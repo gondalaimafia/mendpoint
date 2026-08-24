@@ -284,6 +284,30 @@ describe("SAML bridge token", () => {
 describe("SAML SP-initiated flow end to end", () => {
   beforeEach(configureSaml);
 
+  it("cancels an undeclared oversized assertion body before parsing it", async () => {
+    let cancelled = false;
+    let index = 0;
+    const chunks = [new Uint8Array(1024 * 1024), new Uint8Array([1])];
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks[index++];
+        if (chunk) controller.enqueue(chunk);
+        else controller.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const response = await samlAcs(new NextRequest(ACS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+      duplex: "half",
+    } as ConstructorParameters<typeof NextRequest>[1] & { duplex: "half" }));
+    expect(response.status).toBe(413);
+    expect(cancelled).toBe(true);
+  });
+
   function cookieFrom(response: Response, name: string): string {
     const value = response.headers.get("set-cookie")?.match(
       new RegExp(`(?:^|, )${name}=([^;]+)`),

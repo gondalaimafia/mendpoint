@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { isAllowedMutationOrigin } from "../../../lib/proxy-auth";
+import {
+  BodyLimitExceededError,
+  InvalidContentLengthError,
+  cancelBody,
+  readBodyWithinLimit,
+  readRequestBodyWithinLimit,
+} from "../../../lib/bounded-body";
 
 export const dynamic = "force-dynamic";
 
@@ -44,20 +51,17 @@ export async function POST(request: NextRequest): Promise<Response> {
   if (!contentType.startsWith("application/json")) {
     return Response.json({ error: "invalid_content_type" }, { status: 415 });
   }
-  const declaredLengthValue = request.headers.get("content-length");
-  if (declaredLengthValue) {
-    const declaredLength = Number(declaredLengthValue);
-    if (!Number.isFinite(declaredLength) || declaredLength < 0) {
-      return Response.json({ error: "invalid_content_length" }, { status: 400 });
-    }
-    if (declaredLength > MAX_APPLICATION_BYTES) {
+  let requestBody: Uint8Array<ArrayBuffer> | null;
+  try {
+    requestBody = await readRequestBodyWithinLimit(request, MAX_APPLICATION_BYTES);
+  } catch (error) {
+    if (error instanceof BodyLimitExceededError) {
       return Response.json({ error: "payload_too_large" }, { status: 413 });
     }
-  }
-
-  const requestBody = await request.arrayBuffer();
-  if (requestBody.byteLength > MAX_APPLICATION_BYTES) {
-    return Response.json({ error: "payload_too_large" }, { status: 413 });
+    if (error instanceof InvalidContentLengthError) {
+      return Response.json({ error: "invalid_content_length" }, { status: 400 });
+    }
+    throw error;
   }
   const apiKey = process.env.MENDPOINT_API_KEY?.trim();
   if (!apiKey) {
@@ -89,9 +93,8 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
-  let upstream: Response;
   try {
-    upstream = await fetch(upstreamUrl, {
+    const upstream = await fetch(upstreamUrl, {
       method: "POST",
       headers,
       body: requestBody,
@@ -99,40 +102,41 @@ export async function POST(request: NextRequest): Promise<Response> {
       redirect: "manual",
       signal: controller.signal,
     });
+    const declaredResponseLength = Number(upstream.headers.get("content-length") ?? 0);
+    if (declaredResponseLength > MAX_UPSTREAM_RESPONSE_BYTES) {
+      cancelBody(upstream.body, () => controller.abort());
+      return Response.json({ error: "application_service_unavailable" }, { status: 502 });
+    }
+    const responseBytes = await readBodyWithinLimit(
+      upstream.body,
+      MAX_UPSTREAM_RESPONSE_BYTES,
+      () => controller.abort(),
+    );
+    if (!upstream.ok) {
+      const safe = publicError(upstream.status);
+      const response = Response.json({ error: safe.error }, { status: safe.status });
+      const retryAfter = upstream.headers.get("retry-after");
+      if (safe.status === 429 && retryAfter && /^\d{1,8}$/.test(retryAfter)) {
+        response.headers.set("Retry-After", retryAfter);
+      }
+      return response;
+    }
+    try {
+      const parsed = JSON.parse(Buffer.from(responseBytes ?? []).toString("utf8")) as {
+        data?: { applicationId?: unknown };
+      };
+      const applicationId = parsed.data?.applicationId;
+      if (typeof applicationId !== "string" || !REQUEST_ID_PATTERN.test(applicationId)) {
+        throw new Error("invalid_application_reference");
+      }
+      return Response.json({ applicationId }, { status: 201 });
+    } catch {
+      return Response.json({ error: "application_service_unavailable" }, { status: 502 });
+    }
   } catch (error) {
     const status = error instanceof Error && error.name === "AbortError" ? 504 : 502;
     return Response.json({ error: "application_service_unavailable" }, { status });
   } finally {
     clearTimeout(timeout);
-  }
-
-  const declaredResponseLength = Number(upstream.headers.get("content-length") ?? 0);
-  if (declaredResponseLength > MAX_UPSTREAM_RESPONSE_BYTES) {
-    return Response.json({ error: "application_service_unavailable" }, { status: 502 });
-  }
-  const responseBytes = await upstream.arrayBuffer();
-  if (responseBytes.byteLength > MAX_UPSTREAM_RESPONSE_BYTES) {
-    return Response.json({ error: "application_service_unavailable" }, { status: 502 });
-  }
-  if (!upstream.ok) {
-    const safe = publicError(upstream.status);
-    const response = Response.json({ error: safe.error }, { status: safe.status });
-    const retryAfter = upstream.headers.get("retry-after");
-    if (safe.status === 429 && retryAfter && /^\d{1,8}$/.test(retryAfter)) {
-      response.headers.set("Retry-After", retryAfter);
-    }
-    return response;
-  }
-  try {
-    const parsed = JSON.parse(Buffer.from(responseBytes).toString("utf8")) as {
-      data?: { applicationId?: unknown };
-    };
-    const applicationId = parsed.data?.applicationId;
-    if (typeof applicationId !== "string" || !REQUEST_ID_PATTERN.test(applicationId)) {
-      throw new Error("invalid_application_reference");
-    }
-    return Response.json({ applicationId }, { status: 201 });
-  } catch {
-    return Response.json({ error: "application_service_unavailable" }, { status: 502 });
   }
 }

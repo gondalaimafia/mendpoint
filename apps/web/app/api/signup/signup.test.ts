@@ -48,6 +48,39 @@ function signupRequest(): NextRequest {
 }
 
 describe("self-serve signup web route", () => {
+  it("cancels an undeclared oversized signup body before contacting the API", async () => {
+    configure();
+    process.env.MENDPOINT_SELF_SERVE_SIGNUP = "1";
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    let cancelled = false;
+    let index = 0;
+    const chunks = [new Uint8Array(8_192), new Uint8Array([1])];
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks[index++];
+        if (chunk) controller.enqueue(chunk);
+        else controller.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const response = await signupPost(new NextRequest("https://console.example/api/signup", {
+      method: "POST",
+      headers: {
+        Origin: "https://console.example",
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/json",
+      },
+      body,
+      duplex: "half",
+    } as ConstructorParameters<typeof NextRequest>[1] & { duplex: "half" }));
+    expect(response.status).toBe(413);
+    expect(cancelled).toBe(true);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   it("is inert (404) when the flag is unset", async () => {
     configure();
     delete process.env.MENDPOINT_SELF_SERVE_SIGNUP;
@@ -101,6 +134,31 @@ describe("self-serve signup web route", () => {
     const response = await signupPost(signupRequest());
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error: "self_serve_account_exists" });
+  });
+
+  it("cancels an undeclared oversized signup response", async () => {
+    configure();
+    process.env.MENDPOINT_SELF_SERVE_SIGNUP = "1";
+    let cancelled = false;
+    let index = 0;
+    const chunks = [new Uint8Array(64 * 1_024), new Uint8Array([1])];
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      body: new ReadableStream({
+        pull(controller) {
+          const chunk = chunks[index++];
+          if (chunk) controller.enqueue(chunk);
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      headers: new Headers(),
+      ok: true,
+      status: 201,
+    }) as Response));
+    const response = await signupPost(signupRequest());
+    expect(response.status).toBe(502);
+    expect(cancelled).toBe(true);
   });
 });
 
