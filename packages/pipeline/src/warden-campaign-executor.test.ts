@@ -16,6 +16,7 @@ import {
   linkFettlerCampaignToMission,
   listWardenCampaignTargets,
   planWardenRollout,
+  recordMissionDecision,
   replayWardenRun,
   transitionWardenCampaign,
   type AppDb,
@@ -366,6 +367,19 @@ describe("Warden campaign executor", () => {
     });
     await expect(executeWardenCampaignTarget(executionInput(value)))
       .rejects.toMatchObject({ code: "warden_policy_denied", retryable: false });
+    expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0]?.stage).not.toBe("review");
+  });
+
+  it("fails closed when every planned edit matches an active rejected Mission decision", async () => {
+    const value = fixture();
+    recordMissionDecision(value.db, {
+      tenantId: "tenant-a", missionId: "mission-a",
+      decision: "do not modify generated SDK call sites in src/payments.ts",
+      scope: "src/payments.ts",
+      authorPrincipalId: "owner", correlationId: "campaign-a", createdAt,
+    });
+    await expect(executeWardenCampaignTarget(executionInput(value)))
+      .rejects.toMatchObject({ code: "warden_edits_previously_rejected", retryable: false });
     expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0]?.stage).not.toBe("review");
   });
 });

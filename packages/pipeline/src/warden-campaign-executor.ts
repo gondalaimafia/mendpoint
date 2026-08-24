@@ -10,6 +10,7 @@ import {
   listWardenCampaignTargets,
   replayWardenRun,
   resolveMissionForFettlerCampaign,
+  getActiveMissionDecisions,
   transitionWardenTarget,
   type AppDb,
   type WardenCampaignTarget,
@@ -387,6 +388,26 @@ function rolloutRiskForTarget(decision: WardenRolloutDecision, targetId: string)
   return decision.targetEvidence.find((profile) => profile.targetId === targetId)?.risk ?? "critical";
 }
 
+/**
+ * FET-021: drop planned edits whose path, symbol, id, or kind a still-active
+ * Mission decision already rejected. Scope is the match key (deterministic,
+ * no NLP). A superseding decision with a different scope does not revive the
+ * edit; a retraction/supersession of the rejecting decision does, because
+ * `getActiveMissionDecisions` omits it.
+ */
+export function rejectEditsSupersededByDecisions(
+  edits: readonly WardenTypedEditStrategy[],
+  decisions: readonly Readonly<{ scope: string }>[],
+): readonly WardenTypedEditStrategy[] {
+  const rejected = new Set(decisions.map((decision) => decision.scope));
+  if (rejected.size === 0) return edits;
+  return edits.filter((edit) =>
+    !rejected.has(edit.targetPath) &&
+    !rejected.has(edit.targetSymbol) &&
+    !rejected.has(edit.id) &&
+    !rejected.has(`kind:${edit.kind}`));
+}
+
 function validateTypedEdits(edits: readonly WardenTypedEditStrategy[], sourceArtifactId: string): void {
   if (edits.length === 0 || edits.length > 100) {
     throw new WardenCampaignExecutionError("warden_typed_edits_required", false);
@@ -666,17 +687,28 @@ export async function executeWardenCampaignTarget(input: {
       manifestSha256: snapshot.manifest_sha256, snapshotRoot: snapshot.storage_path,
     });
     validateTypedEdits(edits, source.sourceArtifactId);
+    const mission = resolveMissionForFettlerCampaign(input.db, input.tenantId, input.campaignId);
+    const retainedEdits = mission
+      ? rejectEditsSupersededByDecisions(
+        edits,
+        getActiveMissionDecisions(input.db, input.tenantId, mission.id),
+      )
+      : edits;
+    if (retainedEdits.length === 0) {
+      throw new WardenCampaignExecutionError("warden_edits_previously_rejected", false);
+    }
+    const policyEdits = retainedEdits;
     assertCampaignExecutePolicy(input.db, {
       tenantId: input.tenantId,
       campaignId: input.campaignId,
       task: campaignExecutePolicyTask({
         repositoryId: target.repositoryId,
         branch: snapshot.requested_ref,
-        targetPaths: edits.map((edit) => edit.targetPath),
+        targetPaths: policyEdits.map((edit) => edit.targetPath),
         risk: rolloutRiskForTarget(decision, input.targetId),
       }),
     });
-    appendRun("analysis_completed", edits, [artifactReference(sourceArtifact), artifactReference(baselineArtifact)]);
+    appendRun("analysis_completed", policyEdits, [artifactReference(sourceArtifact), artifactReference(baselineArtifact)]);
     assertRunning(input.db, input.tenantId, input.campaignId);
     current = transitionWardenTarget(input.db, {
       tenantId: input.tenantId, campaignId: input.campaignId, targetId: input.targetId,
@@ -686,20 +718,20 @@ export async function executeWardenCampaignTarget(input: {
     });
     const candidate = await input.dependencies.applyEdits({
       snapshotId: snapshot.id, resolvedSha: snapshot.resolved_sha,
-      manifestSha256: snapshot.manifest_sha256, snapshotRoot: snapshot.storage_path, edits,
+      manifestSha256: snapshot.manifest_sha256, snapshotRoot: snapshot.storage_path, edits: policyEdits,
     });
     if (candidate.baseManifestSha256 !== snapshot.manifest_sha256 ||
-      canonicalJson([...candidate.appliedEditIds].sort()) !== canonicalJson(edits.map((edit) => edit.id).sort())) {
+      canonicalJson([...candidate.appliedEditIds].sort()) !== canonicalJson(policyEdits.map((edit) => edit.id).sort())) {
       throw new WardenCampaignExecutionError("warden_candidate_snapshot_binding_invalid", false);
     }
     const candidateArtifact = persistJsonArtifact(input.db, {
       tenantId: input.tenantId, kind: "warden-candidate", value: {
         snapshotId: snapshot.id, resolvedSha: snapshot.resolved_sha,
         baseManifestSha256: snapshot.manifest_sha256, candidateContentSha256: sha256(candidate.candidateContent),
-        candidateContent: candidate.candidateContent, edits,
+        candidateContent: candidate.candidateContent, edits: policyEdits,
       }, producerPrincipalId: input.actorPrincipalId, createdAt: input.createdAt,
     });
-    appendRun("candidate_generated", { candidateArtifactId: candidateArtifact.id, edits: edits.length }, [artifactReference(candidateArtifact)]);
+    appendRun("candidate_generated", { candidateArtifactId: candidateArtifact.id, edits: policyEdits.length }, [artifactReference(candidateArtifact)]);
     assertRunning(input.db, input.tenantId, input.campaignId);
     current = transitionWardenTarget(input.db, {
       tenantId: input.tenantId, campaignId: input.campaignId, targetId: input.targetId,
@@ -736,7 +768,7 @@ export async function executeWardenCampaignTarget(input: {
         schemaVersion: 1, campaignId: input.campaignId, targetId: input.targetId, runId,
         attempt: current.attemptCount, sourceEnvelopeArtifactId: sourceArtifact.id,
         snapshot: { id: snapshot.id, resolvedSha: snapshot.resolved_sha, manifestSha256: snapshot.manifest_sha256 },
-        typedEdits: edits, baselineArtifactId: baselineArtifact.id, candidateArtifactId: candidateArtifact.id,
+        typedEdits: policyEdits, baselineArtifactId: baselineArtifact.id, candidateArtifactId: candidateArtifact.id,
         postEditArtifactId: postEditArtifact.id, gateArtifactId: gateArtifact.id,
         delivery: { mode: "draft", autoMerge: false, autoDeploy: false },
       }, producerPrincipalId: input.actorPrincipalId, createdAt: input.createdAt,
