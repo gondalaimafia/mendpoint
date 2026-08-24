@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
@@ -23,6 +24,8 @@ import {
   emitAlert,
   recentAlerts,
   clearAlerts,
+  setAlertPersistPath,
+  evaluateDogfoodAlerts,
   startLiveSandbox,
   permissionForRoute,
   type CreateSandboxOpts,
@@ -164,6 +167,71 @@ describe("vm + cost + rbac + scm + alerts", () => {
     expect(recentAlerts(50, { tenantId: "tenant-a", includeUnscoped: true }).map((alert) => alert.message)).toEqual(["legacy", "a"]);
     expect(() => recentAlerts(50, { tenantId: " " })).toThrow(/tenant scope required/i);
     expect(() => emitAlert({ severity: "info", source: "test", message: "blank", tenantId: " " })).toThrow(/tenant scope required/i);
+  });
+
+  it("does not emit a dogfood volume alert for an empty corpus", () => {
+    const dir = mkdtempSync(join(tmpdir(), "alert-empty-corpus-"));
+    try {
+      setAlertPersistPath(join(dir, "alerts.jsonl"));
+      clearAlerts({ wipeFile: true });
+
+      const empty = evaluateDogfoodAlerts({
+        totalRuns: 0,
+        okRate: 0,
+        targetRuns: 30,
+        targetOkRate: 0.5,
+        day90Ready: false,
+        tenantId: "tenant-a",
+      });
+      expect(empty).toEqual([]);
+      expect(recentAlerts(500, { tenantId: "tenant-a" })).toEqual([]);
+
+      // A genuine shortfall — runs exist, just not enough — still alerts.
+      const shortfall = evaluateDogfoodAlerts({
+        totalRuns: 3,
+        okRate: 1,
+        targetRuns: 30,
+        targetOkRate: 0.5,
+        day90Ready: false,
+        tenantId: "tenant-a",
+      });
+      expect(shortfall.map((alert) => alert.severity)).toEqual(["info"]);
+      expect(shortfall[0]?.message).toContain("3/30");
+    } finally {
+      clearAlerts({ wipeFile: true });
+      setAlertPersistPath(null);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never evicts one tenant's alerts to make room for another tenant's volume", () => {
+    const dir = mkdtempSync(join(tmpdir(), "alert-evict-"));
+    try {
+      setAlertPersistPath(join(dir, "alerts.jsonl"));
+      clearAlerts({ wipeFile: true });
+
+      emitAlert({ severity: "warn", source: "test", message: "quiet", tenantId: "tenant-quiet" });
+      // Well past the 500-entry buffer cap: under oldest-first eviction this
+      // alone pushed every other tenant's alerts out of recentAlerts.
+      for (let i = 0; i < 600; i++) {
+        emitAlert({ severity: "info", source: "test", message: `loud-${i}`, tenantId: "tenant-loud" });
+      }
+
+      expect(recentAlerts(500, { tenantId: "tenant-quiet" }).map((alert) => alert.message)).toEqual(["quiet"]);
+      expect(recentAlerts(500, { tenantId: "tenant-loud" }).length).toBeGreaterThan(0);
+
+      // Legacy unscoped alerts are a bucket of their own and survive too.
+      clearAlerts({ wipeFile: true });
+      emitAlert({ severity: "info", source: "test", message: "legacy" });
+      for (let i = 0; i < 600; i++) {
+        emitAlert({ severity: "info", source: "test", message: `loud-${i}`, tenantId: "tenant-loud" });
+      }
+      expect(recentAlerts(500).some((alert) => alert.message === "legacy")).toBe(true);
+    } finally {
+      clearAlerts({ wipeFile: true });
+      setAlertPersistPath(null);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("starts live sandbox and probes health", async () => {

@@ -14,7 +14,6 @@ import {
 import {
   can,
   canMutateSystemCatalog,
-  evaluateDogfoodAlerts,
   recentAlerts,
 } from "@mendpoint/platform";
 import type { ApiEnv } from "./auth.js";
@@ -48,8 +47,11 @@ export function createPlatformStateRoutes(
       return c.json({ error: "unauthorized" }, 401);
     }
     const scope = { tenantId: principal.tenantId };
+    // Read-only on purpose: this handler must not emit alerts. Alert evaluation
+    // belongs to the deliberate dogfood run (`sdk.dogfood()` / `npm run
+    // dogfood:report`), not to a GET any viewer can poll — an emit here let a
+    // caller append to the shared alert buffer and JSONL at will.
     const report = collectDogfood(baseDir, scope);
-    evaluateDogfoodAlerts({ ...report, tenantId: principal.tenantId });
     return c.json({ ...report, markdown: formatDogfoodReport(report) });
   });
 

@@ -5,7 +5,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { addStep, emptyPlan } from "@mendpoint/orchestrator";
 import { executePlan, runDir } from "@mendpoint/harness";
-import { clearAlerts, emitAlert, setAlertPersistPath, type Principal } from "@mendpoint/platform";
+import {
+  clearAlerts,
+  emitAlert,
+  recentAlerts,
+  setAlertPersistPath,
+  type Principal,
+} from "@mendpoint/platform";
 import { createPlatformStateRoutes } from "./platform-state-routes.js";
 import type { ApiEnv } from "./auth.js";
 
@@ -128,5 +134,37 @@ describe("platform state routes", () => {
 
     const invalid = await app.request("/platform/trajectories/invalid!");
     expect(invalid.status).toBe(404);
+  });
+
+  it("reads dogfood without emitting an alert, on an empty corpus or a below-target one", async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), "platform-dogfood-"));
+    dirs.push(baseDir);
+    const alertPath = join(baseDir, "alerts.jsonl");
+    setAlertPersistPath(alertPath);
+    clearAlerts({ wipeFile: true });
+    const app = appFor(baseDir, { id: "v", tenantId: "tenant-a", role: "viewer" });
+
+    // Empty corpus: totalRuns is 0, which used to trip the volume alert on every
+    // request now that each tenant starts from zero runs.
+    for (let i = 0; i < 3; i++) {
+      const empty = await app.request("/platform/dogfood");
+      expect(empty.status).toBe(200);
+      expect((await empty.json() as { totalRuns: number }).totalRuns).toBe(0);
+    }
+    expect(recentAlerts(500, { tenantId: "tenant-a" })).toEqual([]);
+    expect(readFileSync(alertPath, "utf8")).toBe("");
+
+    // Below-target but non-empty: a read is still a read. This is the assertion
+    // that fails if alert evaluation is put back on the GET handler.
+    await seed(baseDir, "tenant-a", "one run", "dogfood-run");
+    for (let i = 0; i < 3; i++) {
+      const seeded = await app.request("/platform/dogfood");
+      expect(seeded.status).toBe(200);
+      const body = await seeded.json() as { totalRuns: number; targetRuns: number };
+      expect(body.totalRuns).toBeGreaterThan(0);
+      expect(body.totalRuns).toBeLessThan(body.targetRuns);
+    }
+    expect(recentAlerts(500, { tenantId: "tenant-a" })).toEqual([]);
+    expect(readFileSync(alertPath, "utf8")).toBe("");
   });
 });
