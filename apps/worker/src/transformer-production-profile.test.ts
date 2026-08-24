@@ -1,7 +1,8 @@
+import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
+import { TRANSFORMER_GATE_SCHEMA_VERSION, validateApiEnv } from "@mendpoint/ops";
 import {
   resolveTransformerWorkerId,
   validateTransformerProductionProfile,
@@ -9,18 +10,24 @@ import {
 
 const CANARY_REVISION = "a".repeat(40);
 const RELEASE_REVISION = "b".repeat(40);
+const testPrivateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
+  .privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 const approval = `approval:regauge:tenant-a:campaign-a:repository:123456:revision:${CANARY_REVISION}:draft:1:run:98765:attempt:1`;
 const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [approval] }] });
 
 describe("Transformer production profile", () => {
   it("builds and runs the hardened transformer image stage", () => {
     const manifest = readFileSync(
-      resolve(import.meta.dirname, "../../../fly.transformer.toml"),
+      resolve(import.meta.dirname, "../../../fly.regauge.toml"),
       "utf8",
     ).replaceAll("\r\n", "\n");
 
     expect(manifest).toContain(
       '[build]\n  dockerfile = "Dockerfile"\n  build-target = "transformer"',
+    );
+    expect(manifest).toContain('app = "mendpoint-regauge-production"');
+    expect(manifest).toContain(
+      'MENDPOINT_REGAUGE_COORDINATOR_URL = "https://mendpoint-regauge-production.fly.dev/"',
     );
     expect(manifest).not.toMatch(/^\s*target\s*=/m);
     expect(manifest).toContain(
@@ -42,6 +49,58 @@ describe("Transformer production profile", () => {
     const serverImportIndex = roleEntrypoint.indexOf('import("../apps/api/src/server.ts")');
     expect(roleIndex).toBeGreaterThanOrEqual(0);
     expect(serverImportIndex).toBeGreaterThan(roleIndex);
+  });
+
+  it.each([
+    [
+      "fly.transformer.toml",
+      "transformer_pilot",
+      "https://mendpoint-transformer-pilot.fly.dev/",
+    ],
+    [
+      "fly.regauge.toml",
+      "regauge_production",
+      "https://mendpoint-regauge-production.fly.dev/",
+    ],
+  ])("feeds %s environment into both API and worker boot validation", (
+    manifestName,
+    profile,
+    coordinatorUrl,
+  ) => {
+    const manifest = readFileSync(
+      resolve(import.meta.dirname, `../../../${manifestName}`),
+      "utf8",
+    );
+    const env: NodeJS.ProcessEnv = {
+      ...environment(),
+      ...manifestEnvironment(manifest),
+      MENDPOINT_PROCESS_ROLE: "transformer_coordinator",
+      MENDPOINT_RELEASE_REVISION: RELEASE_REVISION,
+      MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: undefined,
+      GITHUB_APP_PRIVATE_KEY: testPrivateKey,
+    };
+
+    expect(env.MENDPOINT_DEPLOYMENT_PROFILE).toBe(profile);
+    expect(env.MENDPOINT_REGAUGE_COORDINATOR_URL).toBe(coordinatorUrl);
+    expect(validateApiEnv(env)).toMatchObject({ ok: true, errors: [] });
+    expect(validateTransformerProductionProfile(env, "coordinator")).toMatchObject({
+      role: "coordinator",
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      environment: "production",
+    });
+    expect(validateTransformerProductionProfile(env, "worker")).toMatchObject({
+      role: "worker",
+      workerId: "fly-abcd1234abcd12",
+    });
+  });
+
+  it("protects the dedicated ReGauge manifest with the existing deployment owner", () => {
+    const codeowners = readFileSync(
+      resolve(import.meta.dirname, "../../../.github/CODEOWNERS"),
+      "utf8",
+    );
+    expect(codeowners).toMatch(/^\/fly\.regauge\.toml\s+@gondalaimafia$/m);
   });
 
   it("accepts the exact coordinator and worker production boundaries", () => {
@@ -107,6 +166,40 @@ describe("Transformer production profile", () => {
       ...environment(),
       FLY_MACHINE_ID: undefined,
     }, "worker")).toThrow("transformer_production_fly_machine_id_required");
+    expect(resolveTransformerWorkerId({
+      ...environment(),
+      MENDPOINT_DEPLOYMENT_PROFILE: "transformer_pilot",
+      MENDPOINT_REGAUGE_COORDINATOR_URL: "https://mendpoint-transformer-pilot.fly.dev/",
+    })).toBe("fly-abcd1234abcd12");
+  });
+
+  it.each([
+    ["regauge_production", "https://mendpoint-regauge-production.fly.dev/"],
+    ["transformer_pilot", "https://mendpoint-transformer-pilot.fly.dev/"],
+  ])("binds %s to its exact canonical coordinator URL", (profile, canonicalUrl) => {
+    expect(validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_DEPLOYMENT_PROFILE: profile,
+      MENDPOINT_REGAUGE_COORDINATOR_URL: canonicalUrl,
+    }, "worker").role).toBe("worker");
+
+    for (const coordinatorUrl of [
+      canonicalUrl.replace("https://", "http://"),
+      canonicalUrl.replace(".fly.dev", "-attacker.fly.dev"),
+      canonicalUrl.replace(".fly.dev/", ".fly.dev:443/"),
+      canonicalUrl.replace("https://", "https://operator:secret@"),
+      `${canonicalUrl}?tenant=other`,
+      `${canonicalUrl}#fragment`,
+      `${canonicalUrl}v1/regauge/attempt-coordinator`,
+      ` ${canonicalUrl}`,
+      `${canonicalUrl} `,
+    ]) {
+      expect(() => validateTransformerProductionProfile({
+        ...environment(),
+        MENDPOINT_DEPLOYMENT_PROFILE: profile,
+        MENDPOINT_REGAUGE_COORDINATOR_URL: coordinatorUrl,
+      }, "worker")).toThrow("transformer_production_coordinator_url_invalid");
+    }
   });
 
   it("accepts Fly Tigris standard storage variables and rejects ambiguous aliases", () => {
@@ -194,39 +287,44 @@ describe("Transformer production profile", () => {
     }, "worker")).toThrow("transformer_production_canary_revision_invalid");
   });
 
-  it("requires a canonical activation expiry within the protected run window", () => {
-    expect(() => validateTransformerProductionProfile({
+  it("keeps expiring draft authority outside stable process boot validation", () => {
+    expect(validateTransformerProductionProfile({
       ...environment(),
       MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: undefined,
-    }, "worker")).toThrow("transformer_production_activation_expiry_required");
-    expect(() => validateTransformerProductionProfile({
+    }, "worker").role).toBe("worker");
+    expect(validateTransformerProductionProfile({
       ...environment(),
       MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: "tomorrow",
-    }, "worker")).toThrow("transformer_production_activation_expiry_invalid");
-    expect(() => validateTransformerProductionProfile({
-      ...environment(),
-      MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() - 1_000).toISOString(),
-    }, "worker")).toThrow("transformer_production_activation_expired");
+    }, "worker").role).toBe("worker");
     expect(validateTransformerProductionProfile({
       ...environment(),
       MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() - 1_000).toISOString(),
-    }, "coordinator").role).toBe("coordinator");
-    expect(() => validateTransformerProductionProfile({
+    }, "worker").role).toBe("worker");
+    expect(validateTransformerProductionProfile({
       ...environment(),
       MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() + 91 * 60_000).toISOString(),
-    }, "worker")).toThrow("transformer_production_activation_expiry_invalid");
+    }, "coordinator").role).toBe("coordinator");
   });
 });
+
+function manifestEnvironment(source: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  const section = source.match(/\[env\]\s*([\s\S]*?)(?=\n\[|\n\[\[|$)/)?.[1] ?? "";
+  for (const match of section.matchAll(/^\s*([A-Z][A-Z0-9_]*)\s*=\s*"([^"]*)"\s*$/gm)) {
+    env[match[1]!] = match[2]!;
+  }
+  return env;
+}
 
 function environment(): NodeJS.ProcessEnv {
   return {
     NODE_ENV: "production", API_AUTH: "required", API_HOST: "0.0.0.0", GITHUB_MODE: "real",
-    MENDPOINT_DEPLOYMENT_PROFILE: "transformer_pilot", MENDPOINT_DEPLOYMENT_CLASS: "customer", MENDPOINT_REGAUGE_ENABLED: "1",
+    MENDPOINT_DEPLOYMENT_PROFILE: "regauge_production", MENDPOINT_DEPLOYMENT_CLASS: "customer", MENDPOINT_REGAUGE_ENABLED: "1",
     MENDPOINT_REGAUGE_MULTINODE_COORDINATOR_ENABLED: "1", MENDPOINT_REGAUGE_MULTINODE_ENABLED: "1",
     MENDPOINT_REGAUGE_ARTIFACT_BACKEND: "s3", MENDPOINT_PILOT_SEED: "0", MENDPOINT_FEED_POLLING_ENABLED: "0",
     MENDPOINT_REGAUGE_TENANT_ID: "tenant-a", MENDPOINT_REGAUGE_CAMPAIGN_ID: "campaign-a", MENDPOINT_REGAUGE_ENVIRONMENT: "production",
     MENDPOINT_REGAUGE_GATE: gate, MENDPOINT_REGAUGE_COORDINATOR_TOKEN: `me_${"a".repeat(40)}`,
-    MENDPOINT_REGAUGE_COORDINATOR_URL: "https://mendpoint-transformer-pilot.fly.dev/",
+    MENDPOINT_REGAUGE_COORDINATOR_URL: "https://mendpoint-regauge-production.fly.dev/",
     MENDPOINT_REGAUGE_CHECKPOINT_KEY: Buffer.alloc(32, 1).toString("base64"), MENDPOINT_REGAUGE_OPERATION_SECRET: Buffer.alloc(32, 2).toString("base64"),
     MENDPOINT_REGAUGE_S3_ENDPOINT: "https://s3.example.com", MENDPOINT_REGAUGE_S3_REGION: "auto", MENDPOINT_REGAUGE_S3_BUCKET: "pilot",
     MENDPOINT_REGAUGE_S3_PREFIX: "transformer/tenant-a/campaign-a", MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID: "access", MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY: "secret",

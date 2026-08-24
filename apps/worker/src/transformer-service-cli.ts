@@ -12,6 +12,7 @@ import {
   createTransformerMultinodeService,
 } from "./transformer-multinode-service.js";
 import {
+  resolveTransformerCoordinatorUrl,
   resolveTransformerS3Config,
   resolveTransformerWorkerId,
 } from "./transformer-production-profile.js";
@@ -20,8 +21,6 @@ export type RunningTransformerService = Readonly<{ close(): Promise<void>; readi
 
 export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.env): Promise<RunningTransformerService> {
   if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_MULTINODE_ENABLED") !== "1") throw new Error("transformer_multinode_service_disabled");
-  const activationExpiresAt = activationExpiry(env.MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT);
-  assertActivationCurrent(activationExpiresAt);
   const workerId = resolveTransformerWorkerId(env);
   const tenantId = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_TENANT_ID"), "transformer_multinode_tenant_required");
   const campaignId = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_CAMPAIGN_ID"), "transformer_multinode_campaign_required");
@@ -31,7 +30,7 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
   const readinessPort = integer(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_READINESS_PORT") ?? "9465", 1, 65_535, "transformer_multinode_readiness_port_invalid");
   const readinessHost = readinessAddress(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_READINESS_HOST") ?? "127.0.0.1");
   const transport = createFetchTransformerMultinodeTransport({
-    baseUrl: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_URL"), "transformer_multinode_coordinator_url_required"),
+    baseUrl: resolveTransformerCoordinatorUrl(env),
     authToken: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_TOKEN"), "transformer_multinode_coordinator_token_required"),
     workerId,
     timeoutMs: integer(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_TIMEOUT_MS") ?? "30000", 1, 120_000, "transformer_multinode_timeout_invalid"),
@@ -62,14 +61,11 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
     operationSecret: decodeKey(required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_OPERATION_SECRET"), "transformer_multinode_operation_secret_required")),
     evidenceRefs: evidenceRefs(required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_EVIDENCE_REFS"), "transformer_multinode_evidence_refs_required")),
     gateConfig: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_GATE"), "transformer_multinode_gate_required"),
-    deliverDraft: (intent, target) => {
-      assertActivationCurrent(activationExpiresAt);
-      return createAppDelivery(
-        target.installationId,
-        appCredentials,
-        [target.remoteRepositoryId],
-      ).deliverExactDraft(intent);
-    },
+    deliverDraft: (intent, target) => createAppDelivery(
+      target.installationId,
+      appCredentials,
+      [target.remoteRepositoryId],
+    ).deliverExactDraft(intent),
     observeDraft: (observation, target) => createAppDelivery(
       target.installationId,
       appCredentials,
@@ -83,15 +79,18 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
   const readiness: Server = createServer((request, response) => {
     if (request.method !== "GET" || request.url !== "/readyz") { response.writeHead(404).end(); return; }
     response.setHeader("content-type", "application/json");
-    const activationCurrent = activationExpiresAt === null || Date.now() < activationExpiresAt;
-    response.writeHead(healthy && !closing && activationCurrent ? 200 : 503).end(JSON.stringify({ ready: healthy && !closing && activationCurrent, mode: "checkpoint_required", workerId, lastError: activationCurrent ? lastError : "transformer_multinode_activation_expired" }));
+    response.writeHead(healthy && !closing ? 200 : 503).end(JSON.stringify({
+      ready: healthy && !closing,
+      mode: "checkpoint_required",
+      workerId,
+      lastError,
+    }));
   });
   await new Promise<void>((resolveReady, reject) => {
     readiness.once("error", reject);
     readiness.listen(readinessPort, readinessHost, () => { readiness.off("error", reject); resolveReady(); });
   });
   const probe = async () => {
-    assertActivationCurrent(activationExpiresAt);
     await transport.request({
       path: "/v1/regauge/attempt-coordinator/readyz",
       body: { tenantId, campaignId },
@@ -136,16 +135,3 @@ function integer(value: string, minimum: number, maximum: number, code: string):
 function readinessAddress(value: string): "127.0.0.1" | "0.0.0.0" { if (value === "127.0.0.1" || value === "0.0.0.0") return value; throw new Error("transformer_multinode_readiness_host_invalid"); }
 function decodeKey(value: string): Uint8Array { const bytes = Buffer.from(value, "base64"); if (bytes.byteLength !== 32 || bytes.toString("base64") !== value) throw new Error("transformer_multinode_checkpoint_key_invalid"); return new Uint8Array(bytes); }
 function evidenceRefs(value: string): readonly string[] { const refs = value.split(",").map((item) => item.trim()).filter(Boolean); if (!refs.length || new Set(refs).size !== refs.length) throw new Error("transformer_multinode_evidence_refs_invalid"); return Object.freeze(refs); }
-function activationExpiry(value: string | undefined): number | null {
-  if (!value?.trim()) return null;
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) {
-    throw new Error("transformer_multinode_activation_expiry_invalid");
-  }
-  return parsed;
-}
-function assertActivationCurrent(expiresAt: number | null): void {
-  if (expiresAt !== null && Date.now() >= expiresAt) {
-    throw new Error("transformer_multinode_activation_expired");
-  }
-}

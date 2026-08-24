@@ -170,6 +170,56 @@ describe("real Transformer multi-node coordinator", () => {
     expect(authorize).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["tomorrow", "malformed"],
+    ["2026-08-22T06:31:00.000Z", "longer than the protected window"],
+  ])("boots without %s draft authority and refuses authorization", async (activationExpiresAt) => {
+    const service = new TransformerPilotExecutionService(":memory:", {
+      rawGateConfig: gate,
+      environment: "test",
+    });
+    services.push(service);
+    const authorize = vi.spyOn(service.store, "authorizeCurrentWaveDrafts").mockReturnValue([]);
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("principal", { id: "api-key:worker", tenantId: "tenant-a", role: "agent" });
+      c.set("authScopes", ["transformer:worker"]);
+      await next();
+    });
+    app.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+      enabled: true,
+      store: service.store,
+      now: () => "2026-08-22T05:00:00.000Z",
+      gateConfig: gate,
+      draftAuthorization: {
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        remoteRepositoryId: 84,
+        sourceRevision: revision("a"),
+        environment: "test",
+        productionApprovalRef: draftApproval,
+        activationExpiresAt,
+        maximumDrafts: 1,
+      },
+      loadExactSource: () => { throw new Error("must_not_load"); },
+    }));
+    const response = await app.request(
+      "/v1/regauge/attempt-coordinator/operations/authorizeCurrentWaveDrafts",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tenantId: "tenant-a",
+          campaignId: "campaign-a",
+          evidenceRefs: ["evidence:runner"],
+          idempotencyKey: "regauge-draft-authorize-invalid",
+        }),
+      },
+    );
+    expect(response.status).toBe(403);
+    expect(authorize).not.toHaveBeenCalled();
+  });
+
   it("refuses enabled startup without server-owned gate authority", () => {
     const service = new TransformerPilotExecutionService(":memory:", { rawGateConfig: gate, environment: "test" });
     services.push(service);
@@ -240,7 +290,7 @@ describe("real Transformer multi-node coordinator", () => {
         remoteRepositoryId: 84,
         sourceRevision: revision("a"),
         productionApprovalRef: draftApproval,
-        activationExpiresAt: new Date(Date.parse(coordinatorNow) + 4 * 60 * 60_000).toISOString(),
+        activationExpiresAt: new Date(Date.parse(coordinatorNow) + 60 * 60_000).toISOString(),
         maximumDrafts: 1,
       },
       observeCompletedAttempt: completedObserver,

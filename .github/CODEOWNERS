@@ -39,6 +39,7 @@
 /fly.toml                                        @gondalaimafia
 /fly.customer-warden.toml                        @gondalaimafia
 /fly.transformer.toml                            @gondalaimafia
+/fly.regauge.toml                                @gondalaimafia
 /fly.sandbox.toml                                @gondalaimafia
 
 # Consent and tenant-scope enforcement.

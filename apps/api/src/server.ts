@@ -818,11 +818,12 @@ app.route("/regauge/missions", transformerMissionRoutes);
 app.route("/transformer/missions", transformerMissionRoutes);
 const transformerAttemptCoordinatorEnabled =
   resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_MULTINODE_COORDINATOR_ENABLED") === "1";
+const regaugeActivationExpiresAt =
+  process.env.MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT?.trim() ||
+  "1970-01-01T00:00:00.000Z";
 const transformerDraftAuthorization = transformerAttemptCoordinatorEnabled
   ? (() => {
       const bootstrap = regaugeProductionBootstrapInputFromEnvironment(process.env);
-      const activationExpiresAt = process.env.MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT?.trim();
-      if (!activationExpiresAt) throw new Error("regauge_production_activation_expiry_required");
       return Object.freeze({
         tenantId: bootstrap.tenantId,
         campaignId: bootstrap.campaignId,
@@ -830,7 +831,7 @@ const transformerDraftAuthorization = transformerAttemptCoordinatorEnabled
         remoteRepositoryId: Number(bootstrap.repository.remoteRepositoryId),
         sourceRevision: bootstrap.repository.expectedRevision,
         productionApprovalRef: bootstrap.productionApprovalRef,
-        activationExpiresAt,
+        activationExpiresAt: regaugeActivationExpiresAt,
         maximumDrafts: 1 as const,
       });
     })()
