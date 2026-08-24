@@ -5,7 +5,7 @@ Claims: [`WARDEN_CLAIMS.md`](./WARDEN_CLAIMS.md) · Partner path: [`DESIGN_PARTN
 
 | Demo | Command / UI | Status |
 |------|----------------|--------|
-| Breaking before prod (OpenAPI → impact → mock PR) | `npm run demo` | ✅ |
+| Breaking before prod (OpenAPI → impact → PR candidate, halted at delivery gates) | `npm run demo` | ✅ |
 | Multi-vendor migration examples | `npm run examples` | ✅ |
 | Adopt / new capability sample | `npm run examples -- 05` | ✅ |
 | TS impact harness | `npm run phase-a:harness` | ✅ |
@@ -24,7 +24,7 @@ Claims: [`WARDEN_CLAIMS.md`](./WARDEN_CLAIMS.md) · Partner path: [`DESIGN_PARTN
 ## Suggested 15-minute script
 
 1. `npm run db:seed` (if fresh clone)  
-2. `npm run demo` — show mock PR + findings  
+2. `npm run demo` — show impact findings + PR candidate stopped at delivery gates (fail-closed, no PR opened offline)  
 3. `npm run agent:demo` — show Fettler fix + report  
 4. Open `/agent` if web is running  
 5. Optionally `npm run eval:warden` and stress **internal-only** numbers  

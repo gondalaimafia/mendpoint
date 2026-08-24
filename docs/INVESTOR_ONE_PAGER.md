@@ -32,7 +32,7 @@ Modern software is a mesh of **external APIs**. Breaking changes, silent field r
 | Dual dashboards (provider / consumer) + feeds + graph UI | Yes — Next.js + Hono API |
 | Worker: feed poll, job queue | Yes |
 
-**Demo in minutes:** `npm run demo` — Acme OpenAPI v1→v2 → shop-app scan → mock PR.
+**Demo in minutes:** `npm run demo` — Acme OpenAPI v1→v2 → shop-app scan → migration PR candidate that stops at delivery gates. Offline it fails closed (`prStatus: gates_failed`, no PR opened) because runtime contract and security evidence is unavailable — the fail-closed behavior is the point.
 
 ### 2. Graph engineering as the agentic system (not a chat toy)
 

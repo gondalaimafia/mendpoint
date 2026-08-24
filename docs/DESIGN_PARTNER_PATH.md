@@ -35,7 +35,7 @@ npm run worker:jobs      # drain fan-out job queue
 ### 4. Pipeline (impact → migration PR mock)
 
 ```bash
-npm run demo             # Acme OpenAPI diff → shop-app impact → mock GitHub PR
+npm run demo             # Acme OpenAPI diff → shop-app impact → PR candidate halted at delivery gates (fail-closed, no PR opened)
 npm run examples         # multi-vendor migration fixtures
 ```
 

@@ -122,7 +122,7 @@ npm run build -w @mendpoint/web && npm run start -w @mendpoint/web
 ## YC / partner demo spine (Preview story)
 
 1. Problem: API breaks → consumers break silently  
-2. `npm run demo` → PR with evidence  
+2. `npm run demo` → diff → impact findings → migration PR candidate, halted at delivery gates (fail-closed offline: no PR is opened without runtime verification evidence)  
 3. Registry / graph blast radius  
 4. Optional Fettler agent on fixture  
 5. Open `/status` → **Preview 1.0 operational**  
