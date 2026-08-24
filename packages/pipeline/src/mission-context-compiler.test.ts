@@ -18,13 +18,73 @@ import type { FettlerEndpointImpactResult } from "@mendpoint/graph-learn";
 import {
   compileMissionContext,
   MISSION_CONTEXT_BOUNDS,
+  policyEnvelopeDirectives,
   renderMissionContext,
   type MissionContextInput,
   type MissionVerificationState,
 } from "./mission-context-compiler.js";
+import {
+  canonicalPolicyEnvelopeJson,
+  defaultPolicyEnvelope,
+  type PolicyEnvelope,
+} from "@mendpoint/policy";
 
 const T0 = "2026-01-01T00:00:00.000Z";
 const opened: Array<{ db: AppDb; dir: string }> = [];
+
+describe("policyEnvelopeDirectives", () => {
+  it("emits only the constraining dimensions of the default envelope", () => {
+    const envelope = defaultPolicyEnvelope({ tenantId: "t1", policyEnvelopeId: "pe-1", createdAt: T0 });
+    const result = policyEnvelopeDirectives("t1", canonicalPolicyEnvelopeJson(envelope), 1);
+    expect(result.readable).toBe(true);
+    const subjects = result.directives.map((d) => d.subjectKey).sort();
+    // Default: review required, no deploy, no training — and nothing else.
+    expect(subjects).toEqual(["policy:deployment", "policy:review", "policy:training"]);
+    expect(result.directives.every((d) => d.source === "policy_envelope:v1" && d.tenantId === "t1")).toBe(true);
+  });
+
+  it("emits scope, zone, risk, and external-processing directives when restricted", () => {
+    const restricted: PolicyEnvelope = {
+      ...defaultPolicyEnvelope({ tenantId: "t1", policyEnvelopeId: "pe-1", createdAt: T0 }),
+      repositoryScope: ["repo-a"],
+      forbiddenZones: ["src/generated"],
+      allowedTools: ["codemod"],
+      allowedModelClasses: ["owned"],
+      externalProcessingAllowed: false,
+      riskCeiling: "medium",
+    };
+    const subjects = policyEnvelopeDirectives("t1", canonicalPolicyEnvelopeJson(restricted), 2)
+      .directives.map((d) => d.subjectKey);
+    expect(subjects).toContain("policy:repository_scope");
+    expect(subjects).toContain("policy:forbidden_zone:src/generated");
+    expect(subjects).toContain("policy:tool_scope");
+    expect(subjects).toContain("policy:model_scope");
+    expect(subjects).toContain("policy:external_processing");
+    expect(subjects).toContain("policy:risk_ceiling");
+  });
+
+  it("emits the maximally restrictive fallback for a malformed envelope rather than an empty (fail-open) or partial policy", () => {
+    for (const bad of ["{not json", JSON.stringify({ version: "x" })]) {
+      const result = policyEnvelopeDirectives("t1", bad, 1);
+      // The failure is observable: `readable: false` with a non-empty reason.
+      expect(result.readable).toBe(false);
+      if (result.readable) throw new Error("unreachable");
+      expect(result.reason.length).toBeGreaterThan(0);
+      const subjects = result.directives.map((d) => d.subjectKey).sort();
+      // Maximally restrictive: review, no deploy, no external processing, no training.
+      expect(subjects).toEqual([
+        "policy:deployment",
+        "policy:external_processing",
+        "policy:review",
+        "policy:training",
+      ]);
+      // Strictly MORE restrictive than the valid default, which does not forbid
+      // external processing — a corrupt row is never LESS restrictive.
+      expect(subjects).toContain("policy:external_processing");
+      expect(result.directives).not.toHaveLength(0);
+    }
+  });
+});
 
 afterEach(() => {
   for (const { db, dir } of opened.splice(0)) {
