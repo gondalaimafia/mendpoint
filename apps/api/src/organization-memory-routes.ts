@@ -25,7 +25,7 @@ import {
   getOrganizationMemoryProvenance,
   getOrganizationMemoryScope,
   listOrganizationMemory,
-  recordOrganizationMemoryObservation,
+  observeOrganizationMemory,
   rejectOrganizationMemory,
   ORGANIZATION_MEMORY_STATUSES,
   type AppDb,
@@ -202,8 +202,11 @@ export function createOrganizationMemoryRoutes(
     if ((typeof sourceRefs === "object" && sourceRefs !== undefined && "error" in sourceRefs) || (typeof appliesTo === "object" && appliesTo !== undefined && "error" in appliesTo)) {
       return c.json({ error: "sourceRefs and appliesTo must be arrays of non-empty strings" }, 400);
     }
+    void sourceRefs;
     try {
-      const memory = recordOrganizationMemoryObservation(db, {
+      // The producer mints organization_memory_observation evidence. Client
+      // sourceRefs are never authority — they cannot substitute for the producer.
+      const memory = observeOrganizationMemory(db, {
         tenantId: principal.tenantId,
         category: category as never,
         scope,
@@ -213,7 +216,6 @@ export function createOrganizationMemoryRoutes(
         source: source as never,
         confidence: body.confidence as never,
         structuredValue: body.structuredValue,
-        sourceRefs: sourceRefs as string[] | undefined,
         appliesTo: appliesTo as string[] | undefined,
         reason: typeof body.reason === "string" ? body.reason : undefined,
         at: clock(),

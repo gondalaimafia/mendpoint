@@ -145,31 +145,19 @@ personalization.
 
 ## Operational status of the observation path
 
-`POST /observations` and the independent-corroboration branch of promotion are
-**not operational on this branch** — they are built and fail closed, not live.
+`POST /observations` is operational: the API calls `observeOrganizationMemory`,
+which mints an `evidence_records` row with `subject_type =
+"organization_memory_observation"` (producer = the observing principal, verdict
+`passed`, `subject_id` = the memory id) and then records the observation.
 
-Admitting an observation requires every `sourceRefs` entry to resolve to an
-`evidence_records` row with `subject_type = "organization_memory_observation"`,
-`subject_id` equal to the memory id, `producer_principal_id` equal to the
-observing principal, and `verdict = "passed"` (enforced in
-`observationAuthority`, `packages/db/src/organization-memory.ts`). This is a
-deliberate fail-closed authority control: an observation only counts if an
-independent, verified producer vouched for it.
+Admitting an observation still requires every `sourceRefs` entry to resolve to
+that evidence shape (`observationAuthority` in
+`packages/db/src/organization-memory.ts`). Client-supplied `sourceRefs` are **not**
+authority — the producer always mints the evidence. Do not relax the evidence
+check to accept arbitrary ids.
 
-No production code produces such a record. `insertEvidenceRecord`
-(`packages/db/src/trust.ts`) is the only writer of `evidence_records`, and no
-caller anywhere in `apps/` or `packages/` passes
-`subjectType: "organization_memory_observation"` — only test helpers mint it.
-Until a dedicated observation-evidence producer is built (the surface that turns
-an inferred convention into a verified, attributable observation), `POST
-/observations` always rejects with `organization_memory_evidence_invalid`, so no
-memory can reach ACTIVE through independent corroboration. Explicit human-created
-memory (`POST /`) and human confirmation (`POST /:memoryId/confirm` then
-`/activate`) are the only operational promotion paths today.
-
-Do not relax the evidence requirement to make the path reachable — that would
-re-open the authority gap the control closes. The path becomes operational only
-when the producer exists.
+Independent corroboration still requires two distinct principals. A single
+observation remains a `MEMORY_CANDIDATE` and cannot be activated.
 
 ## `trainingEligible`
 

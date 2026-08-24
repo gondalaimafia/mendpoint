@@ -1,11 +1,8 @@
-import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createDb,
-  insertArtifactManifest,
-  insertEvidenceRecord,
   insertPrincipal,
   insertTenant,
   organizationMemoryId,
@@ -83,42 +80,6 @@ function appWith(db: AppDb, ctx: {
   return app;
 }
 
-function observationEvidence(db: AppDb, input: {
-  memoryId: string;
-  principalId: string;
-  suffix: string;
-}): string {
-  const content = JSON.stringify({ memoryId: input.memoryId, suffix: input.suffix });
-  const sha256 = createHash("sha256").update(content).digest("hex");
-  const artifactId = `artifact-${input.suffix}`;
-  const evidenceId = `evidence-${input.suffix}`;
-  insertArtifactManifest(db, {
-    id: artifactId,
-    tenantId: "tenant-a",
-    kind: "organization_memory_observation",
-    schemaVersion: 1,
-    sha256,
-    mediaType: "application/json",
-    sizeBytes: Buffer.byteLength(content),
-    storageRef: `inline:${artifactId}`,
-    content,
-    producerPrincipalId: input.principalId,
-    createdAt: AT,
-  });
-  insertEvidenceRecord(db, {
-    id: evidenceId,
-    tenantId: "tenant-a",
-    subjectType: "organization_memory_observation",
-    subjectId: input.memoryId,
-    artifactId,
-    producerPrincipalId: input.principalId,
-    tool: "mendpoint-organization-memory-observer",
-    verdict: "passed",
-    createdAt: AT,
-  });
-  return evidenceId;
-}
-
 const createBody = {
   category: "CODING_CONVENTION",
   scope: "tenant",
@@ -167,16 +128,6 @@ describe("Organization Memory API routes", () => {
   it("records an observation, then disables it, and exposes provenance", async () => {
     const db = fixture();
     const app = appWith(db, { tenantId: "tenant-a", trustPrincipalId: "human-tenant-a" });
-    const evidenceId = observationEvidence(db, {
-      memoryId: organizationMemoryId({
-        tenantId: "tenant-a",
-        category: "MIGRATION_PREFERENCE",
-        scope: "tenant",
-        subjectKey: "batch-small",
-      }),
-      principalId: "human-tenant-a",
-      suffix: "batch-small",
-    });
     const observed = await app.request("/organization-memory/observations", {
       method: "POST",
       body: JSON.stringify({
@@ -185,7 +136,6 @@ describe("Organization Memory API routes", () => {
         subjectKey: "batch-small",
         statement: "Keep migration batches small",
         source: "reviewer_correction",
-        sourceRefs: [evidenceId],
       }),
     });
     expect(observed.status).toBe(201);
@@ -206,16 +156,6 @@ describe("Organization Memory API routes", () => {
   it("blocks activating a lone observation through the API", async () => {
     const db = fixture();
     const app = appWith(db, { tenantId: "tenant-a", trustPrincipalId: "human-tenant-a" });
-    const evidenceId = observationEvidence(db, {
-      memoryId: organizationMemoryId({
-        tenantId: "tenant-a",
-        category: "TESTING_REQUIREMENT",
-        scope: "tenant",
-        subjectKey: "e2e-required",
-      }),
-      principalId: "human-tenant-a",
-      suffix: "e2e-required",
-    });
     const observed = await app.request("/organization-memory/observations", {
       method: "POST",
       body: JSON.stringify({
@@ -224,7 +164,6 @@ describe("Organization Memory API routes", () => {
         subjectKey: "e2e-required",
         statement: "E2E tests required",
         source: "repeated_verified_behavior",
-        sourceRefs: [evidenceId],
       }),
     });
     const memoryId = ((await observed.json()) as { memory: { memoryId: string } }).memory.memoryId;
@@ -284,22 +223,6 @@ describe("Organization Memory API routes", () => {
 
   it("does not count two observations from the same principal as independent corroboration", async () => {
     const db = fixture();
-    const memoryId = organizationMemoryId({
-      tenantId: "tenant-a",
-      category: "CODING_CONVENTION",
-      scope: "tenant",
-      subjectKey: "same-observer",
-    });
-    const evidenceOne = observationEvidence(db, {
-      memoryId,
-      principalId: "human-tenant-a",
-      suffix: "same-observer-one",
-    });
-    const evidenceTwo = observationEvidence(db, {
-      memoryId,
-      principalId: "human-tenant-a",
-      suffix: "same-observer-two",
-    });
     const app = appWith(db, { tenantId: "tenant-a", trustPrincipalId: "human-tenant-a" });
     const body = {
       category: "CODING_CONVENTION",
@@ -310,34 +233,30 @@ describe("Organization Memory API routes", () => {
     };
     expect((await app.request("/organization-memory/observations", {
       method: "POST",
-      body: JSON.stringify({ ...body, sourceRefs: [evidenceOne] }),
+      body: JSON.stringify(body),
     })).status).toBe(201);
     const second = await app.request("/organization-memory/observations", {
       method: "POST",
-      body: JSON.stringify({ ...body, sourceRefs: [evidenceTwo] }),
+      body: JSON.stringify(body),
     });
-    expect(second.status).toBe(409);
-    expect(((await second.json()) as { error: string }).error).toBe("organization_memory_observation_not_independent");
+    expect(second.status).toBe(201);
+    const activate = await app.request(
+      `/organization-memory/${organizationMemoryId({
+        tenantId: "tenant-a",
+        category: "CODING_CONVENTION",
+        scope: "tenant",
+        subjectKey: "same-observer",
+      })}/activate`,
+      { method: "POST", body: JSON.stringify({ reason: "premature" }) },
+    );
+    expect(activate.status).toBe(409);
+    expect(((await activate.json()) as { error: string }).error).toBe(
+      "organization_memory_activation_blocked_insufficient_corroboration",
+    );
   });
 
   it("rejects contradictory observations instead of validating the first statement", async () => {
     const db = fixture();
-    const memoryId = organizationMemoryId({
-      tenantId: "tenant-a",
-      category: "CODING_CONVENTION",
-      scope: "tenant",
-      subjectKey: "auth-client",
-    });
-    const firstEvidence = observationEvidence(db, {
-      memoryId,
-      principalId: "human-tenant-a",
-      suffix: "contradiction-one",
-    });
-    const secondEvidence = observationEvidence(db, {
-      memoryId,
-      principalId: "human-tenant-a-second",
-      suffix: "contradiction-two",
-    });
     const firstApp = appWith(db, { tenantId: "tenant-a", trustPrincipalId: "human-tenant-a" });
     const secondApp = appWith(db, { tenantId: "tenant-a", trustPrincipalId: "human-tenant-a-second" });
     await firstApp.request("/organization-memory/observations", {
@@ -348,7 +267,6 @@ describe("Organization Memory API routes", () => {
         subjectKey: "auth-client",
         statement: "Always use the internal auth client",
         source: "repeated_verified_behavior",
-        sourceRefs: [firstEvidence],
       }),
     });
     const contradictory = await secondApp.request("/organization-memory/observations", {
@@ -359,14 +277,13 @@ describe("Organization Memory API routes", () => {
         subjectKey: "auth-client",
         statement: "Never use the internal auth client",
         source: "reviewer_correction",
-        sourceRefs: [secondEvidence],
       }),
     });
     expect(contradictory.status).toBe(409);
     expect(((await contradictory.json()) as { error: string }).error).toBe("organization_memory_observation_conflict");
   });
 
-  it("rejects an observation whose evidence reference is not authoritative", async () => {
+  it("mints observation evidence itself and ignores client-supplied sourceRefs", async () => {
     const db = fixture();
     const app = appWith(db, { tenantId: "tenant-a", trustPrincipalId: "human-tenant-a" });
     const result = await app.request("/organization-memory/observations", {
@@ -380,7 +297,16 @@ describe("Organization Memory API routes", () => {
         sourceRefs: ["evidence-does-not-exist"],
       }),
     });
-    expect(result.status).toBe(400);
-    expect(((await result.json()) as { error: string }).error).toBe("organization_memory_evidence_invalid");
+    expect(result.status).toBe(201);
+    const memory = ((await result.json()) as { memory: { sourceRefs: string[]; status: string } }).memory;
+    expect(memory.status).toBe("MEMORY_CANDIDATE");
+    expect(memory.sourceRefs[0]).not.toBe("evidence-does-not-exist");
+    const evidence = db.raw.prepare(
+      `SELECT subject_type, verdict FROM evidence_records WHERE id = ?`,
+    ).get(memory.sourceRefs[0]) as { subject_type: string; verdict: string };
+    expect(evidence).toMatchObject({
+      subject_type: "organization_memory_observation",
+      verdict: "passed",
+    });
   });
 });

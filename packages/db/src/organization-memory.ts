@@ -33,6 +33,7 @@
 import { createHash } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { AppDb } from "./index.js";
+import { insertArtifactManifest, insertEvidenceRecord } from "./trust.js";
 
 export const ORGANIZATION_MEMORY_CATEGORIES = [
   "ARCHITECTURE_CONVENTION",
@@ -308,6 +309,118 @@ export function organizationMemoryId(input: {
   return `om:${digest}`;
 }
 
+/**
+ * Production observation-evidence producer. Mints the `evidence_records` row
+ * that `observationAuthority` requires (`subject_type =
+ * organization_memory_observation`, `subject_id` = memory id, producer = the
+ * observer, verdict `passed`). Callers must not invent those rows ad hoc — this
+ * is the only production writer of that subject type.
+ *
+ * Content-addressed without the timestamp so the same observer restating the
+ * same convention is idempotent (same artifact/evidence ids), matching
+ * `recordOrganizationMemoryObservation`'s replay contract.
+ */
+export function mintOrganizationMemoryObservationEvidence(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    category: OrganizationMemoryCategory;
+    scope: string;
+    subjectKey: string;
+    statement: string;
+    observerPrincipalId: string;
+    at: string;
+  },
+): Readonly<{ memoryId: string; artifactId: string; evidenceId: string }> {
+  const tenantId = requireText("organization_memory_tenant", input.tenantId);
+  const category = validateCategory(input.category);
+  const scope = requireText("organization_memory_scope", input.scope);
+  const statement = requireText("organization_memory_statement", input.statement);
+  const observerPrincipalId = requireText("organization_memory_observer_principal", input.observerPrincipalId);
+  const at = requireIso("organization_memory_observed_at", input.at);
+  const memoryId = organizationMemoryId({
+    tenantId,
+    category,
+    scope,
+    subjectKey: input.subjectKey,
+  });
+  const content = canonicalJson({
+    kind: "organization_memory_observation",
+    tenantId,
+    memoryId,
+    category,
+    scope,
+    subjectKey: requireText("organization_memory_subject_key", input.subjectKey),
+    statement,
+    observerPrincipalId,
+  });
+  const sha256 = sha256Hex(content);
+  const artifactId = `oma:${sha256}`;
+  const evidenceId = `ome:${sha256}`;
+  insertArtifactManifest(db, {
+    id: artifactId,
+    tenantId,
+    kind: "organization_memory_observation",
+    schemaVersion: 1,
+    sha256,
+    mediaType: "application/json",
+    sizeBytes: Buffer.byteLength(content, "utf8"),
+    storageRef: `sqlite://artifact_manifests/${artifactId}#content_text`,
+    content,
+    producerPrincipalId: observerPrincipalId,
+    createdAt: at,
+  });
+  insertEvidenceRecord(db, {
+    id: evidenceId,
+    tenantId,
+    subjectType: "organization_memory_observation",
+    subjectId: memoryId,
+    artifactId,
+    producerPrincipalId: observerPrincipalId,
+    tool: "mendpoint-organization-memory-observer",
+    verdict: "passed",
+    createdAt: at,
+  });
+  return Object.freeze({ memoryId, artifactId, evidenceId });
+}
+
+/**
+ * Record an inferred observation and mint its authority evidence in one step.
+ * This is the production observation path: POST /observations calls this,
+ * never a client-supplied evidence id.
+ */
+export function observeOrganizationMemory(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    category: OrganizationMemoryCategory;
+    scope: string;
+    subjectKey: string;
+    statement: string;
+    observerPrincipalId: string;
+    source: Exclude<OrganizationMemorySource, "explicit">;
+    confidence?: OrganizationMemoryConfidence;
+    structuredValue?: unknown;
+    appliesTo?: readonly string[];
+    reason?: string;
+    at: string;
+  },
+): OrganizationMemoryRecord {
+  const minted = mintOrganizationMemoryObservationEvidence(db, {
+    tenantId: input.tenantId,
+    category: input.category,
+    scope: input.scope,
+    subjectKey: input.subjectKey,
+    statement: input.statement,
+    observerPrincipalId: input.observerPrincipalId,
+    at: input.at,
+  });
+  return recordOrganizationMemoryObservation(db, {
+    ...input,
+    sourceRefs: [minted.evidenceId],
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Chain reads
 // ---------------------------------------------------------------------------
@@ -566,12 +679,9 @@ function observationAuthority(
   }
   for (const sourceRef of sourceRefs) {
     // Fail-closed authority control: an observation only counts if an
-    // independent, verified producer vouched for it. No production code path
-    // currently mints an evidence_records row with this subject_type (see
-    // docs/memory/ORGANIZATION_MEMORY.md, "Operational status of the observation
-    // path"), so this check always rejects in production and the observation /
-    // independent-corroboration promotion path is inert-but-safe, not live. Do
-    // not relax it to make the path reachable — build the producer instead.
+    // independent, verified producer vouched for it. Production minting lives in
+    // `mintOrganizationMemoryObservationEvidence` / `observeOrganizationMemory`;
+    // this check still rejects client-invented evidence ids.
     const evidence = one<ObservationEvidenceAuthority>(
       db,
       `SELECT id, subject_type, subject_id, producer_principal_id, verdict

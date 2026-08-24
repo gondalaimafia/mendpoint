@@ -24,6 +24,7 @@ import {
   getOrganizationMemoryProvenance,
   listOrganizationMemory,
   organizationMemoryId,
+  observeOrganizationMemory,
   recordOrganizationMemoryObservation,
   rejectOrganizationMemory,
 } from "./organization-memory.js";
@@ -502,5 +503,65 @@ describe("Organization Memory schema convergence", () => {
     });
     expect(memory.status).toBe("ACTIVE");
     expect(getOrganizationMemoryHead(second, "tenant-a", memory.memoryId)?.statement).toBe("New code needs tests");
+  });
+});
+
+describe("observeOrganizationMemory producer", () => {
+  it("mints observation evidence and records a candidate without a client evidence id", () => {
+    const db = fixture();
+    const recorded = observeOrganizationMemory(db, {
+      tenantId: "tenant-a",
+      ...OBS,
+      observerPrincipalId: "human-tenant-a",
+      at: T1,
+    });
+    expect(recorded.status).toBe("MEMORY_CANDIDATE");
+    expect(recorded.sourceRefs).toHaveLength(1);
+    const evidence = db.raw.prepare(
+      `SELECT subject_type, subject_id, producer_principal_id, verdict FROM evidence_records WHERE id = ?`,
+    ).get(recorded.sourceRefs[0]) as {
+      subject_type: string; subject_id: string; producer_principal_id: string; verdict: string;
+    };
+    expect(evidence).toMatchObject({
+      subject_type: "organization_memory_observation",
+      subject_id: recorded.memoryId,
+      producer_principal_id: "human-tenant-a",
+      verdict: "passed",
+    });
+  });
+
+  it("is idempotent for the same observer restating the same convention", () => {
+    const db = fixture();
+    const first = observeOrganizationMemory(db, {
+      tenantId: "tenant-a",
+      ...OBS,
+      observerPrincipalId: "human-tenant-a",
+      at: T1,
+    });
+    const again = observeOrganizationMemory(db, {
+      tenantId: "tenant-a",
+      ...OBS,
+      observerPrincipalId: "human-tenant-a",
+      at: T2,
+    });
+    expect(again.recordId).toBe(first.recordId);
+    expect(again.sourceRefs).toEqual(first.sourceRefs);
+  });
+
+  it("lets a second independent principal corroborate through the producer", () => {
+    const db = fixture();
+    observeOrganizationMemory(db, {
+      tenantId: "tenant-a",
+      ...OBS,
+      observerPrincipalId: "human-tenant-a",
+      at: T1,
+    });
+    const second = observeOrganizationMemory(db, {
+      tenantId: "tenant-a",
+      ...OBS,
+      observerPrincipalId: "human-tenant-a-second",
+      at: T2,
+    });
+    expect(second.status).toBe("VALIDATION");
   });
 });
