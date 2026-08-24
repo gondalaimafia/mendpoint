@@ -9,14 +9,21 @@ import {
   insertArtifactManifest,
   listWardenCampaignTargets,
   replayWardenRun,
+  resolveMissionForFettlerCampaign,
   transitionWardenTarget,
   type AppDb,
   type WardenCampaignTarget,
+  type WardenRolloutDecision,
   type WardenRunArtifactReference,
   type WardenRunEventKind,
   type WardenRunReplayEvidence,
 } from "@mendpoint/db";
 import { runGraphQuery, type GraphLearnDb } from "@mendpoint/graph-learn";
+import type { PolicyRiskClass, PolicyTaskRequest } from "@mendpoint/policy";
+import {
+  evaluateMissionTaskPolicy,
+  missionPolicyDenialReasons,
+} from "./mission-policy-enforcement.js";
 import {
   discoverVerificationCommands,
   runVerificationCommand,
@@ -234,6 +241,7 @@ type SnapshotRow = {
   id: string;
   tenant_id: string;
   repository_id: string;
+  requested_ref: string;
   resolved_sha: string;
   manifest_sha256: string;
   storage_path: string;
@@ -393,6 +401,65 @@ function assertRunning(db: AppDb, tenantId: string, campaignId: string): void {
   const status = campaignStatus(db, tenantId, campaignId);
   if (status === "paused") throw new WardenCampaignExecutionError("warden_campaign_paused", true);
   if (status !== "running") throw new WardenCampaignExecutionError("warden_campaign_not_running", false);
+}
+
+const POLICY_RISKS = new Set<PolicyRiskClass>(["low", "medium", "high", "critical"]);
+
+/**
+ * The Policy Envelope task the campaign executor is about to run: a
+ * review-first, deterministic edit of one repository snapshot. Deployment and
+ * training capture stay false (the executor never delivers or trains).
+ */
+export function campaignExecutePolicyTask(input: {
+  repositoryId: string;
+  branch: string;
+  targetPaths: readonly string[];
+  risk: string;
+}): PolicyTaskRequest {
+  const risk = POLICY_RISKS.has(input.risk as PolicyRiskClass) ? input.risk as PolicyRiskClass : "critical";
+  return Object.freeze({
+    repositoryId: input.repositoryId,
+    branch: input.branch,
+    targetPaths: Object.freeze([...input.targetPaths]),
+    tool: "edit",
+    modelClass: "deterministic",
+    externalProcessing: false,
+    risk,
+    isDeployment: false,
+    wantsTrainingCapture: false,
+    residency: "default",
+  });
+}
+
+/**
+ * Fail closed at the live campaign-execute seam (spec §6.7 / §28.1.0): the
+ * campaign MUST be mission-bound, the Mission MUST have inherited an envelope,
+ * and the concrete task MUST be allowed. `no_envelope` is a denial here even
+ * though the primitive's convenience guard treats it as "caller decides".
+ */
+export function assertCampaignExecutePolicy(db: AppDb, input: {
+  tenantId: string;
+  campaignId: string;
+  task: PolicyTaskRequest;
+}): void {
+  const mission = resolveMissionForFettlerCampaign(db, input.tenantId, input.campaignId);
+  if (!mission) throw new WardenCampaignExecutionError("warden_mission_not_bound", false);
+  const enforcement = evaluateMissionTaskPolicy(db, {
+    tenantId: input.tenantId,
+    missionId: mission.id,
+    task: input.task,
+  });
+  if (enforcement.status === "no_envelope") {
+    throw new WardenCampaignExecutionError("warden_policy_envelope_missing", false);
+  }
+  const reasons = missionPolicyDenialReasons(enforcement);
+  if (reasons) {
+    throw new WardenCampaignExecutionError("warden_policy_denied", false, reasons.join(";"));
+  }
+}
+
+function rolloutRiskForTarget(decision: WardenRolloutDecision, targetId: string): string {
+  return decision.targetEvidence.find((profile) => profile.targetId === targetId)?.risk ?? "critical";
 }
 
 function validateTypedEdits(edits: readonly WardenTypedEditStrategy[], sourceArtifactId: string): void {
@@ -678,7 +745,7 @@ export async function executeWardenCampaignTarget(input: {
   }
 
   const snapshot = input.db.raw.prepare(
-    `SELECT id, tenant_id, repository_id, resolved_sha, manifest_sha256, storage_path, expires_at
+    `SELECT id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path, expires_at
      FROM repository_snapshots WHERE id = ? AND tenant_id = ? AND repository_id = ?`,
   ).get(target.snapshotId, input.tenantId, target.repositoryId) as SnapshotRow | undefined;
   if (!snapshot || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(snapshot.resolved_sha) ||
@@ -686,6 +753,16 @@ export async function executeWardenCampaignTarget(input: {
     throw new WardenCampaignExecutionError("warden_exact_snapshot_invalid", false);
   }
   if (input.createdAt >= snapshot.expires_at) throw new WardenCampaignExecutionError("warden_snapshot_expired", false);
+  assertCampaignExecutePolicy(input.db, {
+    tenantId: input.tenantId,
+    campaignId: input.campaignId,
+    task: campaignExecutePolicyTask({
+      repositoryId: target.repositoryId,
+      branch: snapshot.requested_ref,
+      targetPaths: [],
+      risk: rolloutRiskForTarget(decision, input.targetId),
+    }),
+  });
   const snapshotPolicy = getRepositorySnapshotPolicy(input.db, input.tenantId, snapshot.id);
   if (!snapshotPolicy) throw new WardenCampaignExecutionError("warden_snapshot_policy_required", false);
   const approvedCommands = JSON.parse(snapshotPolicy.verification_commands_json) as unknown;
@@ -771,6 +848,16 @@ export async function executeWardenCampaignTarget(input: {
       manifestSha256: snapshot.manifest_sha256, snapshotRoot: snapshot.storage_path,
     });
     validateTypedEdits(edits, source.sourceArtifactId);
+    assertCampaignExecutePolicy(input.db, {
+      tenantId: input.tenantId,
+      campaignId: input.campaignId,
+      task: campaignExecutePolicyTask({
+        repositoryId: target.repositoryId,
+        branch: snapshot.requested_ref,
+        targetPaths: edits.map((edit) => edit.targetPath),
+        risk: rolloutRiskForTarget(decision, input.targetId),
+      }),
+    });
     appendRun("analysis_completed", edits, [artifactReference(sourceArtifact), artifactReference(baselineArtifact)]);
     assertRunning(input.db, input.tenantId, input.campaignId);
     current = transitionWardenTarget(input.db, {
