@@ -72,6 +72,11 @@ import { TransformerCampaignService } from "./transformer-control-plane.js";
 import { createAppDbTransformerMissionAuthority } from "./transformer-mission-authority.js";
 import { TransformerMissionService } from "./transformer-missions.js";
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
+import {
+  ensureRegaugeVerifierConsent,
+  regaugeVerifierConsentAuthorityFromEnvironment,
+  type RegaugeVerifierConsentAuthority,
+} from "./regauge-verifier-consent.js";
 
 const RECEIPT_SCHEMAS = new Set(["2026-08-14.v1", "2026-08-21.v2"]);
 const RECEIPT_EVENT = "regauge.production.bootstrap.completed";
@@ -355,6 +360,7 @@ type RuntimeOptions = Readonly<{
   executions: TransformerPilotExecutionService;
   missions: TransformerMissionService;
   repositoryDependencies: RepositoryConnectionDependencies;
+  verifierConsentAuthority?: RegaugeVerifierConsentAuthority;
   listInstallationRepositories(): Promise<readonly InstallationRepository[]>;
   now?: () => string;
 }>;
@@ -528,8 +534,9 @@ export function createRegaugeProductionBootstrapRuntime(
         createdAt: at,
       });
       const reviewerSubject = `${bootstrap.reviewer.issuer}|${bootstrap.reviewer.subject}`;
+      const reviewerPrincipalId = stableId("principal-regauge-reviewer", bootstrap.tenantId, reviewerSubject);
       insertPrincipal(options.db, {
-        id: stableId("principal-regauge-reviewer", bootstrap.tenantId, reviewerSubject),
+        id: reviewerPrincipalId,
         tenantId: bootstrap.tenantId,
         kind: "human",
         subject: reviewerSubject,
@@ -548,6 +555,14 @@ export function createRegaugeProductionBootstrapRuntime(
       });
       if (reviewerActorId !== `human:${reviewerSubject}`) {
         throw new Error("regauge_production_bootstrap_reviewer_drift");
+      }
+      if (options.verifierConsentAuthority) {
+        ensureRegaugeVerifierConsent(options.db, {
+          tenantId: bootstrap.tenantId,
+          reviewerPrincipalId,
+          authority: options.verifierConsentAuthority,
+          createdAt: at,
+        });
       }
       upsertGitHubInstallation(options.db, {
         id: stableId("github-installation", bootstrap.repository.installationId),
@@ -818,6 +833,7 @@ export async function runRegaugeProductionBootstrapFromEnvironment(
     throw new Error("regauge_production_bootstrap_disabled");
   }
   const input = regaugeProductionBootstrapInputFromEnvironment(env);
+  const verifierConsentAuthority = regaugeVerifierConsentAuthorityFromEnvironment(env, input.tenantId);
   const appCredentials = loadAppCredentials(env);
   if (!appCredentials) throw new Error("regauge_production_bootstrap_github_app_credentials_required");
   const token = new InstallationTokenCache(
@@ -859,6 +875,7 @@ export async function runRegaugeProductionBootstrapFromEnvironment(
         actorId: "service:regauge-production-bootstrap",
         requestId: `bootstrap-materialize-${input.campaignId}`,
       },
+      verifierConsentAuthority,
       listInstallationRepositories: async () => defaultListInstallationRepositories(await token.get()),
     });
     return await bootstrapRegaugeProductionCampaign(input, runtime);

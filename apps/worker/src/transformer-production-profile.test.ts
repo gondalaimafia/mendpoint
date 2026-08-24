@@ -255,6 +255,7 @@ describe("Transformer production profile", () => {
     ["MENDPOINT_REGAUGE_COORDINATOR_TOKEN", "known-token", "transformer_production_worker_token_invalid"],
     ["MENDPOINT_REGAUGE_COORDINATOR_URL", "http://coordinator.internal", "transformer_production_coordinator_url_invalid"],
     ["MENDPOINT_REGAUGE_S3_PREFIX", "transformer/tenant-b/campaign-a", "transformer_production_s3_prefix_invalid"],
+    ["MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT", "2026-11-21T00:00:00.000Z", "transformer_production_verifier_consent_invalid"],
     ["MENDPOINT_PILOT_SEED", "1", "transformer_production_seed_forbidden"],
   ])("rejects unsafe %s configuration", (name, value, code) => {
     expect(() => validateTransformerProductionProfile({ ...environment(), [name]: value }, "worker")).toThrow(code);
@@ -352,6 +353,8 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD: "0.05",
     MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS: "8000",
     MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES: "0",
+    MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT: "2026-08-24T00:00:00.000Z",
+    MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT: "2026-11-20T23:59:59.000Z",
     MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant-a", products: ["regauge"], dataClassification: "confidential", requiredRegion: "cn", processingRegion: "cn", consentId: "consent-regauge", evidenceRef: "github-environment:regauge-production", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentActive: true }] }),
     MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: "tenant-a", version: 1, repositoryScope: [], branchScope: [], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
     MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "deepseek-v4-flash-2026-08-21", currency: "USD", effectiveAt: "2026-08-21T00:00:00.000Z", inputPerMillion: 0.14, cachedInputPerMillion: 0.0028, outputPerMillion: 0.28 }),

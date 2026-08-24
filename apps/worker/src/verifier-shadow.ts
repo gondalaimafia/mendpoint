@@ -40,7 +40,7 @@ export function createVerifierAdvisoryRuntime(input: Readonly<{
   if (config.rolloutMode !== "offline" && config.rolloutMode !== "advisory") fail("verifier_advisory_rollout_invalid");
   // `offline` is documented (docs/agents/MUSE_DEEPSEEK_VERIFIER_DESIGN.md) as
   // "fixture and retained benchmark evaluation only" and must never open a live
-  // network transport. This worker shadow runtime is a production egress path
+  // network transport. This worker advisory runtime is a production egress path
   // with no retained-artifact source of its own, so a fixture is never available
   // here for a live completion: offline therefore performs no observation and no
   // egress. Refusing is the "no action" / fail-closed effect the design assigns

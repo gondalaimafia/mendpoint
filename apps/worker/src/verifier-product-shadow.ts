@@ -49,6 +49,7 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
   // permission but cannot override the operator's off switch.
   const authorityAt = input.authorityAt ?? input.completion.observedAt;
   const consent = resolveExternalModelConsent(input.db, input.completion.tenantId, authorityAt);
+  const exactConsent = consent.active && consent.consentId === governance.consentId;
   const pricing = resolvePricing(env);
   const principalId = env.MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID?.trim() || null;
   const pack = createCompletionVerifierEvidencePack({
@@ -63,10 +64,10 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
       mayLeaveTenantBoundary: governance.mayLeaveTenantBoundary,
       // Reference the authoritative append-only consent record when active; the
       // env consentId is only a fallback for the denied path (never egresses).
-      consentId: consent.active ? consent.consentId : governance.consentId,
+      consentId: exactConsent ? consent.consentId : governance.consentId,
       // Both the operator's env consent switch AND an active tenant table consent
       // are required. Fail-closed: either false denies external egress.
-      consentActive: governance.consentActive && consent.active,
+      consentActive: governance.consentActive && exactConsent,
     },
     governanceEvidenceRef: governance.evidenceRef,
     assembledAt: input.completion.observedAt,

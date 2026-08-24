@@ -30,6 +30,27 @@ export type RegaugeDraftCanaryEvidence = Readonly<{
   }>[];
 }>;
 
+export type RegaugeVerifierEvidence = Readonly<{
+  schemaVersion: 1;
+  tenantId: string;
+  campaignId: string;
+  observedAt: string;
+  observation: Readonly<{
+    telemetryDigest: string;
+    evidencePackDigest: string;
+    provider: "deepseek";
+    model: "deepseek-v4-flash";
+    backendRevision: string;
+    observedAt: string;
+    totalTokens: number;
+    estimatedCostUsd: number;
+    latencyMs: number;
+    scoreEvidenceDigests: readonly string[];
+    advisoryOnly: true;
+    behaviorChanged: false;
+  }>;
+}>;
+
 export type RegaugeReadinessSoakReport = Readonly<{
   schemaVersion: 1;
   status: "completed" | "failed";
@@ -176,6 +197,70 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
   });
 }
 
+export async function observeRegaugeVerifierEvidence(input: FetchInput & Readonly<{
+  token: string;
+  tenantId: string;
+  campaignId: string;
+}>): Promise<RegaugeVerifierEvidence> {
+  const coordinatorUrl = exactCoordinatorUrl(input.coordinatorUrl);
+  if (!API_KEY.test(input.token)) throw new Error("regauge_production_token_invalid");
+  const tenantId = requiredId(input.tenantId, "regauge_production_tenant_invalid");
+  const campaignId = requiredId(input.campaignId, "regauge_production_campaign_invalid");
+  const payload = await boundedJson(
+    new URL("v1/regauge/attempt-coordinator/verifier-observations", coordinatorUrl).toString(),
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${input.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ tenantId, campaignId }),
+    },
+    input.fetchImpl ?? globalThis.fetch,
+  );
+  if (!Array.isArray(payload.result) || payload.result.length !== 1) {
+    throw new Error("regauge_production_verifier_evidence_missing");
+  }
+  const value = payload.result[0];
+  const observedAt = String(payload.serverTime ?? "");
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      !Number.isFinite(Date.parse(observedAt))) {
+    throw new Error("regauge_production_verifier_evidence_invalid");
+  }
+  const observation = value as Record<string, unknown>;
+  const scoreEvidenceDigests = observation.scoreEvidenceDigests;
+  if (!/^sha256:[a-f0-9]{64}$/.test(String(observation.telemetryDigest)) ||
+      !/^sha256:[a-f0-9]{64}$/.test(String(observation.evidencePackDigest)) ||
+      observation.provider !== "deepseek" || observation.model !== "deepseek-v4-flash" ||
+      typeof observation.backendRevision !== "string" || !observation.backendRevision ||
+      !Number.isFinite(Date.parse(String(observation.observedAt))) ||
+      typeof observation.totalTokens !== "number" || !Number.isSafeInteger(observation.totalTokens) || observation.totalTokens <= 0 ||
+      typeof observation.estimatedCostUsd !== "number" || observation.estimatedCostUsd < 0 ||
+      typeof observation.latencyMs !== "number" || observation.latencyMs < 0 ||
+      !Array.isArray(scoreEvidenceDigests) || scoreEvidenceDigests.length === 0 ||
+      scoreEvidenceDigests.some((digest) => !/^sha256:[a-f0-9]{64}$/.test(String(digest))) ||
+      observation.advisoryOnly !== true || observation.behaviorChanged !== false) {
+    throw new Error("regauge_production_verifier_evidence_invalid");
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    tenantId,
+    campaignId,
+    observedAt,
+    observation: Object.freeze({
+      telemetryDigest: String(observation.telemetryDigest),
+      evidencePackDigest: String(observation.evidencePackDigest),
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      backendRevision: String(observation.backendRevision),
+      observedAt: String(observation.observedAt),
+      totalTokens: Number(observation.totalTokens),
+      estimatedCostUsd: observation.estimatedCostUsd,
+      latencyMs: observation.latencyMs,
+      scoreEvidenceDigests: Object.freeze(scoreEvidenceDigests.map(String)),
+      advisoryOnly: true,
+      behaviorChanged: false,
+    }),
+  });
+}
+
 export async function runRegaugeReadinessSoak(input: FetchInput & Readonly<{
   expectedRevision: string;
   durationSeconds: number;
@@ -268,6 +353,16 @@ async function main(): Promise<void> {
     });
     persistRegaugeProductionEvidence(output, report);
     if (!report.passed) process.exitCode = 1;
+    return;
+  }
+  if (mode === "verifier-evidence") {
+    const evidence = await observeRegaugeVerifierEvidence({
+      coordinatorUrl: process.env.MENDPOINT_REGAUGE_COORDINATOR_URL ?? "",
+      token: process.env.MENDPOINT_REGAUGE_COORDINATOR_TOKEN ?? "",
+      tenantId: process.env.MENDPOINT_REGAUGE_TENANT_ID ?? "",
+      campaignId: process.env.MENDPOINT_REGAUGE_CAMPAIGN_ID ?? "",
+    });
+    persistRegaugeProductionEvidence(output, evidence);
     return;
   }
   throw new Error("regauge_production_proof_mode_invalid");

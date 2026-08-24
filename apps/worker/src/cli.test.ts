@@ -451,6 +451,12 @@ afterEach(() => {
 });
 
 describe("worker runtime", () => {
+  it("leaves ReGauge advisory dispatch to the durable coordinator", () => {
+    const source = readFileSync(new URL("./cli.ts", import.meta.url), "utf8");
+    expect(source).not.toContain("onVerifiedCandidateCompleted:");
+    expect(source).toContain("runVerifierAdvisoryJob({ db, job, env: workerEnv })");
+  });
+
   it("allows model source only for an explicitly configured tenant and model", () => {
     const env = {
       MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",

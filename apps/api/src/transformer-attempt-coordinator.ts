@@ -54,6 +54,7 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
   gateConfig?: string;
   draftAuthorization?: TransformerProductionDraftAuthorization;
   observeCompletedAttempt?(result: TransformerAttemptCheckpointCompletionResult): Promise<void>;
+  readVerifierObservations?(input: Readonly<{ tenantId: string; campaignId: string }>): unknown;
   loadExactSource(lease: TransformerExecutableAttemptLease, observedAt: string): ExactSourceSnapshot | Promise<ExactSourceSnapshot>;
   resolveDraftRepository?(input: Readonly<{
     tenantId: string;
@@ -88,6 +89,22 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
     }
     return c.json({
       result: { ready: true, campaignId: campaign.campaignId, state: campaign.state },
+      serverTime: serverTime(now),
+    });
+  }));
+  app.post("/verifier-observations", (c) => handled(c, async () => {
+    requireWorker(c);
+    const input = await request(c);
+    assertTenant(c, input);
+    if (typeof input.campaignId !== "string" || !input.campaignId ||
+        !options.readVerifierObservations) {
+      throw new Error("coordinator_request_invalid");
+    }
+    return c.json({
+      result: options.readVerifierObservations({
+        tenantId: String(input.tenantId),
+        campaignId: input.campaignId,
+      }),
       serverTime: serverTime(now),
     });
   }));

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   observeRegaugeDraftCanary,
+  observeRegaugeVerifierEvidence,
   runRegaugeReadinessSoak,
 } from "./regauge-production-proof.js";
 
@@ -25,7 +26,7 @@ describe("Regauge production proof", () => {
     }), { status: 200, headers: { "content-type": "application/json" } }));
 
     const evidence = await observeRegaugeDraftCanary({
-      coordinatorUrl: "https://mendpoint-transformer-pilot.fly.dev/",
+      coordinatorUrl: "https://mendpoint-regauge-production.fly.dev/",
       token: `me_${"a".repeat(40)}`,
       tenantId: "tenant-a",
       campaignId: "campaign-a",
@@ -41,7 +42,7 @@ describe("Regauge production proof", () => {
       pullRequests: [{ number: 17, url: "https://github.com/acme/repo/pull/17" }],
     });
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://mendpoint-transformer-pilot.fly.dev/v1/regauge/attempt-coordinator/draft-observations",
+      "https://mendpoint-regauge-production.fly.dev/v1/regauge/attempt-coordinator/draft-observations",
       expect.objectContaining({ method: "POST" }),
     );
   });
@@ -52,7 +53,7 @@ describe("Regauge production proof", () => {
       { status: 200, headers: { "content-type": "application/json" } },
     ));
     const input = {
-      coordinatorUrl: "https://mendpoint-transformer-pilot.fly.dev/",
+      coordinatorUrl: "https://mendpoint-regauge-production.fly.dev/",
       token: `me_${"a".repeat(40)}`,
       tenantId: "tenant-a",
       campaignId: "campaign-a",
@@ -79,6 +80,31 @@ describe("Regauge production proof", () => {
     })).rejects.toThrow("regauge_production_draft_canary_invalid");
   });
 
+  it("requires exact durable DeepSeek advisory provider evidence", async () => {
+    const digest = (value: string) => `sha256:${value.repeat(64).slice(0, 64)}`;
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      result: [{
+        telemetryDigest: digest("a"), evidencePackDigest: digest("b"),
+        provider: "deepseek", model: "deepseek-v4-flash", backendRevision: "deepseek-v4-flash-2026-08-24",
+        observedAt: "2026-08-24T12:05:00.000Z", totalTokens: 44, estimatedCostUsd: 0.001,
+        latencyMs: 320, scoreEvidenceDigests: [digest("c")], advisoryOnly: true, behaviorChanged: false,
+      }],
+      serverTime: "2026-08-24T12:05:01.000Z",
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const result = await observeRegaugeVerifierEvidence({
+      coordinatorUrl: "https://mendpoint-regauge-production.fly.dev/",
+      token: `me_${"a".repeat(40)}`,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      fetchImpl,
+    });
+    expect(result.observation).toMatchObject({ provider: "deepseek", model: "deepseek-v4-flash", advisoryOnly: true, behaviorChanged: false });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://mendpoint-regauge-production.fly.dev/v1/regauge/attempt-coordinator/verifier-observations",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("runs a bounded read only readiness soak against the exact deployment revision", async () => {
     let now = 0;
     const fetchImpl = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify(
@@ -87,7 +113,7 @@ describe("Regauge production proof", () => {
         : { status: "ok", checks: [{ name: "env", ok: true }] },
     ), { status: 200, headers: { "content-type": "application/json" } }));
     const report = await runRegaugeReadinessSoak({
-      coordinatorUrl: "https://mendpoint-transformer-pilot.fly.dev/",
+      coordinatorUrl: "https://mendpoint-regauge-production.fly.dev/",
       expectedRevision: "a".repeat(40),
       durationSeconds: 3,
       intervalSeconds: 1,
@@ -110,7 +136,7 @@ describe("Regauge production proof", () => {
         : { status: "degraded", checks: [{ name: "storage", ok: false }] },
     ), { status: 200, headers: { "content-type": "application/json" } }));
     const report = await runRegaugeReadinessSoak({
-      coordinatorUrl: "https://mendpoint-transformer-pilot.fly.dev/",
+      coordinatorUrl: "https://mendpoint-regauge-production.fly.dev/",
       expectedRevision: "a".repeat(40),
       durationSeconds: 1,
       intervalSeconds: 1,

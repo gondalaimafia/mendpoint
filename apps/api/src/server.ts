@@ -306,6 +306,7 @@ import { createTenantCreationRoutes } from "./tenant-creation-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { regaugeProductionBootstrapInputFromEnvironment } from "./regauge-production-bootstrap-runtime.js";
 import { enqueueDedicatedRegaugeCompletionForAdvisory } from "./regauge-verifier-shadow.js";
+import { readRegaugeVerifierObservations } from "./regauge-verifier-observations.js";
 import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
 import { loadTransformerRecipeSnapshot } from "@mendpoint/worker/transformer-snapshot-loader";
 import {
@@ -867,6 +868,8 @@ const transformerAttemptCoordinatorRoutes = createTransformerAttemptCoordinatorR
   observeCompletedAttempt: async (completion) => {
     enqueueDedicatedRegaugeCompletionForAdvisory({ db, env: process.env, completion });
   },
+  readVerifierObservations: ({ tenantId, campaignId }) =>
+    readRegaugeVerifierObservations(db, { tenantId, campaignId }),
   loadExactSource: (lease, observedAt) => loadTransformerRecipeSnapshot(db, lease, observedAt),
   resolveDraftRepository: createTransformerDraftRepositoryAuthority(db, process.env),
 });

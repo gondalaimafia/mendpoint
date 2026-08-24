@@ -26,6 +26,30 @@ const draftApproval = "approval:regauge:exact";
 const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["test"], grants: [{ tenantId: "tenant-a", environment: "test", boundaries: ["api_control_plane", "worker_action", "delivery", "ui"], acceptanceEvidenceRefs: ["acceptance:transformer-pilot:v1"], productionDeliveryApprovalRefs: [draftApproval] }] });
 
 describe("real Transformer multi-node coordinator", () => {
+  it("exposes only server-produced verifier observations to the authenticated worker scope", async () => {
+    const service = new TransformerPilotExecutionService(":memory:", { rawGateConfig: gate, environment: "test" });
+    services.push(service);
+    const readVerifierObservations = vi.fn(() => [{ telemetryDigest: `sha256:${"a".repeat(64)}` }]);
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("principal", { id: "api-key:worker", tenantId: "tenant-a", role: "agent" });
+      c.set("authScopes", ["transformer:worker"]);
+      await next();
+    });
+    app.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+      enabled: true, store: service.store, gateConfig: gate,
+      readVerifierObservations,
+      loadExactSource: () => { throw new Error("must_not_load"); },
+    }));
+    const response = await app.request("/v1/regauge/attempt-coordinator/verifier-observations", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenantId: "tenant-a", campaignId: "campaign-a" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ result: [{ telemetryDigest: `sha256:${"a".repeat(64)}` }] });
+    expect(readVerifierObservations).toHaveBeenCalledWith({ tenantId: "tenant-a", campaignId: "campaign-a" });
+  });
+
   it("binds draft authorization to server owned campaign, repository, revision, approval, and expiry authority", async () => {
     const service = new TransformerPilotExecutionService(":memory:", {
       rawGateConfig: gate,

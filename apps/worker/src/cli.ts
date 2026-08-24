@@ -14,8 +14,6 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  enqueueVerifierAdvisoryJob,
-  reconcileVerifierAdvisoryPolicyAuthority,
   runChangePipeline,
   VERIFIER_ADVISORY_JOB_TYPE,
   type DelegatedPrCandidateOperationDependencies,
@@ -71,8 +69,6 @@ import {
   settleActiveWardenModelReservationsForFence,
   settleWardenCiRepairWithoutCandidate,
   getMission,
-  getPrincipalBySubject,
-  resolveMissionForRegaugeCampaign,
   type AppDb,
   type FeedScheduleRow,
 } from "@mendpoint/db";
@@ -4226,62 +4222,10 @@ async function runService(intervalMs: number) {
           ),
           shouldContinue: () => !shutdown.signal.aborted,
           adaptiveCandidateDataRoot: dataRoot,
-          onVerifiedCandidateCompleted: async ({ lease, execution, artifact, observedAt }) => {
-            const mission = resolveMissionForRegaugeCampaign(
-              transformerDb,
-              lease.tenantId,
-              lease.campaignId,
-            );
-            if (!mission) throw new Error("regauge_verifier_advisory_mission_missing");
-            const principal = getPrincipalBySubject(
-              transformerDb,
-              lease.tenantId,
-              "service",
-              "service:regauge-production-bootstrap",
-            );
-            if (!principal) throw new Error("regauge_verifier_advisory_principal_invalid");
-            const repository = getConnectedRepository(
-              transformerDb,
-              lease.snapshot.repositoryId,
-              lease.tenantId,
-            );
-            if (!repository) throw new Error("regauge_verifier_advisory_repository_invalid");
-            const completion = {
-              tenantId: lease.tenantId,
-              missionId: mission.id,
-              taskId: `${lease.campaignId}:${lease.unitId}`,
-              product: "regauge" as const,
-              repositoryId: lease.snapshot.repositoryId,
-              snapshotId: lease.snapshot.snapshotId,
-              snapshotDigest: verifierDigest(lease.snapshot.digest),
-              objective: `Execute the bound ${lease.recipe.id} migration for unit ${lease.unitId}.`,
-              risk: "high" as const,
-              allowedChangedPaths: lease.changedPaths,
-              candidateId: `regauge_${createHash("sha256").update([lease.campaignId, lease.unitId, String(lease.attemptNumber)].join("\0"), "utf8").digest("hex").slice(0, 32)}`,
-              candidateDigest: verifierDigest(artifact.outputDigest),
-              changedPaths: lease.changedPaths,
-              observableSummary: `The bound recipe completed ${execution.operations.length} operations and ${execution.commands.length} verification commands on the exact snapshot.`,
-              deterministicEvidenceDigest: verifierDigest(execution.evidence.digest),
-              deterministicEvidenceRefs: artifact.evidenceRefs,
-              observedAt,
-            };
-            const governance = resolveVerifierGovernance(process.env, lease.tenantId, "regauge");
-            const policyEnvelopeJson = process.env.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON?.trim();
-            if (!policyEnvelopeJson) throw new Error("verifier_advisory_policy_required");
-            reconcileVerifierAdvisoryPolicyAuthority(transformerDb, {
-              completion,
-              policyEnvelopeJson,
-              actorPrincipalId: principal.id,
-              branch: repository.selected_branch,
-              processingRegion: governance.processingRegion,
-              createdAt: observedAt,
-            });
-            enqueueVerifierAdvisoryJob(transformerDb, {
-              completion,
-              producerPrincipalId: principal.id,
-              createdAt: observedAt,
-            });
-          },
+          // The coordinator owns the only durable ReGauge Mission and queue.
+          // It enqueues advisory verification after accepting the exact terminal
+          // checkpoint; this volume-less worker must never create a second,
+          // ephemeral provider dispatch before completion is durable.
           ...transformerAdaptiveProductionPorts(process.env, transformerDb),
         });
         transformer = transformerPilotHeartbeatAfterResult(transformer, result, nowIso());

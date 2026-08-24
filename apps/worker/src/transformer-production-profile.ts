@@ -269,6 +269,16 @@ function validateVerifierProfile(env: NodeJS.ProcessEnv, tenantId: string): void
     .some(([name, value]) => env[name] !== value)) {
     throw new Error("transformer_production_verifier_profile_invalid");
   }
+  exact(
+    env.MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT,
+    "2026-08-24T00:00:00.000Z",
+    "transformer_production_verifier_consent_invalid",
+  );
+  exact(
+    env.MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT,
+    "2026-11-20T23:59:59.000Z",
+    "transformer_production_verifier_consent_invalid",
+  );
   let governance: unknown;
   try { governance = JSON.parse(required(env.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON, "transformer_production_verifier_governance_invalid")); }
   catch { throw new Error("transformer_production_verifier_governance_invalid"); }

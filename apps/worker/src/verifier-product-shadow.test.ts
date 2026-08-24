@@ -15,8 +15,8 @@ function setup(): AppDb { const root = mkdtempSync(join(tmpdir(), "verifier-prod
 // Grant an active external-model verifier consent for tenant_a in the append-only
 // learning_consents table. effectiveAt/expiresAt bound the validity window; the
 // completion's observedAt (2026-08-17T12:01:00.000Z) falls inside the defaults.
-function grantVerifierConsent(db: AppDb, over: { effectiveAt?: string; expiresAt?: string | null } = {}): string {
-  const id = "consent_v1";
+function grantVerifierConsent(db: AppDb, over: { id?: string; effectiveAt?: string; expiresAt?: string | null } = {}): string {
+  const id = over.id ?? "consent_a";
   grantLearningConsent(db, {
     id, tenantId: "tenant_a", consentVersion: 1, purpose: VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
     residencyRegion: "us", authorizedByPrincipalId: "human_a", supersedesConsentId: null,
@@ -133,7 +133,7 @@ describe("product verifier advisory adapter", () => {
   it("stops egress the moment consent is revoked, with no redeploy", async () => {
     const db = setup();
     grantVerifierConsent(db);
-    revokeLearningConsent(db, { id: "consent_v2", tenantId: "tenant_a", consentId: "consent_v1", consentVersion: 2, authorizedByPrincipalId: "human_a", reason: "revoked", idempotencyKey: "revoke_v1", createdAt: "2026-08-17T00:30:00.000Z" });
+    revokeLearningConsent(db, { id: "consent_v2", tenantId: "tenant_a", consentId: "consent_a", consentVersion: 2, authorizedByPrincipalId: "human_a", reason: "revoked", idempotencyKey: "revoke_v1", createdAt: "2026-08-17T00:30:00.000Z" });
     const transport = vi.fn(async () => ({ status: 200, headers: {}, body: {} }));
     await expect(observeProductCompletionInAdvisory({ db, env: grantedEnv(), completion: completion(), transport: { request: transport } }))
       .rejects.toThrow("verifier_governance_consent_inactive");
@@ -144,6 +144,15 @@ describe("product verifier advisory adapter", () => {
     const db = setup();
     // Window closes at 11:00, before the completion's 12:01 observedAt.
     grantVerifierConsent(db, { expiresAt: "2026-08-17T11:00:00.000Z" });
+    const transport = vi.fn(async () => ({ status: 200, headers: {}, body: {} }));
+    await expect(observeProductCompletionInAdvisory({ db, env: grantedEnv(), completion: completion(), transport: { request: transport } }))
+      .rejects.toThrow("verifier_governance_consent_inactive");
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("refuses external egress when durable consent does not match protected governance", async () => {
+    const db = setup();
+    grantVerifierConsent(db, { id: "consent_unapproved" });
     const transport = vi.fn(async () => ({ status: 200, headers: {}, body: {} }));
     await expect(observeProductCompletionInAdvisory({ db, env: grantedEnv(), completion: completion(), transport: { request: transport } }))
       .rejects.toThrow("verifier_governance_consent_inactive");
