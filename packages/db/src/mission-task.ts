@@ -224,6 +224,92 @@ export function getMissionTask(db: AppDb, tenantId: string, taskId: string): Mis
   return row ? hydrate(row) : undefined;
 }
 
+/** Stable MissionTask id for a jobs-row. Derived from the job id so a retry of
+ * the same job reuses the task instead of minting a second work primitive. */
+export function missionTaskIdForJob(jobId: string): string {
+  return `mtask-job-${createHash("sha256").update(`mission-task:job:${jobId}`).digest("hex").slice(0, 32)}`;
+}
+
+function jobTaskEvent(jobId: string, kind: string): { eventId: string; idempotencyKey: string } {
+  const digest = createHash("sha256").update(`mission-task:job:${jobId}:${kind}`).digest("hex").slice(0, 32);
+  return { eventId: `e-mtask-${digest}`, idempotencyKey: `mission-task-job:${jobId}:${kind}` };
+}
+
+/**
+ * Bridge a claimed `jobs` row onto the shared MissionTask engine (D3). Creates
+ * the task (id derived from the job) if needed and drives
+ * `unassigned → agent_assigned → agent_working` with owner=agent. Already-past
+ * those states (handoff, terminal) are left alone — this never rewinds. Joins
+ * an open transaction like `createMissionTask`.
+ *
+ * Callers must pass a real bound mission; this function does not invent one.
+ */
+export function ensureMissionTaskForJob(db: AppDb, input: {
+  tenantId: string;
+  jobId: string;
+  missionId: string;
+  taskType: string;
+  acceptanceCriteria: string;
+  risk: MissionTaskRisk;
+  actorPrincipalId: string;
+  assignedPrincipalId: string;
+  createdAt: string;
+  correlationId?: string;
+}): MissionTask {
+  required("mission_task_job_id", input.jobId);
+  const id = missionTaskIdForJob(input.jobId);
+  const correlationId = input.correlationId ?? input.jobId;
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    let task = getMissionTask(db, input.tenantId, id);
+    if (!task) {
+      task = createMissionTask(db, {
+        id,
+        tenantId: input.tenantId,
+        missionId: input.missionId,
+        taskType: input.taskType,
+        acceptanceCriteria: input.acceptanceCriteria,
+        risk: input.risk,
+        actorPrincipalId: input.actorPrincipalId,
+        ...jobTaskEvent(input.jobId, "created"),
+        correlationId,
+        createdAt: input.createdAt,
+      });
+    } else if (task.missionId !== input.missionId) {
+      throw new Error("mission_task_job_mission_mismatch");
+    }
+    if (task.status === "unassigned") {
+      task = transitionMissionTask(db, {
+        tenantId: input.tenantId,
+        taskId: id,
+        expectedRevision: task.revision,
+        to: "agent_assigned",
+        actorPrincipalId: input.actorPrincipalId,
+        assignedPrincipalId: input.assignedPrincipalId,
+        ...jobTaskEvent(input.jobId, "agent_assigned"),
+        correlationId,
+        createdAt: input.createdAt,
+      });
+    }
+    if (task.status === "agent_assigned") {
+      task = transitionMissionTask(db, {
+        tenantId: input.tenantId,
+        taskId: id,
+        expectedRevision: task.revision,
+        to: "agent_working",
+        actorPrincipalId: input.actorPrincipalId,
+        assignedPrincipalId: input.assignedPrincipalId,
+        ...jobTaskEvent(input.jobId, "agent_working"),
+        correlationId,
+        createdAt: input.createdAt,
+      });
+    }
+    if (owns) db.raw.exec("COMMIT");
+    return task;
+  } catch (error) { if (owns) db.raw.exec("ROLLBACK"); throw error; }
+}
+
 export function listMissionTasks(db: AppDb, tenantId: string, missionId: string): MissionTask[] {
   return all<MissionTaskRow>(db,
     `SELECT * FROM mission_task WHERE tenant_id = ? AND mission_id = ? ORDER BY created_at, id`,
