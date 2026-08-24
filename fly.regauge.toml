@@ -1,0 +1,86 @@
+app = "mendpoint-regauge-production"
+primary_region = "sjc"
+kill_signal = "SIGTERM"
+kill_timeout = 45
+
+[build]
+  dockerfile = "Dockerfile"
+  build-target = "transformer"
+
+[experimental]
+  entrypoint = ["/app/scripts/start-transformer-entrypoint.sh"]
+
+[processes]
+  coordinator = "node --import tsx scripts/start-transformer-role.mjs coordinator"
+  worker = "node --import tsx scripts/start-transformer-role.mjs worker"
+
+[env]
+  NODE_ENV = "production"
+  API_AUTH = "required"
+  API_HOST = "0.0.0.0"
+  API_PORT = "3001"
+  MENDPOINT_DEPLOYMENT_PROFILE = "regauge_production"
+  MENDPOINT_DEPLOYMENT_CLASS = "customer"
+  MENDPOINT_REGAUGE_ENABLED = "1"
+  MENDPOINT_REGAUGE_MULTINODE_COORDINATOR_ENABLED = "1"
+  MENDPOINT_REGAUGE_MULTINODE_ENABLED = "1"
+  MENDPOINT_REGAUGE_BOOTSTRAP_ENABLED = "1"
+  MENDPOINT_REGAUGE_LEARNING_ENABLED = "1"
+  MENDPOINT_REGAUGE_ARTIFACT_BACKEND = "s3"
+  MENDPOINT_REGAUGE_READINESS_HOST = "0.0.0.0"
+  MENDPOINT_REGAUGE_READINESS_PORT = "9465"
+  MENDPOINT_REGAUGE_PRIVATE_DATA_ROOT = "/tmp/mendpoint-regauge"
+  MENDPOINT_REGAUGE_COORDINATOR_URL = "https://mendpoint-regauge-production.fly.dev/"
+  MENDPOINT_DATA_DIR = "/data/db"
+  MENDPOINT_REPOS_DIR = "/data/repos"
+  MENDPOINT_PILOT_SEED = "0"
+  MENDPOINT_FEED_POLLING_ENABLED = "0"
+  GITHUB_MODE = "real"
+
+[[mounts]]
+  source = "mendpoint_regauge_production_data"
+  destination = "/data"
+  processes = ["coordinator"]
+  initial_size = "20gb"
+  snapshot_retention = 14
+
+[http_service]
+  processes = ["coordinator"]
+  internal_port = 3001
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "45s"
+    interval = "15s"
+    method = "GET"
+    path = "/ready"
+    timeout = "5s"
+
+[checks]
+  [checks.regauge_worker]
+    processes = ["worker"]
+    type = "http"
+    port = 9465
+    method = "GET"
+    path = "/readyz"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "45s"
+
+[[vm]]
+  processes = ["coordinator"]
+  size = "shared-cpu-1x"
+  memory = "2gb"
+
+[[vm]]
+  processes = ["worker"]
+  size = "performance-2x"
+  memory = "4gb"
+
+[[restart]]
+  processes = ["coordinator", "worker"]
+  policy = "on-failure"
+  retries = 10

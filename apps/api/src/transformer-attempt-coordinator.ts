@@ -11,6 +11,7 @@ import { parseTransformerGateConfig } from "@mendpoint/ops";
 import type { ApiEnv } from "./auth.js";
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_DRAFT_AUTHORIZATION_WINDOW_MS = 90 * 60_000;
 const OPERATIONS = [
   "claimNextAttempt", "renewAttemptLease", "assertCurrentAttemptFence",
   "recordAdaptiveAttemptUsage", "reserveAdaptiveModelCall", "settleAdaptiveModelCall",
@@ -62,9 +63,16 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
   }>): TransformerDraftRepositoryTarget | Promise<TransformerDraftRepositoryTarget>;
 }>): Hono<ApiEnv> {
   if (options.enabled) parseTransformerGateConfig(options.gateConfig);
-  if (options.draftAuthorization) requireDraftAuthorization(options.draftAuthorization);
   const app = new Hono<ApiEnv>();
   const now = options.now ?? (() => new Date().toISOString());
+  const configuredAt = serverTime(now);
+  const draftAuthorization = configuredDraftAuthorization(
+    options.draftAuthorization,
+  );
+  const draftAuthorizationExpiresAt = configuredDraftAuthorizationExpiry(
+    draftAuthorization?.activationExpiresAt,
+    configuredAt,
+  );
   const authority = createTransformerPilotCheckpointAuthority(options.store);
   app.use("*", async (c, next) => options.enabled === true ? next() : c.json({ error: "not_found" }, 404));
   app.post("/readyz", (c) => handled(c, async () => {
@@ -99,14 +107,24 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
           input.evidenceRefs.some((reference) => typeof reference !== "string" || !reference.trim())) {
         throw new Error("coordinator_request_invalid");
       }
-      const authorization = options.draftAuthorization;
+      const authorization = draftAuthorization;
+      const campaign = authorization
+        ? options.store.getCampaign(authorization.tenantId, authorization.campaignId)
+        : null;
+      const durableAuthorizationReplay = Boolean(
+        campaign && authorization &&
+        campaign.units.length === authorization.maximumDrafts &&
+        campaign.units.every((unit) => unit.state === "draft"),
+      );
+      const activeDraftAuthorization =
+        draftAuthorizationExpiresAt !== null &&
+        Date.parse(observedAt) < draftAuthorizationExpiresAt;
       if (!authorization ||
           input.tenantId !== authorization.tenantId ||
           input.campaignId !== authorization.campaignId ||
-          Date.parse(observedAt) >= Date.parse(authorization.activationExpiresAt)) {
+          (!activeDraftAuthorization && !durableAuthorizationReplay)) {
         throw new Error("coordinator_draft_authorization_denied");
       }
-      const campaign = options.store.getCampaign(authorization.tenantId, authorization.campaignId);
       if (!campaign || campaign.environment !== authorization.environment ||
           campaign.units.length !== authorization.maximumDrafts) {
         throw new Error("coordinator_draft_authorization_denied");
@@ -313,18 +331,32 @@ async function request(c: Context<ApiEnv>): Promise<Json> {
   try { const value = JSON.parse(text); if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(); return value as Json; } catch { throw new Error("coordinator_request_invalid"); }
 }
 function serverTime(now: () => string): string { const value = now(); if (!Number.isFinite(Date.parse(value)) || new Date(Date.parse(value)).toISOString() !== value) throw new Error("coordinator_clock_invalid"); return value; }
-function requireDraftAuthorization(
-  input: TransformerProductionDraftAuthorization,
-): TransformerProductionDraftAuthorization {
+function configuredDraftAuthorization(
+  input: TransformerProductionDraftAuthorization | undefined,
+): TransformerProductionDraftAuthorization | undefined {
+  if (!input) return undefined;
   if (!input.tenantId.trim() || !input.campaignId.trim() || !input.environment.trim() ||
       !Number.isSafeInteger(input.remoteRepositoryId) || input.remoteRepositoryId < 1 ||
       !/^[a-f0-9]{40}$/.test(input.sourceRevision) || !input.productionApprovalRef.trim() ||
-      !Number.isFinite(Date.parse(input.activationExpiresAt)) ||
-      new Date(Date.parse(input.activationExpiresAt)).toISOString() !== input.activationExpiresAt ||
+      typeof input.activationExpiresAt !== "string" ||
       input.maximumDrafts !== 1) {
-    throw new Error("coordinator_draft_authorization_invalid");
+    return undefined;
   }
   return input;
+}
+function configuredDraftAuthorizationExpiry(
+  input: string | undefined,
+  configuredAt: string,
+): number | null {
+  if (!input) return null;
+  const configuredAtMs = Date.parse(configuredAt);
+  const expiresAtMs = Date.parse(input);
+  if (!Number.isFinite(configuredAtMs) || !Number.isFinite(expiresAtMs) ||
+      new Date(expiresAtMs).toISOString() !== input ||
+      expiresAtMs > configuredAtMs + MAX_DRAFT_AUTHORIZATION_WINDOW_MS) {
+    return null;
+  }
+  return expiresAtMs;
 }
 async function handled(c: Context<ApiEnv>, operation: () => Promise<Response>): Promise<Response> {
   try { return await operation(); } catch (error) {

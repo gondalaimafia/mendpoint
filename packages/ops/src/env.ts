@@ -19,13 +19,19 @@ export type EnvReport = {
   values: Record<string, string | undefined>;
 };
 
-export type DeploymentProfile = "demo" | "pilot" | "customer" | "transformer_pilot";
+export type DeploymentProfile =
+  | "demo"
+  | "pilot"
+  | "customer"
+  | "transformer_pilot"
+  | "regauge_production";
 
 const DEPLOYMENT_PROFILES = new Set<DeploymentProfile>([
   "demo",
   "pilot",
   "customer",
   "transformer_pilot",
+  "regauge_production",
 ]);
 
 export function deploymentProfile(
@@ -124,7 +130,8 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
   const processRole = env.MENDPOINT_PROCESS_ROLE?.trim();
   const transformerCoordinator =
     processRole === "transformer_coordinator" &&
-    env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() === "transformer_pilot";
+    (env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() === "transformer_pilot" ||
+      env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() === "regauge_production");
   const errors: string[] = [];
   const warnings: string[] = [];
   const values: Record<string, string | undefined> = {
@@ -224,11 +231,11 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
   const profile = deploymentProfile(env);
   if (mode === "production" && !env.MENDPOINT_DEPLOYMENT_PROFILE?.trim()) {
     errors.push(
-      "MENDPOINT_DEPLOYMENT_PROFILE must be explicitly set to demo, pilot, customer, or transformer_pilot in production",
+      "MENDPOINT_DEPLOYMENT_PROFILE must be explicitly set to demo, pilot, customer, transformer_pilot, or regauge_production in production",
     );
   } else if (env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() && !profile) {
     errors.push(
-      "MENDPOINT_DEPLOYMENT_PROFILE must be exactly demo, pilot, customer, or transformer_pilot",
+      "MENDPOINT_DEPLOYMENT_PROFILE must be exactly demo, pilot, customer, transformer_pilot, or regauge_production",
     );
   }
   if (mode === "production" && !env.GITHUB_MODE) {

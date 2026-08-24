@@ -63,7 +63,7 @@ export function resolveTransformerS3Config(env: NodeJS.ProcessEnv): TransformerS
 }
 
 export function resolveTransformerWorkerId(env: NodeJS.ProcessEnv): string {
-  if (env.MENDPOINT_DEPLOYMENT_PROFILE === "transformer_pilot") {
+  if (env.MENDPOINT_DEPLOYMENT_PROFILE === "regauge_production") {
     exact(env.NODE_ENV, "production", "transformer_production_node_env_required");
     if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_WORKER_ID")?.trim()) {
       throw new Error("transformer_production_worker_id_override_forbidden");
@@ -89,7 +89,7 @@ export function validateTransformerProductionProfile(
 ): TransformerProductionProfile {
   if (role !== "coordinator" && role !== "worker") throw new Error("transformer_production_role_invalid");
   exact(env.NODE_ENV, "production", "transformer_production_node_env_required");
-  exact(env.MENDPOINT_DEPLOYMENT_PROFILE, "transformer_pilot", "transformer_production_profile_required");
+  exact(env.MENDPOINT_DEPLOYMENT_PROFILE, "regauge_production", "transformer_production_profile_required");
   exact(env.MENDPOINT_DEPLOYMENT_CLASS, "customer", "transformer_production_deployment_class_required");
   exact(env.API_AUTH, "required", "transformer_production_api_auth_required");
   exact(env.GITHUB_MODE, "real", "transformer_production_github_real_required");
@@ -159,23 +159,6 @@ export function validateTransformerProductionProfile(
   ) {
     throw new Error("transformer_production_delivery_approval_scope_invalid");
   }
-  const activationExpiry = required(
-    env.MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT,
-    "transformer_production_activation_expiry_required",
-  );
-  const activationExpiresAt = Date.parse(activationExpiry);
-  const now = Date.now();
-  if (
-    !Number.isFinite(activationExpiresAt) ||
-    new Date(activationExpiresAt).toISOString() !== activationExpiry ||
-    activationExpiresAt > now + 90 * 60_000
-  ) {
-    throw new Error("transformer_production_activation_expiry_invalid");
-  }
-  if (role === "worker" && activationExpiresAt <= now) {
-    throw new Error("transformer_production_activation_expired");
-  }
-
   const token = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_TOKEN"), "transformer_production_worker_token_required");
   if (!API_KEY.test(token)) throw new Error("transformer_production_worker_token_invalid");
   const coordinatorUrl = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_URL"), "transformer_production_coordinator_url_required");
