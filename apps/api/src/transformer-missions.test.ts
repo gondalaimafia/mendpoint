@@ -199,6 +199,10 @@ describe("Transformer mission application service", () => {
       },
     });
     expect(planned.decision).toBe("planned");
+    if (planned.decision === "planned") {
+      expect(planned.graphPlan.coverage.basis).toBe("not_consulted");
+      expect(planned.organizationMemory.winner).toBe("hard_policy");
+    }
     expect(() => service.launch(request("reviewer-a", "launch-before-review"), "campaign-a"))
       .toThrow("transformer_mission_review_required");
 

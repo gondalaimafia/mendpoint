@@ -142,4 +142,30 @@ describe("self serving Transformer mission planner", () => {
       }],
     })).toMatchObject({ decision: "abstained", reasons: ["repository_operation_owner_missing:repo-a"] });
   });
+
+  it("applies consulted graph dependencies onto units and ignores unknown repos", () => {
+    const candidate = input();
+    const repoB = {
+      ...candidate.repositories[0]!,
+      id: "repo-b",
+      evidenceRefs: ["evidence:snapshot:b"],
+    };
+    const result = planTransformerMission({
+      ...candidate,
+      organization: {
+        ...candidate.organization,
+        repositoryIds: ["repo-a", "repo-b"],
+      },
+      repositories: [repoB, candidate.repositories[0]!],
+      dependsOnByRepositoryId: {
+        "repo-a": ["repo-b", "repo-missing"],
+        "repo-b": [],
+      },
+    });
+    expect(result.decision).toBe("planned");
+    if (result.decision !== "planned") throw new Error(result.reasons.join(","));
+    const byRepo = Object.fromEntries(result.blueprint.units.map((unit) => [unit.repositoryId, unit.dependsOn]));
+    expect(byRepo["repo-a"]).toEqual(["repo-b-node-runtime-18-to-20"]);
+    expect(byRepo["repo-b"]).toEqual([]);
+  });
 });
