@@ -2875,3 +2875,22 @@ restoration.
 - Independent review moved scoped state outside the legacy run root and added direct foreign trajectory denial plus endpoint-level tenant-creation coverage. `git diff --check` is clean.
 - Final quality review found one score-only trajectory visibility defect; the fix now recognizes a tenant-owned run directory without weakening the plan endpoint's `plan.json` requirement. The independent re-review reports no P0, P1, or P2 findings.
 - Full monorepo tests, the production build, and `npm run ga:check` pass on the final tree. The GA gate still reports eight proven-unreachable citations and ten verified foundational requirements without live-path evidence; those pre-existing product-contract gaps are reported, do not involve this tenant-isolation slice, and remain outside issue #349.
+
+## 2026-08-24 Issue #353: dedicated ReGauge production profile
+
+- [x] Add red tests proving the dedicated manifest fails current API and worker boot validation.
+- [x] Accept `regauge_production` in shared production-role validation and require it in the ReGauge worker profile.
+- [x] Separate stable process boot authority from the expiring one-draft authorization without widening delivery, merge, or deployment authority.
+- [x] Add the dedicated `mendpoint-regauge-production` Fly manifest and canonical hostname without editing primary deployment manifests.
+- [x] Add a manifest-to-boot contract test that exercises the exact production environment in both API and worker validators.
+- [x] Run focused tests, affected package typechecks, production build, and repository verification gates.
+- [x] Complete independent specification and quality review, then publish one PR referencing #353 and parent issue #350.
+- [ ] Obtain passing CI and reciprocal Claude review before considering the PR merge-ready.
+
+### Review
+
+- RED: the dedicated `regauge_production` role and manifest were rejected by the shared API and worker production validators.
+- GREEN: the exact dedicated manifest boots both validators, while malformed or expired draft authorization blocks new draft authorization without taking the stable API or worker process down. Persisted, already-authorized draft state remains replayable under its original exact campaign, repository, revision, approval, and one-draft constraints.
+- The first quality review found two P1s and one P2: it broke the legacy protected pilot workflow, could send the bearer token to an arbitrary HTTPS coordinator, and omitted CODEOWNERS coverage. The follow-up preserves the legacy profile, requires the exact canonical coordinator URL for each production role before token transport, and adds the dedicated manifest to CODEOWNERS.
+- Final independent review reports no P0, P1, or P2 findings. The focused suite passes 79 of 79 tests; API, worker, and ops typechecks, the production build, `npm run ga:check`, and `git diff --check` pass on the final tree.
+- Deliberate boundary: this slice defines the dedicated production profile. App and volume provisioning, encrypted state migration, protected-workflow cutover, secret staging, live revision and health proof, one-draft proof, and retirement of the old pilot app remain in parent issue #350 and must not occur through this PR.
