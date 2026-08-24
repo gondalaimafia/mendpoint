@@ -6,6 +6,8 @@ import {
   applyFieldRenameEdits,
   decodeRenamePostcondition,
   encodeRenamePostcondition,
+  extractFieldRenames,
+  payloadRenameDeriver,
   planFieldRenameEdits,
 } from "./warden-campaign-recipe.js";
 
@@ -84,5 +86,40 @@ describe("applyFieldRenameEdits", () => {
     // The candidate has the rename applied on the whole word only.
     expect(readFileSync(join(candidate.candidateRoot, "src/checkout.ts"), "utf8")).toBe("export const x = charge.amount;\n");
     expect(candidate.candidateContent).toContain("src/checkout.ts:amount_cents->amount");
+  });
+});
+
+describe("extractFieldRenames", () => {
+  it("extracts explicit request/response renames, deduped and order-stable", () => {
+    const renames = extractFieldRenames([
+      { op: "request_field_renamed", fromField: "amount_cents", toField: "amount" },
+      { op: "response_field_renamed", fromField: "created", toField: "created_at" },
+      { op: "request_field_renamed", fromField: "amount_cents", toField: "amount" },
+    ]);
+    expect(renames).toEqual([
+      { from: "amount_cents", to: "amount" },
+      { from: "created", to: "created_at" },
+    ]);
+  });
+
+  it("refuses non-rename ops, no-op renames, and non-identifier fields", () => {
+    expect(extractFieldRenames([
+      { op: "request_field_removed", fromField: "amount_cents", toField: "amount" },
+      { op: "request_field_renamed", fromField: "amount", toField: "amount" },
+      { op: "request_field_renamed", fromField: "amount", toField: "" },
+      { op: "request_field_renamed", fromField: "a.b", toField: "amount" },
+      { op: "request_field_renamed", fromField: "amount" },
+    ])).toEqual([]);
+  });
+});
+
+describe("payloadRenameDeriver", () => {
+  it("returns the first carried rename regardless of the envelope", () => {
+    const derive = payloadRenameDeriver([{ from: "amount_cents", to: "amount" }, { from: "x", to: "y" }]);
+    expect(derive({ sourceArtifactId: "src-1" } as never)).toEqual({ from: "amount_cents", to: "amount" });
+  });
+
+  it("returns null when no rename was carried (executor fails closed)", () => {
+    expect(payloadRenameDeriver([])({ sourceArtifactId: "src-1" } as never)).toBeNull();
   });
 });

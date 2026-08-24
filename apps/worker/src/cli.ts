@@ -201,6 +201,7 @@ import {
   runWardenCampaignExecuteTarget,
   type WardenCampaignExecutor,
 } from "./warden-campaign-execute-dispatch.js";
+import type { FieldRename } from "./warden-campaign-recipe.js";
 import type { WardenCampaignExecutionDependencies } from "@mendpoint/pipeline";
 import {
   createInstallationAccountFetcher,
@@ -2474,7 +2475,7 @@ async function processJobsOnceUnfenced(
     // not claim `warden.campaign.execute-target` so the job waits for a
     // configured worker rather than failing closed on every drain.
     wardenCampaignExecution?: Readonly<{
-      dependencies: WardenCampaignExecutionDependencies;
+      resolveDependencies: (renames: readonly FieldRename[]) => WardenCampaignExecutionDependencies;
       execute?: WardenCampaignExecutor;
     }>;
     delegatedPrVerification?: Readonly<{
@@ -2616,7 +2617,7 @@ async function processJobsOnceUnfenced(
         const outcome = await runWardenCampaignExecuteTarget({
           db,
           job,
-          dependencies: opts.wardenCampaignExecution.dependencies,
+          resolveDependencies: opts.wardenCampaignExecution.resolveDependencies,
           execute: opts.wardenCampaignExecution.execute,
         });
         if (outcome.status === "executed") {
