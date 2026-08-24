@@ -32,6 +32,12 @@ import {
   supersedeMissionDecision,
   type MissionDecision,
 } from "./mission-decisions.js";
+import {
+  getMissionTask,
+  transitionMissionTask,
+  type MissionTask,
+  type MissionTaskStatus,
+} from "./mission-task.js";
 
 /**
  * Why a task is being handed to a human. An explicit, closed enum: a handoff
@@ -63,6 +69,50 @@ function assertHandoffReason(reason: unknown): HandoffReason {
   return reason as HandoffReason;
 }
 
+const HUMAN_HANDOFF_STATUSES: ReadonlySet<MissionTaskStatus> = new Set([
+  "human_review_required",
+  "human_assigned",
+  "human_working",
+]);
+
+function eventKey(correlationId: string, taskId: string, to: string): string {
+  return `${correlationId}:mission-task:${taskId}:${to}`;
+}
+
+function transitionBoundTask(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    missionId: string;
+    taskId: string;
+    to: MissionTaskStatus;
+    actorPrincipalId: string;
+    handoffReason?: string;
+    assignedPrincipalId?: string | null;
+    correlationId: string;
+    causationId?: string | null;
+    createdAt: string;
+  },
+): MissionTask {
+  const task = getMissionTask(db, input.tenantId, input.taskId);
+  if (!task) throw new Error("mission_task_not_found");
+  if (task.missionId !== input.missionId) throw new Error("mission_task_mission_mismatch");
+  return transitionMissionTask(db, {
+    tenantId: input.tenantId,
+    taskId: task.id,
+    expectedRevision: task.revision,
+    to: input.to,
+    actorPrincipalId: input.actorPrincipalId,
+    ...(input.assignedPrincipalId !== undefined ? { assignedPrincipalId: input.assignedPrincipalId } : {}),
+    ...(input.handoffReason ? { handoffReason: input.handoffReason } : {}),
+    eventId: eventKey(input.correlationId, task.id, input.to),
+    idempotencyKey: eventKey(input.correlationId, task.id, input.to),
+    correlationId: input.correlationId,
+    causationId: input.causationId ?? null,
+    createdAt: input.createdAt,
+  });
+}
+
 /**
  * Open an agent -> human handoff (task brief §2). Records a BLOCKING mission
  * exception that carries the explicit reason and the SPECIFIC question the agent
@@ -85,6 +135,12 @@ export function openTaskHandoff(
     /** What the agent concluded / why this blocks (the impact). Required. */
     context: string;
     ownerPrincipalId: string;
+    /**
+     * When present, the shared MissionTask is transitioned agent_working →
+     * human_review_required in the same transaction as the blocker. Absent keeps
+     * the pre-task-engine record-only path.
+     */
+    taskId?: string;
     observedAgainst?: SnapshotIdentity;
     correlationId: string;
     causationId?: string | null;
@@ -98,19 +154,47 @@ export function openTaskHandoff(
   // The stored blocker reason carries the enum AND the question as data. The
   // mission-exceptions store bounds and control-character-checks it.
   const statement = `[${reason}] ${input.question.trim()}`;
-  return raiseMissionException(db, {
-    tenantId: input.tenantId,
-    missionId: input.missionId,
-    reason: statement,
-    impact: input.context,
-    ownerPrincipalId: input.ownerPrincipalId,
-    resolutionPath: "await_human_resolution",
-    blocking: true,
-    ...(input.observedAgainst ? { observedAgainst: input.observedAgainst } : {}),
-    correlationId: input.correlationId,
-    causationId: input.causationId ?? null,
-    createdAt: input.createdAt,
-  });
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const exception = raiseMissionException(db, {
+      tenantId: input.tenantId,
+      missionId: input.missionId,
+      reason: statement,
+      impact: input.context,
+      ownerPrincipalId: input.ownerPrincipalId,
+      resolutionPath: "await_human_resolution",
+      blocking: true,
+      ...(input.observedAgainst ? { observedAgainst: input.observedAgainst } : {}),
+      correlationId: input.correlationId,
+      causationId: input.causationId ?? null,
+      createdAt: input.createdAt,
+    });
+    if (input.taskId) {
+      const task = getMissionTask(db, input.tenantId, input.taskId);
+      if (!task) throw new Error("mission_task_not_found");
+      if (task.missionId !== input.missionId) throw new Error("mission_task_mission_mismatch");
+      if (task.status !== "agent_working" && task.status !== "human_review_required") {
+        throw new Error("task_handoff_task_not_agent_working");
+      }
+      transitionBoundTask(db, {
+        tenantId: input.tenantId,
+        missionId: input.missionId,
+        taskId: input.taskId,
+        to: "human_review_required",
+        actorPrincipalId: input.ownerPrincipalId,
+        handoffReason: reason,
+        correlationId: input.correlationId,
+        causationId: input.causationId ?? null,
+        createdAt: input.createdAt,
+      });
+    }
+    if (owns) db.raw.exec("COMMIT");
+    return exception;
+  } catch (error) {
+    if (owns) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 /**
@@ -135,6 +219,11 @@ export function resolveTaskHandoff(
     authorPrincipalId: string;
     /** References to the evidence the decision rests on (never reasoning). */
     evidence?: readonly string[];
+    /**
+     * When present, the shared MissionTask is transitioned to `agent_resume`
+     * in the same transaction as the exception close + decision write.
+     */
+    taskId?: string;
     correlationId: string;
     causationId?: string | null;
     createdAt: string;
@@ -163,6 +252,24 @@ export function resolveTaskHandoff(
       causationId: input.causationId ?? null,
       createdAt: input.createdAt,
     });
+    if (input.taskId) {
+      const task = getMissionTask(db, input.tenantId, input.taskId);
+      if (!task) throw new Error("mission_task_not_found");
+      if (task.missionId !== exception.missionId) throw new Error("mission_task_mission_mismatch");
+      if (task.status !== "agent_resume" && !HUMAN_HANDOFF_STATUSES.has(task.status)) {
+        throw new Error("task_handoff_task_not_human_owned");
+      }
+      transitionBoundTask(db, {
+        tenantId: input.tenantId,
+        missionId: exception.missionId,
+        taskId: input.taskId,
+        to: "agent_resume",
+        actorPrincipalId: input.authorPrincipalId,
+        correlationId: input.correlationId,
+        causationId: input.causationId ?? null,
+        createdAt: input.createdAt,
+      });
+    }
     if (owns) db.raw.exec("COMMIT");
     return { exception, decision };
   } catch (error) {
