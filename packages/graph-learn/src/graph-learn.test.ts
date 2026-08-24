@@ -242,9 +242,13 @@ describe("graph-learn substrate", () => {
     expect(formatQueryForPlanner(r)).not.toContain("Coverage: complete");
   });
 
-  it("does not advertise invariants_for_symbol while PRESERVES_INVARIANT has no producer", () => {
+  it("advertises migration_ready_units and invariants_for_symbol now that both producers exist", () => {
+    // Both relations have live ingest producers: ingestManifestDependencies
+    // writes DEPENDS_ON and ingestInvariantAnnotations writes PRESERVES_INVARIANT.
+    // The handlers still fail closed when their relation is empty (see the
+    // "fails closed" tests above).
     expect(GRAPH_RAG_TOOLS).toContain("migration_ready_units");
-    expect(GRAPH_RAG_TOOLS).not.toContain("invariants_for_symbol");
+    expect(GRAPH_RAG_TOOLS).toContain("invariants_for_symbol");
   });
 
   it("routes a natural-language readiness question to migration_ready_units", () => {
