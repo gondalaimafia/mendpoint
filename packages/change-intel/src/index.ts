@@ -788,10 +788,6 @@ export function diffOpenApi(
   };
 }
 
-export function parseOpenApiJson(raw: string): unknown {
-  return JSON.parse(raw);
-}
-
 function migrationStrategyFor(op: DiffOp, e: DiffEntry): string {
   switch (op) {
     case "request_field_renamed":
