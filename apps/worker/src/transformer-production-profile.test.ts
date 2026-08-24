@@ -51,12 +51,27 @@ describe("Transformer production profile", () => {
     expect(serverImportIndex).toBeGreaterThan(roleIndex);
   });
 
-  it("feeds the dedicated Fly manifest environment into both API and worker boot validation", () => {
+  it.each([
+    [
+      "fly.transformer.toml",
+      "transformer_pilot",
+      "https://mendpoint-transformer-pilot.fly.dev/",
+    ],
+    [
+      "fly.regauge.toml",
+      "regauge_production",
+      "https://mendpoint-regauge-production.fly.dev/",
+    ],
+  ])("feeds %s environment into both API and worker boot validation", (
+    manifestName,
+    profile,
+    coordinatorUrl,
+  ) => {
     const manifest = readFileSync(
-      resolve(import.meta.dirname, "../../../fly.regauge.toml"),
+      resolve(import.meta.dirname, `../../../${manifestName}`),
       "utf8",
     );
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...environment(),
       ...manifestEnvironment(manifest),
       MENDPOINT_PROCESS_ROLE: "transformer_coordinator",
@@ -65,6 +80,8 @@ describe("Transformer production profile", () => {
       GITHUB_APP_PRIVATE_KEY: testPrivateKey,
     };
 
+    expect(env.MENDPOINT_DEPLOYMENT_PROFILE).toBe(profile);
+    expect(env.MENDPOINT_REGAUGE_COORDINATOR_URL).toBe(coordinatorUrl);
     expect(validateApiEnv(env)).toMatchObject({ ok: true, errors: [] });
     expect(validateTransformerProductionProfile(env, "coordinator")).toMatchObject({
       role: "coordinator",
@@ -76,6 +93,14 @@ describe("Transformer production profile", () => {
       role: "worker",
       workerId: "fly-abcd1234abcd12",
     });
+  });
+
+  it("protects the dedicated ReGauge manifest with the existing deployment owner", () => {
+    const codeowners = readFileSync(
+      resolve(import.meta.dirname, "../../../.github/CODEOWNERS"),
+      "utf8",
+    );
+    expect(codeowners).toMatch(/^\/fly\.regauge\.toml\s+@gondalaimafia$/m);
   });
 
   it("accepts the exact coordinator and worker production boundaries", () => {
@@ -141,6 +166,40 @@ describe("Transformer production profile", () => {
       ...environment(),
       FLY_MACHINE_ID: undefined,
     }, "worker")).toThrow("transformer_production_fly_machine_id_required");
+    expect(resolveTransformerWorkerId({
+      ...environment(),
+      MENDPOINT_DEPLOYMENT_PROFILE: "transformer_pilot",
+      MENDPOINT_REGAUGE_COORDINATOR_URL: "https://mendpoint-transformer-pilot.fly.dev/",
+    })).toBe("fly-abcd1234abcd12");
+  });
+
+  it.each([
+    ["regauge_production", "https://mendpoint-regauge-production.fly.dev/"],
+    ["transformer_pilot", "https://mendpoint-transformer-pilot.fly.dev/"],
+  ])("binds %s to its exact canonical coordinator URL", (profile, canonicalUrl) => {
+    expect(validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_DEPLOYMENT_PROFILE: profile,
+      MENDPOINT_REGAUGE_COORDINATOR_URL: canonicalUrl,
+    }, "worker").role).toBe("worker");
+
+    for (const coordinatorUrl of [
+      canonicalUrl.replace("https://", "http://"),
+      canonicalUrl.replace(".fly.dev", "-attacker.fly.dev"),
+      canonicalUrl.replace(".fly.dev/", ".fly.dev:443/"),
+      canonicalUrl.replace("https://", "https://operator:secret@"),
+      `${canonicalUrl}?tenant=other`,
+      `${canonicalUrl}#fragment`,
+      `${canonicalUrl}v1/regauge/attempt-coordinator`,
+      ` ${canonicalUrl}`,
+      `${canonicalUrl} `,
+    ]) {
+      expect(() => validateTransformerProductionProfile({
+        ...environment(),
+        MENDPOINT_DEPLOYMENT_PROFILE: profile,
+        MENDPOINT_REGAUGE_COORDINATOR_URL: coordinatorUrl,
+      }, "worker")).toThrow("transformer_production_coordinator_url_invalid");
+    }
   });
 
   it("accepts Fly Tigris standard storage variables and rejects ambiguous aliases", () => {

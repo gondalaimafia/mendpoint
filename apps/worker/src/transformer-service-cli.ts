@@ -12,6 +12,7 @@ import {
   createTransformerMultinodeService,
 } from "./transformer-multinode-service.js";
 import {
+  resolveTransformerCoordinatorUrl,
   resolveTransformerS3Config,
   resolveTransformerWorkerId,
 } from "./transformer-production-profile.js";
@@ -29,7 +30,7 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
   const readinessPort = integer(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_READINESS_PORT") ?? "9465", 1, 65_535, "transformer_multinode_readiness_port_invalid");
   const readinessHost = readinessAddress(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_READINESS_HOST") ?? "127.0.0.1");
   const transport = createFetchTransformerMultinodeTransport({
-    baseUrl: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_URL"), "transformer_multinode_coordinator_url_required"),
+    baseUrl: resolveTransformerCoordinatorUrl(env),
     authToken: required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_TOKEN"), "transformer_multinode_coordinator_token_required"),
     workerId,
     timeoutMs: integer(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_TIMEOUT_MS") ?? "30000", 1, 120_000, "transformer_multinode_timeout_invalid"),

@@ -5,6 +5,12 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const API_KEY = /^me_[A-Za-z0-9_-]{32,}$/;
 const FLY_MACHINE_ID = /^[a-f0-9]{14,32}$/;
 const NUMERIC_ID = /^[1-9][0-9]{0,19}$/;
+const COORDINATOR_URLS = Object.freeze({
+  transformer_pilot: "https://mendpoint-transformer-pilot.fly.dev/",
+  regauge_production: "https://mendpoint-regauge-production.fly.dev/",
+} as const);
+
+type TransformerProductionDeploymentProfile = keyof typeof COORDINATOR_URLS;
 
 export type TransformerProductionRole = "coordinator" | "worker";
 
@@ -63,7 +69,7 @@ export function resolveTransformerS3Config(env: NodeJS.ProcessEnv): TransformerS
 }
 
 export function resolveTransformerWorkerId(env: NodeJS.ProcessEnv): string {
-  if (env.MENDPOINT_DEPLOYMENT_PROFILE === "regauge_production") {
+  if (isTransformerProductionDeploymentProfile(env.MENDPOINT_DEPLOYMENT_PROFILE)) {
     exact(env.NODE_ENV, "production", "transformer_production_node_env_required");
     if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_WORKER_ID")?.trim()) {
       throw new Error("transformer_production_worker_id_override_forbidden");
@@ -83,13 +89,42 @@ export function resolveTransformerWorkerId(env: NodeJS.ProcessEnv): string {
   );
 }
 
+export function resolveTransformerCoordinatorUrl(env: NodeJS.ProcessEnv): string {
+  const deploymentProfile = env.MENDPOINT_DEPLOYMENT_PROFILE;
+  const productionProfile = isTransformerProductionDeploymentProfile(deploymentProfile);
+  const requiredCode = productionProfile
+    ? "transformer_production_coordinator_url_required"
+    : "transformer_multinode_coordinator_url_required";
+  const invalidCode = productionProfile
+    ? "transformer_production_coordinator_url_invalid"
+    : "transformer_multinode_coordinator_url_invalid";
+  const rawCoordinatorUrl = resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_URL");
+  const coordinatorUrl = required(rawCoordinatorUrl, requiredCode);
+  let parsedUrl: URL;
+  try { parsedUrl = new URL(coordinatorUrl); } catch { throw new Error(invalidCode); }
+  if (parsedUrl.protocol !== "https:" || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
+    throw new Error(invalidCode);
+  }
+  if (productionProfile) {
+    exact(
+      rawCoordinatorUrl,
+      COORDINATOR_URLS[deploymentProfile],
+      "transformer_production_coordinator_url_invalid",
+    );
+  }
+  return coordinatorUrl;
+}
+
 export function validateTransformerProductionProfile(
   env: NodeJS.ProcessEnv,
   role: TransformerProductionRole,
 ): TransformerProductionProfile {
   if (role !== "coordinator" && role !== "worker") throw new Error("transformer_production_role_invalid");
   exact(env.NODE_ENV, "production", "transformer_production_node_env_required");
-  exact(env.MENDPOINT_DEPLOYMENT_PROFILE, "regauge_production", "transformer_production_profile_required");
+  const deploymentProfile = env.MENDPOINT_DEPLOYMENT_PROFILE;
+  if (!isTransformerProductionDeploymentProfile(deploymentProfile)) {
+    throw new Error("transformer_production_profile_required");
+  }
   exact(env.MENDPOINT_DEPLOYMENT_CLASS, "customer", "transformer_production_deployment_class_required");
   exact(env.API_AUTH, "required", "transformer_production_api_auth_required");
   exact(env.GITHUB_MODE, "real", "transformer_production_github_real_required");
@@ -161,12 +196,7 @@ export function validateTransformerProductionProfile(
   }
   const token = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_TOKEN"), "transformer_production_worker_token_required");
   if (!API_KEY.test(token)) throw new Error("transformer_production_worker_token_invalid");
-  const coordinatorUrl = required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_COORDINATOR_URL"), "transformer_production_coordinator_url_required");
-  let parsedUrl: URL;
-  try { parsedUrl = new URL(coordinatorUrl); } catch { throw new Error("transformer_production_coordinator_url_invalid"); }
-  if (parsedUrl.protocol !== "https:" || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
-    throw new Error("transformer_production_coordinator_url_invalid");
-  }
+  resolveTransformerCoordinatorUrl(env);
 
   key(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_CHECKPOINT_KEY"), "transformer_production_checkpoint_key_required");
   key(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_OPERATION_SECRET"), "transformer_production_operation_secret_required");
@@ -214,6 +244,11 @@ export function validateTransformerProductionProfile(
 }
 
 function exact(value: string | undefined, expected: string, code: string): void { if (value !== expected) throw new Error(code); }
+function isTransformerProductionDeploymentProfile(
+  value: string | undefined,
+): value is TransformerProductionDeploymentProfile {
+  return value === "transformer_pilot" || value === "regauge_production";
+}
 function required(value: string | undefined, code: string): string { if (!value?.trim()) throw new Error(code); return value.trim(); }
 function identifier(value: string | undefined, code: string): string { const result = required(value, code); if (!ID.test(result)) throw new Error(code); return result; }
 function key(value: string | undefined, code: string): void { const encoded = required(value, code); const bytes = Buffer.from(encoded, "base64"); if (bytes.byteLength !== 32 || bytes.toString("base64") !== encoded) throw new Error(code); }

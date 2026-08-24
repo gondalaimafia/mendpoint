@@ -38,6 +38,22 @@ describe("Transformer service CLI", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("rejects a noncanonical ReGauge coordinator before constructing token transport", async () => {
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const root = mkdtempSync(join(tmpdir(), "transformer-canonical-url-")); roots.push(root);
+    const port = await freePort();
+    const env = environment(root, port);
+    delete env.MENDPOINT_REGAUGE_WORKER_ID;
+    await expect(runTransformerServiceCli({
+      ...env,
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "regauge_production",
+      FLY_MACHINE_ID: "abcd1234abcd12",
+      MENDPOINT_REGAUGE_COORDINATOR_URL: "https://attacker.example/",
+    })).rejects.toThrow("transformer_production_coordinator_url_invalid");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("boots with expired draft authority because expiry gates authorization only", async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({
       result: null,
