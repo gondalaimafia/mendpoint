@@ -108,8 +108,13 @@ describe("sandbox egress engine — the mint is gated on the probe", () => {
     // cannot silently no-op: the accept job holds issues:write and the
     // failure-guarded alert step is present. Remove either and the mint refuses.
     expect(validate).toContain('grep -q "issues: write" "$engine"');
-    expect(validate).toContain('grep -q "name: Alert on renewal failure" "$engine"');
-    expect(validate).toContain('grep -q "if: \\${{ failure() }}" "$engine"');
+    // Anchored to a real step line so the assertion cannot match its own source
+    // text: an unanchored grep for the step name matches the grep command itself
+    // and keeps passing after the alert step is gone. Also free of a literal
+    // expression delimiter, which GitHub evaluates inside run: blocks where
+    // failure() is not a valid function.
+    expect(validate).toContain("grep -qE '^      - name: Alert on renewal failure$' \"$engine\"");
+    expect(validate).toContain("grep -qE 'failure\\(\\)'");
   });
 });
 
