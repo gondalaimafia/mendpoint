@@ -125,6 +125,22 @@ describe("resolveTenantGraphHandle", () => {
     expect(missing).toMatchObject({ status: "unavailable", reason: "empty_tenant_view" });
   });
 
+  it("returns a ready handle for an empty tenant view only when allowEmpty is set", () => {
+    const { path } = persistentGraph("");
+    const closed = resolveTenantGraphHandle({ tenantId: "tenant-a", graphPath: path });
+    expect(closed).toMatchObject({ status: "unavailable", reason: "empty_tenant_view" });
+    const ingest = resolveTenantGraphHandle({
+      tenantId: "tenant-a",
+      graphPath: path,
+      allowEmpty: true,
+    });
+    expect(ingest.status).toBe("ready");
+    if (ingest.status === "ready") {
+      opened.push({ close: ingest.close });
+      expect(ingest.stats.nodes).toBe(0);
+    }
+  });
+
   it("reports open_failed without leaking an ephemeral memory store", () => {
     const result = resolveTenantGraphHandle({
       tenantId: "tenant-a",

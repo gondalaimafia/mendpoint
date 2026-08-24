@@ -56,6 +56,12 @@ export function resolveTenantGraphHandle(input: {
   consumerIds?: readonly string[];
   /** Explicit graph path. Defaults to `GRAPH_LEARN_DB`. Never created if absent. */
   graphPath?: string | null;
+  /**
+   * When true, an existing file with zero tenant-owned nodes is still `ready`.
+   * Use only on ingest/write paths that must populate the first nodes. Query
+   * paths must leave this unset so an empty view is never presented as authority.
+   */
+  allowEmpty?: boolean;
   exists?: (path: string) => boolean;
   open?: (path: string) => GraphLearnDb;
 }): TenantGraphHandle {
@@ -108,7 +114,7 @@ export function resolveTenantGraphHandle(input: {
       detail: error instanceof Error ? error.message : String(error),
     };
   }
-  if (stats.nodes === 0) {
+  if (stats.nodes === 0 && !input.allowEmpty) {
     try { graphDb.raw.close(); } catch { /* already closed */ }
     return {
       status: "unavailable",
