@@ -2911,3 +2911,17 @@ Production Machine `896427a6e67358` repeatedly reaches the web ready state, then
 RED: the workflow test could not find any runtime-preparation step before protected-authority validation. The retained failed runs corroborate the defect: validation exited, evidence upload found no files, and the failure page crashed because `tsx` had not been installed.
 
 GREEN: a single preparation step now writes only run metadata to a retained artifact and installs the existing reporter before validation. The probe, signing, and rotation order is unchanged. Thirteen focused renewal and image-egress tests pass, both workflow files parse as YAML, every action remains commit-pinned, GA passes, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
+## 2026-08-22 ReGauge activation resolution lessons
+
+- [x] Reconstruct the last failed and first successful protected activation runs from GitHub evidence.
+- [x] Compare the live failure boundary with the exact delivery-only code change that resolved it.
+- [x] Record the correction as reusable operating rules in `tasks/lessons.md`.
+- [x] Verify the documentation diff, commit it separately, and publish it for review.
+
+### Review
+
+- Protected run `32588203239` proved coordinator and worker health, completed execution, authorized delivery, and reached draft claiming before failing at the delivery-time checkpoint binding. The earlier gates were not the active problem.
+- Commit `5b159d8` was authored 26 minutes after that failed run ended. Its production change was one call-site substitution plus a narrowly scoped authenticated checkpoint reader: delivery may retain the terminal artifact's historical `executorDigest`, while tenant, environment, campaign, source, candidate, recipe, constraints, verification, envelope, and seal remain exact. Execution and resume remain strict.
+- Pull request `318` carried red deployment-boundary regressions at the Transformer package and authenticated coordinator seams. It did not rebuild the campaign, rematerialize the repository, weaken execution replay, or broaden delivery authority.
+- Protected run `32592758400` then passed preflight, exact authority validation, coordinator and worker deployment, bounded live model evaluation, the exact real draft canary, a five-minute read-only readiness soak, containment, and evidence upload. It ran from `19:07:02Z` to `19:19:00Z` against exact revision `1c6c9e9`.
+- The speed came from using the durable event trace as a debugging cursor. Once the first missing transition was isolated, the existing completed attempt, authorization, checkpoint, encrypted workspace, and production campaign were treated as valid evidence to replay, not work to recreate.
