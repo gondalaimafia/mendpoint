@@ -39,7 +39,7 @@ import type { InheritedContextInjection } from "@mendpoint/agent";
 import { MAX_INHERITED_CONTEXT_BYTES } from "@mendpoint/agent";
 import type { OrganizationMemoryRecord, OrganizationMemoryStatus } from "@mendpoint/db";
 import {
-  compileFettlerImpactContext,
+  compileMissionGraphProjection,
   type FettlerEndpointImpactResult,
 } from "@mendpoint/graph-learn";
 import { parsePolicyEnvelope, type PolicyEnvelope } from "@mendpoint/policy";
@@ -621,24 +621,24 @@ function buildGraphSection(
   const impact = source.impact;
   assertTenant(tenantId, impact.tenantId);
   const maxBytes = Math.min(source.maxBytes ?? MISSION_CONTEXT_BOUNDS.maxGraphBytes, MISSION_CONTEXT_BOUNDS.maxGraphBytes);
-  let compiled: { content: string; byteLength: number; contentDigest: string };
+  let projection: ReturnType<typeof compileMissionGraphProjection>;
   try {
     // Reuse the one bounded graph projector; never write a second one.
-    compiled = compileFettlerImpactContext(impact, { maxBytes });
+    projection = compileMissionGraphProjection({ impact, maxBytes });
   } catch {
     return Object.freeze({ status: "not_consulted", reason: "graph_projection_failed" });
   }
   return Object.freeze({
     status: "consulted",
     projection: Object.freeze({
-      graphVersionId: impact.graphVersionId,
-      graphContentDigest: impact.graphContentDigest,
-      resultDigest: impact.resultDigest,
-      impact: impact.impact,
-      coverageBasis: impact.coverage.basis,
-      byteLength: compiled.byteLength,
-      content: compiled.content,
-      contentDigest: compiled.contentDigest,
+      graphVersionId: projection.graphVersionId,
+      graphContentDigest: projection.graphContentDigest,
+      resultDigest: projection.resultDigest,
+      impact: projection.impact,
+      coverageBasis: projection.coverage.basis,
+      byteLength: projection.compiled.byteLength,
+      content: projection.compiled.content,
+      contentDigest: projection.compiled.contentDigest,
     }),
   });
 }
