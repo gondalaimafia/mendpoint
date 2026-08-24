@@ -204,6 +204,10 @@ import {
 import type { FieldRename } from "./warden-campaign-recipe.js";
 import type { WardenCampaignExecutionDependencies } from "@mendpoint/pipeline";
 import {
+  campaignExecuteClaimEnabled,
+  productionCampaignResolveDependencies,
+} from "./warden-campaign-execute-activation.js";
+import {
   createInstallationAccountFetcher,
   reconcileNullInstallationAccounts,
 } from "./installation-account-reconcile.js";
@@ -2475,7 +2479,7 @@ async function processJobsOnceUnfenced(
     // not claim `warden.campaign.execute-target` so the job waits for a
     // configured worker rather than failing closed on every drain.
     wardenCampaignExecution?: Readonly<{
-      resolveDependencies: (renames: readonly FieldRename[]) => WardenCampaignExecutionDependencies;
+      resolveDependencies: (renames: readonly FieldRename[], _tenantId: string) => WardenCampaignExecutionDependencies;
       execute?: WardenCampaignExecutor;
     }>;
     delegatedPrVerification?: Readonly<{
@@ -3747,7 +3751,11 @@ async function runJobWorker(intervalMs: number) {
   let failures = 0;
   for (;;) {
     try {
-      const result = await processJobsOnce(db);
+      const result = await processJobsOnce(db, {
+        wardenCampaignExecution: campaignExecuteClaimEnabled()
+          ? { resolveDependencies: productionCampaignResolveDependencies() }
+          : undefined,
+      });
       failures = result.failed > 0 ? failures + 1 : 0;
     } catch (error) {
       failures++;
@@ -3980,6 +3988,9 @@ async function runService(intervalMs: number) {
           maxRunningPerTenant: 1,
           runWardenMaintenance: lane === 0,
           shouldContinue: () => !shutdown.signal.aborted,
+          wardenCampaignExecution: campaignExecuteClaimEnabled()
+            ? { resolveDependencies: productionCampaignResolveDependencies() }
+            : undefined,
           onActiveJob: (job) => {
             if (job) activeJobs.set(lane, job);
             else activeJobs.delete(lane);

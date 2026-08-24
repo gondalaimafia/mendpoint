@@ -23,6 +23,7 @@ import type { WardenCampaignExecutionDependencies } from "@mendpoint/pipeline";
 import { WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE } from "./warden-campaign-execute-dispatch.js";
 import { fieldRenameRecipeDependencies, payloadRenameDeriver } from "./warden-campaign-recipe.js";
 import { processJobsOnce } from "./cli.js";
+import { enqueueReadyWardenCampaignTargets } from "./warden-campaign-execute-activation.js";
 
 // End-to-end proof of the field-rename activation: the diff's rename op rides in
 // the campaign job payload, the loop routes it, and `resolveDependencies(renames)`
@@ -198,5 +199,61 @@ describe("field-rename activation end to end through the worker loop", () => {
     // job does not report success and the target never reaches review.
     expect(result.succeeded).toBe(0);
     expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0].stage).not.toBe("review");
+  });
+});
+
+describe("enqueueReadyWardenCampaignTargets", () => {
+  it("enqueues one execute-target job per ready target with payload renames", () => {
+    const value = fixture();
+    const enqueued = enqueueReadyWardenCampaignTargets(value.db, {
+      tenantId: "tenant-a", campaignId: "campaign-a", actorPrincipalId: "worker", createdAt,
+      source: source(), renames: [{ from: "amount_cents", to: "amount" }],
+      rolloutDecisionId: "rollout-a",
+      rolloutApproval: { decisionSha256: value.decision.decisionSha256, approvedByPrincipalId: "reviewer", approvedAt: createdAt },
+      ownerApproval: { ownerPrincipalId: "owner", ownerHandle: "@payments", approvedAt: createdAt },
+    });
+    expect(enqueued.jobIds).toHaveLength(1);
+    const job = listJobs(value.db, 10, "tenant-a")[0];
+    expect(job).toMatchObject({ type: WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE, status: "pending" });
+    expect(JSON.parse(job.payload_json)).toMatchObject({
+      campaignId: "campaign-a", targetId: "target-a",
+      renames: [{ from: "amount_cents", to: "amount" }],
+    });
+  });
+
+  it("does not insert a second job when the same target is claimed again", () => {
+    const value = fixture();
+    const first = enqueueReadyWardenCampaignTargets(value.db, {
+      tenantId: "tenant-a", campaignId: "campaign-a", actorPrincipalId: "worker", createdAt,
+      source: source(), renames: [{ from: "amount_cents", to: "amount" }],
+      rolloutDecisionId: "rollout-a",
+      rolloutApproval: { decisionSha256: value.decision.decisionSha256, approvedByPrincipalId: "reviewer", approvedAt: createdAt },
+      ownerApproval: { ownerPrincipalId: "owner", ownerHandle: "@payments", approvedAt: createdAt },
+    });
+    const second = enqueueReadyWardenCampaignTargets(value.db, {
+      tenantId: "tenant-a", campaignId: "campaign-a", actorPrincipalId: "worker", createdAt,
+      source: source(), renames: [{ from: "amount_cents", to: "amount" }],
+      rolloutDecisionId: "rollout-a",
+      rolloutApproval: { decisionSha256: value.decision.decisionSha256, approvedByPrincipalId: "reviewer", approvedAt: createdAt },
+      ownerApproval: { ownerPrincipalId: "owner", ownerHandle: "@payments", approvedAt: createdAt },
+    });
+    expect(second.jobIds).toEqual(first.jobIds);
+    expect(listJobs(value.db, 10, "tenant-a")).toHaveLength(1);
+  });
+
+  it("fails closed when the campaign is not running", () => {
+    const value = fixture();
+    transitionWardenCampaign(value.db, {
+      tenantId: "tenant-a", campaignId: "campaign-a", expectedRevision: 2, to: "paused",
+      actorPrincipalId: "owner", eventId: "campaign-paused", idempotencyKey: "campaign-paused",
+      correlationId: "campaign-a", createdAt,
+    });
+    expect(() => enqueueReadyWardenCampaignTargets(value.db, {
+      tenantId: "tenant-a", campaignId: "campaign-a", actorPrincipalId: "worker", createdAt,
+      source: source(), renames: [],
+      rolloutDecisionId: "rollout-a",
+      rolloutApproval: { decisionSha256: value.decision.decisionSha256, approvedByPrincipalId: "reviewer", approvedAt: createdAt },
+      ownerApproval: { ownerPrincipalId: "owner", ownerHandle: "@payments", approvedAt: createdAt },
+    })).toThrow("warden_campaign_not_running");
   });
 });
