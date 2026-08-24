@@ -35,11 +35,12 @@ const opened: Array<{ db: AppDb; dir: string }> = [];
 describe("policyEnvelopeDirectives", () => {
   it("emits only the constraining dimensions of the default envelope", () => {
     const envelope = defaultPolicyEnvelope({ tenantId: "t1", policyEnvelopeId: "pe-1", createdAt: T0 });
-    const directives = policyEnvelopeDirectives("t1", canonicalPolicyEnvelopeJson(envelope), 1);
-    const subjects = directives.map((d) => d.subjectKey).sort();
+    const result = policyEnvelopeDirectives("t1", canonicalPolicyEnvelopeJson(envelope), 1);
+    expect(result.readable).toBe(true);
+    const subjects = result.directives.map((d) => d.subjectKey).sort();
     // Default: review required, no deploy, no training — and nothing else.
     expect(subjects).toEqual(["policy:deployment", "policy:review", "policy:training"]);
-    expect(directives.every((d) => d.source === "policy_envelope:v1" && d.tenantId === "t1")).toBe(true);
+    expect(result.directives.every((d) => d.source === "policy_envelope:v1" && d.tenantId === "t1")).toBe(true);
   });
 
   it("emits scope, zone, risk, and external-processing directives when restricted", () => {
@@ -53,7 +54,7 @@ describe("policyEnvelopeDirectives", () => {
       riskCeiling: "medium",
     };
     const subjects = policyEnvelopeDirectives("t1", canonicalPolicyEnvelopeJson(restricted), 2)
-      .map((d) => d.subjectKey);
+      .directives.map((d) => d.subjectKey);
     expect(subjects).toContain("policy:repository_scope");
     expect(subjects).toContain("policy:forbidden_zone:src/generated");
     expect(subjects).toContain("policy:tool_scope");
@@ -62,9 +63,26 @@ describe("policyEnvelopeDirectives", () => {
     expect(subjects).toContain("policy:risk_ceiling");
   });
 
-  it("returns no directives for a malformed envelope rather than leaking a partial policy", () => {
-    expect(policyEnvelopeDirectives("t1", "{not json", 1)).toEqual([]);
-    expect(policyEnvelopeDirectives("t1", JSON.stringify({ version: "x" }), 1)).toEqual([]);
+  it("emits the maximally restrictive fallback for a malformed envelope rather than an empty (fail-open) or partial policy", () => {
+    for (const bad of ["{not json", JSON.stringify({ version: "x" })]) {
+      const result = policyEnvelopeDirectives("t1", bad, 1);
+      // The failure is observable: `readable: false` with a non-empty reason.
+      expect(result.readable).toBe(false);
+      if (result.readable) throw new Error("unreachable");
+      expect(result.reason.length).toBeGreaterThan(0);
+      const subjects = result.directives.map((d) => d.subjectKey).sort();
+      // Maximally restrictive: review, no deploy, no external processing, no training.
+      expect(subjects).toEqual([
+        "policy:deployment",
+        "policy:external_processing",
+        "policy:review",
+        "policy:training",
+      ]);
+      // Strictly MORE restrictive than the valid default, which does not forbid
+      // external processing — a corrupt row is never LESS restrictive.
+      expect(subjects).toContain("policy:external_processing");
+      expect(result.directives).not.toHaveLength(0);
+    }
   });
 });
 

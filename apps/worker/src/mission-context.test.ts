@@ -11,9 +11,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  bindMissionToPolicyEnvelope,
   createDb,
   createExplicitMemory,
   createMission,
+  createPolicyEnvelope,
   getMission,
   getTrajectory,
   insertPrincipal,
@@ -202,6 +204,40 @@ describe("worker mission-context producer (real stores)", () => {
     const subjects = compiled.envelope.policyConstraints.entries.map((e) => e.subjectKey).sort();
     expect(subjects).toEqual(["policy:deployment", "policy:review", "policy:training"]);
     expect(compiled.injection.promptBody).toContain("Human review is required before delivery.");
+  });
+
+  it("records a corrupt Policy Envelope as `unreadable` (not empty) with the maximally restrictive fallback", () => {
+    const db = fixture();
+    // The envelope store keeps the body opaque, so a corrupt/attacker-shaped row
+    // can be pinned. Bind the mission to it and compile.
+    createPolicyEnvelope(db, {
+      tenantId: "t1", version: 1, policyEnvelopeId: "pe-corrupt", envelopeJson: "{not valid json", createdAt: T0,
+    });
+    bindMissionToPolicyEnvelope(db, {
+      tenantId: "t1", missionId: "m1", version: 1, actorPrincipalId: "p1",
+      eventId: "m1-policy-envelope-bound", idempotencyKey: "mission-policy-bind-m1-v1",
+      correlationId: "corr", createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    });
+    // Observable third state: neither `consulted` (an empty read reads as
+    // unconstrained) nor `not_consulted` (we did look).
+    expect(compiled.envelope.policyConstraints.status).toBe("unreadable");
+    if (compiled.envelope.policyConstraints.status !== "unreadable") throw new Error("unreachable");
+    expect(compiled.envelope.policyConstraints.reason.length).toBeGreaterThan(0);
+    // Maximally restrictive fallback — strictly more restrictive than the valid
+    // default, which does not forbid external processing.
+    const subjects = compiled.envelope.policyConstraints.entries.map((e) => e.subjectKey).sort();
+    expect(subjects).toEqual(["policy:deployment", "policy:external_processing", "policy:review", "policy:training"]);
+    // The restrictive constraints reach the model and the prompt names why.
+    expect(hasInheritedContent(compiled.envelope)).toBe(true);
+    expect(compiled.injection.promptBody).toContain("External processing/models are not permitted by policy.");
+    expect(compiled.injection.promptBody).toContain("policy envelope unreadable");
   });
 
   it("with no mission bound, tenant organization memory still applies and mission-scoped sections report no_mission_bound", () => {

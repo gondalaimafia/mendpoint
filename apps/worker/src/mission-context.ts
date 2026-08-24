@@ -174,12 +174,16 @@ export function buildMissionContext(
   // precedence. When the mission pins no envelope (legacy missions predating
   // set-once binding at creation), the policy store is honestly not consulted.
   const policyEnvelope = mission ? getMissionPolicyEnvelope(db, tenantId, mission.id) : null;
-  const hardPolicies: MissionContextInput["hardPolicies"] = policyEnvelope
-    ? {
-        consulted: true,
-        records: policyEnvelopeDirectives(tenantId, policyEnvelope.envelopeJson, policyEnvelope.version),
-      }
-    : { consulted: false, reason: "store_not_available" };
+  const hardPolicies: MissionContextInput["hardPolicies"] = (() => {
+    if (!policyEnvelope) return { consulted: false, reason: "store_not_available" };
+    const directives = policyEnvelopeDirectives(tenantId, policyEnvelope.envelopeJson, policyEnvelope.version);
+    // A corrupt envelope row is recorded as `unreadable` (not an empty consulted
+    // read) and carries the maximally restrictive fallback, so it is never less
+    // restrictive than a valid envelope.
+    return directives.readable
+      ? { consulted: true, records: directives.directives }
+      : { consulted: true, unreadable: true, reason: directives.reason, records: directives.directives };
+  })();
 
   const history: MissionContextInput["history"] = mission
     ? {
@@ -240,6 +244,8 @@ export function hasInheritedContent(envelope: InheritedContextEnvelope): boolean
   }
   if (envelope.verificationState.status === "consulted" && envelope.verificationState.entries.length > 0) return true;
   if (envelope.policyConstraints.status === "consulted" && envelope.policyConstraints.entries.length > 0) return true;
+  // An unreadable envelope always carries the restrictive fallback and must reach the model.
+  if (envelope.policyConstraints.status === "unreadable") return true;
   if (envelope.graphProjection.status === "consulted") return true;
   return false;
 }
