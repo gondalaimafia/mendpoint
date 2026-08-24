@@ -187,6 +187,10 @@ import { persistWardenTrajectory } from "./warden-trajectory.js";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
 import { observeProductCompletionInShadow } from "./verifier-product-shadow.js";
+import {
+  parseLearningCorpusArgs,
+  sealGovernedLearningCorpus,
+} from "./learning-corpus-cli.js";
 
 function verifierDigest(value: string): string {
   if (/^sha256:[a-f0-9]{64}$/.test(value)) return value;
@@ -4225,8 +4229,20 @@ async function main() {
     } finally {
       db.raw.close();
     }
+  } else if (cmd === "learning-corpus") {
+    // H3: seal a governed learning dataset version through the existing
+    // pipeline sealer. Does not train and does not invent organization-memory
+    // routing. Requires an active consent for --purpose.
+    const input = parseLearningCorpusArgs(process.argv.slice(3));
+    const db = initializeWorkerDurableState(() => createDb());
+    try {
+      const sealed = sealGovernedLearningCorpus(db, input);
+      console.log(JSON.stringify(sealed, null, 2));
+    } finally {
+      db.raw.close();
+    }
   } else {
-    console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|run-transformer-service|sdk-signals|reconcile-installations]
+    console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|run-transformer-service|sdk-signals|reconcile-installations|learning-corpus]
   poll-once [--local] [--no-pipeline] [--slug acme-payments]
   poll [--local] [--interval 60000]
   process-jobs
@@ -4234,7 +4250,8 @@ async function main() {
   run-service [--interval 5000]
   run-transformer-service
   sdk-signals [--local]
-  reconcile-installations [--tenant tenant_default] [--installation 151614362]`);
+  reconcile-installations [--tenant tenant_default] [--installation 151614362]
+  learning-corpus --tenant <id> --purpose <purpose> --cutoff <iso> --actor <principal-id> --idempotency-key <key> [--created-at <iso>]`);
     process.exitCode = 1;
   }
 }
