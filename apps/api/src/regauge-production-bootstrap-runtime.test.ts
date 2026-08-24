@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
+  getMissionPolicyEnvelope,
   insertRepositorySnapshot,
   listDomainEvents,
   listRepositorySnapshots,
@@ -324,6 +325,10 @@ describe("Regauge production bootstrap runtime", () => {
       .map((event) => event.event_type);
     expect(missionEvents).toContain("mission.created");
     expect(missionEvents).toContain("mission.regauge_campaign_linked");
+    expect(missionEvents).toContain("mission.policy_envelope_bound");
     expect(missionEvents.filter((type) => type === "mission.transitioned")).toHaveLength(4);
+    // Spec §6.7: the launched Mission references a versioned Policy Envelope.
+    expect(mission!.policyEnvelopeVersion).toBe("1");
+    expect(getMissionPolicyEnvelope(db, "tenant_regauge_canary", mission!.id)).not.toBeNull();
   }, 20_000);
 });

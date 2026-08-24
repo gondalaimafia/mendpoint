@@ -148,7 +148,10 @@ describe("bindRegaugeMissionAtLaunch", () => {
     expect(() => bindRegaugeMissionAtLaunch(db, args)).not.toThrow();
     const mission = resolveMissionForRegaugeCampaign(db, "t1", "campaign-replay");
     expect(mission?.state).toBe("executing");
-    expect(mission?.revision).toBe(5); // created(1) -> discovering -> scoped -> planning -> executing
+    // created(1) -> discovering -> scoped -> planning -> executing, plus the
+    // set-once Policy Envelope bind. 6 and not 7 is the idempotency this test
+    // exists to prove: the replayed launch does not rebind the envelope.
+    expect(mission?.revision).toBe(6);
     expect(verifyDomainEventIntegrity(db, "t1").ok).toBe(true);
     const transitions = listDomainEvents(db, "t1", "mission", mission!.id)
       .filter((event) => event.event_type === "mission.transitioned");

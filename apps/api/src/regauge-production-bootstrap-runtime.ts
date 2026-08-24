@@ -32,6 +32,7 @@ import {
   resolveGitHubTenantAccountBinding,
   type InstallationRepository,
 } from "@mendpoint/github";
+import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
 import {
   CredentialBroker,
   type SecretProvider,
@@ -161,6 +162,16 @@ export function bindRegaugeMissionAtLaunch(
     actorPrincipalId: input.ownerPrincipalId,
     eventId: `${missionId}-linked`,
     idempotencyKey: `mission-link-${missionId}`,
+    correlationId: input.campaignId,
+    createdAt: input.createdAt,
+  });
+  // Spec §6.7: every Mission MUST reference a versioned Policy Envelope. Bind the
+  // tenant's default envelope set-once at launch (idempotent), mirroring the
+  // Fettler enrollment path, so ReGauge tasks inherit an enforceable boundary.
+  current = ensureDefaultPolicyEnvelopeBinding(db, {
+    tenantId: input.tenantId,
+    missionId,
+    actorPrincipalId: input.ownerPrincipalId,
     correlationId: input.campaignId,
     createdAt: input.createdAt,
   });
