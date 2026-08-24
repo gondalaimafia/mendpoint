@@ -19,6 +19,8 @@ function connectErrorMessage(status: number, code: string | null): string {
       return "That branch name is not valid. Try the default branch, for example main.";
     case "connect_provider_invalid":
       return "That source provider is not supported yet.";
+    case "connect_repository_not_granted":
+      return "The GitHub App does not have access to that repository yet. Open your GitHub App settings, grant it access to this repository, then try again.";
     case "github_app_credentials_missing":
     case "repository_clone_token_required":
       return "Live GitHub access is not configured yet. Ask your workspace admin to finish GitHub setup, then try again.";
