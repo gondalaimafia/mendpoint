@@ -16,7 +16,7 @@ import {
 const opened: Array<{ db?: GraphLearnDb; dir?: string; close?: () => void }> = [];
 
 afterEach(() => {
-  for (const item of opened.splice(0)) {
+  for (const item of opened.splice(0).reverse()) {
     item.close?.();
     try { item.db?.raw.close(); } catch { /* already closed */ }
     if (item.dir) rmSync(item.dir, { recursive: true, force: true });
