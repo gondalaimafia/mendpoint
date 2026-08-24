@@ -311,11 +311,12 @@ export function seedDogfoodScores(
   baseDir: string,
   n: number,
   opts?: { okRate?: number; prefix?: string },
+  scope?: HarnessTenantScope,
 ): string[] {
   const okRate = opts?.okRate ?? 0.6;
   const prefix = opts?.prefix ?? "dogfood-seed";
   const ids: string[] = [];
-  const root = join(baseDir, "runs");
+  const root = runsDir(baseDir, scope);
   mkdirSync(root, { recursive: true });
   for (let i = 0; i < n; i++) {
     const runId = `${prefix}-${String(i + 1).padStart(3, "0")}`;
@@ -332,6 +333,7 @@ export function seedDogfoodScores(
       durationMs: 50 + i * 3,
       graphQueries: 2 + (i % 5),
       tokensEst: 1000 + i * 10,
+      tenantId: scope?.tenantId,
       // Structural marker: these scores are fabricated, not real runs. collectDogfood
       // reads this to exclude them from the real dogfood figures.
       synthetic: true,
@@ -350,7 +352,8 @@ export function seedDogfoodScores(
       recoveredFromFailure: score.recoveredFromFailure,
       graphQueries: score.graphQueries,
       source: "seed",
-    });
+      tenantId: scope?.tenantId,
+    }, scope);
     ids.push(runId);
   }
   return ids;

@@ -26,6 +26,7 @@ import {
   getPlan,
 } from "./index.js";
 import { runSpecialistTool } from "./tools.js";
+import { readLedger } from "./dogfood.js";
 import {
   getGraphLearnDb,
   ingestControlPlane,
@@ -142,6 +143,28 @@ describe("harness", () => {
     expect(report.day90Ready).toBe(false);
     expect(report.synthetic).toBe(true);
     expect(report.syntheticRuns).toBe(DOGFOOD_TARGET_RUNS + 5);
+  });
+
+  it("keeps scoped synthetic seeds inside their tenant namespace", () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-scoped-seed-"));
+    dirs.push(base);
+    const scope = { tenantId: "platform-dev" };
+    const seeded = seedDogfoodScores(base, 2, {
+      okRate: 1,
+      prefix: "scoped-seed",
+    }, scope);
+
+    expect(listPlans(base)).toEqual([]);
+    expect(listTrajectories(base)).toEqual([]);
+    expect(listPlans(base, scope).map((plan) => plan.runId)).toEqual(seeded);
+    expect(collectDogfood(base).syntheticRuns).toBe(0);
+    expect(collectDogfood(base, scope).syntheticRuns).toBe(2);
+    const score = JSON.parse(readFileSync(runDir(base, seeded[0]!, scope).scorePath, "utf8"));
+    expect(score.tenantId).toBe("platform-dev");
+    expect(readLedger(base, scope).map((entry) => entry.tenantId)).toEqual([
+      "platform-dev",
+      "platform-dev",
+    ]);
   });
 
   it("views trajectories", async () => {
