@@ -384,6 +384,33 @@ function installationRepositoryId(
 }
 
 /**
+ * Resolves the GitHub connection binding the PR-review webhook needs: the
+ * installation id and the numeric repository id, both taken from the tenant's
+ * signature-verified github_installations (never invented, never from the request
+ * body). Refuses when the App was never granted the repository, because a
+ * connection that looks successful but can never be resolved by the webhook is
+ * worse than an honest refusal that tells the user to grant access.
+ */
+function resolveGitHubConnectionBinding(
+  db: AppDb,
+  tenantId: string,
+  owner: string,
+  name: string,
+): Readonly<{ installationId: string; repositoryId: string }> {
+  const installation = findAuthorizedGitHubInstallationForRepository(db, tenantId, owner, name);
+  const repositoryId = installation
+    ? installationRepositoryId(installation.repositories_json, owner, name)
+    : undefined;
+  if (!installation || !repositoryId) {
+    throw new Error("connect_repository_not_granted");
+  }
+  return Object.freeze({
+    installationId: installation.installation_id,
+    repositoryId: String(repositoryId),
+  });
+}
+
+/**
  * Real-mode installation token accessor.
  *
  * The installation is resolved from the CALLER'S OWN TENANT (never from the
@@ -466,6 +493,21 @@ export function createSelfServeConnectRoutes(
       }>();
       const provider = parseProvider(body.provider ?? "github");
       const repoKey = typeof body.repoKey === "string" ? body.repoKey : "";
+      // GitHub connections must be resolvable by the PR-review webhook, which
+      // looks up (tenant, numeric repo id, installation id). Resolve both ids
+      // from github_installations before cloning so a repository the App was
+      // never granted is refused up front instead of materializing a checkout
+      // that can never receive a review. Non-GitHub providers keep the local_git
+      // shape below untouched.
+      const githubBinding =
+        provider === "github"
+          ? resolveGitHubConnectionBinding(
+              options.db,
+              principal.tenantId,
+              requirePart("connect_owner", body.owner),
+              requirePart("connect_name", body.name),
+            )
+          : undefined;
       let tokenProvider = options.tokenProvider;
       if (!tokenProvider && provider !== "local_git" && githubMode(env) === "real") {
         tokenProvider = realTokenProvider(
@@ -491,18 +533,26 @@ export function createSelfServeConnectRoutes(
         },
         env,
       );
-      const connection = registerScmConnection(options.db, {
-        tenantId: principal.tenantId,
-        provider: "local_git",
-        externalAccountId: checkout.provider === "local_git"
-          ? requirePart("connect_owner", body.owner)
-          : `${checkout.provider}-${requirePart("connect_owner", body.owner)}`,
-        displayName: `${body.owner} ${body.name}`,
-      });
+      const connection = githubBinding
+        ? registerScmConnection(options.db, {
+            tenantId: principal.tenantId,
+            provider: "github",
+            credentialRef: `github-installation://${githubBinding.installationId}`,
+            externalAccountId: githubBinding.installationId,
+            displayName: `${body.owner} ${body.name}`,
+          })
+        : registerScmConnection(options.db, {
+            tenantId: principal.tenantId,
+            provider: "local_git",
+            externalAccountId: checkout.provider === "local_git"
+              ? requirePart("connect_owner", body.owner)
+              : `${checkout.provider}-${requirePart("connect_owner", body.owner)}`,
+            displayName: `${body.owner} ${body.name}`,
+          });
       const repository = registerConnectedRepository(options.db, {
         tenantId: principal.tenantId,
         connectionId: connection.id,
-        remoteId: repoKey,
+        remoteId: githubBinding ? githubBinding.repositoryId : repoKey,
         owner: body.owner,
         name: body.name,
         defaultBranch: checkout.branch,

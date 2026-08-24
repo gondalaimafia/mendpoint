@@ -15,7 +15,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDb, upsertGitHubInstallation, type AppDb } from "@mendpoint/db";
+import {
+  createDb,
+  getConnectedRepositoryIdByRemote,
+  listScmConnections,
+  upsertGitHubInstallation,
+  type AppDb,
+} from "@mendpoint/db";
 import type { TokenFetcher } from "@mendpoint/github";
 import type { ApiEnv } from "./auth.js";
 import { resolveRepoKey } from "./repo-path.js";
@@ -200,7 +206,7 @@ describe("self-serve connect route", () => {
     expect(res.status).toBe(404);
   });
 
-  it("clones and links a local_git repository when enabled (mock mode)", async () => {
+  it("clones and links a local_git repository when enabled (mock mode, local-git path unchanged)", async () => {
     const root = reposRoot();
     process.env.MENDPOINT_REPOS_DIR = root;
     process.env.NODE_ENV = "test";
@@ -209,20 +215,108 @@ describe("self-serve connect route", () => {
     const db = createDb(join(root, "connect.sqlite"));
     dbs.push(db);
     const app = appWith({ db, enabled: true });
-    const res = await post(app, { repoKey: "shop-app", owner: "acme", name: "shop-app" });
+    const res = await post(app, {
+      provider: "local_git",
+      repoKey: "shop-app",
+      owner: "acme",
+      name: "shop-app",
+    });
     expect(res.status).toBe(201);
     const payload = (await res.json()) as {
       checkout: { path: string; reused: boolean; provider: string };
-      connection: { provider: string };
+      connection: { provider: string; externalAccountId: string };
       repository: { status: string; remote_id: string };
     };
-    // Dev flat layout: MENDPOINT_REPOS_DIR/<repoKey>.
+    // Dev flat layout: MENDPOINT_REPOS_DIR/<repoKey>. The local_git connection is
+    // keyed by owner and points at the on-disk checkout via the repoKey remoteId,
+    // exactly as before the GitHub fix.
     expect(payload.checkout.path).toBe(resolveRepoKey("shop-app", "tenant-a"));
     expect(payload.checkout.reused).toBe(false);
-    expect(payload.checkout.provider).toBe("github");
+    expect(payload.checkout.provider).toBe("local_git");
     expect(payload.connection.provider).toBe("local_git");
+    expect(payload.connection.externalAccountId).toBe("acme");
     expect(payload.repository.status).toBe("pending");
+    expect(payload.repository.remote_id).toBe("shop-app");
     expect(existsSync(join(root, "shop-app", ".git"))).toBe(true);
+  });
+
+  it("registers a GitHub connection the PR-review webhook can resolve (round-trip)", async () => {
+    const root = reposRoot();
+    process.env.MENDPOINT_REPOS_DIR = root;
+    process.env.NODE_ENV = "test";
+    process.env.MENDPOINT_SELF_SERVE_CONNECT = "1";
+    delete process.env.GITHUB_MODE;
+    const db = createDb(join(root, "connect.sqlite"));
+    dbs.push(db);
+    // The App was granted acme/shop-app (numeric repo id 1309223407) through
+    // installation 151614362, exactly as github_installations records it.
+    seedInstallation(db, {
+      installationId: "151614362",
+      accountId: "273115720",
+      tenantId: "tenant-a",
+      owner: "acme",
+      name: "shop-app",
+      repoId: 1309223407,
+    });
+    const app = appWith({ db, enabled: true });
+    // The onboarding UI sends provider "github" and repoKey "owner/name".
+    const res = await post(app, {
+      provider: "github",
+      repoKey: "acme/shop-app",
+      owner: "acme",
+      name: "shop-app",
+    });
+    expect(res.status).toBe(201);
+    const payload = (await res.json()) as {
+      connection: { provider: string; externalAccountId: string };
+      repository: { id: string; remote_id: string };
+    };
+    // The written shape is the webhook's required shape: github provider, the
+    // installation id, and the numeric repo id (not the "owner/name" repoKey).
+    expect(payload.connection.provider).toBe("github");
+    expect(payload.connection.externalAccountId).toBe("151614362");
+    expect(payload.repository.remote_id).toBe("1309223407");
+    // The bug was that nothing exercised the join. Resolve the freshly connected
+    // repository with the webhook's OWN lookup function, bound exactly as the
+    // webhook binds it: [tenantId, numeric repo id, installation id].
+    const resolved = getConnectedRepositoryIdByRemote(db, {
+      tenantId: "tenant-a",
+      remoteId: "1309223407",
+      installationId: "151614362",
+    });
+    expect(resolved).toBe(payload.repository.id);
+  });
+
+  it("refuses a GitHub repository the App was never granted, writing no fallback connection", async () => {
+    const root = reposRoot();
+    process.env.MENDPOINT_REPOS_DIR = root;
+    process.env.NODE_ENV = "test";
+    process.env.MENDPOINT_SELF_SERVE_CONNECT = "1";
+    delete process.env.GITHUB_MODE;
+    const db = createDb(join(root, "connect.sqlite"));
+    dbs.push(db);
+    // The installation grants acme/shop-app only; the caller asks for acme/ledger.
+    seedInstallation(db, {
+      installationId: "151614362",
+      accountId: "273115720",
+      tenantId: "tenant-a",
+      owner: "acme",
+      name: "shop-app",
+      repoId: 1309223407,
+    });
+    const app = appWith({ db, enabled: true });
+    const res = await post(app, {
+      provider: "github",
+      repoKey: "acme/ledger",
+      owner: "acme",
+      name: "ledger",
+    });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: "connect_repository_not_granted" });
+    // No connection was written under the old shape as a consolation prize, and
+    // the refusal happened before any checkout was materialized.
+    expect(listScmConnections(db, "tenant-a")).toHaveLength(0);
+    expect(existsSync(join(root, "acme"))).toBe(false);
   });
 
   // Configures the ambient environment for real GitHub App mode. process.env is
