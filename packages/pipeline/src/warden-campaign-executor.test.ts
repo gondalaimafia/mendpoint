@@ -204,6 +204,14 @@ describe("Warden campaign executor", () => {
       delivery: { mode: "draft", autoMerge: false, autoDeploy: false },
       snapshot: { id: "snapshot-a", resolvedSha, manifestSha256 },
       typedEdits: [{ kind: "ast_codemod", targetSymbol: "createCharge" }],
+      upstreamChange: { providerSlug: "provider", sourceKind: "release" },
+      whyInScope: { repositoryId: "repo-a", ownerHandle: "@payments" },
+      graphPath: { query: "repository_evidence" },
+      coverageLimits: { gatedOn: ["codeowners", "ci", "runtime_trace"] },
+      uncertainty: { graphBasis: "exact_commit_evidence", notVerified: [] },
+      risk: { reviewRequired: true, autoMerge: false, autoDeploy: false },
+      recipeProvenance: { kinds: ["ast_codemod"] },
+      verification: { comparisonOk: true, introducedFailures: [] },
     });
   });
 

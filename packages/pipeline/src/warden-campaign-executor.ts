@@ -112,6 +112,76 @@ export type WardenCampaignExecutionResult = Readonly<{
   replay: WardenRunReplayEvidence;
 }>;
 
+/**
+ * Proof-carrying Fettler review package (FET-020 / spec §16.2). The existing
+ * identity + typed-edit + artifact-id envelope stays; these fields add why the
+ * path is in scope, the graph evidence path, coverage limits, and unresolved
+ * uncertainty without compressing them into one score.
+ */
+export type WardenCampaignReviewPackage = Readonly<{
+  schemaVersion: 1;
+  campaignId: string;
+  targetId: string;
+  runId: string;
+  attempt: number;
+  sourceEnvelopeArtifactId: string;
+  snapshot: Readonly<{ id: string; resolvedSha: string; manifestSha256: string }>;
+  typedEdits: readonly WardenTypedEditStrategy[];
+  baselineArtifactId: string;
+  candidateArtifactId: string;
+  postEditArtifactId: string;
+  gateArtifactId: string;
+  delivery: Readonly<{ mode: "draft"; autoMerge: false; autoDeploy: false }>;
+  upstreamChange: Readonly<{
+    providerSlug: string;
+    sourceKind: WardenSourceEnvelope["sourceKind"];
+    sourceUri: string;
+    sourceRevision: string | null;
+    contentSha256: string;
+    observedAt: string;
+  }>;
+  whyInScope: Readonly<{
+    repositoryId: string;
+    snapshotId: string;
+    resolvedSha: string;
+    ownerHandle: string;
+    ownerEvidenceId: string;
+    reason: string;
+  }>;
+  graphPath: Readonly<{
+    query: "repository_evidence";
+    ownerEvidenceId: string;
+    ciEvidenceId: string;
+    runtimeEvidenceId: string;
+  }>;
+  coverageLimits: Readonly<{
+    approvedVerificationCommands: readonly string[];
+    ranVerificationCommands: readonly string[];
+    gatedOn: readonly ["codeowners", "ci", "runtime_trace"];
+  }>;
+  uncertainty: Readonly<{
+    notVerified: readonly string[];
+    graphBasis: "exact_commit_evidence";
+    notes: readonly string[];
+  }>;
+  risk: Readonly<{
+    reviewRequired: true;
+    autoMerge: false;
+    autoDeploy: false;
+  }>;
+  recipeProvenance: Readonly<{
+    editIds: readonly string[];
+    kinds: readonly WardenTypedEditStrategy["kind"][];
+  }>;
+  verification: Readonly<{
+    baselineArtifactId: string;
+    postEditArtifactId: string;
+    comparisonOk: boolean;
+    introducedFailures: readonly string[];
+    resolvedFailures: readonly string[];
+  }>;
+}>;
+
 export type WardenCampaignExecutionDependencies = Readonly<{
   graphDb: GraphLearnDb;
   planEdits(input: Readonly<{
@@ -364,6 +434,104 @@ function graphGateEvidence(
     ownerEvidenceId: String(owner.id),
     ciEvidenceId: String(ci.id),
     runtimeEvidenceId: String(runtime.id),
+  });
+}
+
+type GraphGateEvidence = ReturnType<typeof graphGateEvidence>;
+
+/**
+ * Assemble the FET-020 review package. Pure: identical inputs always produce
+ * the same JSON-serializable object. Uncertainty, coverage, and risk stay
+ * distinct fields — never folded into one score.
+ */
+export function createWardenCampaignReviewPackage(input: {
+  campaignId: string;
+  targetId: string;
+  runId: string;
+  attempt: number;
+  source: WardenSourceEnvelope;
+  sourceEnvelopeArtifactId: string;
+  snapshot: Readonly<{ id: string; repositoryId: string; resolvedSha: string; manifestSha256: string }>;
+  ownerHandle: string;
+  gates: GraphGateEvidence;
+  edits: readonly WardenTypedEditStrategy[];
+  commands: readonly string[];
+  approvedCommands: readonly string[];
+  comparison: WardenVerificationComparison;
+  baselineArtifactId: string;
+  candidateArtifactId: string;
+  postEditArtifactId: string;
+  gateArtifactId: string;
+}): WardenCampaignReviewPackage {
+  const notes: string[] = [];
+  if (input.comparison.notVerified.length > 0) {
+    notes.push("verification_not_verified");
+  }
+  if (input.approvedCommands.length !== input.commands.length) {
+    notes.push("verification_command_subset");
+  }
+  return Object.freeze({
+    schemaVersion: 1 as const,
+    campaignId: input.campaignId,
+    targetId: input.targetId,
+    runId: input.runId,
+    attempt: input.attempt,
+    sourceEnvelopeArtifactId: input.sourceEnvelopeArtifactId,
+    snapshot: Object.freeze({
+      id: input.snapshot.id,
+      resolvedSha: input.snapshot.resolvedSha,
+      manifestSha256: input.snapshot.manifestSha256,
+    }),
+    typedEdits: input.edits,
+    baselineArtifactId: input.baselineArtifactId,
+    candidateArtifactId: input.candidateArtifactId,
+    postEditArtifactId: input.postEditArtifactId,
+    gateArtifactId: input.gateArtifactId,
+    delivery: Object.freeze({ mode: "draft" as const, autoMerge: false as const, autoDeploy: false as const }),
+    upstreamChange: Object.freeze({
+      providerSlug: input.source.providerSlug,
+      sourceKind: input.source.sourceKind,
+      sourceUri: input.source.sourceUri,
+      sourceRevision: input.source.sourceRevision,
+      contentSha256: input.source.contentSha256,
+      observedAt: input.source.observedAt,
+    }),
+    whyInScope: Object.freeze({
+      repositoryId: input.snapshot.repositoryId,
+      snapshotId: input.snapshot.id,
+      resolvedSha: input.snapshot.resolvedSha,
+      ownerHandle: input.ownerHandle,
+      ownerEvidenceId: input.gates.ownerEvidenceId,
+      reason: `codeowners lists ${input.ownerHandle} on the exact snapshot commit`,
+    }),
+    graphPath: Object.freeze({
+      query: "repository_evidence" as const,
+      ownerEvidenceId: input.gates.ownerEvidenceId,
+      ciEvidenceId: input.gates.ciEvidenceId,
+      runtimeEvidenceId: input.gates.runtimeEvidenceId,
+    }),
+    coverageLimits: Object.freeze({
+      approvedVerificationCommands: Object.freeze([...input.approvedCommands]),
+      ranVerificationCommands: Object.freeze([...input.commands]),
+      gatedOn: Object.freeze(["codeowners", "ci", "runtime_trace"] as const),
+    }),
+    uncertainty: Object.freeze({
+      notVerified: input.comparison.notVerified,
+      graphBasis: "exact_commit_evidence" as const,
+      notes: Object.freeze(notes),
+    }),
+    risk: Object.freeze({ reviewRequired: true as const, autoMerge: false as const, autoDeploy: false as const }),
+    recipeProvenance: Object.freeze({
+      editIds: Object.freeze(input.edits.map((edit) => edit.id)),
+      kinds: Object.freeze(input.edits.map((edit) => edit.kind)),
+    }),
+    verification: Object.freeze({
+      baselineArtifactId: input.baselineArtifactId,
+      postEditArtifactId: input.postEditArtifactId,
+      comparisonOk: input.comparison.ok,
+      introducedFailures: input.comparison.introducedFailures,
+      resolvedFailures: input.comparison.resolvedFailures,
+    }),
   });
 }
 
@@ -645,14 +813,18 @@ export async function executeWardenCampaignTarget(input: {
     if (!comparison.ok) throw new WardenCampaignExecutionError("warden_verification_regression", true);
 
     const packageArtifact = persistJsonArtifact(input.db, {
-      tenantId: input.tenantId, kind: "warden-campaign-review-package", value: {
-        schemaVersion: 1, campaignId: input.campaignId, targetId: input.targetId, runId,
-        attempt: current.attemptCount, sourceEnvelopeArtifactId: sourceArtifact.id,
-        snapshot: { id: snapshot.id, resolvedSha: snapshot.resolved_sha, manifestSha256: snapshot.manifest_sha256 },
-        typedEdits: edits, baselineArtifactId: baselineArtifact.id, candidateArtifactId: candidateArtifact.id,
+      tenantId: input.tenantId, kind: "warden-campaign-review-package", value: createWardenCampaignReviewPackage({
+        campaignId: input.campaignId, targetId: input.targetId, runId, attempt: current.attemptCount,
+        source, sourceEnvelopeArtifactId: sourceArtifact.id,
+        snapshot: {
+          id: snapshot.id, repositoryId: snapshot.repository_id,
+          resolvedSha: snapshot.resolved_sha, manifestSha256: snapshot.manifest_sha256,
+        },
+        ownerHandle: input.ownerApproval.ownerHandle, gates, edits, commands,
+        approvedCommands: approvedCommands as string[],
+        comparison, baselineArtifactId: baselineArtifact.id, candidateArtifactId: candidateArtifact.id,
         postEditArtifactId: postEditArtifact.id, gateArtifactId: gateArtifact.id,
-        delivery: { mode: "draft", autoMerge: false, autoDeploy: false },
-      }, producerPrincipalId: input.actorPrincipalId, createdAt: input.createdAt,
+      }), producerPrincipalId: input.actorPrincipalId, createdAt: input.createdAt,
     });
     current = transitionWardenTarget(input.db, {
       tenantId: input.tenantId, campaignId: input.campaignId, targetId: input.targetId,
