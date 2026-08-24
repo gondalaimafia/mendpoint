@@ -18,6 +18,7 @@ import {
   type InstallationRepository,
   type MockInstallationRepositoryInput,
 } from "@mendpoint/github";
+import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
 import { Hono, type Context } from "hono";
 import type { ApiEnv } from "./auth.js";
 import { mappedErrorResponse, type PublicErrorRule } from "./error-boundary.js";
@@ -454,6 +455,16 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           actorPrincipalId: trustPrincipalId,
           eventId: `${missionId}-linked`,
           idempotencyKey: `mission-link-${missionId}`,
+          correlationId: campaignId,
+          createdAt: at,
+        });
+        // Spec §6.7: every Mission MUST reference a versioned Policy Envelope.
+        // Bind the tenant's default envelope set-once at creation so downstream
+        // task dispatch has an inherited, enforceable boundary rather than null.
+        ensureDefaultPolicyEnvelopeBinding(options.db, {
+          tenantId,
+          missionId,
+          actorPrincipalId: trustPrincipalId,
           correlationId: campaignId,
           createdAt: at,
         });
