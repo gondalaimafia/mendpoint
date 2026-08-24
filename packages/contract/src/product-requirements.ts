@@ -14,11 +14,24 @@ export type ProductAvailability =
   | "pilot"
   | "ga";
 
+/**
+ * `verified` is the register's strongest word: it asserts the requirement was
+ * checked against running code (a test or source path that reachability and
+ * mutation analysis can trace). `documented` is deliberately weaker and
+ * distinct: the requirement is recorded and its only evidence is a
+ * specification or design document, so no reachability or mutation analysis can
+ * validate it. A reader must be able to tell "verified against running code"
+ * from "recorded, with a document as its evidence"; keeping these two states
+ * separate is what makes `verified` mean something. See the
+ * VERIFIED_WITHOUT_CODE_EVIDENCE rule below, which forbids a document-only
+ * requirement from wearing the `verified` label.
+ */
 export type ProductImplementationStatus =
   | "unimplemented"
   | "scaffold"
   | "partial"
   | "verified"
+  | "documented"
   | "blocked_external"
   | "retired";
 
@@ -261,6 +274,7 @@ const IMPLEMENTATION_STATUSES = new Set<ProductImplementationStatus>([
   "scaffold",
   "partial",
   "verified",
+  "documented",
   "blocked_external",
   "retired",
 ]);
@@ -292,6 +306,21 @@ const IMPLEMENTATION_EVIDENCE_TYPES = new Set<ProductEvidenceType>([
   "security",
   "code",
   "document",
+]);
+/**
+ * Evidence types a reachability or mutation analysis can trace to running code.
+ * This is IMPLEMENTATION_EVIDENCE_TYPES minus `document`: a specification or
+ * design document is implementation evidence for a `partial` requirement, but
+ * it is not something the running system can be checked against, so it can
+ * never on its own justify the `verified` label.
+ */
+const CODE_VERIFIABLE_EVIDENCE_TYPES = new Set<ProductEvidenceType>([
+  "unit",
+  "integration",
+  "e2e",
+  "benchmark",
+  "security",
+  "code",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -474,6 +503,7 @@ function validateRegisterSet(
       continue;
     }
     let hasImplementationEvidence = false;
+    let hasCodeVerifiableEvidence = false;
     for (const criterion of raw.acceptance) {
       if (!isRecord(criterion)) {
         addIssue(issues, "ACCEPTANCE_TYPE", id, "acceptance criterion must be an object");
@@ -513,6 +543,9 @@ function validateRegisterSet(
         } else {
           if (IMPLEMENTATION_EVIDENCE_TYPES.has(evidence.type as ProductEvidenceType)) {
             hasImplementationEvidence = true;
+          }
+          if (CODE_VERIFIABLE_EVIDENCE_TYPES.has(evidence.type as ProductEvidenceType)) {
+            hasCodeVerifiableEvidence = true;
           }
           if (evidence.type === "external") {
             hasExternalEvidence = true;
@@ -560,6 +593,14 @@ function validateRegisterSet(
         "PARTIAL_IMPLEMENTATION_EVIDENCE",
         id,
         "partial requirements need implementation evidence",
+      );
+    }
+    if (raw.implementationStatus === "verified" && !hasCodeVerifiableEvidence) {
+      addIssue(
+        issues,
+        "VERIFIED_WITHOUT_CODE_EVIDENCE",
+        id,
+        "verified requirements need evidence traceable to code, not documents alone; use the documented status when the only evidence is a specification",
       );
     }
   }
