@@ -101,11 +101,15 @@ describe("sandbox egress engine — the mint is gated on the probe", () => {
     expect(validate).toContain('test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"');
   });
 
-  it("makes a paging sink a hard prerequisite so a failed renewal cannot be silent", () => {
+  it("guarantees the failure-alarm path exists so a failed renewal cannot be silent", () => {
     const validate = step(engine(), "accept", "Validate protected authority").run as string;
-    expect(validate).toContain(
-      'test -n "${PAGING_WEBHOOK_URL:-}" || test -n "${PAGERDUTY_ROUTING_KEY:-}"',
-    );
+    // The alarm is now a GitHub issue opened in this repo, so the pre-mint gate
+    // asserts -- against the checked-out engine -- that the alert path exists and
+    // cannot silently no-op: the accept job holds issues:write and the
+    // failure-guarded alert step is present. Remove either and the mint refuses.
+    expect(validate).toContain('grep -q "issues: write" "$engine"');
+    expect(validate).toContain('grep -q "name: Alert on renewal failure" "$engine"');
+    expect(validate).toContain('grep -q "if: \\${{ failure() }}" "$engine"');
   });
 });
 
@@ -139,11 +143,23 @@ describe("sandbox egress engine — failure visibility before expiry", () => {
     expect(freshness!.run).toContain("check-sandbox-egress-freshness.ts");
   });
 
-  it("pages loudly on any renewal failure", () => {
+  it("opens a GitHub issue on any renewal failure, needing no external paging secret", () => {
     const workflow = engine();
-    const page = step(workflow, "accept", "Page on renewal failure");
+    // The accept job must actually hold issues:write, or the alert step 403s.
+    expect(workflow.jobs.accept.permissions).toMatchObject({ issues: "write" });
+    const page = step(workflow, "accept", "Alert on renewal failure");
     expect(page.if).toBe("${{ failure() }}");
-    expect(page.run).toContain("pageEgressReceiptRenewalFailed");
+    expect(page.run).toContain("gh issue create");
+    expect(page.run).toContain("sandbox-egress-renewal-failure");
+    // No external paging secret: the old notify-based renewal page is gone.
+    expect(page.run).not.toContain("pageEgressReceiptRenewalFailed");
+  });
+
+  it("auto-closes the renewal-failure alert once a renewal succeeds", () => {
+    const resolve = step(engine(), "accept", "Resolve the renewal-failure alert on success");
+    expect(resolve.if).toBe("${{ success() }}");
+    expect(resolve.run).toContain("gh issue close");
+    expect(resolve.run).toContain("sandbox-egress-renewal-failure");
   });
 });
 

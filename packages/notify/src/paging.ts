@@ -1,9 +1,9 @@
 /**
  * Optional paging sink for CRITICAL operational events.
  *
- * No-ops (skipped: true) when neither PAGING_WEBHOOK_URL nor PAGERDUTY_ROUTING_KEY
- * is set, mirroring the Slack notifier. Compatible with the PagerDuty Events API
- * v2 (routing key) and any generic webhook that accepts JSON (Opsgenie, custom).
+ * No-ops (skipped: true) when PAGING_WEBHOOK_URL is not set, mirroring the Slack
+ * notifier. Posts to any generic webhook that accepts JSON (Opsgenie, a custom
+ * relay, or similar); the sink is opt-in and stays a no-op until configured.
  *
  * Fail-open: a transport error or non-2xx response is caught and logged, never
  * thrown, so a paging failure can never break a request or job.
@@ -32,7 +32,7 @@ export type PagingEvent = {
 };
 
 export type PagingDelivery = {
-  sink: "pagerduty" | "webhook";
+  sink: "webhook";
   ok: boolean;
   status: number;
   error?: string;
@@ -42,7 +42,6 @@ export type NotifyPagingResult =
   | { ok: true; skipped: true; reason: "unconfigured" | "deduped" }
   | { ok: boolean; skipped?: false; deliveries: PagingDelivery[] };
 
-const PAGERDUTY_ENQUEUE_URL = "https://events.pagerduty.com/v2/enqueue";
 const DEFAULT_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
 
 const dedupeSeen = new Map<string, number>();
@@ -86,21 +85,6 @@ function markPaged(key: string, now: number, windowMs: number): void {
   }
 }
 
-function pagerDutyPayload(event: PagingEvent, dedupeKey: string): Record<string, unknown> {
-  return {
-    routing_key: process.env.PAGERDUTY_ROUTING_KEY,
-    event_action: "trigger",
-    dedup_key: dedupeKey,
-    payload: {
-      summary: event.summary,
-      source: event.source ?? "mendpoint",
-      severity: event.severity ?? "critical",
-      component: event.type,
-      custom_details: event.details ?? {},
-    },
-  };
-}
-
 function webhookPayload(event: PagingEvent, dedupeKey: string, ts: string): Record<string, unknown> {
   return {
     type: event.type,
@@ -137,8 +121,7 @@ async function post(
  */
 export async function notifyPaging(event: PagingEvent): Promise<NotifyPagingResult> {
   const webhookUrl = process.env.PAGING_WEBHOOK_URL?.trim();
-  const routingKey = process.env.PAGERDUTY_ROUTING_KEY?.trim();
-  if (!webhookUrl && !routingKey) {
+  if (!webhookUrl) {
     return { ok: true, skipped: true, reason: "unconfigured" };
   }
 
@@ -150,18 +133,12 @@ export async function notifyPaging(event: PagingEvent): Promise<NotifyPagingResu
   }
 
   const ts = new Date().toISOString();
-  const deliveries: PagingDelivery[] = [];
-  if (routingKey) {
-    deliveries.push(await post("pagerduty", PAGERDUTY_ENQUEUE_URL, pagerDutyPayload(event, dedupeKey)));
-  }
-  if (webhookUrl) {
-    deliveries.push(await post("webhook", webhookUrl, webhookPayload(event, dedupeKey, ts)));
-  }
-  // Stamp the dedupe key only after a page actually reached a sink. A partial
-  // success (one sink delivered, another failed) still stamps: a human was
-  // paged, so re-firing through the working sink would double-page for a single
-  // event. On total failure we leave the key unset so the next call (e.g. the
-  // 30s retry) tries again instead of returning a phantom "deduped" success.
+  const deliveries: PagingDelivery[] = [
+    await post("webhook", webhookUrl, webhookPayload(event, dedupeKey, ts)),
+  ];
+  // Stamp the dedupe key only after a page actually reached the sink. On a
+  // delivery failure we leave the key unset so the next call (e.g. the 30s
+  // retry) tries again instead of returning a phantom "deduped" success.
   if (deliveries.some((delivery) => delivery.ok)) {
     markPaged(dedupeKey, now, windowMs);
   }
@@ -292,10 +269,12 @@ export async function pageEgressReceiptFreshness(input: {
 }
 
 /**
- * Best-effort page for a failed egress-receipt renewal run. Called from the
- * renewal workflow's failure path so a failed renewal is loud and attributable
- * immediately — hours before the receipt lapses — rather than discovered when
- * workers start crash-looping.
+ * Best-effort page for a failed egress-receipt renewal run, via the optional
+ * runtime webhook sink. The renewal workflow itself no longer calls this: it now
+ * surfaces a failed renewal as a GitHub issue in the repo (see the "Alert on
+ * renewal failure" step in sandbox-egress-acceptance.yml), which needs no
+ * external secret. This helper remains for any caller that wants the same page
+ * delivered through a configured `PAGING_WEBHOOK_URL`.
  */
 export async function pageEgressReceiptRenewalFailed(input: {
   runUrl?: string;

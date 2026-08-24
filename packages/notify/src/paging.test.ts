@@ -17,7 +17,6 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.PAGING_WEBHOOK_URL;
-  delete process.env.PAGERDUTY_ROUTING_KEY;
   delete process.env.PAGING_DEDUPE_WINDOW_MS;
   delete process.env.MENDPOINT_NOTIFY_TIMEOUT_MS;
   vi.unstubAllGlobals();
@@ -31,38 +30,6 @@ describe("notifyPaging", () => {
     const res = await notifyPaging({ type: "readiness_fail", summary: "down" });
     expect(res).toEqual({ ok: true, skipped: true, reason: "unconfigured" });
     expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("POSTs a PagerDuty Events v2 payload when a routing key is set", async () => {
-    process.env.PAGERDUTY_ROUTING_KEY = "R0UT1NGKEY";
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 202 });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const res = await notifyPaging({
-      type: "backup_failure",
-      summary: "backup failed",
-      details: { backupId: "b-1" },
-    });
-    expect(res).toMatchObject({ ok: true });
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("https://events.pagerduty.com/v2/enqueue");
-    expect(init.method).toBe("POST");
-    expect(init.signal).toBeInstanceOf(AbortSignal);
-    expect(init.redirect).toBe("error");
-    const body = JSON.parse(init.body as string);
-    expect(body).toMatchObject({
-      routing_key: "R0UT1NGKEY",
-      event_action: "trigger",
-      dedup_key: "backup_failure:backup failed",
-      payload: {
-        summary: "backup failed",
-        severity: "critical",
-        source: "mendpoint",
-        component: "backup_failure",
-        custom_details: { backupId: "b-1" },
-      },
-    });
   });
 
   it("POSTs a generic webhook payload with the expected shape", async () => {
@@ -87,19 +54,6 @@ describe("notifyPaging", () => {
       source: "mendpoint",
     });
     expect(typeof body.ts).toBe("string");
-  });
-
-  it("fans out to both sinks when both are configured", async () => {
-    process.env.PAGERDUTY_ROUTING_KEY = "R0UT1NGKEY";
-    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const res = await notifyPaging({ type: "readiness_fail", summary: "down" });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    if (res.skipped) throw new Error("expected delivery");
-    expect(res.deliveries.map((d) => d.sink).sort()).toEqual(["pagerduty", "webhook"]);
-    expect(res.ok).toBe(true);
   });
 
   it("dedupes repeat events within the window", async () => {
@@ -132,30 +86,6 @@ describe("notifyPaging", () => {
     expect(first.ok).toBe(false);
     if (second.skipped) throw new Error("retry must not be deduped after a failed page");
     expect(second.ok).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("stamps after a partial success so a working sink is not re-paged", async () => {
-    // Decision: at least one sink delivering means a human was paged, so the
-    // event is deduped even though the other sink failed.
-    process.env.PAGERDUTY_ROUTING_KEY = "R0UT1NGKEY";
-    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
-    const fetchMock = vi.fn((url: string) =>
-      Promise.resolve(
-        String(url).includes("pagerduty")
-          ? { ok: true, status: 202 }
-          : { ok: false, status: 500 },
-      ),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    vi.spyOn(console, "error").mockImplementation(() => {});
-
-    const first = await notifyPaging({ type: "readiness_fail", summary: "down" });
-    const second = await notifyPaging({ type: "readiness_fail", summary: "down" });
-
-    if (first.skipped) throw new Error("expected a delivery attempt");
-    expect(first.ok).toBe(false);
-    expect(second).toEqual({ ok: true, skipped: true, reason: "deduped" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
