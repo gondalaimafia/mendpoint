@@ -24,7 +24,16 @@ export type Alert = {
 
 export type AlertSink = (a: Alert) => void;
 
+/**
+ * Buffered alerts are capped globally, but eviction takes from whichever tenant
+ * currently holds the most entries rather than from the oldest entry overall.
+ * Oldest-first eviction meant any tenant able to trigger enough emits could
+ * push every other tenant's alerts out of `recentAlerts`.
+ */
+const MAX_BUFFERED_ALERTS = 500;
+
 const buffer: Alert[] = [];
+const bufferedByTenant = new Map<string, number>();
 const sinks: AlertSink[] = [];
 let persistPath: string | null = null;
 let loaded = false;
@@ -49,20 +58,44 @@ function ensureLoaded(): void {
   try {
     const lines = readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean);
     const seen = new Set(buffer.map((a) => a.id));
-    for (const line of lines.slice(-500)) {
+    for (const line of lines.slice(-MAX_BUFFERED_ALERTS)) {
       try {
         const a = JSON.parse(line) as Alert;
         if (a?.id && !seen.has(a.id)) {
-          buffer.push(a);
+          admitToBuffer(a);
           seen.add(a.id);
         }
       } catch {
         /* skip */
       }
     }
-    if (buffer.length > 500) buffer.splice(0, buffer.length - 500);
   } catch {
     /* */
+  }
+}
+
+function tenantKey(alert: Alert): string {
+  return alert.tenantId ?? "";
+}
+
+function admitToBuffer(alert: Alert): void {
+  buffer.push(alert);
+  const key = tenantKey(alert);
+  bufferedByTenant.set(key, (bufferedByTenant.get(key) ?? 0) + 1);
+  while (buffer.length > MAX_BUFFERED_ALERTS) {
+    let target = "";
+    let held = -1;
+    for (const [candidate, count] of bufferedByTenant) {
+      if (count > held) {
+        held = count;
+        target = candidate;
+      }
+    }
+    const index = buffer.findIndex((entry) => tenantKey(entry) === target);
+    if (index < 0) break;
+    buffer.splice(index, 1);
+    if (held - 1 > 0) bufferedByTenant.set(target, held - 1);
+    else bufferedByTenant.delete(target);
   }
 }
 
@@ -100,8 +133,7 @@ export function emitAlert(
     tenantId: partial.tenantId,
     data: partial.data,
   };
-  buffer.push(a);
-  if (buffer.length > 500) buffer.splice(0, buffer.length - 500);
+  admitToBuffer(a);
   persist(a);
   for (const s of sinks) {
     try {
@@ -130,6 +162,7 @@ export function recentAlerts(
 
 export function clearAlerts(opts?: { wipeFile?: boolean }): void {
   buffer.length = 0;
+  bufferedByTenant.clear();
   if (opts?.wipeFile) {
     const path = persistPath ?? defaultAlertPath();
     try {
@@ -169,7 +202,11 @@ export function evaluateDogfoodAlerts(input: {
   tenantId?: string;
 }): Alert[] {
   const out: Alert[] = [];
-  if (input.totalRuns < input.targetRuns) {
+  // An empty corpus is the absence of a measurement, not a volume shortfall.
+  // Alerting on it made every fresh tenant emit on its first evaluation, which
+  // is noise at best and a write amplifier at worst. Mirrors the `>= 5` floor
+  // the okRate alert below already applies.
+  if (input.totalRuns > 0 && input.totalRuns < input.targetRuns) {
     out.push(
       emitAlert({
         severity: "info",

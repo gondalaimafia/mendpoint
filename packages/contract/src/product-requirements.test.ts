@@ -33,7 +33,7 @@ function validManifest() {
         owner: "product",
         targetRelease: "warden-pilot",
         availability: "internal",
-        implementationStatus: "verified",
+        implementationStatus: "documented",
         claimState: "internal_only",
         closureWorkstream: "FC-00",
         acceptance: [
@@ -64,8 +64,40 @@ describe("product requirement validation", () => {
       .toBe(canonicalTextSha256(lf));
   });
 
-  it("accepts a complete traceable requirement", () => {
+  it("accepts a documented requirement whose only evidence is a specification", () => {
+    // The base fixture mirrors a foundational ME-FND row: its evidence is a
+    // product-contract document, so its honest status is `documented`, not
+    // `verified`. A document-evidenced requirement is a complete, valid row.
     expect(validateProductRequirements(validManifest(), { expectedIds: [ID] })).toEqual([]);
+  });
+
+  it("rejects a verified requirement whose only evidence is a document", () => {
+    // A document is a specification, not something a reachability or mutation
+    // analysis can trace to running code. Marking such a requirement `verified`
+    // is the exact dishonesty this rule prevents; the honest status is
+    // `documented`. Deleting the VERIFIED_WITHOUT_CODE_EVIDENCE rule makes this
+    // assertion fail.
+    const manifest = validManifest() as any;
+    manifest.requirements[0].implementationStatus = "verified";
+    expect(validateProductRequirements(manifest, { expectedIds: [ID] })).toContainEqual({
+      code: "VERIFIED_WITHOUT_CODE_EVIDENCE",
+      subject: ID,
+      message:
+        "verified requirements need evidence traceable to code, not documents alone; use the documented status when the only evidence is a specification",
+    });
+  });
+
+  it("accepts a verified requirement backed by code-verifiable evidence", () => {
+    const manifest = validManifest() as any;
+    manifest.requirements[0].implementationStatus = "verified";
+    manifest.requirements[0].acceptance[0].evidence = [
+      {
+        id: `${ID}-AC01-EV01`,
+        type: "integration",
+        locator: "packages/contract/src/product-requirements.test.ts",
+      },
+    ];
+    expect(validateProductRequirements(manifest, { expectedIds: [ID] })).toEqual([]);
   });
 
   it("accepts null external blockers and implementation evidence for a partial requirement", () => {
@@ -194,6 +226,7 @@ describe("product requirement validation", () => {
 
   it("rejects verified requirements with externally dependent acceptance", () => {
     const manifest = validManifest() as any;
+    manifest.requirements[0].implementationStatus = "verified";
     manifest.requirements[0].externalBlockers = ["private canary repository"];
     manifest.requirements[0].acceptance[0].evidence[0] = {
       id: `${ID}-AC01-EV01`,

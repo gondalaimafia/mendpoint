@@ -37,6 +37,7 @@ export {
 export {
   createTenantGraphView,
   graphNodeBelongsToTenant,
+  tenantGraphStats,
   tenantPatternSuccessRows,
   type GraphTenantScope,
 } from "./tenant-scope.js";

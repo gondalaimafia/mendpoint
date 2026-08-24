@@ -2415,6 +2415,11 @@ function migrateProvidersFeedColumns(db: AppDb) {
      ON api_versions(provider_id, content_hash)
      WHERE content_hash IS NOT NULL`,
   );
+  // ALTER TABLE ADD COLUMN cannot attach a CHECK, a column-level FOREIGN KEY, or
+  // a default that differs from the fresh CREATE TABLE, so an entry whose column
+  // carries any of those in the static DDL leaves an upgraded volume permanently
+  // divergent for that column. schema-upgrade-divergence.test.ts characterizes
+  // every such case; add a new one there when introducing another.
   const additiveColumns: Array<{
     table: string;
     name: string;

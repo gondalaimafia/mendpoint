@@ -228,9 +228,11 @@ describe("evidence reachability — real register invariants", () => {
   });
 
   it("exposes both traceability deliverables without collapsing not-determined into fine", () => {
-    expect(report.verifiedTotal).toBe(39);
-    // Document-only ME-FND requirements have no code path to trace.
-    expect(report.verifiedWithoutLivePath).toContain("ME-FND-001");
+    // The ten document-only ME-FND requirements are now `documented`, not
+    // `verified`, so the verified set is the 29 requirements that carry
+    // code-verifiable evidence, and every one of them traces to a live path.
+    expect(report.verifiedTotal).toBe(29);
+    expect(report.verifiedWithoutLivePath).toEqual([]);
     // ME-SCM-006 and ME-GRF-006 were downgraded to partial and their
     // proven-dead citations removed, so no verified requirement now rests on a
     // proven-unreachable test.
