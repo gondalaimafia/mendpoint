@@ -239,7 +239,7 @@ No conflict: exclusions remain valid; do not block batch completion on them.
 
 | Claim | Fair? |
 |-------|-------|
-| Demo end-to-end on fixtures (diff → impact → mock PR) | **Yes** — `npm run demo`, examples, UI |
+| Demo end-to-end on fixtures (diff → impact → PR candidate) | **Yes** — `npm run demo` halts fail-closed at delivery gates (no PR opened); examples, UI |
 | Connect GitHub App / token → real PR on a chosen repo | **Mostly** — path exists; ops polish needed |
 | Continuously watch 5–8 flagships with production-grade ingestion | **No** — not batch-complete |
 | Quote resolve/FP rates from proprietary API-SWE-bench | **No** — not built |

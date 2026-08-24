@@ -14,7 +14,7 @@ cd mendpoint
 npm install
 npm run db:seed
 npm run ga:check      # production GA preflight
-npm run demo          # OpenAPI diff → impact → mock PR (Acme fixture)
+npm run demo          # OpenAPI diff → impact → PR candidate, halted at delivery gates (Acme fixture, fail-closed)
 npm run examples      # Stripe, OpenAI, AWS S3, fintech, multi-lang
 npm run agent:demo    # Fettler on-demand debug loop
 npm test
