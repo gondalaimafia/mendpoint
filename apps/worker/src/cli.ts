@@ -197,6 +197,12 @@ import { runWardenCandidateObservation } from "./warden-candidate-observation.js
 import { runWardenCiRepairDispatch } from "./warden-ci-repair-dispatch.js";
 import { runFettlerPrReviewDispatch } from "./fettler-pr-review-dispatch.js";
 import {
+  WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE,
+  runWardenCampaignExecuteTarget,
+  type WardenCampaignExecutor,
+} from "./warden-campaign-execute-dispatch.js";
+import type { WardenCampaignExecutionDependencies } from "@mendpoint/pipeline";
+import {
   createInstallationAccountFetcher,
   reconcileNullInstallationAccounts,
 } from "./installation-account-reconcile.js";
@@ -2462,6 +2468,15 @@ async function processJobsOnceUnfenced(
     transformerAdaptiveRepositoryResolver?: ResolveTransformerAdaptiveRepository;
     wardenCandidateGithub?: GitHubDelivery;
     wardenCandidateRepositoryResolver?: ResolveWardenCandidateRepository;
+    // Fettler campaign per-target execution (review-first). Present only when a
+    // deployment has configured the production dependencies (generation
+    // planEdits/applyEdits + sandbox verify + draft delivery); absent workers do
+    // not claim `warden.campaign.execute-target` so the job waits for a
+    // configured worker rather than failing closed on every drain.
+    wardenCampaignExecution?: Readonly<{
+      dependencies: WardenCampaignExecutionDependencies;
+      execute?: WardenCampaignExecutor;
+    }>;
     delegatedPrVerification?: Readonly<{
       candidateDependencies: DelegatedPrCandidateOperationDependencies;
       verificationDependencies: DelegatedPrVerificationDependencies;
@@ -2508,6 +2523,11 @@ async function processJobsOnceUnfenced(
     if (delegatedPrVerification?.candidateDependencies.enabled === true &&
         delegatedPrVerification.verificationDependencies.enabled === true) {
       claimedTypes.push(DELEGATED_PR_VERIFICATION_JOB_TYPE);
+    }
+    // Only claim campaign-execute jobs when this worker has the production
+    // execution dependencies; otherwise leave them for a worker that does.
+    if (opts.wardenCampaignExecution) {
+      claimedTypes.push(WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE);
     }
     const job = claimNextJob(
       db,
@@ -2588,6 +2608,42 @@ async function processJobsOnceUnfenced(
           if (verification.status === "retry_scheduled") result.retried++;
         }
         continue;
+      }
+      if (job.type === WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE && opts.wardenCampaignExecution) {
+        // Review-first: the executor drives the target to stage `review` (never
+        // delivers). Known outcomes settle here under the lease fence; an
+        // unexpected throw propagates to the loop's generic failure path.
+        const outcome = await runWardenCampaignExecuteTarget({
+          db,
+          job,
+          dependencies: opts.wardenCampaignExecution.dependencies,
+          execute: opts.wardenCampaignExecution.execute,
+        });
+        if (outcome.status === "executed") {
+          if (!completeJob(db, job.id, outcome, nowIso(), { ...fence })) {
+            throw new Error("warden_campaign_execute_lease_lost");
+          }
+          result.succeeded++;
+          continue;
+        }
+        db.raw.exec("BEGIN IMMEDIATE");
+        try {
+          const failure = failJob(db, job.id, outcome.code, nowIso(), {
+            ...fence,
+            errorCode: outcome.code,
+            retryable: outcome.status === "retry_scheduled",
+            baseDelayMs: 5_000,
+            maxDelayMs: 300_000,
+          });
+          db.raw.exec("COMMIT");
+          result.failed++;
+          if (failure.status === "pending") result.retried++;
+          if (!failure.applied) console.error(`  stale lease ignored job=${job.id}`);
+          continue;
+        } catch (settlementError) {
+          if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+          throw settlementError;
+        }
       }
       if (job.type === "warden.candidate.deliver") {
         const ciReentry = wardenCiConfigForDeliveryJob(db, job, workerEnv);
