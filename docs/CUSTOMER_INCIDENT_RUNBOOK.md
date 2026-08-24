@@ -43,8 +43,8 @@ map to `package.json` scripts and the probe/paging codes below map to source in
 
 Critical operational events fire through the paging sink in
 `packages/notify` (`notifyPaging`). It is a no-op unless `PAGING_WEBHOOK_URL`
-and/or `PAGERDUTY_ROUTING_KEY` is set, so confirm those are configured for the
-tenant before relying on pages. Event types and what they mean:
+is set, so confirm it is configured for the tenant before relying on pages.
+Event types and what they mean:
 
 - `readiness_fail`: `/ready` is returning 503. Triage from the failed check
   names in the page details.

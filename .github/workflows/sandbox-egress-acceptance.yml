@@ -37,6 +37,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: ${{ inputs.environment }}
+    # The renewal-failure alarm is a GitHub issue opened in this repo (see the
+    # "Alert on renewal failure" step), so this job needs issues:write on top of
+    # the read-only default. Scoped to this job only; the workflow-level default
+    # (contents: read) is left unchanged.
+    permissions:
+      contents: read
+      issues: write
     concurrency:
       group: sandbox-egress-production
       cancel-in-progress: false
@@ -57,10 +64,10 @@ jobs:
       # apps from the live Fly inventory.
       SANDBOX_EGRESS_ROTATION_APP_PREFIXES: ${{ vars.SANDBOX_EGRESS_ROTATION_APP_PREFIXES }}
       FLY_ORG: ${{ vars.FLY_ORG }}
-      # Failure visibility: a failed or skipped renewal must page BEFORE the
-      # receipt lapses. At least one sink is a hard prerequisite (asserted below).
-      PAGING_WEBHOOK_URL: ${{ secrets.PAGING_WEBHOOK_URL }}
-      PAGERDUTY_ROUTING_KEY: ${{ secrets.PAGERDUTY_ROUTING_KEY }}
+      # Failure visibility: a failed or skipped renewal must be loud BEFORE the
+      # receipt lapses. The sink is a GitHub issue opened by the "Alert on
+      # renewal failure" step below (no external paging secret required); the
+      # pre-mint assertion guarantees that alert path exists and is not skipped.
       MENDPOINT_SANDBOX_EGRESS_ALERT_LEAD_MS: ${{ vars.SANDBOX_EGRESS_ALERT_LEAD_MS }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
@@ -94,9 +101,17 @@ jobs:
             test -n "$DEFAULT_BRANCH"
             test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
           fi
-          # A failed or skipped renewal must be loud BEFORE the receipt lapses, so
-          # a paging sink is a hard prerequisite, never optional.
-          test -n "${PAGING_WEBHOOK_URL:-}" || test -n "${PAGERDUTY_ROUTING_KEY:-}"
+          # A failed or skipped renewal must be loud BEFORE the receipt lapses.
+          # The alarm is a GitHub issue opened by the failure-guarded "Alert on
+          # renewal failure" step, which needs issues:write. Guarantee -- against
+          # this checked-out workflow -- that the alert path still exists and
+          # cannot silently no-op BEFORE minting: the accept job must hold
+          # issues:write and the failure-guarded alert step must be present.
+          # Remove either and this refuses, so no receipt is minted unmonitored.
+          engine=".github/workflows/sandbox-egress-acceptance.yml"
+          grep -q "issues: write" "$engine"
+          grep -q "name: Alert on renewal failure" "$engine"
+          grep -q "if: \${{ failure() }}" "$engine"
           required=(
             SANDBOX_FLY_API_TOKEN ROTATION_FLY_API_TOKEN
             MENDPOINT_SANDBOX_EGRESS_SIGNING_KEY_PKCS8_BASE64
@@ -326,19 +341,54 @@ jobs:
           path: test-results/sandbox-egress/
           if-no-files-found: error
           retention-days: 90
-      - name: Page on renewal failure
+      - name: Alert on renewal failure
         if: ${{ failure() }}
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           # A failed renewal is surfaced immediately -- hours before the receipt
-          # lapses -- rather than discovered when workers start crash-looping.
-          node --import tsx --input-type=module -e '
-            import { pageEgressReceiptRenewalFailed } from "@mendpoint/notify";
-            await pageEgressReceiptRenewalFailed({
-              runUrl: process.env.RUN_URL,
-              detail: "sandbox egress receipt renewal run failed",
-            });
-          '
+          # lapses -- as a GitHub issue in this repo, not discovered when workers
+          # start crash-looping. No external paging secret: the repo's own issues
+          # are the sink. Idempotent -- one open alert is reused (a comment is
+          # appended) instead of duplicated -- and auto-closed by the success path
+          # below once a renewal run passes.
+          label="sandbox-egress-renewal-failure"
+          gh label create "$label" --repo "$GH_REPO" --color b60205 \
+            --description "Automated: sandbox egress receipt renewal failed" >/dev/null 2>&1 || true
+          existing="$(gh issue list --repo "$GH_REPO" --state open --label "$label" \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GH_REPO" \
+              --body "Renewal failed again. Failed run: $RUN_URL"
+          else
+            body="$(printf '%s\n' \
+              "The sandbox egress receipt renewal run failed. The receipt will lapse without a fresh mint; once it does, sandbox verification is unavailable and workers crash-loop." \
+              "" \
+              "Failed run: $RUN_URL" \
+              "Runbook: docs/CUSTOMER_INCIDENT_RUNBOOK.md" \
+              "" \
+              "Opened automatically on failure; closed automatically once a renewal succeeds.")"
+            gh issue create --repo "$GH_REPO" --label "$label" \
+              --title "Sandbox egress receipt renewal FAILED" --body "$body"
+          fi
+      - name: Resolve the renewal-failure alert on success
+        if: ${{ success() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Auto-close any open renewal-failure alert once a renewal succeeds, so
+          # the alert reflects live state instead of lingering after recovery.
+          label="sandbox-egress-renewal-failure"
+          for number in $(gh issue list --repo "$GH_REPO" --state open --label "$label" \
+            --json number --jq '.[].number'); do
+            gh issue close "$number" --repo "$GH_REPO" --reason completed \
+              --comment "Renewal succeeded: $RUN_URL. Closing automatically."
+          done

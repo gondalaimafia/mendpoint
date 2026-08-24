@@ -42,6 +42,13 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     uses: ./.github/workflows/sandbox-egress-acceptance.yml
     secrets: inherit
+    # A called workflow's GITHUB_TOKEN can only be at or below the caller's grant,
+    # so the engine's issues:write (for the renewal-failure GitHub issue) is inert
+    # unless it is granted here too. Scoped to this caller job; the top-level
+    # default (contents: read) is left unchanged.
+    permissions:
+      contents: read
+      issues: write
     with:
       environment: sandbox-production
       require_confirmation: true
@@ -51,6 +58,11 @@ jobs:
     if: ${{ github.event_name == 'schedule' }}
     uses: ./.github/workflows/sandbox-egress-acceptance.yml
     secrets: inherit
+    # See the manual job: issues:write must be granted at the caller so the
+    # engine's renewal-failure GitHub-issue alert is not capped away.
+    permissions:
+      contents: read
+      issues: write
     with:
       environment: sandbox-production-renewal
       require_confirmation: false

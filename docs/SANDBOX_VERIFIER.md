@@ -200,11 +200,14 @@ only in which GitHub Environment gates the mint:
   refuses unless it passes.
 
 A failed or skipped renewal is surfaced **before** the receipt lapses, never after
-workers start crash-looping: a paging sink (`PAGING_WEBHOOK_URL` or
-`PAGERDUTY_ROUTING_KEY`) is a hard prerequisite; a failed run pages immediately;
-and `scripts/check-sandbox-egress-freshness.ts` pages once the receipt is within a
-lead window of expiry (default 6h, `SANDBOX_EGRESS_ALERT_LEAD_MS`) regardless of
-whether a renewal ran.
+workers start crash-looping: a failed run opens (or updates) a GitHub issue in this
+repo — the `accept` job holds `issues: write`, so no external paging secret is
+required — and that issue is closed automatically once a renewal run succeeds. In
+addition, `scripts/check-sandbox-egress-freshness.ts` flags a receipt once it is
+within a lead window of expiry (default 6h, `SANDBOX_EGRESS_ALERT_LEAD_MS`)
+regardless of whether a renewal ran; as the workflow's own self-check step it fails
+the run (opening the same issue), and as a standalone monitor it uses the optional
+runtime paging webhook (`PAGING_WEBHOOK_URL`) when one is configured.
 
 ### Operator checklist to enable the sandbox
 
@@ -237,7 +240,10 @@ whether a renewal ran.
    - `SANDBOX_EGRESS_ROTATION_APP_PREFIXES` (and optionally `FLY_ORG`) — the
      naming convention that selects consuming apps from the live inventory. A newly
      provisioned app matching the convention is covered without editing any list.
-   - a paging sink (`PAGING_WEBHOOK_URL` or `PAGERDUTY_ROUTING_KEY`).
+   - No external paging secret is required: a failed renewal opens a GitHub issue
+     in this repo (the `accept` job carries `issues: write`), auto-closed on the
+     next success. `PAGING_WEBHOOK_URL` stays an optional runtime sink for the
+     readiness, heartbeat, and freshness monitors.
 7. Leave renewal to the schedule. For an on-demand mint, run the
    `Sandbox egress receipt renewal` workflow (`workflow_dispatch`) with
    confirmation `SANDBOX_EGRESS_ACCEPTED`. Either path starts one bounded Machine,
