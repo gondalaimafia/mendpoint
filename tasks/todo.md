@@ -2952,3 +2952,17 @@ GREEN: `/readyz` now re-exports the established `/healthz` readiness handler and
 RED: `npm run docs:check` reported exactly `model-router.html`, `model-router.md`, `billing-usage.html`, and `billing-usage.md` as stale.
 
 GREEN: the canonical generator changed only those four artifacts. It removed references to the absent billing and router-runtime test files and aligned the router upload copy with the immutable decision record in the source catalog. `docs:check`, `names:check`, `claims:check`, and the production build pass; strict diff review found no source-catalog rewrite.
+## 2026-08-24 Issue #351: platform hardening and backup automation
+
+- [ ] Add red regressions for zero, negative, fractional, nonnumeric, and excessive audit-export limits plus spreadsheet-formula cells in CSV output.
+- [ ] Parse audit-export limits as positive bounded integers and encode every formula-capable CSV cell safely without changing tenant scope.
+- [ ] Extract one streaming byte-limit reader for public Next.js routes and add red regressions for undeclared oversized webhook, design-partner, signup, session, and SAML bodies.
+- [ ] Apply bounded streaming reads to those five public routes and bound every upstream response they buffer.
+- [ ] Add a default-branch-only customer backup workflow running every 30 minutes under a protected environment, using an app-scoped Fly token, an explicit app binding, concurrency fencing, a bounded remote command, retained evidence, and a deduplicated GitHub issue on failure.
+- [ ] Add workflow contract tests proving schedule, permissions, exact environment and secret bindings, command timeout, evidence upload, and failure alerting cannot silently drift.
+- [ ] Run focused tests red first, affected typechecks, full tests, production build, GA checks, dependency audit, and diff checks.
+- [ ] Complete independent review, publish one PR for #351, and obtain passing CI plus reciprocal Claude review before merge-ready.
+
+### Review
+
+- Pending implementation and verification.
