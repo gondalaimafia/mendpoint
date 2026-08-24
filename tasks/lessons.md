@@ -114,3 +114,8 @@
 **Mistake:** I paused the production activation after an external credential boundary was resolved instead of immediately continuing the next safe, authorized step.
 **Correction:** Talal asked why I had stopped, granted explicit approval, and completed the required device connection.
 **Rule:** When the user restores a required credential or device authority during an already-approved bounded deployment, verify the authority without exposing secrets and immediately resume the next planned safe step. Stop only on a new material risk or missing authority.
+
+### 2026-08-22 — Reconcile the full inventory before resuming
+**Mistake:** I resumed the non-ReGauge backlog without explicitly carrying the outstanding DeepSeek verifier slice into the active sequence.
+**Correction:** Talal called out that the DeepSeek and verifier work was still outstanding and asked me to complete it too.
+**Rule:** Before resuming a parked backlog, reconcile the active plan against every previously accepted inventory item and environment blocker. Preserve named slices explicitly so sequencing one item cannot silently omit another.
