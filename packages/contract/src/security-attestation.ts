@@ -22,6 +22,9 @@
  */
 import { createHash } from "node:crypto";
 
+// Retained forward-compat surface: the canonical schema-version anchor for the
+// security-attestation contract. Unreferenced until a v2 forces a migration; do
+// not remove — it is the version this contract advertises to consumers.
 export const SECURITY_ATTESTATION_SCHEMA_VERSION = 1 as const;
 
 const DIGEST = /^[a-f0-9]{64}$/;
