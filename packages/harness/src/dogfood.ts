@@ -11,7 +11,7 @@ import {
   mkdirSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { RunScore } from "./trajectory.js";
+import { runDir, runsDir, type HarnessTenantScope, type RunScore } from "./trajectory.js";
 
 export const DOGFOOD_TARGET_RUNS = 30;
 export const DOGFOOD_TARGET_OK_RATE = 0.5;
@@ -59,25 +59,26 @@ export type DogfoodReport = {
   notes: string[];
 };
 
-function scorePath(baseDir: string, runId: string): string {
-  return join(baseDir, "runs", runId, "score.json");
+function scorePath(baseDir: string, runId: string, scope?: HarnessTenantScope): string {
+  return runDir(baseDir, runId, scope).scorePath;
 }
 
-export function listRunIds(baseDir: string): string[] {
-  const root = join(baseDir, "runs");
+export function listRunIds(baseDir: string, scope?: HarnessTenantScope): string[] {
+  const root = runsDir(baseDir, scope);
   if (!existsSync(root)) return [];
   return readdirSync(root, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => d.name)
-    .filter((id) => existsSync(scorePath(baseDir, id)))
+    .filter((id) => existsSync(scorePath(baseDir, id, scope)))
     .sort();
 }
 
 export function loadRunScore(
   baseDir: string,
   runId: string,
+  scope?: HarnessTenantScope,
 ): RunScore | undefined {
-  const p = scorePath(baseDir, runId);
+  const p = scorePath(baseDir, runId, scope);
   if (!existsSync(p)) return undefined;
   try {
     return JSON.parse(readFileSync(p, "utf8")) as RunScore;
@@ -86,15 +87,15 @@ export function loadRunScore(
   }
 }
 
-export function collectDogfood(baseDir: string): DogfoodReport {
-  const ids = listRunIds(baseDir);
+export function collectDogfood(baseDir: string, scope?: HarnessTenantScope): DogfoodReport {
+  const ids = listRunIds(baseDir, scope);
   const runs: DogfoodRunSummary[] = [];
   const dayMap = new Map<string, { runs: number; ok: number }>();
 
   for (const runId of ids) {
-    const s = loadRunScore(baseDir, runId);
+    const s = loadRunScore(baseDir, runId, scope);
     if (!s) continue;
-    const path = scorePath(baseDir, runId);
+    const path = scorePath(baseDir, runId, scope);
     const synthetic = !!s.synthetic;
     runs.push({
       runId,
@@ -129,7 +130,7 @@ export function collectDogfood(baseDir: string): DogfoodReport {
   }
 
   // Merge ledger entries if present (explicit timestamps)
-  const ledger = readLedger(baseDir);
+  const ledger = readLedger(baseDir, scope);
   for (const e of ledger) {
     const day = e.ts.slice(0, 10);
     const synthetic = e.source === "seed";
@@ -229,17 +230,19 @@ export type LedgerEntry = {
   recoveredFromFailure?: boolean;
   graphQueries?: number;
   source?: string;
+  tenantId?: string;
 };
 
-export function ledgerPath(baseDir: string): string {
-  return join(baseDir, "runs", "dogfood-ledger.jsonl");
+export function ledgerPath(baseDir: string, scope?: HarnessTenantScope): string {
+  return join(runsDir(baseDir, scope), "dogfood-ledger.jsonl");
 }
 
 export function appendDogfoodLedger(
   baseDir: string,
   entry: Omit<LedgerEntry, "ts"> & { ts?: string },
+  scope?: HarnessTenantScope,
 ): void {
-  const root = join(baseDir, "runs");
+  const root = runsDir(baseDir, scope);
   mkdirSync(root, { recursive: true });
   const line: LedgerEntry = {
     ts: entry.ts ?? new Date().toISOString(),
@@ -251,12 +254,13 @@ export function appendDogfoodLedger(
     recoveredFromFailure: entry.recoveredFromFailure,
     graphQueries: entry.graphQueries,
     source: entry.source ?? "harness",
+    tenantId: entry.tenantId,
   };
-  appendFileSync(ledgerPath(baseDir), JSON.stringify(line) + "\n", "utf8");
+  appendFileSync(ledgerPath(baseDir, scope), JSON.stringify(line) + "\n", "utf8");
 }
 
-export function readLedger(baseDir: string): LedgerEntry[] {
-  const p = ledgerPath(baseDir);
+export function readLedger(baseDir: string, scope?: HarnessTenantScope): LedgerEntry[] {
+  const p = ledgerPath(baseDir, scope);
   if (!existsSync(p)) return [];
   return readFileSync(p, "utf8")
     .split(/\r?\n/)
@@ -274,9 +278,10 @@ export function readLedger(baseDir: string): LedgerEntry[] {
 export function writeDogfoodReport(
   baseDir: string,
   report?: DogfoodReport,
+  scope?: HarnessTenantScope,
 ): string {
-  const r = report ?? collectDogfood(baseDir);
-  const root = join(baseDir, "runs");
+  const r = report ?? collectDogfood(baseDir, scope);
+  const root = runsDir(baseDir, scope);
   mkdirSync(root, { recursive: true });
   const out = join(root, "dogfood-report.json");
   writeFileSync(out, JSON.stringify(r, null, 2), "utf8");
@@ -306,11 +311,12 @@ export function seedDogfoodScores(
   baseDir: string,
   n: number,
   opts?: { okRate?: number; prefix?: string },
+  scope?: HarnessTenantScope,
 ): string[] {
   const okRate = opts?.okRate ?? 0.6;
   const prefix = opts?.prefix ?? "dogfood-seed";
   const ids: string[] = [];
-  const root = join(baseDir, "runs");
+  const root = runsDir(baseDir, scope);
   mkdirSync(root, { recursive: true });
   for (let i = 0; i < n; i++) {
     const runId = `${prefix}-${String(i + 1).padStart(3, "0")}`;
@@ -327,6 +333,7 @@ export function seedDogfoodScores(
       durationMs: 50 + i * 3,
       graphQueries: 2 + (i % 5),
       tokensEst: 1000 + i * 10,
+      tenantId: scope?.tenantId,
       // Structural marker: these scores are fabricated, not real runs. collectDogfood
       // reads this to exclude them from the real dogfood figures.
       synthetic: true,
@@ -345,7 +352,8 @@ export function seedDogfoodScores(
       recoveredFromFailure: score.recoveredFromFailure,
       graphQueries: score.graphQueries,
       source: "seed",
-    });
+      tenantId: scope?.tenantId,
+    }, scope);
     ids.push(runId);
   }
   return ids;

@@ -113,9 +113,9 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
   let paths: RunPaths;
   let inject = opts.injectFailureAction;
 
-  if (opts.resumeRunId && runExists(baseDir, opts.resumeRunId)) {
+  if (opts.resumeRunId && runExists(baseDir, opts.resumeRunId, opts.scope)) {
     runId = opts.resumeRunId;
-    paths = runDir(baseDir, runId);
+    paths = runDir(baseDir, runId, opts.scope);
     plan = loadPlan(paths);
     appendTrace(paths, {
       ts: new Date().toISOString(),
@@ -123,7 +123,7 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
       message: `resumed run ${runId}`,
     });
   } else {
-    paths = initRun(baseDir, runId, plan);
+    paths = initRun(baseDir, runId, plan, opts.scope);
   }
 
   const ownsSandbox = !opts.sandbox;
@@ -235,6 +235,7 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
     sandboxMinutes,
     costUsd: cost.totalUsd,
     planId: plan.id,
+    tenantId: opts.scope?.tenantId,
   };
   writeScore(paths, score);
   try {
@@ -247,7 +248,8 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
       recoveredFromFailure: score.recoveredFromFailure,
       graphQueries: score.graphQueries,
       source: "harness",
-    });
+      tenantId: opts.scope?.tenantId,
+    }, opts.scope);
   } catch {
     /* ledger is best-effort */
   }
@@ -262,7 +264,10 @@ export async function executePlan(opts: ExecuteOptions): Promise<ExecuteResult> 
 }
 
 /** Day-15 hello world: 2-step plan, echo, persist, resume-ready */
-export async function helloWorldRun(baseDir = process.cwd()) {
+export async function helloWorldRun(
+  baseDir = process.cwd(),
+  scope?: GraphTenantScope,
+) {
   const { emptyPlan, addStep } = await import("@mendpoint/orchestrator");
   let plan = emptyPlan({
     kind: "generic",
@@ -282,5 +287,5 @@ export async function helloWorldRun(baseDir = process.cwd()) {
     successCriteria: ["stdout contains sandbox ready"],
     notes: "sandbox ready",
   });
-  return executePlan({ baseDir, plan });
+  return executePlan({ baseDir, plan, scope });
 }

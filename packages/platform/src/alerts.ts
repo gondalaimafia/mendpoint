@@ -18,6 +18,7 @@ export type Alert = {
   severity: AlertSeverity;
   source: string;
   message: string;
+  tenantId?: string;
   data?: Record<string, unknown>;
 };
 
@@ -87,12 +88,16 @@ export function emitAlert(
   partial: Omit<Alert, "id" | "ts"> & { id?: string; ts?: string },
 ): Alert {
   ensureLoaded();
+  if (partial.tenantId !== undefined && partial.tenantId.trim() === "") {
+    throw new Error("Tenant scope required");
+  }
   const a: Alert = {
     id: partial.id ?? `alert_${Date.now().toString(36)}`,
     ts: partial.ts ?? new Date().toISOString(),
     severity: partial.severity,
     source: partial.source,
     message: partial.message,
+    tenantId: partial.tenantId,
     data: partial.data,
   };
   buffer.push(a);
@@ -108,9 +113,19 @@ export function emitAlert(
   return a;
 }
 
-export function recentAlerts(limit = 50): Alert[] {
+export function recentAlerts(
+  limit = 50,
+  scope?: Readonly<{ tenantId: string; includeUnscoped?: boolean }>,
+): Alert[] {
   ensureLoaded();
-  return buffer.slice(-limit);
+  if (!scope) return buffer.slice(-limit);
+  if (scope.tenantId.trim() === "") throw new Error("Tenant scope required");
+  return buffer
+    .filter((alert) =>
+      alert.tenantId === scope.tenantId ||
+      (scope.includeUnscoped === true && alert.tenantId === undefined),
+    )
+    .slice(-limit);
 }
 
 export function clearAlerts(opts?: { wipeFile?: boolean }): void {
@@ -128,6 +143,7 @@ export function clearAlerts(opts?: { wipeFile?: boolean }): void {
 export function evaluateLatencyAlerts(input: {
   violations: string[];
   ok: boolean;
+  tenantId?: string;
 }): Alert[] {
   const out: Alert[] = [];
   if (!input.ok) {
@@ -136,6 +152,7 @@ export function evaluateLatencyAlerts(input: {
         severity: "warn",
         source: "graph-slo",
         message: `Graph-RAG SLO violations: ${input.violations.join("; ") || "unknown"}`,
+        tenantId: input.tenantId,
         data: { violations: input.violations },
       }),
     );
@@ -149,6 +166,7 @@ export function evaluateDogfoodAlerts(input: {
   targetRuns: number;
   targetOkRate: number;
   day90Ready: boolean;
+  tenantId?: string;
 }): Alert[] {
   const out: Alert[] = [];
   if (input.totalRuns < input.targetRuns) {
@@ -157,6 +175,7 @@ export function evaluateDogfoodAlerts(input: {
         severity: "info",
         source: "dogfood",
         message: `Dogfood volume ${input.totalRuns}/${input.targetRuns}`,
+        tenantId: input.tenantId,
         data: input,
       }),
     );
@@ -167,6 +186,7 @@ export function evaluateDogfoodAlerts(input: {
         severity: "critical",
         source: "dogfood",
         message: `Dogfood okRate ${(input.okRate * 100).toFixed(0)}% below target — freeze features`,
+        tenantId: input.tenantId,
         data: input,
       }),
     );
@@ -177,6 +197,7 @@ export function evaluateDogfoodAlerts(input: {
         severity: "info",
         source: "dogfood",
         message: "Day-90 dogfood gates met",
+        tenantId: input.tenantId,
         data: input,
       }),
     );
@@ -187,6 +208,7 @@ export function evaluateDogfoodAlerts(input: {
 export function evaluateCostAlerts(input: {
   totalUsd: number;
   budgetUsd?: number;
+  tenantId?: string;
 }): Alert[] {
   const budget = input.budgetUsd ?? 10;
   if (input.totalUsd > budget) {
@@ -195,6 +217,7 @@ export function evaluateCostAlerts(input: {
         severity: "warn",
         source: "cost",
         message: `Cost $${input.totalUsd.toFixed(4)} exceeds budget $${budget}`,
+        tenantId: input.tenantId,
         data: input,
       }),
     ];

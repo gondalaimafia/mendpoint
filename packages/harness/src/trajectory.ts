@@ -8,6 +8,7 @@ import {
   readFileSync,
   existsSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { AgentPlan } from "@mendpoint/orchestrator";
 
@@ -48,6 +49,24 @@ export type RunPaths = {
   scorePath: string;
 };
 
+export type HarnessTenantScope = Readonly<{ tenantId: string }>;
+
+function tenantNamespace(tenantId: string): string {
+  if (tenantId.trim() === "") throw new Error("Tenant scope required");
+  const lengthPrefixed = `${Buffer.byteLength(tenantId, "utf8")}:${tenantId}`;
+  return createHash("sha256").update(lengthPrefixed, "utf8").digest("hex");
+}
+
+/**
+ * Resolve the run collection root. Omitting scope is the explicit legacy CLI
+ * layout; a supplied scope is isolated under an opaque tenant namespace so an
+ * arbitrary tenant id can never become a path segment.
+ */
+export function runsDir(baseDir: string, scope?: HarnessTenantScope): string {
+  if (!scope) return resolve(baseDir, "runs");
+  return resolve(baseDir, "tenant-runs", tenantNamespace(scope.tenantId), "runs");
+}
+
 function validRunId(runId: string): boolean {
   return (
     /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runId) &&
@@ -56,9 +75,13 @@ function validRunId(runId: string): boolean {
   );
 }
 
-export function runDir(baseDir: string, runId: string): RunPaths {
+export function runDir(
+  baseDir: string,
+  runId: string,
+  scope?: HarnessTenantScope,
+): RunPaths {
   if (!validRunId(runId)) throw new Error("Invalid run id");
-  const runsRoot = resolve(baseDir, "runs");
+  const runsRoot = runsDir(baseDir, scope);
   const root = resolve(runsRoot, runId);
   const rel = relative(runsRoot, root);
   if (rel.startsWith("..") || isAbsolute(rel)) {
@@ -72,8 +95,13 @@ export function runDir(baseDir: string, runId: string): RunPaths {
   };
 }
 
-export function initRun(baseDir: string, runId: string, plan: AgentPlan): RunPaths {
-  const paths = runDir(baseDir, runId);
+export function initRun(
+  baseDir: string,
+  runId: string,
+  plan: AgentPlan,
+  scope?: HarnessTenantScope,
+): RunPaths {
+  const paths = runDir(baseDir, runId, scope);
   mkdirSync(paths.root, { recursive: true });
   writeFileSync(paths.planPath, JSON.stringify(plan, null, 2), "utf8");
   writeFileSync(paths.tracePath, "", "utf8");
@@ -102,6 +130,18 @@ export function savePlan(paths: RunPaths, plan: AgentPlan): void {
   writeFileSync(paths.planPath, JSON.stringify(plan, null, 2), "utf8");
 }
 
-export function runExists(baseDir: string, runId: string): boolean {
-  return existsSync(join(baseDir, "runs", runId, "plan.json"));
+export function runExists(
+  baseDir: string,
+  runId: string,
+  scope?: HarnessTenantScope,
+): boolean {
+  return existsSync(runDir(baseDir, runId, scope).planPath);
+}
+
+export function runDirectoryExists(
+  baseDir: string,
+  runId: string,
+  scope?: HarnessTenantScope,
+): boolean {
+  return existsSync(runDir(baseDir, runId, scope).root);
 }

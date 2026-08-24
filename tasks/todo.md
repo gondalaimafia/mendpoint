@@ -2856,3 +2856,22 @@ restoration.
 - GREEN: 13 checkpoint tests and 7 authenticated coordinator tests pass. Exact execution reopening still rejects the newer executor, delivery accepts only that field difference, and a changed constraint still fails closed.
 - Full verification: the complete monorepo `npm test` command exited 0, including 443 Transformer tests, 462 API tests, 410 worker tests, and 161 script tests. Transformer, worker, and API typechecks, the production build, GA gate, and the production dependency audit all pass; the audit reports 0 vulnerabilities.
 - Security review: the authenticated envelope, canonical state, envelope metadata, tenant, environment, campaign, unit, repository, snapshot, source and candidate manifests, recipe, constraint, verification plan, and candidate seal remain exact. Only `executorDigest` may differ in the delivery-only opener. The execution and resume opener is unchanged and still rejects that difference.
+
+## 2026-08-24 Issue #349: tenant isolation review fixes
+
+- [x] Record red regressions for identical run IDs across tenants, scoped lists, foreign reads, and foreign plan mutation.
+- [x] Namespace harness run state by authenticated tenant while preserving explicitly unscoped CLI compatibility.
+- [x] Persist tenant identity on run scores and propagate scope through API, worker, and SDK callers.
+- [x] Scope alerts to their tenant and quarantine legacy unscoped alerts to system operators.
+- [x] Require system catalog authority for top-level tenant creation and reject unknown billing plans.
+- [x] Run focused tests, affected package typechecks, the full production build, and repository verification gates.
+- [x] Review the final diff for compatibility and tenant-boundary regressions, then push one branch and open one PR for issue #349.
+- [ ] Obtain passing CI and reciprocal Claude review before considering the PR merge-ready.
+
+### Review
+
+- RED: the pre-fix focused suite failed because two tenants resolved the same run ID to one path, blank scope was accepted, alerts were process-global, and the scoped route/service modules did not exist.
+- GREEN: 58 focused regressions pass across harness, platform, API, worker, and SDK. Full repository typecheck passed before the final review adjustment; final harness and API typechecks also pass.
+- Independent review moved scoped state outside the legacy run root and added direct foreign trajectory denial plus endpoint-level tenant-creation coverage. `git diff --check` is clean.
+- Final quality review found one score-only trajectory visibility defect; the fix now recognizes a tenant-owned run directory without weakening the plan endpoint's `plan.json` requirement. The independent re-review reports no P0, P1, or P2 findings.
+- Full monorepo tests, the production build, and `npm run ga:check` pass on the final tree. The GA gate still reports eight proven-unreachable citations and ten verified foundational requirements without live-path evidence; those pre-existing product-contract gaps are reported, do not involve this tenant-isolation slice, and remain outside issue #349.

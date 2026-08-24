@@ -157,7 +157,7 @@ export function createPlatform(scope: GraphTenantScope): PlatformClient {
       return executePlan({ plan, baseDir, scope });
     },
     executeHello(baseDir) {
-      return helloWorldRun(baseDir);
+      return helloWorldRun(baseDir, scope);
     },
     recordOutcome(input) {
       labelPrOutcome(getGraphLearnDb(), input, scope.tenantId);
@@ -192,7 +192,7 @@ export function createPlatform(scope: GraphTenantScope): PlatformClient {
     latencySlo() {
       const report = latencyReport();
       const check = checkSlos(3);
-      evaluateLatencyAlerts({ ok: check.ok, violations: check.violations });
+      evaluateLatencyAlerts({ ok: check.ok, violations: check.violations, tenantId: scope.tenantId });
       return {
         report,
         check,
@@ -200,9 +200,9 @@ export function createPlatform(scope: GraphTenantScope): PlatformClient {
       };
     },
     dogfood(baseDir = process.cwd()) {
-      const report = collectDogfood(baseDir);
-      evaluateDogfoodAlerts(report);
-      const reportPath = writeDogfoodReport(baseDir, report);
+      const report = collectDogfood(baseDir, scope);
+      evaluateDogfoodAlerts({ ...report, tenantId: scope.tenantId });
+      const reportPath = writeDogfoodReport(baseDir, report, scope);
       return {
         ...report,
         markdown: formatDogfoodReport(report),
@@ -263,13 +263,13 @@ export function createPlatform(scope: GraphTenantScope): PlatformClient {
       return listScmProviders();
     },
     alerts() {
-      return recentAlerts(50);
+      return recentAlerts(50, { tenantId: scope.tenantId });
     },
     editPlan(baseDir, runId, patch) {
-      return savePlanHitl(baseDir, runId, patch);
+      return savePlanHitl(baseDir, runId, patch, scope);
     },
     listPlans(baseDir = process.cwd()) {
-      return listPlans(baseDir);
+      return listPlans(baseDir, scope);
     },
     estimateCost(input) {
       return estimateCost(input);

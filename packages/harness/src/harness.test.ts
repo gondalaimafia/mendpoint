@@ -26,6 +26,7 @@ import {
   getPlan,
 } from "./index.js";
 import { runSpecialistTool } from "./tools.js";
+import { readLedger } from "./dogfood.js";
 import {
   getGraphLearnDb,
   ingestControlPlane,
@@ -144,6 +145,28 @@ describe("harness", () => {
     expect(report.syntheticRuns).toBe(DOGFOOD_TARGET_RUNS + 5);
   });
 
+  it("keeps scoped synthetic seeds inside their tenant namespace", () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-scoped-seed-"));
+    dirs.push(base);
+    const scope = { tenantId: "platform-dev" };
+    const seeded = seedDogfoodScores(base, 2, {
+      okRate: 1,
+      prefix: "scoped-seed",
+    }, scope);
+
+    expect(listPlans(base)).toEqual([]);
+    expect(listTrajectories(base)).toEqual([]);
+    expect(listPlans(base, scope).map((plan) => plan.runId)).toEqual(seeded);
+    expect(collectDogfood(base).syntheticRuns).toBe(0);
+    expect(collectDogfood(base, scope).syntheticRuns).toBe(2);
+    const score = JSON.parse(readFileSync(runDir(base, seeded[0]!, scope).scorePath, "utf8"));
+    expect(score.tenantId).toBe("platform-dev");
+    expect(readLedger(base, scope).map((entry) => entry.tenantId)).toEqual([
+      "platform-dev",
+      "platform-dev",
+    ]);
+  });
+
   it("views trajectories", async () => {
     const base = mkdtempSync(join(tmpdir(), "harness-view-"));
     dirs.push(base);
@@ -187,6 +210,64 @@ describe("harness", () => {
     expect(() => runDir(base, "../outside")).toThrow(/Invalid run id/);
     expect(() => runDir(base, "nested/run")).toThrow(/Invalid run id/);
     expect(runDir(base, "run-1").root).toBe(join(base, "runs", "run-1"));
+  });
+
+  it("namespaces identical run ids by tenant and persists the tenant on scores", async () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-tenant-"));
+    dirs.push(base);
+    const tenantA = { tenantId: "tenant-a" };
+    const tenantB = { tenantId: "tenant-b" };
+
+    let planA = emptyPlan({ kind: "generic", title: "A", goal: "tenant A", agent: "shared" });
+    planA = addStep(planA, {
+      title: "Echo A",
+      action: "harness.echo",
+      successCriteria: ["stdout contains tenant A"],
+      notes: "tenant A",
+    });
+    let planB = emptyPlan({ kind: "generic", title: "B", goal: "tenant B", agent: "shared" });
+    planB = addStep(planB, {
+      title: "Echo B",
+      action: "harness.echo",
+      successCriteria: ["stdout contains tenant B"],
+      notes: "tenant B",
+    });
+
+    const a = await executePlan({ baseDir: base, runId: "same-run", plan: planA, scope: tenantA });
+    const b = await executePlan({ baseDir: base, runId: "same-run", plan: planB, scope: tenantB });
+
+    expect(a.paths.root).not.toBe(b.paths.root);
+    expect(a.score.tenantId).toBe("tenant-a");
+    expect(b.score.tenantId).toBe("tenant-b");
+    expect(getPlan(base, "same-run", tenantA).title).toBe("A");
+    expect(getPlan(base, "same-run", tenantB).title).toBe("B");
+    expect(listPlans(base, tenantA).map((item) => item.runId)).toEqual(["same-run"]);
+    expect(listTrajectories(base, tenantB).map((item) => item.runId)).toEqual(["same-run"]);
+  });
+
+  it("keeps the legacy unscoped layout explicit and rejects blank tenant scopes", () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-scope-"));
+    dirs.push(base);
+    expect(runDir(base, "legacy-run").root).toBe(join(base, "runs", "legacy-run"));
+    expect(() => runDir(base, "run-1", { tenantId: " " })).toThrow(/tenant scope required/i);
+    expect(() => listPlans(base, { tenantId: "" })).toThrow(/tenant scope required/i);
+  });
+
+  it("contains path-shaped tenant ids inside an opaque namespace", () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-hostile-tenant-"));
+    dirs.push(base);
+    const paths = runDir(base, "run-1", { tenantId: "../../other/tenant" });
+    expect(paths.root.startsWith(join(base, "tenant-runs"))).toBe(true);
+    expect(paths.root).not.toContain("other");
+    expect(paths.root).not.toContain("tenant\\run-1");
+  });
+
+  it("does not expose tenant namespaces as legacy unscoped runs", async () => {
+    const base = mkdtempSync(join(tmpdir(), "harness-legacy-list-"));
+    dirs.push(base);
+    await helloWorldRun(base, { tenantId: "tenant-a" });
+    expect(listTrajectories(base)).toEqual([]);
+    expect(listPlans(base)).toEqual([]);
   });
 
   it("runs real specialist tools not stub_ok", async () => {

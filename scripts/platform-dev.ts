@@ -23,12 +23,13 @@ async function main() {
   console.log("=== Mendpoint Shared Platform P0 bring-up ===\n");
   resetLatencySamples();
 
-  const platform = createPlatform({ tenantId: "platform-dev" });
+  const scope = { tenantId: "platform-dev" };
+  const platform = createPlatform(scope);
   console.log("1) Graph-RAG stats:");
   console.log("  ", platform.graphQuery({ op: "stats" }).summary);
 
   console.log("\n2) Harness hello world (plan + sandbox + trajectory):");
-  const hello = await helloWorldRun(root);
+  const hello = await helloWorldRun(root, scope);
   console.log("  runId=", hello.runId, "ok=", hello.ok);
   console.log("  artifacts=", hello.paths.root);
 
@@ -75,7 +76,7 @@ async function main() {
       seedDogfoodScores(root, need, {
         okRate: 0.6,
         prefix: `platform-dev-seed-${Date.now().toString(36)}`,
-      });
+      }, scope);
       console.log(
         `  seeded ${need} synthetic scores (marked synthetic; excluded from the real day-90 gate)`,
       );

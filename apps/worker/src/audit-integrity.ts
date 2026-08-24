@@ -49,6 +49,7 @@ export function checkAuditIntegrityForAllTenants(db: AppDb): AuditIntegritySumma
       severity: "critical",
       source: "audit-integrity",
       message: `Audit chain broken for tenant ${failure.tenantId}: ${failure.error}`,
+      tenantId: failure.tenantId,
       data: failure,
     });
     console.error(

@@ -78,7 +78,6 @@ import {
   getTenant,
   getTenantBySlug,
   getPrincipal,
-  insertTenant,
   updateTenantPlan,
   tenantToApi,
   upsertGitHubInstallation,
@@ -168,9 +167,7 @@ import {
   createVmSandbox,
   vmStatusReport,
   startLiveSandbox,
-  recentAlerts,
   evaluateLatencyAlerts,
-  evaluateDogfoodAlerts,
   parsePrincipalFromHeaders,
   can,
   canMutateSystemCatalog,
@@ -204,16 +201,6 @@ import {
   GraphQuerySchema,
   type GraphTenantScope,
 } from "@mendpoint/graph-learn";
-import {
-  collectDogfood,
-  formatDogfoodReport,
-  listTrajectories,
-  viewTrajectory,
-  listPlans,
-  getPlan,
-  savePlanHitl,
-  type PlanPatch,
-} from "@mendpoint/harness";
 import {
   resolveCiHarnessEvidence,
   type CiHarnessEvidence,
@@ -309,6 +296,8 @@ import { createDashboardRoutes } from "./dashboard-routes.js";
 import { createLearningConsentRoutes } from "./learning-consent-routes.js";
 import { createOrganizationMemoryRoutes } from "./organization-memory-routes.js";
 import { createPlatformSandboxRoutes } from "./platform-sandbox.js";
+import { createPlatformStateRoutes } from "./platform-state-routes.js";
+import { createTenantCreationRoutes } from "./tenant-creation-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { regaugeProductionBootstrapInputFromEnvironment } from "./regauge-production-bootstrap-runtime.js";
 import { observeDedicatedRegaugeCompletionInShadow } from "./regauge-verifier-shadow.js";
@@ -1369,6 +1358,7 @@ app.get("/graph-learn/slo", (c) => {
   evaluateLatencyAlerts({
     ok: check.ok,
     violations: check.violations,
+    tenantId: requestTenantId(c),
   });
   return c.json(check);
 });
@@ -1576,53 +1566,7 @@ app.post("/platform/scm/snapshots/purge", async (c) => {
   return c.json(result);
 });
 
-app.get("/platform/alerts", (c) => c.json({ alerts: recentAlerts(50) }));
-
-app.get("/platform/dogfood", (c) => {
-  const baseDir = process.cwd();
-  const report = collectDogfood(baseDir);
-  evaluateDogfoodAlerts(report);
-  return c.json({ ...report, markdown: formatDogfoodReport(report) });
-});
-
-app.get("/platform/trajectories", (c) => {
-  return c.json({ runs: listTrajectories(process.cwd()) });
-});
-
-app.get("/platform/trajectories/:runId", (c) => {
-  const text = viewTrajectory(process.cwd(), c.req.param("runId"));
-  return c.json({ runId: c.req.param("runId"), text });
-});
-
-app.get("/platform/plans", (c) => {
-  return c.json({ plans: listPlans(process.cwd()) });
-});
-
-app.get("/platform/plans/:runId", (c) => {
-  try {
-    const plan = getPlan(process.cwd(), c.req.param("runId"));
-    return c.json(plan);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") {
-      return c.json({ error: "not_found", requestId: c.get("requestId") }, 404);
-    }
-    return internalErrorResponse(c, e);
-  }
-});
-
-app.patch("/platform/plans/:runId", async (c) => {
-  const principal = c.get("principal");
-  if (!principal || !can(principal, "plan:edit")) {
-    return c.json({ error: "rbac_denied", need: "plan:edit" }, 403);
-  }
-  const patch = (await c.req.json()) as PlanPatch;
-  try {
-    const plan = savePlanHitl(process.cwd(), c.req.param("runId"), patch);
-    return c.json({ ok: true, plan });
-  } catch (e) {
-    return internalErrorResponse(c, e);
-  }
-});
+app.route("/platform", createPlatformStateRoutes());
 
 app.post("/platform/cost/estimate", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
@@ -3651,32 +3595,16 @@ app.get("/tenants/:idOrSlug", (c) => {
   return c.json(tenantToApi(t));
 });
 
-app.post("/tenants", async (c) => {
-  const principal = c.get("principal");
-  if (!principal) return c.json({ error: "unauthorized" }, 401);
-  const body = await c.req.json<{ slug: string; name: string; plan?: string }>();
-  if (!body.slug || !body.name) return c.json({ error: "slug and name required" }, 400);
-  if (getTenantBySlug(db, body.slug)) return c.json({ error: "slug taken" }, 409);
-  const id = newId();
-  const plan = body.plan ?? "free";
-  const planMeta = BILLING_PLANS.find((p) => p.id === plan);
-  insertTenant(db, {
-    id,
-    slug: body.slug,
-    name: body.name,
-    plan,
-    seatLimit: planMeta?.seatLimit ?? 3,
-    createdAt: nowIso(),
-  });
-  requestAudit(c, {
+app.route("/tenants", createTenantCreationRoutes({
+  db,
+  onCreated: (c, tenant) => requestAudit(c, {
     actor: "api",
     action: "tenant.created",
     resourceType: "tenant",
-    resourceId: id,
-    metadata: { slug: body.slug, plan },
-  });
-  return c.json(tenantToApi(getTenant(db, id)!), 201);
-});
+    resourceId: tenant.id,
+    metadata: { slug: tenant.slug, plan: tenant.plan },
+  }),
+}));
 
 app.post("/tenants/:id/plan", async (c) => {
   const principal = c.get("principal");
