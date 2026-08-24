@@ -110,8 +110,8 @@ jobs:
           # Remove either and this refuses, so no receipt is minted unmonitored.
           engine=".github/workflows/sandbox-egress-acceptance.yml"
           grep -q "issues: write" "$engine"
-          grep -q "name: Alert on renewal failure" "$engine"
-          grep -q "if: \${{ failure() }}" "$engine"
+          grep -qE '^      - name: Alert on renewal failure$' "$engine"
+          grep -A1 -E '^      - name: Alert on renewal failure$' "$engine" | grep -qE 'failure\(\)'
           required=(
             SANDBOX_FLY_API_TOKEN ROTATION_FLY_API_TOKEN
             MENDPOINT_SANDBOX_EGRESS_SIGNING_KEY_PKCS8_BASE64
