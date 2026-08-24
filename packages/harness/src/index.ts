@@ -7,6 +7,7 @@ export {
   loadPlan,
   savePlan,
   runExists,
+  runDirectoryExists,
   runsDir,
 } from "./trajectory.js";
 

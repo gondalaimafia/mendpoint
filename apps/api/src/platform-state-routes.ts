@@ -5,6 +5,7 @@ import {
   getPlan,
   listPlans,
   listTrajectories,
+  runDirectoryExists,
   runExists,
   savePlanHitl,
   viewTrajectory,
@@ -68,7 +69,7 @@ export function createPlatformStateRoutes(
     const runId = c.req.param("runId");
     const scope = { tenantId: principal.tenantId };
     try {
-      if (!runExists(baseDir, runId, scope)) {
+      if (!runDirectoryExists(baseDir, runId, scope)) {
         return c.json(notFound(c.get("requestId")), 404);
       }
       return c.json({ runId, text: viewTrajectory(baseDir, runId, undefined, scope) });

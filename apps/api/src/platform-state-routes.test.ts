@@ -1,10 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { addStep, emptyPlan } from "@mendpoint/orchestrator";
-import { executePlan } from "@mendpoint/harness";
+import { executePlan, runDir } from "@mendpoint/harness";
 import { clearAlerts, emitAlert, setAlertPersistPath, type Principal } from "@mendpoint/platform";
 import { createPlatformStateRoutes } from "./platform-state-routes.js";
 import type { ApiEnv } from "./auth.js";
@@ -96,5 +96,37 @@ describe("platform state routes", () => {
     const system = await appFor(baseDir, { id: "sys", tenantId: "tenant_default", role: "owner" }).request("/platform/alerts");
     const systemBody = await system.json() as { alerts: Array<{ message: string }> };
     expect(systemBody.alerts.map((alert) => alert.message)).toEqual(["legacy", "a", "b"]);
+  });
+
+  it("lists and renders a tenant-owned score-only trajectory", async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), "platform-score-only-"));
+    dirs.push(baseDir);
+    const scope = { tenantId: "tenant-a" };
+    const paths = runDir(baseDir, "score-only", scope);
+    mkdirSync(paths.root, { recursive: true });
+    writeFileSync(paths.scorePath, JSON.stringify({
+      runId: "score-only",
+      tenantId: "tenant-a",
+      ok: true,
+      stepsTotal: 0,
+      stepsDone: 0,
+      stepsFailed: 0,
+      recoveredFromFailure: false,
+      durationMs: 1,
+    }), "utf8");
+    const app = appFor(baseDir, { id: "a", tenantId: "tenant-a", role: "viewer" });
+
+    const list = await app.request("/platform/trajectories");
+    const body = await list.json() as { runs: Array<{ runId: string; hasPlan: boolean }> };
+    expect(body.runs).toContainEqual(expect.objectContaining({ runId: "score-only", hasPlan: false }));
+
+    const detail = await app.request("/platform/trajectories/score-only");
+    expect(detail.status).toBe(200);
+    const detailBody = await detail.json() as { text: string };
+    expect(detailBody.text).toContain("score.json");
+    expect(detailBody.text).toContain("tenant-a");
+
+    const invalid = await app.request("/platform/trajectories/invalid!");
+    expect(invalid.status).toBe(404);
   });
 });

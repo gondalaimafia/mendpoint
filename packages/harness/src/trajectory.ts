@@ -137,3 +137,11 @@ export function runExists(
 ): boolean {
   return existsSync(runDir(baseDir, runId, scope).planPath);
 }
+
+export function runDirectoryExists(
+  baseDir: string,
+  runId: string,
+  scope?: HarnessTenantScope,
+): boolean {
+  return existsSync(runDir(baseDir, runId, scope).root);
+}
