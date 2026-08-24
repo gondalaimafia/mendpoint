@@ -927,6 +927,9 @@ CREATE TABLE IF NOT EXISTS mission_decisions (
   supersedes_id TEXT REFERENCES mission_decisions(id),
   content_digest TEXT NOT NULL CHECK (length(content_digest) = 64),
   created_at TEXT NOT NULL,
+  -- §8.19 annotation. Nullable, not in the content digest: existing rows keep
+  -- their id. ALTER ADD COLUMN does not fire the append-only UPDATE trigger.
+  decision_type TEXT,
   FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id)
 );
 CREATE INDEX IF NOT EXISTS mission_decisions_mission_idx
@@ -959,6 +962,9 @@ CREATE TABLE IF NOT EXISTS mission_exceptions (
   supersedes_id TEXT REFERENCES mission_exceptions(id),
   content_digest TEXT NOT NULL CHECK (length(content_digest) = 64),
   created_at TEXT NOT NULL,
+  -- §8.20 annotations. Nullable, not in the content digest.
+  task_id TEXT,
+  category TEXT,
   FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id),
   FOREIGN KEY (observed_snapshot_id, tenant_id) REFERENCES repository_snapshots(id, tenant_id),
   -- A context-bound exception carries both snapshot-identity fields; a
@@ -1047,6 +1053,9 @@ CREATE TABLE IF NOT EXISTS mission_artifacts (
   producer_principal_id TEXT NOT NULL REFERENCES principals(id),
   content_digest TEXT NOT NULL CHECK (length(content_digest) = 64),
   created_at TEXT NOT NULL,
+  -- §8.21 annotations. Nullable, not in the content digest.
+  task_id TEXT,
+  source_snapshot TEXT,
   FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id),
   FOREIGN KEY (artifact_id, tenant_id) REFERENCES artifact_manifests(id, tenant_id),
   -- One registration per (mission, role, artifact): an artifact fills a role once.
@@ -2705,6 +2714,14 @@ function migrateProvidersFeedColumns(db: AppDb) {
       name: "executed_executor_id",
       sql: "TEXT",
     },
+    // §8.19–8.21 annotations. Nullable TEXT, no default. Not part of any
+    // content digest, so existing append-only rows keep their ids. ALTER ADD
+    // COLUMN does not fire the no-update triggers.
+    { table: "mission_decisions", name: "decision_type", sql: "TEXT" },
+    { table: "mission_exceptions", name: "task_id", sql: "TEXT" },
+    { table: "mission_exceptions", name: "category", sql: "TEXT" },
+    { table: "mission_artifacts", name: "task_id", sql: "TEXT" },
+    { table: "mission_artifacts", name: "source_snapshot", sql: "TEXT" },
   ];
   const addedColumns = new Set<string>();
   for (const column of additiveColumns) {

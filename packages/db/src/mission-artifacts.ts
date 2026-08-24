@@ -78,6 +78,8 @@ export type MissionArtifact = Readonly<{
   producerPrincipalId: string;
   contentDigest: string;
   createdAt: string;
+  taskId: string | null;
+  sourceSnapshot: string | null;
 }>;
 
 export type MissionArtifactLineageEdge = Readonly<{
@@ -104,6 +106,8 @@ type MissionArtifactRow = {
   producer_principal_id: string;
   content_digest: string;
   created_at: string;
+  task_id: string | null;
+  source_snapshot: string | null;
 };
 
 type MissionArtifactLineageRow = {
@@ -188,6 +192,8 @@ function hydrateArtifact(row: MissionArtifactRow): MissionArtifact {
     producerPrincipalId: row.producer_principal_id,
     contentDigest: row.content_digest,
     createdAt: row.created_at,
+    taskId: row.task_id ?? null,
+    sourceSnapshot: row.source_snapshot ?? null,
   });
 }
 
@@ -253,6 +259,8 @@ export function registerMissionArtifact(db: AppDb, input: {
   correlationId: string;
   causationId?: string | null;
   createdAt: string;
+  taskId?: string | null;
+  sourceSnapshot?: string | null;
 }): MissionArtifact {
   const role = assertRole(input.role);
   const label = boundedText(input.label, "mission_artifact_label_invalid", MAX_LABEL);
@@ -291,10 +299,12 @@ export function registerMissionArtifact(db: AppDb, input: {
     if (claimed) throw new Error("mission_artifact_already_registered");
     db.raw.prepare(`INSERT INTO mission_artifacts
       (id, tenant_id, mission_id, role, artifact_id, artifact_sha256, label,
-       producer_principal_id, content_digest, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+       producer_principal_id, content_digest, created_at, task_id, source_snapshot)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       digest, input.tenantId, input.missionId, role, input.artifactId, artifactSha256, label,
-      input.producerPrincipalId, digest, createdAt);
+      input.producerPrincipalId, digest, createdAt,
+      input.taskId ? boundedText(input.taskId, "mission_artifact_task_id_invalid", 256) : null,
+      input.sourceSnapshot ? boundedText(input.sourceSnapshot, "mission_artifact_source_snapshot_invalid", 256) : null);
     appendDomainEvent(db, {
       id: `mission-artifact:${digest}`,
       tenantId: input.tenantId,
