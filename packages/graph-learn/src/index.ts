@@ -58,6 +58,12 @@ export {
 } from "./ingest.js";
 
 export {
+  ingestManifestDependencies,
+  type ManifestDependency,
+  type ManifestIngestResult,
+} from "./ingest-manifest-dependencies.js";
+
+export {
   ingestRepositoryEvidence,
   repositorySnapshotNodeId,
   type RepositoryEvidence,
