@@ -49,6 +49,7 @@ export * from "./mission-verification.js";
 export * from "./mission-artifacts.js";
 export * from "./mission-timeline.js";
 export * from "./mission-handoff.js";
+export * from "./mission-task.js";
 export * from "./policy-envelope.js";
 export * from "./task-ownership.js";
 
@@ -1094,6 +1095,69 @@ END;
 CREATE TRIGGER IF NOT EXISTS mission_artifact_lineage_no_delete
 BEFORE DELETE ON mission_artifact_lineage BEGIN
   SELECT RAISE(ABORT, 'mission_artifact_lineage_append_only');
+END;
+
+-- Shared Mission Task engine (spec §6.8). The single work primitive both agents
+-- and humans operate on, so work moves agent -> human -> agent without
+-- reconstructing Mission context. Unlike the append-only record stores above, a
+-- task TRANSITIONS in place under optimistic concurrency (revision), and the
+-- hash-chained domain_events carry the audit trail (mirroring the mission row).
+-- owner_type is the CURRENT owner (null while UNASSIGNED); handoff_reason records
+-- why the last agent/human boundary was crossed; retry_count is the replan
+-- history counter. Brand-new table + a companion dependency-edge table, so both
+-- converge on fresh AND pre-change databases via CREATE TABLE/INDEX IF NOT EXISTS
+-- with no ALTER. The composite FK (tenant_id, mission_id) -> mission(tenant_id,
+-- id) binds every task to a mission of the same tenant.
+CREATE TABLE IF NOT EXISTS mission_task (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  mission_id TEXT NOT NULL,
+  task_type TEXT NOT NULL,
+  acceptance_criteria TEXT NOT NULL,
+  risk TEXT NOT NULL CHECK (risk IN ('low', 'medium', 'high', 'critical')),
+  status TEXT NOT NULL CHECK (status IN (
+    'unassigned', 'agent_assigned', 'agent_working', 'human_review_required',
+    'human_assigned', 'human_working', 'agent_resume', 'complete',
+    'blocked', 'failed', 'cancelled', 'escalated')),
+  owner_type TEXT CHECK (owner_type IN ('agent', 'human')),
+  assigned_principal_id TEXT REFERENCES principals(id),
+  handoff_reason TEXT,
+  retry_count INTEGER NOT NULL CHECK (retry_count >= 0),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id),
+  UNIQUE (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS mission_task_mission_idx
+  ON mission_task(tenant_id, mission_id, status, created_at);
+
+-- Task dependency edges (task depends_on prerequisite). Append-only DAG within a
+-- single mission; a task is READY only when every prerequisite is COMPLETE. Both
+-- endpoints must be tasks of the same (tenant, mission); self-edges are rejected
+-- by CHECK and longer cycles in code.
+CREATE TABLE IF NOT EXISTS mission_task_dependencies (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  mission_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  depends_on_task_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id),
+  FOREIGN KEY (task_id) REFERENCES mission_task(id),
+  FOREIGN KEY (depends_on_task_id) REFERENCES mission_task(id),
+  CHECK (task_id != depends_on_task_id),
+  UNIQUE (tenant_id, task_id, depends_on_task_id)
+);
+CREATE INDEX IF NOT EXISTS mission_task_dependencies_task_idx
+  ON mission_task_dependencies(tenant_id, task_id);
+CREATE TRIGGER IF NOT EXISTS mission_task_dependencies_no_update
+BEFORE UPDATE ON mission_task_dependencies BEGIN
+  SELECT RAISE(ABORT, 'mission_task_dependencies_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS mission_task_dependencies_no_delete
+BEFORE DELETE ON mission_task_dependencies BEGIN
+  SELECT RAISE(ABORT, 'mission_task_dependencies_append_only');
 END;
 
 -- Trajectory capture (Intelligence Ownership Phases 4 + 7). The OBSERVATION layer
