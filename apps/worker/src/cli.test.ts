@@ -733,6 +733,32 @@ describe("worker runtime", () => {
     db.raw.close();
   });
 
+  it("restricts the coordinator advisory drain to verifier jobs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-worker-job-filter-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    enqueueJob(db, {
+      id: "unrelated-pipeline-job",
+      tenantId: "tenant-a",
+      type: "pipeline.fanout",
+      createdAt: nowIso(),
+      payload: { providerSlug: "acme" },
+    });
+
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a",
+      runWardenMaintenance: false,
+      logWhenIdle: false,
+      jobTypes: ["verifier.advisory.verify"],
+      wardenEnv: { DEEPSEEK_VERIFIER_ENABLED: "true" },
+    })).resolves.toEqual({ claimed: 0, succeeded: 0, failed: 0, retried: 0 });
+    expect(listJobs(db, 10, "tenant-a")[0]).toMatchObject({
+      id: "unrelated-pipeline-job",
+      status: "pending",
+    });
+    db.raw.close();
+  });
+
   it("does not claim customer jobs while the global backup fence is active", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-worker-backup-fence-"));
     dirs.push(dir);

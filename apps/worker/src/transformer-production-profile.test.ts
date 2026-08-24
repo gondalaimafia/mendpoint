@@ -49,6 +49,9 @@ describe("Transformer production profile", () => {
     const serverImportIndex = roleEntrypoint.indexOf('import("../apps/api/src/server.ts")');
     expect(roleIndex).toBeGreaterThanOrEqual(0);
     expect(serverImportIndex).toBeGreaterThan(roleIndex);
+    expect(roleEntrypoint).toContain("processJobsOnce");
+    expect(roleEntrypoint).toContain("jobTypes: [VERIFIER_ADVISORY_JOB_TYPE]");
+    expect(roleEntrypoint).toContain("runWardenMaintenance: false");
   });
 
   it.each([

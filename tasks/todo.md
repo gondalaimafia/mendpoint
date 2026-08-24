@@ -2992,16 +2992,22 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 
 ## 2026-08-24 Issue #361: durable ReGauge DeepSeek advisory verification
 
-- [ ] Add red regressions proving ReGauge completion currently calls DeepSeek synchronously, loses failed observations, accepts the `shadow` production mode, and dispatches without an inherited Mission Policy Envelope.
-- [ ] Define one immutable ReGauge verifier Policy Envelope binding from protected nonsecret configuration, bind it at launch, and reconcile the same exact binding before advisory dispatch for already-running Missions.
-- [ ] Persist a content-addressed advisory input plus an identifier-and-digest-only `verifier.advisory.verify` job in one idempotent transaction; keep repository content out of the job payload.
-- [ ] Process advisory jobs through the existing fenced worker queue, rehydrate and verify the content-addressed input, revalidate Mission, repository, snapshot, Policy Envelope, consent, provider, and principal authority, then persist telemetry before completing the job.
-- [ ] Make retries consult verified durable telemetry rather than the pre-call dispatch intent, so a failed provider attempt remains retryable and an already-recorded result never repeats provider work.
-- [ ] Replace active production `shadow` wiring with exact `advisory` mode while preserving behavior-change denial and compatibility aliases only where required for already-built callers.
-- [ ] Update the protected ReGauge workflow and profile contracts for the Policy Envelope binding and advisory mode without granting candidate selection, execution, delivery, merge, or deployment authority.
-- [ ] Run red-first focused tests, affected typechecks, full tests, optimized production build, GA checks, dependency audit, and diff checks.
-- [ ] Complete strict review, publish one PR closing #361 under #350, and obtain passing CI plus reciprocal Claude review before merge-ready.
+- [x] Add red regressions proving ReGauge completion currently calls DeepSeek synchronously, loses failed observations, accepts the `shadow` production mode, and dispatches without an inherited Mission Policy Envelope.
+- [x] Define one immutable ReGauge verifier Policy Envelope binding from protected nonsecret configuration, bind it at launch, and reconcile the same exact binding before advisory dispatch for already-running Missions.
+- [x] Persist a content-addressed advisory input plus an identifier-and-digest-only `verifier.advisory.verify` job in one idempotent transaction; keep repository content out of the job payload.
+- [x] Process advisory jobs through the existing fenced worker queue, rehydrate and verify the content-addressed input, revalidate Mission, repository, snapshot, Policy Envelope, consent, provider, and principal authority, then persist telemetry before completing the job.
+- [x] Drain the advisory queue from the volume-owning production coordinator, restricted to `verifier.advisory.verify`, because the execution worker intentionally has no coordinator volume.
+- [x] Make retries consult verified durable telemetry rather than the pre-call dispatch intent, so a failed provider attempt remains retryable and an already-recorded result never repeats provider work.
+- [x] Replace active production `shadow` wiring with exact `advisory` mode while preserving behavior-change denial and compatibility aliases only where required for already-built callers.
+- [x] Update the protected ReGauge workflow and profile contracts for the Policy Envelope binding and advisory mode without granting candidate selection, execution, delivery, merge, or deployment authority.
+- [x] Run red-first focused tests, affected typechecks, full tests, optimized production build, GA checks, dependency audit, and diff checks.
+- [x] Complete strict local review with no remaining P0 or P1 findings.
+- [ ] Publish one PR closing #361 under #350, then obtain passing CI plus reciprocal Claude review before merge-ready.
 
 ### Review
 
-- Pending implementation and verification.
+- RED: the original completion hook called the provider in process, treated dispatch intent as a replay terminal, accepted production `shadow`, had no inherited Policy Envelope, and left a coordinator-owned durable queue invisible to the volume-free execution worker.
+- GREEN: exact completion now persists a content-addressed input and identifier-only job. The mounted coordinator drains only `verifier.advisory.verify`; an allowlist regression proves unrelated jobs remain pending. Provider telemetry is validated and durable before job completion, while transient provider failures remain retryable.
+- Authority: the exact Mission, repository, snapshot, branch, immutable Policy Envelope, service principal, append-only tenant consent, governance entry, processing region, DeepSeek V4 Flash backend, and advisory-only no-behavior-change result are revalidated. Consent expires no later than 2026-11-20T23:59:59.000Z.
+- Review fix: final architecture review caught the P1 volume boundary before push. The coordinator-side drain keeps the execution worker volume-free and uses the existing fenced job lifecycle without allowing the coordinator to claim pipeline, repair, delivery, learning, or campaign-execution jobs.
+- Verification: the final full repository test suite passed on current `main`, including 444 Transformer, 482 API, 459 worker, and 169 script tests. Full typecheck, the 50-route optimized production build, GA checks, YAML parsing, diff integrity, and the production audit with zero vulnerabilities passed. After the queue-boundary fix, the 137-test affected integration matrix passed; final full-tree gates are being rerun before push.

@@ -2557,6 +2557,8 @@ async function processJobsOnceUnfenced(
     maxRunningPerTenant?: number;
     shouldContinue?: () => boolean;
     runWardenMaintenance?: boolean;
+    jobTypes?: readonly string[];
+    logWhenIdle?: boolean;
     wardenPlanner?: AgentPlanner;
     wardenEnv?: NodeJS.ProcessEnv;
     pipelineRunner?: typeof runChangePipeline;
@@ -2584,8 +2586,11 @@ async function processJobsOnceUnfenced(
 ): Promise<JobDrainResult> {
   const workerId = opts.workerId ?? WORKER_ID;
   const workerEnv = opts.wardenEnv ?? process.env;
-  const delegatedPrVerification = opts.delegatedPrVerification ??
-    delegatedPrVerificationRuntimeFromEnv(db, workerEnv, workerId);
+  const delegatedPrVerification = opts.jobTypes &&
+      !opts.jobTypes.includes(DELEGATED_PR_VERIFICATION_JOB_TYPE)
+    ? undefined
+    : opts.delegatedPrVerification ??
+      delegatedPrVerificationRuntimeFromEnv(db, workerEnv, workerId);
   const leaseMs = parseLeaseMs(opts.leaseMs ?? process.env.JOB_LEASE_MS);
   const maxJobs = Math.max(1, Math.min(opts.maxJobs ?? 25, 100));
   const result: JobDrainResult = {
@@ -2613,22 +2618,27 @@ async function processJobsOnceUnfenced(
       );
     }
   }
+  const supportedTypes = ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver",
+    "warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update",
+    "fettler.pr.review", "transformer.adaptive.deliver", LEARNING_OUTCOME_RESOLVE_JOB_TYPE];
+  if (workerEnv.DEEPSEEK_VERIFIER_ENABLED?.trim() === "true") {
+    supportedTypes.push(VERIFIER_ADVISORY_JOB_TYPE);
+  }
+  if (delegatedPrVerification?.candidateDependencies.enabled === true &&
+      delegatedPrVerification.verificationDependencies.enabled === true) {
+    supportedTypes.push(DELEGATED_PR_VERIFICATION_JOB_TYPE);
+  }
+  // Only claim campaign-execute jobs when this worker has the production
+  // execution dependencies; otherwise leave them for a worker that does.
+  if (opts.wardenCampaignExecution) {
+    supportedTypes.push(WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE);
+  }
+  const claimedTypes = opts.jobTypes === undefined ? supportedTypes : [...opts.jobTypes];
+  if (claimedTypes.length === 0 || new Set(claimedTypes).size !== claimedTypes.length ||
+      claimedTypes.some((type) => !supportedTypes.includes(type))) {
+    throw new Error("worker_job_type_filter_invalid");
+  }
   for (; result.claimed < maxJobs && opts.shouldContinue?.() !== false; ) {
-    const claimedTypes = ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver",
-      "warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update",
-      "fettler.pr.review", "transformer.adaptive.deliver", LEARNING_OUTCOME_RESOLVE_JOB_TYPE];
-    if (workerEnv.DEEPSEEK_VERIFIER_ENABLED?.trim() === "true") {
-      claimedTypes.push(VERIFIER_ADVISORY_JOB_TYPE);
-    }
-    if (delegatedPrVerification?.candidateDependencies.enabled === true &&
-        delegatedPrVerification.verificationDependencies.enabled === true) {
-      claimedTypes.push(DELEGATED_PR_VERIFICATION_JOB_TYPE);
-    }
-    // Only claim campaign-execute jobs when this worker has the production
-    // execution dependencies; otherwise leave them for a worker that does.
-    if (opts.wardenCampaignExecution) {
-      claimedTypes.push(WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE);
-    }
     const job = claimNextJob(
       db,
       claimedTypes,
@@ -3890,7 +3900,7 @@ async function processJobsOnceUnfenced(
       opts.onActiveJob?.(null);
     }
   }
-  if (!result.claimed) console.log("No pending jobs");
+  if (!result.claimed && opts.logWhenIdle !== false) console.log("No pending jobs");
   return result;
 }
 
