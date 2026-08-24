@@ -34,6 +34,49 @@ export interface FieldRename {
  * rename applies (the executor then fails closed on an empty edit set). */
 export type DeriveFieldRename = (source: WardenSourceEnvelope) => FieldRename | null;
 
+/** A single OpenAPI diff entry (structural subset this recipe reads). */
+export interface DiffRenameEntry {
+  readonly op: string;
+  readonly fromField?: string;
+  readonly toField?: string;
+}
+
+const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/**
+ * Extract UNAMBIGUOUS field renames from an OpenAPI diff. Only the explicit
+ * `*_field_renamed` ops carry a rename (`fromField` -> `toField`); this refuses a
+ * type change (which the lossy taxonomy signal cannot distinguish from a rename)
+ * and requires both sides to be real identifiers and to differ. Deduplicated and
+ * order-stable. This is the correct rename source — the diff — captured at
+ * enqueue time when both spec versions are in hand, not the persisted artifact.
+ */
+export function extractFieldRenames(entries: readonly DiffRenameEntry[]): FieldRename[] {
+  const seen = new Set<string>();
+  const renames: FieldRename[] = [];
+  for (const entry of entries) {
+    if (entry.op !== "request_field_renamed" && entry.op !== "response_field_renamed") continue;
+    const from = entry.fromField;
+    const to = entry.toField;
+    if (!from || !to || from === to || !IDENTIFIER.test(from) || !IDENTIFIER.test(to)) continue;
+    const key = `${from}\0${to}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    renames.push({ from, to });
+  }
+  return renames;
+}
+
+/**
+ * A deriver that returns a rename carried in the campaign job payload (extracted
+ * from the diff at enqueue time), independent of the envelope. Returns the first
+ * rename, or null when none was carried (the executor then fails closed).
+ */
+export function payloadRenameDeriver(renames: readonly FieldRename[]): DeriveFieldRename {
+  const first = renames[0] ?? null;
+  return () => first;
+}
+
 const SKIP_DIRS = new Set(["node_modules", ".git", ".hg", "dist", "build", "coverage"]);
 const TEXT_EXTENSIONS = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".java", ".rb", ".rs",

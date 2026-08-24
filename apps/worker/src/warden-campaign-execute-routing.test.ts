@@ -54,7 +54,7 @@ describe("warden.campaign.execute-target loop routing", () => {
     const execute = (async () => ({ stage: "review" }) as Awaited<ReturnType<WardenCampaignExecutor>>) as WardenCampaignExecutor;
     const result = await processJobsOnce(db, {
       allTenants: true, runWardenMaintenance: false,
-      wardenCampaignExecution: { dependencies: deps, execute },
+      wardenCampaignExecution: { resolveDependencies: () => deps, execute },
     });
     expect(result).toMatchObject({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
     expect(listJobs(db, 10, "tenant-a")[0]).toMatchObject({ id: "job-exec-1", status: "done" });
@@ -68,7 +68,7 @@ describe("warden.campaign.execute-target loop routing", () => {
     }) as WardenCampaignExecutor;
     const result = await processJobsOnce(db, {
       allTenants: true, runWardenMaintenance: false,
-      wardenCampaignExecution: { dependencies: deps, execute },
+      wardenCampaignExecution: { resolveDependencies: () => deps, execute },
     });
     expect(result).toMatchObject({ claimed: 1, succeeded: 0, failed: 1, retried: 1 });
     expect(listJobs(db, 10, "tenant-a")[0]).toMatchObject({ id: "job-exec-1", status: "pending" });
@@ -82,7 +82,7 @@ describe("warden.campaign.execute-target loop routing", () => {
     }) as WardenCampaignExecutor;
     const result = await processJobsOnce(db, {
       allTenants: true, runWardenMaintenance: false,
-      wardenCampaignExecution: { dependencies: deps, execute },
+      wardenCampaignExecution: { resolveDependencies: () => deps, execute },
     });
     expect(result).toMatchObject({ claimed: 1, succeeded: 0, failed: 1 });
     const job = listJobs(db, 10, "tenant-a")[0];
