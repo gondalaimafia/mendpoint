@@ -4121,6 +4121,7 @@ export {
   claimReadyWardenTargets,
   createWardenCampaign,
   getWardenCampaign,
+  getWardenCampaignTarget,
   getWardenRolloutDecision,
   listWardenCampaignTargets,
   planWardenRollout,

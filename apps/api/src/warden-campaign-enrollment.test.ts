@@ -17,7 +17,9 @@ import {
   insertPrincipal,
   insertRepositorySnapshot,
   listAudit,
+  listMissionTasks,
   listWardenCampaignTargets,
+  fettlerCampaignMissionTaskId,
   putTenantMembership,
   resolveMissionForFettlerCampaign,
   upsertScmConnection,
@@ -295,6 +297,8 @@ describe("Warden campaign org enrollment", () => {
     expect(body.enrolled).toHaveLength(0);
     expect(body.skipped.find((s) => s.remoteId === "200")?.reason).toBe("already_enrolled");
     expect(listWardenCampaignTargets(db, "tenant-a", "campaign-a")).toHaveLength(1);
+    const mission = resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a");
+    expect(listMissionTasks(db, "tenant-a", mission!.id)).toHaveLength(1);
   });
 
   it("creates and campaign-links a Fettler Mission on enrollment", async () => {
@@ -312,9 +316,18 @@ describe("Warden campaign org enrollment", () => {
       ownerPrincipalId: "trust-tenant-a-writer-a",
     });
 
+    expect(listMissionTasks(db, "tenant-a", mission!.id)).toEqual([
+      expect.objectContaining({
+        id: fettlerCampaignMissionTaskId(mission!.id, "repository-a"),
+        taskType: "code_migration",
+        status: "unassigned",
+      }),
+    ]);
+
     // Idempotent: a second enrollment resolves the same Mission, not a new one.
     expect((await enroll(app)).status).toBe(200);
     expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")?.id).toBe(mission!.id);
+    expect(listMissionTasks(db, "tenant-a", mission!.id)).toHaveLength(1);
   });
 
   it("POST /fettler/campaigns/:id/start plans a conservative rollout and marks the campaign running", async () => {

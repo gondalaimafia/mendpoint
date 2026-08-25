@@ -10,6 +10,7 @@ import {
   getMissionTask,
   insertPrincipal,
   listMissionTasks,
+  fettlerCampaignMissionTaskId,
   missionTaskReady,
   regaugeLaunchMissionTaskId,
   transitionMissionTask,
@@ -66,6 +67,20 @@ describe("mission task engine", () => {
       regaugeLaunchMissionTaskId("mission-a", "repo-b"),
     );
     expect(regaugeLaunchMissionTaskId("mission-a")).toMatch(/^mt-regauge-[0-9a-f]{24}$/);
+  });
+
+  it("derives a stable Fettler campaign task id from mission and optional repository", () => {
+    expect(fettlerCampaignMissionTaskId("mission-a")).toBe(fettlerCampaignMissionTaskId("mission-a"));
+    expect(fettlerCampaignMissionTaskId("mission-a", "repo-a")).toBe(
+      fettlerCampaignMissionTaskId("mission-a", "repo-a"),
+    );
+    expect(fettlerCampaignMissionTaskId("mission-a")).not.toBe(
+      fettlerCampaignMissionTaskId("mission-a", "repo-a"),
+    );
+    expect(fettlerCampaignMissionTaskId("mission-a", "repo-a")).not.toBe(
+      fettlerCampaignMissionTaskId("mission-a", "repo-b"),
+    );
+    expect(fettlerCampaignMissionTaskId("mission-a")).toMatch(/^mt-fettler-[0-9a-f]{24}$/);
   });
 
   it("creates an unassigned task, is idempotent on the id, and conflicts on a changed field", () => {
