@@ -41,6 +41,8 @@ export interface GitHubCheckRun {
   conclusion: string | null;
   head_sha: string;
   html_url: string;
+  details_url?: string | null;
+  app?: { id: number } | null;
 }
 
 export interface GitHubWorkflowRun {
@@ -51,6 +53,14 @@ export interface GitHubWorkflowRun {
   conclusion: string | null;
   head_sha: string;
   html_url: string;
+}
+
+export interface GitHubCommitStatus {
+  id: number;
+  context: string;
+  state: string;
+  target_url: string | null;
+  creator: { login: string; id: number };
 }
 
 export interface GitHubWorkflowJob {
@@ -89,10 +99,20 @@ export interface ProviderResolvedPullRequest {
   remediatesPullRequests: number[];
   authorityRotation?: {
     rotationId: string;
+    kind: "runtime" | "stage_successor" | "activate_successor";
     issuedAt: string;
     expiresAt: string;
     basePolicySha256: string;
     proposedPolicySha256: string;
+    successor?: {
+      workflowPath: string;
+      workflowSha256: string;
+      externalCheckName: string;
+      externalCheckAppId: number;
+      controllerCheckName: string;
+      controllerCheckAppId: number;
+      activationDeadline: string;
+    };
   };
 }
 
@@ -166,6 +186,8 @@ export interface GitHubAuthorityClient {
   listWorkflowRuns(revision: string): Promise<GitHubWorkflowRun[]>;
   listWorkflowJobs(runId: number): Promise<GitHubWorkflowJob[]>;
   listReviews(number: number): Promise<GitHubReview[]>;
+  listCommitStatuses(revision: string): Promise<GitHubCommitStatus[]>;
+  getWorkflowRun(runId: number): Promise<GitHubWorkflowRun>;
   getIssue(number: number): Promise<GitHubIssue>;
 }
 
@@ -264,6 +286,7 @@ function remediationReviewScope(body: string | null): Map<number, string> | null
 
 function authorityRotationAttestation(body: string | null): {
   rotationId: string;
+  kind: "runtime" | "stage_successor" | "activate_successor";
   basePolicySha256: string;
   proposedPolicySha256: string;
 } | null {
@@ -278,13 +301,15 @@ function authorityRotationAttestation(body: string | null): {
     if (/^##\s+/.test(line.trim())) break;
     if (line.trim()) section.push(line.trim());
   }
-  if (section.length !== 3) return null;
+  if (section.length !== 4) return null;
   const rotation = /^- Rotation ID: ([a-z0-9][a-z0-9._-]{7,127})$/.exec(section[0]);
-  const base = /^- Base policy: (sha256:[a-f0-9]{64})$/.exec(section[1]);
-  const proposed = /^- Proposed policy: (sha256:[a-f0-9]{64})$/.exec(section[2]);
-  if (!rotation || !base || !proposed) return null;
+  const transition = /^- Transition: (runtime|stage_successor|activate_successor)$/.exec(section[1]);
+  const base = /^- Base policy: (sha256:[a-f0-9]{64})$/.exec(section[2]);
+  const proposed = /^- Proposed policy: (sha256:[a-f0-9]{64})$/.exec(section[3]);
+  if (!rotation || !transition || !base || !proposed) return null;
   return {
     rotationId: rotation[1],
+    kind: transition[1] as "runtime" | "stage_successor" | "activate_successor",
     basePolicySha256: base[1],
     proposedPolicySha256: proposed[1],
   };
@@ -648,6 +673,7 @@ export async function verifyGitHubClosureAuthority(
           return Boolean(
             attestation &&
             attestation.rotationId === expectedRotation.rotationId &&
+            attestation.kind === expectedRotation.kind &&
             attestation.basePolicySha256 === expectedRotation.basePolicySha256 &&
             attestation.proposedPolicySha256 === expectedRotation.proposedPolicySha256 &&
             Number.isFinite(submittedAt) &&
@@ -671,6 +697,7 @@ export async function verifyGitHubClosureAuthority(
       expectedRotation &&
       (!attestedRotation ||
         attestedRotation.rotationId !== expectedRotation.rotationId ||
+        attestedRotation.kind !== expectedRotation.kind ||
         attestedRotation.basePolicySha256 !== expectedRotation.basePolicySha256 ||
         attestedRotation.proposedPolicySha256 !== expectedRotation.proposedPolicySha256 ||
         !bootstrapReview?.submitted_at ||
@@ -692,6 +719,69 @@ export async function verifyGitHubClosureAuthority(
         String(bootstrap.number),
         "a non-rotation pull request cannot carry authority rotation attestation",
       );
+    }
+    if (expectedRotation?.kind === "activate_successor") {
+      const successor = expectedRotation.successor;
+      if (!successor) {
+        add(
+          issues,
+          "AUTHORITY_SUCCESSOR_DECLARATION_REQUIRED",
+          String(bootstrap.number),
+          "successor activation requires the exact staged workflow and check identity tuple",
+        );
+      } else {
+        const successorCheck = (await client.listCheckRuns(liveBootstrap.head.sha))
+          .filter(
+            (check) =>
+              check.name === successor.externalCheckName &&
+              check.status === "completed" &&
+              check.conclusion === "success" &&
+              check.head_sha === liveBootstrap.head.sha &&
+              check.app?.id === successor.externalCheckAppId,
+          )
+          .sort((left, right) => right.id - left.id)[0];
+        const successorStatus = (await client.listCommitStatuses(liveBootstrap.head.sha))
+          .filter(
+            (status) =>
+              status.context === successor.controllerCheckName &&
+              status.state === "success",
+          )
+          .sort((left, right) => right.id - left.id)[0];
+        const checkRunId = /\/actions\/runs\/(\d+)(?:\/|$)/.exec(
+          successorCheck?.details_url ?? "",
+        )?.[1];
+        const statusRunId = /\/actions\/runs\/(\d+)(?:\/|$)/.exec(
+          successorStatus?.target_url ?? "",
+        )?.[1];
+        if (!successorCheck || !successorStatus || !checkRunId || checkRunId !== statusRunId) {
+          add(
+            issues,
+            "AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED",
+            successor.workflowPath,
+            "successor external and controller results must be successful, exact-head, App-bound, and linked to one workflow run",
+          );
+        } else {
+          const run = await client.getWorkflowRun(Number(checkRunId));
+          if (
+            run.id !== Number(checkRunId) ||
+            run.path.split("@", 1)[0] !== successor.workflowPath ||
+            run.event !== "pull_request_target" ||
+            run.status !== "completed" ||
+            run.conclusion !== "success" ||
+            run.head_sha !== observation.mainRevisionStart
+          ) {
+            add(
+              issues,
+              "AUTHORITY_SUCCESSOR_WORKFLOW_PROVENANCE_INVALID",
+              successor.workflowPath,
+              "successor proof must come from the exact staged default-branch workflow and current base revision",
+            );
+          } else {
+            observation.checkRunIds.push(successorCheck.id);
+            observation.workflowRunIds.push(run.id);
+          }
+        }
+      }
     }
     const attestedRemediationScope = remediationReviewScope(
       bootstrapReview?.body ?? null,
@@ -960,6 +1050,16 @@ export class GitHubRestClient implements GitHubAuthorityClient {
   async listReviews(number: number): Promise<GitHubReview[]> {
     return this.paginate<GitHubReview>(
       `/repos/${this.repository}/pulls/${number}/reviews`,
+    );
+  }
+  async listCommitStatuses(revision: string): Promise<GitHubCommitStatus[]> {
+    return this.paginate<GitHubCommitStatus>(
+      `/repos/${this.repository}/commits/${revision}/statuses`,
+    );
+  }
+  async getWorkflowRun(runId: number): Promise<GitHubWorkflowRun> {
+    return this.request<GitHubWorkflowRun>(
+      `/repos/${this.repository}/actions/runs/${runId}`,
     );
   }
   async getIssue(number: number): Promise<GitHubIssue> {

@@ -11,6 +11,22 @@ export interface AuthorityReviewerIdentity {
   userId: number;
 }
 
+export interface AuthoritySuccessorTuple {
+  workflowPath: string;
+  workflowSha256: string;
+  externalCheckName: string;
+  externalCheckAppId: number;
+  controllerCheckName: string;
+  controllerCheckAppId: number;
+  activationDeadline: string;
+}
+
+export interface AuthoritySuccessorState extends AuthoritySuccessorTuple {
+  phase: "staged" | "active";
+  stagedByRotationId: string;
+  activatedByRotationId: string | null;
+}
+
 export interface ClosureAuthorityPolicy {
   schemaVersion: 1;
   repositoryId: number;
@@ -26,6 +42,7 @@ export interface ClosureAuthorityPolicy {
   legacyBootstrapMatrixDigest: string;
   authorityRotationManifestPath: string;
   authorityRotationAuxiliaryFiles: string[];
+  successor: AuthoritySuccessorState | null;
   trustedReviewers: Record<string, AuthorityReviewerIdentity[]>;
   productionEvidenceAuthorities: unknown[];
   protectedFiles: Record<string, string>;
@@ -40,6 +57,7 @@ export interface AuthorityRotationFileChange {
 }
 
 export interface AuthorityRotationReceipt {
+  kind: "runtime" | "stage_successor" | "activate_successor";
   rotationId: string;
   previousRotationId: string | null;
   baseRevision: string;
@@ -48,6 +66,7 @@ export interface AuthorityRotationReceipt {
   baseLedgerSha256: string;
   basePolicySha256: string;
   proposedPolicySha256: string;
+  successor: AuthoritySuccessorTuple | null;
   changes: AuthorityRotationFileChange[];
 }
 
@@ -117,6 +136,69 @@ function exactReviewerIdentities(policy: ClosureAuthorityPolicy): Set<string> {
       )
       .map((identity) => `${identity.login.trim().toLowerCase()}:${identity.userId}`),
   );
+}
+
+function canonicalTime(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) && new Date(milliseconds).toISOString() === value;
+}
+
+function exactSuccessorTuple(
+  left: AuthoritySuccessorTuple | null | undefined,
+  right: AuthoritySuccessorTuple | null | undefined,
+): boolean {
+  const tuple = (value: AuthoritySuccessorTuple | null | undefined) => value ? {
+    workflowPath: value.workflowPath,
+    workflowSha256: value.workflowSha256,
+    externalCheckName: value.externalCheckName,
+    externalCheckAppId: value.externalCheckAppId,
+    controllerCheckName: value.controllerCheckName,
+    controllerCheckAppId: value.controllerCheckAppId,
+    activationDeadline: value.activationDeadline,
+  } : null;
+  return JSON.stringify(tuple(left)) === JSON.stringify(tuple(right));
+}
+
+function validSuccessorTuple(
+  successor: AuthoritySuccessorTuple | null | undefined,
+): successor is AuthoritySuccessorTuple {
+  return Boolean(
+    successor &&
+    normalizedPath(successor.workflowPath) === successor.workflowPath &&
+    /^\.github\/workflows\/closure-authority-[a-z0-9-]+\.yml$/.test(successor.workflowPath) &&
+    SHA256.test(successor.workflowSha256) &&
+    typeof successor.externalCheckName === "string" &&
+    successor.externalCheckName.trim() &&
+    typeof successor.controllerCheckName === "string" &&
+    successor.controllerCheckName.trim() &&
+    successor.externalCheckName !== successor.controllerCheckName &&
+    Number.isInteger(successor.externalCheckAppId) &&
+    successor.externalCheckAppId > 0 &&
+    Number.isInteger(successor.controllerCheckAppId) &&
+    successor.controllerCheckAppId > 0 &&
+    canonicalTime(successor.activationDeadline)
+  );
+}
+
+function activeIdentity(policy: ClosureAuthorityPolicy): unknown {
+  return {
+    workflowPath: policy.workflowPath,
+    externalCheckName: policy.externalCheckName,
+    externalCheckAppId: policy.externalCheckAppId,
+    controllerCheckName: policy.controllerCheckName,
+    controllerCheckAppId: policy.controllerCheckAppId,
+  };
+}
+
+function successorActiveIdentity(successor: AuthoritySuccessorTuple): unknown {
+  return {
+    workflowPath: successor.workflowPath,
+    externalCheckName: successor.externalCheckName,
+    externalCheckAppId: successor.externalCheckAppId,
+    controllerCheckName: successor.controllerCheckName,
+    controllerCheckAppId: successor.controllerCheckAppId,
+  };
 }
 
 function staticRelativeImports(contents: string): string[] {
@@ -218,14 +300,21 @@ export function verifyAuthorityRotation(
     );
   }
 
+  const transitionKind = receipt.kind;
+  if (!(["runtime", "stage_successor", "activate_successor"] as const).includes(transitionKind)) {
+    add(
+      issues,
+      "AUTHORITY_SUCCESSOR_TRANSITION_INVALID",
+      receipt.rotationId,
+      "every rotation must declare one recognized authority transition kind",
+    );
+  }
+
   const immutableFields: Array<keyof ClosureAuthorityPolicy> = [
     "schemaVersion",
     "repositoryId",
     "repository",
-    "workflowPath",
     "requiredCiWorkflowPath",
-    "externalCheckName",
-    "controllerCheckName",
     "protectionMode",
     "protectionBranch",
     "authorityRotationManifestPath",
@@ -241,6 +330,185 @@ export function verifyAuthorityRotation(
       );
     }
   }
+
+  const activeIdentityChanged =
+    JSON.stringify(activeIdentity(input.basePolicy)) !==
+    JSON.stringify(activeIdentity(input.proposedPolicy));
+  if (transitionKind !== "activate_successor" && activeIdentityChanged) {
+    add(
+      issues,
+      transitionKind === "stage_successor"
+        ? "AUTHORITY_SUCCESSOR_STAGE_ACTIVE_DRIFT"
+        : "AUTHORITY_ROTATION_IDENTITY_DRIFT",
+      input.basePolicy.workflowPath,
+      "the active workflow and check identity cannot change before a staged successor is activated",
+    );
+  }
+
+  if (transitionKind === "runtime") {
+    if (receipt.successor !== null || !exactSuccessorTuple(input.basePolicy.successor, input.proposedPolicy.successor)) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_TRANSITION_INVALID",
+        receipt.rotationId,
+        "a runtime rotation cannot stage, activate, or rewrite successor state",
+      );
+    }
+  } else if (!validSuccessorTuple(receipt.successor)) {
+    add(
+      issues,
+      "AUTHORITY_SUCCESSOR_TUPLE_INVALID",
+      receipt.rotationId,
+      "successor transitions require a normalized pinned workflow, unique checks, positive App IDs, and canonical deadline",
+    );
+  } else if (transitionKind === "stage_successor") {
+    const successor = receipt.successor;
+    const expectedState: AuthoritySuccessorState = {
+      phase: "staged",
+      stagedByRotationId: receipt.rotationId,
+      activatedByRotationId: null,
+      ...successor,
+    };
+    const deadline = Date.parse(successor.activationDeadline);
+    if (
+      input.basePolicy.successor !== null ||
+      JSON.stringify(input.proposedPolicy.successor) !== JSON.stringify(expectedState)
+    ) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_STAGE_STATE_INVALID",
+        receipt.rotationId,
+        "staging must create one exact successor state from an authority with no pending successor",
+      );
+    }
+    if (
+      successor.workflowPath === input.basePolicy.workflowPath ||
+      new Set([
+        input.basePolicy.externalCheckName,
+        input.basePolicy.controllerCheckName,
+        successor.externalCheckName,
+        successor.controllerCheckName,
+      ]).size !== 4
+    ) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_CONTEXT_COLLISION",
+        successor.workflowPath,
+        "the successor workflow and both check contexts must be distinct from the active authority",
+      );
+    }
+    if (
+      deadline < observedAt ||
+      deadline <= issuedAt ||
+      deadline - issuedAt > MAX_ROTATION_VALIDITY_MS
+    ) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_ACTIVATION_DEADLINE_INVALID",
+        receipt.rotationId,
+        "a staged successor must be activated within a canonical seven-day window",
+      );
+    }
+    if (
+      input.proposedPolicy.protectedFiles[successor.workflowPath] !== successor.workflowSha256 ||
+      input.proposedFileDigests.get(successor.workflowPath) !== successor.workflowSha256
+    ) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_WORKFLOW_NOT_PINNED",
+        successor.workflowPath,
+        "the staged successor workflow must be present and pinned to its exact proposal bytes",
+      );
+    }
+    if (
+      input.proposedPolicy.protectedFiles[input.basePolicy.workflowPath] !==
+      input.basePolicy.protectedFiles[input.basePolicy.workflowPath]
+    ) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_PREDECESSOR_NOT_RETAINED",
+        input.basePolicy.workflowPath,
+        "staging must retain the active predecessor workflow unchanged",
+      );
+    }
+  } else if (transitionKind === "activate_successor") {
+    const successor = receipt.successor;
+    const staged = input.basePolicy.successor;
+    const expectedActiveState: AuthoritySuccessorState = {
+      phase: "active",
+      stagedByRotationId: staged?.stagedByRotationId ?? "",
+      activatedByRotationId: receipt.rotationId,
+      ...successor,
+    };
+    if (
+      !staged ||
+      staged.phase !== "staged" ||
+      staged.activatedByRotationId !== null ||
+      baseReceipt?.kind !== "stage_successor" ||
+      baseReceipt.rotationId !== staged.stagedByRotationId ||
+      !exactSuccessorTuple(baseReceipt.successor, successor) ||
+      !exactSuccessorTuple(staged, successor) ||
+      JSON.stringify(input.proposedPolicy.successor) !== JSON.stringify(expectedActiveState)
+    ) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_ACTIVATION_STATE_INVALID",
+        receipt.rotationId,
+        "activation must immediately follow and exactly consume the staged successor state",
+      );
+    }
+    if (JSON.stringify(activeIdentity(input.proposedPolicy)) !== JSON.stringify(successorActiveIdentity(successor))) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_ACTIVATION_IDENTITY_INVALID",
+        receipt.rotationId,
+        "the proposed active workflow and check identity must equal the staged successor tuple",
+      );
+    }
+    if (observedAt > Date.parse(successor.activationDeadline)) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_ACTIVATION_EXPIRED",
+        receipt.rotationId,
+        "successor activation must complete before its staged deadline",
+      );
+    }
+    if (
+      input.basePolicy.protectedFiles[successor.workflowPath] !== successor.workflowSha256 ||
+      input.proposedPolicy.protectedFiles[successor.workflowPath] !== successor.workflowSha256 ||
+      input.proposedFileDigests.get(successor.workflowPath) !== successor.workflowSha256 ||
+      input.changedFiles.some((change) => change.path === successor.workflowPath)
+    ) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_STAGED_BYTES_DRIFT",
+        successor.workflowPath,
+        "activation cannot change the successor bytes that were staged and proven from main",
+      );
+    }
+    if (
+      input.proposedPolicy.protectedFiles[input.basePolicy.workflowPath] !==
+      input.basePolicy.protectedFiles[input.basePolicy.workflowPath]
+    ) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_PREDECESSOR_NOT_RETAINED",
+        input.basePolicy.workflowPath,
+        "activation must retain the predecessor workflow for fail-closed handoff and later cleanup",
+      );
+    }
+    for (const [path, expectedDigest] of Object.entries(input.basePolicy.protectedFiles)) {
+      if (input.proposedPolicy.protectedFiles[path] !== expectedDigest) {
+        add(
+          issues,
+          "AUTHORITY_SUCCESSOR_STAGED_BYTES_DRIFT",
+          path,
+          "activation cannot combine the handoff with changes to staged authority bytes",
+        );
+      }
+    }
+  }
+
   if (input.changedFiles.some((change) => change.path === input.basePolicy.workflowPath)) {
     add(
       issues,

@@ -13,6 +13,7 @@ import {
   type GitHubAuthorityContext,
   type GitHubAuthorityMatrix,
   type GitHubCheckRun,
+  type GitHubCommitStatus,
   type GitHubIssue,
   type GitHubPullRequest,
   type GitHubReview,
@@ -176,6 +177,7 @@ class FixtureClient implements GitHubAuthorityClient {
     conclusion: check.conclusion,
   }));
   trackedReviews = reviews();
+  trackedStatuses: GitHubCommitStatus[] = [];
   trackedIssue = issue();
   failure: Error | null = null;
 
@@ -206,6 +208,14 @@ class FixtureClient implements GitHubAuthorityClient {
   async listReviews(): Promise<GitHubReview[]> {
     if (this.failure) throw this.failure;
     return this.trackedReviews;
+  }
+  async listCommitStatuses(): Promise<GitHubCommitStatus[]> {
+    return this.trackedStatuses;
+  }
+  async getWorkflowRun(runId: number): Promise<GitHubWorkflowRun> {
+    const run = this.trackedWorkflowRuns.find((candidate) => candidate.id === runId);
+    if (!run) throw new Error("workflow run missing");
+    return run;
   }
   async getIssue(): Promise<GitHubIssue> {
     if (this.failure) throw this.failure;
@@ -357,6 +367,7 @@ describe("GitHub production closure authority", () => {
     const configured = matrix();
     configured.releaseTrain.currentPullRequestBootstrap.authorityRotation = {
       rotationId: "rotation-20260825-001",
+      kind: "runtime",
       issuedAt: "2026-08-25T11:00:00.000Z",
       expiresAt: "2026-08-26T11:00:00.000Z",
       basePolicySha256: `sha256:${"1".repeat(64)}`,
@@ -368,6 +379,7 @@ describe("GitHub production closure authority", () => {
         "## Authority rotation attestation",
         "",
         "- Rotation ID: rotation-20260825-001",
+        "- Transition: runtime",
         `- Base policy: sha256:${"1".repeat(64)}`,
         `- Proposed policy: sha256:${"2".repeat(64)}`,
       ].join("\n"),
@@ -386,6 +398,7 @@ describe("GitHub production closure authority", () => {
     const configured = matrix();
     configured.releaseTrain.currentPullRequestBootstrap.authorityRotation = {
       rotationId: "rotation-20260825-001",
+      kind: "runtime",
       issuedAt: "2026-08-25T11:00:00.000Z",
       expiresAt: "2026-08-25T11:30:00.000Z",
       basePolicySha256: `sha256:${"1".repeat(64)}`,
@@ -397,6 +410,7 @@ describe("GitHub production closure authority", () => {
         "## Authority rotation attestation",
         "",
         "- Rotation ID: rotation-20260825-001",
+        "- Transition: runtime",
         `- Base policy: sha256:${"1".repeat(64)}`,
         `- Proposed policy: sha256:${"3".repeat(64)}`,
       ].join("\n"),
@@ -406,6 +420,73 @@ describe("GitHub production closure authority", () => {
     const result = await verifyGitHubClosureAuthority(configured, context(), client);
 
     expect(codes(result)).toContain("AUTHORITY_ROTATION_REVIEW_ATTESTATION_REQUIRED");
+  });
+
+  it("requires a staged successor live run on the activation head and current base", async () => {
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap.authorityRotation = {
+      rotationId: "rotation-20260825-002",
+      kind: "activate_successor",
+      issuedAt: "2026-08-25T11:00:00.000Z",
+      expiresAt: "2026-08-26T11:00:00.000Z",
+      basePolicySha256: `sha256:${"1".repeat(64)}`,
+      proposedPolicySha256: `sha256:${"2".repeat(64)}`,
+      successor: {
+        workflowPath: ".github/workflows/closure-authority-v2.yml",
+        workflowSha256: `sha256:${"3".repeat(64)}`,
+        externalCheckName: "mendpoint-production-closure-authority-v2",
+        externalCheckAppId: 123,
+        controllerCheckName: "mendpoint-production-closure-controller-v2",
+        controllerCheckAppId: 15368,
+        activationDeadline: "2026-08-26T11:00:00.000Z",
+      },
+    };
+    const client = new FixtureClient();
+    client.trackedReviews = reviews({
+      body: [
+        "## Authority rotation attestation",
+        "",
+        "- Rotation ID: rotation-20260825-002",
+        "- Transition: activate_successor",
+        `- Base policy: sha256:${"1".repeat(64)}`,
+        `- Proposed policy: sha256:${"2".repeat(64)}`,
+      ].join("\n"),
+    });
+    client.trackedChecks.push({
+      id: 202,
+      name: "mendpoint-production-closure-authority-v2",
+      status: "completed",
+      conclusion: "success",
+      head_sha: HEAD,
+      html_url: "https://github.com/gondalaimafia/mendpoint/runs/202",
+      details_url: "https://github.com/gondalaimafia/mendpoint/actions/runs/202",
+      app: { id: 123 },
+    });
+    client.trackedStatuses = [{
+      id: 303,
+      context: "mendpoint-production-closure-controller-v2",
+      state: "success",
+      target_url: "https://github.com/gondalaimafia/mendpoint/actions/runs/202",
+      creator: { login: "github-actions[bot]", id: 41898282 },
+    }];
+    client.trackedWorkflowRuns.push({
+      id: 202,
+      path: ".github/workflows/closure-authority-v2.yml@refs/heads/main",
+      event: "pull_request_target",
+      status: "completed",
+      conclusion: "success",
+      head_sha: MAIN,
+      html_url: "https://github.com/gondalaimafia/mendpoint/actions/runs/202",
+    });
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(result.workflowRunIds).toContain(202);
+
+    client.trackedChecks.at(-1)!.app = { id: 999 };
+    const wrongApp = await verifyGitHubClosureAuthority(configured, context(), client);
+    expect(codes(wrongApp)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
   });
 
   it("fails closed when the live open PR set is incomplete", async () => {

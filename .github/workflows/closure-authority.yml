@@ -186,6 +186,22 @@ jobs:
           jq -e --arg context "$controller_name" --argjson app_id "$controller_app_id" \
             '[.checks[] | select(.context == $context and .app_id == $app_id)] | length == 1' \
             "$RUNNER_TEMP/required-status-checks.json"
+          rotation_kind="$(gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/${GITHUB_REPOSITORY}/contents/docs/PRODUCTION_CLOSURE_MATRIX.json?ref=${PR_HEAD_SHA}" \
+            | jq -r '.releaseTrain.currentPullRequestBootstrap.authorityRotation.kind // "runtime"')"
+          if [ "$rotation_kind" = activate_successor ]; then
+            predecessor_external_name="$(jq -er '.externalCheckName' config/production-closure-authority.json)"
+            predecessor_external_app_id="$(jq -er '.externalCheckAppId | select(type == "number" and . > 0)' config/production-closure-authority.json)"
+            predecessor_controller_name="$(jq -er '.controllerCheckName' config/production-closure-authority.json)"
+            predecessor_controller_app_id="$(jq -er '.controllerCheckAppId | select(type == "number" and . > 0)' config/production-closure-authority.json)"
+            jq -e --arg context "$predecessor_external_name" --argjson app_id "$predecessor_external_app_id" \
+              '[.checks[] | select(.context == $context and .app_id == $app_id)] | length == 1' \
+              "$RUNNER_TEMP/required-status-checks.json"
+            jq -e --arg context "$predecessor_controller_name" --argjson app_id "$predecessor_controller_app_id" \
+              '[.checks[] | select(.context == $context and .app_id == $app_id)] | length == 1' \
+              "$RUNNER_TEMP/required-status-checks.json"
+          fi
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}

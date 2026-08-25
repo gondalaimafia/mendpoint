@@ -3,10 +3,12 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { parse } from "yaml";
 import {
   verifyAuthorityRotation,
   type AuthorityRotationFileChange,
   type AuthorityRotationLedger,
+  type AuthoritySuccessorTuple,
   type ClosureAuthorityPolicy,
 } from "./production-closure-authority-rotation.js";
 import {
@@ -57,10 +59,12 @@ export interface ProposalAuthorityObservation {
   fetchedBlobs: ProposalBlobObservation[];
   authorityRotation: {
     rotationId: string;
+    kind: "runtime" | "stage_successor" | "activate_successor";
     issuedAt: string;
     expiresAt: string;
     basePolicySha256: string;
     proposedPolicySha256: string;
+    successor: AuthoritySuccessorTuple | null;
   } | null;
   verdict: "pass" | "fail";
   issues: ProductionClosureMatrixIssue[];
@@ -225,6 +229,50 @@ function stableAuthorityRotationMatrixView(matrix: ProductionClosureMatrix): unk
   return copy;
 }
 
+function successorWorkflowSafetyIssues(
+  path: string,
+  contents: Buffer | undefined,
+  successor: AuthoritySuccessorTuple,
+): ProductionClosureMatrixIssue[] {
+  const issues: ProductionClosureMatrixIssue[] = [];
+  try {
+    const source = contents?.toString("utf8") ?? "";
+    const workflow = parse(source) as Record<string, unknown>;
+    const triggers = workflow.on as Record<string, unknown> | undefined;
+    const permissions = workflow.permissions as Record<string, unknown> | undefined;
+    const jobs = workflow.jobs as Record<string, { environment?: unknown; steps?: unknown[] }> | undefined;
+    const uses = [...source.matchAll(/^\s*uses:\s*([^\s#]+).*$/gm)].map((match) => match[1]);
+    const checkoutRefs = [...source.matchAll(/uses:\s*actions\/checkout@[a-f0-9]{40}[\s\S]{0,400}?\n\s*ref:\s*([^\r\n]+)/g)]
+      .map((match) => match[1].trim());
+    if (
+      !contents ||
+      !triggers?.pull_request_target ||
+      triggers.pull_request !== undefined ||
+      permissions?.statuses !== "write" ||
+      permissions?.checks !== "read" ||
+      !jobs ||
+      !Object.values(jobs).some((job) => job.environment === "production-closure-authority") ||
+      uses.length === 0 ||
+      uses.some((use) => !/@[a-f0-9]{40}$/.test(use)) ||
+      checkoutRefs.length === 0 ||
+      checkoutRefs.some((ref) => ref !== "${{ needs.discover.outputs.main_sha }}") ||
+      source.includes("github.event.pull_request.head") ||
+      !source.includes(successor.externalCheckName) ||
+      !source.includes(successor.controllerCheckName)
+    ) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_WORKFLOW_UNSAFE",
+        path,
+        "a staged successor must be a pinned default-branch controller with least authority and unique declared checks",
+      );
+    }
+  } catch {
+    add(issues, "AUTHORITY_SUCCESSOR_WORKFLOW_UNSAFE", path, "staged successor workflow YAML is invalid");
+  }
+  return issues;
+}
+
 export async function verifyProductionClosureProposal(
   policy: ClosureAuthorityPolicy,
   repository: string,
@@ -365,7 +413,11 @@ export async function verifyProductionClosureProposal(
       await readProposalPath(path);
     }
     for (const [path, entry] of entries) {
-      if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path) || path === policy.workflowPath) {
+      if (
+        !/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path) ||
+        path === policy.workflowPath ||
+        path === proposedPolicy.successor?.workflowPath
+      ) {
         continue;
       }
       if (entry.type !== "blob") continue;
@@ -500,6 +552,16 @@ export async function verifyProductionClosureProposal(
         proposedPaths: new Set(entries.keys()),
       });
       issues.push(...rotationIssues);
+      const receipt = proposedLedger.rotations?.at(-1) ?? null;
+      if (receipt?.kind === "stage_successor" && receipt.successor) {
+        issues.push(
+          ...successorWorkflowSafetyIssues(
+            receipt.successor.workflowPath,
+            bytesByPath.get(receipt.successor.workflowPath),
+            receipt.successor,
+          ),
+        );
+      }
       try {
         const baseMatrixBytes = await readBasePath("docs/PRODUCTION_CLOSURE_MATRIX.json");
         if (
@@ -522,15 +584,16 @@ export async function verifyProductionClosureProposal(
           "base and proposed closure matrices must remain structurally comparable",
         );
       }
-      const receipt = proposedLedger.rotations?.at(-1) ?? null;
       if (
         !receipt ||
         !bootstrapRotation ||
         bootstrapRotation.rotationId !== receipt.rotationId ||
+        bootstrapRotation.kind !== receipt.kind ||
         bootstrapRotation.issuedAt !== receipt.issuedAt ||
         bootstrapRotation.expiresAt !== receipt.expiresAt ||
         bootstrapRotation.basePolicySha256 !== receipt.basePolicySha256 ||
-        bootstrapRotation.proposedPolicySha256 !== receipt.proposedPolicySha256
+        bootstrapRotation.proposedPolicySha256 !== receipt.proposedPolicySha256 ||
+        JSON.stringify(bootstrapRotation.successor ?? null) !== JSON.stringify(receipt.successor)
       ) {
         add(
           issues,
@@ -541,10 +604,12 @@ export async function verifyProductionClosureProposal(
       } else if (rotationIssues.length === 0) {
         observation.authorityRotation = {
           rotationId: receipt.rotationId,
+          kind: receipt.kind,
           issuedAt: receipt.issuedAt,
           expiresAt: receipt.expiresAt,
           basePolicySha256: receipt.basePolicySha256,
           proposedPolicySha256: receipt.proposedPolicySha256,
+          successor: receipt.successor,
         };
       }
     }

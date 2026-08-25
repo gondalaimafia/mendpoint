@@ -147,10 +147,20 @@ export interface CurrentPullRequestBootstrap {
   remediatesPullRequests: number[];
   authorityRotation?: {
     rotationId: string;
+    kind: "runtime" | "stage_successor" | "activate_successor";
     issuedAt: string;
     expiresAt: string;
     basePolicySha256: string;
     proposedPolicySha256: string;
+    successor?: {
+      workflowPath: string;
+      workflowSha256: string;
+      externalCheckName: string;
+      externalCheckAppId: number;
+      controllerCheckName: string;
+      controllerCheckAppId: number;
+      activationDeadline: string;
+    };
   };
 }
 
@@ -991,10 +1001,24 @@ export function validateProductionClosureMatrix(
     authorityRotation !== undefined &&
     (
       !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(authorityRotation.rotationId) ||
+      !["runtime", "stage_successor", "activate_successor"].includes(authorityRotation.kind) ||
       !canonicalTime(authorityRotation.issuedAt) ||
       !canonicalTime(authorityRotation.expiresAt) ||
       !SHA256.test(authorityRotation.basePolicySha256) ||
-      !SHA256.test(authorityRotation.proposedPolicySha256)
+      !SHA256.test(authorityRotation.proposedPolicySha256) ||
+      (authorityRotation.kind === "runtime" && authorityRotation.successor !== undefined) ||
+      (authorityRotation.kind !== "runtime" && (
+        !authorityRotation.successor ||
+        !/^\.github\/workflows\/closure-authority-[a-z0-9-]+\.yml$/.test(authorityRotation.successor.workflowPath) ||
+        !SHA256.test(authorityRotation.successor.workflowSha256) ||
+        !authorityRotation.successor.externalCheckName?.trim() ||
+        !Number.isInteger(authorityRotation.successor.externalCheckAppId) ||
+        authorityRotation.successor.externalCheckAppId < 1 ||
+        !authorityRotation.successor.controllerCheckName?.trim() ||
+        !Number.isInteger(authorityRotation.successor.controllerCheckAppId) ||
+        authorityRotation.successor.controllerCheckAppId < 1 ||
+        !canonicalTime(authorityRotation.successor.activationDeadline)
+      ))
     )
   ) {
     add(

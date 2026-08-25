@@ -252,6 +252,7 @@ describe("production closure proposal authority", () => {
     const proposedMatrix = JSON.parse(matrixBytes.toString("utf8")) as ProductionClosureMatrix;
     const rotation = {
       rotationId: "rotation-20260825-001",
+      kind: "runtime" as const,
       issuedAt: "2026-08-25T11:00:00.000Z",
       expiresAt: "2026-08-26T11:00:00.000Z",
       basePolicySha256: sha256(authority.policyBytes),
@@ -293,6 +294,7 @@ describe("production closure proposal authority", () => {
         previousRotationId: null,
         baseRevision: BASE,
         baseLedgerSha256: sha256(authority.rotationLedgerBytes),
+        successor: null,
         changes,
       }],
     };
