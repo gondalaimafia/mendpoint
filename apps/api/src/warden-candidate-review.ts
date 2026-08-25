@@ -364,6 +364,7 @@ export function registerWardenCandidateReviewRoutes(
             evidence: [`agent_run:${run.id}`, ...(candidateDigest ? [`candidate:${candidateDigest}`] : [])],
             correlationId: next.runId,
             createdAt: reviewedAt,
+            decisionType: "verification",
           });
         }
         reviewedResult = { ...result, review: { decision: body.decision, rationale: body.rationale,

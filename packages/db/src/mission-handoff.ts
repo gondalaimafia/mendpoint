@@ -31,6 +31,7 @@ import {
   recordMissionDecision,
   supersedeMissionDecision,
   type MissionDecision,
+  type MissionDecisionType,
 } from "./mission-decisions.js";
 import {
   getMissionTask,
@@ -136,9 +137,10 @@ export function openTaskHandoff(
     context: string;
     ownerPrincipalId: string;
     /**
-     * When present, the shared MissionTask is transitioned agent_working →
-     * human_review_required in the same transaction as the blocker. Absent keeps
-     * the pre-task-engine record-only path.
+     * When present: (1) persisted as the exception annotation, and (2) the
+     * shared MissionTask is transitioned agent_working → human_review_required
+     * in the same transaction as the blocker. Absent keeps the pre-task-engine
+     * record-only path.
      */
     taskId?: string;
     observedAgainst?: SnapshotIdentity;
@@ -169,6 +171,8 @@ export function openTaskHandoff(
       correlationId: input.correlationId,
       causationId: input.causationId ?? null,
       createdAt: input.createdAt,
+      category: reason,
+      ...(input.taskId ? { taskId: input.taskId } : {}),
     });
     if (input.taskId) {
       const task = getMissionTask(db, input.tenantId, input.taskId);
@@ -251,6 +255,7 @@ export function resolveTaskHandoff(
       correlationId: input.correlationId,
       causationId: input.causationId ?? null,
       createdAt: input.createdAt,
+      decisionType: "exception_resolution",
     });
     if (input.taskId) {
       const task = getMissionTask(db, input.tenantId, input.taskId);
@@ -298,6 +303,8 @@ export function recordReviewerDirective(
     correlationId: string;
     causationId?: string | null;
     createdAt: string;
+    /** Closed-set label from §8.19. Omitted persists as null. */
+    decisionType?: MissionDecisionType | null;
   },
 ): MissionDecision {
   return recordMissionDecision(db, {
@@ -310,6 +317,7 @@ export function recordReviewerDirective(
     correlationId: input.correlationId,
     causationId: input.causationId ?? null,
     createdAt: input.createdAt,
+    decisionType: input.decisionType ?? null,
   });
 }
 
