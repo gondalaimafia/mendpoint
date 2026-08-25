@@ -3383,7 +3383,7 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - [x] Reconcile only exact candidate-bound current heads and released legacy heads whose scope agrees with their `agent_run:` evidence.
 - [x] Replace timestamp/hash survivor selection with the smallest durable causal ordering or fail-closed ambiguity rule.
 - [x] Run focused API and database tests, affected typechecks, and diff integrity on current `origin/main`.
-- [ ] Commit and push the Codex-owned branch without merging or self-approving.
+- [x] Commit and push the Codex-owned branch without merging or self-approving.
 
 #### Review
 
