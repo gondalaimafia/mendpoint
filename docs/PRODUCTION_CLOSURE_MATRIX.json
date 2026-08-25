@@ -1,0 +1,2688 @@
+{
+  "schemaVersion": 1,
+  "canonicalRegister": {
+    "path": "docs/PRODUCT_REQUIREMENTS.json",
+    "includeAdditionalRegisterSets": true
+  },
+  "requirements": [
+    {
+      "requirementId": "ME-FND-001",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "documented",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-FND-002",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "documented",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-FND-003",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "documented",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        337
+      ],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-FND-004",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "documented",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-FND-005",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "documented",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-FND-006",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "documented",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-FND-007",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "documented",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-FND-008",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "documented",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-FND-009",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "documented",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-FND-010",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "documented",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        284,
+        337
+      ],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ING-001",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ING-001-AC01-EV01",
+        "ME-ING-001-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ING-002",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ING-002-AC01-EV01",
+        "ME-ING-002-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ING-003",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ING-003-AC01-EV01",
+        "ME-ING-003-AC01-EV02",
+        "ME-ING-003-AC01-EV03"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ING-004",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ING-004-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ING-005",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ING-005-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ING-006",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ING-006-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ING-007",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ING-007-AC01-EV01",
+        "ME-ING-007-AC01-EV02",
+        "ME-ING-007-AC01-EV03"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ING-008",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ING-008-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ING-009",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ING-009-AC01-EV01",
+        "ME-ING-009-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-SCM-001",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-SCM-001-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-SCM-002",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-SCM-002-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-SCM-003",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-SCM-003-AC01-EV01",
+        "ME-SCM-003-AC01-EV03",
+        "ME-SCM-003-AC01-EV04"
+      ],
+      "productionEvidenceIds": [
+        "ME-SCM-003-AC01-EV05"
+      ]
+    },
+    {
+      "requirementId": "ME-SCM-004",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-SCM-004-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-SCM-005",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-SCM-005-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-SCM-006",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-SCM-006-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-GRF-001",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        384,
+        388,
+        394,
+        396,
+        415
+      ],
+      "testEvidenceIds": [
+        "ME-GRF-001-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-GRF-002",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-GRF-002-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-GRF-003",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        384
+      ],
+      "testEvidenceIds": [
+        "ME-GRF-003-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-GRF-004",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-GRF-004-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-GRF-005",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-GRF-005-AC01-EV01",
+        "ME-GRF-005-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-GRF-006",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        388,
+        395
+      ],
+      "testEvidenceIds": [
+        "ME-GRF-006-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-GRF-007",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-GRF-007-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-GRF-008",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        331
+      ],
+      "testEvidenceIds": [
+        "ME-GRF-008-AC01-EV01",
+        "ME-GRF-008-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-WAR-001",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        395,
+        401
+      ],
+      "testEvidenceIds": [
+        "ME-WAR-001-AC01-EV01",
+        "ME-WAR-001-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-WAR-002",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-WAR-002-AC01-EV01",
+        "ME-WAR-002-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-WAR-003",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-WAR-003-AC01-EV01",
+        "ME-WAR-003-AC01-EV02",
+        "ME-WAR-003-AC01-EV03"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-WAR-004",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        330,
+        381,
+        410,
+        418
+      ],
+      "testEvidenceIds": [
+        "ME-WAR-004-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-WAR-005",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        379
+      ],
+      "testEvidenceIds": [
+        "ME-WAR-005-AC01-EV01",
+        "ME-WAR-005-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-WAR-006",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        381,
+        403,
+        408,
+        409,
+        410,
+        413,
+        417
+      ],
+      "testEvidenceIds": [
+        "ME-WAR-006-AC01-EV01",
+        "ME-WAR-006-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-WAR-007",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-WAR-007-AC01-EV01",
+        "ME-WAR-007-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-WAR-008",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        330
+      ],
+      "testEvidenceIds": [
+        "ME-WAR-008-AC01-EV01",
+        "ME-WAR-008-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-WAR-009",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        395
+      ],
+      "testEvidenceIds": [
+        "ME-WAR-009-AC01-EV01",
+        "ME-WAR-009-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-WAR-010",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "blocked_external",
+        "availability": "planned",
+        "claimState": "roadmap_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-TRN-001",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-TRN-001-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-TRN-002",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-TRN-002-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-TRN-003",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [
+        361
+      ],
+      "pullRequests": [
+        387,
+        400,
+        402,
+        404,
+        407,
+        414
+      ],
+      "testEvidenceIds": [
+        "ME-TRN-003-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-TRN-004",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-TRN-004-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-TRN-005",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [
+        361
+      ],
+      "pullRequests": [
+        387
+      ],
+      "testEvidenceIds": [
+        "ME-TRN-005-AC01-EV01",
+        "ME-TRN-005-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-TRN-006",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-TRN-006-AC01-EV01",
+        "ME-TRN-006-AC01-EV02",
+        "ME-TRN-006-AC01-EV03"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-TRN-007",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        407,
+        414
+      ],
+      "testEvidenceIds": [
+        "ME-TRN-007-AC01-EV01",
+        "ME-TRN-007-AC01-EV02",
+        "ME-TRN-007-AC01-EV03"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-TRN-008",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-TRN-008-AC01-EV01",
+        "ME-TRN-008-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-TRN-009",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-TRN-009-AC01-EV01",
+        "ME-TRN-009-AC01-EV02",
+        "ME-TRN-009-AC01-EV03"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-TRN-010",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-TRN-010-AC01-EV01",
+        "ME-TRN-010-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-TRN-011",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-TRN-011-AC01-EV01",
+        "ME-TRN-011-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-TRN-012",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [
+        361
+      ],
+      "pullRequests": [
+        387
+      ],
+      "testEvidenceIds": [
+        "ME-TRN-012-AC01-EV01",
+        "ME-TRN-012-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-TRN-013",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        337
+      ],
+      "testEvidenceIds": [
+        "ME-TRN-013-AC01-EV01",
+        "ME-TRN-013-AC01-EV02",
+        "ME-TRN-013-AC01-EV03",
+        "ME-TRN-013-AC01-EV04"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-RTR-001",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-RTR-001-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-RTR-002",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-RTR-002-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-RTR-003",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-RTR-003-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-RTR-004",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-RTR-004-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-RTR-005",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-RTR-005-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-RTR-006",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [
+        361
+      ],
+      "pullRequests": [
+        330,
+        387
+      ],
+      "testEvidenceIds": [
+        "ME-RTR-006-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-RTR-007",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-RTR-007-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-RTR-008",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-RTR-008-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-RTR-009",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [
+        361
+      ],
+      "pullRequests": [
+        387
+      ],
+      "testEvidenceIds": [
+        "ME-RTR-009-AC01-EV01",
+        "ME-RTR-009-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ENT-001",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ENT-001-AC01-EV01",
+        "ME-ENT-001-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ENT-002",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        394,
+        396
+      ],
+      "testEvidenceIds": [
+        "ME-ENT-002-AC01-EV01",
+        "ME-ENT-002-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ENT-003",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [
+        351
+      ],
+      "pullRequests": [
+        358
+      ],
+      "testEvidenceIds": [
+        "ME-ENT-003-AC01-EV01",
+        "ME-ENT-003-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ENT-004",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [
+        351
+      ],
+      "pullRequests": [
+        358
+      ],
+      "testEvidenceIds": [
+        "ME-ENT-004-AC01-EV01",
+        "ME-ENT-004-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ENT-005",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        406
+      ],
+      "testEvidenceIds": [
+        "ME-ENT-005-AC01-EV01",
+        "ME-ENT-005-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ENT-006",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ENT-006-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ENT-007",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [
+        351
+      ],
+      "pullRequests": [
+        358
+      ],
+      "testEvidenceIds": [
+        "ME-ENT-007-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ENT-008",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ENT-008-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ENT-009",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ENT-009-AC01-EV01",
+        "ME-ENT-009-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ENT-010",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ENT-010-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ENT-011",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "scaffold",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ENT-011-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-ENT-012",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "scaffold",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-ENT-012-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-COM-001",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        390
+      ],
+      "testEvidenceIds": [
+        "ME-COM-001-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-COM-002",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        390
+      ],
+      "testEvidenceIds": [
+        "ME-COM-002-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-COM-003",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-COM-003-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-COM-004",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        390
+      ],
+      "testEvidenceIds": [
+        "ME-COM-004-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-GTM-001",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-GTM-001-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-GTM-002",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "verified",
+        "availability": "experimental",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-GTM-002-AC01-EV01",
+        "ME-GTM-002-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-GTM-003",
+      "registerSet": "foundational",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        284,
+        333,
+        337
+      ],
+      "testEvidenceIds": [
+        "ME-GTM-003-AC01-EV01"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-FET-015",
+      "registerSet": "v3-platform",
+      "status": {
+        "implementationStatus": "unimplemented",
+        "availability": "planned",
+        "claimState": "roadmap_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-FET-016",
+      "registerSet": "v3-platform",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-FET-016-AC01-EV02",
+        "ME-FET-016-AC01-EV03"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-FET-017",
+      "registerSet": "v3-platform",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "experimental",
+        "claimState": "experimental_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [
+        "ME-FET-017-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-FET-018",
+      "registerSet": "v3-platform",
+      "status": {
+        "implementationStatus": "unimplemented",
+        "availability": "planned",
+        "claimState": "roadmap_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        401
+      ],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-REG-015",
+      "registerSet": "v3-platform",
+      "status": {
+        "implementationStatus": "unimplemented",
+        "availability": "planned",
+        "claimState": "roadmap_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-REG-016",
+      "registerSet": "v3-platform",
+      "status": {
+        "implementationStatus": "unimplemented",
+        "availability": "planned",
+        "claimState": "roadmap_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-REG-017",
+      "registerSet": "v3-platform",
+      "status": {
+        "implementationStatus": "unimplemented",
+        "availability": "planned",
+        "claimState": "roadmap_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-REG-018",
+      "registerSet": "v3-platform",
+      "status": {
+        "implementationStatus": "unimplemented",
+        "availability": "planned",
+        "claimState": "roadmap_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-CGR-001",
+      "registerSet": "v3-platform",
+      "status": {
+        "implementationStatus": "unimplemented",
+        "availability": "planned",
+        "claimState": "roadmap_only"
+      },
+      "issues": [],
+      "pullRequests": [],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-MSN-001",
+      "registerSet": "v4-platform",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        415,
+        416
+      ],
+      "testEvidenceIds": [
+        "ME-MSN-001-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-MSN-002",
+      "registerSet": "v4-platform",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        418,
+        419,
+        421
+      ],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-MSN-003",
+      "registerSet": "v4-platform",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        383,
+        402,
+        403,
+        411,
+        413,
+        415,
+        417,
+        418,
+        420,
+        421
+      ],
+      "testEvidenceIds": [
+        "ME-MSN-003-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-MTE-001",
+      "registerSet": "v4-platform",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        383,
+        390,
+        404,
+        407,
+        408,
+        409,
+        410,
+        411,
+        417,
+        419
+      ],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-OMM-001",
+      "registerSet": "v4-platform",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        377
+      ],
+      "testEvidenceIds": [
+        "ME-OMM-001-AC01-EV02"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-PEV-001",
+      "registerSet": "v4-platform",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        379,
+        400,
+        414
+      ],
+      "testEvidenceIds": [
+        "ME-PEV-001-AC01-EV03"
+      ],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-MCC-001",
+      "registerSet": "v4-platform",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        416,
+        420,
+        421
+      ],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    },
+    {
+      "requirementId": "ME-SXT-001",
+      "registerSet": "v4-platform",
+      "status": {
+        "implementationStatus": "partial",
+        "availability": "internal",
+        "claimState": "internal_only"
+      },
+      "issues": [],
+      "pullRequests": [
+        331,
+        337
+      ],
+      "testEvidenceIds": [],
+      "productionEvidenceIds": []
+    }
+  ],
+  "releaseTrain": {
+    "observedAt": "2026-08-25T02:22:34.9988613Z",
+    "observedMainRevision": "0b9bcc4cebf775ad87249f495b556dfe62b46d98",
+    "ownershipAuthority": "provisional_branch_prefix_only",
+    "openPullRequests": [
+      {
+        "number": 284,
+        "title": "Make the public claims gate able to fail",
+        "headBranch": "claude/claims-gate-drift",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Claude",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "extract_smaller_replacement",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-FND-010",
+          "ME-GTM-003"
+        ],
+        "checkState": "stale_checks",
+        "blockers": []
+      },
+      {
+        "number": 330,
+        "title": "Finish verifier evidence and delegated draft cleanup",
+        "headBranch": "codex/non-regauge-inventory-20260822",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            387
+          ],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-WAR-004",
+          "ME-WAR-008",
+          "ME-RTR-006"
+        ],
+        "checkState": "stale_checks",
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "authorizeActor is tautological instead of a durable authorization reread"
+          },
+          {
+            "priority": "P1",
+            "summary": "repository excerpt refusal states collapse into one result"
+          },
+          {
+            "priority": "P1",
+            "summary": "critical evidence joins lack negative deletion tests"
+          },
+          {
+            "priority": "P1",
+            "summary": "the evidence digest is not independently recomputed"
+          },
+          {
+            "priority": "P2",
+            "summary": "allowed-tenant and retain-exact paths lack direct tests"
+          }
+        ]
+      },
+      {
+        "number": 331,
+        "title": "Add pinned Graphify process evaluator",
+        "headBranch": "codex/graphify-process-benchmark-20260822",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-SXT-001",
+          "ME-GRF-008"
+        ],
+        "checkState": "conflicting",
+        "blockers": []
+      },
+      {
+        "number": 333,
+        "title": "Refresh public documentation evidence",
+        "headBranch": "codex/public-docs-drift-20260822",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-GTM-003"
+        ],
+        "checkState": "conflicting",
+        "blockers": []
+      },
+      {
+        "number": 337,
+        "title": "Promote production runtime profiles",
+        "headBranch": "codex/production-only-promotion-20260822",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "extract_smaller_replacement",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-FND-003",
+          "ME-FND-010",
+          "ME-TRN-013",
+          "ME-SXT-001",
+          "ME-GTM-003"
+        ],
+        "checkState": "stale_checks",
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "the branch regresses sandbox renewal alerting and fail-closed validation"
+          },
+          {
+            "priority": "P1",
+            "summary": "the dedicated ReGauge hostname and boot profile contradict each other"
+          },
+          {
+            "priority": "P1",
+            "summary": "the branch combines real SCM, polling, external processing, seed removal, and capacity changes"
+          },
+          {
+            "priority": "P1",
+            "summary": "authorizeActor is tautological instead of a durable authorization reread"
+          },
+          {
+            "priority": "P1",
+            "summary": "repository excerpt refusal states collapse into one result"
+          },
+          {
+            "priority": "P2",
+            "summary": "an obsolete test entrypoint can skip script gates"
+          }
+        ]
+      },
+      {
+        "number": 358,
+        "title": "Harden public inputs and automate customer backups",
+        "headBranch": "codex/351-platform-hardening",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-ENT-003",
+          "ME-ENT-004",
+          "ME-ENT-007"
+        ],
+        "checkState": "conflicting",
+        "blockers": []
+      },
+      {
+        "number": 377,
+        "title": "db: mint organization-memory observation evidence on the live path",
+        "headBranch": "cursor/org-memory-observation-producer-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-OMM-001"
+        ],
+        "checkState": "stale_checks",
+        "blockers": []
+      },
+      {
+        "number": 379,
+        "title": "pipeline: enforce the inherited Policy Envelope at campaign execute",
+        "headBranch": "cursor/mission-policy-campaign-dispatch-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            372
+          ],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-PEV-001",
+          "ME-WAR-005"
+        ],
+        "checkState": "behind",
+        "blockers": []
+      },
+      {
+        "number": 381,
+        "title": "pipeline: skip Fettler edits a Mission already rejected (FET-021)",
+        "headBranch": "cursor/fettler-decision-avoidance-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [
+            372,
+            379
+          ],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-WAR-004",
+          "ME-WAR-006"
+        ],
+        "checkState": "stale_checks",
+        "blockers": []
+      },
+      {
+        "number": 383,
+        "title": "db: drive agent-human-agent handoff through MissionTask and resume standing",
+        "headBranch": "cursor/mission-task-handoff-resume-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            374
+          ],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MTE-001",
+          "ME-MSN-003"
+        ],
+        "checkState": "conflicting",
+        "blockers": []
+      },
+      {
+        "number": 384,
+        "title": "graph-learn: ingest DEPENDS_ON from package manifests",
+        "headBranch": "cursor/depends-on-manifest-ingest-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-GRF-001",
+          "ME-GRF-003"
+        ],
+        "checkState": "stale_checks",
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "an unrelated service dependency can open MigrationUnit readiness vacuously"
+          },
+          {
+            "priority": "P1",
+            "summary": "global service-name identifiers can clobber provider and cross-tenant nodes"
+          },
+          {
+            "priority": "P2",
+            "summary": "missing, malformed, and unparseable inputs collapse and discard dependency provenance"
+          }
+        ]
+      },
+      {
+        "number": 387,
+        "title": "Make ReGauge advisory verification durable in production",
+        "headBranch": "codex/361-deepseek-advisory-clean",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-TRN-003",
+          "ME-TRN-005",
+          "ME-TRN-012",
+          "ME-RTR-006",
+          "ME-RTR-009"
+        ],
+        "checkState": "conflicting",
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "the workflow creates an unscoped envelope before requiring exact repository and branch binding"
+          },
+          {
+            "priority": "P1",
+            "summary": "consent can be reconstructed after processing instead of being durable before egress"
+          },
+          {
+            "priority": "P1",
+            "summary": "an ambiguous post-response crash can reissue provider work without idempotency or reconciliation"
+          }
+        ]
+      },
+      {
+        "number": 388,
+        "title": "graph-learn: ingest PRESERVES_INVARIANT from source annotations",
+        "headBranch": "cursor/preserves-invariant-ingest-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-GRF-001",
+          "ME-GRF-006"
+        ],
+        "checkState": "stale_checks",
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "source comments can be surfaced as verified invariants"
+          },
+          {
+            "priority": "P1",
+            "summary": "exact and heuristic invariant evidence are indistinguishable"
+          },
+          {
+            "priority": "P1",
+            "summary": "a natural in-function comment can bind to a later declaration"
+          },
+          {
+            "priority": "P1",
+            "summary": "a tenant-wide gate can report complete with zero annotations"
+          },
+          {
+            "priority": "P1",
+            "summary": "symbol properties can be overwritten"
+          },
+          {
+            "priority": "P2",
+            "summary": "malformed or unbound evidence is silently discarded and the ADR overstates adjacency"
+          }
+        ]
+      },
+      {
+        "number": 390,
+        "title": "worker: bridge claimed jobs onto MissionTask and attribute Fettler MCU",
+        "headBranch": "cursor/job-mission-task-mcu-bridge-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [
+            383
+          ],
+          "branches": [
+            "cursor/mission-task-handoff-resume-f457"
+          ]
+        },
+        "requirementIds": [
+          "ME-MTE-001",
+          "ME-COM-001",
+          "ME-COM-002",
+          "ME-COM-004"
+        ],
+        "checkState": "stale_checks",
+        "blockers": []
+      },
+      {
+        "number": 394,
+        "title": "api: fail closed on /graph-learn when no tenant Change Graph handle exists",
+        "headBranch": "cursor/api-graph-handle-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            397
+          ],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-GRF-001",
+          "ME-ENT-002"
+        ],
+        "checkState": "conflicting",
+        "blockers": []
+      },
+      {
+        "number": 395,
+        "title": "api: distinguish verified no-impact from unknown coverage on the change report",
+        "headBranch": "cursor/change-impact-coverage-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            394
+          ],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-GRF-006",
+          "ME-WAR-001",
+          "ME-WAR-009"
+        ],
+        "checkState": "conflicting",
+        "blockers": []
+      },
+      {
+        "number": 396,
+        "title": "sdk: fail closed when createPlatform has no tenant Change Graph handle",
+        "headBranch": "cursor/sdk-graph-handle-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [
+            394
+          ],
+          "branches": [
+            "cursor/api-graph-handle-f457"
+          ]
+        },
+        "requirementIds": [
+          "ME-GRF-001",
+          "ME-ENT-002"
+        ],
+        "checkState": "stale_checks",
+        "blockers": []
+      },
+      {
+        "number": 400,
+        "title": "policy: bind the default envelope on ReGauge Surface A campaign create",
+        "headBranch": "cursor/regauge-control-plane-policy-bind-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            372
+          ],
+          "branches": [
+            "cursor/public-claims-live-refresh-f457"
+          ]
+        },
+        "requirementIds": [
+          "ME-PEV-001",
+          "ME-TRN-003"
+        ],
+        "checkState": "conflicting",
+        "blockers": []
+      },
+      {
+        "number": 401,
+        "title": "pipeline: stamp FET-018 raw_retrieval when analyzeImpact is the impact path",
+        "headBranch": "cursor/fet-018-raw-retrieval-stamp-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            392
+          ],
+          "branches": [
+            "cursor/fettler-graph-authority-f457"
+          ]
+        },
+        "requirementIds": [
+          "ME-FET-018",
+          "ME-WAR-001"
+        ],
+        "checkState": "conflicting",
+        "blockers": []
+      },
+      {
+        "number": 402,
+        "title": "regauge: bind the Mission on HTTP POST /missions/:id/launch",
+        "headBranch": "cursor/regauge-http-launch-mission-bind-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            374
+          ],
+          "branches": [
+            "cursor/public-claims-live-refresh-f457"
+          ]
+        },
+        "requirementIds": [
+          "ME-MSN-003",
+          "ME-TRN-003"
+        ],
+        "checkState": "conflicting",
+        "blockers": []
+      },
+      {
+        "number": 403,
+        "title": "worker: pin Fettler trajectories to a bound Mission when the job claims one",
+        "headBranch": "cursor/fettler-trajectory-mission-id-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            385
+          ],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MSN-003",
+          "ME-WAR-006"
+        ],
+        "checkState": "conflicting",
+        "blockers": []
+      },
+      {
+        "number": 404,
+        "title": "regauge: create unassigned MissionTasks when a campaign launches",
+        "headBranch": "cursor/regauge-launch-mission-task-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            374,
+            369
+          ],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MTE-001",
+          "ME-TRN-003"
+        ],
+        "checkState": "conflicting",
+        "blockers": []
+      },
+      {
+        "number": 406,
+        "title": "Expose production readiness probe",
+        "headBranch": "codex/add-public-readyz",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-ENT-005"
+        ],
+        "checkState": "checks_running",
+        "blockers": []
+      },
+      {
+        "number": 407,
+        "title": "worker: drive ReGauge MissionTasks on the live pilot-lane claim",
+        "headBranch": "cursor/regauge-pilot-mission-task-claim-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [
+            404
+          ],
+          "branches": [
+            "cursor/regauge-launch-mission-task-f457"
+          ]
+        },
+        "requirementIds": [
+          "ME-MTE-001",
+          "ME-TRN-003",
+          "ME-TRN-007"
+        ],
+        "checkState": "conflicting",
+        "blockers": [
+          {
+            "priority": "P2",
+            "summary": "the active pull request and ADR still name the production execution path as a pilot lane"
+          }
+        ]
+      },
+      {
+        "number": 408,
+        "title": "api: create unassigned MissionTasks when a Fettler campaign enrolls",
+        "headBranch": "cursor/fettler-enroll-mission-task-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            374,
+            385
+          ],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MTE-001",
+          "ME-WAR-006"
+        ],
+        "checkState": "conflicting",
+        "blockers": []
+      },
+      {
+        "number": 409,
+        "title": "worker: drive Fettler MissionTasks on the campaign-execute claim",
+        "headBranch": "cursor/fettler-execute-mission-task-claim-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [
+            408
+          ],
+          "branches": [
+            "cursor/fettler-enroll-mission-task-f457"
+          ]
+        },
+        "requirementIds": [
+          "ME-MTE-001",
+          "ME-WAR-006"
+        ],
+        "checkState": "conflicting",
+        "blockers": []
+      },
+      {
+        "number": 410,
+        "title": "worker: hand Fettler MissionTasks to review after campaign execute",
+        "headBranch": "cursor/fettler-execute-mission-task-review-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [
+            409
+          ],
+          "branches": [
+            "cursor/fettler-execute-mission-task-claim-f457"
+          ]
+        },
+        "requirementIds": [
+          "ME-MTE-001",
+          "ME-WAR-004",
+          "ME-WAR-006"
+        ],
+        "checkState": "checks_running",
+        "blockers": []
+      },
+      {
+        "number": 411,
+        "title": "api: bind POST /agent/runs to a claimed Mission when the body names one",
+        "headBranch": "cursor/agent-run-mission-id-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            374
+          ],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MSN-003",
+          "ME-MTE-001"
+        ],
+        "checkState": "checks_running",
+        "blockers": []
+      },
+      {
+        "number": 413,
+        "title": "worker: copy a claimed Mission id onto Fettler CI-repair agent runs",
+        "headBranch": "cursor/ci-repair-mission-id-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            374,
+            385
+          ],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MSN-003",
+          "ME-WAR-006"
+        ],
+        "checkState": "stale_checks",
+        "blockers": []
+      },
+      {
+        "number": 414,
+        "title": "worker: enforce the inherited Policy Envelope on the ReGauge pilot lane",
+        "headBranch": "cursor/regauge-pilot-policy-enforce-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            372,
+            407
+          ],
+          "branches": [
+            "cursor/regauge-pilot-mission-task-claim-f457"
+          ]
+        },
+        "requirementIds": [
+          "ME-PEV-001",
+          "ME-TRN-003",
+          "ME-TRN-007"
+        ],
+        "checkState": "stale_checks",
+        "blockers": [
+          {
+            "priority": "P2",
+            "summary": "the active pull request title and branch still call the production ReGauge execution path a pilot lane"
+          }
+        ]
+      },
+      {
+        "number": 415,
+        "title": "pipeline: pin a published Change Graph version onto single-repo Missions",
+        "headBranch": "cursor/bind-mission-graph-version-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [
+            380
+          ],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MSN-001",
+          "ME-MSN-003",
+          "ME-GRF-001"
+        ],
+        "checkState": "stale_checks",
+        "blockers": []
+      },
+      {
+        "number": 416,
+        "title": "worker: carry a pinned graph version on Mission context identity",
+        "headBranch": "cursor/mission-context-graph-version-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [
+            415
+          ],
+          "branches": [
+            "cursor/bind-mission-graph-version-f457"
+          ]
+        },
+        "requirementIds": [
+          "ME-MSN-001",
+          "ME-MCC-001"
+        ],
+        "checkState": "stacked_unverified",
+        "blockers": []
+      },
+      {
+        "number": 417,
+        "title": "worker: resume Fettler agent.run through resolveResumeContext",
+        "headBranch": "cursor/fettler-resume-context-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MSN-003",
+          "ME-MTE-001",
+          "ME-WAR-006"
+        ],
+        "checkState": "stale_checks",
+        "blockers": []
+      },
+      {
+        "number": 418,
+        "title": "pipeline: register persisted Fettler review artifacts on a bound Mission",
+        "headBranch": "cursor/mission-artifact-register-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MSN-002",
+          "ME-MSN-003",
+          "ME-WAR-004"
+        ],
+        "checkState": "stale_checks",
+        "blockers": []
+      },
+      {
+        "number": 419,
+        "title": "db: persist decisionType, category, and taskId on live handoff writers",
+        "headBranch": "cursor/mission-decision-annotations-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MSN-002",
+          "ME-MTE-001"
+        ],
+        "checkState": "behind",
+        "blockers": []
+      },
+      {
+        "number": 420,
+        "title": "agent: compile inherited context for bound Missions without the global switch",
+        "headBranch": "cursor/bound-mission-inherited-context-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [
+            417
+          ],
+          "branches": [
+            "cursor/fettler-resume-context-f457"
+          ]
+        },
+        "requirementIds": [
+          "ME-MCC-001",
+          "ME-MSN-003"
+        ],
+        "checkState": "stacked_unverified",
+        "blockers": []
+      },
+      {
+        "number": 421,
+        "title": "register: point v4-platform locators at live resume, decision, and compile seams",
+        "headBranch": "cursor/v4-register-locator-refresh-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [
+            417,
+            419,
+            420
+          ],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MSN-002",
+          "ME-MSN-003",
+          "ME-MCC-001"
+        ],
+        "checkState": "behind",
+        "blockers": []
+      }
+    ]
+  }
+}
+
