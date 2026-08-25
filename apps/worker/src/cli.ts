@@ -192,6 +192,10 @@ import {
   parseLearningCorpusArgs,
   sealGovernedLearningCorpus,
 } from "./learning-corpus-cli.js";
+import {
+  bridgeClaimedJobToMissionTask,
+  recordBoundMissionExecutionCost,
+} from "./mission-task-job-bridge.js";
 
 function verifierDigest(value: string): string {
   if (/^sha256:[a-f0-9]{64}$/.test(value)) return value;
@@ -670,9 +674,11 @@ type WardenJobPayload = Readonly<{
   // The mission this job belongs to, if any. Carried forward across a regenerate
   // so a resumed run reads the compiled envelope for its mission (decisions,
   // exceptions, verification, history) instead of only tenant organization
-  // memory. A Fettler repair job on current main carries none (the Fettler ->
-  // mission binding is a separate, acknowledged gap), so this stays undefined and
-  // the mission-scoped sections honestly report `no_mission_bound`.
+  // memory. When present, the claim path also bridges a MissionTask and the
+  // settle path attributes execution-cost MCU to this mission. A Fettler repair
+  // job that was never enrolled still carries none (the enqueue-time binding is
+  // a separate gap), so this stays undefined and the mission-scoped sections
+  // honestly report `no_mission_bound`.
   missionId?: string;
   source?: Readonly<{
     pipelineJobId: string;
@@ -1480,6 +1486,7 @@ async function persistCompletedAgentJob(
     if (routingFinalizationStarted) throw new WardenAtomicFinalizationError(error);
     throw error;
   }
+  recordJobMissionExecutionCost(db, jobId, run.tenantId, run.id);
 }
 
 function persistFailedAgentJob(
@@ -1570,6 +1577,35 @@ function fanoutRunMeterSignalsFromReport(report: PipelineReport): FanoutRunMeter
  * declared value, capped at the reservation). Best-effort: a settlement failure is
  * logged for reconciliation and never breaks job processing.
  */
+/**
+ * Best-effort MCU rollup onto a bound mission. Usage-ledger hashes stay
+ * untouched; this writes `actual_execution_cost_entries.mission_id` only when
+ * `resolveBoundMissionForJob` finds a real mission. Failures are logged, never
+ * used to un-complete the job (same convention as ReGauge trajectory emit).
+ */
+function recordJobMissionExecutionCost(
+  db: AppDb,
+  jobId: string,
+  tenantId: string,
+  sourceRunId: string,
+): void {
+  try {
+    const completed = getJob(db, jobId, tenantId);
+    if (!completed) return;
+    recordBoundMissionExecutionCost(db, {
+      job: completed,
+      sourceRunId,
+      createdAt: nowIso(),
+    });
+  } catch (error) {
+    console.error(
+      `  mission execution-cost skipped job=${jobId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
 function settleFanoutRunUsage(
   db: AppDb,
   tenantId: string,
@@ -2607,6 +2643,9 @@ async function processJobsOnceUnfenced(
     }, Math.max(100, Math.floor(leaseMs / 3)));
     renewal.unref();
     try {
+      // D3: when the job is bound to a real mission, put a MissionTask on the
+      // live claim path (unassigned → agent_working). Unbound jobs stay unbound.
+      bridgeClaimedJobToMissionTask(db, job, nowIso());
       if (job.type === DELEGATED_PR_VERIFICATION_JOB_TYPE) {
         if (!delegatedPrVerification) throw new Error("delegated_pr_verification_disabled");
         const verification = await runDelegatedPrVerificationJob(db, {
@@ -2660,6 +2699,7 @@ async function processJobsOnceUnfenced(
           } catch {
             // Observational: review handoff must not un-complete a landed execute.
           }
+          recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
           result.succeeded++;
           continue;
         }
@@ -3661,6 +3701,7 @@ async function processJobsOnceUnfenced(
           throw error;
         }
         settleFanoutRunUsage(db, job.tenant_id, payload, report);
+        recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
         result.succeeded++;
         console.log(`  done change=${report.changeId}`);
         continue;
@@ -3681,6 +3722,7 @@ async function processJobsOnceUnfenced(
         throw new Error("lease_lost_before_pipeline_completion");
       }
       settleFanoutRunUsage(db, job.tenant_id, payload, report);
+      recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
       result.succeeded++;
       console.log(`  done change=${report.changeId}`);
     } catch (error) {

@@ -41,10 +41,10 @@ export type ActualExecutionCostEntry = Readonly<{
   createdAt: string;
   /**
    * Mission this execution's cost is attributable to, or null when there is no
-   * mission link. On the ReGauge live launch path a mission genuinely exists and
-   * is carried here; the Fettler `agent.run` payload carries no campaign/mission
-   * id (and `createWardenCampaign` has zero non-test callers), so a Fettler cost
-   * row is honestly null — "no mission link yet", never a fabricated one.
+   * mission link. ReGauge's live launch path and a Fettler job whose payload
+   * names a bound mission (or a campaign that resolves through the mission FK)
+   * carry it here. An unbound Fettler `agent.run` stays null — "no mission link
+   * yet", never a fabricated one. Usage-ledger hashes are not the carrier.
    */
   missionId: string | null;
   /**

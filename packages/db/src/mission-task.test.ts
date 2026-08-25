@@ -7,10 +7,12 @@ import {
   createDb,
   createMission,
   createMissionTask,
+  ensureMissionTaskForJob,
   getMissionTask,
   insertPrincipal,
   listMissionTasks,
   fettlerCampaignMissionTaskId,
+  missionTaskIdForJob,
   missionTaskReady,
   regaugeLaunchMissionTaskId,
   transitionMissionTask,
@@ -193,5 +195,87 @@ describe("mission task engine", () => {
       acceptanceCriteria: "green", risk: "low", actorPrincipalId: "p1", eventId: "e-z", idempotencyKey: "c-z",
       correlationId: "corr", createdAt: at });
     expect(t.status).toBe("unassigned");
+  });
+
+  it("bridges a job onto a MissionTask in agent_working, and is idempotent", () => {
+    const db = fixture();
+    const first = ensureMissionTaskForJob(db, {
+      tenantId: "t1", jobId: "job-1", missionId: "m1", taskType: "agent.run",
+      acceptanceCriteria: "complete the run", risk: "medium",
+      actorPrincipalId: "p1", assignedPrincipalId: "agent1", createdAt: at,
+    });
+    expect(first.id).toBe(missionTaskIdForJob("job-1"));
+    expect(first).toMatchObject({
+      status: "agent_working", ownerType: "agent", assignedPrincipalId: "agent1",
+      missionId: "m1", taskType: "agent.run",
+    });
+    const replay = ensureMissionTaskForJob(db, {
+      tenantId: "t1", jobId: "job-1", missionId: "m1", taskType: "agent.run",
+      acceptanceCriteria: "complete the run", risk: "medium",
+      actorPrincipalId: "p1", assignedPrincipalId: "agent1", createdAt: at,
+    });
+    expect(replay.revision).toBe(first.revision);
+    expect(verifyDomainEventIntegrity(db, "t1").ok).toBe(true);
+  });
+
+  it("resumes a partially created task and does not rewind a human-owned one", () => {
+    const db = fixture();
+    const id = missionTaskIdForJob("job-partial");
+    createMissionTask(db, {
+      id, tenantId: "t1", missionId: "m1", taskType: "agent.run",
+      acceptanceCriteria: "complete the run", risk: "low", actorPrincipalId: "p1",
+      eventId: "e-partial", idempotencyKey: "c-partial", correlationId: "corr", createdAt: at,
+    });
+    const resumed = ensureMissionTaskForJob(db, {
+      tenantId: "t1", jobId: "job-partial", missionId: "m1", taskType: "agent.run",
+      acceptanceCriteria: "complete the run", risk: "low",
+      actorPrincipalId: "p1", assignedPrincipalId: "agent1", createdAt: at,
+    });
+    expect(resumed.status).toBe("agent_working");
+
+    const handed = missionTaskIdForJob("job-handoff");
+    let t = createMissionTask(db, {
+      id: handed, tenantId: "t1", missionId: "m1", taskType: "agent.run",
+      acceptanceCriteria: "review", risk: "high", actorPrincipalId: "p1",
+      eventId: "e-h", idempotencyKey: "c-h", correlationId: "corr", createdAt: at,
+    });
+    t = move(db, t, "agent_assigned");
+    t = move(db, t, "agent_working");
+    t = move(db, t, "human_review_required", { handoffReason: "needs staff" });
+    const left = ensureMissionTaskForJob(db, {
+      tenantId: "t1", jobId: "job-handoff", missionId: "m1", taskType: "agent.run",
+      acceptanceCriteria: "review", risk: "high",
+      actorPrincipalId: "p1", assignedPrincipalId: "agent1", createdAt: at,
+    });
+    expect(left.status).toBe("human_review_required");
+    expect(left.revision).toBe(t.revision);
+  });
+
+  it("rejects a job id already bound to a different mission, and joins an open transaction", () => {
+    const db = fixture();
+    createMission(db, {
+      id: "m2", tenantId: "t1", product: "fettler", triggerKind: "provider_change",
+      objective: "Other", ownerPrincipalId: "p1", eventId: "e-m2", idempotencyKey: "c-m2",
+      correlationId: "corr", createdAt: at,
+    });
+    ensureMissionTaskForJob(db, {
+      tenantId: "t1", jobId: "job-x", missionId: "m1", taskType: "agent.run",
+      acceptanceCriteria: "x", risk: "medium",
+      actorPrincipalId: "p1", assignedPrincipalId: "agent1", createdAt: at,
+    });
+    expect(() => ensureMissionTaskForJob(db, {
+      tenantId: "t1", jobId: "job-x", missionId: "m2", taskType: "agent.run",
+      acceptanceCriteria: "x", risk: "medium",
+      actorPrincipalId: "p1", assignedPrincipalId: "agent1", createdAt: at,
+    })).toThrow("mission_task_job_mission_mismatch");
+
+    db.raw.exec("BEGIN IMMEDIATE");
+    const nested = ensureMissionTaskForJob(db, {
+      tenantId: "t1", jobId: "job-nested", missionId: "m1", taskType: "pipeline.fanout",
+      acceptanceCriteria: "nested", risk: "medium",
+      actorPrincipalId: "p1", assignedPrincipalId: "agent1", createdAt: at,
+    });
+    expect(nested.status).toBe("agent_working");
+    db.raw.exec("COMMIT");
   });
 });
