@@ -313,6 +313,9 @@ describe("Regauge production workflow", () => {
     const index = (name: string) => steps.findIndex((step) => step.name === name);
 
     expect(index("Attest exact restored state on target volume")).toBeGreaterThan(-1);
+    expect(steps[index("Attest exact restored state on target volume")].if).toBe(
+      "${{ vars.REGAUGE_TRANSFER_ID != '' }}",
+    );
     expect(index("Stage production secrets")).toBeGreaterThan(
       index("Attest exact restored state on target volume"),
     );
@@ -331,6 +334,15 @@ describe("Regauge production workflow", () => {
     expect(failure.if).toBe("${{ failure() }}");
     expect(failure.run).toContain("worker=0");
     expect(failure.run).not.toContain("volumes delete");
+    // Transfer authority is enforced only when a transfer is configured, but a
+    // partial transfer config (id set, key or fence missing) still hard-fails.
+    const validation = steps.find(
+      (step) => step.name === "Validate exact authority before mutation",
+    )!.run as string;
+    expect(validation).not.toMatch(/required=\([^)]*MENDPOINT_REGAUGE_TRANSFER_ID/);
+    expect(validation).toContain('if [[ -n "${MENDPOINT_REGAUGE_TRANSFER_ID:-}" ]]; then');
+    expect(validation).toContain("MENDPOINT_REGAUGE_TRANSFER_KEY_ID");
+    expect(validation).toContain("MENDPOINT_REGAUGE_TRANSFER_FENCE_ID");
     expect(steps.some((step) => (step.run as string | undefined)?.includes(
       "flyctl scale count coordinator=0 worker=0 --app mendpoint-transformer-pilot",
     ))).toBe(false);

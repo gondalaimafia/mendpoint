@@ -213,8 +213,6 @@ jobs:
             MENDPOINT_REGAUGE_ADAPTIVE_MODEL_PROVIDER MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT
             MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION
             MENDPOINT_REGAUGE_LIVE_EVAL_MAX_USD
-            MENDPOINT_REGAUGE_TRANSFER_ID MENDPOINT_REGAUGE_TRANSFER_KEY_ID
-            MENDPOINT_REGAUGE_TRANSFER_FENCE_ID
             DEEPSEEK_API_KEY MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON
             MENDPOINT_AGENT_VERIFIER_PRICING_JSON MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON
             MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT
@@ -222,6 +220,12 @@ jobs:
           for name in "${required[@]}"; do
             test -n "${!name:-}" || { echo "Missing required Regauge production authority: $name"; exit 1; }
           done
+          if [[ -n "${MENDPOINT_REGAUGE_TRANSFER_ID:-}" ]]; then
+            for name in MENDPOINT_REGAUGE_TRANSFER_ID MENDPOINT_REGAUGE_TRANSFER_KEY_ID \
+              MENDPOINT_REGAUGE_TRANSFER_FENCE_ID; do
+              test -n "${!name:-}" || { echo "Missing required Regauge production authority: $name"; exit 1; }
+            done
+          fi
           test "$MENDPOINT_REGAUGE_TENANT_ID" = "tenant_regauge_canary"
           test "$MENDPOINT_REGAUGE_CAMPAIGN_ID" = "campaign_regauge_canary_20260814"
           test "$MENDPOINT_REGAUGE_CANARY_OWNER" = "gondalaimafia"
@@ -292,6 +296,7 @@ jobs:
               || { echo "regauge_storage_bootstrap_required:$name"; exit 1; }
           done
       - name: Attest exact restored state on target volume
+        if: ${{ vars.REGAUGE_TRANSFER_ID != '' }}
         shell: bash
         run: |
           set -euo pipefail
