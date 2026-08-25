@@ -11,8 +11,10 @@ import {
   linkFettlerCampaignToMission,
   listActualExecutionCosts,
   missionTaskIdForJob,
+  openTaskHandoff,
   recordRoutingDecision,
   recordRoutingOutcome,
+  resolveTaskHandoff,
   type AppDb,
 } from "@mendpoint/db";
 import {
@@ -167,5 +169,36 @@ describe("mission-task job bridge", () => {
       status: "agent_working",
       taskType: "warden.campaign.execute-target",
     });
+  });
+
+  it("returns an agent_resume job task to agent_working on the next claim", () => {
+    const db = fixture();
+    const claimed = job({ missionId: "m1", goal: "repair", consumerId: "c1" });
+    const working = bridgeClaimedJobToMissionTask(db, claimed, at)!;
+    const exception = openTaskHandoff(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      taskId: working.id,
+      reason: "architecture_decision_required",
+      question: "Proceed?",
+      context: "Advisory verification passed.",
+      ownerPrincipalId: "p1",
+      correlationId: "job-1",
+      createdAt: at,
+    });
+    resolveTaskHandoff(db, {
+      tenantId: "t1",
+      priorExceptionId: exception.id,
+      taskId: working.id,
+      resolutionNote: "Yes.",
+      decision: "Proceed",
+      scope: "handoff_resolution:job-1",
+      authorPrincipalId: "p1",
+      correlationId: "job-1",
+      createdAt: at,
+    });
+    expect(getMissionTask(db, "t1", working.id)?.status).toBe("agent_resume");
+    const resumed = bridgeClaimedJobToMissionTask(db, claimed, at);
+    expect(resumed).toMatchObject({ status: "agent_working", ownerType: "agent" });
   });
 });

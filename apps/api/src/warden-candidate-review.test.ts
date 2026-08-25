@@ -7,17 +7,23 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
   createMission,
+  createMissionTask,
   enqueueJob,
+  evaluateMissionExceptions,
   getActiveMissionDecisions,
   getAgentRun,
   getJob,
+  getMissionTask,
   getWardenCiCycle,
   getWardenCiUpdateByRun,
   insertAgentRun,
   insertPrincipal,
+  openTaskHandoff,
   recordAudit,
+  transitionMissionTask,
   verifyAuditIntegrity,
   type AppDb,
+  type MissionTask,
 } from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
 import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
@@ -573,6 +579,132 @@ describe("Warden candidate human review", () => {
     // No mission exists and none is fabricated: the decision store stays empty.
     const count = db.raw.prepare("SELECT COUNT(*) AS n FROM mission_decisions").get() as { n: number };
     expect(count.n).toBe(0);
+  });
+
+  function bindMission(db: AppDb): void {
+    createMission(db, {
+      id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
+      objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-m1", idempotencyKey: "cm-m1", correlationId: "corr", createdAt: NOW,
+    });
+    const src = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(src.payload_json), missionId: "m1" }));
+  }
+
+  function workingTask(db: AppDb): MissionTask {
+    let task = createMissionTask(db, {
+      id: "task-review-1", tenantId: "tenant-a", missionId: "m1", taskType: "code_migration",
+      acceptanceCriteria: "tests pass", risk: "medium", actorPrincipalId: "trust-human-a",
+      eventId: "e-task-1", idempotencyKey: "c-task-1", correlationId: "corr", createdAt: NOW,
+    });
+    task = transitionMissionTask(db, {
+      tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision, to: "agent_assigned",
+      actorPrincipalId: "trust-human-a", eventId: "e-assign", idempotencyKey: "c-assign",
+      correlationId: "corr", createdAt: NOW,
+    });
+    return transitionMissionTask(db, {
+      tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision, to: "agent_working",
+      actorPrincipalId: "trust-human-a", eventId: "e-work", idempotencyKey: "c-work",
+      correlationId: "corr", createdAt: NOW,
+    });
+  }
+
+  // CONTROL: deleting tryResolveBoundReviewHandoff on regenerate leaves the
+  // exception blocking and the MissionTask in human_review_required.
+  it("resolves an open handoff on mission-bound regenerate and moves the task to agent_resume", async () => {
+    const { app, db } = fixture();
+    bindMission(db);
+    workingTask(db);
+    const openedHandoff = openTaskHandoff(db, {
+      tenantId: "tenant-a",
+      missionId: "m1",
+      taskId: "task-review-1",
+      reason: "architecture_decision_required",
+      question: "Should the SDK keep the public signature?",
+      context: "Candidate changed the request mapping.",
+      ownerPrincipalId: "trust-human-a",
+      correlationId: "corr",
+      createdAt: NOW,
+    });
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(true);
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        decision: "regenerate",
+        rationale: "Keep the public signature and repair the internal request mapping.",
+      }),
+    });
+    expect(response.status).toBe(202);
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(false);
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").resolved.map((row) => row.supersedesId))
+      .toContain(openedHandoff.id);
+    expect(getMissionTask(db, "tenant-a", "task-review-1")).toMatchObject({
+      status: "agent_resume",
+      ownerType: "agent",
+    });
+    const resolutions = getActiveMissionDecisions(db, "tenant-a", "m1")
+      .filter((row) => row.decisionType === "exception_resolution");
+    expect(resolutions).toHaveLength(1);
+    expect(resolutions[0]).toMatchObject({
+      scope: "handoff_resolution:warden-run-1",
+      decision: "Keep the public signature and repair the internal request mapping.",
+    });
+  });
+
+  it("does not resolve an open handoff on reject (task stays human-owned)", async () => {
+    const { app, db } = fixture();
+    bindMission(db);
+    workingTask(db);
+    openTaskHandoff(db, {
+      tenantId: "tenant-a",
+      missionId: "m1",
+      taskId: "task-review-1",
+      reason: "architecture_decision_required",
+      question: "Should we abandon this approach?",
+      context: "Reviewer is rejecting the candidate.",
+      ownerPrincipalId: "trust-human-a",
+      correlationId: "corr",
+      createdAt: NOW,
+    });
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "reject", rationale: "This approach is unsafe." }),
+    });
+    expect(response.status).toBe(200);
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(true);
+    expect(getMissionTask(db, "tenant-a", "task-review-1")?.status).toBe("human_review_required");
+  });
+
+  it("resolves an open handoff on mission-bound approve", async () => {
+    const { app, db } = fixture({
+      sealApproval: async () => ({ path: "C:\\sealed-handoff-approval.json", sha256: `sha256:${"b".repeat(64)}`, created: true }),
+    });
+    bindMission(db);
+    workingTask(db);
+    seedCiRepairCandidate(db);
+    openTaskHandoff(db, {
+      tenantId: "tenant-a",
+      missionId: "m1",
+      taskId: "task-review-1",
+      reason: "architecture_decision_required",
+      question: "Proceed to CI update after verification passed?",
+      context: "Post-edit verification passed.",
+      ownerPrincipalId: "trust-human-a",
+      correlationId: "corr",
+      createdAt: NOW,
+    });
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve the exact CI repair." }),
+    });
+    expect(response.status).toBe(202);
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(false);
+    expect(getMissionTask(db, "tenant-a", "task-review-1")?.status).toBe("agent_resume");
   });
 
   it("keeps the committed winner seal through an orchestrated concurrent approval conflict", async () => {
