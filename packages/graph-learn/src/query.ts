@@ -15,7 +15,6 @@ import {
   edgesFrom,
   edgesTo,
   getNode,
-  listAllEdges,
   listNodesByKind,
   type GraphLearnDb,
 } from "./store.js";
@@ -766,18 +765,25 @@ function runGraphQueryInner(
       const units = listNodesByKind(db, "MigrationUnit").filter(
         (node) => String(node.props?.campaign_id ?? "") === campaignId,
       );
-      const dependsOnPopulated = listAllEdges(db).some((edge) => edge.kind === "DEPENDS_ON");
+      // Readiness walks MigrationUnit --DEPENDS_ON--> MigrationUnit only, so the
+      // gate must test that exact population. Any DEPENDS_ON is not enough: the
+      // manifest producer writes Service -> Service edges, which would open the
+      // gate while every MigrationUnit still has zero deps, making
+      // `deps.every(...)` vacuously true and flagging every pending unit ready.
+      const dependsOnPopulated = listNodesByKind(db, "MigrationUnit").some((unit) =>
+        edgesFrom(db, unit.id, ["DEPENDS_ON"]).some(
+          (edge) => getNode(db, edge.target)?.kind === "MigrationUnit",
+        ),
+      );
       if (!dependsOnPopulated) {
         return {
           op: q.op,
           nodes: [],
           edges: [],
           summary: `migration readiness unavailable for campaign ${campaignId}`,
-          // Readiness is derived from DEPENDS_ON. An empty relation would make
-          // `deps.every(...)` vacuously true and flag every pending unit ready.
           coverage: {
             basis: "target_absent",
-            reason: "DEPENDS_ON is not populated by any ingest path",
+            reason: "MigrationUnit DEPENDS_ON is not populated by any ingest path",
           },
           rows: [],
         };
@@ -914,8 +920,9 @@ function runGraphQueryInner(
  *
  * `invariants_for_symbol` is deliberately NOT advertised while PRESERVES_INVARIANT
  * has no ingest producer. `migration_ready_units` is advertised now that
- * `ingestManifestDependencies` writes DEPENDS_ON; the handler still fails closed
- * when that relation is empty for the tenant.
+ * `ingestManifestDependencies` writes DEPENDS_ON; note that producer emits only
+ * Service -> Service edges, so until a MigrationUnit -> MigrationUnit producer
+ * lands the handler still fails closed (`target_absent`) for every campaign.
  */
 export const GRAPH_RAG_TOOLS = [
   "who_consumes_provider",

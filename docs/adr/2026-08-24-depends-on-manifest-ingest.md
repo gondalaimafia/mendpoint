@@ -17,15 +17,25 @@ evidence/provenance.
 ## Decision
 
 1. **Writer.** `ingestManifestDependencies` parses workspace `package.json`,
-   `pyproject.toml`, or `go.mod` and writes tenant-scoped Service nodes plus
-   DEPENDS_ON edges (source_system `manifest`). Malformed names/files are
-   skipped, never guessed. Self-edges and path-like names are rejected.
+   `pyproject.toml`, or `go.mod` and writes Service nodes plus DEPENDS_ON edges
+   (source_system `manifest`). Service ids are repo-namespaced
+   (`service:${repoId}:${name}`, mirroring `symbol:${repoId}:...`) so a declared
+   dependency cannot collide with a provider Service (`service:${slug}`) or
+   across tenants/repos. Each edge records the manifest block it came from
+   (`dependencies` / `peerDependencies` / `require`). Malformed names/files are
+   skipped, never guessed, and the result carries an explicit `skipped` state
+   with a reason (`no-manifest` / `unparseable` / `no-package-name`). Self-edges
+   and path-like names are rejected.
 2. **Live path.** `ingestLspSymbols` (AST fallback and heuristic file ingest)
    calls the writer, so a repository walk populates the relation.
-3. **Readiness query.** `migration_ready_units` still fails closed when the
-   tenant graph has zero DEPENDS_ON edges. When the relation is populated it
-   returns units whose dependencies are `complete`/`done`. The planner tool
-   surface and query-picker rule are restored together.
+3. **Readiness query.** `migration_ready_units` fails closed unless the tenant
+   graph holds at least one MigrationUnit -> MigrationUnit DEPENDS_ON edge — the
+   exact relation readiness walks. The manifest writer emits only
+   Service -> Service edges, so it does not by itself open the gate; readiness
+   waits for a MigrationUnit dependency producer. When that relation is
+   populated the query returns units whose dependencies are `complete`/`done`.
+   The planner tool surface and query-picker rule are restored together (the op
+   answers `target_absent` honestly until a MigrationUnit producer lands).
 
 ## Alternatives considered
 
@@ -36,9 +46,11 @@ evidence/provenance.
 
 ## Security impact
 
-Package names are bounded and reject `..` / path separators. Nodes carry
-`repo_id` (and optional `tenant_id`) so the tenant graph view can include them.
-No execution of manifest scripts.
+Package names are bounded and reject `..` / path separators. Service ids are
+repo-namespaced so manifest ingest cannot clobber another tenant's or the
+provider's Service node (which would strip its `tenant_id`/`tier` and reassign
+ownership). Nodes carry `repo_id` (and optional `tenant_id`) so the tenant graph
+view can include them. No execution of manifest scripts.
 
 ## Data and compatibility impact
 

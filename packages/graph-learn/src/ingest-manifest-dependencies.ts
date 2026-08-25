@@ -20,9 +20,17 @@ export type ManifestDependency = Readonly<{
   name: string;
   specifier: string;
   ecosystem: "npm" | "pypi" | "go";
+  /** Manifest block the edge came from; a peer/optional dep is a weaker claim than a runtime one. */
+  block: "dependencies" | "peerDependencies" | "require";
 }>;
 
+/** Why a manifest was not ingested; `null` on the ingested path. */
+export type ManifestSkipReason = "no-manifest" | "unparseable" | "no-package-name";
+
 export type ManifestIngestResult = Readonly<{
+  /** `ingested` when a manifest parsed and produced a (possibly empty) edge set; `skipped` otherwise. */
+  status: "ingested" | "skipped";
+  reason: ManifestSkipReason | null;
   manifest: string | null;
   ecosystem: "npm" | "pypi" | "go" | null;
   packageName: string | null;
@@ -30,8 +38,19 @@ export type ManifestIngestResult = Readonly<{
   skipped: number;
 }>;
 
-function serviceId(name: string): string {
-  return `service:${name}`;
+/**
+ * Discriminated parse outcome so a missing/path-like package name is not
+ * conflated with genuinely unparseable text (both once collapsed to `null`).
+ */
+type ParseOutcome =
+  | { readonly ok: true; readonly name: string; readonly deps: ManifestDependency[] }
+  | { readonly ok: false; readonly reason: Exclude<ManifestSkipReason, "no-manifest"> };
+
+// Manifest-derived Services are namespaced by repo (mirroring `symbol:${repoId}:...`)
+// so a declared dependency can never collide with a provider Service (`service:${slug}`)
+// or with another tenant/repo that depends on a package of the same name.
+function serviceId(repoId: string, name: string): string {
+  return `service:${repoId}:${name}`;
 }
 
 function safePackageName(value: string): string | null {
@@ -43,35 +62,40 @@ function safePackageName(value: string): string | null {
   return name;
 }
 
-function parsePackageJson(text: string): { name: string; deps: ManifestDependency[] } | null {
+function parsePackageJson(text: string): ParseOutcome {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text) as unknown;
   } catch {
-    return null;
+    return { ok: false, reason: "unparseable" };
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, reason: "unparseable" };
+  }
   const record = parsed as Record<string, unknown>;
   const name = typeof record.name === "string" ? safePackageName(record.name) : null;
-  if (!name) return null;
+  if (!name) return { ok: false, reason: "no-package-name" };
   const deps: ManifestDependency[] = [];
-  const blocks = [record.dependencies, record.peerDependencies];
-  for (const block of blocks) {
-    if (!block || typeof block !== "object" || Array.isArray(block)) continue;
-    for (const [rawName, rawSpec] of Object.entries(block as Record<string, unknown>)) {
+  const blocks: ReadonlyArray<readonly [ManifestDependency["block"], unknown]> = [
+    ["dependencies", record.dependencies],
+    ["peerDependencies", record.peerDependencies],
+  ];
+  for (const [block, value] of blocks) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    for (const [rawName, rawSpec] of Object.entries(value as Record<string, unknown>)) {
       const depName = safePackageName(rawName);
       if (!depName) continue;
       const specifier = typeof rawSpec === "string" ? rawSpec.trim().slice(0, 80) : "*";
-      deps.push({ name: depName, specifier: specifier || "*", ecosystem: "npm" });
+      deps.push({ name: depName, specifier: specifier || "*", ecosystem: "npm", block });
     }
   }
-  return { name, deps: deps.slice(0, MAX_DEPENDENCIES) };
+  return { ok: true, name, deps: deps.slice(0, MAX_DEPENDENCIES) };
 }
 
-function parsePyproject(text: string): { name: string; deps: ManifestDependency[] } | null {
+function parsePyproject(text: string): ParseOutcome {
   const nameMatch = text.match(/^name\s*=\s*["']([^"']+)["']/m);
   const name = nameMatch ? safePackageName(nameMatch[1] ?? "") : null;
-  if (!name) return null;
+  if (!name) return { ok: false, reason: "no-package-name" };
   const deps: ManifestDependency[] = [];
   const block = text.match(/\[project\][\s\S]*?dependencies\s*=\s*\[([\s\S]*?)\]/);
   if (block) {
@@ -79,16 +103,16 @@ function parsePyproject(text: string): { name: string; deps: ManifestDependency[
       const token = (raw[1] ?? "").trim();
       const depName = safePackageName(token.split(/[\s<>=!~\[]/)[0] ?? "");
       if (!depName) continue;
-      deps.push({ name: depName, specifier: token.slice(0, 80), ecosystem: "pypi" });
+      deps.push({ name: depName, specifier: token.slice(0, 80), ecosystem: "pypi", block: "dependencies" });
     }
   }
-  return { name, deps: deps.slice(0, MAX_DEPENDENCIES) };
+  return { ok: true, name, deps: deps.slice(0, MAX_DEPENDENCIES) };
 }
 
-function parseGoMod(text: string): { name: string; deps: ManifestDependency[] } | null {
+function parseGoMod(text: string): ParseOutcome {
   const moduleMatch = text.match(/^module\s+(\S+)/m);
   const name = moduleMatch ? safePackageName(moduleMatch[1] ?? "") : null;
-  if (!name) return null;
+  if (!name) return { ok: false, reason: "no-package-name" };
   const deps: ManifestDependency[] = [];
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -103,26 +127,26 @@ function parseGoMod(text: string): { name: string; deps: ManifestDependency[] } 
       name: depName,
       specifier: (parts[1] ?? "*").slice(0, 80),
       ecosystem: "go",
+      block: "require",
     });
   }
-  return { name, deps: deps.slice(0, MAX_DEPENDENCIES) };
+  return { ok: true, name, deps: deps.slice(0, MAX_DEPENDENCIES) };
 }
 
-function parseManifest(path: string, text: string): { name: string; deps: ManifestDependency[]; ecosystem: ManifestIngestResult["ecosystem"] } | null {
+type ManifestParse =
+  | { readonly ok: true; readonly name: string; readonly deps: ManifestDependency[]; readonly ecosystem: "npm" | "pypi" | "go" }
+  | { readonly ok: false; readonly reason: Exclude<ManifestSkipReason, "no-manifest"> };
+
+function withEcosystem(outcome: ParseOutcome, ecosystem: "npm" | "pypi" | "go"): ManifestParse {
+  return outcome.ok ? { ...outcome, ecosystem } : outcome;
+}
+
+function parseManifest(path: string, text: string): ManifestParse {
   const file = path.replace(/\\/g, "/").split("/").pop() ?? "";
-  if (file === "package.json") {
-    const parsed = parsePackageJson(text);
-    return parsed ? { ...parsed, ecosystem: "npm" } : null;
-  }
-  if (file === "pyproject.toml") {
-    const parsed = parsePyproject(text);
-    return parsed ? { ...parsed, ecosystem: "pypi" } : null;
-  }
-  if (file === "go.mod") {
-    const parsed = parseGoMod(text);
-    return parsed ? { ...parsed, ecosystem: "go" } : null;
-  }
-  return null;
+  if (file === "package.json") return withEcosystem(parsePackageJson(text), "npm");
+  if (file === "pyproject.toml") return withEcosystem(parsePyproject(text), "pypi");
+  if (file === "go.mod") return withEcosystem(parseGoMod(text), "go");
+  return { ok: false, reason: "unparseable" };
 }
 
 function writeDependencies(
@@ -136,7 +160,7 @@ function writeDependencies(
   },
 ): { dependencies: number; skipped: number } {
   const tenantProps = input.tenantId ? { tenant_id: input.tenantId } : {};
-  const sourceId = serviceId(input.packageName);
+  const sourceId = serviceId(input.repoId, input.packageName);
   upsertNode(db, {
     id: sourceId,
     kind: "Service",
@@ -153,7 +177,7 @@ function writeDependencies(
       continue;
     }
     seen.add(dep.name);
-    const targetId = serviceId(dep.name);
+    const targetId = serviceId(input.repoId, dep.name);
     upsertNode(db, {
       id: targetId,
       kind: "Service",
@@ -168,7 +192,7 @@ function writeDependencies(
       target: targetId,
       source_system: "manifest",
       confidence: 1,
-      props: { specifier: dep.specifier, ecosystem: dep.ecosystem, manifest: input.sourcePath },
+      props: { specifier: dep.specifier, ecosystem: dep.ecosystem, block: dep.block, manifest: input.sourcePath },
     });
     dependencies++;
   }
@@ -190,9 +214,12 @@ export function ingestManifestDependencies(
     files?: ReadonlyArray<{ path: string; text: string }>;
   },
 ): ManifestIngestResult {
-  const empty: ManifestIngestResult = {
-    manifest: null, ecosystem: null, packageName: null, dependencies: 0, skipped: 0,
-  };
+  const notIngested = (
+    reason: ManifestSkipReason,
+    manifest: string | null,
+  ): ManifestIngestResult => ({
+    status: "skipped", reason, manifest, ecosystem: null, packageName: null, dependencies: 0, skipped: 0,
+  });
   const candidates = ["package.json", "pyproject.toml", "go.mod"] as const;
   let chosen: { path: string; text: string } | undefined;
   if (opts.files) {
@@ -211,9 +238,9 @@ export function ingestManifestDependencies(
       break;
     }
   }
-  if (!chosen) return empty;
+  if (!chosen) return notIngested("no-manifest", null);
   const parsed = parseManifest(chosen.path, chosen.text);
-  if (!parsed) return empty;
+  if (!parsed.ok) return notIngested(parsed.reason, chosen.path);
   const written = writeDependencies(db, {
     repoId: opts.repoId,
     tenantId: opts.tenantId,
@@ -222,6 +249,8 @@ export function ingestManifestDependencies(
     deps: parsed.deps,
   });
   return {
+    status: "ingested",
+    reason: null,
     manifest: chosen.path,
     ecosystem: parsed.ecosystem,
     packageName: parsed.name,
