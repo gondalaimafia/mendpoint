@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ProductRequirementManifest } from "@mendpoint/contract";
 import {
+  releaseTrainObservationIssues,
   validateProductionClosureMatrix,
   type ProductionClosureMatrix,
 } from "./production-closure-matrix.js";
@@ -39,8 +40,14 @@ describe("production closure matrix", () => {
         0,
       );
 
-    expect(requirementCount).toBe(101);
-    expect(matrix.requirements).toHaveLength(101);
+    // The invariant is that the matrix and the canonical register agree with
+    // each other, not that either equals a fixed number. Pinning a magic count
+    // would turn the first legitimate new requirement into a red ga:check for
+    // every other open PR; the validator's REQUIREMENT_MISSING /
+    // REQUIREMENT_UNKNOWN rules are what actually detect drift, and asserting
+    // the validator returns no issues confirms they see none here.
+    expect(requirementCount).toBeGreaterThan(0);
+    expect(matrix.requirements).toHaveLength(requirementCount);
     expect(validateProductionClosureMatrix(manifest, matrix)).toEqual([]);
   });
 
@@ -71,18 +78,10 @@ describe("production closure matrix", () => {
     );
   });
 
-  it("fails verified or GA promotion without canonical evidence", () => {
-    const verifiedManifest = loadManifest();
-    const verifiedMatrix = loadMatrix();
-    const verifiedRequirement = verifiedManifest.requirements[0];
-    verifiedRequirement.implementationStatus = "verified";
-    verifiedRequirement.acceptance[0].evidence = [];
-    verifiedMatrix.requirements[0].status.implementationStatus = "verified";
-
-    expect(codes(verifiedManifest, verifiedMatrix)).toContain(
-      "VERIFIED_EVIDENCE_REQUIRED",
-    );
-
+  it("fails GA promotion without canonical live evidence", () => {
+    // The "verified needs code-verifiable evidence" case is covered upstream by
+    // the contract's stricter VERIFIED_WITHOUT_CODE_EVIDENCE rule (spec:check);
+    // the redundant closure-side check was removed, so it is not asserted here.
     const gaManifest = loadManifest();
     const gaMatrix = loadMatrix();
     const gaRequirement = gaManifest.requirements[0];
@@ -104,5 +103,49 @@ describe("production closure matrix", () => {
     expect(codes(gaManifest, gaMatrix)).toContain(
       "GA_PRODUCTION_EVIDENCE_REQUIRED",
     );
+  });
+
+  it("accepts a fresh, reachable live observation", () => {
+    const matrix = loadMatrix();
+    expect(
+      releaseTrainObservationIssues(matrix, {
+        revisionExists: () => true,
+        now: new Date(matrix.releaseTrain.observedAt),
+      }),
+    ).toEqual([]);
+  });
+
+  it("rejects an observedMainRevision that is not a commit", () => {
+    const matrix = loadMatrix();
+    matrix.releaseTrain.observedMainRevision =
+      "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    const codes = releaseTrainObservationIssues(matrix, {
+      revisionExists: () => false,
+      now: new Date(matrix.releaseTrain.observedAt),
+    }).map((issue) => issue.code);
+
+    expect(codes).toContain("RELEASE_REVISION_UNREACHABLE");
+  });
+
+  it("rejects a whole-second batch stamp for observedAt", () => {
+    const matrix = loadMatrix();
+    matrix.releaseTrain.observedAt = "2026-08-20T00:00:00.000Z";
+    const codes = releaseTrainObservationIssues(matrix, {
+      revisionExists: () => true,
+      now: new Date(matrix.releaseTrain.observedAt),
+    }).map((issue) => issue.code);
+
+    expect(codes).toContain("RELEASE_TIMESTAMP_BATCH_STAMP");
+  });
+
+  it("rejects a live observation older than the staleness bound", () => {
+    const matrix = loadMatrix();
+    const observedMs = Date.parse(matrix.releaseTrain.observedAt);
+    const codes = releaseTrainObservationIssues(matrix, {
+      revisionExists: () => true,
+      now: new Date(observedMs + 15 * 24 * 60 * 60 * 1000),
+    }).map((issue) => issue.code);
+
+    expect(codes).toContain("RELEASE_SNAPSHOT_STALE");
   });
 });

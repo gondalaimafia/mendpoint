@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -88,12 +89,12 @@ const TEST_EVIDENCE_TYPES = new Set([
   "benchmark",
   "security",
 ]);
-const VERIFIED_EVIDENCE_TYPES = new Set([
-  ...TEST_EVIDENCE_TYPES,
-  "code",
-  "live",
-]);
 const SHA = /^[a-f0-9]{40}$/;
+// A live observation older than this is treated as decayed: the open-PR
+// snapshot is a point-in-time read that goes stale within hours, so a bounded
+// age converts silent rot into a visible refresh obligation without CI needing
+// network access.
+const OBSERVATION_MAX_AGE_DAYS = 14;
 
 function sorted(values: readonly string[]): string[] {
   return [...values].sort((left, right) => left.localeCompare(right));
@@ -131,6 +132,78 @@ function canonicalRequirements(
 
 function evidenceFor(requirement: ProductRequirement) {
   return requirement.acceptance.flatMap((criterion) => criterion.evidence);
+}
+
+/**
+ * releaseTrain.observedAt and releaseTrain.observedMainRevision both assert a
+ * live observation: someone read main and the open-PR set at one instant. The
+ * pure validator above can only check that the revision is well-formed
+ * (SHA.test) and the timestamp parses (Date.parse); it has no repository access
+ * or clock, so it cannot tell a real commit from a fabricated forty-hex string,
+ * a genuine probe from a hand-entered batch stamp, or a fresh snapshot from a
+ * decayed one. This does, and it mirrors the same guards public-claims-check.ts
+ * applies to live claim evidence, because that is exactly where this hole first
+ * appeared: a batch of PRs stamped observedAt while pinning a revision that was
+ * never committed here. The rules:
+ *   - a well-formed observedMainRevision must resolve to an actual commit
+ *     object (malformed revisions are left to the RELEASE_REVISION format check
+ *     so we do not double-report them);
+ *   - observedAt must not end in ".000Z": a genuine probe reads the clock once
+ *     and records sub-second precision (…T02:57:03.604Z), while a synthetic
+ *     batch stamp collapses to whole-second precision;
+ *   - observedAt must be within OBSERVATION_MAX_AGE_DAYS of now.
+ */
+export function releaseTrainObservationIssues(
+  matrix: ProductionClosureMatrix,
+  options: {
+    revisionExists: (revision: string) => boolean;
+    now: Date;
+  },
+): ProductionClosureMatrixIssue[] {
+  const issues: ProductionClosureMatrixIssue[] = [];
+  const revision = matrix.releaseTrain?.observedMainRevision ?? "";
+  if (SHA.test(revision) && !options.revisionExists(revision)) {
+    add(
+      issues,
+      "RELEASE_REVISION_UNREACHABLE",
+      "releaseTrain",
+      `observedMainRevision ${revision} is not a commit in this repository`,
+    );
+  }
+  const observedAt = matrix.releaseTrain?.observedAt ?? "";
+  if (observedAt.endsWith(".000Z")) {
+    add(
+      issues,
+      "RELEASE_TIMESTAMP_BATCH_STAMP",
+      "releaseTrain",
+      `observedAt ${observedAt} uses whole-second precision; a genuine live observation records sub-second precision`,
+    );
+  }
+  const observedMs = Date.parse(observedAt);
+  if (!Number.isNaN(observedMs)) {
+    const ageMs = options.now.getTime() - observedMs;
+    if (ageMs > OBSERVATION_MAX_AGE_DAYS * 24 * 60 * 60 * 1000) {
+      add(
+        issues,
+        "RELEASE_SNAPSHOT_STALE",
+        "releaseTrain",
+        `observedAt ${observedAt} is older than ${OBSERVATION_MAX_AGE_DAYS} days; refresh the snapshot against current main`,
+      );
+    }
+  }
+  return issues;
+}
+
+function gitRevisionExists(repoRoot: string, revision: string): boolean {
+  try {
+    execFileSync("git", ["cat-file", "-e", `${revision}^{commit}`], {
+      cwd: repoRoot,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function validateProductionClosureMatrix(
@@ -255,17 +328,13 @@ export function validateProductionClosureMatrix(
         );
       }
     }
-    if (
-      requirement.implementationStatus === "verified" &&
-      !evidence.some((item) => VERIFIED_EVIDENCE_TYPES.has(item.type))
-    ) {
-      add(
-        issues,
-        "VERIFIED_EVIDENCE_REQUIRED",
-        row.requirementId,
-        "verified requirements need canonical code-verifiable evidence",
-      );
-    }
+    // A "verified needs code-verifiable evidence" rule once lived here, but it
+    // could never be the check that failed: the contract's stricter
+    // VERIFIED_WITHOUT_CODE_EVIDENCE rule (spec:check, which runs first in
+    // ga:check) forbids the same requirements over a strict subset of evidence
+    // types, so any requirement this would reject is already rejected upstream.
+    // A check that cannot fail reads as coverage it does not provide, so it was
+    // removed rather than duplicated here.
     if (
       requirement.availability === "ga" &&
       !evidence.some((item) => item.type === "live")
@@ -434,7 +503,13 @@ function main() {
   const matrix = JSON.parse(
     readFileSync(matrixPath, "utf8"),
   ) as ProductionClosureMatrix;
-  const issues = validateProductionClosureMatrix(manifest, matrix);
+  const issues = [
+    ...releaseTrainObservationIssues(matrix, {
+      revisionExists: (revision) => gitRevisionExists(root, revision),
+      now: new Date(),
+    }),
+    ...validateProductionClosureMatrix(manifest, matrix),
+  ];
   if (issues.length > 0) {
     for (const issue of issues) {
       console.error(`${issue.code} ${issue.subject}: ${issue.message}`);
