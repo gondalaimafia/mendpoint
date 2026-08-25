@@ -789,7 +789,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         summary: "graph handle unavailable",
         coverage: { basis: "unknown" as const, reason: "graph_handle_unavailable" },
       };
-  const graphRagMd = gldb ? formatQueryForPlanner(blast) : "";
+  // Render the blast unconditionally. Without a handle it carries
+  // basis "unknown" / reason "graph_handle_unavailable", and
+  // formatQueryForPlanner prints that. Emitting "" instead would drop the
+  // one signal distinguishing "no graph was consulted" from "the graph was
+  // consulted and found nothing" — the honest object is already built above.
+  const graphRagMd = formatQueryForPlanner(blast);
 
   // Graph-update audit at the ingest entry point. Keep the replay identity and
   // metadata derived only from the immutable spec change. Blast-radius counts
