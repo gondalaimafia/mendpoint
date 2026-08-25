@@ -8,8 +8,8 @@
  * no tenant). This compiler instead SELECTS a bounded envelope of inherited
  * context — mission identity, the task, a bounded graph projection, relevant
  * history, active decisions, relevant organization memory, policy constraints,
- * verification state, unresolved exceptions, and evidence refs — and renders it
- * for injection at the model seam.
+ * verification state, unresolved exceptions, mission artifacts (refs only),
+ * and evidence refs — and renders it for injection at the model seam.
  *
  * Design commitments, each with a deletable control and a test that dies when it
  * is removed (see mission-context-compiler.test.ts):
@@ -216,6 +216,18 @@ export type ExceptionEntry = Readonly<{
   status: string;
 }>;
 
+/**
+ * A mission output by REFERENCE only: role, artifact id, sha256, and label.
+ * Never the artifact body — those bytes stay in `artifact_manifests`.
+ */
+export type ArtifactEntry = Readonly<{
+  id: string;
+  role: string;
+  artifactId: string;
+  artifactSha256: string;
+  label: string;
+}>;
+
 export type DecisionEntry = Readonly<{
   id: string;
   subjectKey: string;
@@ -241,6 +253,14 @@ export type InheritedContextEnvelope = Readonly<{
     | NotConsulted<MissionSectionNotConsultedReason>;
   unresolvedExceptions:
     | Consulted<{ entries: readonly ExceptionEntry[] }>
+    | NotConsulted<MissionSectionNotConsultedReason>;
+  /**
+   * Mission outputs by reference (role / artifact id / sha256 / label). Never
+   * bodies. Omitted input is `not_consulted`; a bound producer that looked and
+   * found none is `consulted` with empty entries.
+   */
+  missionArtifacts:
+    | Consulted<{ entries: readonly ArtifactEntry[] }>
     | NotConsulted<MissionSectionNotConsultedReason>;
   evidenceRefs: readonly string[];
   /** Every contended subject that the single precedence resolver decided. */
@@ -369,6 +389,16 @@ export type ExceptionInput = Readonly<{
   status: string;
 }>;
 
+/** Mission artifact registry row, refs only — never the stored body. */
+export type ArtifactInput = Readonly<{
+  tenantId: string;
+  id: string;
+  role: string;
+  artifactId: string;
+  artifactSha256: string;
+  label: string;
+}>;
+
 export type HistoryInput = Readonly<{
   tenantId: string;
   trajectoryRef: string;
@@ -412,6 +442,12 @@ export type MissionContextInput = Readonly<{
   history: SectionSource<HistoryInput>;
   verification: SectionSource<VerificationInput>;
   exceptions: SectionSource<ExceptionInput>;
+  /**
+   * Optional. Omitted means the compiler did not look (`not_consulted`,
+   * defaulting to `store_not_available`). A bound producer that listed the
+   * registry MUST pass `{ consulted: true, records }` even when empty.
+   */
+  artifacts?: SectionSource<ArtifactInput>;
   evidenceRefs?: readonly string[];
 }>;
 
@@ -806,6 +842,25 @@ export function compileMissionContext(input: MissionContextInput): InheritedCont
       })
     : sectionNotConsulted(input.exceptions);
 
+  const artifactsSource = input.artifacts ?? { consulted: false as const };
+  const missionArtifacts: InheritedContextEnvelope["missionArtifacts"] = artifactsSource.consulted
+    ? Object.freeze({
+        status: "consulted",
+        entries: Object.freeze(
+          cap(artifactsSource.records).map((record) => {
+            assertTenant(tenantId, record.tenantId);
+            return Object.freeze({
+              id: identifier(record.id, "mission_context_artifact_id_invalid"),
+              role: identifier(record.role, "mission_context_artifact_role_invalid"),
+              artifactId: identifier(record.artifactId, "mission_context_artifact_ref_invalid"),
+              artifactSha256: identifier(record.artifactSha256, "mission_context_artifact_sha256_invalid"),
+              label: clippedText(record.label, "mission_context_artifact_label_invalid"),
+            });
+          }),
+        ),
+      })
+    : sectionNotConsulted(artifactsSource);
+
   const graphProjection = buildGraphSection(tenantId, input.graph);
   const verificationState = buildVerificationSection(tenantId, input.verification);
 
@@ -828,6 +883,7 @@ export function compileMissionContext(input: MissionContextInput): InheritedCont
     policyConstraints,
     verificationState,
     unresolvedExceptions,
+    missionArtifacts,
     evidenceRefs,
     precedence: Object.freeze(precedence.outcomes),
     bounds: Object.freeze({ sectionItemsCapped, historyTruncated, promptTruncated: false }),
@@ -860,6 +916,7 @@ export type ContextRef =
   | Readonly<{ kind: "policy_constraint"; id: string; subjectKey: string; source: string }>
   | Readonly<{ kind: "verification"; id: string; state: MissionVerificationState }>
   | Readonly<{ kind: "exception"; id: string; status: string }>
+  | Readonly<{ kind: "mission_artifact"; id: string; role: string; artifactId: string; sha256: string }>
   | Readonly<{ kind: "history"; trajectoryRef: string; outcome: string }>
   | Readonly<{ kind: "evidence"; ref: string }>;
 
@@ -914,7 +971,7 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
   lines.push(`Task goal: ${envelope.task.goal}`);
 
   // Ordered by drop-priority (highest kept longest): policy, decisions,
-  // exceptions, verification (current only), org memory, graph, history.
+  // exceptions, artifacts, verification (current only), org memory, graph, history.
   const sections: string[][] = [];
 
   // Policy constraints (highest authority).
@@ -962,6 +1019,29 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
     exceptionLines.push(`(reason: ${envelope.unresolvedExceptions.reason})`);
   }
   sections.push(exceptionLines);
+
+  // Mission artifacts by reference only — role, id, sha256, label; never bodies.
+  const artifactLines: string[] = [`## Mission artifacts [${sectionState(envelope.missionArtifacts)}]`];
+  if (envelope.missionArtifacts.status === "consulted") {
+    if (envelope.missionArtifacts.entries.length === 0) artifactLines.push("(none registered for this mission)");
+    for (const entry of envelope.missionArtifacts.entries) {
+      artifactLines.push(
+        `- [${entry.role}] ${entry.artifactId} sha256=${entry.artifactSha256} (${entry.label})`,
+      );
+      refs.push(
+        Object.freeze({
+          kind: "mission_artifact",
+          id: entry.id,
+          role: entry.role,
+          artifactId: entry.artifactId,
+          sha256: entry.artifactSha256,
+        }),
+      );
+    }
+  } else {
+    artifactLines.push(`(reason: ${envelope.missionArtifacts.reason})`);
+  }
+  sections.push(artifactLines);
 
   // Verification: current evidence and superseded evidence are separated. A stale
   // verification is listed under "superseded" and is NEVER presented as current.

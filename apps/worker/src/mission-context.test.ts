@@ -9,6 +9,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   bindMissionGraphVersion,
@@ -19,11 +20,13 @@ import {
   createPolicyEnvelope,
   getMission,
   getTrajectory,
+  insertArtifactManifest,
   insertPrincipal,
   raiseMissionException,
   recordMissionDecision,
   recordMissionVerification,
   recordTrajectory,
+  registerMissionArtifact,
   type AppDb,
 } from "@mendpoint/db";
 import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
@@ -156,6 +159,9 @@ describe("worker mission-context producer (real stores)", () => {
     expect(compiled.envelope.activeDecisions.status).toBe("consulted");
     expect(compiled.envelope.unresolvedExceptions.status).toBe("consulted");
     expect(compiled.envelope.verificationState.status).toBe("consulted");
+    expect(compiled.envelope.missionArtifacts.status).toBe("consulted");
+    if (compiled.envelope.missionArtifacts.status !== "consulted") throw new Error("unreachable");
+    expect(compiled.envelope.missionArtifacts.entries).toEqual([]);
     // The passing verification against the current snapshot is current evidence.
     if (compiled.envelope.verificationState.status !== "consulted") throw new Error("unreachable");
     expect(compiled.envelope.verificationState.entries.some((entry) => entry.state === "current_evidence")).toBe(true);
@@ -272,6 +278,9 @@ describe("worker mission-context producer (real stores)", () => {
     expect(compiled.envelope.activeDecisions.status).toBe("not_consulted");
     if (compiled.envelope.activeDecisions.status !== "not_consulted") throw new Error("unreachable");
     expect(compiled.envelope.activeDecisions.reason).toBe("no_mission_bound");
+    expect(compiled.envelope.missionArtifacts.status).toBe("not_consulted");
+    if (compiled.envelope.missionArtifacts.status !== "not_consulted") throw new Error("unreachable");
+    expect(compiled.envelope.missionArtifacts.reason).toBe("no_mission_bound");
     expect(compiled.injection.promptBody).toContain("use the internal auth client");
   });
 
@@ -345,6 +354,60 @@ describe("worker mission-context producer (real stores)", () => {
       repositoryId: "r1",
       snapshotId: "snapA",
       graphVersionId: "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+  });
+
+  it("lists registered mission artifacts by reference after insertArtifactManifest", () => {
+    const db = fixture();
+    const body = "the candidate patch bytes must never appear in context";
+    const sha256 = createHash("sha256").update(body).digest("hex");
+    insertArtifactManifest(db, {
+      id: "art-patch",
+      tenantId: "t1",
+      kind: "candidate-edit",
+      schemaVersion: 1,
+      sha256,
+      mediaType: "text/plain",
+      sizeBytes: Buffer.byteLength(body, "utf8"),
+      storageRef: "mem://art-patch",
+      content: body,
+      createdAt: T0,
+    });
+    const registered = registerMissionArtifact(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      role: "candidate_patch",
+      artifactId: "art-patch",
+      label: "payments patch",
+      producerPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    });
+    expect(compiled.envelope.missionArtifacts.status).toBe("consulted");
+    if (compiled.envelope.missionArtifacts.status !== "consulted") throw new Error("unreachable");
+    expect(compiled.envelope.missionArtifacts.entries).toEqual([{
+      id: registered.id,
+      role: "candidate_patch",
+      artifactId: "art-patch",
+      artifactSha256: sha256,
+      label: "payments patch",
+    }]);
+    expect(compiled.injection.promptBody).toContain("[candidate_patch] art-patch");
+    expect(compiled.injection.promptBody).toContain(`sha256=${sha256}`);
+    expect(compiled.injection.promptBody).not.toContain("the candidate patch bytes must never appear in context");
+    expect(compiled.refs).toContainEqual({
+      kind: "mission_artifact",
+      id: registered.id,
+      role: "candidate_patch",
+      artifactId: "art-patch",
+      sha256,
     });
   });
 });

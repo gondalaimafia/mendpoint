@@ -383,6 +383,93 @@ describe("mission context compiler", () => {
     expect(body).toContain("task not part of a formal mission");
   });
 
+  it("omitted artifacts are not_consulted, distinct from a bound empty read", () => {
+    const omitted = compileMissionContext(baseInput());
+    expect(omitted.missionArtifacts.status).toBe("not_consulted");
+    if (omitted.missionArtifacts.status !== "not_consulted") throw new Error("unreachable");
+    expect(omitted.missionArtifacts.reason).toBe("store_not_available");
+
+    const emptyBound = compileMissionContext(baseInput({ artifacts: { consulted: true, records: [] } }));
+    expect(emptyBound.missionArtifacts.status).toBe("consulted");
+    if (emptyBound.missionArtifacts.status !== "consulted") throw new Error("unreachable");
+    expect(emptyBound.missionArtifacts.entries).toEqual([]);
+    const emptyBody = renderMissionContext(emptyBound).injection.promptBody;
+    expect(emptyBody).toContain("Mission artifacts [consulted]");
+    expect(emptyBody).toContain("(none registered for this mission)");
+  });
+
+  it("consulted artifacts carry refs/roles/sha256/label only, never bodies", () => {
+    const envelope = compileMissionContext(
+      baseInput({
+        artifacts: {
+          consulted: true,
+          records: [{
+            tenantId: "t1",
+            id: "ma-1",
+            role: "candidate_patch",
+            artifactId: "art-patch",
+            artifactSha256: "a".repeat(64),
+            label: "payments patch",
+          }],
+        },
+      }),
+    );
+    expect(envelope.missionArtifacts.status).toBe("consulted");
+    if (envelope.missionArtifacts.status !== "consulted") throw new Error("unreachable");
+    expect(envelope.missionArtifacts.entries).toEqual([{
+      id: "ma-1",
+      role: "candidate_patch",
+      artifactId: "art-patch",
+      artifactSha256: "a".repeat(64),
+      label: "payments patch",
+    }]);
+    const compiled = renderMissionContext(envelope);
+    expect(compiled.injection.promptBody).toContain("[candidate_patch] art-patch");
+    expect(compiled.injection.promptBody).toContain(`sha256=${"a".repeat(64)}`);
+    expect(compiled.injection.promptBody).toContain("payments patch");
+    expect(compiled.injection.promptBody).not.toContain("PATCH BODY");
+    expect(compiled.refs).toContainEqual({
+      kind: "mission_artifact",
+      id: "ma-1",
+      role: "candidate_patch",
+      artifactId: "art-patch",
+      sha256: "a".repeat(64),
+    });
+  });
+
+  it("unbound artifacts report no_mission_bound, not store_not_available", () => {
+    const envelope = compileMissionContext(
+      baseInput({
+        mission: { missionId: null, product: "fettler", objective: "repair a failing test", repositoryId: "repo1", snapshotId: null, graphVersionId: null },
+        artifacts: { consulted: false, reason: "no_mission_bound" },
+      }),
+    );
+    expect(envelope.missionArtifacts.status).toBe("not_consulted");
+    if (envelope.missionArtifacts.status !== "not_consulted") throw new Error("unreachable");
+    expect(envelope.missionArtifacts.reason).toBe("no_mission_bound");
+    expect(renderMissionContext(envelope).injection.promptBody).toContain("Mission artifacts [not consulted]");
+  });
+
+  it("a foreign-tenant artifact is rejected rather than leaking into the prompt", () => {
+    expect(() =>
+      compileMissionContext(
+        baseInput({
+          artifacts: {
+            consulted: true,
+            records: [{
+              tenantId: "t2",
+              id: "ma-x",
+              role: "candidate_patch",
+              artifactId: "art-x",
+              artifactSha256: "b".repeat(64),
+              label: "foreign",
+            }],
+          },
+        }),
+      ),
+    ).toThrow("mission_context_tenant_mismatch");
+  });
+
   it("an active memory with no higher layer applies and is named", () => {
     const envelope = compileMissionContext(
       baseInput({
