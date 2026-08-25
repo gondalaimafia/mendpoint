@@ -14,7 +14,9 @@ import {
   getMissionTask,
   getMission,
   insertPrincipal,
+  listRepositorySnapshots,
   missionTaskIdForJob,
+  openTaskHandoff,
   recordExecutionCostFromRoutingLedger,
   resolveMissionForFettlerCampaign,
   resolveMissionForRegaugeCampaign,
@@ -53,17 +55,6 @@ function parseRisk(value: unknown): MissionTaskRisk {
     return value;
   }
   return "medium";
-}
-
-function reviewTaskEvent(jobId: string): { eventId: string; idempotencyKey: string } {
-  const digest = createHash("sha256")
-    .update(`mission-task:job:${jobId}:human_review_required`)
-    .digest("hex")
-    .slice(0, 32);
-  return {
-    eventId: `e-mtask-${digest}`,
-    idempotencyKey: `mission-task-job:${jobId}:human_review_required`,
-  };
 }
 
 function missionTaskAgentPrincipal(db: AppDb, tenantId: string, createdAt: string) {
@@ -143,19 +134,27 @@ export function handoffCompletedJobToMissionReview(
   if (task.status !== "agent_working" || !task.assignedPrincipalId) {
     throw new Error("mission_task_job_review_transition_invalid");
   }
-  const event = reviewTaskEvent(job.id);
-  return transitionMissionTask(db, {
+  const snapshot = mission.snapshotId && mission.repositoryId
+    ? listRepositorySnapshots(db, job.tenant_id, mission.repositoryId)
+      .find((row) => row.id === mission.snapshotId)
+    : undefined;
+  openTaskHandoff(db, {
     tenantId: job.tenant_id,
+    missionId: mission.id,
     taskId: task.id,
-    expectedRevision: task.revision,
-    to: "human_review_required",
-    actorPrincipalId: task.assignedPrincipalId,
-    assignedPrincipalId: task.assignedPrincipalId,
-    handoffReason: "advisory_verification_review",
-    ...event,
+    reason: "architecture_decision_required",
+    question:
+      `Should job ${job.id} (${job.type}) under mission ${mission.id}` +
+      ` proceed after advisory verification passed?`,
+    context:
+      `Review-first job ${job.id} settled successfully. ` +
+      `Human approval is required before treating verification as delivery.`,
+    ownerPrincipalId: task.assignedPrincipalId,
+    ...(snapshot ? { observedAgainst: { snapshotId: snapshot.id, resolvedSha: snapshot.resolved_sha } } : {}),
     correlationId: job.id,
     createdAt,
   });
+  return getMissionTask(db, job.tenant_id, task.id);
 }
 
 /**

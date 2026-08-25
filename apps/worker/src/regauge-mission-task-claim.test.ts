@@ -10,6 +10,7 @@ import {
   insertPrincipal,
   linkRegaugeCampaignToMission,
   listMissionTasks,
+  listMissionExceptions,
   regaugeLaunchMissionTaskId,
   transitionMissionTask,
   type AppDb,
@@ -222,8 +223,18 @@ describe("handoffRegaugeMissionTaskOnReview", () => {
     });
     expect(handed).toMatchObject({
       status: "human_review_required",
-      handoffReason: "pilot_lane_review",
+      ownerType: "human",
+      handoffReason: "architecture_decision_required",
     });
+    const exceptions = listMissionExceptions(db, "t1", missionId);
+    expect(exceptions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        blocking: true,
+        category: "architecture_decision_required",
+        taskId: handed?.id,
+      }),
+    ]));
+    expect(exceptions[0]?.reason).toContain("proceed after the pilot attempt passed verification");
   });
 
   it("is idempotent once the task is already human_review_required", () => {

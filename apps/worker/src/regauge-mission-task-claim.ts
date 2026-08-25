@@ -10,8 +10,11 @@
  */
 import { createHash } from "node:crypto";
 import {
+  getMission,
   getMissionTask,
   insertPrincipal,
+  listRepositorySnapshots,
+  openTaskHandoff,
   regaugeLaunchMissionTaskId,
   resolveMissionForRegaugeCampaign,
   transitionMissionTask,
@@ -113,9 +116,11 @@ export function assignRegaugeMissionTaskOnClaim(
 }
 
 /**
- * After a successful pilot-lane complete, hand the MissionTask to humans.
- * The live ReGauge path is review-first: verification passing is not delivery.
- * No-op when unbound or the task is not on the claimed working path.
+ * After a successful pilot-lane complete, hand the MissionTask to humans
+ * through `openTaskHandoff` (blocking exception + MissionTask in one
+ * transaction). The live ReGauge path is review-first: verification passing
+ * is not delivery. No-op when unbound or the task is not on the claimed
+ * working path. A generic "please review" is refused by the store.
  */
 export function handoffRegaugeMissionTaskOnReview(
   db: AppDb,
@@ -125,18 +130,28 @@ export function handoffRegaugeMissionTaskOnReview(
   if (!task) return undefined;
   if (task.status === "human_review_required") return task;
   if (task.status !== "agent_working") return undefined;
-  const actorId = task.assignedPrincipalId
-    ?? missionTaskAgentPrincipal(db, input.tenantId, input.createdAt).id;
-  return transitionMissionTask(db, {
+  if (!task.assignedPrincipalId) throw new Error("mission_task_review_actor_unknown");
+  const mission = resolveMissionForRegaugeCampaign(db, input.tenantId, input.campaignId);
+  const snapshot = mission?.snapshotId && mission.repositoryId
+    ? listRepositorySnapshots(db, input.tenantId, mission.repositoryId)
+      .find((row) => row.id === mission.snapshotId)
+    : undefined;
+  openTaskHandoff(db, {
     tenantId: input.tenantId,
+    missionId: task.missionId,
     taskId: task.id,
-    expectedRevision: task.revision,
-    to: "human_review_required",
-    actorPrincipalId: actorId,
-    handoffReason: "pilot_lane_review",
-    eventId: `${task.id}-claim-review`,
-    idempotencyKey: `mission-task-claim-review-${task.id}`,
+    reason: "architecture_decision_required",
+    question:
+      `Should ReGauge campaign ${input.campaignId} repository ${input.repositoryId}` +
+      `${mission?.snapshotId ? ` snapshot ${mission.snapshotId}` : ""}` +
+      ` proceed after the pilot attempt passed verification?`,
+    context:
+      `ReGauge pilot-lane completeAttempt reached review for campaign ${input.campaignId}` +
+      ` repository ${input.repositoryId}. Verification passing is not delivery.`,
+    ownerPrincipalId: task.assignedPrincipalId,
+    ...(snapshot ? { observedAgainst: { snapshotId: snapshot.id, resolvedSha: snapshot.resolved_sha } } : {}),
     correlationId: input.campaignId,
     createdAt: input.createdAt,
   });
+  return getMissionTask(db, input.tenantId, task.id);
 }
