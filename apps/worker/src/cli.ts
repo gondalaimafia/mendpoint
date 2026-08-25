@@ -184,6 +184,7 @@ import {
 } from "./warden-model-accounting.js";
 import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
 import { persistWardenTrajectory } from "./warden-trajectory.js";
+import { assertAgentRunMissionPolicy } from "./agent-run-policy.js";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
 import { observeProductCompletionInShadow } from "./verifier-product-shadow.js";
@@ -2962,6 +2963,17 @@ async function processJobsOnceUnfenced(
         }
         const repository = getConnectedRepository(db, binding.repositoryId, job.tenant_id);
         if (!repository) throw new Error("warden_connected_repository_not_found");
+        if (payload.missionId) {
+          assertAgentRunMissionPolicy(db, {
+            tenantId: job.tenant_id,
+            missionId: payload.missionId,
+            repositoryId: binding.repositoryId,
+            branch: repository.selected_branch || repository.default_branch || "main",
+            targetPaths: allowedChangedPaths,
+            useLlm,
+            risk: payload.ciFailure ? "high" : "medium",
+          });
+        }
         const repositoryClassification = modelSourcePolicy
           ? resolveWardenRepositoryClassification(job.tenant_id, repository.remote_id, workerEnv)
           : "restricted";
