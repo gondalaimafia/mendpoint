@@ -3295,7 +3295,6 @@ GREEN: a single preparation step now writes only run metadata to a retained arti
 RED: `npm run docs:check` reported exactly `model-router.html`, `model-router.md`, `billing-usage.html`, and `billing-usage.md` as stale.
 
 GREEN: the canonical generator changed only those four artifacts. It removed references to the absent billing and router-runtime test files and aligned the router upload copy with the immutable decision record in the source catalog. `docs:check`, `names:check`, `claims:check`, and the production build pass; strict diff review found no source-catalog rewrite.
-
 ### 2026-08-25 ReGauge authenticated state transfer
 
 - [x] Define a versioned, authenticated, encrypted transfer manifest for the exact four live SQLite stores and immutable authority bindings.
@@ -3333,3 +3332,20 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 #### Review
 
 Main revision `c8d51caa` merged a reviewer key that the runtime ignores and retained null App IDs. The repair uses the verified, nonsecret identity tuple for `mendpoint-closure-authority[bot]` and the observed GitHub Actions App ID. The bot is temporarily bound under `Claude`, which permits reciprocal review of the current Codex and Cursor queue; a second distinct reviewer identity is still required before Claude-owned pull requests can satisfy the same invariant. The 26 GitHub-authority tests, 30 matrix tests, and 12 proposal-authority tests pass, the scripts TypeScript project passes, and `git diff --check` is clean.
+
+### 2026-08-25 PR 458 reviewer-directive replacement
+
+- [x] RED: prove two live regeneration cycles for the same durable candidate identity replace the earlier reviewer directive.
+- [x] RED: prove every legacy reviewer-directive head on the same scope is retired while foreign decisions remain active.
+- [x] RED: prove an identical retry replays the active directive and preserves causal lineage.
+- [x] RED: prove the primitive owns its read/write transaction and remains safe inside an existing transaction.
+- [x] Implement a stable candidate-bound directive scope and the smallest tenant-scoped atomic replacement primitive.
+- [x] Run focused API and database tests, affected typechecks, and diff integrity.
+- [x] Inspect the complete current-main diff, document review evidence, commit, and push `codex/pr458-review-fixes`.
+
+#### Review
+
+- RED: current main stored reviewer scope by transient run id, left two active live directives for the same candidate, retained every duplicate legacy head, and had no atomic replacement primitive. The API suite failed 3 new assertions and the database suite failed all 4 primitive assertions before production code changed. A whitespace-preserving retry then reproduced a second distinct successor until input normalization was added.
+- GREEN: the API now derives reviewer scope from the exact 64-character candidate digest. The database primitive recognizes only candidate-bound verification decisions with agent-run evidence, deterministically retires every matching legacy head, leaves foreign policy or architecture decisions active, replays identical normalized input, and forwards correlation and causation through its append-only records.
+- Concurrency: the primitive opens `BEGIN IMMEDIATE` before reading when it owns the transaction, while joining an existing caller transaction without committing it. A boundary-injection regression proves a writer committed immediately before the lock is visible and fully reconciled; an outer rollback removes the complete replacement.
+- Verification: rebased onto current `origin/main` `4d8dfd66`. All 21 candidate-review API tests and 23 MissionDecision and handoff database tests pass. API and database typechecks pass, and diff integrity is clean.

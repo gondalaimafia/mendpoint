@@ -28,7 +28,9 @@ import {
   type SnapshotIdentity,
 } from "./mission-exceptions.js";
 import {
+  getActiveMissionDecisions,
   recordMissionDecision,
+  retractMissionDecision,
   supersedeMissionDecision,
   type MissionDecision,
   type MissionDecisionType,
@@ -319,6 +321,113 @@ export function recordReviewerDirective(
     createdAt: input.createdAt,
     decisionType: input.decisionType ?? null,
   });
+}
+
+const REVIEWER_CANDIDATE_DIGEST = /^[a-f0-9]{64}$/;
+
+export function reviewerDirectiveScope(candidateDigest: string): string {
+  const normalized = candidateDigest.trim().toLowerCase();
+  if (!REVIEWER_CANDIDATE_DIGEST.test(normalized)) {
+    throw new Error("reviewer_directive_candidate_digest_invalid");
+  }
+  return `reviewer_directive:candidate:${normalized}`;
+}
+
+function sameEvidence(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((ref, index) => ref === right[index]);
+}
+
+/**
+ * Record the current human directive for one durable candidate identity. This
+ * is deliberately narrower than a generic MissionDecision replacement: only
+ * verification decisions carrying both the exact candidate and an agent-run
+ * reference are reviewer directives. Foreign policy or architecture decisions
+ * on the same textual scope are never superseded.
+ *
+ * Legacy data may contain multiple active reviewer heads because the generic
+ * record primitive permits independent roots. Reconcile those heads in stable
+ * creation/id order, retracting every duplicate before replacing the newest
+ * head. The entire read/reconcile/write sequence owns one IMMEDIATE transaction
+ * unless its caller already owns the transaction.
+ */
+export function replaceReviewerDirective(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    missionId: string;
+    directive: string;
+    candidateDigest: string;
+    sourceRunId: string;
+    authorPrincipalId: string;
+    correlationId: string;
+    causationId?: string | null;
+    createdAt: string;
+  },
+): MissionDecision {
+  const directive = input.directive.trim();
+  const candidateDigest = input.candidateDigest.trim().toLowerCase();
+  const sourceRunId = input.sourceRunId.trim();
+  if (!sourceRunId) throw new Error("reviewer_directive_source_run_invalid");
+  const scope = reviewerDirectiveScope(candidateDigest);
+  const candidateEvidence = `candidate:${candidateDigest}`;
+  const evidence = [`agent_run:${sourceRunId}`, candidateEvidence] as const;
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const heads = getActiveMissionDecisions(db, input.tenantId, input.missionId).filter((decision) =>
+      decision.scope === scope &&
+      decision.decisionType === "verification" &&
+      decision.evidence.includes(candidateEvidence) &&
+      decision.evidence.some((ref) => ref.startsWith("agent_run:") && ref.length > "agent_run:".length));
+    const replay = heads.find((decision) =>
+      decision.decision === directive &&
+      decision.authorPrincipalId === input.authorPrincipalId &&
+      decision.createdAt === input.createdAt &&
+      sameEvidence(decision.evidence, evidence));
+    const survivor = replay ?? heads.at(-1);
+    for (const head of heads) {
+      if (head.id === survivor?.id) continue;
+      retractMissionDecision(db, {
+        tenantId: input.tenantId,
+        priorDecisionId: head.id,
+        rationale: `Duplicate reviewer directive reconciled for ${scope}`,
+        authorPrincipalId: input.authorPrincipalId,
+        correlationId: input.correlationId,
+        causationId: input.causationId ?? null,
+        createdAt: input.createdAt,
+      });
+    }
+    const value = replay ?? (survivor
+      ? supersedeMissionDecision(db, {
+          tenantId: input.tenantId,
+          priorDecisionId: survivor.id,
+          decision: directive,
+          scope,
+          authorPrincipalId: input.authorPrincipalId,
+          evidence,
+          correlationId: input.correlationId,
+          causationId: input.causationId ?? null,
+          createdAt: input.createdAt,
+          decisionType: "verification",
+        })
+      : recordReviewerDirective(db, {
+          tenantId: input.tenantId,
+          missionId: input.missionId,
+          directive,
+          scope,
+          authorPrincipalId: input.authorPrincipalId,
+          evidence,
+          correlationId: input.correlationId,
+          causationId: input.causationId ?? null,
+          createdAt: input.createdAt,
+          decisionType: "verification",
+        }));
+    if (owns) db.raw.exec("COMMIT");
+    return value;
+  } catch (error) {
+    if (owns) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 /**

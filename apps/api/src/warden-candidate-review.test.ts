@@ -15,7 +15,9 @@ import {
   getWardenCiUpdateByRun,
   insertAgentRun,
   insertPrincipal,
+  recordMissionDecision,
   recordAudit,
+  recordReviewerDirective,
   verifyAuditIntegrity,
   type AppDb,
 } from "@mendpoint/db";
@@ -513,53 +515,88 @@ describe("Warden candidate human review", () => {
     const active = getActiveMissionDecisions(db, "tenant-a", "m1");
     expect(active).toHaveLength(1);
     expect(active[0]!.decision).toBe("Do not use a raw OAuth flow: it violates the internal auth policy.");
-    expect(active[0]!.scope).toBe("reviewer_directive:warden-run-1");
+    expect(active[0]!.scope).toBe(`reviewer_directive:candidate:${CANDIDATE_DIGEST}`);
     expect(active[0]!.decisionType).toBe("verification");
   });
 
-  it("records the rejected approach as a path-scoped mission decision when reject is mission-bound", async () => {
+  it("replaces a live reviewer directive when a later run yields the same candidate identity", async () => {
     const { app, db } = fixture();
     createMission(db, {
       id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
       objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
       eventId: "ev-m1", idempotencyKey: "cm-m1", correlationId: "corr", createdAt: NOW,
     });
-    const src = getJob(db, "source-job-1", "tenant-a")!;
+    const source = getJob(db, "source-job-1", "tenant-a")!;
     db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
-      .run(JSON.stringify({ ...JSON.parse(src.payload_json), missionId: "m1" }));
+      .run(JSON.stringify({ ...JSON.parse(source.payload_json), missionId: "m1" }));
+    const candidateResult = getAgentRun(db, "warden-run-1", "tenant-a")!.result_json;
 
-    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+    const firstResponse = await app.request("/agent/runs/warden-run-1/candidate/review", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        decision: "reject",
-        rationale: "Do not rewrite the public SDK surface.",
-      }),
+      body: JSON.stringify({ decision: "regenerate", rationale: "Keep the public signature stable." }),
     });
-    expect(response.status).toBe(200);
+    expect(firstResponse.status).toBe(202);
+    const firstBody = await firstResponse.json() as { supersedingRunId: string };
+    db.raw.prepare(
+      `UPDATE agent_runs SET status = 'candidate_ready', result_json = ?, finished_at = ?
+       WHERE id = ? AND tenant_id = ?`,
+    ).run(candidateResult, NOW, firstBody.supersedingRunId, "tenant-a");
+
+    const secondResponse = await app.request(`/agent/runs/${firstBody.supersedingRunId}/candidate/review`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Keep the signature and add the missing retry guard." }),
+    });
+    expect(secondResponse.status).toBe(202);
     const active = getActiveMissionDecisions(db, "tenant-a", "m1");
     expect(active).toHaveLength(1);
     expect(active[0]).toMatchObject({
-      decision: "Do not rewrite the public SDK surface.",
-      scope: "src/client.ts",
-      decisionType: "other",
+      decision: "Keep the signature and add the missing retry guard.",
+      scope: `reviewer_directive:candidate:${CANDIDATE_DIGEST}`,
+      decisionType: "verification",
     });
-    expect(active[0]!.evidence).toEqual([
-      "agent_run:warden-run-1",
-      `candidate:${CANDIDATE_DIGEST}`,
-    ]);
   });
 
-  it("records no mission decision when the reject is not mission-bound (no fabrication)", async () => {
+  it("retires every legacy reviewer head without superseding a foreign same-scope decision", async () => {
     const { app, db } = fixture();
+    createMission(db, {
+      id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
+      objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-m1", idempotencyKey: "cm-m1", correlationId: "corr", createdAt: NOW,
+    });
+    const source = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(source.payload_json), missionId: "m1" }));
+    const scope = `reviewer_directive:candidate:${CANDIDATE_DIGEST}`;
+    for (const [runId, directive, createdAt] of [
+      ["legacy-run-1", "Keep the signature stable.", "2026-08-06T11:58:00.000Z"],
+      ["legacy-run-2", "Keep the signature stable and preserve retries.", "2026-08-06T11:59:00.000Z"],
+    ] as const) {
+      recordReviewerDirective(db, {
+        tenantId: "tenant-a", missionId: "m1", directive, scope,
+        authorPrincipalId: "trust-human-a",
+        evidence: [`agent_run:${runId}`, `candidate:${CANDIDATE_DIGEST}`],
+        correlationId: runId, createdAt, decisionType: "verification",
+      });
+    }
+    const policy = recordMissionDecision(db, {
+      tenantId: "tenant-a", missionId: "m1", decision: "OAuth changes require security approval.", scope,
+      authorPrincipalId: "trust-human-a", evidence: ["policy:security"], correlationId: "policy-corr",
+      createdAt: "2026-08-06T11:57:00.000Z", decisionType: "policy",
+    });
+
     const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: "reject", rationale: "The candidate is not acceptable." }),
+      body: JSON.stringify({ decision: "regenerate", rationale: "Preserve the signature and add bounded retries." }),
     });
-    expect(response.status).toBe(200);
-    const count = db.raw.prepare("SELECT COUNT(*) AS n FROM mission_decisions").get() as { n: number };
-    expect(count.n).toBe(0);
+    expect(response.status).toBe(202);
+    const active = getActiveMissionDecisions(db, "tenant-a", "m1");
+    expect(active.map((decision) => decision.id)).toContain(policy.id);
+    expect(active.filter((decision) => decision.decisionType === "verification")).toEqual([
+      expect.objectContaining({ decision: "Preserve the signature and add bounded retries.", scope }),
+    ]);
   });
 
   it("records no mission decision when the regenerate is not mission-bound (no fabrication)", async () => {

@@ -17,8 +17,11 @@ import {
   getActiveMissionDecisions,
   getMissionTask,
   insertPrincipal,
+  listDomainEvents,
+  listMissionDecisions,
   openTaskHandoff,
   recordReviewerDirective,
+  replaceReviewerDirective,
   resolveTaskHandoff,
   reviseDecisionOnNewEvidence,
   transitionMissionTask,
@@ -214,6 +217,93 @@ describe("mission handoff (durable records)", () => {
     });
     expect(recorded.decisionType).toBe("verification");
     expect(getActiveMissionDecisions(db, "t1", "m1")[0]!.decisionType).toBe("verification");
+  });
+
+  it("replays an identical reviewer directive instead of extending its supersession chain", () => {
+    const db = fixture();
+    const input = {
+      tenantId: "t1", missionId: "m1", directive: "  Keep the public signature stable.  ",
+      candidateDigest: "a".repeat(64), sourceRunId: "run-a", authorPrincipalId: "human-1",
+      correlationId: "corr-review", causationId: "candidate-ready-event", createdAt: T1,
+    } as const;
+    const first = replaceReviewerDirective(db, input);
+    const replay = replaceReviewerDirective(db, input);
+    expect(replay.id).toBe(first.id);
+    expect(replay.decision).toBe("Keep the public signature stable.");
+    expect(listMissionDecisions(db, "t1", "m1").filter((decision) =>
+      decision.scope === `reviewer_directive:candidate:${input.candidateDigest}`)).toHaveLength(1);
+  });
+
+  it("preserves causation on the superseding reviewer directive event", () => {
+    const db = fixture();
+    const candidateDigest = "b".repeat(64);
+    recordReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Keep the signature stable.",
+      scope: `reviewer_directive:candidate:${candidateDigest}`, authorPrincipalId: "human-1",
+      evidence: ["agent_run:run-old", `candidate:${candidateDigest}`],
+      correlationId: "corr-old", createdAt: T0, decisionType: "verification",
+    });
+    const replacement = replaceReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Keep the signature and add bounded retries.",
+      candidateDigest, sourceRunId: "run-new", authorPrincipalId: "human-1",
+      correlationId: "corr-new", causationId: "candidate-review:event-1", createdAt: T1,
+    });
+    expect(listDomainEvents(db, "t1", "mission", "m1").find((event) =>
+      event.id === `mission-decision:${replacement.id}`)?.causation_id).toBe("candidate-review:event-1");
+  });
+
+  it("opens its transaction before reading and reconciles a writer that commits at that boundary", () => {
+    const db = fixture();
+    const candidateDigest = "c".repeat(64);
+    const scope = `reviewer_directive:candidate:${candidateDigest}`;
+    recordReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "First directive.", scope,
+      authorPrincipalId: "human-1", evidence: ["agent_run:run-1", `candidate:${candidateDigest}`],
+      correlationId: "corr-1", createdAt: T0, decisionType: "verification",
+    });
+    const realExec = db.raw.exec.bind(db.raw);
+    let injected = false;
+    (db.raw as unknown as { exec: (sql: string) => unknown }).exec = (sql: string) => {
+      if (!injected && sql === "BEGIN IMMEDIATE") {
+        injected = true;
+        recordReviewerDirective(db, {
+          tenantId: "t1", missionId: "m1", directive: "Concurrent directive.", scope,
+          authorPrincipalId: "human-1", evidence: ["agent_run:run-2", `candidate:${candidateDigest}`],
+          correlationId: "corr-2", createdAt: T1, decisionType: "verification",
+        });
+      }
+      return realExec(sql);
+    };
+    try {
+      replaceReviewerDirective(db, {
+        tenantId: "t1", missionId: "m1", directive: "Committed directive.",
+        candidateDigest, sourceRunId: "run-3", authorPrincipalId: "human-1",
+        correlationId: "corr-3", createdAt: T2,
+      });
+    } finally {
+      (db.raw as unknown as { exec: typeof realExec }).exec = realExec;
+    }
+    expect(injected).toBe(true);
+    expect(getActiveMissionDecisions(db, "t1", "m1").filter((decision) =>
+      decision.scope === scope && decision.decisionType === "verification")).toEqual([
+      expect.objectContaining({ decision: "Committed directive." }),
+    ]);
+  });
+
+  it("joins an owning transaction so rollback removes the whole replacement", () => {
+    const db = fixture();
+    db.raw.exec("BEGIN IMMEDIATE");
+    try {
+      replaceReviewerDirective(db, {
+        tenantId: "t1", missionId: "m1", directive: "Transactional directive.",
+        candidateDigest: "d".repeat(64), sourceRunId: "run-d", authorPrincipalId: "human-1",
+        correlationId: "corr-d", createdAt: T1,
+      });
+      expect(db.raw.isTransaction).toBe(true);
+    } finally {
+      db.raw.exec("ROLLBACK");
+    }
+    expect(getActiveMissionDecisions(db, "t1", "m1")).toHaveLength(0);
   });
 
   // CONTROL: suppression is not absolute — a genuinely changed circumstance lets

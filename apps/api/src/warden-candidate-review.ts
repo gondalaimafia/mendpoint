@@ -11,7 +11,7 @@ import {
   getMission,
   getPrincipal,
   getTenantMembership,
-  recordReviewerDirective,
+  replaceReviewerDirective,
   getWardenCandidateDeliveryByRun,
   getWardenCiCycle,
   getWardenCiUpdateByRun,
@@ -79,6 +79,7 @@ const WARDEN_REVIEW_ERRORS = [
     "warden_candidate_response_too_large",
     "warden_candidate_result_invalid",
     "warden_candidate_review_conflict",
+    "reviewer_directive_candidate_digest_invalid",
     "warden_candidate_snapshot_binding_mismatch",
     "warden_candidate_source_invalid",
     "warden_candidate_source_job_invalid",
@@ -398,28 +399,24 @@ export function registerWardenCandidateReviewRoutes(
             currentRepairRunId: run.id, nextRepairRunId: next.runId, nextRepairJobId: next.jobId,
             observedAt: reviewedAt });
         }
-        // First real caller of the mission decision store. When this regenerate is
-        // part of a formal mission, record the reviewer's directive as a durable
-        // ACTIVE decision so EVERY prior cycle's guidance survives for the resumed
-        // run to inherit through the compiled envelope — not only the latest
-        // cycle's rationale by string concatenation. Scoped by the superseded run
-        // so distinct cycles stay distinct active decisions. The rationale is
-        // untrusted reviewer text: stored as data, and it only ever reaches a
-        // model inside the compiler's untrusted-data fence. A Fettler repair with
-        // no mission bound skips this — the mission is never fabricated.
+        // When this regenerate is part of a formal mission, retain one reviewer
+        // directive for the durable candidate identity. Repeated production runs
+        // that yield the same candidate therefore replace earlier guidance while
+        // distinct edits remain independent. The rationale is untrusted reviewer
+        // text and only reaches a model inside the compiler's data fence. A
+        // Fettler repair with no mission bound skips this; no mission is fabricated.
         const regenerateMissionId = typeof originalPayload.missionId === "string"
           ? originalPayload.missionId : null;
         if (regenerateMissionId && getMission(db, tenantId, regenerateMissionId)) {
-          recordReviewerDirective(db, {
+          replaceReviewerDirective(db, {
             tenantId,
             missionId: regenerateMissionId,
             directive: body.rationale,
-            scope: `reviewer_directive:${run.id}`,
+            candidateDigest,
+            sourceRunId: run.id,
             authorPrincipalId: trustId!,
-            evidence: [`agent_run:${run.id}`, ...(candidateDigest ? [`candidate:${candidateDigest}`] : [])],
             correlationId: next.runId,
             createdAt: reviewedAt,
-            decisionType: "verification",
           });
         }
         reviewedResult = { ...result, review: { decision: body.decision, rationale: body.rationale,
