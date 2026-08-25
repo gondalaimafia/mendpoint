@@ -220,7 +220,9 @@ export function buildMissionContext(
         records: listMissionArtifacts(db, tenantId, mission.id)
           .filter((artifact) => {
             const exactTaskArtifact =
-              artifact.taskId === params.task.taskId && artifact.sourceSnapshot === snapshotId;
+              snapshotId !== null &&
+              artifact.taskId === params.task.taskId &&
+              artifact.sourceSnapshot === snapshotId;
             const explicitlyMissionGlobal =
               params.includeMissionGlobalArtifacts === true &&
               artifact.taskId === null && artifact.sourceSnapshot === null;

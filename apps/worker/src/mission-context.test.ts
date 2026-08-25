@@ -500,6 +500,29 @@ describe("worker mission-context producer (real stores)", () => {
       correlationId: "corr",
       createdAt: T0,
     });
+    insertArtifactManifest(db, {
+      id: "art-partial-null",
+      tenantId: "t1",
+      kind: "candidate-edit",
+      schemaVersion: 1,
+      sha256: createHash("sha256").update("partially scoped output").digest("hex"),
+      mediaType: "text/plain",
+      sizeBytes: Buffer.byteLength("partially scoped output", "utf8"),
+      storageRef: "mem://art-partial-null",
+      content: "partially scoped output",
+      createdAt: T0,
+    });
+    registerMissionArtifact(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      taskId: "task-1",
+      role: "candidate_patch",
+      artifactId: "art-partial-null",
+      label: "partial null binding",
+      producerPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
     const mission = getMission(db, "t1", "m1")!;
     const params = {
       tenantId: "t1",
