@@ -169,6 +169,8 @@ export async function runWardenCiRepairDispatch(input: WardenCiRepairDispatchInp
     observationDigest: observation.observationDigest, evidenceArtifactId: observation.evidenceArtifactId,
     evidenceDigest: observation.evidenceDigest, trigger,
     reviewFeedbackDigest: evidenceAuthorityValue.reviewFeedbackDigest });
+  // Copy the source run's claimed Mission id when present. Do not invent one
+  // from the delivery or campaign; unbound source runs stay unbound.
   const missionId = claimedMissionId(originalPayload);
   const agentPayload = Object.freeze({
     goal: trigger === "review_feedback"
