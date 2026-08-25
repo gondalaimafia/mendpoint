@@ -326,8 +326,7 @@ function retainAndBindVerifierPolicy(db: AppDb, input: Readonly<{
       tenantId: input.tenantId,
       policyEnvelopeId: defaultPolicyEnvelopeId(input.tenantId),
       version: 1,
-      residency: inheritedEnvelope.residency,
-      createdAt: inheritedEnvelope.createdAt,
+      createdAt: inheritedBefore.createdAt,
     }));
     if (canonicalInherited !== inheritedBefore.envelopeJson ||
         sha256(canonicalInherited) !== inheritedBefore.contentSha256 ||

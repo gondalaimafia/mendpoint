@@ -147,12 +147,39 @@ describe("Transformer production profile", () => {
       ...environment(),
       MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: "{}",
     }, "coordinator")).toThrow("transformer_production_verifier_policy_invalid");
+    for (const baseUrl of [
+      "http://api.deepseek.com",
+      "https://attacker.example",
+      "https://api.deepseek.com/v1",
+      " https://api.deepseek.com",
+    ]) {
+      expect(() => validateTransformerProductionProfile({
+        ...environment(),
+        MENDPOINT_AGENT_VERIFIER_BASE_URL: baseUrl,
+      }, "coordinator")).toThrow("transformer_production_verifier_base_url_invalid");
+    }
     const mixedGovernance = JSON.parse(environment().MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON!);
     mixedGovernance.entries[0].externalModelAllowed = false;
     expect(() => validateTransformerProductionProfile({
       ...environment(),
       MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify(mixedGovernance),
     }, "coordinator")).toThrow("transformer_production_verifier_governance_invalid");
+  });
+
+  it("keeps the workflow policy version aligned with production boot validation", () => {
+    const workflow = readFileSync(
+      resolve(import.meta.dirname, "../../../.github/workflows/regauge-production.yml"),
+      "utf8",
+    );
+    const stagedPolicy = workflow.match(
+      /policy_envelope=[\s\S]*?policyEnvelopeId:[\s\S]*?version:\s*(\d+),[\s\S]*?createdAt:/,
+    );
+    const profilePolicy = JSON.parse(
+      environment().MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON!,
+    ) as { version: number };
+    expect(stagedPolicy?.[1]).toBe(String(profilePolicy.version));
+    expect(() => validateTransformerProductionProfile(environment(), "coordinator"))
+      .not.toThrow();
   });
 
   it("derives production worker identity from the Fly machine and rejects app-wide overrides", () => {
@@ -364,7 +391,7 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT: "2026-08-24T00:00:00.000Z",
     MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT: "2026-11-20T23:59:59.000Z",
     MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: TENANT, products: ["regauge"], dataClassification: "confidential", requiredRegion: "cn", processingRegion: "cn", consentId: "consent-regauge", evidenceRef: "github-environment:regauge-production", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentActive: true }] }),
-    MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: TENANT, version: 1, repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"], branchScope: ["main"], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
+    MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: TENANT, version: 2, repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"], branchScope: ["main"], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
     MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "deepseek-v4-flash-2026-08-21", currency: "USD", effectiveAt: "2026-08-21T00:00:00.000Z", inputPerMillion: 0.14, cachedInputPerMillion: 0.0028, outputPerMillion: 0.28 }),
   };
 }

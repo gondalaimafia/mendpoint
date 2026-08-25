@@ -3096,3 +3096,18 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Consent: an authenticated existing bootstrap receipt now reconciles the protected durable consent before Mission policy reconciliation. A missing historical grant is created once; an inactive or revoked version remains disabled and is never silently replaced.
 - Policy: the privileged migrated-state path accepts only the byte-identical canonical tenant default v1 and exact restrictive v2 target. A forged but internally consistent default identifier fails before v2 is inserted.
 - Verification: 20 focused bootstrap, Policy Envelope, advisory, and protected-workflow tests pass across 4 files. Diff integrity is clean.
+
+### 2026-08-25 Exact-head production profile review closure
+
+- [x] Align protected workflow Policy Envelope v2 with coordinator and worker boot validation.
+- [x] Bind legacy default validation to default residency and the retained row creation time rather than trusting fields embedded in candidate JSON.
+- [x] Pin production verifier egress to the authorized DeepSeek HTTPS origin.
+- [x] Add workflow-to-profile, forged-residency, forged-time, and endpoint-redirection regressions.
+- [x] Run the focused production profile, policy migration, and workflow matrix.
+
+#### Review
+
+- Boot contract: the exact workflow-staged Policy Envelope version now equals the only version accepted by the dedicated production profile.
+- Historical authority: repository scope, residency, or embedded-time mutations under the deterministic default identifier all fail before restrictive v2 is retained.
+- Egress: the dedicated production profile accepts only `https://api.deepseek.com`; plaintext, alternate-host, path, and whitespace variants fail before coordinator or worker startup.
+- Verification: 39 focused tests pass across 3 files.

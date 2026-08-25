@@ -284,6 +284,11 @@ function validateVerifierProfile(
     throw new Error("transformer_production_verifier_profile_invalid");
   }
   exact(
+    env.MENDPOINT_AGENT_VERIFIER_BASE_URL ?? "https://api.deepseek.com",
+    "https://api.deepseek.com",
+    "transformer_production_verifier_base_url_invalid",
+  );
+  exact(
     env.MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT,
     "2026-08-24T00:00:00.000Z",
     "transformer_production_verifier_consent_invalid",
@@ -329,7 +334,7 @@ function validateVerifierProfile(
   const expectedBranchScope = JSON.stringify([REGAUGE_DEEPSEEK_APPROVED_SCOPE.branch]);
   if (!plain(policy) || Object.keys(policy).sort().join(",") !== policyKeys ||
       policy.tenantId !== tenantId || policy.policyEnvelopeId !== "regauge-deepseek-v4-flash-advisory-20260824" ||
-      policy.version !== 1 || JSON.stringify(policy.repositoryScope) !== expectedRepositoryScope ||
+      policy.version !== 2 || JSON.stringify(policy.repositoryScope) !== expectedRepositoryScope ||
       JSON.stringify(policy.branchScope) !== expectedBranchScope || JSON.stringify(policy.forbiddenZones) !== "[]" ||
       JSON.stringify(policy.allowedTools) !== JSON.stringify(["deepseek-verifier"]) ||
       JSON.stringify(policy.allowedModelClasses) !== JSON.stringify(["rented_specialist"]) ||

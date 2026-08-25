@@ -105,7 +105,11 @@ describe("dedicated ReGauge advisory dispatch", () => {
     expect(listArtifactManifests(store, "tenant_regauge_canary", "agent_verifier_advisory_substantive_evidence")).toHaveLength(1);
   });
 
-  it("rejects a forged legacy default before retaining the privileged v2 policy", () => {
+  it.each([
+    ["repository scope", { repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"] }],
+    ["residency", { residency: "cn" }],
+    ["embedded creation time", { createdAt: "2026-08-23T12:00:00.000Z" }],
+  ])("rejects a forged legacy default with changed %s before retaining v2", (_field, changes) => {
     const store = db();
     const forged = canonicalPolicyEnvelopeJson({
       ...defaultPolicyEnvelope({
@@ -114,7 +118,7 @@ describe("dedicated ReGauge advisory dispatch", () => {
         version: 1,
         createdAt: "2026-08-24T12:00:00.000Z",
       }),
-      repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"],
+      ...changes,
     });
     createPolicyEnvelope(store, {
       tenantId: "tenant_regauge_canary",
