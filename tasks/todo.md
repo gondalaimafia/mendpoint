@@ -3205,3 +3205,19 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Root cause: the protected environment and pinned Git revision identify `codex/regauge-canary-baseline`, while the shared DeepSeek scope and workflow Policy Envelope required `main`; activation would fail before the dedicated coordinator could start.
 - Authority: the approved scope now names the exact canary branch. The workflow derives the envelope branch from the protected binding and separately rejects every branch except that approved value. Tenant, campaign, repository, model class, external-processing consent, advisory-only behavior, and expiry are unchanged.
 - Verification: 74 focused tests pass across the production workflow, shared advisory scope, worker profile, worker verifier job, coordinator dispatch, and bootstrap runtime. Full workspace typecheck, the optimized 50-route production build, and the complete GA policy and evidence gate pass; YAML parsing and diff integrity are clean. The register remains honest at 28 verified foundational requirements, with ReGauge still explicitly non-GA.
+
+### 2026-08-25 PR 447 Mission scope review repair
+
+- [x] Review the Cursor head against current main and reproduce the additive enrollment scope defect.
+- [x] Keep the Fettler Mission unbound while a draft campaign can still gain repository targets.
+- [x] Bind an exact repository and immutable snapshot only when a single-target campaign starts.
+- [x] Prove sequential multi-repository enrollment stays unbound and single-repository start is idempotently bound.
+- [x] Run focused API tests, affected typecheck, and diff integrity.
+- [ ] Push a Codex-owned replacement PR and obtain exact-head reciprocal review before merge.
+
+#### Review
+
+- Root cause: enrollment is additive while Mission repository and snapshot scope is immutable. Binding after the first one-repository scan made a later eligible repository invisible in Mission scope.
+- Repair: enrollment retains the durable Mission, Policy Envelope, graph version, and per-repository MissionTasks without freezing repository scope. Start binds scope only when the final target set has exactly one repository and fails closed on any conflicting prior scope.
+- Regression: a one-repository scan followed by a second eligible repository remains unbound through start; a final single-repository start binds the exact immutable snapshot, and replay preserves the same Mission revision.
+- Verification: all 17 campaign enrollment API tests pass, API typecheck passes, dependency audit reports zero vulnerabilities, and diff integrity is clean.

@@ -18,6 +18,7 @@ import {
   transitionWardenCampaign,
   linkFettlerCampaignToMission,
   recordAudit,
+  resolveMissionForFettlerCampaign,
   type AppDb,
   type WardenOrgRepositoryCandidate,
 } from "@mendpoint/db";
@@ -535,21 +536,6 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           correlationId: campaignId,
           createdAt: at,
         });
-        const enrolledTargets = listWardenCampaignTargets(options.db, tenantId, campaignId);
-        if (enrolledTargets.length === 1) {
-          const only = enrolledTargets[0]!;
-          bindMissionScope(options.db, {
-            tenantId,
-            missionId,
-            repositoryId: only.repositoryId,
-            snapshotId: only.snapshotId,
-            actorPrincipalId: trustPrincipalId,
-            eventId: `${missionId}-scope-bound`,
-            idempotencyKey: `mission-scope-${missionId}`,
-            correlationId: campaignId,
-            createdAt: at,
-          });
-        }
         createFettlerEnrollmentMissionTasks(options.db, {
           tenantId,
           missionId,
@@ -636,6 +622,21 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
       }
       const targets = listWardenCampaignTargets(options.db, auth.tenantId, campaignId);
       if (targets.length === 0) throw new Error("warden_rollout_targets_required");
+      const mission = resolveMissionForFettlerCampaign(options.db, auth.tenantId, campaignId);
+      if (mission && targets.length === 1) {
+        const only = targets[0]!;
+        bindMissionScope(options.db, {
+          tenantId: auth.tenantId,
+          missionId: mission.id,
+          repositoryId: only.repositoryId,
+          snapshotId: only.snapshotId,
+          actorPrincipalId: auth.trustPrincipalId,
+          eventId: `${mission.id}-scope-bound`,
+          idempotencyKey: `mission-scope-${mission.id}`,
+          correlationId: campaignId,
+          createdAt: at,
+        });
+      }
       const windowEnd = new Date(Date.parse(at) + 24 * 60 * 60 * 1000).toISOString();
       const decision = planWardenRollout(options.db, {
         id: `rollout-${campaignId}`,

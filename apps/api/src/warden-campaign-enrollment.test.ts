@@ -306,7 +306,7 @@ describe("Warden campaign org enrollment", () => {
     expect(listMissionTasks(db, "tenant-a", mission!.id)).toHaveLength(1);
   });
 
-  it("creates and campaign-links a Fettler Mission on enrollment", async () => {
+  it("creates and campaign-links an unscoped Fettler Mission on enrollment", async () => {
     const { app, db } = fixture();
     expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toBeUndefined();
 
@@ -320,8 +320,8 @@ describe("Warden campaign org enrollment", () => {
       fettlerCampaignId: "campaign-a",
       ownerPrincipalId: "trust-tenant-a-writer-a",
       graphVersionId: null,
-      repositoryId: "repository-a",
-      snapshotId: "snapshot-repository-a",
+      repositoryId: null,
+      snapshotId: null,
     });
 
     expect(listMissionTasks(db, "tenant-a", mission!.id)).toEqual([
@@ -338,8 +338,14 @@ describe("Warden campaign org enrollment", () => {
     expect(listMissionTasks(db, "tenant-a", mission!.id)).toHaveLength(1);
   });
 
-  it("leaves mission repository and snapshot unbound when enrollment is multi-repo", async () => {
+  it("leaves mission repository and snapshot unbound when a later scan adds a repository", async () => {
     const { app, db } = fixture();
+    expect((await enroll(app)).status).toBe(200);
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      repositoryId: null,
+      snapshotId: null,
+    });
+
     insertMonitoredApi(db, {
       id: "monitor-repository-b", consumerId: "consumer-repository-b",
       providerId: "provider-stripe", detectionSource: "detected",
@@ -348,6 +354,11 @@ describe("Warden campaign org enrollment", () => {
     expect(listWardenCampaignTargets(db, "tenant-a", "campaign-a")).toHaveLength(2);
     const mission = resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a");
     expect(mission).toMatchObject({ repositoryId: null, snapshotId: null });
+    expect((await startCampaign(app)).status).toBe(200);
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      repositoryId: null,
+      snapshotId: null,
+    });
   });
 
   it("pins a published Change Graph version on a single-repo enrollment", async () => {
@@ -418,6 +429,10 @@ describe("Warden campaign org enrollment", () => {
   it("POST /fettler/campaigns/:id/start plans a conservative rollout and marks the campaign running", async () => {
     const { app, db } = fixture();
     expect((await enroll(app)).status).toBe(200);
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      repositoryId: null,
+      snapshotId: null,
+    });
 
     const res = await startCampaign(app);
     expect(res.status).toBe(200);
@@ -429,15 +444,20 @@ describe("Warden campaign org enrollment", () => {
     });
     expect(body.jobIds).toHaveLength(1);
     expect(getWardenCampaign(db, "tenant-a", "campaign-a")?.status).toBe("running");
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      repositoryId: "repository-a",
+      snapshotId: "snapshot-repository-a",
+    });
     expect(listAudit(db, "tenant-a")).toEqual(expect.arrayContaining([
       expect.objectContaining({ action: "warden.campaign.started", resource_id: "campaign-a" }),
     ]));
   });
 
   it("POST /fettler/campaigns/:id/start is a no-op when the campaign is already running", async () => {
-    const { app } = fixture();
+    const { app, db } = fixture();
     expect((await enroll(app)).status).toBe(200);
     expect((await startCampaign(app)).status).toBe(200);
+    const first = resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a");
     const second = await startCampaign(app);
     expect(second.status).toBe(200);
     expect(await second.json()).toMatchObject({
@@ -445,6 +465,12 @@ describe("Warden campaign org enrollment", () => {
       status: "running",
       jobIds: [],
       rolloutDecisionId: "rollout-campaign-a",
+    });
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      id: first?.id,
+      repositoryId: "repository-a",
+      snapshotId: "snapshot-repository-a",
+      revision: first?.revision,
     });
   });
 
