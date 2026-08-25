@@ -133,6 +133,11 @@ describe("web credential proxy", () => {
     );
     expect(icon.headers.get("x-middleware-next")).toBe("1");
 
+    const readiness = await middleware(
+      new NextRequest("https://console.example/readyz"),
+    );
+    expect(readiness.headers.get("x-middleware-next")).toBe("1");
+
     const githubReturn = await middleware(
       new NextRequest(
         "https://console.example/github/setup?installation_id=123&setup_action=install&state=opaque",
