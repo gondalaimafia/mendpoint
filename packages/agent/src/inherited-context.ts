@@ -59,6 +59,11 @@ export function inheritedContextShouldCompile(
   env: Record<string, string | undefined> = process.env,
   options: { missionBound?: boolean } = {},
 ): boolean {
+  // Operator kill switch: an explicit off overrides `missionBound`, so on-call can
+  // stop compilation for bound Missions by restart alone, without a code deploy.
+  // "unset" (default-off for unbound jobs) and "explicitly off" must stay distinct.
+  const raw = env[INHERITED_CONTEXT_ENV_VAR];
+  if (raw === "0" || raw === "false") return false;
   return inheritedContextEnabled(env) || Boolean(options.missionBound);
 }
 
