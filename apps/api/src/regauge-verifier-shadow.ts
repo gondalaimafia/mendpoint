@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   getConnectedRepository,
   getPrincipalBySubject,
@@ -93,15 +93,32 @@ export async function drainDedicatedRegaugeAdvisoryOutbox(input: Readonly<{
     throw new Error("verifier_advisory_scope_invalid");
   }
   const now = input.now ?? (() => new Date().toISOString());
-  const pending = input.store.listPendingVerifierAdvisoryDispatches(
-    input.tenantId,
-    input.limit ?? 25,
-  );
+  input.store.backfillVerifierAdvisoryDispatches({
+    tenantId: input.tenantId,
+    campaignId: REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId,
+  });
+  const limit = input.limit ?? 25;
+  const claimantId = `regauge-advisory-drainer-${randomUUID()}`;
   const outcomes: RegaugeVerifierAdvisoryDispatchOutcome[] = [];
-  for (const dispatch of pending) {
+  for (let index = 0; index < limit; index += 1) {
+    const leaseToken = randomBytes(32).toString("base64url");
+    const claim = input.store.claimNextVerifierAdvisoryDispatch({
+      tenantId: input.tenantId,
+      claimantId,
+      claimId: `regauge-advisory-claim-${randomUUID()}`,
+      leaseToken,
+      leaseDurationMs: 60_000,
+      observedAt: now(),
+    });
+    if (!claim) break;
+    const { dispatch } = claim;
     if (dispatch.campaignId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId) {
-      input.store.recordVerifierAdvisoryDispatchResult({
-        ...dispatch,
+      input.store.recordVerifierAdvisoryDispatchClaimResult({
+        tenantId: claim.tenantId,
+        dispatchId: claim.dispatchId,
+        claimId: claim.claimId,
+        leaseGeneration: claim.leaseGeneration,
+        leaseToken,
         status: "failed",
         errorCode: "verifier_advisory_scope_invalid",
         observedAt: now(),
@@ -122,8 +139,12 @@ export async function drainDedicatedRegaugeAdvisoryOutbox(input: Readonly<{
         completion,
         exactSource,
       });
-      input.store.recordVerifierAdvisoryDispatchResult({
-        ...dispatch,
+      input.store.recordVerifierAdvisoryDispatchClaimResult({
+        tenantId: claim.tenantId,
+        dispatchId: claim.dispatchId,
+        claimId: claim.claimId,
+        leaseGeneration: claim.leaseGeneration,
+        leaseToken,
         status: "enqueued",
         jobId: queued.jobId,
         observedAt: now(),
@@ -137,8 +158,12 @@ export async function drainDedicatedRegaugeAdvisoryOutbox(input: Readonly<{
       const errorCode = error instanceof Error && ID.test(error.message)
         ? error.message
         : "verifier_advisory_dispatch_failed";
-      input.store.recordVerifierAdvisoryDispatchResult({
-        ...dispatch,
+      input.store.recordVerifierAdvisoryDispatchClaimResult({
+        tenantId: claim.tenantId,
+        dispatchId: claim.dispatchId,
+        claimId: claim.claimId,
+        leaseGeneration: claim.leaseGeneration,
+        leaseToken,
         status: "failed",
         errorCode,
         observedAt: now(),

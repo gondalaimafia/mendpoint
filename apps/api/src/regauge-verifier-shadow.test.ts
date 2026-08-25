@@ -138,11 +138,16 @@ describe("dedicated ReGauge advisory dispatch", () => {
     });
     const claims = [
       { dispatch, claimId: "claim-a", claimantId: "drainer-a", leaseGeneration: 1,
+        tenantId: dispatch.tenantId, dispatchId: dispatch.dispatchId,
         leaseTokenDigest: digest("lease-a"), claimedAt: "2026-08-24T12:02:00.000Z",
         expiresAt: "2026-08-24T12:03:00.000Z" },
+      null,
       { dispatch, claimId: "claim-b", claimantId: "drainer-b", leaseGeneration: 2,
+        tenantId: dispatch.tenantId, dispatchId: dispatch.dispatchId,
         leaseTokenDigest: digest("lease-b"), claimedAt: "2026-08-24T12:04:00.000Z",
         expiresAt: "2026-08-24T12:05:00.000Z" },
+      null,
+      null,
     ];
     const recorded: Array<Record<string, unknown>> = [];
     const pilotStore = {

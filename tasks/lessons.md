@@ -143,3 +143,8 @@
 **Mistake:** A first `fly storage create` invocation allowed generated credential values to appear in command output.
 **Correction:** Generated credentials must never be exposed while provisioning storage authority.
 **Rule:** Always suppress output on the first `fly storage create` invocation, verify only secret names and status, and rotate or destroy the credentials immediately if any values appear.
+
+### 2026-08-24 — Keep internal dispatch state out of immutable requests
+**Mistake:** A server-only advisory dispatch flag was added to the historical completion event payload, changing the idempotency digest for an otherwise identical completed attempt.
+**Correction:** Advisory orchestration must remain internal, and existing authenticated terminal events must be upgraded without replaying product completion.
+**Rule:** Never add server scheduling or dispatch configuration to an immutable domain request. Persist side effects atomically in a separate identifier-only outbox, backfill historical terminal records only after verifying their append-only request digest and exact durable bindings, and drain them through tenant-scoped fenced claims with bounded retries.

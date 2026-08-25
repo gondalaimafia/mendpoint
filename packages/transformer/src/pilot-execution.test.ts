@@ -885,7 +885,10 @@ describe("Transformer pilot execution coordinator", () => {
   });
 
   it("atomically completes an attempt with its terminal checkpoint head", () => {
-    const store = new TransformerPilotExecutionStore();
+    const root = mkdtempSync(join(tmpdir(), "transformer-advisory-dispatch-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    const store = new TransformerPilotExecutionStore(path);
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
     const leaseToken = "lease-token-checkpoint-terminal-0001";
     const lease = store.claimNextAttempt({
@@ -1005,6 +1008,7 @@ describe("Transformer pilot execution coordinator", () => {
       tenantId: "tenant-a",
       campaignId: "campaign-a",
     })).toEqual({ inserted: 0, existing: 1 });
+    const concurrentStore = new TransformerPilotExecutionStore(path);
     const advisoryOutbox = store.listPendingVerifierAdvisoryDispatches("tenant-a", 10);
     expect(advisoryOutbox).toEqual([expect.objectContaining({
       schemaVersion: 1,
@@ -1029,7 +1033,7 @@ describe("Transformer pilot execution coordinator", () => {
       observedAt: time(4),
     })!;
     expect(firstClaim.dispatch).toEqual(dispatch);
-    expect(store.claimNextVerifierAdvisoryDispatch({
+    expect(concurrentStore.claimNextVerifierAdvisoryDispatch({
       tenantId: "tenant-a",
       claimantId: "drainer-b",
       claimId: "claim-b-blocked",
@@ -1052,30 +1056,6 @@ describe("Transformer pilot execution coordinator", () => {
       errorCode: "queue_unavailable",
       observedAt: time(4),
     })).toThrow("transformer_verifier_advisory_dispatch_fence_invalid");
-    store.recordVerifierAdvisoryDispatchClaimResult({
-      ...firstClaim,
-      leaseToken: "advisory-lease-a",
-      status: "failed",
-      errorCode: "queue_unavailable",
-      observedAt: time(4),
-    });
-    expect(() => store.recordVerifierAdvisoryDispatchClaimResult({
-      ...firstClaim,
-      leaseToken: "advisory-lease-a",
-      status: "failed",
-      errorCode: "queue_unavailable",
-      observedAt: time(4),
-    })).toThrow("transformer_verifier_advisory_dispatch_result_exists");
-    expect(store.claimNextVerifierAdvisoryDispatch({
-      tenantId: "tenant-a",
-      claimantId: "drainer-b",
-      claimId: "claim-b-backoff",
-      leaseToken: "advisory-lease-b-backoff",
-      leaseDurationMs: 60_000,
-      observedAt: time(4),
-    })).toBeNull();
-    expect(store.listVerifierAdvisoryDispatchResults("tenant-a", dispatch.dispatchId))
-      .toEqual([expect.objectContaining({ status: "failed", errorCode: "queue_unavailable" })]);
     const secondClaim = store.claimNextVerifierAdvisoryDispatch({
       tenantId: "tenant-a",
       claimantId: "drainer-b",
@@ -1085,13 +1065,65 @@ describe("Transformer pilot execution coordinator", () => {
       observedAt: time(5),
     })!;
     expect(secondClaim.leaseGeneration).toBe(2);
+    expect(() => store.recordVerifierAdvisoryDispatchClaimResult({
+      ...firstClaim,
+      leaseToken: "advisory-lease-a",
+      status: "failed",
+      errorCode: "queue_unavailable",
+      observedAt: time(5),
+    })).toThrow("transformer_verifier_advisory_dispatch_fence_invalid");
     store.recordVerifierAdvisoryDispatchClaimResult({
       ...secondClaim,
       leaseToken: "advisory-lease-b",
-      status: "enqueued",
-      jobId: "verifier-job-a",
+      status: "failed",
+      errorCode: "queue_unavailable",
       observedAt: time(5),
     });
+    expect(() => store.recordVerifierAdvisoryDispatchClaimResult({
+      ...secondClaim,
+      leaseToken: "advisory-lease-b",
+      status: "failed",
+      errorCode: "queue_unavailable",
+      observedAt: time(5),
+    })).toThrow("transformer_verifier_advisory_dispatch_result_exists");
+    expect(store.claimNextVerifierAdvisoryDispatch({
+      tenantId: "tenant-a",
+      claimantId: "drainer-c",
+      claimId: "claim-c-backoff",
+      leaseToken: "advisory-lease-c-backoff",
+      leaseDurationMs: 60_000,
+      observedAt: time(5),
+    })).toBeNull();
+    expect(store.listVerifierAdvisoryDispatchResults("tenant-a", dispatch.dispatchId))
+      .toEqual([expect.objectContaining({ status: "failed", errorCode: "queue_unavailable" })]);
+    for (let failureNumber = 2; failureNumber <= 8; failureNumber += 1) {
+      const observedAt = time(6 + ((failureNumber - 2) * 6));
+      const leaseTokenForFailure = `advisory-lease-${failureNumber}-bounded`;
+      const claim = store.claimNextVerifierAdvisoryDispatch({
+        tenantId: "tenant-a",
+        claimantId: `drainer-${failureNumber}`,
+        claimId: `claim-${failureNumber}`,
+        leaseToken: leaseTokenForFailure,
+        leaseDurationMs: 60_000,
+        observedAt,
+      })!;
+      expect(claim.leaseGeneration).toBe(failureNumber + 1);
+      store.recordVerifierAdvisoryDispatchClaimResult({
+        ...claim,
+        leaseToken: leaseTokenForFailure,
+        status: "failed",
+        errorCode: "queue_unavailable",
+        observedAt,
+      });
+    }
+    expect(store.claimNextVerifierAdvisoryDispatch({
+      tenantId: "tenant-a",
+      claimantId: "drainer-after-limit",
+      claimId: "claim-after-limit",
+      leaseToken: "advisory-lease-after-limit",
+      leaseDurationMs: 60_000,
+      observedAt: time(54),
+    })).toBeNull();
     expect(store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(0);
     store.authorizeCurrentWaveDrafts({
       ...mutation(4, "authorize-checkpoint-draft"),
@@ -1206,11 +1238,14 @@ describe("Transformer pilot execution coordinator", () => {
       event.type === "attempt.completed_with_checkpoint"
     )).toHaveLength(1);
     expect(store.listVerifierAdvisoryDispatchResults("tenant-a", dispatch.dispatchId))
-      .toHaveLength(2);
+      .toHaveLength(8);
+    concurrentStore.close();
     const raw = (store as unknown as { db: DatabaseSync }).db;
     raw.exec(`
       DROP TRIGGER tf_pilot_verifier_advisory_outbox_no_delete;
       DROP TRIGGER tf_pilot_events_no_update;
+      DROP TRIGGER tf_pilot_verifier_advisory_dispatch_claim_results_no_delete;
+      DROP TRIGGER tf_pilot_verifier_advisory_dispatch_claims_no_delete;
       DELETE FROM tf_pilot_verifier_advisory_dispatch_claim_results;
       DELETE FROM tf_pilot_verifier_advisory_dispatch_claims;
       DELETE FROM tf_pilot_verifier_advisory_outbox;

@@ -3065,8 +3065,16 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - [x] RED: backfill one authenticated identifier-and-digest-only outbox row for an exact legacy terminal event without replaying completion, and reject a tampered event atomically.
 - [x] RED: prove two concurrent drainers cannot claim the same dispatch, an expired claim can be fenced and taken over, and each claim has one terminal result.
 - [x] RED: prove retryable failures honor bounded exponential backoff so repeated readiness polls do not append failure rows.
-- [ ] Remove advisory dispatch configuration from the historical completion request payload while retaining atomic event and outbox insertion for new completions.
-- [ ] Implement exact-scope authenticated outbox backfill and tenant-scoped fenced claims under append-only store invariants.
-- [ ] Drain claims asynchronously into the deterministic verifier job lane and preserve completion, execution, selection, and delivery independence.
-- [ ] Run the focused advisory matrix, affected typechecks, and diff integrity checks.
-- [ ] Review and commit without rebasing, pushing, or merging.
+- [x] Remove advisory dispatch configuration from the historical completion request payload while retaining atomic event and outbox insertion for new completions.
+- [x] Implement exact-scope authenticated outbox backfill and tenant-scoped fenced claims under append-only store invariants.
+- [x] Drain claims asynchronously into the deterministic verifier job lane and preserve completion, execution, selection, and delivery independence.
+- [x] Run the focused advisory matrix, affected typechecks, and diff integrity checks.
+- [x] Review and commit without rebasing, pushing, or merging.
+
+#### Review
+
+- RED: the same historical checkpoint completion replayed with the server-only advisory flag failed with `transformer_pilot_idempotency_conflict`, and the asynchronous drain still consumed an unfenced pending list.
+- GREEN: the immutable terminal request no longer contains advisory configuration. Existing authenticated terminal events are checked against their append-only idempotency digest, exact checkpoint, completion, authorization, tenant, campaign, unit, episode, and current durable campaign state before one deterministic identifier-and-digest-only outbox row is inserted or verified.
+- Concurrency: append-only tenant-scoped claim and claim-result ledgers enforce one live lease, monotonic fencing, one terminal result per claim, takeover only after expiry, exponential retry backoff, and a terminal eight-failure ceiling. Two SQLite coordinator connections cannot claim the same dispatch.
+- Isolation: readiness drains backfill only the configured exact ReGauge campaign, claim before loading evidence or enqueueing, and retain the deterministic verifier job identity. Completion, candidate selection, execution, delivery, merge, and deployment authority are unchanged.
+- Verification: 56 direct store and drain regressions pass. The 11-file ReGauge advisory, consent, coordinator, worker, workflow, and proof matrix passes 163 tests. Transformer and API typechecks pass, and diff integrity is clean.
