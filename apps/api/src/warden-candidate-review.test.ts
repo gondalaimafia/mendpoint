@@ -7,15 +7,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
   createMission,
+  createMissionTask,
   enqueueJob,
   getActiveMissionDecisions,
   getAgentRun,
   getJob,
+  getMissionTask,
   getWardenCiCycle,
   getWardenCiUpdateByRun,
   insertAgentRun,
   insertPrincipal,
+  openTaskHandoff,
   recordAudit,
+  resolveTaskHandoff,
+  transitionMissionTask,
   verifyAuditIntegrity,
   type AppDb,
 } from "@mendpoint/db";
@@ -573,6 +578,59 @@ describe("Warden candidate human review", () => {
     // No mission exists and none is fabricated: the decision store stays empty.
     const count = db.raw.prepare("SELECT COUNT(*) AS n FROM mission_decisions").get() as { n: number };
     expect(count.n).toBe(0);
+  });
+
+  it("completes agent_resume MissionTasks on mission-bound approve", async () => {
+    const { app, db } = fixture({
+      sealApproval: async () => ({ path: "C:\\sealed-complete.json", sha256: `sha256:${"b".repeat(64)}`, created: true }),
+    });
+    createMission(db, {
+      id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
+      objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-m1", idempotencyKey: "cm-m1", correlationId: "corr", createdAt: NOW,
+    });
+    const src = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(src.payload_json), missionId: "m1" }));
+    let task = createMissionTask(db, {
+      id: "task-complete-1", tenantId: "tenant-a", missionId: "m1", taskType: "code_migration",
+      acceptanceCriteria: "tests pass", risk: "medium", actorPrincipalId: "trust-human-a",
+      eventId: "e-task-1", idempotencyKey: "c-task-1", correlationId: "corr", createdAt: NOW,
+    });
+    task = transitionMissionTask(db, {
+      tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision, to: "agent_assigned",
+      actorPrincipalId: "trust-human-a", eventId: "e-assign", idempotencyKey: "c-assign",
+      correlationId: "corr", createdAt: NOW,
+    });
+    task = transitionMissionTask(db, {
+      tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision, to: "agent_working",
+      actorPrincipalId: "trust-human-a", eventId: "e-work", idempotencyKey: "c-work",
+      correlationId: "corr", createdAt: NOW,
+    });
+    const exception = openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: task.id,
+      reason: "architecture_decision_required",
+      question: "Proceed to delivery?",
+      context: "Verification passed.",
+      ownerPrincipalId: "trust-human-a",
+      correlationId: "corr", createdAt: NOW,
+    });
+    resolveTaskHandoff(db, {
+      tenantId: "tenant-a", priorExceptionId: exception.id, taskId: task.id,
+      resolutionNote: "Yes.", decision: "Proceed",
+      scope: "handoff_resolution:warden-run-1",
+      authorPrincipalId: "trust-human-a",
+      correlationId: "corr", createdAt: NOW,
+    });
+    expect(getMissionTask(db, "tenant-a", task.id)?.status).toBe("agent_resume");
+    seedCiRepairCandidate(db);
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve the exact CI repair." }),
+    });
+    expect(response.status).toBe(202);
+    expect(getMissionTask(db, "tenant-a", task.id)?.status).toBe("complete");
   });
 
   it("keeps the committed winner seal through an orchestrated concurrent approval conflict", async () => {

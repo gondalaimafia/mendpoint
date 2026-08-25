@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   addWardenCampaignTarget,
+  addMissionTaskDependency,
   createDb,
   createMission,
   createMissionTask,
@@ -131,6 +132,23 @@ describe("assignFettlerMissionTaskOnClaim", () => {
       ownerType: "agent",
     });
     expect(driven?.assignedPrincipalId).toMatch(/^principal-mtask-agent-/);
+  });
+
+  it("does not start a task whose dependencies are not complete", () => {
+    const { db, missionId } = fixture();
+    const blocked = enrollTask(db, missionId, "repo-a");
+    const prereq = createMissionTask(db, {
+      id: "task-prereq", tenantId: "t1", missionId, taskType: "code_migration",
+      acceptanceCriteria: "first", risk: "medium", actorPrincipalId: "p1",
+      eventId: "e-prereq", idempotencyKey: "c-prereq", correlationId: "camp-1", createdAt: at,
+    });
+    addMissionTaskDependency(db, {
+      id: "dep-1", tenantId: "t1", missionId, taskId: blocked.id, dependsOnTaskId: prereq.id, createdAt: at,
+    });
+    expect(assignFettlerMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at,
+    })).toBeUndefined();
+    expect(getMissionTask(db, "t1", blocked.id)?.status).toBe("unassigned");
   });
 
   it("does not resolve a repo-scoped claim to the mission-level enrollment task", () => {

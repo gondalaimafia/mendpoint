@@ -15,6 +15,7 @@ import {
   getMission,
   insertPrincipal,
   missionTaskIdForJob,
+  missionTaskReady,
   recordExecutionCostFromRoutingLedger,
   resolveMissionForFettlerCampaign,
   resolveMissionForRegaugeCampaign,
@@ -110,7 +111,13 @@ export function bridgeClaimedJobToMissionTask(
   if (!mission) return undefined;
   const agent = missionTaskAgentPrincipal(db, job.tenant_id, createdAt);
   const payload = payloadRecord(job);
-  return ensureMissionTaskForJob(db, {
+  // Gate before ensureMissionTaskForJob, which starts unassigned tasks. A
+  // post-start check would leave the row agent_working after throwing.
+  const existing = getMissionTask(db, job.tenant_id, missionTaskIdForJob(job.id));
+  if (existing && !missionTaskReady(db, job.tenant_id, existing.id)) {
+    throw new Error("mission_task_dependencies_incomplete");
+  }
+  const task = ensureMissionTaskForJob(db, {
     tenantId: job.tenant_id,
     jobId: job.id,
     missionId: mission.id,
@@ -122,6 +129,7 @@ export function bridgeClaimedJobToMissionTask(
     createdAt,
     correlationId: job.id,
   });
+  return task;
 }
 
 /**

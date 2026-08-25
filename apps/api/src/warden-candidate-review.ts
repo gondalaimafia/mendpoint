@@ -11,7 +11,9 @@ import {
   getMission,
   getPrincipal,
   getTenantMembership,
+  listMissionTasks,
   recordReviewerDirective,
+  transitionMissionTask,
   getWardenCandidateDeliveryByRun,
   getWardenCiCycle,
   getWardenCiUpdateByRun,
@@ -116,6 +118,41 @@ function parseDecision(value: unknown): { decision: ReviewDecision; rationale: s
 function regenerationIds(tenantId: string, runId: string) {
   const digest = createHash("sha256").update([tenantId, runId, "regenerate"].join("\0"), "utf8").digest("hex");
   return { jobId: `warden-regenerate-job-${digest.slice(0, 32)}`, runId: `warden-regenerate-run-${digest.slice(32)}` };
+}
+
+/**
+ * Terminal approve: complete MissionTasks already in `agent_resume` for a bound
+ * Mission. Human_review_required cannot go to complete (legal table); those
+ * stay until a resolver moves them to agent_resume (`#454`). Unbound skip.
+ */
+export function tryCompleteBoundMissionTasksOnApprove(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    missionId: string | null;
+    actorPrincipalId: string;
+    correlationId: string;
+    createdAt: string;
+  },
+): number {
+  if (!input.missionId || !getMission(db, input.tenantId, input.missionId)) return 0;
+  let completed = 0;
+  for (const task of listMissionTasks(db, input.tenantId, input.missionId)) {
+    if (task.status !== "agent_resume") continue;
+    transitionMissionTask(db, {
+      tenantId: input.tenantId,
+      taskId: task.id,
+      expectedRevision: task.revision,
+      to: "complete",
+      actorPrincipalId: input.actorPrincipalId,
+      eventId: `${task.id}-review-complete`,
+      idempotencyKey: `mission-task-review-complete-${task.id}`,
+      correlationId: input.correlationId,
+      createdAt: input.createdAt,
+    });
+    completed += 1;
+  }
+  return completed;
 }
 
 function sourceBinding(db: AppDb, tenantId: string, result: Record<string, unknown>) {
@@ -472,6 +509,23 @@ export function registerWardenCandidateReviewRoutes(
             requesterPrincipalId: trustId!, rationale: body.rationale, now: reviewedAt });
           response = { ...response, delivery };
         }
+        const sourceJob = run.job_id ? getJob(db, run.job_id, tenantId) : undefined;
+        let approveMissionId: string | null = null;
+        if (sourceJob) {
+          try {
+            const payload = JSON.parse(sourceJob.payload_json) as Record<string, unknown>;
+            approveMissionId = typeof payload.missionId === "string" ? payload.missionId : null;
+          } catch {
+            approveMissionId = null;
+          }
+        }
+        tryCompleteBoundMissionTasksOnApprove(db, {
+          tenantId,
+          missionId: approveMissionId,
+          actorPrincipalId: trustId!,
+          correlationId: run.id,
+          createdAt: reviewedAt,
+        });
       }
       audit(c, { actor: "operator", action: body.decision === "approve" ? "agent.candidate.approved"
         : body.decision === "reject" ? "agent.candidate.rejected" : "agent.candidate.regeneration_requested",
