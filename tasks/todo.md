@@ -3041,3 +3041,13 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Second-review GREEN: the generated Policy Envelope names the exact approved repository and `main`. Each DeepSeek request now inserts a content-addressed intent containing the exact canonical consent snapshot and request binding before egress; each returned HTTP response is durably receipted before verifier parsing. A receipt is replayed without another provider call, an unresolved intent fails closed, and only an explicit no-response failure may create a new attempt.
 - Historical authority: production observations read the exact bound consent snapshot and provider request/processing times from the durable operation ledger, so later revocation does not erase valid historical proof. The current provider path still resolves active consent immediately before every new request, so revocation cannot authorize new processing.
 - Second-review verification: 184 Mission, Policy, campaign, workflow, proof, API, worker, and advisory tests pass across 19 files. The narrower advisory matrix passes 68 tests across 10 files. Pipeline, API, worker, and scripts typechecks pass; the workflow parses as YAML and diff integrity is clean.
+
+### 2026-08-24 Final spec review closure: completion outbox and revoked consent
+
+- [ ] RED: prove ReGauge completion acknowledges independently when advisory dispatch fails, while a tenant-bound identifier-and-digest-only outbox remains durable and retryable.
+- [ ] RED: prove outbox replay is idempotent and rejects tenant or completion-digest mismatches.
+- [ ] RED: prove coordinator bootstrap restarts after consent revocation without creating a replacement grant, while new verifier egress remains disabled.
+- [ ] Implement the smallest transactional completion outbox and asynchronous advisory drain through the existing verifier job lane.
+- [ ] Make revoked or otherwise inactive historical consent an explicit verifier-disabled bootstrap result that requires a new versioned operator grant before future egress.
+- [ ] Run the focused Mission, Policy, campaign, advisory, bootstrap, and coordinator matrices plus affected typechecks and diff integrity.
+- [ ] Review and commit the closure without rebasing, pushing, or merging.

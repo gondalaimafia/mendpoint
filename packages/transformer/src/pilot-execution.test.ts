@@ -992,6 +992,51 @@ describe("Transformer pilot execution coordinator", () => {
       observedAt: time(3),
       checkpointHead: terminal,
     });
+    const advisoryOutbox = store.listPendingVerifierAdvisoryDispatches("tenant-a", 10);
+    expect(advisoryOutbox).toEqual([expect.objectContaining({
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      campaignRevision: completed.campaign.revision,
+      unitId: lease.unitId,
+      episodeId: terminal.episodeId,
+      completionDigest,
+      authorizationDigest: completionIntent.authorizationDigest,
+      checkpointStateDigest: terminal.stateDigest,
+      observedAt: time(3),
+    })]);
+    expect(JSON.stringify(advisoryOutbox)).not.toContain("package.json");
+    const dispatch = advisoryOutbox[0]!;
+    expect(() => store.recordVerifierAdvisoryDispatchResult({
+      ...dispatch,
+      tenantId: "tenant-b",
+      status: "failed",
+      errorCode: "queue_unavailable",
+      observedAt: time(4),
+    })).toThrow("transformer_verifier_advisory_dispatch_scope_invalid");
+    expect(() => store.recordVerifierAdvisoryDispatchResult({
+      ...dispatch,
+      completionDigest: digest("9"),
+      status: "failed",
+      errorCode: "queue_unavailable",
+      observedAt: time(4),
+    })).toThrow("transformer_verifier_advisory_dispatch_binding_invalid");
+    store.recordVerifierAdvisoryDispatchResult({
+      ...dispatch,
+      status: "failed",
+      errorCode: "queue_unavailable",
+      observedAt: time(4),
+    });
+    expect(store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(1);
+    expect(store.listVerifierAdvisoryDispatchResults("tenant-a", dispatch.dispatchId))
+      .toEqual([expect.objectContaining({ status: "failed", errorCode: "queue_unavailable" })]);
+    store.recordVerifierAdvisoryDispatchResult({
+      ...dispatch,
+      status: "enqueued",
+      jobId: "verifier-job-a",
+      observedAt: time(5),
+    });
+    expect(store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(0);
     store.authorizeCurrentWaveDrafts({
       ...mutation(4, "authorize-checkpoint-draft"),
       gateConfig: authorization,
@@ -1104,6 +1149,8 @@ describe("Transformer pilot execution coordinator", () => {
     expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
       event.type === "attempt.completed_with_checkpoint"
     )).toHaveLength(1);
+    expect(store.listVerifierAdvisoryDispatchResults("tenant-a", dispatch.dispatchId))
+      .toHaveLength(2);
     store.close();
   });
 

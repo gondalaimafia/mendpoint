@@ -291,6 +291,7 @@ describe("real Transformer multi-node coordinator", () => {
     const constraint = createOrganizationConstraintContract({ tenantId: "tenant-a", organizationId: "org-a", version: 1, effectiveAt: "2026-08-12T11:59:00.000Z", sources: [{ id: "policy-a", kind: "explicit_policy", repositoryId: "repo-a", revision: revision("a"), digest: `sha256:${"a".repeat(64)}`, locator: "policy://org-a/repo-a/v1", evidenceRefs: ["evidence:policy:a"] }], rules: [{ id: "allow-a", sourceId: "policy-a", repositoryId: "repo-a", pathPattern: "**", actions: ["change"], effect: "allow", ownerIds: ["owner-a"], rationale: "Approved test scope" }] });
     service.store.createCampaign({ tenantId: "tenant-a", organizationId: "org-a", campaignId: "campaign-a", environment: "test", constraints: constraint, units: [{ id: "unit-a", title: "Migrate node", ownerId: "owner-a", reviewerIds: ["reviewer-a"], dependsOn: [], snapshot: { snapshotId: "snapshot-a", repositoryId: "repo-a", revision: revision("a"), manifestSha256: "a".repeat(64), digest: snapshotDigest, evidenceRefs: ["evidence:snapshot:a"] }, candidateRevision: revision("c"), candidateDigest: applied.outputDigest, recipe: recipeReference(NODE_RUNTIME_18_TO_20_RECIPE), changedPaths: ["package.json"] }], observedAt: "2026-08-12T12:00:00.000Z", evidenceRefs: ["evidence:create"], idempotencyKey: "create-a", gateConfig: gate });
     const app = new Hono<ApiEnv>();
+    let failFirstAdvisoryDispatch = true;
     const completedObserver = vi.fn(async (completion) => {
       expect(buildDedicatedRegaugeCompletionInput(completion, "mission-regauge-a")).toMatchObject({
         tenantId: "tenant-a",
@@ -299,6 +300,10 @@ describe("real Transformer multi-node coordinator", () => {
         candidateDigest: applied.outputDigest,
         deterministicEvidenceDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       });
+      if (failFirstAdvisoryDispatch) {
+        failFirstAdvisoryDispatch = false;
+        throw new Error("simulated_advisory_queue_failure");
+      }
       return;
     });
     app.use("*", async (c, next) => { c.set("requestId", "request-real"); c.set("principal", { id: "api-key:worker", tenantId: c.req.header("x-test-tenant") ?? "tenant-a", role: "agent" }); c.set("authScopes", ["transformer:worker"]); await next(); });
@@ -329,10 +334,12 @@ describe("real Transformer multi-node coordinator", () => {
     expect(readyResponse.status).toBe(200);
     let loseCompletionResponse = true;
     let loseDraftCompletionResponse = true;
+    const completionHttpStatuses: number[] = [];
     const draftAuthorizationRequests: unknown[] = [];
     const transport: TransformerMultinodeTransport = { request: async ({ path, body }) => {
       if (path.endsWith("authorizeCurrentWaveDrafts")) draftAuthorizationRequests.push(body);
       const response = await app.request(path, { method: "POST", headers: { "content-type": "application/json", "x-test-tenant": "tenant-a" }, body: JSON.stringify(body) });
+      if (path.endsWith("completeWithHead")) completionHttpStatuses.push(response.status);
       const parsed = await response.json() as Record<string, unknown>;
       if (!response.ok) throw new Error(String(parsed.error));
       if (path.endsWith("completeWithHead") && loseCompletionResponse) { loseCompletionResponse = false; throw new Error("simulated_response_loss"); }
@@ -375,7 +382,10 @@ describe("real Transformer multi-node coordinator", () => {
     const runner = createTransformerMultinodeService(runnerConfig, transport, artifactBackend);
     const result = await runner.runOnce();
     expect(result).toMatchObject({ status: "completed" });
-    expect(completedObserver).toHaveBeenCalled();
+    await vi.waitFor(() => expect(completedObserver).toHaveBeenCalledTimes(2));
+    expect(completionHttpStatuses).toEqual([200, 200]);
+    expect(failFirstAdvisoryDispatch).toBe(false);
+    expect(service.store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(1);
     expect(loseCompletionResponse).toBe(false);
     expect(service.store.getCampaign("tenant-a", "campaign-a")?.units[0]).toMatchObject({ candidateDigest: applied.outputDigest });
     await expect(runner.runOnce()).resolves.toMatchObject({ status: "idle" });

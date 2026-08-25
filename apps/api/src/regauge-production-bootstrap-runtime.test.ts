@@ -5,12 +5,14 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
+  findActiveLearningConsent,
   getMissionPolicyEnvelope,
   insertRepositorySnapshot,
   listDomainEvents,
   listMissionTasks,
   listRepositorySnapshots,
   resolveMissionForRegaugeCampaign,
+  revokeLearningConsent,
   verifyDomainEventIntegrity,
   type AppDb,
 } from "@mendpoint/db";
@@ -29,6 +31,10 @@ import {
   regaugeLaunchMissionTaskId,
   regaugeProductionBootstrapInputFromEnvironment,
 } from "./regauge-production-bootstrap-runtime.js";
+import {
+  REGAUGE_VERIFIER_CONSENT_PURPOSE,
+  regaugeVerifierConsentAuthorityFromEnvironment,
+} from "./regauge-verifier-consent.js";
 import { TransformerCampaignService } from "./transformer-control-plane.js";
 import { createAppDbTransformerMissionAuthority } from "./transformer-mission-authority.js";
 import { TransformerMissionService } from "./transformer-missions.js";
@@ -138,6 +144,22 @@ function environment() {
     MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF: APPROVAL,
     MENDPOINT_REGAUGE_GATE: gate(),
     MENDPOINT_REGAUGE_EVIDENCE_REFS: `${APPROVAL},evidence:regauge:acceptance`,
+    MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({
+      schemaVersion: "2026-08-17.v1",
+      entries: [{
+        tenantId: "tenant_regauge_canary",
+        products: ["regauge"],
+        consentId: "consent_regauge_20260824",
+        evidenceRef: "approval:user:2026-08-24",
+        requiredRegion: "cn",
+        processingRegion: "cn",
+        externalModelAllowed: true,
+        mayLeaveTenantBoundary: true,
+        consentActive: true,
+      }],
+    }),
+    MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT: "2026-08-24T00:00:00.000Z",
+    MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT: "2026-11-20T23:59:59.000Z",
     GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7654321":"tenant_regauge_canary"}',
   };
 }
@@ -218,6 +240,10 @@ describe("Regauge production bootstrap runtime", () => {
       control,
       executions,
       missions,
+      verifierConsentAuthority: regaugeVerifierConsentAuthorityFromEnvironment(
+        environment(),
+        "tenant_regauge_canary",
+      ),
       repositoryDependencies: {
         credentialBroker: broker,
         githubTransport: new GitHubSnapshotTransport(),
@@ -341,5 +367,32 @@ describe("Regauge production bootstrap runtime", () => {
         status: "unassigned",
       }),
     ]);
+
+    const consent = findActiveLearningConsent(db, {
+      tenantId: "tenant_regauge_canary",
+      purpose: REGAUGE_VERIFIER_CONSENT_PURPOSE,
+      at: new Date().toISOString(),
+    })!;
+    revokeLearningConsent(db, {
+      id: "consent_regauge_revoked_after_bootstrap",
+      tenantId: "tenant_regauge_canary",
+      consentId: consent.id,
+      consentVersion: consent.consent_version + 1,
+      authorizedByPrincipalId: consent.authorized_by_principal_id,
+      reason: "Operator revoked DeepSeek advisory processing.",
+      idempotencyKey: "regauge-bootstrap-consent-revoked",
+      createdAt: new Date().toISOString(),
+    });
+    await expect(baseRuntime.prepareRepository({
+      bootstrap: regaugeProductionBootstrapInputFromEnvironment(environment()),
+      reviewerActorId: "human:https://github.com|gondalaimafia",
+    })).resolves.toMatchObject({ repositoryId: first.repositoryId });
+    expect(findActiveLearningConsent(db, {
+      tenantId: "tenant_regauge_canary",
+      purpose: REGAUGE_VERIFIER_CONSENT_PURPOSE,
+      at: new Date().toISOString(),
+    })).toBeUndefined();
+    expect((db.raw.prepare("SELECT COUNT(*) count FROM learning_consents").get() as { count: number }).count)
+      .toBe(2);
   }, 20_000);
 });
