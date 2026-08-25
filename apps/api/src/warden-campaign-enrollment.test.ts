@@ -17,12 +17,19 @@ import {
   insertPrincipal,
   insertRepositorySnapshot,
   listAudit,
+  listMissionTasks,
   listWardenCampaignTargets,
+  fettlerCampaignMissionTaskId,
   putTenantMembership,
   resolveMissionForFettlerCampaign,
   upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
+import {
+  openGraphLearnDb,
+  publishSoftwareGraphVersion,
+  type SoftwareGraphPublicationV1,
+} from "@mendpoint/graph-learn";
 import type { InstallationRepository } from "@mendpoint/github";
 import type { ApiEnv } from "./auth.js";
 import { createWardenCampaignEnrollmentRoutes } from "./warden-campaign-enrollment.js";
@@ -218,6 +225,38 @@ function enroll(
   });
 }
 
+function startCampaign(
+  app: Hono<ApiEnv>,
+  session = "tenant-a",
+  mount: "warden" | "fettler" = "fettler",
+) {
+  return app.request(`/${mount}/campaigns/campaign-a/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Test-Session": session },
+    body: JSON.stringify({
+      ownerHandle: "@payments",
+      source: {
+        id: "source-a",
+        tenantId: "tenant-a",
+        sourceKind: "release",
+        sourceUri: "https://provider.example/releases/2026-08",
+        providerSlug: "stripe",
+        sourceRevision: "2026-08",
+        contentSha256: "a".repeat(64),
+        contentType: "application/json",
+        content: "{}",
+        observedAt: NOW,
+        capturedAt: NOW,
+        capturedBy: "worker:catalog",
+        taxonomyVersion: "2026-08-02",
+        taxonomySignals: [],
+        createdAt: NOW,
+      },
+      diffEntries: [{ op: "request_field_renamed", fromField: "amount_cents", toField: "amount" }],
+    }),
+  });
+}
+
 type EnrollBody = {
   campaignId: string;
   scanned: number;
@@ -228,6 +267,7 @@ type EnrollBody = {
 describe("Warden campaign org enrollment", () => {
   it("maps to plan execution authority and requires authentication", async () => {
     expect(permissionForRoute("POST", "/warden/campaigns/campaign-a/enroll-org")).toBe("plan:execute");
+    expect(permissionForRoute("POST", "/fettler/campaigns/campaign-a/start")).toBe("plan:execute");
     const { app } = fixture();
     const unauth = await app.request("/warden/campaigns/campaign-a/enroll-org", { method: "POST" });
     expect(unauth.status).toBe(401);
@@ -262,6 +302,8 @@ describe("Warden campaign org enrollment", () => {
     expect(body.enrolled).toHaveLength(0);
     expect(body.skipped.find((s) => s.remoteId === "200")?.reason).toBe("already_enrolled");
     expect(listWardenCampaignTargets(db, "tenant-a", "campaign-a")).toHaveLength(1);
+    const mission = resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a");
+    expect(listMissionTasks(db, "tenant-a", mission!.id)).toHaveLength(1);
   });
 
   it("creates and campaign-links a Fettler Mission on enrollment", async () => {
@@ -277,11 +319,119 @@ describe("Warden campaign org enrollment", () => {
       state: "created",
       fettlerCampaignId: "campaign-a",
       ownerPrincipalId: "trust-tenant-a-writer-a",
+      graphVersionId: null,
     });
+
+    expect(listMissionTasks(db, "tenant-a", mission!.id)).toEqual([
+      expect.objectContaining({
+        id: fettlerCampaignMissionTaskId(mission!.id, "repository-a"),
+        taskType: "code_migration",
+        status: "unassigned",
+      }),
+    ]);
 
     // Idempotent: a second enrollment resolves the same Mission, not a new one.
     expect((await enroll(app)).status).toBe(200);
     expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")?.id).toBe(mission!.id);
+    expect(listMissionTasks(db, "tenant-a", mission!.id)).toHaveLength(1);
+  });
+
+  it("pins a published Change Graph version on a single-repo enrollment", async () => {
+    const { app, db, root } = fixture();
+    const graphPath = join(root, "graph-learn.sqlite");
+    const graphDb = openGraphLearnDb(graphPath);
+    const extractor = Object.freeze({
+      id: "mendpoint.code-index",
+      version: "1.0.0",
+      digest: `sha256:${"1".repeat(64)}`,
+    });
+    const publication: SoftwareGraphPublicationV1 = {
+      schemaVersion: "mendpoint.software-graph.v1",
+      tenantId: "tenant-a",
+      repositoryId: "repository-a",
+      repositorySnapshotId: "snapshot-repository-a",
+      repositoryRevision: "a".repeat(40),
+      providerId: "provider-stripe",
+      providerSnapshotId: "provider-snapshot-1",
+      providerRevision: "2026-08-17",
+      observedAt: "2026-08-17T12:00:00.000Z",
+      entities: [{
+        id: "endpoint:charges-create",
+        kind: "endpoint",
+        canonicalKey: "POST /v1/charges",
+        aliases: ["charges.create"],
+        label: "POST /v1/charges",
+        scope: "provider",
+        evidenceRefs: ["artifact:openapi:v1"],
+        extractor,
+        derivation: "provider_spec",
+        confidenceBasis: "deterministic_exact",
+        status: "active",
+        validFrom: "2026-08-17T12:00:00.000Z",
+      }],
+      relationships: [],
+      coverage: ([
+        "repository_discovery",
+        "language_parsing",
+        "provider_specification",
+        "sdk_resolution",
+        "call_resolution",
+        "test_resolution",
+      ] as const).map((stage) => ({
+        extractor,
+        stage,
+        basis: "complete" as const,
+        analyzed: 1,
+        omitted: 0,
+        evidenceRefs: [`evidence:${stage}`],
+      })),
+    };
+    const published = publishSoftwareGraphVersion(graphDb, publication);
+    graphDb.raw.close();
+
+    const previous = process.env.GRAPH_LEARN_DB;
+    process.env.GRAPH_LEARN_DB = graphPath;
+    try {
+      expect((await enroll(app)).status).toBe(200);
+      const mission = resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a");
+      expect(mission?.graphVersionId).toBe(published.versionId);
+    } finally {
+      if (previous === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = previous;
+    }
+  });
+
+  it("POST /fettler/campaigns/:id/start plans a conservative rollout and marks the campaign running", async () => {
+    const { app, db } = fixture();
+    expect((await enroll(app)).status).toBe(200);
+
+    const res = await startCampaign(app);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { campaignId: string; status: string; jobIds: string[]; rolloutDecisionId: string };
+    expect(body).toMatchObject({
+      campaignId: "campaign-a",
+      status: "running",
+      rolloutDecisionId: "rollout-campaign-a",
+    });
+    expect(body.jobIds).toHaveLength(1);
+    expect(getWardenCampaign(db, "tenant-a", "campaign-a")?.status).toBe("running");
+    expect(listAudit(db, "tenant-a")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "warden.campaign.started", resource_id: "campaign-a" }),
+    ]));
+  });
+
+  it("POST /fettler/campaigns/:id/start is a no-op when the campaign is already running", async () => {
+    const { app } = fixture();
+    expect((await enroll(app)).status).toBe(200);
+    expect((await startCampaign(app)).status).toBe(200);
+    const second = await startCampaign(app);
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({
+      campaignId: "campaign-a",
+      status: "running",
+      jobIds: [],
+      rolloutDecisionId: "rollout-campaign-a",
+    });
   });
 
   it("fails closed on unknown provider, missing connection, and unknown fields", async () => {

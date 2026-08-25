@@ -20,6 +20,7 @@ import {
   classifyMissionVerificationEvidence,
   evaluateMissionExceptions,
   getActiveMissionDecisions,
+  getMissionPolicyEnvelope,
   listMissionVerifications,
   listOrganizationMemory,
   listTrajectories,
@@ -30,6 +31,7 @@ import {
 } from "@mendpoint/db";
 import {
   compileAndRenderMissionContext,
+  policyEnvelopeDirectives,
   type CompiledMissionContext,
   type InheritedContextEnvelope,
   type MissionContextInput,
@@ -167,6 +169,22 @@ export function buildMissionContext(
     };
   })();
 
+  // The Mission's inherited Policy Envelope (spec §6.7) becomes the hard-policy
+  // layer: its real constraints are rendered and outrank organization memory in
+  // precedence. When the mission pins no envelope (legacy missions predating
+  // set-once binding at creation), the policy store is honestly not consulted.
+  const policyEnvelope = mission ? getMissionPolicyEnvelope(db, tenantId, mission.id) : null;
+  const hardPolicies: MissionContextInput["hardPolicies"] = (() => {
+    if (!policyEnvelope) return { consulted: false, reason: "store_not_available" };
+    const directives = policyEnvelopeDirectives(tenantId, policyEnvelope.envelopeJson, policyEnvelope.version);
+    // A corrupt envelope row is recorded as `unreadable` (not an empty consulted
+    // read) and carries the maximally restrictive fallback, so it is never less
+    // restrictive than a valid envelope.
+    return directives.readable
+      ? { consulted: true, records: directives.directives }
+      : { consulted: true, unreadable: true, reason: directives.reason, records: directives.directives };
+  })();
+
   const history: MissionContextInput["history"] = mission
     ? {
         consulted: true,
@@ -187,21 +205,24 @@ export function buildMissionContext(
       objective: mission?.objective ?? params.fallback.objective,
       repositoryId: mission?.repositoryId ?? params.fallback.repositoryId,
       snapshotId,
-      // The Mission row carries no graph version (deferred on main), so the graph
-      // projection is not available on this path; the Fettler agent has no graph.
-      graphVersionId: null,
+      graphVersionId: mission?.graphVersionId ?? null,
     },
     task: params.task,
-    // No tenant hard-policy store exists on main (policy is synthesized per call,
-    // not persisted per tenant), so policy constraints are honestly not_consulted
-    // rather than fabricated. The precedence machinery is exercised whenever a
-    // mission decision and a memory share a scope.
-    hardPolicies: { consulted: false, reason: "store_not_available" },
+    // Policy constraints come from the mission's inherited Policy Envelope
+    // (spec §6.7). When no envelope is pinned, the section is honestly not
+    // consulted rather than fabricated. The precedence machinery is exercised
+    // whenever a policy directive, mission decision, and memory share a scope.
+    hardPolicies,
     missionDecisions,
     organizationMemory,
     userPreferences: { consulted: false, reason: "store_not_available" },
-    // The Fettler agent has no graph tool; no graph version is bound here.
-    graph: { consulted: false, reason: "graph_version_absent" },
+    // Impact-path projection requires an endpoint key (`queryFettlerEndpointImpact`).
+    // This producer does not invent one. A pinned graph version is still carried
+    // on mission identity; the graph section stays not-consulted until a real
+    // endpoint surface is available on the task.
+    graph: mission?.graphVersionId
+      ? { consulted: false, reason: "endpoint_key_absent" }
+      : { consulted: false, reason: "graph_version_absent" },
     history,
     verification,
     exceptions,
@@ -226,6 +247,8 @@ export function hasInheritedContent(envelope: InheritedContextEnvelope): boolean
   }
   if (envelope.verificationState.status === "consulted" && envelope.verificationState.entries.length > 0) return true;
   if (envelope.policyConstraints.status === "consulted" && envelope.policyConstraints.entries.length > 0) return true;
+  // An unreadable envelope always carries the restrictive fallback and must reach the model.
+  if (envelope.policyConstraints.status === "unreadable") return true;
   if (envelope.graphProjection.status === "consulted") return true;
   return false;
 }

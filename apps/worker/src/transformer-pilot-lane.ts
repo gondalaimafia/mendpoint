@@ -24,6 +24,11 @@ import {
 } from "@mendpoint/transformer";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
 import { resolveRenamedEnv } from "@mendpoint/shared";
+import { assertRegaugePilotMissionPolicy } from "./regauge-pilot-policy.js";
+import {
+  assignRegaugeMissionTaskOnClaim,
+  handoffRegaugeMissionTaskOnReview,
+} from "./regauge-mission-task-claim.js";
 import {
   discardTransformerAdaptiveModelEvidence,
   persistTransformerAdaptiveModelEvidence,
@@ -349,16 +354,68 @@ function requireAdaptiveRetention(value: number | undefined): number {
   return retention;
 }
 
-function asCoordinator(store: TransformerPilotLaneStore): TransformerAttemptCoordinatorPort {
+function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): TransformerAttemptCoordinatorPort {
   return {
-    claimNextAttempt: (input) => store.claimNextAttempt(input),
+    claimNextAttempt: (input) => {
+      const lease = store.claimNextAttempt(input);
+      if (!lease) return lease;
+      try {
+        // Drive the launch-created MissionTask on the same claim that took the
+        // lease. Missing/unbound tasks are a no-op; a raced task must not fail
+        // an already-claimed attempt.
+        assignRegaugeMissionTaskOnClaim(db, {
+          tenantId: lease.tenantId,
+          campaignId: lease.campaignId,
+          repositoryId: lease.snapshot.repositoryId,
+          createdAt: lease.startedAt,
+        });
+      } catch (error) {
+        // Observational: the lease is already held, so never fail the claim.
+        // Log the code so a driven/absent/revision-conflict/principal-conflict
+        // claim is not indistinguishable from a silent no-op.
+        console.error(
+          `  regauge mission-task claim drive failed campaign=${lease.campaignId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      return lease;
+    },
     renewAttemptLease: (input) => store.renewAttemptLease(input),
     assertCurrentAttemptFence: (input) => store.assertCurrentAttemptFence(input),
     recordAdaptiveAttemptUsage: (input) => store.recordAdaptiveAttemptUsage(input),
     reserveAdaptiveModelCall: (input) => store.reserveAdaptiveModelCall(input),
     settleAdaptiveModelCall: (input) => store.settleAdaptiveModelCall(input),
     recordAdaptiveCandidateHandoff: (input) => store.recordAdaptiveCandidateHandoff(input),
-    completeAttempt: (input) => store.completeAttempt(input),
+    completeAttempt: (input) => {
+      const completed = store.completeAttempt(input);
+      try {
+        // Verification passing is still review-first, not delivery. Hand the
+        // launch MissionTask to humans on the same complete that closed the
+        // lease. Missing/unbound tasks are a no-op; a raced task must not
+        // un-complete an already-recorded attempt.
+        const repositoryId = completed.units.find((unit) => unit.id === input.unitId)
+          ?.snapshot.repositoryId;
+        if (repositoryId) {
+          handoffRegaugeMissionTaskOnReview(db, {
+            tenantId: input.tenantId,
+            campaignId: input.campaignId,
+            repositoryId,
+            createdAt: input.observedAt,
+          });
+        }
+      } catch (error) {
+        // Observational: the attempt is already completed, so never un-complete
+        // it. Log the code so a driven/absent/revision-conflict/principal-conflict
+        // handoff is not indistinguishable from a silent no-op.
+        console.error(
+          `  regauge mission-task review handoff failed campaign=${input.campaignId} unit=${input.unitId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      return completed;
+    },
     recordAttemptFailure: (input) => store.recordAttemptFailure(input),
   };
 }
@@ -645,7 +702,7 @@ export async function runTransformerPilotLaneOnce(
     }
   }
 
-  const coordinator = asCoordinator(input.store);
+  const coordinator = asCoordinator(input.store, input.db);
   // The shared policy router is the dispatcher for every runnable campaign: it
   // decides (execute vs mandatory human handoff), selects the Transformer
   // executor over Warden under the existing filters and breakers, and persists
@@ -704,6 +761,23 @@ export async function runTransformerPilotLaneOnce(
         continue;
       }
       adaptiveAuthorizationEvidenceRef = authorization.evidenceRef;
+    }
+    try {
+      // Inherited Policy Envelope is an authorization control, not a prompt.
+      // Unbound campaigns proceed; a bound Mission with a missing/invalid
+      // envelope or an explicit deny must not take a lease.
+      assertRegaugePilotMissionPolicy(input.db, {
+        tenantId: campaign.tenantId,
+        campaignId: campaign.campaignId,
+        repositoryId: campaign.repositoryId,
+        externalProcessing: Boolean(adaptiveAdapter),
+        changedPaths: campaign.changedPaths,
+        ...(adaptiveAdapter ? { adaptiveModelId: adaptiveAdapter.policy.model } : {}),
+      });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : String(error);
+      errors.push(`transformer_lane_policy_denied:${campaign.campaignId}:${code}`);
+      continue;
     }
     const adaptiveProvenanceStart = adaptiveAdapter?.provenance().length ?? 0;
     const adaptiveCostRemaining = 25;

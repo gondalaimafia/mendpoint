@@ -199,6 +199,14 @@ describe("Transformer mission application service", () => {
       },
     });
     expect(planned.decision).toBe("planned");
+    if (planned.decision === "planned") {
+      expect(planned.graphPlan.coverage.basis).toBe("not_consulted");
+      // No Organization Memory provider is wired on this fixture, so the consult
+      // must declare "not consulted" rather than resolving into a hard-policy win
+      // that is indistinguishable from a real but empty consult.
+      expect(planned.organizationMemory.consulted).toBe(false);
+      expect(planned.organizationMemory.basis).toBe("not_consulted");
+    }
     expect(() => service.launch(request("reviewer-a", "launch-before-review"), "campaign-a"))
       .toThrow("transformer_mission_review_required");
 

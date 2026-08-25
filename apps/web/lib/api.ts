@@ -81,6 +81,16 @@ export type Provider = {
   createdAt: string;
 };
 
+export type ChangeImpactCoverage = {
+  impact: "impact" | "no_impact" | "unknown_impact";
+  coverageBasis: "analyzed" | "partial" | "not_analyzed" | null;
+  reason: string | null;
+  findingCount: number;
+  prCount: number;
+  /** FET-018: present when impact analysis used the raw-retrieval path. */
+  fallback?: "raw_retrieval" | null;
+};
+
 export type ApiChange = {
   id: string;
   providerId: string;

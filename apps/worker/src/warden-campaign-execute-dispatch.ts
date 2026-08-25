@@ -26,6 +26,7 @@ import {
   executeWardenCampaignTarget,
   type WardenCampaignExecutionDependencies,
 } from "@mendpoint/pipeline";
+import type { FieldRename } from "./warden-campaign-recipe.js";
 
 export const WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE = "warden.campaign.execute-target";
 
@@ -65,6 +66,8 @@ interface ExecutePayload {
   source: unknown;
   rolloutApproval: RolloutApproval;
   ownerApproval: OwnerApproval;
+  /** Field renames extracted from the diff at enqueue time; drives the recipe. */
+  renames: FieldRename[];
 }
 
 class PayloadError extends Error {}
@@ -121,7 +124,18 @@ export function parseWardenCampaignExecuteJob(job: WardenCampaignExecuteJob): Ex
       ownerHandle: str(owner, "ownerHandle"),
       approvedAt: str(owner, "approvedAt"),
     },
+    renames: parseRenames(record.renames),
   };
+}
+
+function parseRenames(value: unknown): FieldRename[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new PayloadError("warden_campaign_execute_payload_renames_invalid");
+  return value.map((entry) => {
+    if (typeof entry !== "object" || entry === null) throw new PayloadError("warden_campaign_execute_payload_renames_invalid");
+    const record = entry as Record<string, unknown>;
+    return { from: str(record, "from"), to: str(record, "to") };
+  });
 }
 
 /**
@@ -133,7 +147,9 @@ export function parseWardenCampaignExecuteJob(job: WardenCampaignExecuteJob): Ex
 export async function runWardenCampaignExecuteTarget(input: {
   db: AppDb;
   job: WardenCampaignExecuteJob;
-  dependencies: WardenCampaignExecutionDependencies;
+  /** Build the executor dependencies from the renames the diff carried in the
+   * job payload (per job — each campaign target carries its own change). */
+  resolveDependencies: (renames: readonly FieldRename[], tenantId: string) => WardenCampaignExecutionDependencies;
   execute?: WardenCampaignExecutor;
 }): Promise<WardenCampaignExecuteOutcome> {
   const execute = input.execute ?? executeWardenCampaignTarget;
@@ -156,7 +172,7 @@ export async function runWardenCampaignExecuteTarget(input: {
       actorPrincipalId: payload.actorPrincipalId,
       runId: payload.runId,
       createdAt: payload.createdAt,
-      dependencies: input.dependencies,
+      dependencies: input.resolveDependencies(payload.renames, input.job.tenant_id),
     });
     return { status: "executed", stage: result.stage };
   } catch (error) {

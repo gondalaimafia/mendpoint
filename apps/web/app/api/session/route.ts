@@ -8,8 +8,14 @@ import {
   isAllowedMutationOrigin,
   secureEqual,
 } from "../../../lib/proxy-auth";
+import {
+  BodyLimitExceededError,
+  InvalidContentLengthError,
+  readRequestBodyWithinLimit,
+} from "../../../lib/bounded-body";
 
 export const dynamic = "force-dynamic";
+const MAX_SESSION_BODY_BYTES = 8_192;
 
 export async function GET(request: NextRequest): Promise<Response> {
   const subject = await authenticatedWebSubject(request);
@@ -24,13 +30,24 @@ export async function POST(request: NextRequest): Promise<Response> {
   if (!expected) {
     return Response.json({ error: "web_access_not_configured" }, { status: 503 });
   }
-  const declaredLength = Number(request.headers.get("content-length") ?? 0);
-  if (declaredLength > 8_192) {
-    return Response.json({ error: "payload_too_large" }, { status: 413 });
+  let raw: Uint8Array<ArrayBuffer> | null;
+  try {
+    raw = await readRequestBodyWithinLimit(request, MAX_SESSION_BODY_BYTES);
+  } catch (error) {
+    if (error instanceof BodyLimitExceededError) {
+      return Response.json({ error: "payload_too_large" }, { status: 413 });
+    }
+    if (error instanceof InvalidContentLengthError) {
+      return Response.json({ error: "invalid_content_length" }, { status: 400 });
+    }
+    throw error;
   }
-  const body = await request.json().catch(() => null) as {
-    token?: string;
-  } | null;
+  let body: { token?: string } | null = null;
+  try {
+    body = JSON.parse(Buffer.from(raw ?? []).toString("utf8"));
+  } catch {
+    body = null;
+  }
   if (!body?.token || !(await secureEqual(body.token, expected))) {
     return Response.json({ error: "invalid_access_token" }, { status: 401 });
   }

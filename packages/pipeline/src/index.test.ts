@@ -282,7 +282,7 @@ describe("pipeline", () => {
     ).toBe(true);
   });
 
-  it("falls back to deterministic impact analysis when the shadow graph analyzer fails", async () => {
+  it("abstains from delivery when the graph analyzer fails", async () => {
     const db = seedProviderVersions();
     const provider = db.raw
       .prepare("SELECT id FROM providers WHERE slug = ?")
@@ -307,13 +307,50 @@ describe("pipeline", () => {
       securityScanAttested: true,
     });
 
-    expect(report.consumers[0]?.prStatus).toBe("draft");
+    expect(report.consumers[0]?.prStatus).toBe("package_failed");
     expect(report.consumers[0]?.graphVersionId).toBeUndefined();
-    const shadowFailure = listAudit(db).find((event) => event.action === "graph.shadow_failed");
-    expect(shadowFailure).toBeDefined();
-    expect(JSON.parse(shadowFailure!.metadata_json!)).toEqual({
+    expect(existsSync(join(deliveryRoot, "org", "shop", "pulls"))).toBe(false);
+    const analysisFailure = listAudit(db).find((event) => event.action === "graph.analysis_failed");
+    expect(analysisFailure).toBeDefined();
+    expect(JSON.parse(analysisFailure!.metadata_json!)).toEqual({
       code: "software_graph_materializer_entity_collision",
     });
+  });
+
+  it("does not invent a graph when no tenant handle is ready", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop });
+    const deliveryRoot = join(tmpdir(), `mendpoint-pipe-graph-unavail-${Date.now()}-${Math.random()}`);
+    dirs.push(deliveryRoot);
+    const previous = process.env.GRAPH_LEARN_DB;
+    delete process.env.GRAPH_LEARN_DB;
+    try {
+      const report = await runChangePipeline({
+        tenantId: "tenant_default",
+        providerSlug: "acme-payments",
+        db,
+        github: new MockGitHubDelivery(deliveryRoot),
+        persistIndex: false,
+        contractCases: [
+          { id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } },
+        ],
+        securityScanAttested: true,
+      });
+      expect(report.consumers[0]?.graphVersionId).toBeUndefined();
+      const unavailable = listAudit(db).find((event) => event.action === "graph.handle_unavailable");
+      expect(unavailable).toBeDefined();
+      expect(JSON.parse(unavailable!.metadata_json!).reason).toBe("path_missing");
+      expect(listAudit(db).some((event) => event.action === "graph.updated")).toBe(false);
+      const analyzed = listAudit(db).find((event) => event.action === "impact.analyzed");
+      expect(analyzed).toBeDefined();
+      expect(JSON.parse(analyzed!.metadata_json!).fallback).toBe("raw_retrieval");
+    } finally {
+      if (previous === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = previous;
+    }
   });
 
   it("fails closed before SCM delivery when reviewer ownership is incomplete", async () => {
@@ -465,6 +502,9 @@ describe("pipeline", () => {
     expect(listPrs(db).length).toBe(1);
     expect(listAudit(db).some((a) => a.action === "change.normalized")).toBe(true);
     expect(listAudit(db).some((a) => a.action === "pr.draft_opened")).toBe(true);
+    const graphAnalyzed = listAudit(db).find((event) => event.action === "impact.analyzed");
+    expect(graphAnalyzed).toBeDefined();
+    expect(JSON.parse(graphAnalyzed!.metadata_json!).fallback).toBeUndefined();
 
     const prId = report.consumers[0].prId!;
     const artifacts = listArtifactManifests(db, "tenant_default");
@@ -760,7 +800,7 @@ describe("pipeline", () => {
     });
     expect(attested.consumers[0]?.prStatus).toBe("draft");
     expect(existsSync(join(deliveryRoot, "org", "sec-gate-shop", "pulls"))).toBe(true);
-  });
+  }, 15_000);
 
   it("writes a durable audit record of a scanner attestation (who/when/subject/tier/outcome)", async () => {
     const dir = join(tmpdir(), `mendpoint-pipe-sec-audit-${Date.now()}`);

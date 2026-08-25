@@ -39,9 +39,10 @@ import type { InheritedContextInjection } from "@mendpoint/agent";
 import { MAX_INHERITED_CONTEXT_BYTES } from "@mendpoint/agent";
 import type { OrganizationMemoryRecord, OrganizationMemoryStatus } from "@mendpoint/db";
 import {
-  compileFettlerImpactContext,
+  compileMissionGraphProjection,
   type FettlerEndpointImpactResult,
 } from "@mendpoint/graph-learn";
+import { parsePolicyEnvelope, type PolicyEnvelope } from "@mendpoint/policy";
 import { createHash } from "node:crypto";
 import {
   organizationMemoryPrecedenceLayer,
@@ -80,11 +81,19 @@ export const MISSION_CONTEXT_BOUNDS = {
 export type Consulted<T> = Readonly<{ status: "consulted" } & T>;
 /** A section that was NOT read. The reason distinguishes it from an empty read. */
 export type NotConsulted<R extends string> = Readonly<{ status: "not_consulted"; reason: R }>;
+/**
+ * A section whose source WAS read but could not be parsed. Distinct from both a
+ * `consulted` empty read ("nothing applies") and a `not_consulted` section ("we
+ * did not look"): here we looked, the source was corrupt, and we fell back to a
+ * safe default. The `reason` records why the parse failed.
+ */
+export type Unreadable<T> = Readonly<{ status: "unreadable"; reason: string } & T>;
 
 export type SectionNotConsultedReason =
   | "store_not_available"
   | "not_applicable_to_task"
   | "graph_version_absent"
+  | "endpoint_key_absent"
   | "graph_projection_failed";
 
 /**
@@ -223,7 +232,10 @@ export type InheritedContextEnvelope = Readonly<{
   relevantHistory: Consulted<{ entries: readonly HistoryEntry[] }> | NotConsulted<MissionSectionNotConsultedReason>;
   activeDecisions: Consulted<{ entries: readonly DecisionEntry[] }> | NotConsulted<MissionSectionNotConsultedReason>;
   relevantOrgMemory: OrgMemorySection;
-  policyConstraints: Consulted<{ entries: readonly PolicyConstraint[] }> | NotConsulted<MissionSectionNotConsultedReason>;
+  policyConstraints:
+    | Consulted<{ entries: readonly PolicyConstraint[] }>
+    | Unreadable<{ entries: readonly PolicyConstraint[] }>
+    | NotConsulted<MissionSectionNotConsultedReason>;
   verificationState:
     | Consulted<{ entries: readonly VerificationEntry[] }>
     | NotConsulted<MissionSectionNotConsultedReason>;
@@ -252,6 +264,75 @@ export type DirectiveInput = Readonly<{
   directive: string;
   source: string;
 }>;
+
+/**
+ * Outcome of translating a Mission's Policy Envelope into hard-policy directives.
+ * `readable` carries the envelope's real directives; `unreadable` carries the
+ * maximally restrictive fallback and the parse failure `reason`, so the caller can
+ * record the unreadable case as a THIRD state distinct from an empty read.
+ */
+export type PolicyEnvelopeDirectives =
+  | Readonly<{ readable: true; directives: readonly DirectiveInput[] }>
+  | Readonly<{ readable: false; reason: string; directives: readonly DirectiveInput[] }>;
+
+/**
+ * Translate a Mission's inherited Policy Envelope into hard-policy directives for
+ * the context compiler (spec §6.10: the compiled context SHOULD include the
+ * Policy Envelope; §28.1.0: policy is inherited). Only ACTUALLY-constraining
+ * dimensions are emitted, so the permissive default envelope contributes its real
+ * constraints (review required, no deploy, no training) and nothing else — the
+ * prompt is not grown with "unrestricted" noise. These directives are also the
+ * top precedence layer (`hard_policy`), so a memory that contradicts policy is
+ * recorded as overridden, never applied.
+ *
+ * The envelope JSON is parsed and validated (`parsePolicyEnvelope`). A malformed
+ * row is NOT treated as unconstrained: emitting no directives would make a corrupt
+ * envelope strictly LESS restrictive than a valid one (fail-open). Instead the
+ * parse failure yields `readable: false` with the maximally restrictive fallback
+ * (review required, no deployment, no external processing, no training) — a
+ * Mission whose policy is unreadable is treated as maximally constrained — and a
+ * `reason` the caller records observably. We still never emit a PARTIAL policy.
+ */
+export function policyEnvelopeDirectives(
+  tenantId: string,
+  envelopeJson: string,
+  version: number,
+): PolicyEnvelopeDirectives {
+  const source = `policy_envelope:v${version}`;
+  const out: DirectiveInput[] = [];
+  const push = (key: string, directive: string) =>
+    out.push({ tenantId, id: `policy:v${version}:${key}`, subjectKey: `policy:${key}`, directive, source });
+
+  let envelope: PolicyEnvelope;
+  try {
+    envelope = parsePolicyEnvelope(JSON.parse(envelopeJson));
+  } catch (error) {
+    // Fail closed: the four fail-closed dimensions of the default envelope, so an
+    // unreadable policy is never less restrictive than a working one.
+    push("review", "Human review is required before delivery.");
+    push("deployment", "Deployment is not permitted by policy.");
+    push("external_processing", "External processing/models are not permitted by policy.");
+    push("training", "Training-data capture is not permitted by policy.");
+    const reason = error instanceof Error ? error.message : "policy_envelope_unparseable";
+    const unreadable: PolicyEnvelopeDirectives = { readable: false, reason, directives: Object.freeze(out) };
+    return unreadable;
+  }
+
+  if (envelope.reviewRequired) push("review", "Human review is required before delivery.");
+  if (!envelope.deploymentAllowed) push("deployment", "Deployment is not permitted by policy.");
+  if (!envelope.externalProcessingAllowed) push("external_processing", "External processing/models are not permitted by policy.");
+  if (!envelope.trainingDataAllowed) push("training", "Training-data capture is not permitted by policy.");
+  if (envelope.riskCeiling !== "critical") push("risk_ceiling", `Risk ceiling: ${envelope.riskCeiling}.`);
+  if (envelope.repositoryScope.length > 0) push("repository_scope", `Repositories limited to: ${[...envelope.repositoryScope].sort().join(", ")}.`);
+  if (envelope.branchScope.length > 0) push("branch_scope", `Branches limited to: ${[...envelope.branchScope].sort().join(", ")}.`);
+  if (envelope.allowedTools.length > 0) push("tool_scope", `Tools limited to: ${[...envelope.allowedTools].sort().join(", ")}.`);
+  if (envelope.allowedModelClasses.length > 0) push("model_scope", `Model classes limited to: ${[...envelope.allowedModelClasses].sort().join(", ")}.`);
+  for (const zone of [...envelope.forbiddenZones].sort()) {
+    push(`forbidden_zone:${zone}`, `Do not edit under ${zone} (forbidden zone).`);
+  }
+  const readable: PolicyEnvelopeDirectives = { readable: true, directives: Object.freeze(out) };
+  return readable;
+}
 
 export type MissionDecisionInput = Readonly<{
   tenantId: string;
@@ -304,6 +385,17 @@ export type SectionSource<T> =
   | Readonly<{ consulted: true; records: readonly T[] }>
   | Readonly<{ consulted: false; reason?: MissionSectionNotConsultedReason }>;
 
+/**
+ * The hard-policy section source. Adds a third disposition to `SectionSource`: the
+ * Policy Envelope was read (`consulted`) but could not be parsed (`unreadable`),
+ * so `records` carries the maximally restrictive fallback and `reason` records the
+ * failure. Distinct from a `consulted` empty read and from `not_consulted`.
+ */
+export type HardPolicySource =
+  | Readonly<{ consulted: true; unreadable?: false; records: readonly DirectiveInput[] }>
+  | Readonly<{ consulted: true; unreadable: true; reason: string; records: readonly DirectiveInput[] }>
+  | Readonly<{ consulted: false; reason?: MissionSectionNotConsultedReason }>;
+
 export type GraphSource =
   | Readonly<{ consulted: true; impact: FettlerEndpointImpactResult; maxBytes?: number }>
   | Readonly<{ consulted: false; reason: SectionNotConsultedReason }>;
@@ -312,7 +404,7 @@ export type MissionContextInput = Readonly<{
   tenantId: string;
   mission: MissionIdentity;
   task: TaskDescriptor;
-  hardPolicies: SectionSource<DirectiveInput>;
+  hardPolicies: HardPolicySource;
   missionDecisions: SectionSource<MissionDecisionInput>;
   organizationMemory: SectionSource<OrgMemoryInput>;
   userPreferences: SectionSource<DirectiveInput>;
@@ -530,24 +622,24 @@ function buildGraphSection(
   const impact = source.impact;
   assertTenant(tenantId, impact.tenantId);
   const maxBytes = Math.min(source.maxBytes ?? MISSION_CONTEXT_BOUNDS.maxGraphBytes, MISSION_CONTEXT_BOUNDS.maxGraphBytes);
-  let compiled: { content: string; byteLength: number; contentDigest: string };
+  let projection: ReturnType<typeof compileMissionGraphProjection>;
   try {
     // Reuse the one bounded graph projector; never write a second one.
-    compiled = compileFettlerImpactContext(impact, { maxBytes });
+    projection = compileMissionGraphProjection({ impact, maxBytes });
   } catch {
     return Object.freeze({ status: "not_consulted", reason: "graph_projection_failed" });
   }
   return Object.freeze({
     status: "consulted",
     projection: Object.freeze({
-      graphVersionId: impact.graphVersionId,
-      graphContentDigest: impact.graphContentDigest,
-      resultDigest: impact.resultDigest,
-      impact: impact.impact,
-      coverageBasis: impact.coverage.basis,
-      byteLength: compiled.byteLength,
-      content: compiled.content,
-      contentDigest: compiled.contentDigest,
+      graphVersionId: projection.graphVersionId,
+      graphContentDigest: projection.graphContentDigest,
+      resultDigest: projection.resultDigest,
+      impact: projection.impact,
+      coverageBasis: projection.coverage.basis,
+      byteLength: projection.compiled.byteLength,
+      content: projection.compiled.content,
+      contentDigest: projection.compiled.contentDigest,
     }),
   });
 }
@@ -659,22 +751,26 @@ export function compileMissionContext(input: MissionContextInput): InheritedCont
       })
     : sectionNotConsulted(input.missionDecisions);
 
-  const policyConstraints: InheritedContextEnvelope["policyConstraints"] = input.hardPolicies.consulted
-    ? Object.freeze({
-        status: "consulted",
-        entries: Object.freeze(
-          cap(hardPolicyRecords).map((record) => {
-            assertTenant(tenantId, record.tenantId);
-            return Object.freeze({
-              id: identifier(record.id, "mission_context_policy_id_invalid"),
-              subjectKey: identifier(record.subjectKey, "mission_context_policy_subject_invalid"),
-              directive: clippedText(record.directive, "mission_context_policy_directive_invalid"),
-              source: identifier(record.source, "mission_context_policy_source_invalid"),
-            });
-          }),
-        ),
-      })
-    : sectionNotConsulted(input.hardPolicies);
+  const policyConstraints: InheritedContextEnvelope["policyConstraints"] = (() => {
+    if (!input.hardPolicies.consulted) return sectionNotConsulted(input.hardPolicies);
+    const entries = Object.freeze(
+      cap(hardPolicyRecords).map((record) => {
+        assertTenant(tenantId, record.tenantId);
+        return Object.freeze({
+          id: identifier(record.id, "mission_context_policy_id_invalid"),
+          subjectKey: identifier(record.subjectKey, "mission_context_policy_subject_invalid"),
+          directive: clippedText(record.directive, "mission_context_policy_directive_invalid"),
+          source: identifier(record.source, "mission_context_policy_source_invalid"),
+        });
+      }),
+    );
+    // An unparseable Policy Envelope is recorded as `unreadable` — a third state,
+    // never a `consulted` empty read — while still carrying the maximally
+    // restrictive fallback directives, so the failure is observable and safe.
+    return input.hardPolicies.unreadable
+      ? Object.freeze({ status: "unreadable", reason: input.hardPolicies.reason, entries })
+      : Object.freeze({ status: "consulted", entries });
+  })();
 
   const relevantHistory: InheritedContextEnvelope["relevantHistory"] = input.history.consulted
     ? Object.freeze({
@@ -767,7 +863,9 @@ export type CompiledMissionContext = Readonly<{
 }>;
 
 function sectionState<T extends { status: string }>(section: T): string {
-  return section.status === "consulted" ? "consulted" : "not consulted";
+  if (section.status === "consulted") return "consulted";
+  if (section.status === "unreadable") return "unreadable";
+  return "not consulted";
 }
 
 /**
@@ -795,14 +893,21 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
 
   // Policy constraints (highest authority).
   const policyLines: string[] = [`## Policy constraints [${sectionState(envelope.policyConstraints)}]`];
-  if (envelope.policyConstraints.status === "consulted") {
-    if (envelope.policyConstraints.entries.length === 0) policyLines.push("(none apply to this task)");
+  if (envelope.policyConstraints.status === "not_consulted") {
+    policyLines.push(`(reason: ${envelope.policyConstraints.reason})`);
+  } else {
+    // An unreadable envelope still renders its maximally restrictive fallback, and
+    // names why it fell back so the reader (and the model) sees the constraints
+    // were imposed because the policy could not be parsed, not authored.
+    if (envelope.policyConstraints.status === "unreadable") {
+      policyLines.push(`(policy envelope unreadable: ${envelope.policyConstraints.reason}; enforcing the maximally restrictive fallback)`);
+    } else if (envelope.policyConstraints.entries.length === 0) {
+      policyLines.push("(none apply to this task)");
+    }
     for (const entry of envelope.policyConstraints.entries) {
       policyLines.push(`- [${entry.subjectKey}] ${entry.directive} (source: ${entry.source})`);
       refs.push(Object.freeze({ kind: "policy_constraint", id: entry.id, subjectKey: entry.subjectKey, source: entry.source }));
     }
-  } else {
-    policyLines.push(`(reason: ${envelope.policyConstraints.reason})`);
   }
   sections.push(policyLines);
 

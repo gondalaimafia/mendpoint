@@ -86,7 +86,7 @@ function validateConfig(config: DeepSeekVerifierBackendConfig) {
   if (config.scoringMode !== "nonthinking_logprobs" && config.scoringMode !== "upstream_thinking_logprobs") {
     fail("verifier_backend_mode_invalid");
   }
-  if (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1 || config.timeoutMs > 120_000) fail("verifier_backend_timeout_invalid");
+  if (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1 || config.timeoutMs > 660_000) fail("verifier_backend_timeout_invalid");
   if (!Number.isSafeInteger(config.maximumRetries) || config.maximumRetries < 0 || config.maximumRetries > 3) fail("verifier_backend_retries_invalid");
   const pricing = {
     version: boundedText(config.pricing.version, "verifier_pricing_version_invalid", 128),
@@ -234,6 +234,7 @@ async function boundedRequest(
   parentSignal: AbortSignal | undefined,
   timeoutMs: number,
 ): Promise<VerifierHttpResponse> {
+  if (parentSignal?.aborted) throw new Error("verifier_backend_aborted");
   const controller = new AbortController();
   const onAbort = () => controller.abort(parentSignal?.reason);
   if (parentSignal?.aborted) controller.abort(parentSignal.reason);

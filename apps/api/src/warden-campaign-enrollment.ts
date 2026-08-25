@@ -2,12 +2,18 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   autoEnrollWardenCampaignOrg,
   createMission,
+  createMissionTask,
   createWardenCampaign,
+  fettlerCampaignMissionTaskId,
   getPrincipal,
   getProviderBySlug,
   getScmConnection,
   getTenantMembership,
   getWardenCampaign,
+  getWardenRolloutDecision,
+  listWardenCampaignTargets,
+  planWardenRollout,
+  transitionWardenCampaign,
   linkFettlerCampaignToMission,
   recordAudit,
   type AppDb,
@@ -18,6 +24,11 @@ import {
   type InstallationRepository,
   type MockInstallationRepositoryInput,
 } from "@mendpoint/github";
+import {
+  ensureDefaultPolicyEnvelopeBinding,
+  pinPublishedGraphVersionForSingleRepository,
+} from "@mendpoint/pipeline";
+import { enqueueReadyWardenCampaignTargets, extractFieldRenames } from "@mendpoint/worker/warden-campaign-execute-activation";
 import { Hono, type Context } from "hono";
 import type { ApiEnv } from "./auth.js";
 import { mappedErrorResponse, type PublicErrorRule } from "./error-boundary.js";
@@ -35,6 +46,16 @@ const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "warden_campaign_create_authentication_required", publicCode: "unauthorized", status: 401 },
   { internalCode: "warden_campaign_create_forbidden", publicCode: "forbidden", status: 403 },
   { internalCode: "warden_campaign_not_found", publicCode: "not_found", status: 404 },
+  { internalCode: "warden_campaign_not_running", publicCode: "conflict", status: 409 },
+  { internalCode: "warden_campaign_not_draft", publicCode: "conflict", status: 409 },
+  { internalCode: "warden_transition_invalid", publicCode: "conflict", status: 409 },
+  { internalCode: "warden_revision_conflict", publicCode: "conflict", status: 409 },
+  { internalCode: "warden_rollout_targets_required", publicCode: "unprocessable", status: 422 },
+  { internalCode: "warden_campaign_id_invalid", publicCode: "unprocessable", status: 422 },
+  { internalCode: "warden_owner_handle_invalid", publicCode: "unprocessable", status: 422 },
+  { internalCode: "warden_campaign_start_source_invalid", publicCode: "unprocessable", status: 422 },
+  { internalCode: "warden_campaign_start_field_forbidden", publicCode: "unprocessable", status: 422 },
+  { internalCode: "warden_human_planner_required", publicCode: "forbidden", status: 403 },
   { internalCode: "warden_enroll_connection_not_found", publicCode: "not_found", status: 404 },
   { internalCode: "warden_org_provider_unknown", publicCode: "not_found", status: 404 },
   { internalCode: "warden_campaign_not_draft", publicCode: "campaign_not_draft", status: 409 },
@@ -260,6 +281,48 @@ async function body(c: Context<ApiEnv>) {
   };
 }
 
+/**
+ * Create the unassigned MissionTask rows enrollment just made real. One task
+ * per enrolled repository; when the scan enrolled none (fail-closed / all
+ * skipped) create a single mission-level task so the work unit still exists.
+ * Uses the campaign's current targets, not just this scan's newly enrolled
+ * set, so a replay does not invent a mission-level task beside existing
+ * per-repo rows. Idempotent. Does not assign or advance the task.
+ */
+function createFettlerEnrollmentMissionTasks(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    missionId: string;
+    campaignId: string;
+    ownerPrincipalId: string;
+    repositories: readonly Readonly<{ repositoryId: string }>[];
+    createdAt: string;
+  }>,
+): void {
+  const repositoryIds = [...new Set(input.repositories.map((repository) => repository.repositoryId))];
+  const scopes = repositoryIds.length > 0 ? repositoryIds : [undefined];
+  for (const repositoryId of scopes) {
+    const taskId = fettlerCampaignMissionTaskId(input.missionId, repositoryId);
+    const acceptanceCriteria = repositoryId
+      ? `Complete the enrolled Fettler unit for repository ${repositoryId}.`
+      : `Complete the enrolled Fettler campaign ${input.campaignId}.`;
+    createMissionTask(db, {
+      id: taskId,
+      tenantId: input.tenantId,
+      missionId: input.missionId,
+      taskType: "code_migration",
+      acceptanceCriteria,
+      risk: "medium",
+      actorPrincipalId: input.ownerPrincipalId,
+      eventId: `${taskId}-created`,
+      idempotencyKey: `mission-task-create-${taskId}`,
+      correlationId: input.campaignId,
+      createdAt: input.createdAt,
+    });
+  }
+}
+
 export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnrollmentOptions) {
   const routes = new Hono<ApiEnv>();
   const now = options.now ?? (() => new Date().toISOString());
@@ -428,8 +491,8 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
       // sat inert — nothing forgot to call it; the callers could not satisfy
       // assertPrincipal. Best-effort: Mission bookkeeping is metadata and must
       // never fail an enrollment (convention in packages/pipeline/src/index.ts);
-      // never a bare catch. createMission/linkFettlerCampaignToMission are
-      // idempotent, so repeated enrollments are safe.
+      // never a bare catch. createMission/linkFettlerCampaignToMission and
+      // createMissionTask are idempotent, so repeated enrollments are safe.
       try {
         const missionId = `mission-fettler-${createHash("sha256")
           .update(`${tenantId}\0${campaignId}`)
@@ -456,6 +519,39 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           idempotencyKey: `mission-link-${missionId}`,
           correlationId: campaignId,
           createdAt: at,
+        });
+        // Spec §6.7: every Mission MUST reference a versioned Policy Envelope.
+        // Bind the tenant's default envelope set-once at creation so downstream
+        // task dispatch has an inherited, enforceable boundary rather than null.
+        ensureDefaultPolicyEnvelopeBinding(options.db, {
+          tenantId,
+          missionId,
+          actorPrincipalId: trustPrincipalId,
+          correlationId: campaignId,
+          createdAt: at,
+        });
+        createFettlerEnrollmentMissionTasks(options.db, {
+          tenantId,
+          missionId,
+          campaignId,
+          ownerPrincipalId: trustPrincipalId,
+          repositories: listWardenCampaignTargets(options.db, tenantId, campaignId),
+          createdAt: at,
+        });
+        // Spec §11.10: pin a published Change Graph version when this campaign
+        // has exactly one enrolled repository and a unique head already exists.
+        // Never create a graph file. Multi-repo campaigns stay unbound.
+        const enrolledRepos = listWardenCampaignTargets(options.db, tenantId, campaignId)
+          .map((target) => target.repositoryId);
+        const provider = getProviderBySlug(options.db, result.providerSlug);
+        pinPublishedGraphVersionForSingleRepository(options.db, {
+          tenantId,
+          missionId,
+          repositoryIds: enrolledRepos,
+          actorPrincipalId: trustPrincipalId,
+          correlationId: campaignId,
+          createdAt: at,
+          ...(provider ? { providerId: provider.id } : {}),
         });
       } catch (error) {
         console.error(
@@ -484,6 +580,107 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           reason: skip.reason,
         })),
       }, 200);
+    } catch (error) {
+      return mappedErrorResponse(c, error, ERRORS);
+    }
+  });
+
+  const START_ALLOWED_FIELDS = new Set(["ownerHandle", "source", "diffEntries"]);
+  routes.post("/:campaignId/start", async (c) => {
+    try {
+      const auth = authorizeCampaignWriter(c, options.db);
+      const campaignId = c.req.param("campaignId");
+      if (!CAMPAIGN_ID.test(campaignId)) throw new Error("warden_campaign_id_invalid");
+      const campaign = getWardenCampaign(options.db, auth.tenantId, campaignId);
+      if (!campaign) throw new Error("warden_campaign_not_found");
+      const raw = await c.req.json() as Record<string, unknown>;
+      if (Object.keys(raw).some((key) => !START_ALLOWED_FIELDS.has(key))) {
+        throw new Error("warden_campaign_start_field_forbidden");
+      }
+      const ownerHandle = requiredText(raw.ownerHandle, "warden_owner_handle_invalid", 200);
+      const source = raw.source;
+      if (!source || typeof source !== "object" || Array.isArray(source)) {
+        throw new Error("warden_campaign_start_source_invalid");
+      }
+      const diffEntries = Array.isArray(raw.diffEntries) ? raw.diffEntries as Array<{ op: string; fromField?: string; toField?: string }> : [];
+      const at = now();
+      reverifyCampaignWriter(c, options.db, auth, at);
+      if (campaign.status === "running") {
+        const existing = getWardenRolloutDecision(options.db, auth.tenantId, `rollout-${campaignId}`);
+        return c.json({
+          campaignId,
+          status: "running",
+          jobIds: [] as const,
+          rolloutDecisionId: existing?.id ?? `rollout-${campaignId}`,
+        }, 200);
+      }
+      const targets = listWardenCampaignTargets(options.db, auth.tenantId, campaignId);
+      if (targets.length === 0) throw new Error("warden_rollout_targets_required");
+      const windowEnd = new Date(Date.parse(at) + 24 * 60 * 60 * 1000).toISOString();
+      const decision = planWardenRollout(options.db, {
+        id: `rollout-${campaignId}`,
+        tenantId: auth.tenantId,
+        campaignId,
+        expectedCampaignRevision: campaign.revision,
+        profiles: targets.map((target) => ({
+          targetId: target.id,
+          risk: "medium" as const,
+          environment: "test" as const,
+          verificationConfidence: 0.99,
+          canaryEligible: true,
+          ownerGroup: "owners",
+          ownerMaxParallel: 1,
+          maintenanceWindow: { start: at, end: windowEnd },
+        })),
+        canaryTargetId: targets[0]!.id,
+        maxCohortSize: Math.min(campaign.concurrencyLimit, targets.length),
+        stopConditions: {
+          pauseFailureRate: 0.1, abortFailureRate: 0.25,
+          minimumVerificationConfidence: 0.9, abortOnCriticalFailure: true,
+        },
+        actorPrincipalId: auth.trustPrincipalId,
+        eventId: `${campaignId}-rollout`,
+        idempotencyKey: `${campaignId}-rollout`,
+        correlationId: campaignId,
+        createdAt: at,
+      });
+      transitionWardenCampaign(options.db, {
+        tenantId: auth.tenantId, campaignId, expectedRevision: campaign.revision,
+        to: "running", actorPrincipalId: auth.trustPrincipalId,
+        eventId: `${campaignId}-running`, idempotencyKey: `${campaignId}-running`,
+        correlationId: campaignId, createdAt: at,
+      });
+      const enqueued = enqueueReadyWardenCampaignTargets(options.db, {
+        tenantId: auth.tenantId,
+        campaignId,
+        actorPrincipalId: auth.trustPrincipalId,
+        createdAt: at,
+        source: source as Parameters<typeof enqueueReadyWardenCampaignTargets>[1]["source"],
+        renames: extractFieldRenames(diffEntries),
+        rolloutDecisionId: decision.id,
+        rolloutApproval: {
+          decisionSha256: decision.decisionSha256,
+          approvedByPrincipalId: auth.trustPrincipalId,
+          approvedAt: at,
+        },
+        ownerApproval: {
+          ownerPrincipalId: targets[0]!.ownerPrincipalId,
+          ownerHandle,
+          approvedAt: at,
+        },
+      });
+      recordAudit(options.db, {
+        id: `audit_${createHash("sha256").update(`${auth.tenantId}\0${campaignId}\0start`).digest("hex")}`,
+        tenantId: auth.tenantId,
+        actor: auth.principal.id,
+        principalId: auth.trustPrincipalId,
+        requestId: c.get("requestId") ?? null,
+        action: "warden.campaign.started",
+        resourceType: "warden_campaign",
+        resourceId: campaignId,
+        metadata: { jobIds: enqueued.jobIds, rolloutDecisionId: decision.id },
+      });
+      return c.json({ campaignId, status: "running", jobIds: enqueued.jobIds, rolloutDecisionId: decision.id }, 200);
     } catch (error) {
       return mappedErrorResponse(c, error, ERRORS);
     }

@@ -1,7 +1,16 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
-import { createPlatform, planFromOpenApiPair } from "./index.js";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  openGraphLearnDb,
+  upsertNode,
+  type GraphLearnDb,
+} from "@mendpoint/graph-learn";
+import {
+  createPlatform,
+  GraphHandleUnavailableError,
+  planFromOpenApiPair,
+} from "./index.js";
 import { wardenSpecDiffStub } from "./specialists/warden-stub.js";
 import { transformerCampaignStub } from "./specialists/transformer-stub.js";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -9,20 +18,109 @@ import { tmpdir } from "node:os";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 
+const opened: Array<{ db?: GraphLearnDb; dir?: string }> = [];
+
+afterEach(() => {
+  for (const item of opened.splice(0)) {
+    try { item.db?.raw.close(); } catch { /* already closed */ }
+    if (item.dir) rmSync(item.dir, { recursive: true, force: true });
+  }
+});
+
+/** Build a real on-disk graph with one tenant-owned node and return its path. */
+function seededGraph(tenantId: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "mendpoint-sdk-graph-"));
+  const path = join(dir, "graph-learn.sqlite");
+  const db = openGraphLearnDb(path);
+  opened.push({ db, dir });
+  upsertNode(db, {
+    id: `file:${tenantId}:index.ts`,
+    kind: "File",
+    label: `${tenantId}/index.ts`,
+    repo_id: `${tenantId}:repo`,
+  });
+  return path;
+}
+
 describe("platform SDK", () => {
   it("exposes graph_query plan execute record_outcome", () => {
-    const p = createPlatform({ tenantId: "sdk-test" });
+    const graphPath = seededGraph("sdk-test");
+    const p = createPlatform({ tenantId: "sdk-test" }, { graphPath });
     const stats = p.graphQuery({ op: "stats" });
     expect(stats.summary).toBeTruthy();
     expect(p.plannerContext("warden")).toMatch(/Idempotency|Knowledge|style/i);
   });
 
+  it("fails closed with a structured reason when no handle is ready", () => {
+    const previous = process.env.GRAPH_LEARN_DB;
+    delete process.env.GRAPH_LEARN_DB;
+    try {
+      const p = createPlatform({ tenantId: "sdk-test" });
+      let err: unknown;
+      try {
+        p.graphQuery({ op: "stats" });
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(GraphHandleUnavailableError);
+      expect(err).toMatchObject({
+        error: "graph_handle_unavailable",
+        reason: "path_missing",
+      });
+      expect((err as GraphHandleUnavailableError).detail).toBeTruthy();
+    } finally {
+      if (previous === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = previous;
+    }
+  });
+
+  it("rejects an ephemeral in-memory handle rather than trusting it", () => {
+    const p = createPlatform({ tenantId: "sdk-test" }, { graphPath: ":memory:" });
+    let err: unknown;
+    try {
+      p.graphQuery({ op: "stats" });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(GraphHandleUnavailableError);
+    expect((err as GraphHandleUnavailableError).reason).toBe("path_ephemeral");
+  });
+
+  it("plannerContext distinguishes handle-unavailable from no-patterns", () => {
+    const previous = process.env.GRAPH_LEARN_DB;
+
+    delete process.env.GRAPH_LEARN_DB;
+    let unavailable: string;
+    try {
+      unavailable = createPlatform({ tenantId: "sdk-test" }).plannerContext("warden");
+    } finally {
+      if (previous === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = previous;
+    }
+    expect(unavailable).toContain("## Change Graph unavailable");
+    expect(unavailable).toContain("reason: path_missing");
+    expect(unavailable).not.toContain("## Historical patterns");
+
+    const graphPath = seededGraph("sdk-test");
+    const consulted = createPlatform(
+      { tenantId: "sdk-test" },
+      { graphPath },
+    ).plannerContext("warden");
+    expect(consulted).toContain("## Historical patterns");
+    expect(consulted).not.toContain("## Change Graph unavailable");
+
+    expect(unavailable).not.toBe(consulted);
+  });
+
   it("warden stub plans from acme openapi", async () => {
+    const graphPath = seededGraph("sdk-warden");
     const r = await wardenSpecDiffStub({
       providerSlug: "acme-payments",
       oldSpecPath: join(root, "fixtures/providers/acme-payments/openapi-v1.json"),
       newSpecPath: join(root, "fixtures/providers/acme-payments/openapi-v2.json"),
       execute: false,
+      tenantId: "sdk-warden",
+      graphPath,
     });
     expect(r.plan.steps.length).toBeGreaterThan(2);
     expect(r.markdown).toContain("Plan:");
@@ -55,7 +153,8 @@ describe("platform SDK", () => {
   });
 
   it("exposes backfillGit latencySlo dogfood", () => {
-    const p = createPlatform({ tenantId: "sdk-test" });
+    const graphPath = seededGraph("sdk-test");
+    const p = createPlatform({ tenantId: "sdk-test" }, { graphPath });
     p.graphQuery({ op: "stats" });
     p.graphQuery({ op: "stats" });
     p.graphQuery({ op: "stats" });

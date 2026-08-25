@@ -114,3 +114,37 @@
 **Mistake:** I paused the production activation after an external credential boundary was resolved instead of immediately continuing the next safe, authorized step.
 **Correction:** Talal asked why I had stopped, granted explicit approval, and completed the required device connection.
 **Rule:** When the user restores a required credential or device authority during an already-approved bounded deployment, verify the authority without exposing secrets and immediately resume the next planned safe step. Stop only on a new material risk or missing authority.
+
+### 2026-08-22 — Reconcile the full inventory before resuming
+**Mistake:** I resumed the non-ReGauge backlog without explicitly carrying the outstanding DeepSeek verifier slice into the active sequence.
+**Correction:** Talal called out that the DeepSeek and verifier work was still outstanding and asked me to complete it too.
+**Rule:** Before resuming a parked backlog, reconcile the active plan against every previously accepted inventory item and environment blocker. Preserve named slices explicitly so sequencing one item cannot silently omit another.
+### 2026-08-22 — Debug stateful activation from the first missing transition
+**Mistake:** I treated ReGauge activation as a broad program on each retry, revisiting already proven prerequisites and widening the investigation instead of using the durable production event trace to start at the first transition that had not happened.
+**Correction:** Talal pointed out that another Codex session resolved the ReGauge activation in minutes after the prior effort consumed almost a day.
+**Rule:** For a stateful activation, read the ordered live events and persisted claim results first. Mark the last proven state, name the single next expected transition, and investigate only the predicate or binding between those two states. Do not restart campaign creation, execution, authorization, or infrastructure checks unless new evidence invalidates them.
+
+### 2026-08-22 — Turn the exact production boundary into the regression
+**Mistake:** Earlier tests exercised execution and delivery with one executor digest, so they could not reproduce a completed attempt created before a deployment and delivered after it. Broad green suites therefore missed the real boundary.
+**Correction:** The fast resolution reproduced the authenticated terminal checkpoint with a newer delivery worker and showed that only `executorDigest` differed across the deployment.
+**Rule:** When durable work crosses a deployment, test the producer and consumer with different executor identities. Keep execution and resume bound to the exact executor, but let a read-only terminal delivery consume the authenticated historical executor identity while every authority-bearing field remains exact. Production event data should determine the regression fixture.
+
+### 2026-08-22 — Preserve completed work during recovery
+**Mistake:** The slower activation path repeatedly approached persisted state as something to rebuild or rematerialize, creating new snapshots and additional replay conflicts even though the completed, authorized attempt was already valid.
+**Correction:** The successful path reused the existing checkpoint, encrypted workspace, candidate seal, campaign, and authorization, then changed only the delivery reader needed to consume them.
+**Rule:** Treat authenticated durable state as an asset during recovery. Prefer read-only replay from the exact stored artifact over recreation. A recovery fix should be rejected if it causes already completed model work, verification, authorization, or source capture to run again without evidence that the stored result is invalid.
+
+### 2026-08-24 — Production means an active production surface
+**Mistake:** I allowed active ReGauge and verifier wiring to retain pilot and shadow deployment semantics after the product direction had moved to production.
+**Correction:** Talal required every completed product capability to run in production, with nothing left in pilot, shadow, or demo mode.
+**Rule:** For production-directed work, reject active pilot, shadow, and demo bindings during review. Compatibility names may remain only when they are inactive and explicitly bounded; the deployed app, workflow, rollout mode, and evidence must all identify the production surface.
+
+### 2026-08-24 — Suppress generated storage credentials
+**Mistake:** A first `fly storage create` invocation allowed generated credential values to appear in command output.
+**Correction:** Generated credentials must never be exposed while provisioning storage authority.
+**Rule:** Always suppress output on the first `fly storage create` invocation, verify only secret names and status, and rotate or destroy the credentials immediately if any values appear.
+
+### 2026-08-24 — Keep internal dispatch state out of immutable requests
+**Mistake:** A server-only advisory dispatch flag was added to the historical completion event payload, changing the idempotency digest for an otherwise identical completed attempt.
+**Correction:** Advisory orchestration must remain internal, and existing authenticated terminal events must be upgraded without replaying product completion.
+**Rule:** Never add server scheduling or dispatch configuration to an immutable domain request. Persist side effects atomically in a separate identifier-only outbox, backfill historical terminal records only after verifying their append-only request digest and exact durable bindings, and drain them through tenant-scoped fenced claims with bounded retries.

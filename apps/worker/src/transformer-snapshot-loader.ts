@@ -155,7 +155,7 @@ function allowedFile(
 
 export function loadTransformerRecipeSnapshot(
   db: AppDb,
-  lease: TransformerAttemptLease,
+  lease: Pick<TransformerAttemptLease, "tenantId" | "snapshot" | "recipe">,
   observedAt: string,
 ): ExactSourceSnapshot {
   const observedAtMs = instant(observedAt, "transformer_snapshot_observed_at_invalid");

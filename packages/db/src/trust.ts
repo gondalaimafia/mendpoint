@@ -82,11 +82,17 @@ export function insertPrincipal(
     if (!same) throw new Error("principal_identity_conflict");
     return existing;
   }
+  // Read-then-insert has no BEGIN IMMEDIATE, so a concurrent caller can commit
+  // the same deterministic principal between the SELECT above and this INSERT.
+  // `ON CONFLICT DO NOTHING` makes the race idempotent (the primary key and the
+  // (tenant_id, kind, subject) unique index both hold) instead of throwing a
+  // constraint error the caller would otherwise swallow.
   db.raw
     .prepare(
       `INSERT INTO principals
        (id, tenant_id, kind, subject, display_name, audience, expires_at, revoked_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT DO NOTHING`,
     )
     .run(
       input.id,
@@ -99,7 +105,16 @@ export function insertPrincipal(
       input.revokedAt ?? null,
       input.createdAt,
     );
-  return one<PrincipalRow>(db, `SELECT * FROM principals WHERE id = ?`, [input.id])!;
+  // Re-read by id; fall back to the identity index when a raced writer used a
+  // different id for the same (tenant_id, kind, subject).
+  return (
+    one<PrincipalRow>(db, `SELECT * FROM principals WHERE id = ?`, [input.id]) ??
+    one<PrincipalRow>(
+      db,
+      `SELECT * FROM principals WHERE tenant_id = ? AND kind = ? AND subject = ?`,
+      [input.tenantId, input.kind, input.subject],
+    )
+  )!;
 }
 
 export function getPrincipalBySubject(

@@ -46,6 +46,11 @@ export type TransformerMissionPlanningInput = Readonly<{
   repositories: readonly TransformerMissionPlanningRepository[];
   objective: Omit<TransformerObjective, "units">;
   recipeCatalog: readonly MigrationRecipeContract[];
+  /**
+   * Repository-id → repository-ids this unit depends on, from a consulted Change
+   * Graph. Absent or empty means the planner does not invent dependencies.
+   */
+  dependsOnByRepositoryId?: Readonly<Record<string, readonly string[]>>;
 }>;
 
 function compareCodeUnits(left: string, right: string): number {
@@ -192,6 +197,14 @@ export function planTransformerMission(
   }
   if (reasons.length > 0) return abstained(reasons);
   if (units.length === 0) return abstained(["mission_unit_required"]);
+  const unitByRepository = new Map(units.map((unit) => [unit.repositoryId, unit.id]));
+  for (const unit of units) {
+    const declared = input.dependsOnByRepositoryId?.[unit.repositoryId] ?? [];
+    unit.dependsOn = [...new Set(declared)]
+      .map((repositoryId) => unitByRepository.get(repositoryId))
+      .filter((dependencyId): dependencyId is string => Boolean(dependencyId) && dependencyId !== unit.id)
+      .sort(compareCodeUnits);
+  }
 
   return planTransformerBlueprint({
     evaluatedAt: input.evaluatedAt,

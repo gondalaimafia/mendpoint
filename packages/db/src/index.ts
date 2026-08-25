@@ -49,6 +49,7 @@ export * from "./mission-verification.js";
 export * from "./mission-artifacts.js";
 export * from "./mission-timeline.js";
 export * from "./mission-handoff.js";
+export * from "./mission-task.js";
 export * from "./policy-envelope.js";
 export * from "./task-ownership.js";
 
@@ -926,6 +927,9 @@ CREATE TABLE IF NOT EXISTS mission_decisions (
   supersedes_id TEXT REFERENCES mission_decisions(id),
   content_digest TEXT NOT NULL CHECK (length(content_digest) = 64),
   created_at TEXT NOT NULL,
+  -- §8.19 annotation. Nullable, not in the content digest: existing rows keep
+  -- their id. ALTER ADD COLUMN does not fire the append-only UPDATE trigger.
+  decision_type TEXT,
   FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id)
 );
 CREATE INDEX IF NOT EXISTS mission_decisions_mission_idx
@@ -958,6 +962,9 @@ CREATE TABLE IF NOT EXISTS mission_exceptions (
   supersedes_id TEXT REFERENCES mission_exceptions(id),
   content_digest TEXT NOT NULL CHECK (length(content_digest) = 64),
   created_at TEXT NOT NULL,
+  -- §8.20 annotations. Nullable, not in the content digest.
+  task_id TEXT,
+  category TEXT,
   FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id),
   FOREIGN KEY (observed_snapshot_id, tenant_id) REFERENCES repository_snapshots(id, tenant_id),
   -- A context-bound exception carries both snapshot-identity fields; a
@@ -1046,6 +1053,9 @@ CREATE TABLE IF NOT EXISTS mission_artifacts (
   producer_principal_id TEXT NOT NULL REFERENCES principals(id),
   content_digest TEXT NOT NULL CHECK (length(content_digest) = 64),
   created_at TEXT NOT NULL,
+  -- §8.21 annotations. Nullable, not in the content digest.
+  task_id TEXT,
+  source_snapshot TEXT,
   FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id),
   FOREIGN KEY (artifact_id, tenant_id) REFERENCES artifact_manifests(id, tenant_id),
   -- One registration per (mission, role, artifact): an artifact fills a role once.
@@ -1094,6 +1104,69 @@ END;
 CREATE TRIGGER IF NOT EXISTS mission_artifact_lineage_no_delete
 BEFORE DELETE ON mission_artifact_lineage BEGIN
   SELECT RAISE(ABORT, 'mission_artifact_lineage_append_only');
+END;
+
+-- Shared Mission Task engine (spec §6.8). The single work primitive both agents
+-- and humans operate on, so work moves agent -> human -> agent without
+-- reconstructing Mission context. Unlike the append-only record stores above, a
+-- task TRANSITIONS in place under optimistic concurrency (revision), and the
+-- hash-chained domain_events carry the audit trail (mirroring the mission row).
+-- owner_type is the CURRENT owner (null while UNASSIGNED); handoff_reason records
+-- why the last agent/human boundary was crossed; retry_count is the replan
+-- history counter. Brand-new table + a companion dependency-edge table, so both
+-- converge on fresh AND pre-change databases via CREATE TABLE/INDEX IF NOT EXISTS
+-- with no ALTER. The composite FK (tenant_id, mission_id) -> mission(tenant_id,
+-- id) binds every task to a mission of the same tenant.
+CREATE TABLE IF NOT EXISTS mission_task (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  mission_id TEXT NOT NULL,
+  task_type TEXT NOT NULL,
+  acceptance_criteria TEXT NOT NULL,
+  risk TEXT NOT NULL CHECK (risk IN ('low', 'medium', 'high', 'critical')),
+  status TEXT NOT NULL CHECK (status IN (
+    'unassigned', 'agent_assigned', 'agent_working', 'human_review_required',
+    'human_assigned', 'human_working', 'agent_resume', 'complete',
+    'blocked', 'failed', 'cancelled', 'escalated')),
+  owner_type TEXT CHECK (owner_type IN ('agent', 'human')),
+  assigned_principal_id TEXT REFERENCES principals(id),
+  handoff_reason TEXT,
+  retry_count INTEGER NOT NULL CHECK (retry_count >= 0),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id),
+  UNIQUE (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS mission_task_mission_idx
+  ON mission_task(tenant_id, mission_id, status, created_at);
+
+-- Task dependency edges (task depends_on prerequisite). Append-only DAG within a
+-- single mission; a task is READY only when every prerequisite is COMPLETE. Both
+-- endpoints must be tasks of the same (tenant, mission); self-edges are rejected
+-- by CHECK and longer cycles in code.
+CREATE TABLE IF NOT EXISTS mission_task_dependencies (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  mission_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  depends_on_task_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id),
+  FOREIGN KEY (task_id) REFERENCES mission_task(id),
+  FOREIGN KEY (depends_on_task_id) REFERENCES mission_task(id),
+  CHECK (task_id != depends_on_task_id),
+  UNIQUE (tenant_id, task_id, depends_on_task_id)
+);
+CREATE INDEX IF NOT EXISTS mission_task_dependencies_task_idx
+  ON mission_task_dependencies(tenant_id, task_id);
+CREATE TRIGGER IF NOT EXISTS mission_task_dependencies_no_update
+BEFORE UPDATE ON mission_task_dependencies BEGIN
+  SELECT RAISE(ABORT, 'mission_task_dependencies_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS mission_task_dependencies_no_delete
+BEFORE DELETE ON mission_task_dependencies BEGIN
+  SELECT RAISE(ABORT, 'mission_task_dependencies_append_only');
 END;
 
 -- Trajectory capture (Intelligence Ownership Phases 4 + 7). The OBSERVATION layer
@@ -2415,6 +2488,11 @@ function migrateProvidersFeedColumns(db: AppDb) {
      ON api_versions(provider_id, content_hash)
      WHERE content_hash IS NOT NULL`,
   );
+  // ALTER TABLE ADD COLUMN cannot attach a CHECK, a column-level FOREIGN KEY, or
+  // a default that differs from the fresh CREATE TABLE, so an entry whose column
+  // carries any of those in the static DDL leaves an upgraded volume permanently
+  // divergent for that column. schema-upgrade-divergence.test.ts characterizes
+  // every such case; add a new one there when introducing another.
   const additiveColumns: Array<{
     table: string;
     name: string;
@@ -2636,6 +2714,14 @@ function migrateProvidersFeedColumns(db: AppDb) {
       name: "executed_executor_id",
       sql: "TEXT",
     },
+    // §8.19–8.21 annotations. Nullable TEXT, no default. Not part of any
+    // content digest, so existing append-only rows keep their ids. ALTER ADD
+    // COLUMN does not fire the no-update triggers.
+    { table: "mission_decisions", name: "decision_type", sql: "TEXT" },
+    { table: "mission_exceptions", name: "task_id", sql: "TEXT" },
+    { table: "mission_exceptions", name: "category", sql: "TEXT" },
+    { table: "mission_artifacts", name: "task_id", sql: "TEXT" },
+    { table: "mission_artifacts", name: "source_snapshot", sql: "TEXT" },
   ];
   const addedColumns = new Set<string>();
   for (const column of additiveColumns) {
@@ -2744,6 +2830,8 @@ function migrateProvidersFeedColumns(db: AppDb) {
      ON migration_prs(consumer_id, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS audit_events_tenant_created_idx
      ON audit_events(tenant_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS audit_events_tenant_action_created_idx
+     ON audit_events(tenant_id, action, created_at DESC)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS agent_runs_tenant_job_uidx
      ON agent_runs(tenant_id, job_id) WHERE job_id IS NOT NULL`,
   ]) {
@@ -3796,6 +3884,17 @@ export type { ProductMetrics } from "./metrics.js";
 
 export { buildExposureReport } from "./exposure.js";
 export type { ExposureReport } from "./exposure.js";
+export { summarizeChangeImpactCoverage } from "./change-impact-coverage.js";
+export type { ChangeImpactCoverage } from "./change-impact-coverage.js";
+export {
+  loadChangeImpactCoverage,
+  lookupChangeImpactAudit,
+} from "./change-impact-audit.js";
+export type {
+  ChangeImpactAudit,
+  ChangeImpactCoverageWithFallback,
+  ChangeImpactFallback,
+} from "./change-impact-audit.js";
 
 export {
   appendDomainEvent,
@@ -4011,6 +4110,7 @@ export {
   grantLearningConsent,
   listAdmittableLearningRecords,
   listEligibleLearningDatasetMembers,
+  listLearningConsentHistory,
   listLearningRecordLineage,
   revokeLearningConsent,
   sealLearningDatasetVersion,
@@ -4035,6 +4135,7 @@ export {
   claimReadyWardenTargets,
   createWardenCampaign,
   getWardenCampaign,
+  getWardenCampaignTarget,
   getWardenRolloutDecision,
   listWardenCampaignTargets,
   planWardenRollout,
@@ -4043,6 +4144,7 @@ export {
   transitionWardenTarget,
 } from "./warden-campaign.js";
 export {
+  advanceMissionPolicyEnvelopeVersion,
   bindMissionGraphVersion,
   bindMissionPolicyEnvelopeVersion,
   bindMissionScope,
@@ -5555,6 +5657,9 @@ export function jobToApi(job: JobRow) {
 
 export function exportAuditJson(db: AppDb, limit = 5000, tenantId?: string) {
   assertTenantScope(tenantId);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20_000) {
+    throw new Error("audit_export_limit_invalid");
+  }
   const rows = all(
     db,
     `SELECT * FROM audit_events
@@ -5571,6 +5676,9 @@ export function exportAuditJson(db: AppDb, limit = 5000, tenantId?: string) {
 
 export function exportAuditCsv(db: AppDb, limit = 5000, tenantId?: string): string {
   assertTenantScope(tenantId);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20_000) {
+    throw new Error("audit_export_limit_invalid");
+  }
   const rows = all(
     db,
     `SELECT id, tenant_id, actor, principal_id, api_key_id, request_id,
@@ -5606,7 +5714,13 @@ export function exportAuditCsv(db: AppDb, limit = 5000, tenantId?: string): stri
       r.resource_id ?? "",
       r.created_at,
     ]
-      .map((c) => `"${String(c).replace(/"/g, '""')}"`)
+      .map((c) => {
+        const text = String(c);
+        const formulaSafe = /^(?:[=+\-@\t\r\n]| +[=+\-@])/.test(text)
+          ? `'${text}`
+          : text;
+        return `"${formulaSafe.replace(/"/g, '""')}"`;
+      })
       .join(","),
   );
   return [header, ...lines].join("\n");

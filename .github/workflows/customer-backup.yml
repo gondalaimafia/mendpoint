@@ -1,0 +1,121 @@
+name: Customer production backup
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: customer-production-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    # The app's authenticated object-store operation is bounded at four hours.
+    # Keep the runner alive through that fail-closed timeout so it does not sever
+    # the SSH session while the remote process still owns the backup fence.
+    timeout-minutes: 270
+    environment: customer-production-backup
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Install Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+
+      - name: Initialize backup evidence
+        shell: bash
+        env:
+          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/customer-backup
+          evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          printf 'run=%s attempt=%s app=%s revision=%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$CUSTOMER_APP" "$GITHUB_SHA" > "$evidence"
+
+      - name: Validate app-scoped backup authority
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}
+          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
+        run: |
+          set -euo pipefail
+          test -n "$FLY_API_TOKEN" || { echo customer_backup_fly_token_missing >&2; exit 1; }
+          [[ "$CUSTOMER_APP" =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]] || {
+            echo customer_backup_app_binding_invalid >&2
+            exit 1
+          }
+          mapfile -t visible_apps < <(flyctl apps list --json | jq -r '.[].name' | sort -u)
+          if [ "${#visible_apps[@]}" -ne 1 ] || [ "${visible_apps[0]:-}" != "$CUSTOMER_APP" ]; then
+            echo customer_backup_token_not_app_scoped >&2
+            exit 1
+          fi
+          flyctl status --app "$CUSTOMER_APP" >/dev/null
+
+      - name: Run authenticated customer backup
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}
+          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
+        run: |
+          set -euo pipefail
+          evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
+            --command "node --import tsx scripts/customer-backup.ts" 2>&1 | tee -a "$evidence"
+          grep -q '"backupId"' "$evidence"
+          grep -q '"manifestAuthentication"' "$evidence"
+          grep -q '"publication"' "$evidence"
+
+      - name: Retain backup evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: customer-production-backup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/customer-backup/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Alert on backup failure
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          label="customer-production-backup-failure"
+          gh label create "$label" --repo "$GH_REPO" --color b60205 \
+            --description "Automated: customer production backup failed" >/dev/null 2>&1 || true
+          existing="$(gh issue list --repo "$GH_REPO" --state open --label "$label" \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GH_REPO" \
+              --body "Customer backup failed again. Failed run: $RUN_URL"
+          else
+            gh issue create --repo "$GH_REPO" --label "$label" \
+              --title "Customer production backup FAILED" \
+              --body "The recurring authenticated customer backup failed. Failed run: $RUN_URL. Runbook: docs/CUSTOMER_INCIDENT_RUNBOOK.md"
+          fi
+
+      - name: Resolve backup failure alert
+        if: ${{ success() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          label="customer-production-backup-failure"
+          for number in $(gh issue list --repo "$GH_REPO" --state open --label "$label" \
+            --json number --jq '.[].number'); do
+            gh issue close "$number" --repo "$GH_REPO" --reason completed \
+              --comment "Customer backup succeeded: $RUN_URL. Closing automatically."
+          done

@@ -1,19 +1,21 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   addWardenCampaignTarget,
+  bindMissionToPolicyEnvelope,
   createDb,
   createMission,
   createPolicyEnvelope,
-  bindMissionToPolicyEnvelope,
   createWardenCampaign,
   insertPrincipal,
   insertRepositorySnapshot,
   insertRepositorySnapshotPolicy,
   linkFettlerCampaignToMission,
+  listMissionArtifactLineage,
+  listMissionArtifacts,
   listWardenCampaignTargets,
   planWardenRollout,
   recordMissionDecision,
@@ -26,6 +28,7 @@ import type { UnifiedSourceArtifact } from "@mendpoint/change-intel";
 import { canonicalPolicyEnvelopeJson, type PolicyEnvelope } from "@mendpoint/policy";
 import {
   compareWardenVerificationRuns,
+  createWardenCampaignReviewPackage,
   createWardenSourceEnvelope,
   executeWardenCampaignTarget,
   recoverWardenCampaignTarget,
@@ -238,7 +241,22 @@ describe("Warden campaign executor", () => {
       delivery: { mode: "draft", autoMerge: false, autoDeploy: false },
       snapshot: { id: "snapshot-a", resolvedSha, manifestSha256 },
       typedEdits: [{ kind: "ast_codemod", targetSymbol: "createCharge" }],
+      upstreamChange: { providerSlug: "provider", sourceKind: "release" },
+      whyInScope: { repositoryId: "repo-a", ownerHandle: "@payments" },
+      graphPath: { query: "repository_evidence" },
+      coverageLimits: { gatedOn: ["codeowners", "ci", "runtime_trace"] },
+      // graphBasis is derived from the gate rows that matched on the exact commit,
+      // not asserted as a literal. Fields fixed by the clean-run precondition
+      // (comparisonOk, introducedFailures, notVerified) are no longer emitted.
+      uncertainty: { graphBasis: "exact_commit_evidence" },
+      risk: { reviewRequired: true, autoMerge: false, autoDeploy: false },
+      recipeProvenance: { kinds: ["ast_codemod"] },
+      verification: { resolvedFailures: [] },
     });
+    const parsed = JSON.parse(reviewPackage.content_text);
+    expect(parsed.verification).not.toHaveProperty("comparisonOk");
+    expect(parsed.verification).not.toHaveProperty("introducedFailures");
+    expect(parsed.uncertainty).not.toHaveProperty("notVerified");
   });
 
   it("fails closed on a new verification regression and resumes only from verified replay evidence", async () => {
@@ -381,5 +399,85 @@ describe("Warden campaign executor", () => {
     await expect(executeWardenCampaignTarget(executionInput(value)))
       .rejects.toMatchObject({ code: "warden_edits_previously_rejected", retryable: false });
     expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0]?.stage).not.toBe("review");
+  });
+
+  it("registers persisted candidate, verification, and review-package manifests on a bound Mission", async () => {
+    const value = fixture();
+    const result = await executeWardenCampaignTarget(executionInput(value));
+    const registered = listMissionArtifacts(value.db, "tenant-a", "mission-a");
+    expect(registered.map((row) => row.role).sort()).toEqual([
+      "candidate_patch", "pull_request", "verification_report",
+    ]);
+    expect(registered.find((row) => row.role === "candidate_patch")?.artifactId).toBe(result.candidateArtifactId);
+    expect(registered.find((row) => row.role === "verification_report")?.artifactId).toBe(result.postEditArtifactId);
+    expect(registered.find((row) => row.role === "pull_request")?.artifactId).toBe(result.packageArtifactId);
+    expect(registered.every((row) => row.sourceSnapshot === "snapshot-a")).toBe(true);
+    expect(registered.every((row) => row.producerPrincipalId === "worker")).toBe(true);
+    const lineage = listMissionArtifactLineage(value.db, "tenant-a", "mission-a");
+    expect(lineage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        artifactId: result.postEditArtifactId, parentArtifactId: result.candidateArtifactId,
+      }),
+      expect.objectContaining({
+        artifactId: result.packageArtifactId, parentArtifactId: result.candidateArtifactId,
+      }),
+    ]));
+  });
+
+  // CONTROL: the live campaign execute seam must call the best-effort registry
+  // helper. Deleting tryRegisterFettlerCampaignMissionArtifacts from
+  // executeWardenCampaignTarget makes this die.
+  it("CONTROL: executeWardenCampaignTarget calls tryRegisterFettlerCampaignMissionArtifacts", () => {
+    const source = readFileSync(join(import.meta.dirname, "warden-campaign-executor.ts"), "utf8");
+    expect(source).toContain('from "./mission-artifact-register.js"');
+    expect(source).toMatch(/tryRegisterFettlerCampaignMissionArtifacts\(/);
+    expect(source).toContain('role: "candidate_patch"');
+    expect(source).toContain('role: "verification_report"');
+    expect(source).toContain('role: "pull_request"');
+  });
+});
+
+function reviewPackageInput(
+  commands: readonly string[],
+  approvedCommands: readonly string[],
+): Parameters<typeof createWardenCampaignReviewPackage>[0] {
+  return {
+    campaignId: "campaign-a", targetId: "target-a", runId: "run-a", attempt: 1,
+    source: {
+      schemaVersion: 1, sourceArtifactId: "source-1", tenantId: "tenant-a", sourceKind: "release",
+      providerSlug: "provider", sourceUri: "https://provider.example/r", sourceRevision: null,
+      contentSha256: digest("content"), observedAt: createdAt, capturedAt: createdAt,
+      taxonomyVersion: "2026-08-02", signalEvidenceLocations: [],
+    },
+    sourceEnvelopeArtifactId: "source-artifact",
+    snapshot: { id: "snapshot-a", repositoryId: "repo-a", resolvedSha, manifestSha256 },
+    ownerHandle: "@payments",
+    gates: {
+      snapshotId: "snapshot-a", resolvedSha, ownerEvidenceId: "owners-1", ciEvidenceId: "ci-1",
+      runtimeEvidenceId: "runtime-1", graphBasis: "exact_commit_evidence",
+      gatedOn: ["codeowners", "ci", "runtime_trace"],
+    },
+    edits: [{ id: "edit-1", kind: "ast_codemod", targetPath: "src/payments.ts", targetSymbol: "createCharge",
+      sourceEvidenceIds: ["source-1"], precondition: "p", postcondition: "q", rollback: "r", confidence: 0.9 }],
+    commands, approvedCommands,
+    comparison: {
+      ok: true, introducedFailures: [], resolvedFailures: [], baselineFailed: [], postEditFailed: [], notVerified: [],
+    },
+    baselineArtifactId: "baseline", candidateArtifactId: "candidate",
+    postEditArtifactId: "post-edit", gateArtifactId: "gate",
+  };
+}
+
+describe("createWardenCampaignReviewPackage coverage notes", () => {
+  it("flags a command subset by set, even when duplicates make the counts match", () => {
+    // ran = {a}, approved = {a, b}: "b" never ran, but the array lengths both equal
+    // 2, so the pre-fix length comparison suppressed the note.
+    const pkg = createWardenCampaignReviewPackage(reviewPackageInput(["a", "a"], ["a", "b"]));
+    expect(pkg.uncertainty.notes).toContain("verification_command_subset");
+  });
+
+  it("omits the subset note when the approved and ran command sets are equal", () => {
+    const pkg = createWardenCampaignReviewPackage(reviewPackageInput(["a", "b"], ["b", "a"]));
+    expect(pkg.uncertainty.notes).not.toContain("verification_command_subset");
   });
 });

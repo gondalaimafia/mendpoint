@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { graphPathDisplay, type GraphPath } from "@mendpoint/shared";
-import { ApiRequestError, apiGet, type MigrationPr } from "../../../../lib/api";
+import { ApiRequestError, apiGet, type ChangeImpactCoverage, type MigrationPr } from "../../../../lib/api";
 import { SeverityForm } from "./severity-form";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +25,7 @@ type ChangeDetail = {
     graphPath: GraphPath | null;
   }>;
   prs: MigrationPr[];
+  impactCoverage?: ChangeImpactCoverage;
 };
 
 type FindingGraphPath = ChangeDetail["findings"][number]["graphPath"];
@@ -58,6 +59,22 @@ function renderGraphPath(graphPath: FindingGraphPath) {
       {suffix}
     </code>
   );
+}
+
+function emptyFindingsCopy(coverage?: ChangeImpactCoverage): string {
+  if (coverage?.impact === "no_impact" && coverage.fallback === "raw_retrieval") {
+    return "No impact — analyzed without a tenant graph. This is not a graph-authoritative no-impact result; Fettler used bounded raw retrieval.";
+  }
+  if (coverage?.impact === "no_impact") {
+    return "No impact — verified. Fettler analyzed the in-scope code with full coverage and found nothing affected.";
+  }
+  if (coverage?.impact === "unknown_impact" && coverage.reason === "partial_or_unknown_coverage") {
+    return "No known impact under partial coverage. There may be affected code that was not analyzed.";
+  }
+  if (coverage?.impact === "unknown_impact" && coverage.reason === "analysis_did_not_run") {
+    return "No analysis ran against real code. An empty findings list is not evidence of no impact.";
+  }
+  return "No impact findings are recorded. Confirm pipeline completion before treating this as no impact.";
 }
 
 function changeLoadMessage(error: unknown): string {
@@ -160,6 +177,11 @@ export default async function ChangeDetailPage({
       </table>
 
       <h2>Impact findings</h2>
+      {data.findings.length > 0 && data.impactCoverage?.fallback === "raw_retrieval" && (
+        <p className="muted">
+          Impact was analyzed via raw retrieval, not a tenant graph.
+        </p>
+      )}
       <table>
         <thead>
           <tr>
@@ -185,7 +207,7 @@ export default async function ChangeDetailPage({
           {data.findings.length === 0 && (
             <tr>
               <td colSpan={4} className="muted">
-                No impact findings are recorded. Confirm pipeline completion before treating this as no impact.
+                {emptyFindingsCopy(data.impactCoverage)}
               </td>
             </tr>
           )}

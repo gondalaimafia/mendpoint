@@ -110,6 +110,7 @@ function fakeRuntime() {
       return control;
     },
     async readExecution() { return execution; },
+    async reconcileExisting() {},
     async launch(request) {
       calls.launch += 1;
       execution = {

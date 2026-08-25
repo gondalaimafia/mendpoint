@@ -9,6 +9,7 @@ const originalEnvironment = {
 };
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   if (originalEnvironment.apiKey === undefined) delete process.env.MENDPOINT_API_KEY;
   else process.env.MENDPOINT_API_KEY = originalEnvironment.apiKey;
@@ -88,6 +89,40 @@ describe("public design partner application bridge", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("cancels an undeclared streamed request at the byte limit", async () => {
+    configure();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    let cancelled = false;
+    let index = 0;
+    const chunks = [new Uint8Array(16 * 1_024), new Uint8Array([1])];
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks[index++];
+        if (chunk) controller.enqueue(chunk);
+        else controller.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const streamed = new NextRequest("https://mendpoint.dev/api/design-partners", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://mendpoint.dev",
+        "sec-fetch-site": "same-origin",
+      },
+      body,
+      duplex: "half",
+    } as ConstructorParameters<typeof NextRequest>[1] & { duplex: "half" });
+
+    const response = await POST(streamed);
+    expect(response.status).toBe(413);
+    expect(cancelled).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("fails closed without the server API key and redacts upstream failures", async () => {
     process.env.MENDPOINT_WEB_ALLOWED_ORIGINS = "https://mendpoint.dev";
     delete process.env.MENDPOINT_API_KEY;
@@ -116,5 +151,52 @@ describe("public design partner application bridge", () => {
     const response = await POST(request());
     expect(response.status).toBe(502);
     await expect(response.json()).resolves.toEqual({ error: "application_service_unavailable" });
+  });
+
+  it("cancels an undeclared oversized upstream response", async () => {
+    configure();
+    let cancelled = false;
+    let index = 0;
+    const chunks = [new Uint8Array(16 * 1_024), new Uint8Array([1])];
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      body: new ReadableStream({
+        pull(controller) {
+          const chunk = chunks[index++];
+          if (chunk) controller.enqueue(chunk);
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      headers: new Headers(),
+      ok: true,
+      status: 201,
+    }) as Response));
+    const response = await POST(request());
+    expect(response.status).toBe(502);
+    expect(cancelled).toBe(true);
+  });
+
+  it("keeps the upstream timeout active while consuming the response body", async () => {
+    configure();
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const signal = init?.signal as AbortSignal;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          signal.addEventListener("abort", () => {
+            controller.error(new DOMException("request timed out", "AbortError"));
+          }, { once: true });
+        },
+      }), { status: 201 });
+    }));
+
+    const responsePromise = POST(request());
+    await vi.advanceTimersByTimeAsync(10_000);
+    const response = await responsePromise;
+    expect(response.status).toBe(504);
+    await expect(response.json()).resolves.toEqual({
+      error: "application_service_unavailable",
+    });
   });
 });

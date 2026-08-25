@@ -61,7 +61,7 @@ describe("runWardenCampaignExecuteTarget", () => {
       received = input;
       return { stage: "review" } as Awaited<ReturnType<WardenCampaignExecutor>>;
     }) as WardenCampaignExecutor;
-    const outcome = await runWardenCampaignExecuteTarget({ db, job: job(validPayload()), dependencies, execute });
+    const outcome = await runWardenCampaignExecuteTarget({ db, job: job(validPayload()), resolveDependencies: () => dependencies, execute });
     expect(outcome).toEqual({ status: "executed", stage: "review" });
     expect(received!.tenantId).toBe("t-1");
     expect(received!.campaignId).toBe("camp-1");
@@ -69,11 +69,42 @@ describe("runWardenCampaignExecuteTarget", () => {
     expect(received!.dependencies).toBe(dependencies);
   });
 
+  it("parses payload renames and threads them into resolveDependencies", async () => {
+    const payload = { ...validPayload(), renames: [{ from: "amount", to: "amount_cents" }] };
+    let seen: readonly { from: string; to: string }[] | null = null;
+    const execute = (async () => ({ stage: "review" } as Awaited<ReturnType<WardenCampaignExecutor>>)) as WardenCampaignExecutor;
+    await runWardenCampaignExecuteTarget({
+      db,
+      job: job(payload),
+      resolveDependencies: (renames) => {
+        seen = renames;
+        return dependencies;
+      },
+      execute,
+    });
+    expect(seen).toEqual([{ from: "amount", to: "amount_cents" }]);
+  });
+
+  it("defaults renames to an empty list when the payload omits them", async () => {
+    let seen: readonly { from: string; to: string }[] | null = null;
+    const execute = (async () => ({ stage: "review" } as Awaited<ReturnType<WardenCampaignExecutor>>)) as WardenCampaignExecutor;
+    await runWardenCampaignExecuteTarget({
+      db,
+      job: job(validPayload()),
+      resolveDependencies: (renames) => {
+        seen = renames;
+        return dependencies;
+      },
+      execute,
+    });
+    expect(seen).toEqual([]);
+  });
+
   it("reschedules on a retryable executor error", async () => {
     const execute = (async () => {
       throw new WardenCampaignExecutionError("warden_target_not_ready", true);
     }) as WardenCampaignExecutor;
-    const outcome = await runWardenCampaignExecuteTarget({ db, job: job(validPayload()), dependencies, execute });
+    const outcome = await runWardenCampaignExecuteTarget({ db, job: job(validPayload()), resolveDependencies: () => dependencies, execute });
     expect(outcome).toEqual({ status: "retry_scheduled", code: "warden_target_not_ready" });
   });
 
@@ -81,7 +112,7 @@ describe("runWardenCampaignExecuteTarget", () => {
     const execute = (async () => {
       throw new WardenCampaignExecutionError("warden_owner_approval_mismatch", false);
     }) as WardenCampaignExecutor;
-    const outcome = await runWardenCampaignExecuteTarget({ db, job: job(validPayload()), dependencies, execute });
+    const outcome = await runWardenCampaignExecuteTarget({ db, job: job(validPayload()), resolveDependencies: () => dependencies, execute });
     expect(outcome).toEqual({ status: "failed", code: "warden_owner_approval_mismatch" });
   });
 
@@ -92,7 +123,7 @@ describe("runWardenCampaignExecuteTarget", () => {
       return { stage: "review" } as Awaited<ReturnType<WardenCampaignExecutor>>;
     }) as WardenCampaignExecutor;
     const outcome = await runWardenCampaignExecuteTarget({
-      db, job: { ...job({}), payload_json: "not json" }, dependencies, execute,
+      db, job: { ...job({}), payload_json: "not json" }, resolveDependencies: () => dependencies, execute,
     });
     expect(outcome).toEqual({ status: "failed", code: "warden_campaign_execute_payload_invalid" });
     expect(called).toBe(false);
@@ -102,7 +133,7 @@ describe("runWardenCampaignExecuteTarget", () => {
     const execute = (async () => {
       throw new Error("kaboom");
     }) as WardenCampaignExecutor;
-    await expect(runWardenCampaignExecuteTarget({ db, job: job(validPayload()), dependencies, execute }))
+    await expect(runWardenCampaignExecuteTarget({ db, job: job(validPayload()), resolveDependencies: () => dependencies, execute }))
       .rejects.toThrow("kaboom");
   });
 });

@@ -761,20 +761,59 @@ function runGraphQueryInner(
       };
     }
     case "migration_ready_units": {
+      const campaignId = q.campaignId;
+      const units = listNodesByKind(db, "MigrationUnit").filter(
+        (node) => String(node.props?.campaign_id ?? "") === campaignId,
+      );
+      // Readiness walks MigrationUnit --DEPENDS_ON--> MigrationUnit only, so the
+      // gate must test that exact population. Any DEPENDS_ON is not enough: the
+      // manifest producer writes Service -> Service edges, which would open the
+      // gate while every MigrationUnit still has zero deps, making
+      // `deps.every(...)` vacuously true and flagging every pending unit ready.
+      const dependsOnPopulated = listNodesByKind(db, "MigrationUnit").some((unit) =>
+        edgesFrom(db, unit.id, ["DEPENDS_ON"]).some(
+          (edge) => getNode(db, edge.target)?.kind === "MigrationUnit",
+        ),
+      );
+      if (!dependsOnPopulated) {
+        return {
+          op: q.op,
+          nodes: [],
+          edges: [],
+          summary: `migration readiness unavailable for campaign ${campaignId}`,
+          coverage: {
+            basis: "target_absent",
+            reason: "MigrationUnit DEPENDS_ON is not populated by any ingest path",
+          },
+          rows: [],
+        };
+      }
+      const complete = (status: string) => status === "complete" || status === "done";
+      const readyUnits = units.filter((unit) => {
+        if (complete(String(unit.props?.status ?? ""))) return false;
+        const deps = edgesFrom(db, unit.id, ["DEPENDS_ON"]);
+        return deps.every((edge) => {
+          const target = getNode(db, edge.target);
+          return complete(String(target?.props?.status ?? ""));
+        });
+      });
+      const batchSize = Math.min(Math.max(q.batchSize ?? readyUnits.length, 0), readyUnits.length);
+      const batch = readyUnits.slice(0, batchSize);
+      const edges = batch.flatMap((unit) => edgesFrom(db, unit.id, ["DEPENDS_ON"]));
       return {
         op: q.op,
-        nodes: [],
-        edges: [],
-        summary: `migration readiness unavailable for campaign ${q.campaignId}`,
-        // Readiness is derived entirely from DEPENDS_ON, which no ingest path
-        // populates, so `deps.every(...)` over an always-empty edge set is
-        // vacuously true and would flag every pending unit "ready". Fail closed:
-        // the readiness signal is underivable, never a definitive "ready".
-        coverage: {
-          basis: "target_absent",
-          reason: "DEPENDS_ON is not populated by any ingest path",
-        },
-        rows: [],
+        nodes: collectNodes(db, new Set([
+          ...batch.map((unit) => unit.id),
+          ...edges.flatMap((edge) => [edge.source, edge.target]),
+        ])),
+        edges,
+        summary: `${batch.length} ready unit(s) for campaign ${campaignId}`,
+        coverage: { basis: "complete" },
+        rows: batch.map((unit) => ({
+          unitId: unit.id,
+          label: unit.label,
+          status: String(unit.props?.status ?? "pending"),
+        })),
       };
     }
     case "invariants_for_symbol": {
@@ -879,14 +918,11 @@ function runGraphQueryInner(
 /**
  * Planner tool surface — string templates.
  *
- * `migration_ready_units` and `invariants_for_symbol` are deliberately NOT
- * advertised here while their sole source relations (DEPENDS_ON and
- * PRESERVES_INVARIANT) have no ingest producer: advertising them lets a planner
- * route a readiness or invariant question to an op that can only ever return an
- * empty result. Their handlers still exist (returning `target_absent` for any
- * direct caller), so re-enabling them means re-adding them here AND to the
- * natural-language rules in query-pick.ts at the same time a producer lands —
- * which keeps the re-enable honest.
+ * `invariants_for_symbol` is deliberately NOT advertised while PRESERVES_INVARIANT
+ * has no ingest producer. `migration_ready_units` is advertised now that
+ * `ingestManifestDependencies` writes DEPENDS_ON; note that producer emits only
+ * Service -> Service edges, so until a MigrationUnit -> MigrationUnit producer
+ * lands the handler still fails closed (`target_absent`) for every campaign.
  */
 export const GRAPH_RAG_TOOLS = [
   "who_consumes_provider",
@@ -897,6 +933,7 @@ export const GRAPH_RAG_TOOLS = [
   "callers",
   "path",
   "depends_on_path",
+  "migration_ready_units",
   "outcomes_for_pattern",
   "pattern_success_rates",
   "consumers_of_field",

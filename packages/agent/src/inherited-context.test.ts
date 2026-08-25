@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import type { InheritedContextInjection } from "./types.js";
 import {
   inheritedContextEnabled,
+  inheritedContextShouldCompile,
   MAX_INHERITED_CONTEXT_BYTES,
   renderInheritedContextSystemBlock,
 } from "./inherited-context.js";
@@ -68,5 +69,19 @@ describe("inherited context injection", () => {
     expect(inheritedContextEnabled({ MENDPOINT_INHERITED_CONTEXT: "0" })).toBe(false);
     expect(inheritedContextEnabled({ MENDPOINT_INHERITED_CONTEXT: "1" })).toBe(true);
     expect(inheritedContextEnabled({ MENDPOINT_INHERITED_CONTEXT: "true" })).toBe(true);
+  });
+
+  it("CONTROL: a bound Mission compiles with the switch unset, but an explicit off overrides missionBound", () => {
+    // Unset (default-off for unbound jobs) vs bound.
+    expect(inheritedContextShouldCompile({}, { missionBound: false })).toBe(false);
+    expect(inheritedContextShouldCompile({}, { missionBound: true })).toBe(true);
+    // Explicitly on for an unbound job.
+    expect(inheritedContextShouldCompile({ MENDPOINT_INHERITED_CONTEXT: "1" }, { missionBound: false })).toBe(true);
+    expect(inheritedContextShouldCompile({ MENDPOINT_INHERITED_CONTEXT: "true" }, { missionBound: false })).toBe(true);
+    // Operator kill switch: an explicit off wins even for a bound Mission, so
+    // "unset" and "explicitly disabled" are not collapsed into one falsy value.
+    expect(inheritedContextShouldCompile({ MENDPOINT_INHERITED_CONTEXT: "0" }, { missionBound: true })).toBe(false);
+    expect(inheritedContextShouldCompile({ MENDPOINT_INHERITED_CONTEXT: "false" }, { missionBound: true })).toBe(false);
+    expect(inheritedContextShouldCompile({ MENDPOINT_INHERITED_CONTEXT: "0" }, { missionBound: false })).toBe(false);
   });
 });

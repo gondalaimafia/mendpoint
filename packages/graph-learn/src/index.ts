@@ -37,6 +37,7 @@ export {
 export {
   createTenantGraphView,
   graphNodeBelongsToTenant,
+  tenantGraphStats,
   tenantPatternSuccessRows,
   type GraphTenantScope,
 } from "./tenant-scope.js";
@@ -55,6 +56,12 @@ export {
   ingestImpactFindings,
   labelPrOutcome,
 } from "./ingest.js";
+
+export {
+  ingestManifestDependencies,
+  type ManifestDependency,
+  type ManifestIngestResult,
+} from "./ingest-manifest-dependencies.js";
 
 export {
   ingestRepositoryEvidence,

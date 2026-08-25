@@ -49,6 +49,7 @@ const ROUTING_ERROR_CODE = /^[A-Za-z0-9][A-Za-z0-9._,:-]{0,499}$/;
 const DEFAULT_LEASE_DURATION_MS = 60_000;
 const MIN_LEASE_DURATION_MS = 1_000;
 const MAX_LEASE_DURATION_MS = 3_600_000;
+const MAX_VERIFIER_ADVISORY_DISPATCH_FAILURES = 8;
 
 export type TransformerAdaptiveAttemptAccounting = Readonly<{
   plannerCalls: number;
@@ -545,6 +546,7 @@ export type TransformerRunnableCampaign = Readonly<{
   taskSnapshotId: string;
   expectedBaseRevision: string;
   sourceArtifactIds: readonly string[];
+  changedPaths: readonly string[];
 }>;
 
 export type TransformerExpiredAttempt = Readonly<{
@@ -653,6 +655,7 @@ export type TransformerAttemptCheckpointCompletionInput =
     nextCheckpointHead: TransformerAttemptCheckpointHead;
     candidateSeal: TransformerCandidateSeal;
     completionIntent: TransformerAttemptCompletionIntent;
+    advisoryDispatchRequested?: boolean;
     gateConfig?: string;
   }>;
 
@@ -671,6 +674,45 @@ export type TransformerAttemptCheckpointCompletionReceipt = Readonly<{
 export type TransformerAttemptCheckpointCompletionResult = Readonly<{
   campaign: TransformerPilotCampaign;
   receipt: TransformerAttemptCheckpointCompletionReceipt;
+}>;
+
+export type TransformerVerifierAdvisoryDispatch = Readonly<{
+  schemaVersion: 1;
+  dispatchId: string;
+  tenantId: string;
+  campaignId: string;
+  campaignRevision: number;
+  unitId: string;
+  episodeId: string;
+  completionDigest: string;
+  authorizationDigest: string;
+  checkpointStateDigest: string;
+  observedAt: string;
+}>;
+
+export type TransformerVerifierAdvisoryDispatchResult = Readonly<{
+  sequence: number;
+  tenantId: string;
+  dispatchId: string;
+  claimId: string;
+  leaseGeneration: number;
+  status: "enqueued" | "failed";
+  jobId: string | null;
+  errorCode: string | null;
+  nextAttemptAt: string | null;
+  observedAt: string;
+}>;
+
+export type TransformerVerifierAdvisoryDispatchClaim = Readonly<{
+  tenantId: string;
+  dispatchId: string;
+  claimId: string;
+  claimantId: string;
+  leaseGeneration: number;
+  leaseTokenDigest: string;
+  claimedAt: string;
+  expiresAt: string;
+  dispatch: TransformerVerifierAdvisoryDispatch;
 }>;
 
 export type TransformerAttemptCheckpointFailureInput = MutationInput & Readonly<{
@@ -743,6 +785,35 @@ function sha256(value: unknown): string {
 
 function leaseTokenDigest(value: string): string {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
+function verifierAdvisoryDispatchFromRow(
+  row: Record<string, unknown>,
+): TransformerVerifierAdvisoryDispatch {
+  return deepFreeze({
+    schemaVersion: 1,
+    dispatchId: row.dispatch_id as string,
+    tenantId: row.tenant_id as string,
+    campaignId: row.campaign_id as string,
+    campaignRevision: row.campaign_revision as number,
+    unitId: row.unit_id as string,
+    episodeId: row.episode_id as string,
+    completionDigest: row.completion_digest as string,
+    authorizationDigest: row.authorization_digest as string,
+    checkpointStateDigest: row.checkpoint_state_digest as string,
+    observedAt: row.observed_at as string,
+  });
+}
+
+function verifierAdvisoryDispatchId(input: Readonly<{
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  episodeId: string;
+  completionDigest: string;
+  authorizationDigest: string;
+}>): string {
+  return `regauge_advisory_${sha256(input).slice(7)}`;
 }
 
 function expectedAttemptId(input: Readonly<{
@@ -1493,6 +1564,60 @@ export class TransformerPilotExecutionStore {
         lease_json TEXT NOT NULL,
         PRIMARY KEY (tenant_id, idempotency_key)
       );
+      CREATE TABLE IF NOT EXISTS tf_pilot_verifier_advisory_outbox (
+        tenant_id TEXT NOT NULL,
+        dispatch_id TEXT NOT NULL,
+        campaign_id TEXT NOT NULL,
+        campaign_revision INTEGER NOT NULL,
+        unit_id TEXT NOT NULL,
+        episode_id TEXT NOT NULL,
+        completion_digest TEXT NOT NULL,
+        authorization_digest TEXT NOT NULL,
+        checkpoint_state_digest TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, dispatch_id)
+      );
+      CREATE TABLE IF NOT EXISTS tf_pilot_verifier_advisory_dispatch_results (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        dispatch_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('enqueued', 'failed')),
+        job_id TEXT,
+        error_code TEXT,
+        observed_at TEXT NOT NULL,
+        FOREIGN KEY (tenant_id, dispatch_id)
+          REFERENCES tf_pilot_verifier_advisory_outbox(tenant_id, dispatch_id)
+      );
+      CREATE TABLE IF NOT EXISTS tf_pilot_verifier_advisory_dispatch_claims (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        dispatch_id TEXT NOT NULL,
+        claim_id TEXT NOT NULL,
+        claimant_id TEXT NOT NULL,
+        lease_generation INTEGER NOT NULL,
+        lease_token_digest TEXT NOT NULL,
+        claimed_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        UNIQUE (tenant_id, dispatch_id, claim_id),
+        UNIQUE (tenant_id, dispatch_id, lease_generation),
+        FOREIGN KEY (tenant_id, dispatch_id)
+          REFERENCES tf_pilot_verifier_advisory_outbox(tenant_id, dispatch_id)
+      );
+      CREATE TABLE IF NOT EXISTS tf_pilot_verifier_advisory_dispatch_claim_results (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        dispatch_id TEXT NOT NULL,
+        claim_id TEXT NOT NULL,
+        lease_generation INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('enqueued', 'failed')),
+        job_id TEXT,
+        error_code TEXT,
+        next_attempt_at TEXT,
+        observed_at TEXT NOT NULL,
+        UNIQUE (tenant_id, dispatch_id, claim_id),
+        FOREIGN KEY (tenant_id, dispatch_id, claim_id)
+          REFERENCES tf_pilot_verifier_advisory_dispatch_claims(tenant_id, dispatch_id, claim_id)
+      );
       CREATE TRIGGER IF NOT EXISTS tf_pilot_events_no_update BEFORE UPDATE ON tf_pilot_events
       BEGIN SELECT RAISE(ABORT, 'transformer_pilot_events_append_only'); END;
       CREATE TRIGGER IF NOT EXISTS tf_pilot_events_no_delete BEFORE DELETE ON tf_pilot_events
@@ -1509,6 +1634,22 @@ export class TransformerPilotExecutionStore {
       BEGIN SELECT RAISE(ABORT, 'transformer_pilot_delivery_claim_results_append_only'); END;
       CREATE TRIGGER IF NOT EXISTS tf_pilot_delivery_claim_results_no_delete BEFORE DELETE ON tf_pilot_delivery_claim_results
       BEGIN SELECT RAISE(ABORT, 'transformer_pilot_delivery_claim_results_append_only'); END;
+      CREATE TRIGGER IF NOT EXISTS tf_pilot_verifier_advisory_outbox_no_update BEFORE UPDATE ON tf_pilot_verifier_advisory_outbox
+      BEGIN SELECT RAISE(ABORT, 'transformer_pilot_verifier_advisory_outbox_append_only'); END;
+      CREATE TRIGGER IF NOT EXISTS tf_pilot_verifier_advisory_outbox_no_delete BEFORE DELETE ON tf_pilot_verifier_advisory_outbox
+      BEGIN SELECT RAISE(ABORT, 'transformer_pilot_verifier_advisory_outbox_append_only'); END;
+      CREATE TRIGGER IF NOT EXISTS tf_pilot_verifier_advisory_dispatch_results_no_update BEFORE UPDATE ON tf_pilot_verifier_advisory_dispatch_results
+      BEGIN SELECT RAISE(ABORT, 'transformer_pilot_verifier_advisory_dispatch_results_append_only'); END;
+      CREATE TRIGGER IF NOT EXISTS tf_pilot_verifier_advisory_dispatch_results_no_delete BEFORE DELETE ON tf_pilot_verifier_advisory_dispatch_results
+      BEGIN SELECT RAISE(ABORT, 'transformer_pilot_verifier_advisory_dispatch_results_append_only'); END;
+      CREATE TRIGGER IF NOT EXISTS tf_pilot_verifier_advisory_dispatch_claims_no_update BEFORE UPDATE ON tf_pilot_verifier_advisory_dispatch_claims
+      BEGIN SELECT RAISE(ABORT, 'transformer_pilot_verifier_advisory_dispatch_claims_append_only'); END;
+      CREATE TRIGGER IF NOT EXISTS tf_pilot_verifier_advisory_dispatch_claims_no_delete BEFORE DELETE ON tf_pilot_verifier_advisory_dispatch_claims
+      BEGIN SELECT RAISE(ABORT, 'transformer_pilot_verifier_advisory_dispatch_claims_append_only'); END;
+      CREATE TRIGGER IF NOT EXISTS tf_pilot_verifier_advisory_dispatch_claim_results_no_update BEFORE UPDATE ON tf_pilot_verifier_advisory_dispatch_claim_results
+      BEGIN SELECT RAISE(ABORT, 'transformer_pilot_verifier_advisory_dispatch_claim_results_append_only'); END;
+      CREATE TRIGGER IF NOT EXISTS tf_pilot_verifier_advisory_dispatch_claim_results_no_delete BEFORE DELETE ON tf_pilot_verifier_advisory_dispatch_claim_results
+      BEGIN SELECT RAISE(ABORT, 'transformer_pilot_verifier_advisory_dispatch_claim_results_append_only'); END;
     `);
   }
 
@@ -1537,6 +1678,357 @@ export class TransformerPilotExecutionStore {
       evidenceRefs: JSON.parse(row.evidence_refs_json as string) as string[],
       payload: JSON.parse(row.payload_json as string) as Record<string, unknown>,
     }));
+  }
+
+  listPendingVerifierAdvisoryDispatches(
+    tenantId: string,
+    limit = 25,
+  ): TransformerVerifierAdvisoryDispatch[] {
+    requireId(tenantId, "transformer_verifier_advisory_dispatch_scope_invalid");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error("transformer_verifier_advisory_dispatch_limit_invalid");
+    }
+    const rows = this.db.prepare(`
+      SELECT o.* FROM tf_pilot_verifier_advisory_outbox o
+      WHERE o.tenant_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM tf_pilot_verifier_advisory_dispatch_results r
+          WHERE r.tenant_id = o.tenant_id AND r.dispatch_id = o.dispatch_id
+            AND r.status = 'enqueued'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM tf_pilot_verifier_advisory_dispatch_claim_results r
+          WHERE r.tenant_id = o.tenant_id AND r.dispatch_id = o.dispatch_id
+            AND r.status = 'enqueued'
+        )
+        AND (SELECT COUNT(*) FROM tf_pilot_verifier_advisory_dispatch_claim_results r
+          WHERE r.tenant_id = o.tenant_id AND r.dispatch_id = o.dispatch_id
+            AND r.status = 'failed') < ${MAX_VERIFIER_ADVISORY_DISPATCH_FAILURES}
+      ORDER BY o.observed_at, o.dispatch_id
+      LIMIT ?
+    `).all(tenantId, limit) as Array<Record<string, unknown>>;
+    return rows.map(verifierAdvisoryDispatchFromRow);
+  }
+
+  backfillVerifierAdvisoryDispatches(input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+  }>): Readonly<{ inserted: number; existing: number }> {
+    requireId(input.tenantId, "transformer_verifier_advisory_dispatch_scope_invalid");
+    requireId(input.campaignId, "transformer_pilot_campaign_invalid");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const rows = this.db.prepare(`
+        SELECT e.campaign_revision, e.observed_at, e.payload_json,
+               i.scope, i.request_digest, i.campaign_id, i.result_revision
+        FROM tf_pilot_events e
+        JOIN tf_pilot_idempotency i
+          ON i.tenant_id = e.tenant_id
+         AND i.campaign_id = e.campaign_id
+         AND i.result_revision = e.campaign_revision
+         AND i.scope = e.type
+        WHERE e.tenant_id = ? AND e.campaign_id = ?
+          AND e.type = 'attempt.completed_with_checkpoint'
+        ORDER BY e.sequence
+      `).all(input.tenantId, input.campaignId) as Array<Record<string, unknown>>;
+      const campaign = this.mustGet(input.tenantId, input.campaignId);
+      let inserted = 0;
+      let existing = 0;
+      for (const row of rows) {
+        let payload: Record<string, unknown>;
+        try { payload = JSON.parse(row.payload_json as string) as Record<string, unknown>; }
+        catch { throw new Error("transformer_verifier_advisory_backfill_invalid"); }
+        const campaignRevision = row.campaign_revision as number;
+        if (row.scope !== "attempt.completed_with_checkpoint" || row.campaign_id !== input.campaignId ||
+            row.result_revision !== campaignRevision || row.request_digest !== sha256(payload) ||
+            !Number.isSafeInteger(campaignRevision) || campaignRevision < 1 ||
+            typeof payload.unitId !== "string" || typeof payload.episodeId !== "string" ||
+            typeof payload.completionDigest !== "string" || typeof payload.authorizationDigest !== "string") {
+          throw new Error("transformer_verifier_advisory_backfill_invalid");
+        }
+        requireDigest(payload.completionDigest, "transformer_verifier_advisory_backfill_invalid");
+        requireDigest(payload.authorizationDigest, "transformer_verifier_advisory_backfill_invalid");
+        let checkpoint: TransformerAttemptCheckpointHead;
+        try {
+          checkpoint = requireCheckpointHeadForScope(
+            requireCheckpointHead(payload.nextCheckpointHead as TransformerAttemptCheckpointHead),
+            input.tenantId,
+            input.campaignId,
+            payload.unitId,
+            payload.episodeId,
+          );
+        } catch {
+          throw new Error("transformer_verifier_advisory_backfill_invalid");
+        }
+        const unit = campaign.units.find((candidate) => candidate.id === payload.unitId);
+        if (!unit || !["executed", "draft", "accepted", "merged"].includes(unit.state) ||
+            unit.verificationPassed !== true || unit.executedAt !== row.observed_at ||
+            unit.attemptCheckpointHead?.stateDigest !== checkpoint.stateDigest ||
+            campaign.revision < campaignRevision) {
+          throw new Error("transformer_verifier_advisory_backfill_invalid");
+        }
+        const dispatchId = verifierAdvisoryDispatchId({
+          tenantId: input.tenantId,
+          campaignId: input.campaignId,
+          unitId: payload.unitId,
+          episodeId: payload.episodeId,
+          completionDigest: payload.completionDigest,
+          authorizationDigest: payload.authorizationDigest,
+        });
+        const result = this.db.prepare(`
+          INSERT OR IGNORE INTO tf_pilot_verifier_advisory_outbox
+            (tenant_id, dispatch_id, campaign_id, campaign_revision, unit_id, episode_id,
+             completion_digest, authorization_digest, checkpoint_state_digest, observed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(input.tenantId, dispatchId, input.campaignId, campaignRevision,
+          payload.unitId, payload.episodeId, payload.completionDigest, payload.authorizationDigest,
+          checkpoint.stateDigest, String(row.observed_at));
+        if (result.changes === 1) inserted += 1;
+        else {
+          const stored = this.db.prepare(`
+            SELECT * FROM tf_pilot_verifier_advisory_outbox
+            WHERE tenant_id = ? AND dispatch_id = ?
+          `).get(input.tenantId, dispatchId) as Record<string, unknown> | undefined;
+          const expected = Object.freeze({
+            schemaVersion: 1 as const,
+            dispatchId,
+            tenantId: input.tenantId,
+            campaignId: input.campaignId,
+            campaignRevision,
+            unitId: payload.unitId,
+            episodeId: payload.episodeId,
+            completionDigest: payload.completionDigest,
+            authorizationDigest: payload.authorizationDigest,
+            checkpointStateDigest: checkpoint.stateDigest,
+            observedAt: String(row.observed_at),
+          });
+          if (!stored || sha256(verifierAdvisoryDispatchFromRow(stored)) !== sha256(expected)) {
+            throw new Error("transformer_verifier_advisory_backfill_invalid");
+          }
+          existing += 1;
+        }
+      }
+      this.db.exec("COMMIT");
+      return Object.freeze({ inserted, existing });
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      if (error instanceof Error && error.message === "transformer_verifier_advisory_backfill_invalid") throw error;
+      throw new Error("transformer_verifier_advisory_backfill_invalid");
+    }
+  }
+
+  claimNextVerifierAdvisoryDispatch(input: Readonly<{
+    tenantId: string;
+    claimantId: string;
+    claimId: string;
+    leaseToken: string;
+    leaseDurationMs: number;
+    observedAt: string;
+  }>): TransformerVerifierAdvisoryDispatchClaim | null {
+    requireId(input.tenantId, "transformer_verifier_advisory_dispatch_scope_invalid");
+    requireId(input.claimantId, "transformer_verifier_advisory_dispatch_claim_invalid");
+    requireId(input.claimId, "transformer_verifier_advisory_dispatch_claim_invalid");
+    requireTimestamp(input.observedAt);
+    if (!Number.isSafeInteger(input.leaseDurationMs) || input.leaseDurationMs < MIN_LEASE_DURATION_MS ||
+        input.leaseDurationMs > MAX_LEASE_DURATION_MS || input.leaseToken.length < 16) {
+      throw new Error("transformer_verifier_advisory_dispatch_claim_invalid");
+    }
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const rows = this.db.prepare(`
+        SELECT o.* FROM tf_pilot_verifier_advisory_outbox o
+        WHERE o.tenant_id = ?
+          AND NOT EXISTS (SELECT 1 FROM tf_pilot_verifier_advisory_dispatch_results r
+            WHERE r.tenant_id = o.tenant_id AND r.dispatch_id = o.dispatch_id AND r.status = 'enqueued')
+          AND NOT EXISTS (SELECT 1 FROM tf_pilot_verifier_advisory_dispatch_claim_results r
+            WHERE r.tenant_id = o.tenant_id AND r.dispatch_id = o.dispatch_id AND r.status = 'enqueued')
+        ORDER BY o.observed_at, o.dispatch_id
+      `).all(input.tenantId) as Array<Record<string, unknown>>;
+      for (const row of rows) {
+        const latest = this.db.prepare(`
+          SELECT c.*, r.status, r.next_attempt_at
+          FROM tf_pilot_verifier_advisory_dispatch_claims c
+          LEFT JOIN tf_pilot_verifier_advisory_dispatch_claim_results r
+            ON r.tenant_id = c.tenant_id AND r.dispatch_id = c.dispatch_id AND r.claim_id = c.claim_id
+          WHERE c.tenant_id = ? AND c.dispatch_id = ?
+          ORDER BY c.lease_generation DESC LIMIT 1
+        `).get(input.tenantId, String(row.dispatch_id)) as Record<string, unknown> | undefined;
+        if (latest && latest.status == null && String(latest.expires_at) > input.observedAt) continue;
+        if (latest?.status === "failed" &&
+            (latest.next_attempt_at == null || String(latest.next_attempt_at) > input.observedAt)) continue;
+        const leaseGeneration = latest ? Number(latest.lease_generation) + 1 : 1;
+        const expiresAt = new Date(Date.parse(input.observedAt) + input.leaseDurationMs).toISOString();
+        this.db.prepare(`
+          INSERT INTO tf_pilot_verifier_advisory_dispatch_claims
+            (tenant_id, dispatch_id, claim_id, claimant_id, lease_generation,
+             lease_token_digest, claimed_at, expires_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(input.tenantId, String(row.dispatch_id), input.claimId, input.claimantId, leaseGeneration,
+          leaseTokenDigest(input.leaseToken), input.observedAt, expiresAt);
+        this.db.exec("COMMIT");
+        return deepFreeze({
+          tenantId: input.tenantId,
+          dispatchId: row.dispatch_id as string,
+          claimId: input.claimId,
+          claimantId: input.claimantId,
+          leaseGeneration,
+          leaseTokenDigest: leaseTokenDigest(input.leaseToken),
+          claimedAt: input.observedAt,
+          expiresAt,
+          dispatch: verifierAdvisoryDispatchFromRow(row),
+        });
+      }
+      this.db.exec("COMMIT");
+      return null;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  listVerifierAdvisoryDispatchResults(
+    tenantId: string,
+    dispatchId: string,
+  ): TransformerVerifierAdvisoryDispatchResult[] {
+    requireId(tenantId, "transformer_verifier_advisory_dispatch_scope_invalid");
+    requireId(dispatchId, "transformer_verifier_advisory_dispatch_id_invalid");
+    const rows = this.db.prepare(`
+      SELECT * FROM tf_pilot_verifier_advisory_dispatch_claim_results
+      WHERE tenant_id = ? AND dispatch_id = ? ORDER BY sequence
+    `).all(tenantId, dispatchId) as Array<Record<string, unknown>>;
+    return rows.map((row) => deepFreeze({
+      sequence: row.sequence as number,
+      tenantId: row.tenant_id as string,
+      dispatchId: row.dispatch_id as string,
+      claimId: row.claim_id as string,
+      leaseGeneration: row.lease_generation as number,
+      status: row.status as "enqueued" | "failed",
+      jobId: row.job_id as string | null,
+      errorCode: row.error_code as string | null,
+      nextAttemptAt: row.next_attempt_at as string | null,
+      observedAt: row.observed_at as string,
+    }));
+  }
+
+  recordVerifierAdvisoryDispatchClaimResult(
+    input: Readonly<{
+      tenantId: string;
+      dispatchId: string;
+      claimId: string;
+      leaseGeneration: number;
+      leaseToken: string;
+      status: "enqueued" | "failed";
+      jobId?: string;
+      errorCode?: string;
+      observedAt: string;
+    }>,
+  ): TransformerVerifierAdvisoryDispatchResult {
+    requireId(input.tenantId, "transformer_verifier_advisory_dispatch_scope_invalid");
+    requireId(input.dispatchId, "transformer_verifier_advisory_dispatch_id_invalid");
+    requireTimestamp(input.observedAt);
+    const anyScope = this.db.prepare(
+      "SELECT tenant_id FROM tf_pilot_verifier_advisory_dispatch_claims WHERE dispatch_id = ? AND claim_id = ? LIMIT 1",
+    ).get(input.dispatchId, input.claimId) as { tenant_id: string } | undefined;
+    if (anyScope && anyScope.tenant_id !== input.tenantId) {
+      throw new Error("transformer_verifier_advisory_dispatch_scope_invalid");
+    }
+    const stored = this.db.prepare(`
+      SELECT * FROM tf_pilot_verifier_advisory_dispatch_claims
+      WHERE tenant_id = ? AND dispatch_id = ? AND claim_id = ?
+    `).get(input.tenantId, input.dispatchId, input.claimId) as Record<string, unknown> | undefined;
+    const latest = this.db.prepare(`
+      SELECT MAX(lease_generation) AS lease_generation
+      FROM tf_pilot_verifier_advisory_dispatch_claims
+      WHERE tenant_id = ? AND dispatch_id = ?
+    `).get(input.tenantId, input.dispatchId) as { lease_generation: number | null };
+    if (!stored || stored.lease_generation !== input.leaseGeneration ||
+        latest.lease_generation !== input.leaseGeneration ||
+        stored.lease_token_digest !== leaseTokenDigest(input.leaseToken) ||
+        String(stored.expires_at) <= input.observedAt) {
+      throw new Error("transformer_verifier_advisory_dispatch_fence_invalid");
+    }
+    const jobId = input.status === "enqueued"
+      ? requireId(input.jobId ?? "", "transformer_verifier_advisory_dispatch_result_invalid")
+      : null;
+    const errorCode = input.status === "failed"
+      ? requireId(input.errorCode ?? "", "transformer_verifier_advisory_dispatch_result_invalid")
+      : null;
+    const failures = input.status === "failed" ? (this.db.prepare(`
+      SELECT COUNT(*) AS count FROM tf_pilot_verifier_advisory_dispatch_claim_results
+      WHERE tenant_id = ? AND dispatch_id = ? AND status = 'failed'
+    `).get(input.tenantId, input.dispatchId) as { count: number }).count : 0;
+    const nextAttemptAt = input.status === "failed" && failures + 1 < MAX_VERIFIER_ADVISORY_DISPATCH_FAILURES
+      ? new Date(Date.parse(input.observedAt) + Math.min(300_000, 5_000 * (2 ** failures))).toISOString()
+      : null;
+    let inserted: Record<string, unknown>;
+    try {
+      inserted = this.db.prepare(`
+        INSERT INTO tf_pilot_verifier_advisory_dispatch_claim_results
+          (tenant_id, dispatch_id, claim_id, lease_generation, status, job_id, error_code,
+           next_attempt_at, observed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING *
+      `).get(input.tenantId, input.dispatchId, input.claimId, input.leaseGeneration,
+        input.status, jobId, errorCode, nextAttemptAt, input.observedAt) as Record<string, unknown>;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
+        throw new Error("transformer_verifier_advisory_dispatch_result_exists");
+      }
+      throw error;
+    }
+    return this.listVerifierAdvisoryDispatchResults(input.tenantId, input.dispatchId)
+      .find((result) => result.sequence === inserted.sequence)!;
+  }
+
+  readVerifierAdvisoryCompletion(
+    dispatch: TransformerVerifierAdvisoryDispatch,
+  ): TransformerAttemptCheckpointCompletionResult {
+    const stored = this.db.prepare(`
+      SELECT * FROM tf_pilot_verifier_advisory_outbox
+      WHERE tenant_id = ? AND dispatch_id = ?
+    `).get(dispatch.tenantId, dispatch.dispatchId) as Record<string, unknown> | undefined;
+    if (!stored || sha256(verifierAdvisoryDispatchFromRow(stored)) !== sha256(dispatch)) {
+      throw new Error("transformer_verifier_advisory_dispatch_binding_invalid");
+    }
+    const event = this.db.prepare(`
+      SELECT payload_json, observed_at FROM tf_pilot_events
+      WHERE tenant_id = ? AND campaign_id = ? AND campaign_revision = ?
+        AND type = 'attempt.completed_with_checkpoint'
+    `).get(dispatch.tenantId, dispatch.campaignId, dispatch.campaignRevision) as {
+      payload_json: string;
+      observed_at: string;
+    } | undefined;
+    if (!event || event.observed_at !== dispatch.observedAt) {
+      throw new Error("transformer_verifier_advisory_dispatch_binding_invalid");
+    }
+    let payload: Record<string, unknown>;
+    try { payload = JSON.parse(event.payload_json) as Record<string, unknown>; }
+    catch { throw new Error("transformer_verifier_advisory_dispatch_binding_invalid"); }
+    const checkpointHead = requireCheckpointHead(payload.nextCheckpointHead as TransformerAttemptCheckpointHead);
+    if (payload.unitId !== dispatch.unitId || payload.episodeId !== dispatch.episodeId ||
+        payload.completionDigest !== dispatch.completionDigest ||
+        payload.authorizationDigest !== dispatch.authorizationDigest ||
+        checkpointHead.stateDigest !== dispatch.checkpointStateDigest) {
+      throw new Error("transformer_verifier_advisory_dispatch_binding_invalid");
+    }
+    const campaign = this.getCampaign(dispatch.tenantId, dispatch.campaignId);
+    if (!campaign || campaign.revision < dispatch.campaignRevision) {
+      throw new Error("transformer_verifier_advisory_dispatch_binding_invalid");
+    }
+    return deepFreeze({
+      campaign,
+      receipt: {
+        schemaVersion: 1,
+        tenantId: dispatch.tenantId,
+        campaignId: dispatch.campaignId,
+        unitId: dispatch.unitId,
+        episodeId: dispatch.episodeId,
+        completionDigest: dispatch.completionDigest,
+        campaignRevision: dispatch.campaignRevision,
+        observedAt: dispatch.observedAt,
+        checkpointHead,
+      },
+    });
   }
 
   listRunnableCampaigns(
@@ -1586,6 +2078,10 @@ export class TransformerPilotExecutionStore {
             `manifest:${unit.snapshot.manifestSha256}`,
             unit.snapshot.digest,
           ]),
+          // The exact paths this unit rewrites, carried so the pilot-lane policy
+          // seam can enforce the envelope's forbidden zones against real targets
+          // (guaranteed non-empty at campaign creation, see enqueue guard).
+          changedPaths: Object.freeze([...unit.changedPaths]),
         };
       });
     return deepFreeze(runnable);
@@ -2793,7 +3289,33 @@ export class TransformerPilotExecutionStore {
         throw new Error("transformer_pilot_checkpoint_head_invalid");
       }
       applyAttemptCompletion(state, completionInput, terminal);
-    });
+    }, input.advisoryDispatchRequested === true ? (state) => {
+      const dispatchId = verifierAdvisoryDispatchId({
+        tenantId: intent.tenantId,
+        campaignId: intent.campaignId,
+        unitId: intent.unitId,
+        episodeId: intent.episodeId,
+        completionDigest,
+        authorizationDigest: intent.authorizationDigest,
+      });
+      this.db.prepare(`
+        INSERT INTO tf_pilot_verifier_advisory_outbox
+          (tenant_id, dispatch_id, campaign_id, campaign_revision, unit_id, episode_id,
+           completion_digest, authorization_digest, checkpoint_state_digest, observed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        intent.tenantId,
+        dispatchId,
+        intent.campaignId,
+        state.revision,
+        intent.unitId,
+        intent.episodeId,
+        completionDigest,
+        intent.authorizationDigest,
+        nextCheckpointHead.stateDigest,
+        intent.observedAt,
+      );
+    } : undefined);
     return deepFreeze({
       campaign: completed,
       receipt: this.readAttemptCheckpointCompletionReceipt(
@@ -3843,6 +4365,7 @@ export class TransformerPilotExecutionStore {
     scope: string,
     request: unknown,
     update: (state: StoredCampaign) => void,
+    beforeCommit?: (state: StoredCampaign) => void,
   ): TransformerPilotCampaign {
     requireTimestamp(input.observedAt);
     const evidenceRefs = requireEvidence(input.evidenceRefs);
@@ -3863,6 +4386,7 @@ export class TransformerPilotExecutionStore {
         .run(state.revision, JSON.stringify(state), state.tenantId, state.campaignId);
       this.insertEvent(state, scope, input.observedAt, evidenceRefs, request as Record<string, unknown>);
       this.insertIdempotency(state.tenantId, input.idempotencyKey, scope, requestDigest, state.campaignId, state.revision);
+      beforeCommit?.(state);
       this.db.exec("COMMIT");
       return deepFreeze(clone(state));
     } catch (error) {

@@ -11,7 +11,6 @@ import {
   getChange,
   listConsumers,
   listPrs,
-  listPrsForChange,
   getPr,
   findPrByGitHubIdentityAndNumber,
   findWardenCandidateDeliveryByPrUrl,
@@ -48,7 +47,6 @@ import {
   changeToApi,
   consumerToApi,
   prToApi,
-  findingToApi,
   auditToApi,
   versionToApi,
   createApiKey,
@@ -100,6 +98,7 @@ import {
   insertAgentRun,
   listAgentRuns,
   getAgentRun,
+  getMission,
   getWardenCandidateDeliveryByRun,
   agentRunToApi,
   buildExposureReport,
@@ -107,6 +106,8 @@ import {
   listConsumersImpactedByChange,
   registrySummaryMarkdown,
 } from "@mendpoint/db";
+import { parseAuditExportLimit } from "./audit-export.js";
+import { changeDetailBody } from "./change-detail.js";
 import {
   detectVendors,
   listCatalog,
@@ -114,7 +115,15 @@ import {
   pollAllFeeds,
   probeKnownSdks,
 } from "@mendpoint/catalog";
-import { applyPrFeedback, runChangePipeline } from "@mendpoint/pipeline";
+import {
+  applyPrFeedback,
+  REGAUGE_DEEPSEEK_APPROVED_SCOPE,
+  runChangePipeline,
+} from "@mendpoint/pipeline";
+import {
+  withTenantGraphHandle,
+  type GraphHandleFailure,
+} from "./tenant-graph-request.js";
 import {
   normalizeGitHubEvent,
   parseWebhookHeaders,
@@ -181,7 +190,6 @@ import {
   defaultAlertPath,
 } from "@mendpoint/platform";
 import {
-  getGraphLearnDb,
   runGraphQuery,
   formatQueryForPlanner,
   GRAPH_RAG_TOOLS,
@@ -199,6 +207,7 @@ import {
   kuzuStatus,
   exportSqliteToKuzuScript,
   GraphQuerySchema,
+  type GraphLearnDb,
   type GraphTenantScope,
 } from "@mendpoint/graph-learn";
 import {
@@ -300,7 +309,8 @@ import { createPlatformStateRoutes } from "./platform-state-routes.js";
 import { createTenantCreationRoutes } from "./tenant-creation-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { regaugeProductionBootstrapInputFromEnvironment } from "./regauge-production-bootstrap-runtime.js";
-import { observeDedicatedRegaugeCompletionInShadow } from "./regauge-verifier-shadow.js";
+import { drainDedicatedRegaugeAdvisoryOutbox } from "./regauge-verifier-shadow.js";
+import { readRegaugeVerifierObservations } from "./regauge-verifier-observations.js";
 import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
 import { loadTransformerRecipeSnapshot } from "@mendpoint/worker/transformer-snapshot-loader";
 import {
@@ -642,6 +652,24 @@ function requestGraphTenantScope(c: Context<ApiEnv>): GraphTenantScope {
   };
 }
 
+function graphHandleUnavailable(c: Context<ApiEnv>, failure: GraphHandleFailure) {
+  return c.json(failure, 503);
+}
+
+function withRequestGraphHandle<T>(
+  c: Context<ApiEnv>,
+  fn: (graphDb: GraphLearnDb) => T,
+  opts?: { allowEmpty?: boolean },
+) {
+  return withTenantGraphHandle(
+    {
+      ...requestGraphTenantScope(c),
+      allowEmpty: opts?.allowEmpty,
+    },
+    fn,
+  );
+}
+
 function repositoryCredentialDependencies(c: Context<ApiEnv>) {
   const principal = c.get("principal");
   if (!principal) throw new Error("authenticated_principal_required");
@@ -836,16 +864,39 @@ const transformerDraftAuthorization = transformerAttemptCoordinatorEnabled
       });
     })()
   : undefined;
+const drainRegaugeAdvisoryOutbox = async (): Promise<void> => {
+  if (!transformerDraftAuthorization) return;
+  await drainDedicatedRegaugeAdvisoryOutbox({
+    db,
+    store: transformerExecutions.store,
+    env: process.env,
+    tenantId: transformerDraftAuthorization.tenantId,
+    loadExactSource: (completion) => {
+      const unit = completion.campaign.units.find(
+        (candidate) => candidate.id === completion.receipt.unitId,
+      );
+      if (!unit) throw new Error("regauge_verifier_advisory_completion_invalid");
+      return loadTransformerRecipeSnapshot(db, {
+        tenantId: completion.campaign.tenantId,
+        snapshot: unit.snapshot,
+        recipe: unit.recipe,
+      }, completion.receipt.observedAt);
+    },
+  });
+};
 const transformerAttemptCoordinatorRoutes = createTransformerAttemptCoordinatorRoutes({
   enabled: transformerAttemptCoordinatorEnabled,
   store: transformerExecutions.store,
   gateConfig: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
   ...(transformerDraftAuthorization ? { draftAuthorization: transformerDraftAuthorization } : {}),
-  observeCompletedAttempt: (completion) => observeDedicatedRegaugeCompletionInShadow({
-    db,
-    env: process.env,
-    completion,
-  }).then(() => undefined),
+  verifierAdvisoryScope: {
+    tenantId: REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId,
+    campaignId: REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId,
+  },
+  observeCompletedAttempt: async () => drainRegaugeAdvisoryOutbox(),
+  drainPendingCompletedAttempts: drainRegaugeAdvisoryOutbox,
+  readVerifierObservations: ({ tenantId, campaignId }) =>
+    readRegaugeVerifierObservations(db, { tenantId, campaignId }),
   loadExactSource: (lease, observedAt) => loadTransformerRecipeSnapshot(db, lease, observedAt),
   resolveDraftRepository: createTransformerDraftRepositoryAuthority(db, process.env),
 });
@@ -1176,14 +1227,13 @@ app.get("/platform/memory/seed", (c) => {
  */
 registerPlatformCanaryRoutes(app, requestAudit);
 
-/** Dimension 6 — Graph learning / graph-RAG */
+/** Dimension 6 — Graph learning / graph-RAG. Never create an empty sqlite file. */
 app.get("/graph-learn/stats", (c) => {
-  const result = runGraphQuery(
-    getGraphLearnDb(),
-    { op: "stats" },
-    requestGraphTenantScope(c),
+  const opened = withRequestGraphHandle(c, (graphDb) =>
+    runGraphQuery(graphDb, { op: "stats" }, requestGraphTenantScope(c)),
   );
-  return c.json({ ...(result.rows?.[0] ?? {}), tools: GRAPH_RAG_TOOLS });
+  if (!opened.ok) return graphHandleUnavailable(c, opened.failure);
+  return c.json({ ...(opened.value.rows?.[0] ?? {}), tools: GRAPH_RAG_TOOLS });
 });
 
 app.post("/graph-learn/query", async (c) => {
@@ -1199,14 +1249,13 @@ app.post("/graph-learn/query", async (c) => {
         400,
       );
     }
-    const result = runGraphQuery(
-      getGraphLearnDb(),
-      parsed.data,
-      requestGraphTenantScope(c),
+    const opened = withRequestGraphHandle(c, (graphDb) =>
+      runGraphQuery(graphDb, parsed.data, requestGraphTenantScope(c)),
     );
+    if (!opened.ok) return graphHandleUnavailable(c, opened.failure);
     return c.json({
-      ...result,
-      markdown: formatQueryForPlanner(result),
+      ...opened.value,
+      markdown: formatQueryForPlanner(opened.value),
     });
   } catch (e) {
     return internalErrorResponse(c, e);
@@ -1219,25 +1268,24 @@ app.post("/graph-learn/pick", async (c) => {
   if (!body.q) return c.json({ error: "q required" }, 400);
   const pick = pickGraphQuery(body.q);
   if (body.run) {
-    const result = runGraphQuery(
-      getGraphLearnDb(),
-      pick.query,
-      requestGraphTenantScope(c),
+    const opened = withRequestGraphHandle(c, (graphDb) =>
+      runGraphQuery(graphDb, pick.query, requestGraphTenantScope(c)),
     );
+    if (!opened.ok) return graphHandleUnavailable(c, opened.failure);
     return c.json({
       pick,
-      result: { ...result, markdown: formatQueryForPlanner(result) },
+      result: { ...opened.value, markdown: formatQueryForPlanner(opened.value) },
     });
   }
   return c.json({ pick });
 });
 
 app.post("/graph-learn/promote-patterns", (c) => {
-  const promotions = promotePatterns(
-    getGraphLearnDb(),
-    {},
-    requestGraphTenantScope(c),
+  const opened = withRequestGraphHandle(c, (graphDb) =>
+    promotePatterns(graphDb, {}, requestGraphTenantScope(c)),
   );
+  if (!opened.ok) return graphHandleUnavailable(c, opened.failure);
+  const promotions = opened.value;
   // Graph-update audit at the mutation entry point (not per node/edge): one
   // event per promotion sweep records who promoted patterns and how many, which
   // is the security- and migration-relevant fact (spec 19.8 graph updates).
@@ -1252,12 +1300,11 @@ app.post("/graph-learn/promote-patterns", (c) => {
 });
 
 app.get("/graph-learn/ab", (c) => {
-  const report = measureAbLift(
-    getGraphLearnDb(),
-    undefined,
-    requestGraphTenantScope(c),
+  const opened = withRequestGraphHandle(c, (graphDb) =>
+    measureAbLift(graphDb, undefined, requestGraphTenantScope(c)),
   );
-  return c.json({ ...report, markdown: formatAbReport(report) });
+  if (!opened.ok) return graphHandleUnavailable(c, opened.failure);
+  return c.json({ ...opened.value, markdown: formatAbReport(opened.value) });
 });
 
 app.post("/graph-learn/ast-ingest", async (c) => {
@@ -1270,11 +1317,18 @@ app.post("/graph-learn/ast-ingest", async (c) => {
   const owned = tenantConsumerRepo(body.consumerId, tenantId);
   if (!owned) return c.json({ error: "consumer not found" }, 404);
   const { consumer, repo } = owned;
-  const r = ingestAstRepo(getGraphLearnDb(), {
-    repoPath: repo.local_path,
-    repoId: `${tenantId}:${consumer.id}`,
-    maxFiles: Math.min(Math.max(body.maxFiles ?? 100, 1), 500),
-  });
+  const opened = withRequestGraphHandle(
+    c,
+    (graphDb) =>
+      ingestAstRepo(graphDb, {
+        repoPath: repo.local_path,
+        repoId: `${tenantId}:${consumer.id}`,
+        maxFiles: Math.min(Math.max(body.maxFiles ?? 100, 1), 500),
+      }),
+    { allowEmpty: true },
+  );
+  if (!opened.ok) return graphHandleUnavailable(c, opened.failure);
+  const r = opened.value;
   requestAudit(c, {
     actor: "api",
     action: "graph.updated",
@@ -1294,10 +1348,17 @@ app.post("/graph-learn/lsp-ingest", async (c) => {
   const owned = tenantConsumerRepo(body.consumerId, tenantId);
   if (!owned) return c.json({ error: "consumer not found" }, 404);
   const { consumer, repo } = owned;
-  const r = ingestLspSymbols(getGraphLearnDb(), {
-    repoPath: repo.local_path,
-    repoId: `${tenantId}:${consumer.id}`,
-  });
+  const opened = withRequestGraphHandle(
+    c,
+    (graphDb) =>
+      ingestLspSymbols(graphDb, {
+        repoPath: repo.local_path,
+        repoId: `${tenantId}:${consumer.id}`,
+      }),
+    { allowEmpty: true },
+  );
+  if (!opened.ok) return graphHandleUnavailable(c, opened.failure);
+  const r = opened.value;
   requestAudit(c, {
     actor: "api",
     action: "graph.updated",
@@ -1317,11 +1378,18 @@ app.post("/graph-learn/incremental", async (c) => {
   const owned = tenantConsumerRepo(body.consumerId, tenantId);
   if (!owned) return c.json({ error: "consumer not found" }, 404);
   const { consumer, repo } = owned;
-  const r = incrementalReingest(getGraphLearnDb(), {
-    repoPath: repo.local_path,
-    repoId: `${tenantId}:${consumer.id}`,
-    maxFiles: 150,
-  });
+  const opened = withRequestGraphHandle(
+    c,
+    (graphDb) =>
+      incrementalReingest(graphDb, {
+        repoPath: repo.local_path,
+        repoId: `${tenantId}:${consumer.id}`,
+        maxFiles: 150,
+      }),
+    { allowEmpty: true },
+  );
+  if (!opened.ok) return graphHandleUnavailable(c, opened.failure);
+  const r = opened.value;
   requestAudit(c, {
     actor: "api",
     action: "graph.updated",
@@ -1340,10 +1408,11 @@ app.post("/graph-learn/incremental", async (c) => {
 });
 
 app.get("/graph-learn/gnn-export", (c) => {
-  const exp = exportGnnFeatures(
-    getGraphLearnDb(),
-    requestGraphTenantScope(c),
+  const opened = withRequestGraphHandle(c, (graphDb) =>
+    exportGnnFeatures(graphDb, requestGraphTenantScope(c)),
   );
+  if (!opened.ok) return graphHandleUnavailable(c, opened.failure);
+  const exp = opened.value;
   return c.json({
     exportedAt: exp.exportedAt,
     nodes: exp.nodes.length,
@@ -1365,21 +1434,20 @@ app.get("/graph-learn/slo", (c) => {
 });
 
 app.post("/graph-learn/embed", (c) => {
-  const r = embedGraphNodes(
-    getGraphLearnDb(),
-    undefined,
-    requestGraphTenantScope(c),
+  const opened = withRequestGraphHandle(c, (graphDb) =>
+    embedGraphNodes(graphDb, undefined, requestGraphTenantScope(c)),
   );
-  return c.json(r);
+  if (!opened.ok) return graphHandleUnavailable(c, opened.failure);
+  return c.json(opened.value);
 });
 
 app.get("/graph-learn/kuzu", (c) => {
   const status = kuzuStatus();
-  const script = exportSqliteToKuzuScript(
-    getGraphLearnDb(),
-    { maxNodes: 100 },
-    requestGraphTenantScope(c),
+  const opened = withRequestGraphHandle(c, (graphDb) =>
+    exportSqliteToKuzuScript(graphDb, { maxNodes: 100 }, requestGraphTenantScope(c)),
   );
+  if (!opened.ok) return graphHandleUnavailable(c, opened.failure);
+  const script = opened.value;
   return c.json({
     ...status,
     export: {
@@ -1907,14 +1975,7 @@ app.get("/changes/:id", (c) => {
     return c.json({ error: "not found" }, 404);
   }
   const tenantId = requestTenantId(c);
-  const findings = listFindingsForChange(db, change.id, tenantId).map(findingToApi);
-  const prs = listPrsForChange(db, change.id, tenantId).map(prToApi);
-  return c.json({
-    ...changeToApi(change),
-    diff: JSON.parse(change.diff_json),
-    findings,
-    prs,
-  });
+  return c.json(changeDetailBody(db, tenantId, change));
 });
 
 app.get("/consumers", (c) => {
@@ -2804,7 +2865,12 @@ app.get("/consumers/:id/exposure.md", (c) => {
 /** Audit export for enterprise / compliance */
 app.get("/audit/export", (c) => {
   const format = c.req.query("format") ?? "json";
-  const limit = Math.min(Number(c.req.query("limit") ?? 2000), 20_000);
+  let limit: number;
+  try {
+    limit = parseAuditExportLimit(c.req.query("limit"));
+  } catch {
+    return c.json({ error: "audit_export_limit_invalid" }, 400);
+  }
   if (format === "csv") {
     const csv = exportAuditCsv(db, limit, requestTenantId(c));
     return c.body(csv, 200, {
@@ -3094,7 +3160,7 @@ registerLegacyBehaviorRoutes(app, db, {
 
 /**
  * Run Warden — Mendpoint API debug agent (tool loop).
- * Body: { mode?, goal, consumerId, allowedChangedPaths, verifyCommand?, errorLog?, maxSteps?, useLlm? }
+ * Body: { mode?, goal, consumerId, allowedChangedPaths, verifyCommand?, errorLog?, maxSteps?, useLlm?, missionId? }
  * Every run is queued so the worker can enforce the snapshot and lease boundaries.
  */
 app.post("/agent/runs", async (c) => {
@@ -3106,6 +3172,9 @@ app.post("/agent/runs", async (c) => {
     const tenantId = requestTenantId(c);
     const owned = tenantConsumerRepo(body.consumerId, tenantId);
     if (!owned) return c.json({ error: "consumer not found" }, 404);
+    if (body.missionId && !getMission(db, tenantId, body.missionId)) {
+      return c.json({ error: "mission not found" }, 404);
+    }
     const { consumer, repo } = owned;
     const repoPath = repo.local_path;
 
@@ -3130,6 +3199,7 @@ app.post("/agent/runs", async (c) => {
       useLlm: resolveWardenUseLlm(body),
       allowNetwork: false,
       sessionId,
+      ...(body.missionId ? { missionId: body.missionId } : {}),
     };
     const payloadJson = JSON.stringify(payload);
     const createdAt = nowIso();

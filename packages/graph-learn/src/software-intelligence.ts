@@ -348,6 +348,20 @@ export function getSoftwareGraphHead(
   return row ? { versionId: row.version_id, contentDigest: row.content_digest } : undefined;
 }
 
+/** Tenant+repository heads across providers. Used to pin a Mission only when the version is unambiguous. */
+export function listSoftwareGraphHeads(
+  db: GraphLearnDb,
+  tenantId: string,
+  repositoryId: string,
+): ReadonlyArray<{ providerId: string; versionId: string; contentDigest: string }> {
+  const rows = db.raw.prepare(
+    `SELECT provider_id, version_id, content_digest FROM gl_software_heads_v1 WHERE tenant_id = ? AND repository_id = ? ORDER BY provider_id`,
+  ).all(tenantId, repositoryId) as Array<{ provider_id: string; version_id: string; content_digest: string }>;
+  return rows.map((row) => Object.freeze({
+    providerId: row.provider_id, versionId: row.version_id, contentDigest: row.content_digest,
+  }));
+}
+
 export function publishSoftwareGraphVersion(db: GraphLearnDb, input: SoftwareGraphPublicationV1): { versionId: string; contentDigest: string; replayed: boolean } {
   const normalized = normalizedPublication(structuredClone(input));
   const contentJson = canonicalJson(normalized);
@@ -595,6 +609,45 @@ export function compileFettlerImpactContext(result: FettlerEndpointImpactResult,
   const byteLength = Buffer.byteLength(content, "utf8");
   if (byteLength > options.maxBytes) throw new Error("fettler_impact_context_too_large");
   return Object.freeze({ content, byteLength, contentDigest: sha256(content) });
+}
+
+/**
+ * Named MissionGraphProjection (spec §8.16): the bounded, versioned,
+ * evidence-bearing Change Graph view compiled for one mission or task.
+ * Wraps `compileFettlerImpactContext` so callers receive one typed object
+ * rather than an unbounded dump or an anonymous `{ content, byteLength }`.
+ */
+export type MissionGraphProjection = Readonly<{
+  schemaVersion: "mendpoint.mission-graph-projection.v1";
+  missionId: string | null;
+  tenantId: string;
+  repositoryId: string;
+  graphVersionId: string;
+  graphContentDigest: string;
+  resultDigest: string;
+  impact: FettlerEndpointImpactResult["impact"];
+  coverage: FettlerEndpointImpactResult["coverage"];
+  compiled: Readonly<{ content: string; byteLength: number; contentDigest: string }>;
+}>;
+
+export function compileMissionGraphProjection(input: {
+  impact: FettlerEndpointImpactResult;
+  missionId?: string | null;
+  maxBytes: number;
+}): MissionGraphProjection {
+  const compiled = compileFettlerImpactContext(input.impact, { maxBytes: input.maxBytes });
+  return Object.freeze({
+    schemaVersion: "mendpoint.mission-graph-projection.v1",
+    missionId: input.missionId ?? null,
+    tenantId: input.impact.tenantId,
+    repositoryId: input.impact.repositoryId,
+    graphVersionId: input.impact.graphVersionId,
+    graphContentDigest: input.impact.graphContentDigest,
+    resultDigest: input.impact.resultDigest,
+    impact: input.impact.impact,
+    coverage: Object.freeze({ ...input.impact.coverage, reasons: [...input.impact.coverage.reasons] }),
+    compiled,
+  });
 }
 
 export type ChangeGraphFailureDestination =

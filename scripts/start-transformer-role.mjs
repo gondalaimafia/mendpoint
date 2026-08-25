@@ -13,10 +13,14 @@ if (role === "coordinator") {
     { createDb },
     { ensureTransformerWorkerCredential },
     { runRegaugeProductionBootstrapFromEnvironment },
+    { processJobsOnce },
+    { VERIFIER_ADVISORY_JOB_TYPE },
   ] = await Promise.all([
     import("@mendpoint/db"),
     import("../apps/api/src/transformer-worker-bootstrap.ts"),
     import("../apps/api/src/regauge-production-bootstrap-runtime.ts"),
+    import("../apps/worker/src/cli.ts"),
+    import("@mendpoint/pipeline"),
   ]);
   const bootstrap = await runRegaugeProductionBootstrapFromEnvironment(process.env);
   if (bootstrap.tenantId !== profile.tenantId || bootstrap.campaignId !== profile.campaignId) {
@@ -30,6 +34,32 @@ if (role === "coordinator") {
       createdAt: new Date().toISOString(),
     });
   } finally { db.raw.close(); }
+  if (process.env.MENDPOINT_DEPLOYMENT_PROFILE === "regauge_production") {
+    const advisoryDb = createDb();
+    const runAdvisoryQueue = async () => {
+      for (;;) {
+        try {
+          await processJobsOnce(advisoryDb, {
+            tenantId: profile.tenantId,
+            workerId: `regauge-verifier-coordinator:${process.pid}`,
+            maxJobs: 25,
+            runWardenMaintenance: false,
+            jobTypes: [VERIFIER_ADVISORY_JOB_TYPE],
+            logWhenIdle: false,
+            wardenEnv: process.env,
+          });
+        } catch (error) {
+          console.error(JSON.stringify({
+            event: "regauge_verifier_advisory_queue_failed",
+            code: error instanceof Error ? error.message : "verifier_advisory_unknown",
+            observedAt: new Date().toISOString(),
+          }));
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+    };
+    void runAdvisoryQueue();
+  }
   await import("../apps/api/src/server.ts");
 } else {
   const { runTransformerServiceCli } = await import("../apps/worker/src/transformer-service-cli.ts");

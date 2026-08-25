@@ -76,6 +76,19 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+      - name: Prepare renewal diagnostics and runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/sandbox-egress
+          printf 'run_url=%s\nrun_attempt=%s\nrevision=%s\nref=%s\nenvironment=%s\n' \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            "$GITHUB_RUN_ATTEMPT" \
+            "$GITHUB_SHA" \
+            "$GITHUB_REF" \
+            "${{ inputs.environment }}" \
+            >test-results/sandbox-egress/renewal-context.txt
+          npm ci
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
         with:
           version: "0.4.79"
@@ -127,9 +140,6 @@ jobs:
           [[ "$MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
           actual_policy_digest="sha256:$(sha256sum scripts/start-sandbox-entrypoint.sh | cut -d' ' -f1)"
           test "$actual_policy_digest" = "$MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST"
-          mkdir -p test-results/sandbox-egress
-      - name: Install receipt producer
-        run: npm ci
       - name: Prove default deny and local execution
         id: acceptance
         shell: bash
