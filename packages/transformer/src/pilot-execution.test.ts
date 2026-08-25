@@ -2261,6 +2261,14 @@ describe("Transformer pilot execution coordinator", () => {
     ]);
     expect(store.listRunnableCampaigns("tenant-a", 2).map((item) => item.campaignId))
       .toEqual(["campaign-a", "campaign-b"]);
+    const firstPage = store.listRunnableCampaignPage("tenant-a", 2);
+    expect(firstPage.campaigns.map((item) => item.campaignId)).toEqual(["campaign-a", "campaign-b"]);
+    expect(firstPage.nextCursor).toEqual({
+      updatedAt: time(1), tenantId: "tenant-a", campaignId: "campaign-b",
+    });
+    const secondPage = store.listRunnableCampaignPage("tenant-a", 2, undefined, firstPage.nextCursor!);
+    expect(secondPage.campaigns.map((item) => item.campaignId)).toEqual(["campaign-z"]);
+    expect(secondPage.nextCursor).toBeNull();
     expect(store.listRunnableCampaigns("tenant-b")).toEqual([]);
     expect(() => store.listRunnableCampaigns(undefined, 0))
       .toThrow("transformer_pilot_campaign_limit_invalid");

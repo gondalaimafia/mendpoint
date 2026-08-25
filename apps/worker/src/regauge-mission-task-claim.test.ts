@@ -167,6 +167,38 @@ describe("assignRegaugeMissionTaskOnClaim", () => {
     expect(second).toEqual(first);
   });
 
+  it("drives a reviewed agent_resume task back to agent_working for the next repository unit", () => {
+    const { db, missionId } = fixture();
+    const created = launchTask(db, missionId, "repo-a");
+    let task = transitionMissionTask(db, {
+      tenantId: "t1", taskId: created.id, expectedRevision: created.revision,
+      to: "agent_assigned", actorPrincipalId: "p1", assignedPrincipalId: "p1",
+      eventId: "resume-assigned", idempotencyKey: "resume-assign", correlationId: "campaign-a", createdAt: at,
+    });
+    task = transitionMissionTask(db, {
+      tenantId: "t1", taskId: task.id, expectedRevision: task.revision,
+      to: "agent_working", actorPrincipalId: "p1", assignedPrincipalId: "p1",
+      eventId: "resume-working", idempotencyKey: "resume-work", correlationId: "campaign-a", createdAt: at,
+    });
+    task = transitionMissionTask(db, {
+      tenantId: "t1", taskId: task.id, expectedRevision: task.revision,
+      to: "human_review_required", actorPrincipalId: "p1", handoffReason: "review",
+      eventId: "resume-review", idempotencyKey: "resume-review", correlationId: "campaign-a", createdAt: at,
+    });
+    task = transitionMissionTask(db, {
+      tenantId: "t1", taskId: task.id, expectedRevision: task.revision,
+      to: "agent_resume", actorPrincipalId: "p1", eventId: "resume-approved",
+      idempotencyKey: "resume-approved", correlationId: "campaign-a", createdAt: at,
+    });
+
+    expect(regaugeMissionTaskExecutionReady(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    })).toBe(true);
+    expect(assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    })).toMatchObject({ id: task.id, status: "agent_working", ownerType: "agent" });
+  });
+
   it("does not rewind a task that has already left the claim path", () => {
     const { db, missionId } = fixture();
     const created = launchTask(db, missionId, "repo-a");

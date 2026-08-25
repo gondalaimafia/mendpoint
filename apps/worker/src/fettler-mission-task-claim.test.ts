@@ -285,6 +285,72 @@ describe("assignFettlerMissionTaskOnClaim", () => {
 });
 
 describe("campaign execute claim drives MissionTask", () => {
+  it("classifies a reviewed MissionTask state instead of deferring it as dependency-incomplete", async () => {
+    const { db, missionId } = fixture();
+    const input = { tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at };
+    enrollTask(db, missionId, "repo-a");
+    assignFettlerMissionTaskOnClaim(db, input);
+    handoffFettlerMissionTaskOnReview(db, input);
+    enqueueJob(db, {
+      id: "job-exec-reviewed-task", tenantId: "t1", type: WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE, createdAt: at,
+      payload: {
+        campaignId: "camp-1", targetId: "tgt-1", rolloutDecisionId: "rd-1",
+        actorPrincipalId: "p1", runId: "run-reviewed-task", createdAt: at,
+        source: { sourceArtifactId: "src-1" },
+        rolloutApproval: { decisionSha256: "a".repeat(64), approvedByPrincipalId: "p1", approvedAt: at },
+        ownerApproval: { ownerPrincipalId: "p1", ownerHandle: "@team", approvedAt: at },
+      },
+    });
+    let executed = 0;
+    const result = await processJobsOnce(db, {
+      allTenants: true,
+      runWardenMaintenance: false,
+      wardenCampaignExecution: {
+        resolveDependencies: () => ({} as WardenCampaignExecutionDependencies),
+        execute: (async () => { executed++; throw new Error("must not execute"); }) as unknown as WardenCampaignExecutor,
+      },
+    });
+    expect(result).toMatchObject({ claimed: 1, succeeded: 0, failed: 1, retried: 0 });
+    expect(executed).toBe(0);
+    expect(getJob(db, "job-exec-reviewed-task", "t1")).toMatchObject({
+      status: "dead_letter", attempts: 1, error_code: "mission_task_claim_state_invalid",
+    });
+  });
+
+  it("classifies a non-readiness MissionTask claim error instead of disguising it as a dependency wait", async () => {
+    const { db, missionId } = fixture();
+    enrollTask(db, missionId, "repo-a");
+    db.raw.exec(`CREATE TRIGGER reject_mission_task_agent
+      BEFORE INSERT ON principals
+      WHEN NEW.subject = 'mission-task-agent'
+      BEGIN SELECT RAISE(ABORT, 'sqlite_busy mission task claim'); END`);
+    enqueueJob(db, {
+      id: "job-exec-invalid-claim", tenantId: "t1", type: WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE, createdAt: at,
+      payload: {
+        campaignId: "camp-1", targetId: "tgt-1", rolloutDecisionId: "rd-1",
+        actorPrincipalId: "p1", runId: "run-invalid-claim", createdAt: at,
+        source: { sourceArtifactId: "src-1" },
+        rolloutApproval: { decisionSha256: "a".repeat(64), approvedByPrincipalId: "p1", approvedAt: at },
+        ownerApproval: { ownerPrincipalId: "p1", ownerHandle: "@team", approvedAt: at },
+      },
+    });
+    const result = await processJobsOnce(db, {
+      allTenants: true,
+      runWardenMaintenance: false,
+      wardenCampaignExecution: {
+        resolveDependencies: () => ({} as WardenCampaignExecutionDependencies),
+        execute: (async () => { throw new Error("must not execute"); }) as unknown as WardenCampaignExecutor,
+      },
+    });
+    expect(result).toMatchObject({ claimed: 1, succeeded: 0, failed: 1, retried: 1 });
+    expect(getJob(db, "job-exec-invalid-claim", "t1")).toMatchObject({
+      status: "pending",
+      attempts: 1,
+    });
+    expect(getJob(db, "job-exec-invalid-claim", "t1")?.error_code)
+      .not.toBe("mission_task_dependencies_incomplete");
+  });
+
   it("defers the live execute without spending retry budget while a dependency is incomplete", async () => {
     const { db, missionId } = fixture();
     const blocked = enrollTask(db, missionId, "repo-a");

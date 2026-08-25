@@ -21,6 +21,7 @@ import {
   type TransformerAttemptCoordinatorPort,
   type TransformerVerifiedCandidateCompletion,
   type TransformerPilotExecutionStore,
+  type TransformerRunnableCampaignCursor,
 } from "@mendpoint/transformer";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
 import { resolveRenamedEnv } from "@mendpoint/shared";
@@ -72,8 +73,10 @@ export type TransformerPilotLaneStore = Pick<
   | "listPendingRoutingSettlements"
   | "expireAttempt"
   | "listRunnableCampaigns"
+  | "listRunnableCampaignPage"
   | "listAdaptiveCandidateHandoffs"
   | "bindRoutingAttempt"
+  | "abandonRoutingAttempt"
   | "claimNextAttempt"
   | "renewAttemptLease"
   | "assertCurrentAttemptFence"
@@ -690,12 +693,15 @@ export async function runTransformerPilotLaneOnce(
   // admission cap. Otherwise maxCampaigns blocked rows at the front can starve
   // a ready campaign forever because their durable ordering never changes.
   let admittedCampaigns = 0;
-  for (const campaign of input.store.listRunnableCampaigns(
-    input.tenantId,
-    100,
-    rawGate,
-  )) {
-    if (input.shouldContinue?.() === false) break;
+  let campaignCursor: TransformerRunnableCampaignCursor | undefined;
+  let stopCampaignScan = false;
+  do {
+    const page = input.store.listRunnableCampaignPage(input.tenantId, 100, rawGate, campaignCursor);
+    for (const campaign of page.campaigns) {
+    if (input.shouldContinue?.() === false) {
+      stopCampaignScan = true;
+      break;
+    }
     if (!regaugeMissionTaskExecutionReady(input.db, {
       tenantId: campaign.tenantId,
       campaignId: campaign.campaignId,
@@ -705,8 +711,10 @@ export async function runTransformerPilotLaneOnce(
       idle++;
       continue;
     }
-    if (admittedCampaigns >= maxCampaigns) break;
-    admittedCampaigns++;
+    if (admittedCampaigns >= maxCampaigns) {
+      stopCampaignScan = true;
+      break;
+    }
     const decision = authorizeTransformerWorkerAction(
       { tenantId: campaign.tenantId, environment: campaign.environment },
       rawGate,
@@ -714,25 +722,6 @@ export async function runTransformerPilotLaneOnce(
     if (!decision.allowed) {
       errors.push(`transformer_lane_campaign_denied:${campaign.campaignId}`);
       continue;
-    }
-    let checkpoint: TransformerAttemptCheckpointConfig | undefined;
-    if (input.checkpointForCampaign) {
-      const resolvedCheckpoint = await resolveCheckpointProvider(
-        input.checkpointForCampaign,
-        {
-          tenantId: campaign.tenantId,
-          campaignId: campaign.campaignId,
-          environment: campaign.environment,
-        },
-        leaseDurationMs,
-      );
-      if (resolvedCheckpoint.errorCode) {
-        attempted++;
-        failed++;
-        errors.push(resolvedCheckpoint.errorCode);
-        continue;
-      }
-      checkpoint = resolvedCheckpoint.checkpoint;
     }
     const adaptiveAdapter = input.adaptivePlannerAdapterForTenant?.(campaign.tenantId);
     let adaptiveAuthorizationEvidenceRef: string | undefined;
@@ -771,6 +760,26 @@ export async function runTransformerPilotLaneOnce(
       errors.push(`transformer_lane_policy_denied:${campaign.campaignId}:${code}`);
       continue;
     }
+    let checkpoint: TransformerAttemptCheckpointConfig | undefined;
+    if (input.checkpointForCampaign) {
+      const resolvedCheckpoint = await resolveCheckpointProvider(
+        input.checkpointForCampaign,
+        {
+          tenantId: campaign.tenantId,
+          campaignId: campaign.campaignId,
+          environment: campaign.environment,
+        },
+        leaseDurationMs,
+      );
+      if (resolvedCheckpoint.errorCode) {
+        admittedCampaigns++;
+        attempted++;
+        failed++;
+        errors.push(resolvedCheckpoint.errorCode);
+        continue;
+      }
+      checkpoint = resolvedCheckpoint.checkpoint;
+    }
     const adaptiveProvenanceStart = adaptiveAdapter?.provenance().length ?? 0;
     const adaptiveCostRemaining = 25;
     const externalRoutingProfile = adaptiveAdapter
@@ -792,6 +801,7 @@ export async function runTransformerPilotLaneOnce(
       campaign.tenantId,
       campaign.campaignId,
     );
+    let preparedRoutingBinding: Readonly<{ runId: string; envelopeId: string }> | undefined;
     const routed = await runRoutedTransformerAttempt({
       db: input.db,
       registry: routedRegistry,
@@ -872,6 +882,7 @@ export async function runTransformerPilotLaneOnce(
           ),
           gateConfig: rawGate,
         });
+        preparedRoutingBinding = Object.freeze({ runId, envelopeId: prepared.envelopeId });
       },
       runAttempt: async () => {
         // Reserve the bound MissionTask before the attempt runner can claim a
@@ -888,6 +899,25 @@ export async function runTransformerPilotLaneOnce(
         const missionTaskClaim = assignRegaugeMissionTaskOnClaim(input.db, missionTaskInput);
         if (missionTaskClaim === undefined &&
             !regaugeMissionTaskExecutionReady(input.db, missionTaskInput)) {
+          if (!preparedRoutingBinding) {
+            throw new Error("transformer_pilot_routing_binding_missing");
+          }
+          input.store.abandonRoutingAttempt({
+            tenantId: campaign.tenantId,
+            campaignId: campaign.campaignId,
+            runId: preparedRoutingBinding.runId,
+            envelopeId: preparedRoutingBinding.envelopeId,
+            reason: "mission_task_dependencies_incomplete",
+            observedAt: now(),
+            evidenceRefs: Object.freeze([
+              ...decision.acceptanceEvidenceRefs,
+              stableId("tfroutingabandoned", campaign.tenantId, campaign.campaignId,
+                preparedRoutingBinding.envelopeId),
+            ]),
+            idempotencyKey: stableId("tfroutingabandon", campaign.tenantId,
+              campaign.campaignId, runId, preparedRoutingBinding.envelopeId),
+            gateConfig: rawGate,
+          });
           return Object.freeze({
             status: "idle" as const,
             summary: "Mission task dependencies are incomplete",
@@ -1120,7 +1150,10 @@ export async function runTransformerPilotLaneOnce(
       errors.push(`transformer_routing_human_handoff:${campaign.campaignId}`);
       continue;
     }
-    if (routed.status !== "idle") attempted++;
+    if (routed.status !== "idle") {
+      admittedCampaigns++;
+      attempted++;
+    }
     if (routed.status === "completed") {
       completed++;
       if (routed.result?.verifierShadowError) errors.push(routed.result.verifierShadowError);
@@ -1134,9 +1167,12 @@ export async function runTransformerPilotLaneOnce(
       (routed.status === "completed" || routed.status === "failed") &&
       !reconcileRoutingSettlements()
     ) {
+      stopCampaignScan = true;
       break;
     }
-  }
+    }
+    campaignCursor = page.nextCursor ?? undefined;
+  } while (!stopCampaignScan && campaignCursor);
 
   return Object.freeze({
     enabled: true,

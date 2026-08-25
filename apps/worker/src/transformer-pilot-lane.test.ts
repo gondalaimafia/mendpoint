@@ -23,6 +23,7 @@ import {
   insertRepositorySnapshot,
   insertRepositorySnapshotFiles,
   regaugeLaunchMissionTaskId,
+  transitionMissionTask,
   upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
@@ -1038,6 +1039,9 @@ describe("Transformer production pilot lane", () => {
     const laneStore = new Proxy(store, {
       get(target, property) {
         if (property === "listRunnableCampaigns") return () => [blocked, ready];
+        if (property === "listRunnableCampaignPage") {
+          return () => Object.freeze({ campaigns: Object.freeze([blocked, ready]), nextCursor: null });
+        }
         const value = Reflect.get(target, property, target);
         return typeof value === "function" ? value.bind(target) : value;
       },
@@ -1064,6 +1068,178 @@ describe("Transformer production pilot lane", () => {
     expect(commandRunner).toHaveBeenCalled();
     expect(getMissionTask(db, "tenant-a", blockedTask.id)?.status).toBe("unassigned");
     expect(store.getCampaign("tenant-a", "campaign-a")?.units[0]?.state).toBe("executed");
+  });
+
+  it("recovers a prepared routing binding when a second connection adds a dependency before Mission claim", async () => {
+    const { root, db, store } = setup();
+    const missionId = seedRegaugeMissionForCampaignA(db);
+    const task = createMissionTask(db, {
+      id: regaugeLaunchMissionTaskId(missionId, "repository-a"),
+      tenantId: "tenant-a", missionId, taskType: "code_migration",
+      acceptanceCriteria: "Complete repository-a.", risk: "medium",
+      actorPrincipalId: "principal-a", eventId: "race-task-created",
+      idempotencyKey: "race-task-create", correlationId: "campaign-a", createdAt: CREATED_AT,
+    });
+    let prerequisite = createMissionTask(db, {
+      id: "race-prerequisite", tenantId: "tenant-a", missionId, taskType: "code_migration",
+      acceptanceCriteria: "Complete first.", risk: "medium", actorPrincipalId: "principal-a",
+      eventId: "race-prerequisite-created", idempotencyKey: "race-prerequisite-create",
+      correlationId: "campaign-a", createdAt: CREATED_AT,
+    });
+    const peer = createDb(join(root, "mendpoint.sqlite"));
+    databases.push(peer);
+    let inserted = false;
+    const racedStore = new Proxy(store, {
+      get(target, property) {
+        if (property === "bindRoutingAttempt") {
+          return (input: Parameters<TransformerPilotExecutionStore["bindRoutingAttempt"]>[0]) => {
+            const result = target.bindRoutingAttempt(input);
+            if (!inserted) {
+              inserted = true;
+              addMissionTaskDependency(peer, {
+                id: "race-dependency", tenantId: "tenant-a", missionId,
+                taskId: task.id, dependsOnTaskId: prerequisite.id, createdAt: RUN_AT,
+              });
+            }
+            return result;
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as TransformerPilotLaneStore;
+    const commandRunner = vi.fn(async () => ({ exitCode: 0, stdout: "verified", stderr: "" }));
+    const first = await runTransformerPilotLaneOnce({
+      db, store: racedStore, gateConfig: gateConfig(), tenantId: "tenant-a", workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"), candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"), runId: "run-raced-binding", now: () => RUN_AT,
+      leaseToken: () => "transformer-raced-binding-token-0001", commandRunner,
+    });
+    expect(first).toMatchObject({ attempted: 0, idle: 1, completed: 0 });
+    expect(commandRunner).not.toHaveBeenCalled();
+    expect(getMissionTask(db, "tenant-a", task.id)?.status).toBe("unassigned");
+
+    prerequisite = transitionMissionTask(peer, {
+      tenantId: "tenant-a", taskId: prerequisite.id, expectedRevision: prerequisite.revision,
+      to: "agent_assigned", actorPrincipalId: "principal-a", assignedPrincipalId: "principal-a",
+      eventId: "race-prerequisite-assigned", idempotencyKey: "race-prerequisite-assign",
+      correlationId: "campaign-a", createdAt: RUN_AT,
+    });
+    prerequisite = transitionMissionTask(peer, {
+      tenantId: "tenant-a", taskId: prerequisite.id, expectedRevision: prerequisite.revision,
+      to: "agent_working", actorPrincipalId: "principal-a", assignedPrincipalId: "principal-a",
+      eventId: "race-prerequisite-working", idempotencyKey: "race-prerequisite-work",
+      correlationId: "campaign-a", createdAt: RUN_AT,
+    });
+    transitionMissionTask(peer, {
+      tenantId: "tenant-a", taskId: prerequisite.id, expectedRevision: prerequisite.revision,
+      to: "complete", actorPrincipalId: "principal-a", eventId: "race-prerequisite-complete",
+      idempotencyKey: "race-prerequisite-finish", correlationId: "campaign-a", createdAt: RUN_AT,
+    });
+
+    const resumed = await runTransformerPilotLaneOnce({
+      db, store: racedStore, gateConfig: gateConfig(), tenantId: "tenant-a", workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"), candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"), runId: "run-raced-binding-resume", now: () => RUN_AT,
+      leaseToken: () => "transformer-raced-binding-token-0002", commandRunner,
+    });
+    expect(resumed).toMatchObject({ attempted: 1, completed: 1, errors: [] });
+    expect(commandRunner).toHaveBeenCalled();
+  });
+
+  it("paginates beyond one hundred dependency-blocked campaigns", async () => {
+    const { root, db, store } = setup();
+    registerTenantA(db);
+    dbModule.insertPrincipal(db, {
+      id: "principal-a", tenantId: "tenant-a", kind: "human",
+      subject: "owner@tenant-a.example", displayName: "Owner A", createdAt: CREATED_AT,
+    });
+    const blockedMission = dbModule.createMission(db, {
+      id: "mission-page-blocked", tenantId: "tenant-a", product: "regauge",
+      triggerKind: "migration_objective", objective: "Blocked migration",
+      ownerPrincipalId: "principal-a", eventId: "mission-page-blocked-created",
+      idempotencyKey: "mission-page-blocked-create", correlationId: "campaign-blocked",
+      createdAt: CREATED_AT,
+    });
+    dbModule.linkRegaugeCampaignToMission(db, {
+      tenantId: "tenant-a", missionId: blockedMission.id, regaugeCampaignId: "campaign-blocked",
+      actorPrincipalId: "principal-a", eventId: "mission-page-blocked-linked",
+      idempotencyKey: "mission-page-blocked-link", correlationId: "campaign-blocked",
+      createdAt: CREATED_AT,
+    });
+    const blockedTask = createMissionTask(db, {
+      id: regaugeLaunchMissionTaskId(blockedMission.id, "repository-a"), tenantId: "tenant-a",
+      missionId: blockedMission.id, taskType: "code_migration", acceptanceCriteria: "Wait.",
+      risk: "medium", actorPrincipalId: "principal-a", eventId: "page-blocked-task-created",
+      idempotencyKey: "page-blocked-task-create", correlationId: "campaign-blocked", createdAt: CREATED_AT,
+    });
+    const blockedPrerequisite = createMissionTask(db, {
+      id: "page-blocked-prerequisite", tenantId: "tenant-a", missionId: blockedMission.id,
+      taskType: "code_migration", acceptanceCriteria: "Finish first.", risk: "medium",
+      actorPrincipalId: "principal-a", eventId: "page-blocked-prerequisite-created",
+      idempotencyKey: "page-blocked-prerequisite-create", correlationId: "campaign-blocked",
+      createdAt: CREATED_AT,
+    });
+    addMissionTaskDependency(db, {
+      id: "page-blocked-dependency", tenantId: "tenant-a", missionId: blockedMission.id,
+      taskId: blockedTask.id, dependsOnTaskId: blockedPrerequisite.id, createdAt: CREATED_AT,
+    });
+    const ready = store.listRunnableCampaigns("tenant-a", 1, gateConfig())[0]!;
+    const blocked = Object.freeze({ ...ready, campaignId: "campaign-blocked" });
+    const pageStore = new Proxy(store, {
+      get(target, property) {
+        if (property === "listRunnableCampaigns") return () => Array.from({ length: 100 }, () => blocked);
+        if (property === "listRunnableCampaignPage") {
+          return (_tenantId: string | undefined, _limit: number, _gate: string | undefined, cursor?: unknown) =>
+            cursor
+              ? Object.freeze({ campaigns: Object.freeze([ready]), nextCursor: null })
+              : Object.freeze({
+                  campaigns: Object.freeze(Array.from({ length: 100 }, () => blocked)),
+                  nextCursor: Object.freeze({ updatedAt: CREATED_AT, tenantId: "tenant-a", campaignId: "blocked-99" }),
+                });
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as TransformerPilotLaneStore;
+    const commandRunner = vi.fn(async () => ({ exitCode: 0, stdout: "verified", stderr: "" }));
+    const result = await runTransformerPilotLaneOnce({
+      db, store: pageStore, gateConfig: gateConfig(), tenantId: "tenant-a", workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"), candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"), maxCampaigns: 1, runId: "run-page-after-blocked",
+      now: () => RUN_AT, leaseToken: () => "transformer-page-token-000000001", commandRunner,
+    });
+    expect(result).toMatchObject({ attempted: 1, completed: 1 });
+    expect(commandRunner).toHaveBeenCalled();
+  });
+
+  it("does not count a campaign until campaign-specific authorization and Mission policy pass", async () => {
+    const { root, db, store } = setup();
+    const ready = store.listRunnableCampaigns("tenant-a", 1, gateConfig())[0]!;
+    const denied = Object.freeze({ ...ready, campaignId: "campaign-without-consent" });
+    const laneStore = new Proxy(store, {
+      get(target, property) {
+        if (property === "listRunnableCampaignPage") {
+          return () => Object.freeze({ campaigns: Object.freeze([denied, ready]), nextCursor: null });
+        }
+        if (property === "listRunnableCampaigns") return () => [denied, ready];
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as TransformerPilotLaneStore;
+    const commandRunner = vi.fn(async () => ({ exitCode: 0, stdout: "verified", stderr: "" }));
+    const result = await runTransformerPilotLaneOnce({
+      db, store: laneStore, gateConfig: gateConfig(), tenantId: "tenant-a", workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"), candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"), maxCampaigns: 1, runId: "run-ready-after-denied",
+      now: () => RUN_AT, leaseToken: () => "transformer-consent-token-0000001", commandRunner,
+      adaptivePlannerAdapterForTenant: () => adaptiveAdapter(),
+      authorizeAdaptiveExternalProcessing: ({ campaignId }) => campaignId === "campaign-a"
+        ? { allowed: true, evidenceRef: "consent:campaign-a" }
+        : { allowed: false },
+    });
+    expect(result).toMatchObject({ attempted: 1, completed: 1, handoff: 1 });
+    expect(commandRunner).toHaveBeenCalled();
   });
 
   it("does not hand the launch MissionTask to review when the attempt fails", async () => {

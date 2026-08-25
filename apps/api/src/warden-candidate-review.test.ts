@@ -17,6 +17,7 @@ import {
   getWardenCiUpdateByRun,
   insertAgentRun,
   insertPrincipal,
+  linkRegaugeCampaignToMission,
   missionTaskIdForJob,
   openTaskHandoff,
   recordAudit,
@@ -606,6 +607,52 @@ describe("Warden candidate human review", () => {
     });
     expect(response.status).toBe(202);
     expect(getMissionTask(db, "tenant-a", task.id)?.status).toBe("complete");
+  });
+
+  it("completes a MissionTask resolved through the source job campaign binding", async () => {
+    const { app, db } = fixture({
+      sealApproval: async () => ({ path: "C:\\sealed-campaign-task.json", sha256: `sha256:${"b".repeat(64)}`, created: true }),
+    });
+    createMission(db, {
+      id: "m-campaign", tenantId: "tenant-a", product: "regauge", triggerKind: "migration_objective",
+      objective: "Migrate the campaign", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-campaign-mission", idempotencyKey: "cm-campaign-mission",
+      correlationId: "campaign-bound", createdAt: NOW,
+    });
+    linkRegaugeCampaignToMission(db, {
+      tenantId: "tenant-a", missionId: "m-campaign", regaugeCampaignId: "campaign-bound",
+      actorPrincipalId: "trust-human-a", eventId: "ev-campaign-link",
+      idempotencyKey: "cm-campaign-link", correlationId: "campaign-bound", createdAt: NOW,
+    });
+    const source = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(source.payload_json), campaignId: "campaign-bound" }));
+    const task = bridgeClaimedJobToMissionTask(db, getJob(db, "source-job-1", "tenant-a")!, NOW)!;
+    seedCiRepairCandidate(db);
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve the campaign-bound candidate." }),
+    });
+    expect(response.status).toBe(202);
+    expect(getMissionTask(db, "tenant-a", task.id)?.status).toBe("complete");
+  });
+
+  it("fails closed when a candidate claims a source job that no longer exists", async () => {
+    const { app, db } = fixture({
+      sealApproval: async () => ({ path: "C:\\sealed-missing-source.json", sha256: `sha256:${"b".repeat(64)}`, created: true }),
+    });
+    seedCiRepairCandidate(db);
+    db.raw.prepare("DELETE FROM jobs WHERE id = 'source-job-1' AND tenant_id = 'tenant-a'").run();
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve the exact candidate." }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "mission_task_review_binding_invalid" });
+    expect(getAgentRun(db, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
+    expect(getWardenCiUpdateByRun(db, "tenant-a", "warden-run-1")).toBeUndefined();
   });
 
   it("repairs the exact live MissionTask when an identical approval replays after result commit", async () => {

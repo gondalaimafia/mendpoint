@@ -549,6 +549,17 @@ export type TransformerRunnableCampaign = Readonly<{
   changedPaths: readonly string[];
 }>;
 
+export type TransformerRunnableCampaignCursor = Readonly<{
+  updatedAt: string;
+  tenantId: string;
+  campaignId: string;
+}>;
+
+export type TransformerRunnableCampaignPage = Readonly<{
+  campaigns: readonly TransformerRunnableCampaign[];
+  nextCursor: TransformerRunnableCampaignCursor | null;
+}>;
+
 export type TransformerExpiredAttempt = Readonly<{
   tenantId: string;
   campaignId: string;
@@ -2036,9 +2047,25 @@ export class TransformerPilotExecutionStore {
     limit = 25,
     gateConfig?: string,
   ): TransformerRunnableCampaign[] {
+    return deepFreeze([...this.listRunnableCampaignPage(tenantId, limit, gateConfig).campaigns]);
+  }
+
+  listRunnableCampaignPage(
+    tenantId?: string,
+    limit = 25,
+    gateConfig?: string,
+    cursor?: TransformerRunnableCampaignCursor,
+  ): TransformerRunnableCampaignPage {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       throw new Error("transformer_pilot_campaign_limit_invalid");
     }
+    const after = cursor
+      ? {
+          updatedAt: requireTimestamp(cursor.updatedAt),
+          tenantId: requireId(cursor.tenantId, "transformer_pilot_campaign_cursor_invalid"),
+          campaignId: requireId(cursor.campaignId, "transformer_pilot_campaign_cursor_invalid"),
+        }
+      : undefined;
     const rows = tenantId === undefined
       ? this.db.prepare("SELECT body_json FROM tf_pilot_campaigns").all()
       : this.db.prepare(
@@ -2060,7 +2087,13 @@ export class TransformerPilotExecutionStore {
         compareCodeUnits(left.tenantId, right.tenantId) ||
         compareCodeUnits(left.campaignId, right.campaignId)
       )
-      .slice(0, limit)
+      .filter((campaign) => !after ||
+        compareCodeUnits(campaign.updatedAt, after.updatedAt) > 0 ||
+        (campaign.updatedAt === after.updatedAt && compareCodeUnits(campaign.tenantId, after.tenantId) > 0) ||
+        (campaign.updatedAt === after.updatedAt && campaign.tenantId === after.tenantId &&
+          compareCodeUnits(campaign.campaignId, after.campaignId) > 0));
+    const selected = runnable.slice(0, limit);
+    const campaigns = selected
       .map((campaign) => {
         const unit = campaign.units
           .filter((candidate) => attemptEligible(campaign, candidate))
@@ -2084,7 +2117,13 @@ export class TransformerPilotExecutionStore {
           changedPaths: Object.freeze([...unit.changedPaths]),
         };
       });
-    return deepFreeze(runnable);
+    const last = selected.at(-1);
+    return deepFreeze({
+      campaigns,
+      nextCursor: runnable.length > selected.length && last
+        ? { updatedAt: last.updatedAt, tenantId: last.tenantId, campaignId: last.campaignId }
+        : null,
+    });
   }
 
   listAdaptiveCandidateHandoffs(
@@ -2380,6 +2419,44 @@ export class TransformerPilotExecutionStore {
         throw new Error("transformer_pilot_routing_settlement_pending");
       }
       replaceUnit(state, { ...eligible, routingSettlement: record });
+    });
+  }
+
+  abandonRoutingAttempt(
+    input: MutationInput & Readonly<{
+      runId: string;
+      envelopeId: string;
+      reason: "mission_task_dependencies_incomplete";
+      gateConfig?: string;
+    }>,
+  ): TransformerPilotCampaign {
+    requireId(input.runId, "transformer_pilot_routing_run_invalid");
+    requireId(input.envelopeId, "transformer_pilot_routing_envelope_invalid");
+    const campaign = this.mustGet(input.tenantId, input.campaignId);
+    const gate = authorizeTransformerWorkerAction(
+      { tenantId: input.tenantId, environment: campaign.environment },
+      input.gateConfig,
+    );
+    if (!gate.allowed) {
+      throw new TransformerDomainError("transformer_pilot_gate_denied", gate.reasons.join(","));
+    }
+    const request = Object.freeze({
+      runId: input.runId,
+      envelopeId: input.envelopeId,
+      reason: input.reason,
+    });
+    return this.mutate(input, "routing.attempt_abandoned", request, (state) => {
+      const unit = state.units.find((candidate) =>
+        candidate.routingSettlement?.runId === input.runId &&
+        candidate.routingSettlement.envelopeId === input.envelopeId);
+      const routing = unit?.routingSettlement;
+      if (!unit || !routing || routing.settledAt || routing.outcome ||
+          routing.attemptNumber !== undefined || routing.leaseGeneration !== undefined ||
+          routing.leaseTokenDigest !== undefined) {
+        throw new Error("transformer_pilot_routing_abandonment_invalid");
+      }
+      const { routingSettlement: _routingSettlement, ...unbound } = unit;
+      replaceUnit(state, unbound);
     });
   }
 

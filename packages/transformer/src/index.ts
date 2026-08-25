@@ -366,6 +366,8 @@ export {
   type TransformerVerifierAdvisoryDispatchResult,
   type TransformerExpiredAttempt,
   type TransformerRunnableCampaign,
+  type TransformerRunnableCampaignCursor,
+  type TransformerRunnableCampaignPage,
   type TransformerDraftAction,
   type TransformerDraftDeliveryRecord,
   type TransformerDraftDeliveryLease,

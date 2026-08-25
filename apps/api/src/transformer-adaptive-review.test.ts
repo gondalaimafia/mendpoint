@@ -5,16 +5,22 @@ import { join } from "node:path";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  createMission,
+  createMissionTask,
   createDb,
   getAdaptiveCandidate,
   getAdaptiveDeliveryByCandidate,
   getAdaptiveRegenerationByCandidate,
   getJob,
+  getMissionTask,
   getLearningRecordRedactedContent,
   grantLearningConsent,
   insertPrincipal,
+  linkRegaugeCampaignToMission,
   markAdaptiveRegenerationScheduled,
   recordAdaptiveCandidate,
+  regaugeLaunchMissionTaskId,
+  transitionMissionTask,
   type AppDb,
 } from "@mendpoint/db";
 import {
@@ -248,6 +254,59 @@ afterEach(() => {
 });
 
 describe("transformer adaptive candidate review routes", () => {
+  it("resumes the exact repository MissionTask when a human approves its reviewed unit", async () => {
+    const { app, db } = fixture();
+    createMission(db, {
+      id: "mission-review-resume", tenantId: "tenant-a", product: "regauge",
+      triggerKind: "migration_objective", objective: "Upgrade the repository",
+      ownerPrincipalId: "trust-human-a", eventId: "mission-review-resume-created",
+      idempotencyKey: "mission-review-resume-create", correlationId: "campaign-1", createdAt: NOW,
+    });
+    linkRegaugeCampaignToMission(db, {
+      tenantId: "tenant-a", missionId: "mission-review-resume", regaugeCampaignId: "campaign-1",
+      actorPrincipalId: "trust-human-a", eventId: "mission-review-resume-linked",
+      idempotencyKey: "mission-review-resume-link", correlationId: "campaign-1", createdAt: NOW,
+    });
+    let task = createMissionTask(db, {
+      id: regaugeLaunchMissionTaskId("mission-review-resume", "repo-1"), tenantId: "tenant-a",
+      missionId: "mission-review-resume", taskType: "code_migration",
+      acceptanceCriteria: "Complete the repository migration.", risk: "medium",
+      actorPrincipalId: "trust-human-a", eventId: "mission-review-task-created",
+      idempotencyKey: "mission-review-task-create", correlationId: "campaign-1", createdAt: NOW,
+    });
+    task = transitionMissionTask(db, {
+      tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision,
+      to: "agent_assigned", actorPrincipalId: "trust-human-a", assignedPrincipalId: "trust-human-a",
+      eventId: "mission-review-task-assigned", idempotencyKey: "mission-review-task-assign",
+      correlationId: "campaign-1", createdAt: NOW,
+    });
+    task = transitionMissionTask(db, {
+      tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision,
+      to: "agent_working", actorPrincipalId: "trust-human-a", assignedPrincipalId: "trust-human-a",
+      eventId: "mission-review-task-working", idempotencyKey: "mission-review-task-work",
+      correlationId: "campaign-1", createdAt: NOW,
+    });
+    task = transitionMissionTask(db, {
+      tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision,
+      to: "human_review_required", actorPrincipalId: "trust-human-a", handoffReason: "pilot_lane_review",
+      eventId: "mission-review-task-handoff", idempotencyKey: "mission-review-task-handoff",
+      correlationId: "campaign-1", createdAt: NOW,
+    });
+    const seeded = seedCandidate(db, "tenant-a");
+
+    const response = await app.request(`/transformer/adaptive-candidates/${seeded.id}/review`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Test-Actor": "human-a" },
+      body: reviewBody("approve"),
+    });
+
+    expect(response.status).toBe(202);
+    expect(getMissionTask(db, "tenant-a", task.id)).toMatchObject({
+      status: "agent_resume",
+      ownerType: "agent",
+    });
+  });
+
   it("sanitizes an unmapped database failure during review", async () => {
     const sentinel = "SQLITE_BUSY at C:\\customers\\acme\\adaptive-private.sqlite";
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);

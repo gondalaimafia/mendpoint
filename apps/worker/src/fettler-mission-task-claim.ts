@@ -138,14 +138,33 @@ function resolveClaimedTask(
 
 /** Missing/unbound tasks preserve the existing compatibility path. A bound
  * task gates execution until its dependencies and ownership state allow work. */
+export type FettlerMissionTaskClaimReadiness =
+  | Readonly<{ status: "legacy_unbound" }>
+  | Readonly<{ status: "ready" }>
+  | Readonly<{ status: "dependency_incomplete" }>
+  | Readonly<{ status: "invalid_state"; taskStatus: MissionTask["status"] }>;
+
+export function fettlerMissionTaskClaimReadiness(
+  db: AppDb,
+  input: FettlerMissionTaskClaimInput,
+): FettlerMissionTaskClaimReadiness {
+  const task = resolveClaimedTask(db, input);
+  if (!task) return Object.freeze({ status: "legacy_unbound" });
+  if (!missionTaskReady(db, input.tenantId, task.id)) {
+    return Object.freeze({ status: "dependency_incomplete" });
+  }
+  if (task.status === "unassigned" || task.status === "agent_assigned" || task.status === "agent_working") {
+    return Object.freeze({ status: "ready" });
+  }
+  return Object.freeze({ status: "invalid_state", taskStatus: task.status });
+}
+
 export function fettlerMissionTaskExecutionReady(
   db: AppDb,
   input: FettlerMissionTaskClaimInput,
 ): boolean {
-  const task = resolveClaimedTask(db, input);
-  if (!task) return true;
-  if (!missionTaskReady(db, input.tenantId, task.id)) return false;
-  return task.status === "unassigned" || task.status === "agent_assigned" || task.status === "agent_working";
+  const readiness = fettlerMissionTaskClaimReadiness(db, input);
+  return readiness.status === "legacy_unbound" || readiness.status === "ready";
 }
 
 /**

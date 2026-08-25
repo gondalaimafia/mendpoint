@@ -39,6 +39,7 @@ import {
 } from "./warden-candidate.js";
 import { isHumanWardenReviewer } from "./warden-review-auth.js";
 import { assertDelegatedPrVerificationApprovalAuthority } from "@mendpoint/worker/delegated-pr-verification-job";
+import { resolveBoundMissionForJob } from "@mendpoint/worker/mission-task-job-bridge";
 
 type AuditEvent = Omit<Parameters<typeof recordAudit>[1], "tenantId" | "principalId" | "apiKeyId" | "requestId">;
 export type WardenCandidateReviewAudit = (c: Context<ApiEnv>, event: AuditEvent) => void;
@@ -174,13 +175,23 @@ function candidateMissionTaskBinding(
 ): { missionId: string | null; taskId: string | null } {
   if (!sourceJobId) return { missionId: null, taskId: null };
   const sourceJob = getJob(db, sourceJobId, tenantId);
-  if (!sourceJob) return { missionId: null, taskId: null };
+  if (!sourceJob) throw new Error("mission_task_review_binding_invalid");
+  let payload: unknown;
   try {
-    const payload = JSON.parse(sourceJob.payload_json) as Record<string, unknown>;
-    const missionId = typeof payload.missionId === "string" ? payload.missionId : null;
-    return { missionId, taskId: missionId ? missionTaskIdForJob(sourceJob.id) : null };
+    payload = JSON.parse(sourceJob.payload_json);
   } catch {
-    return { missionId: null, taskId: null };
+    throw new Error("mission_task_review_binding_invalid");
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("mission_task_review_binding_invalid");
+  }
+  try {
+    const mission = resolveBoundMissionForJob(db, sourceJob);
+    return mission
+      ? { missionId: mission.id, taskId: missionTaskIdForJob(sourceJob.id) }
+      : { missionId: null, taskId: null };
+  } catch {
+    throw new Error("mission_task_review_binding_invalid");
   }
 }
 

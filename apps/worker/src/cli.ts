@@ -226,7 +226,7 @@ import {
 } from "./warden-campaign-execute-dispatch.js";
 import {
   assignFettlerMissionTaskOnClaim,
-  fettlerMissionTaskExecutionReady,
+  fettlerMissionTaskClaimReadiness,
   handoffFettlerMissionTaskOnReview,
 } from "./fettler-mission-task-claim.js";
 import type { FieldRename } from "./warden-campaign-recipe.js";
@@ -2756,14 +2756,18 @@ async function processJobsOnceUnfenced(
       };
       if (job.type === WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE && opts.wardenCampaignExecution) {
         const claimed = parseWardenCampaignExecuteJob(job);
-        if (!fettlerMissionTaskExecutionReady(db, {
+        const readiness = fettlerMissionTaskClaimReadiness(db, {
           tenantId: job.tenant_id,
           campaignId: claimed.campaignId,
           targetId: claimed.targetId,
           createdAt: nowIso(),
-        })) {
+        });
+        if (readiness.status === "dependency_incomplete") {
           deferForMissionDependencies();
           continue;
+        }
+        if (readiness.status === "invalid_state") {
+          throw new Error("mission_task_claim_state_invalid");
         }
       }
       // D3: when the job is bound to a real mission, put a MissionTask on the
@@ -2816,31 +2820,26 @@ if (job.type === "warden.candidate.cleanup") {
         continue;
       }
       if (job.type === WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE && opts.wardenCampaignExecution) {
-        try {
-          const claimed = parseWardenCampaignExecuteJob(job);
-          const missionTaskInput = {
-            tenantId: job.tenant_id,
-            campaignId: claimed.campaignId,
-            targetId: claimed.targetId,
-            // Stamp the transition at claim time, not the payload's enqueue time,
-            // so the MissionTask `updated_at` never predates the claim (matching
-            // ReGauge's `lease.startedAt` and the review handoff below).
-            createdAt: nowIso(),
-          };
-          const missionTaskClaim = assignFettlerMissionTaskOnClaim(db, missionTaskInput);
-          if (missionTaskClaim === undefined &&
-              !fettlerMissionTaskExecutionReady(db, missionTaskInput)) {
+        const claimed = parseWardenCampaignExecuteJob(job);
+        const missionTaskInput = {
+          tenantId: job.tenant_id,
+          campaignId: claimed.campaignId,
+          targetId: claimed.targetId,
+          // Stamp the transition at claim time, not the payload's enqueue time,
+          // so the MissionTask `updated_at` never predates the claim (matching
+          // ReGauge's `lease.startedAt` and the review handoff below).
+          createdAt: nowIso(),
+        };
+        const missionTaskClaim = assignFettlerMissionTaskOnClaim(db, missionTaskInput);
+        if (missionTaskClaim === undefined) {
+          const readiness = fettlerMissionTaskClaimReadiness(db, missionTaskInput);
+          if (readiness.status === "dependency_incomplete") {
             deferForMissionDependencies();
             continue;
           }
-        } catch (error) {
-          console.error(
-            `  fettler mission-task claim drive failed job=${job.id}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-          deferForMissionDependencies();
-          continue;
+          if (readiness.status === "invalid_state") {
+            throw new Error("mission_task_claim_state_invalid");
+          }
         }
         // Review-first: the executor drives the target to stage `review` (never
         // delivers). Known outcomes settle here under the lease fence; an

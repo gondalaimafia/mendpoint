@@ -75,7 +75,8 @@ export function regaugeMissionTaskExecutionReady(
   const task = resolveClaimedTask(db, input);
   if (!task) return true;
   if (!missionTaskReady(db, input.tenantId, task.id)) return false;
-  return task.status === "unassigned" || task.status === "agent_assigned" || task.status === "agent_working";
+  return task.status === "unassigned" || task.status === "agent_assigned" ||
+    task.status === "agent_working" || task.status === "agent_resume";
 }
 
 /**
@@ -103,7 +104,7 @@ export function assignRegaugeMissionTaskOnClaim(
       if (owns) db.raw.exec("COMMIT");
       return task;
     }
-    if (task.status !== "unassigned" && task.status !== "agent_assigned") {
+    if (task.status !== "unassigned" && task.status !== "agent_assigned" && task.status !== "agent_resume") {
       if (owns) db.raw.exec("COMMIT");
       return undefined;
     }
@@ -138,12 +139,54 @@ export function assignRegaugeMissionTaskOnClaim(
         createdAt: input.createdAt,
       });
     }
+    if (current.status === "agent_resume") {
+      current = transitionMissionTask(db, {
+        tenantId: input.tenantId,
+        taskId: current.id,
+        expectedRevision: current.revision,
+        to: "agent_working",
+        actorPrincipalId: agent.id,
+        assignedPrincipalId: agent.id,
+        eventId: `${current.id}-claim-resumed-${current.revision}`,
+        idempotencyKey: `mission-task-claim-resumed-${current.id}-${current.revision}`,
+        correlationId: input.campaignId,
+        createdAt: input.createdAt,
+      });
+    }
     if (owns) db.raw.exec("COMMIT");
     return current;
   } catch (error) {
     if (owns) db.raw.exec("ROLLBACK");
     throw error;
   }
+}
+
+/** Return a reviewed repository task to the agent-owned queue. The following
+ * unit claim performs the distinct `agent_resume -> agent_working` transition,
+ * keeping approval and execution as separately attributable state changes. */
+export function resumeRegaugeMissionTaskAfterReview(
+  db: AppDb,
+  input: RegaugeMissionTaskClaimInput & Readonly<{ actorPrincipalId: string }>,
+): MissionTask | undefined {
+  const task = resolveClaimedTask(db, input);
+  if (!task) return undefined;
+  if (task.status === "agent_resume" || task.status === "agent_working" || task.status === "complete") {
+    return task;
+  }
+  if (task.status !== "human_review_required") {
+    throw new Error("mission_task_review_transition_invalid");
+  }
+  return transitionMissionTask(db, {
+    tenantId: input.tenantId,
+    taskId: task.id,
+    expectedRevision: task.revision,
+    to: "agent_resume",
+    actorPrincipalId: input.actorPrincipalId,
+    eventId: `${task.id}-review-resume-${task.revision}`,
+    idempotencyKey: `mission-task-review-resume-${task.id}-${task.revision}`,
+    correlationId: input.campaignId,
+    createdAt: input.createdAt,
+  });
 }
 
 /**

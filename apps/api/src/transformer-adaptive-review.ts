@@ -29,6 +29,7 @@ import {
   admitRejectedOutcomeLearningRecord,
   rejectedOutcomeCaptureEnabled,
 } from "@mendpoint/worker/transformer-learning-rejected";
+import { resumeRegaugeMissionTaskAfterReview } from "@mendpoint/worker/regauge-mission-task-claim";
 import type { ApiEnv } from "./auth.js";
 import {
   internalErrorResponse,
@@ -102,6 +103,7 @@ const ADAPTIVE_REVIEW_ERRORS = [
     "transformer_adaptive_candidate_escalation_not_required",
     "transformer_adaptive_candidate_escalation_conflict",
     "warden_candidate_delivery_conflict",
+    "mission_task_review_transition_invalid",
   ].map((internalCode) => ({ internalCode, status: 409 as const })),
   { internalCode: "transformer_adaptive_candidate_expired", status: 410 },
 ] satisfies readonly PublicErrorRule[];
@@ -690,6 +692,13 @@ export function registerTransformerAdaptiveReviewRoutes(
         });
       }
       if (reviewed.status === "approved") {
+        resumeRegaugeMissionTaskAfterReview(db, {
+          tenantId,
+          campaignId: reviewed.campaignId,
+          repositoryId: reviewed.repositoryId,
+          actorPrincipalId: trustPrincipalId!,
+          createdAt: nowIso(),
+        });
         delivery = enqueueAdaptiveDelivery(db, {
           tenantId,
           candidateId: reviewed.id,

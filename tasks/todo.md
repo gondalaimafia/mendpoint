@@ -3340,3 +3340,16 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Approval binding: only the deterministic MissionTask for the reviewed source job may complete. Both the live `agent_working` path and an `agent_resume` handoff path converge, and an identical approval replay repairs a committed result whose task transition was previously missed.
 - Concurrency: an IMMEDIATE transaction checks readiness and starts the task under one write fence. Dependency writers reject new edges after `unassigned`; a two-connection regression proves a competing writer cannot enter between admission and start.
 - Verification: 155 affected regressions pass across the database, both claim drivers, generic bridge, ReGauge live lane, and candidate review. Database, worker, and API typechecks pass; dependency audit and diff integrity are rerun on the final head before reciprocal review.
+
+### 2026-08-25 PR 465 exact-head review repairs
+
+- [x] Make the MissionTask claim and ReGauge routing preparation recoverable under the exact cross-database dependency race.
+- [x] Carry one repository through multiple ReGauge units and reviewed `agent_resume` without stranding the launch task.
+- [x] Apply the campaign execution cap only after every fail-closed gate and scan runnable campaigns beyond the first 100 rows.
+- [x] Fail closed on a broken non-null candidate source binding while preserving proven legacy-unbound runs and campaign-derived Mission resolution.
+- [x] Defer Fettler only for dependency readiness; route every other claim failure through normal fenced failure handling.
+- [x] Run focused tests, database/worker/API typechecks, strict diff review, commit, and push. Fresh reciprocal review remains the merge gate.
+
+#### Review
+
+GREEN: 198 focused Mission, Transformer store/lane, Fettler/ReGauge claim, and API review regressions pass. Database, Transformer, worker, and API typechecks pass, including the exact two-connection dependency interleaving, explicit routing-abandonment recovery, real cursor paging plus a 100-row blocked scan, campaign-derived review binding, missing-source fail closed behavior, reviewed repository resume, and typed Fettler readiness/failure classification. Strict diff integrity passes. The rebased repaired head is ready to push for fresh exact-head reciprocal review; it is not self-approved or merged.
