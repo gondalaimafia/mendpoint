@@ -127,6 +127,21 @@ describe("DeepSeek verifier backend", () => {
     await expect(pending).rejects.toThrow("verifier_backend_aborted");
   });
 
+  it("does not invoke the transport when the caller is already cancelled", async () => {
+    const transport = vi.fn(async () => okResponse);
+    const backend = createDeepSeekVerifierBackend({
+      apiKey: "key", transport: { request: transport },
+      scoringMode: "nonthinking_logprobs", timeoutMs: 1000, maximumRetries: 0,
+      pricing: { version: "v", currency: "USD", effectiveAt: "2026-08-17T00:00:00.000Z", inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 },
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(backend.score({ ...request(), signal: controller.signal }))
+      .rejects.toThrow("verifier_backend_aborted");
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   it("rejects wrong models, missing score logprobs, and malformed responses", async () => {
     for (const response of [
       { ...okResponse, body: { ...okResponse.body, model: "deepseek-v4-pro" } },

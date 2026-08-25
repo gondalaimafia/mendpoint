@@ -128,6 +128,75 @@ describe("verifier advisory job runner", () => {
       .toMatchObject({ status: "human_review_required", handoffReason: "advisory_verification_review" });
   });
 
+  it("retries an Undici connection timeout that proves the provider was never reached", async () => {
+    const db = setup();
+    enqueue(db);
+    const first = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
+    let providerAvailable = false;
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => {
+      if (!providerAvailable) {
+        throw Object.assign(new TypeError("fetch failed"), {
+          cause: Object.assign(new Error("connection timed out"), { code: "UND_ERR_CONNECT_TIMEOUT" }),
+        });
+      }
+      return successfulProviderResponse();
+    });
+
+    await expect(runVerifierAdvisoryJob({ db, job: first, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:02.000Z" }))
+      .rejects.toThrow("verifier_advisory_provider_retryable:api_failure");
+    expect(listArtifactManifests(db, "tenant_regauge_canary", "agent_verifier_provider_no_response")).toHaveLength(1);
+    failJob(db, first.id, "connect_timeout", "2026-08-24T12:01:03.000Z", { workerId: "worker-a", leaseGeneration: first.lease_generation, errorCode: "transient_dependency", retryable: true, baseDelayMs: 1_000, maxDelayMs: 1_000 });
+
+    providerAvailable = true;
+    const second = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-b", leaseMs: 60_000, now: "2026-08-24T12:01:04.000Z" })!;
+    await expect(runVerifierAdvisoryJob({ db, job: second, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:05.000Z" }))
+      .resolves.toMatchObject({ status: "verified" });
+    expect(transport.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it.each([
+    { label: "connection reset", error: Object.assign(new Error("socket reset after write"), { code: "ECONNRESET" }) },
+    { label: "generic timeout", error: Object.assign(new Error("socket timed out"), { code: "ETIMEDOUT" }) },
+    { label: "broken pipe", error: Object.assign(new Error("socket write failed"), { code: "EPIPE" }) },
+    { label: "Undici socket error", error: Object.assign(new Error("socket failed"), { code: "UND_ERR_SOCKET" }) },
+    { label: "Undici headers timeout", error: Object.assign(new Error("response headers timed out"), { code: "UND_ERR_HEADERS_TIMEOUT" }) },
+    { label: "Undici body timeout", error: Object.assign(new Error("response body timed out"), { code: "UND_ERR_BODY_TIMEOUT" }) },
+    { label: "Undici abort", error: Object.assign(new Error("request aborted"), { code: "UND_ERR_ABORTED" }) },
+    { label: "AbortError", error: new DOMException("aborted", "AbortError") },
+    { label: "backend deadline", error: new Error("verifier_backend_timeout") },
+  ])("fails closed without retrying an ambiguous provider outcome: $label", async ({ error: providerError }) => {
+    const db = setup();
+    enqueue(db);
+    const job = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => { throw providerError; });
+
+    await expect(runVerifierAdvisoryJob({ db, job, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:02.000Z" }))
+      .rejects.toThrow("verifier_advisory_provider_outcome_unknown");
+    expect(listArtifactManifests(db, "tenant_regauge_canary", "agent_verifier_provider_no_response")).toHaveLength(0);
+    const calls = transport.mock.calls.length;
+
+    await expect(runVerifierAdvisoryJob({ db, job, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:03.000Z" }))
+      .rejects.toThrow("verifier_advisory_provider_outcome_unknown");
+    expect(transport).toHaveBeenCalledTimes(calls);
+  });
+
+  it("seals a local deadline as outcome unknown instead of repeating provider work", async () => {
+    const db = setup();
+    enqueue(db);
+    const job = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => new Promise<never>(() => undefined));
+    const shortDeadline = { ...env(), MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS: "1" };
+
+    await expect(runVerifierAdvisoryJob({ db, job, env: shortDeadline, transport: { request: transport }, now: () => "2026-08-24T12:01:02.000Z" }))
+      .rejects.toThrow("verifier_advisory_provider_outcome_unknown");
+    expect(listArtifactManifests(db, "tenant_regauge_canary", "agent_verifier_provider_no_response")).toHaveLength(0);
+    expect(transport).toHaveBeenCalledTimes(1);
+
+    await expect(runVerifierAdvisoryJob({ db, job, env: env(), transport: { request: async () => successfulProviderResponse() }, now: () => "2026-08-24T12:01:03.000Z" }))
+      .rejects.toThrow("verifier_advisory_provider_outcome_unknown");
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
   it("atomically reconciles job completion and the review-first MissionTask handoff", async () => {
     const db = setup();
     const queued = enqueue(db);
@@ -178,13 +247,13 @@ describe("verifier advisory job runner", () => {
       db, job: first, env: env(), transport: { request: transport },
       now: () => "2026-08-24T12:01:02.000Z",
       operationHooks: { afterProviderReturn: () => { throw new Error("simulated_crash"); } },
-    })).rejects.toThrow("verifier_advisory_provider_retryable:api_failure");
+    })).rejects.toThrow("verifier_advisory_provider_outcome_unknown");
     const providerCallsAfterReturn = transport.mock.calls.length;
     expect(providerCallsAfterReturn).toBeGreaterThan(0);
     failJob(db, first.id, "simulated_crash", "2026-08-24T12:01:03.000Z", { workerId: "worker-a", leaseGeneration: first.lease_generation, errorCode: "transient_dependency", retryable: true, baseDelayMs: 1_000, maxDelayMs: 1_000 });
     const second = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-b", leaseMs: 60_000, now: "2026-08-24T12:01:04.000Z" })!;
     await expect(runVerifierAdvisoryJob({ db, job: second, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:05.000Z" }))
-      .rejects.toThrow("verifier_advisory_provider_retryable:api_failure");
+      .rejects.toThrow("verifier_advisory_provider_outcome_unknown");
     expect(transport).toHaveBeenCalledTimes(providerCallsAfterReturn);
   });
 

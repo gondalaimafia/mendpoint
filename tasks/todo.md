@@ -3146,3 +3146,22 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Evidence: focused regression passed, pipeline workspace passed 200 of 200 tests, and the complete repository test command exited 0 after the repair.
 - Current-main integration: main added an explicit `inconclusive` worker outcome. The coordinator-only advisory filter now asserts that counter remains zero; the final 15-file matrix passes 222 of 222 tests with the new main semantics retained.
 - Claude exact-head review: removed the unused `getMission` import left after advisory dispatch moved to the coordinator. This changes no runtime behavior and removes a false dependency signal.
+
+### 2026-08-25 DeepSeek transport outcome closure
+
+- [x] RED: prove an Undici connection establishment timeout can advance to a new durable operation after an exact no-dispatch receipt.
+- [x] RED: prove resets, generic timeouts, broken pipes, aborts, Undici socket, header, and body failures cannot be recorded as no-response evidence or repeat provider work.
+- [x] RED: reproduce the production wrapper deadline leaving an intent without a terminal provider observation.
+- [x] Propagate an unsettled durable request intent as `verifier_advisory_provider_outcome_unknown` on the first job attempt instead of consuming the retry budget as a generic API failure.
+- [x] Expand automatic retries only to fixed pre-connect errors and keep all post-dispatch ambiguity fail closed.
+- [x] Refuse a pre-aborted verifier request before invoking the transport.
+- [x] Align the dedicated production timeout with the provider queue boundary while keeping it below the renewing job lease.
+- [x] Run the complete changed-area ReGauge and DeepSeek matrix plus affected typechecks and diff integrity.
+- [ ] Rebase onto current main, obtain exact-head reciprocal and attributable Claude review, then require fresh protected CI before merge.
+
+#### Review
+
+- Retry safety: only `ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN`, `EHOSTUNREACH`, `ENETUNREACH`, `EADDRNOTAVAIL`, and `UND_ERR_CONNECT_TIMEOUT` can create the signed no-response path. Every reset, generic timeout, pipe, abort, socket, header, or body failure remains outcome unknown because provider work may have occurred.
+- Lifecycle: the worker tracks request intents and durable response or no-dispatch settlements around the existing provider operation ledger. A retryable verifier result with any unsettled operation is promoted to the explicit nonretryable reconciliation error immediately; replay consults the retained intent and never reissues it.
+- Deadline: the dedicated production profile waits 660 seconds, covering DeepSeek's documented ten minute queue behavior while remaining below the default renewing 900 second job lease. The deadline still seals an ambiguous operation rather than pretending the provider did no work.
+- Verification: 67 focused transport, profile, workflow, and verifier tests pass. The complete 17-file changed-area matrix passes 260 of 260 tests, worker and verifier typechecks pass, and diff integrity is clean.

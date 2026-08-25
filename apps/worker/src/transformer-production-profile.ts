@@ -276,7 +276,10 @@ function validateVerifierProfile(
     MENDPOINT_AGENT_VERIFIER_PIVOTS: "1",
     MENDPOINT_AGENT_VERIFIER_MAXIMUM_CANDIDATES: "1",
     MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD: "0.05",
-    MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS: "8000",
+    // DeepSeek may keep a nonstreaming request connected while it queues. Wait
+    // through the provider's ten minute queue boundary before sealing an
+    // ambiguous operation for reconciliation.
+    MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS: "660000",
     MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES: "0",
   } as const;
   if (!env.DEEPSEEK_API_KEY?.trim() || Object.entries(exactProfile)

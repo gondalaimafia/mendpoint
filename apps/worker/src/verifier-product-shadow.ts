@@ -114,7 +114,10 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
   })) return null;
   const now = input.now ?? (() => new Date().toISOString());
   const providerTransport = input.transport ?? createFetchVerifierTransport();
+  const startedProviderOperationIds: string[] = [];
+  const settledProviderOperationIds: string[] = [];
   const completedProviderOperationIds: string[] = [];
+  const unknownProviderOperationIds: string[] = [];
   const transport = input.completion.product === "regauge"
     ? durableRegaugeTransport({
       db: input.db,
@@ -127,7 +130,10 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
       now,
       beforeProviderRequest: input.beforeProviderRequest,
       hooks: input.operationHooks,
+      startedOperationIds: startedProviderOperationIds,
+      settledOperationIds: settledProviderOperationIds,
       completedOperationIds: completedProviderOperationIds,
+      unknownOperationIds: unknownProviderOperationIds,
     })
     : input.transport;
   const runtime = createVerifierAdvisoryRuntime({
@@ -169,6 +175,17 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
   });
   if (result.failureCode && RETRYABLE_VERIFIER_FAILURE_CODES.has(
     result.failureCode as "api_failure" | "logprob_failure",
+  ) && (unknownProviderOperationIds.length > 0 ||
+    startedProviderOperationIds.some((operationId) =>
+      !settledProviderOperationIds.includes(operationId)))) {
+    // A request intent without either a durable response receipt or proof that
+    // the provider was never reached is not retryable. The provider may have
+    // completed paid work before the connection failed. Surface reconciliation
+    // immediately instead of consuming queue retries or repeating model work.
+    throw new Error("verifier_advisory_provider_outcome_unknown");
+  }
+  if (result.failureCode && RETRYABLE_VERIFIER_FAILURE_CODES.has(
+    result.failureCode as "api_failure" | "logprob_failure",
   )) {
     const operationId = completedProviderOperationIds.at(-1);
     if (operationId) {
@@ -195,7 +212,10 @@ function durableRegaugeTransport(input: Readonly<{
   now: () => string;
   beforeProviderRequest?: (requestedAt: string) => void;
   hooks?: Readonly<{ afterProviderReturn?: () => void; afterProviderReceipt?: () => void }>;
+  startedOperationIds: string[];
+  settledOperationIds: string[];
   completedOperationIds: string[];
+  unknownOperationIds: string[];
 }>): VerifierHttpTransport {
   return Object.freeze({
     request: async (request: VerifierHttpRequest) => {
@@ -203,22 +223,32 @@ function durableRegaugeTransport(input: Readonly<{
       if (!providerRequestId) throw new Error("verifier_advisory_provider_request_invalid");
       const requestedAt = input.now();
       input.beforeProviderRequest?.(requestedAt);
-      const operation = beginVerifierAdvisoryProviderOperation(input.db, {
-        tenantId: input.tenantId,
-        verificationAttemptId: input.verificationAttemptId,
-        evidencePackDigest: input.evidencePackDigest,
-        providerRequestId,
-        requestBodySha256: digest(canonical(request.body)),
-        expectedConsentId: input.expectedConsentId,
-        consentPurpose: REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
-        authorizationDeadline: REGAUGE_DEEPSEEK_APPROVED_SCOPE.authorizationDeadline,
-        requestedAt,
-        producerPrincipalId: input.producerPrincipalId,
-      });
+      let operation: ReturnType<typeof beginVerifierAdvisoryProviderOperation>;
+      try {
+        operation = beginVerifierAdvisoryProviderOperation(input.db, {
+          tenantId: input.tenantId,
+          verificationAttemptId: input.verificationAttemptId,
+          evidencePackDigest: input.evidencePackDigest,
+          providerRequestId,
+          requestBodySha256: digest(canonical(request.body)),
+          expectedConsentId: input.expectedConsentId,
+          consentPurpose: REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
+          authorizationDeadline: REGAUGE_DEEPSEEK_APPROVED_SCOPE.authorizationDeadline,
+          requestedAt,
+          producerPrincipalId: input.producerPrincipalId,
+        });
+      } catch (error) {
+        if (error instanceof Error && error.message === "verifier_advisory_provider_outcome_unknown") {
+          input.unknownOperationIds.push(providerRequestId);
+        }
+        throw error;
+      }
       if (operation.status === "recover") {
+        input.settledOperationIds.push(operation.operationId);
         input.completedOperationIds.push(operation.operationId);
         return operation.response!;
       }
+      input.startedOperationIds.push(operation.operationId);
       try {
         const response = await input.providerTransport.request(request);
         input.hooks?.afterProviderReturn?.();
@@ -229,6 +259,7 @@ function durableRegaugeTransport(input: Readonly<{
           providerProcessedAt: input.now(),
           producerPrincipalId: input.producerPrincipalId,
         });
+        input.settledOperationIds.push(operation.operationId);
         input.hooks?.afterProviderReceipt?.();
         input.completedOperationIds.push(operation.operationId);
         return response;
@@ -242,6 +273,7 @@ function durableRegaugeTransport(input: Readonly<{
             errorCode: noResponseCode,
             producerPrincipalId: input.producerPrincipalId,
           });
+          input.settledOperationIds.push(operation.operationId);
         }
         throw error;
       }
@@ -254,8 +286,20 @@ function provableNoResponseCode(error: unknown): string | null {
   if (!error || typeof error !== "object") return null;
   const direct = (error as { code?: unknown }).code;
   const cause = (error as { cause?: { code?: unknown } }).cause?.code;
-  const code = typeof direct === "string" ? direct : typeof cause === "string" ? cause : null;
-  return code && ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(code)
+  const code = (typeof direct === "string" ? direct : typeof cause === "string" ? cause : "")
+    .toUpperCase();
+  // Only failures that happen before a connection is established prove the
+  // request was not dispatched. Resets, generic timeouts, broken pipes, aborts,
+  // and Undici header/body/socket errors can all occur after provider work.
+  return [
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+    "EADDRNOTAVAIL",
+    "UND_ERR_CONNECT_TIMEOUT",
+  ].includes(code)
     ? `verifier_transport_${code.toLowerCase()}`
     : null;
 }

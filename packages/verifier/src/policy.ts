@@ -70,7 +70,7 @@ export function resolveVerifierRuntimeConfig(env: Readonly<Record<string, string
     scoringMode,
     maximumCandidates: integer(env, "MENDPOINT_AGENT_VERIFIER_MAXIMUM_CANDIDATES", 5, 1, 20),
     maximumCostUsd: decimal(env, "MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD", 0.25, 0.000001, 100),
-    timeoutMs: integer(env, "MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS", 30_000, 1, 120_000),
+    timeoutMs: integer(env, "MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS", 30_000, 1, 660_000),
     maximumRetries: integer(env, "MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES", 1, 0, 3),
   });
 }
