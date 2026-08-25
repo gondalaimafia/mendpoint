@@ -310,6 +310,10 @@ import { createTenantCreationRoutes } from "./tenant-creation-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { regaugeProductionBootstrapInputFromEnvironment } from "./regauge-production-bootstrap-runtime.js";
 import { drainDedicatedRegaugeAdvisoryOutbox } from "./regauge-verifier-shadow.js";
+import {
+  createRegaugeMissionArtifactRuntime,
+  drainRegaugeMissionArtifactOutbox,
+} from "./regauge-mission-artifact-outbox.js";
 import { readRegaugeVerifierObservations } from "./regauge-verifier-observations.js";
 import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
 import { loadTransformerRecipeSnapshot } from "@mendpoint/worker/transformer-snapshot-loader";
@@ -884,6 +888,22 @@ const drainRegaugeAdvisoryOutbox = async (): Promise<void> => {
     },
   });
 };
+const regaugeMissionArtifactRuntime = transformerDraftAuthorization
+  ? createRegaugeMissionArtifactRuntime(process.env)
+  : undefined;
+const drainRegaugeMissionArtifacts = async (): Promise<void> => {
+  if (!transformerDraftAuthorization || !regaugeMissionArtifactRuntime) return;
+  await drainRegaugeMissionArtifactOutbox({
+    db,
+    store: transformerExecutions.store,
+    tenantId: transformerDraftAuthorization.tenantId,
+    runtime: regaugeMissionArtifactRuntime,
+  });
+};
+const drainRegaugeCompletedOutboxes = async (): Promise<void> => {
+  await drainRegaugeMissionArtifacts();
+  await drainRegaugeAdvisoryOutbox();
+};
 const transformerAttemptCoordinatorRoutes = createTransformerAttemptCoordinatorRoutes({
   enabled: transformerAttemptCoordinatorEnabled,
   store: transformerExecutions.store,
@@ -893,7 +913,8 @@ const transformerAttemptCoordinatorRoutes = createTransformerAttemptCoordinatorR
     tenantId: REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId,
     campaignId: REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId,
   },
-  observeCompletedAttempt: async () => drainRegaugeAdvisoryOutbox(),
+  observeCompletedAttempt: async () => drainRegaugeCompletedOutboxes(),
+  drainPendingMissionArtifacts: drainRegaugeMissionArtifacts,
   drainPendingCompletedAttempts: drainRegaugeAdvisoryOutbox,
   readVerifierObservations: ({ tenantId, campaignId }) =>
     readRegaugeVerifierObservations(db, { tenantId, campaignId }),

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +15,7 @@ import {
   createTransformerAttemptEffectIdentity,
   createTransformerCoordinatorCompletionRequestDigest,
   createTransformerCoordinatorCompletionSlot,
+  createTransformerMissionEvidenceArtifact,
   type TransformerCandidateSeal,
 } from "./attempt-checkpoint.js";
 import {
@@ -1067,6 +1069,7 @@ describe("Transformer pilot execution coordinator", () => {
       terminal.episodeId,
       candidateSeal,
       completionIntent,
+      registration,
     );
     const completionIdentity = createTransformerAttemptEffectIdentity(
       terminal.episodeId,
@@ -1440,6 +1443,7 @@ describe("Transformer pilot execution coordinator", () => {
       terminal.episodeId,
       candidateSeal,
       completionIntent,
+      registration,
     );
     const completionIdentity = createTransformerAttemptEffectIdentity(
       terminal.episodeId,
@@ -3059,6 +3063,133 @@ describe("Transformer pilot execution coordinator", () => {
       gateConfig: gateConfig(),
     })).toBeNull();
     expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]!.leaseGeneration).toBe(1);
+    store.close();
+  });
+
+  it("adopts an authenticated pre-outbox terminal attempt without replaying campaign work", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const leaseToken = "lease-token-legacy-adoption-00001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-legacy-adoption"),
+      leaseToken,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const current = checkpointHead(lease, 1, "d");
+    store.compareAndSwapAttemptCheckpointHead({
+      ...mutation(2, "legacy-adoption-current"),
+      unitId: lease.unitId,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      expectedStateDigest: null,
+      next: current,
+      gateConfig: gateConfig(),
+    });
+    const terminal = checkpointHead(lease, 2, "a");
+    const candidateBytes = Buffer.from('{"kind":"candidate"}', "utf8");
+    const executionBytes = Buffer.from('{"kind":"execution"}\n', "utf8");
+    const candidateDigest = `sha256:${createHash("sha256").update(candidateBytes).digest("hex")}`;
+    const executionDigest = `sha256:${createHash("sha256").update(executionBytes).digest("hex")}`;
+    const candidateArtifactId = `tcman_${candidateDigest.slice(7)}`;
+    const executionArtifactId = `tre_execution_${createHash("sha256").update("execution-id").digest("hex")}`;
+    const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    const authorization = gateConfig();
+    const candidateSeal = {
+      schemaVersion: 1,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      workspaceManifestDigest: digest("d"),
+      workspacePayloadDigest: digest("e"),
+      sealDigest: digest("f"),
+    } satisfies TransformerCandidateSeal;
+    const completionIntent = {
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: terminal.episodeId,
+      candidateSealDigest: candidateSeal.sealDigest,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseTokenDigest: lease.leaseTokenDigest,
+      sourceRevision: candidate.snapshot.revision,
+      sourceDigest: candidate.snapshot.digest,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      authorizationDigest: createTransformerAttemptAuthorizationDigest(authorization),
+      verificationPassed: true,
+      actualCostUsd: 0,
+      accounting: adaptiveAccounting(),
+      observedAt: time(3),
+      evidenceRefs: [candidateArtifactId, executionArtifactId],
+    } satisfies TransformerAttemptCompletionIntent;
+    const completionDigest = createTransformerAttemptCompletionDigest(completionIntent);
+    const completionIdentity = createTransformerAttemptEffectIdentity(
+      terminal.episodeId,
+      "coordinator_complete",
+      createTransformerCoordinatorCompletionSlot(completionDigest),
+      createTransformerCoordinatorCompletionRequestDigest(
+        terminal.episodeId,
+        candidateSeal,
+        completionIntent,
+      ),
+    );
+    store.completeAttemptWithCheckpointHead({
+      ...mutation(3, "complete-legacy-adoption"),
+      evidenceRefs: completionIntent.evidenceRefs,
+      idempotencyKey: completionIdentity.idempotencyKey,
+      leaseToken,
+      expectedStateDigest: current.stateDigest,
+      nextCheckpointHead: terminal,
+      candidateSeal,
+      completionIntent,
+      gateConfig: authorization,
+    });
+    const adoption = store.listMissionArtifactAdoptionCandidates("tenant-a", 10);
+    expect(adoption).toHaveLength(1);
+    const key = new Uint8Array(32).fill(7);
+    const candidateArtifact = createTransformerMissionEvidenceArtifact({
+      tenantId: "tenant-a",
+      episodeId: terminal.episodeId,
+      artifactId: candidateArtifactId,
+    }, candidateBytes, key);
+    const executionArtifact = createTransformerMissionEvidenceArtifact({
+      tenantId: "tenant-a",
+      episodeId: terminal.episodeId,
+      artifactId: executionArtifactId,
+    }, executionBytes, key);
+    const registration = {
+      schemaVersion: 2 as const,
+      episodeId: terminal.episodeId,
+      attemptId: transformerAttemptId(lease),
+      sourceSnapshotId: lease.snapshot.snapshotId,
+      candidateArtifactId,
+      candidateManifestDigest: candidateDigest,
+      candidateManifestArtifact: candidateArtifact.artifact,
+      executionArtifactId,
+      executionEvidenceDigest: executionDigest,
+      executionEvidenceArtifact: executionArtifact.artifact,
+      executionSchemaVersion: 3,
+    };
+    const revisionBefore = store.getCampaign("tenant-a", "campaign-a")!.revision;
+    const eventsBefore = store.listEvents("tenant-a", "campaign-a").length;
+    const adopted = store.adoptMissionArtifactRegistration({
+      candidate: adoption[0]!,
+      registration,
+    });
+    expect(store.adoptMissionArtifactRegistration({
+      candidate: adoption[0]!,
+      registration,
+    })).toEqual(adopted);
+    expect(store.getCampaign("tenant-a", "campaign-a")!.revision).toBe(revisionBefore);
+    expect(store.listEvents("tenant-a", "campaign-a")).toHaveLength(eventsBefore);
+    expect(store.listPendingMissionArtifactRegistrations("tenant-a", 10)).toEqual([adopted]);
+    expect(() => store.adoptMissionArtifactRegistration({
+      candidate: { ...adoption[0]!, terminalEventSequence: adoption[0]!.terminalEventSequence + 1 },
+      registration,
+    })).toThrow("transformer_mission_artifact_adoption_fence_invalid");
     store.close();
   });
 });

@@ -3354,3 +3354,20 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Production resolves `service:regauge-production-bootstrap` in the completed attempt's tenant. Candidate and execution manifests, Mission artifact events, and lineage events use that service principal rather than `mission.ownerPrincipalId`.
 - Both manifest inserts, both Mission registrations, and lineage share one App DB savepoint. A forced second insert failure leaves zero manifests and zero Mission artifacts.
 - Verification: 55 pilot execution, 39 attempt runner, 13 checkpoint, 25 live lane, 10 pipeline registration, and 6 direct artifact tests pass. Transformer, worker, and eval typechecks pass, and `git diff --check` is clean.
+
+### 2026-08-25 PR #460 exact-head P1 repair
+
+- [x] Bind the Mission artifact registration into the authenticated checkpoint completion request and reuse it exactly after every crash boundary.
+- [x] Publish candidate and execution evidence to the shared immutable artifact backend before terminal completion, and store only durable storage keys plus digests in the coordinator outbox.
+- [x] Add a coordinator-owned outbox reconciler to the exact ReGauge production entrypoint with tenant-scoped service-principal attribution and shared-backend rehydration.
+- [x] Add fenced adoption for authenticated terminal attempts created before the outbox schema without rerunning source, recipe, provider, or verification work.
+- [x] Add crash-point, worker-destruction, exact-entrypoint, tamper, cross-tenant, and legacy-adoption regressions.
+- [x] Run focused suites, affected typechecks, strict diff integrity, commit, and push the new exact head without approving or merging.
+
+#### Review
+
+- Checkpoint completion requests now carry the exact authenticated artifact registration. Their request digest and effect identity change with that registration, and an in-flight pre-upgrade request is replaced under the same live lease only after both encrypted requests prove the same completion and the replacement adds a schema-2 registration.
+- Candidate and execution evidence are encrypted with tenant, episode, and artifact AAD and published create-only to the configured shared S3 backend before the coordinator can commit terminal state. The outbox stores those immutable locators and authenticated digests rather than worker-local paths.
+- The exact Fly coordinator entrypoint imports the API server. Worker readiness now waits for the coordinator-owned Mission artifact drain; missing, tampered, or unavailable shared evidence returns unavailable and prevents the worker loop from claiming more work. DeepSeek advisory dispatch remains asynchronous and subordinate to artifact recovery.
+- Historical terminal attempts are discovered from their immutable terminal events and adopted only when the current campaign, exact event sequence, attempt fence, source snapshot, candidate manifest, execution evidence, tenant scope, and shared ciphertext all match. Adoption changes no campaign revision or event and replays idempotently.
+- Focused verification passes: 72 Transformer checkpoint and pilot tests, 48 worker lane and exact-entrypoint tests, and 13 API coordinator and shared-artifact tests. Transformer, worker, and API typechecks pass, and strict diff integrity is clean.

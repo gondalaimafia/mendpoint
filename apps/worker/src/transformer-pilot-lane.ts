@@ -371,10 +371,10 @@ type RegaugeArtifactRegistrationSource = Readonly<{
   sourceSnapshotId: string;
   candidateArtifactId: string;
   candidateManifestDigest: string;
-  candidateManifestPath: string;
+  candidateContent: string;
   executionArtifactId: string;
   executionEvidenceDigest: string;
-  executionEvidencePath: string;
+  executionContent: string;
   executionSchemaVersion: number;
   observedAt: string;
 }>;
@@ -407,7 +407,7 @@ function registerRegaugeArtifacts(
     throw new Error("regauge_service_principal_tenant_invalid");
   }
 
-  const candidateContent = readFileSync(source.candidateManifestPath, "utf8");
+  const candidateContent = source.candidateContent;
   const candidateSha256 = sha256(candidateContent);
   const candidateArtifactId = source.candidateArtifactId;
   if (
@@ -416,7 +416,7 @@ function registerRegaugeArtifacts(
   ) {
     throw new Error("regauge_candidate_manifest_evidence_mismatch");
   }
-  const executionContent = readFileSync(source.executionEvidencePath, "utf8");
+  const executionContent = source.executionContent;
   const executionSha256 = sha256(executionContent);
   const executionArtifactId = source.executionArtifactId;
   if (
@@ -503,21 +503,20 @@ export function registerRegaugeVerifiedCandidateArtifacts(
     sourceSnapshotId: lease.snapshot.snapshotId,
     candidateArtifactId: `tcman_${artifact.manifestDigest.slice("sha256:".length)}`,
     candidateManifestDigest: artifact.manifestDigest,
-    candidateManifestPath: artifact.manifestPath,
+    candidateContent: readFileSync(artifact.manifestPath, "utf8"),
     executionArtifactId: execution.evidence.record.evidenceId,
     executionEvidenceDigest: execution.evidence.digest,
-    executionEvidencePath: execution.evidence.path,
+    executionContent: readFileSync(execution.evidence.path, "utf8"),
     executionSchemaVersion: execution.evidence.record.schemaVersion,
     observedAt: input.observedAt,
   }, producerPrincipalId);
 }
 
-function registerRegaugeMissionArtifactOutbox(
+export function registerRegaugeMissionArtifactOutbox(
   db: AppDb,
   registration: TransformerMissionArtifactRegistration,
   producerPrincipalId: string | undefined,
-  candidateRoot: string,
-  evidenceRoot: string,
+  content: Readonly<{ candidateContent: string; executionContent: string }>,
 ) {
   return registerRegaugeArtifacts(db, {
     tenantId: registration.tenantId,
@@ -526,13 +525,33 @@ function registerRegaugeMissionArtifactOutbox(
     sourceSnapshotId: registration.sourceSnapshotId,
     candidateArtifactId: registration.candidateArtifactId,
     candidateManifestDigest: registration.candidateManifestDigest,
-    candidateManifestPath: resolveRegistrationPath(candidateRoot, registration.candidateManifestPath),
+    candidateContent: content.candidateContent,
     executionArtifactId: registration.executionArtifactId,
     executionEvidenceDigest: registration.executionEvidenceDigest,
-    executionEvidencePath: resolveRegistrationPath(evidenceRoot, registration.executionEvidencePath),
+    executionContent: content.executionContent,
     executionSchemaVersion: registration.executionSchemaVersion,
     observedAt: registration.observedAt,
   }, producerPrincipalId);
+}
+
+function readLocalRegaugeMissionArtifactOutbox(
+  registration: TransformerMissionArtifactRegistration,
+  candidateRoot: string,
+  evidenceRoot: string,
+): Readonly<{ candidateContent: string; executionContent: string }> {
+  if (registration.schemaVersion !== 1) {
+    throw new Error("regauge_artifact_registration_shared_reader_required");
+  }
+  return Object.freeze({
+    candidateContent: readFileSync(
+      resolveRegistrationPath(candidateRoot, registration.candidateManifestPath),
+      "utf8",
+    ),
+    executionContent: readFileSync(
+      resolveRegistrationPath(evidenceRoot, registration.executionEvidencePath),
+      "utf8",
+    ),
+  });
 }
 
 function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): TransformerAttemptCoordinatorPort {
@@ -643,8 +662,11 @@ export async function runTransformerPilotLaneOnce(
           input.db,
           registration,
           principalId,
-          input.candidateRoot,
-          input.evidenceRoot,
+          readLocalRegaugeMissionArtifactOutbox(
+            registration,
+            input.candidateRoot,
+            input.evidenceRoot,
+          ),
         );
         input.store.completeMissionArtifactRegistration(registration);
         if (result.status === "registered") missionArtifactsRegistered++;

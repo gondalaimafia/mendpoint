@@ -64,8 +64,8 @@ import type {
   TransformerAdaptiveAttemptAccounting,
   TransformerAttemptLease,
   TransformerAttemptLeaseRenewal,
-  TransformerMissionArtifactRegistrationBinding,
 } from "./pilot-execution.js";
+import type { TransformerMissionArtifactRegistrationBinding } from "./attempt-checkpoint.js";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const REVISION = /^[a-f0-9]{40}$/;

@@ -12,6 +12,7 @@ import {
   createTransformerCoordinatorCompletionRequestDigest,
   createTransformerCoordinatorCompletionSlot,
   createTransformerCoordinatorEffectResultArtifact,
+  createTransformerMissionEvidenceArtifact,
   createTransformerEffectRequestArtifact,
   createTransformerEffectResultArtifact,
   createTransformerModelEffectResultArtifact,
@@ -33,6 +34,7 @@ import {
   prepareTransformerAttemptCheckpointAdvance,
   prepareTransformerAttemptCheckpointTerminalAdvance,
   supersedeTransformerAttemptCheckpointCoordinatorCompletion,
+  upgradeTransformerAttemptCheckpointCoordinatorCompletionRequest,
   verifyTransformerWorkspaceArtifact,
   type TransformerAttemptCheckpointEnvelope,
   type TransformerAttemptCheckpointJournal,
@@ -937,26 +939,63 @@ describe("Transformer attempt checkpoint", () => {
     const coordinatorCompletionDigest = createTransformerAttemptCompletionDigest(
       coordinatorCompletionIntent,
     );
+    const candidateMissionEvidence = createTransformerMissionEvidenceArtifact({
+      tenantId: current.state.binding.tenantId,
+      episodeId: current.state.episodeId,
+      artifactId: `tcman_${"1".repeat(64)}`,
+    }, Buffer.from("candidate manifest"), key);
+    const executionMissionEvidence = createTransformerMissionEvidenceArtifact({
+      tenantId: current.state.binding.tenantId,
+      episodeId: current.state.episodeId,
+      artifactId: `tre_execution_${"2".repeat(64)}`,
+    }, Buffer.from("execution evidence"), key);
+    const artifactRegistration = {
+      schemaVersion: 2 as const,
+      episodeId: current.state.episodeId,
+      attemptId: `tfattempt_${"3".repeat(32)}`,
+      sourceSnapshotId: current.state.binding.snapshotId,
+      candidateArtifactId: `tcman_${"1".repeat(64)}`,
+      candidateManifestDigest: candidateMissionEvidence.artifact.payloadDigest,
+      candidateManifestArtifact: candidateMissionEvidence.artifact,
+      executionArtifactId: `tre_execution_${"2".repeat(64)}`,
+      executionEvidenceDigest: executionMissionEvidence.artifact.payloadDigest,
+      executionEvidenceArtifact: executionMissionEvidence.artifact,
+      executionSchemaVersion: 3,
+    };
     const coordinatorRequest = createTransformerCoordinatorCompletionRequest(
       current.state.episodeId,
       repairedSeal,
       coordinatorCompletionIntent,
+      artifactRegistration,
     );
     expect(digest(createTransformerCoordinatorCompletionRequest(
       current.state.episodeId,
       repairedSeal,
       coordinatorCompletionIntent,
+      artifactRegistration,
     ))).toBe(createTransformerCoordinatorCompletionRequestDigest(
       current.state.episodeId,
       repairedSeal,
       coordinatorCompletionIntent,
+      artifactRegistration,
     ));
     expect(openTransformerCoordinatorCompletionRequest(coordinatorRequest)).toEqual({
       episodeId: current.state.episodeId,
       seal: repairedSeal,
       completionDigest: coordinatorCompletionDigest,
       completionIntent: coordinatorCompletionIntent,
+      artifactRegistration,
     });
+    expect(createTransformerCoordinatorCompletionRequestDigest(
+      current.state.episodeId,
+      repairedSeal,
+      coordinatorCompletionIntent,
+    )).not.toBe(createTransformerCoordinatorCompletionRequestDigest(
+      current.state.episodeId,
+      repairedSeal,
+      coordinatorCompletionIntent,
+      artifactRegistration,
+    ));
 
     await expect(advanceTransformerAttemptCheckpoint(
       journal,
@@ -1158,6 +1197,50 @@ describe("Transformer attempt checkpoint", () => {
       key,
       current.state.binding,
     );
+    const upgradedJournal = journal.clone();
+    const upgradedPayload = createTransformerCoordinatorCompletionRequest(
+      current.state.episodeId,
+      repairedSeal,
+      coordinatorCompletionIntent,
+      artifactRegistration,
+    );
+    const upgradedDigest = digest(upgradedPayload);
+    const upgradedIdentity = createTransformerAttemptEffectIdentity(
+      current.state.episodeId,
+      "coordinator_complete",
+      completionSlot,
+      upgradedDigest,
+    );
+    const upgradedRequest = createTransformerEffectRequestArtifact({
+      tenantId: current.state.binding.tenantId,
+      episodeId: current.state.episodeId,
+      effectId: upgradedIdentity.effectId,
+    }, upgradedPayload, key);
+    upgradedJournal.putArtifact(upgradedRequest.artifact.storageKey, upgradedRequest.bytes);
+    const upgradedHead = await upgradeTransformerAttemptCheckpointCoordinatorCompletionRequest(
+      upgradedJournal,
+      coordinatorPreparedHead.stateDigest,
+      {
+        kind: "coordinator_complete",
+        state: "prepared",
+        slot: completionSlot,
+        ...upgradedIdentity,
+        requestDigest: upgradedDigest,
+        requestArtifact: upgradedRequest.artifact,
+      },
+      new Date(Date.parse(coordinatorPrepared.createdAt) + 1_000).toISOString(),
+      key,
+      current.state.binding,
+    );
+    expect(openTransformerAttemptCheckpoint(
+      upgradedHead,
+      key,
+      current.state.binding,
+    ).pendingEffect).toMatchObject({
+      kind: "coordinator_complete",
+      state: "prepared",
+      effectId: upgradedIdentity.effectId,
+    });
     const coordinatorDispatched = {
       ...coordinatorPrepared,
       generation: coordinatorPrepared.generation + 1,

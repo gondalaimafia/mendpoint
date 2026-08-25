@@ -55,6 +55,7 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
   draftAuthorization?: TransformerProductionDraftAuthorization;
   verifierAdvisoryScope?: Readonly<{ tenantId: string; campaignId: string }>;
   observeCompletedAttempt?(result: TransformerAttemptCheckpointCompletionResult): Promise<void>;
+  drainPendingMissionArtifacts?(): Promise<void>;
   drainPendingCompletedAttempts?(): Promise<void>;
   readVerifierObservations?(input: Readonly<{ tenantId: string; campaignId: string }>): unknown;
   loadExactSource(lease: TransformerExecutableAttemptLease, observedAt: string): ExactSourceSnapshot | Promise<ExactSourceSnapshot>;
@@ -102,6 +103,7 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
     if (!campaign) {
       throw new Error("coordinator_campaign_not_ready");
     }
+    await options.drainPendingMissionArtifacts?.();
     scheduleAdvisoryDispatch(options.drainPendingCompletedAttempts, serverTime(now));
     return c.json({
       result: { ready: true, campaignId: campaign.campaignId, state: campaign.state },
