@@ -67,6 +67,56 @@ describe("change detail — FET-017 empty findings", () => {
     );
     expect(html).toContain("No impact — verified");
     expect(html).not.toContain("Confirm pipeline completion");
+    expect(html).not.toContain("analyzed without a tenant graph");
+  });
+
+  it("does not treat raw-retrieval no-impact as graph-authoritative", async () => {
+    apiGet.mockResolvedValue({
+      ...BASE,
+      findings: [],
+      impactCoverage: {
+        impact: "no_impact",
+        coverageBasis: "analyzed",
+        reason: null,
+        findingCount: 0,
+        prCount: 1,
+        fallback: "raw_retrieval",
+      },
+    });
+    const html = renderToStaticMarkup(
+      await ChangeDetailPage({ params: Promise.resolve({ id: "chg1" }) }),
+    );
+    expect(html).toContain("analyzed without a tenant graph");
+    expect(html).not.toContain("No impact — verified");
+  });
+
+  it("notes raw retrieval when findings are present", async () => {
+    apiGet.mockResolvedValue({
+      ...BASE,
+      findings: [
+        {
+          id: "f1",
+          filePath: "app.ts",
+          lineStart: 10,
+          symbol: "source",
+          confidence: "high",
+          graphPath: null,
+        },
+      ],
+      impactCoverage: {
+        impact: "impact",
+        coverageBasis: "analyzed",
+        reason: null,
+        findingCount: 1,
+        prCount: 1,
+        fallback: "raw_retrieval",
+      },
+    });
+    const html = renderToStaticMarkup(
+      await ChangeDetailPage({ params: Promise.resolve({ id: "chg1" }) }),
+    );
+    expect(html).toContain("Impact was analyzed via raw retrieval, not a tenant graph");
+    expect(html).not.toContain("analyzed without a tenant graph");
   });
 
   it("does not treat partial coverage as verified no-impact", async () => {

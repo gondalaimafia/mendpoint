@@ -11,7 +11,6 @@ import {
   getChange,
   listConsumers,
   listPrs,
-  listPrsForChange,
   getPr,
   findPrByGitHubIdentityAndNumber,
   findWardenCandidateDeliveryByPrUrl,
@@ -48,8 +47,6 @@ import {
   changeToApi,
   consumerToApi,
   prToApi,
-  findingToApi,
-  summarizeChangeImpactCoverage,
   auditToApi,
   versionToApi,
   createApiKey,
@@ -110,6 +107,7 @@ import {
   registrySummaryMarkdown,
 } from "@mendpoint/db";
 import { parseAuditExportLimit } from "./audit-export.js";
+import { changeDetailBody } from "./change-detail.js";
 import {
   detectVendors,
   listCatalog,
@@ -1949,18 +1947,7 @@ app.get("/changes/:id", (c) => {
     return c.json({ error: "not found" }, 404);
   }
   const tenantId = requestTenantId(c);
-  const findings = listFindingsForChange(db, change.id, tenantId).map(findingToApi);
-  const prs = listPrsForChange(db, change.id, tenantId).map(prToApi);
-  return c.json({
-    ...changeToApi(change),
-    diff: JSON.parse(change.diff_json),
-    findings,
-    prs,
-    impactCoverage: summarizeChangeImpactCoverage({
-      findingCount: findings.length,
-      prs,
-    }),
-  });
+  return c.json(changeDetailBody(db, tenantId, change));
 });
 
 app.get("/consumers", (c) => {
