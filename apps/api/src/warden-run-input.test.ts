@@ -99,10 +99,9 @@ describe("Warden run input", () => {
       ok: true,
       value: { missionId: "mission-a" },
     });
-    expect(parseWardenRunInput(valid())).toMatchObject({
-      ok: true,
-      value: { missionId: undefined },
-    });
+    const omitted = parseWardenRunInput(valid());
+    expect(omitted.ok).toBe(true);
+    if (omitted.ok) expect(omitted.value.missionId).toBeUndefined();
     expect(parseWardenRunInput(valid({ missionId: "" }))).toEqual({
       ok: false,
       error: "missionId must be a nonempty mission id",
