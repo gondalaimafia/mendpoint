@@ -380,6 +380,7 @@ describe("ReGauge state transfer", () => {
       targetRoot: fx.targetRoot,
       fenceRoot: join(fx.root, "cutover-fence"),
       assessedAt: "2026-08-25T12:05:00.000Z",
+      now: new Date("2026-08-25T12:05:00.000Z"),
     })).toMatchObject({
       schemaVersion: 1,
       kind: "mendpoint.regauge.rollback-proof",
@@ -397,6 +398,7 @@ describe("ReGauge state transfer", () => {
       targetRoot: fx.targetRoot,
       fenceRoot: join(fx.root, "cutover-fence"),
       assessedAt: "2026-08-25T12:05:00.000Z",
+      now: new Date("2026-08-25T12:05:00.000Z"),
     });
     thawRegaugeCutoverFence({
       fenceRoot: join(fx.root, "cutover-fence"),
@@ -404,6 +406,7 @@ describe("ReGauge state transfer", () => {
       transferId: manifest.transferId,
       transferKey: KEY,
       rollbackProof: proof,
+      now: new Date("2026-08-25T12:05:30.000Z"),
     });
     expect(existsSync(join(fx.root, "cutover-fence", "regauge-cutover-fence.v1.json"))).toBe(false);
     expect(isBackupFenceActive(join(fx.root, "cutover-fence"))).toBe(false);
@@ -420,6 +423,7 @@ describe("ReGauge state transfer", () => {
       transferId: later.transferId,
       transferKey: KEY,
       rollbackProof: proof,
+      now: new Date("2026-08-25T12:05:30.000Z"),
     })).toThrow("regauge_rollback_proof_invalid");
 
     const forgedFx = fixture();
@@ -430,6 +434,7 @@ describe("ReGauge state transfer", () => {
       transferId: forged.transferId,
       transferKey: KEY,
       rollbackProof: { ...proof, authentication: { ...proof.authentication, value: "0".repeat(64) } },
+      now: new Date("2026-08-25T12:05:30.000Z"),
     })).toThrow("regauge_rollback_proof_authentication_failed");
 
     const nonLedgerFx = fixture();
@@ -444,6 +449,7 @@ describe("ReGauge state transfer", () => {
       targetRoot: nonLedgerFx.targetRoot,
       fenceRoot: join(nonLedgerFx.root, "cutover-fence"),
       assessedAt: "2026-08-25T12:05:00.000Z",
+      now: new Date("2026-08-25T12:05:00.000Z"),
     })).toThrow("regauge_rollback_replay_risk");
 
     const ledgerFx = fixture();
@@ -459,6 +465,97 @@ describe("ReGauge state transfer", () => {
       targetRoot: ledgerFx.targetRoot,
       fenceRoot: join(ledgerFx.root, "cutover-fence"),
       assessedAt: "2026-08-25T12:05:00.000Z",
+      now: new Date("2026-08-25T12:05:00.000Z"),
     })).toThrow("regauge_rollback_replay_risk");
+  });
+
+  it("refuses a saved rollback proof replayed against a freshly re-acquired fence of the same id", () => {
+    const fx = fixture();
+    const manifest = transfer(fx);
+    const fenceRoot = join(fx.root, "cutover-fence");
+    restoreRegaugeStateTransfer({ bundleRoot: fx.bundleRoot, targetRoot: fx.targetRoot, transferKey: KEY });
+    const proof = classifyRegaugeSourceRollback({
+      importManifest: manifest,
+      transferKey: KEY,
+      targetRoot: fx.targetRoot,
+      fenceRoot,
+      assessedAt: "2026-08-25T12:05:00.000Z",
+      now: new Date("2026-08-25T12:05:00.000Z"),
+    });
+    // Cutover #1 completes: the proof legitimately unfreezes the source.
+    thawRegaugeCutoverFence({
+      fenceRoot,
+      fenceId: manifest.fence.id,
+      transferId: manifest.transferId,
+      transferKey: KEY,
+      rollbackProof: proof,
+      now: new Date("2026-08-25T12:05:30.000Z"),
+    });
+    expect(existsSync(join(fenceRoot, "regauge-cutover-fence.v1.json"))).toBe(false);
+
+    // A new cutover re-acquires a fence under the same operator-chosen fenceId and transferId. Its
+    // fresh random nonce yields a different marker, so the saved proof is bound to a fence instance
+    // that no longer exists and must not unfreeze the source again (kept inside the freshness window
+    // so the fence-marker binding, not proof expiry, is what refuses it).
+    acquireRegaugeCutoverFence({
+      fenceRoot,
+      fenceId: manifest.fence.id,
+      transferId: manifest.transferId,
+      createdAt: "2026-08-25T12:06:00.000Z",
+      sourceApp: BINDINGS.sourceApp,
+      sourceVolume: BINDINGS.sourceVolume,
+      transferKeyId: BINDINGS.transferKeyId,
+      transferKey: KEY,
+    });
+    const reacquired = inspectRegaugeCutoverFence({ fenceRoot, fenceId: manifest.fence.id, transferKey: KEY });
+    expect(reacquired.markerSha256).not.toBe(proof.fenceMarkerSha256);
+    expect(() => thawRegaugeCutoverFence({
+      fenceRoot,
+      fenceId: manifest.fence.id,
+      transferId: manifest.transferId,
+      transferKey: KEY,
+      rollbackProof: proof,
+      now: new Date("2026-08-25T12:06:30.000Z"),
+    })).toThrow("regauge_rollback_proof_cutover_mismatch");
+    expect(existsSync(join(fenceRoot, "regauge-cutover-fence.v1.json"))).toBe(true);
+  });
+
+  it("expires a rollback proof at the thaw site once it ages past the cutover window", () => {
+    const fx = fixture();
+    const manifest = transfer(fx);
+    const fenceRoot = join(fx.root, "cutover-fence");
+    restoreRegaugeStateTransfer({ bundleRoot: fx.bundleRoot, targetRoot: fx.targetRoot, transferKey: KEY });
+    const proof = classifyRegaugeSourceRollback({
+      importManifest: manifest,
+      transferKey: KEY,
+      targetRoot: fx.targetRoot,
+      fenceRoot,
+      assessedAt: "2026-08-25T12:05:00.000Z",
+      now: new Date("2026-08-25T12:05:00.000Z"),
+    });
+    expect(() => thawRegaugeCutoverFence({
+      fenceRoot,
+      fenceId: manifest.fence.id,
+      transferId: manifest.transferId,
+      transferKey: KEY,
+      rollbackProof: proof,
+      now: new Date("2026-08-25T13:05:01.000Z"),
+    })).toThrow("regauge_rollback_proof_expired");
+    expect(existsSync(join(fenceRoot, "regauge-cutover-fence.v1.json"))).toBe(true);
+  });
+
+  it("refuses to mint a rollback proof from a stale assessment", () => {
+    const fx = fixture();
+    const manifest = transfer(fx);
+    const fenceRoot = join(fx.root, "cutover-fence");
+    restoreRegaugeStateTransfer({ bundleRoot: fx.bundleRoot, targetRoot: fx.targetRoot, transferKey: KEY });
+    expect(() => classifyRegaugeSourceRollback({
+      importManifest: manifest,
+      transferKey: KEY,
+      targetRoot: fx.targetRoot,
+      fenceRoot,
+      assessedAt: "2026-08-25T12:05:00.000Z",
+      now: new Date("2026-08-25T13:05:01.000Z"),
+    })).toThrow("regauge_rollback_proof_expired");
   });
 });

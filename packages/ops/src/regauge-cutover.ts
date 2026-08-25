@@ -135,6 +135,23 @@ function assertIso(value: string): void {
   }
 }
 
+// A rollback proof authorizes unfreezing the source during the cutover window. `assertIso` only
+// checks format, so without a lifetime bound a proof minted during one cutover stays replayable
+// forever: weeks later, after the target has taken independent writes and a fence is re-acquired
+// under the same operator-chosen fenceId, the stale proof would unfreeze the source and produce
+// two writers on one tenant's state. Bind the assessment to the cutover window.
+const ROLLBACK_PROOF_MAX_AGE_MS = 3_600_000;
+const ROLLBACK_PROOF_CLOCK_SKEW_MS = 60_000;
+
+function assertRollbackAssessmentFresh(assessedAt: string, now: Date): void {
+  const current = now.getTime();
+  if (!Number.isFinite(current)) fail("regauge_rollback_proof_expired");
+  const ageMs = current - Date.parse(assessedAt);
+  if (ageMs > ROLLBACK_PROOF_MAX_AGE_MS || ageMs < -ROLLBACK_PROOF_CLOCK_SKEW_MS) {
+    fail("regauge_rollback_proof_expired");
+  }
+}
+
 function assertKey(key: Buffer): void {
   if (!Buffer.isBuffer(key) || key.byteLength !== 32) fail("regauge_transfer_key_invalid");
 }
@@ -764,9 +781,11 @@ export function classifyRegaugeSourceRollback(input: Readonly<{
   targetRoot: string;
   fenceRoot: string;
   assessedAt: string;
+  now?: Date;
 }>): RegaugeRollbackProof {
   assertKey(input.transferKey);
   assertIso(input.assessedAt);
+  assertRollbackAssessmentFresh(input.assessedAt, input.now ?? new Date());
   const manifest = validateManifest(input.importManifest);
   verifyAuthentication(manifest, input.transferKey);
   try {
@@ -816,6 +835,7 @@ export function thawRegaugeCutoverFence(input: Readonly<{
   transferId: string;
   transferKey: Buffer;
   rollbackProof: RegaugeRollbackProof;
+  now?: Date;
 }>): void {
   assertKey(input.transferKey);
   requiredText(input.transferId, "regauge_transfer_id_invalid");
@@ -832,6 +852,7 @@ export function thawRegaugeCutoverFence(input: Readonly<{
       !/^[a-f0-9]{64}$/.test(proof.fenceMarkerSha256) ||
       !/^[a-f0-9]{64}$/.test(proof.targetEvidenceSha256)) fail("regauge_rollback_proof_invalid");
   assertIso(proof.assessedAt);
+  assertRollbackAssessmentFresh(proof.assessedAt, input.now ?? new Date());
   const { authentication, ...body } = proof;
   if (!authentication || authentication.algorithm !== "hmac-sha256" ||
       !/^[a-f0-9]{64}$/.test(authentication.value)) fail("regauge_rollback_proof_invalid");

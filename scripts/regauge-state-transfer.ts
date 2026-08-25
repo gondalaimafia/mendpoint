@@ -350,6 +350,7 @@ export async function attestRestoredRegaugeState(
 export async function createRegaugeRollbackProof(
   runtime: RegaugeStateTransferRuntime,
   transport: CustomerObjectStoreTransport,
+  now: Date = new Date(),
 ): Promise<RegaugeRollbackProof> {
   const downloaded = await downloadTransfer(runtime, transport);
   try {
@@ -358,7 +359,8 @@ export async function createRegaugeRollbackProof(
       transferKey: runtime.transferKey,
       targetRoot: runtime.targetRoot,
       fenceRoot: runtime.fenceRoot,
-      assessedAt: new Date().toISOString(),
+      assessedAt: now.toISOString(),
+      now,
     });
   } finally {
     rmSync(downloaded.bundleRoot, { recursive: true, force: true });
@@ -384,7 +386,7 @@ export async function runRegaugeStateTransferCommand(
   if (command === "restore") return await restorePublishedRegaugeState(runtime, transport);
   if (command === "attest-restored") return await attestRestoredRegaugeState(runtime, transport);
   if (command === "rollback-check") {
-    return await createRegaugeRollbackProof(runtime, transport);
+    return await createRegaugeRollbackProof(runtime, transport, now);
   }
   if (command === "thaw") {
     thawRegaugeCutoverFence({
@@ -393,6 +395,7 @@ export async function runRegaugeStateTransferCommand(
       transferId: runtime.transferId,
       transferKey: runtime.transferKey,
       rollbackProof: parseRollbackProof(env.MENDPOINT_REGAUGE_ROLLBACK_PROOF_JSON),
+      now,
     });
     return Object.freeze({ transferId: runtime.transferId, fenceId: runtime.fenceId, thawed: true });
   }
