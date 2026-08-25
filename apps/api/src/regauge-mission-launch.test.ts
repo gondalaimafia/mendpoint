@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,7 +13,13 @@ import {
   resolveMissionForRegaugeCampaign,
   verifyDomainEventIntegrity,
   type AppDb,
+  type Mission,
 } from "@mendpoint/db";
+import {
+  openGraphLearnDb,
+  publishSoftwareGraphVersion,
+  type SoftwareGraphPublicationV1,
+} from "@mendpoint/graph-learn";
 import {
   bindRegaugeMissionAtLaunch,
   regaugeLaunchMissionTaskId,
@@ -224,5 +230,120 @@ describe("bindRegaugeMissionAtLaunch", () => {
         taskType: "code_migration",
       }),
     ]);
+    expect(mission?.graphVersionId).toBeNull();
+  });
+
+  it("pins a unique published graph version on a single-repository launch", () => {
+    const db = fixture();
+    const graphPath = join(tmpdir(), `mendpoint-regauge-graph-${Date.now()}-${Math.random()}.sqlite`);
+    const graphDb = openGraphLearnDb(graphPath);
+    const extractor = Object.freeze({
+      id: "mendpoint.code-index",
+      version: "1.0.0",
+      digest: `sha256:${"1".repeat(64)}`,
+    });
+    const publication: SoftwareGraphPublicationV1 = {
+      schemaVersion: "mendpoint.software-graph.v1",
+      tenantId: "t1",
+      repositoryId: "repo-exact",
+      repositorySnapshotId: "snapshot-exact",
+      repositoryRevision: "a".repeat(40),
+      providerId: "provider-a",
+      providerSnapshotId: "provider-snapshot-1",
+      providerRevision: "2026-08-17",
+      observedAt: "2026-08-17T12:00:00.000Z",
+      entities: [{
+        id: "endpoint:charges-create",
+        kind: "endpoint",
+        canonicalKey: "POST /v1/charges",
+        aliases: ["charges.create"],
+        label: "POST /v1/charges",
+        scope: "provider",
+        evidenceRefs: ["artifact:openapi:v1"],
+        extractor,
+        derivation: "provider_spec",
+        confidenceBasis: "deterministic_exact",
+        status: "active",
+        validFrom: "2026-08-17T12:00:00.000Z",
+      }],
+      relationships: [],
+      coverage: ([
+        "repository_discovery",
+        "language_parsing",
+        "provider_specification",
+        "sdk_resolution",
+        "call_resolution",
+        "test_resolution",
+      ] as const).map((stage) => ({
+        extractor,
+        stage,
+        basis: "complete" as const,
+        analyzed: 1,
+        omitted: 0,
+        evidenceRefs: [`evidence:${stage}`],
+      })),
+    };
+    const published = publishSoftwareGraphVersion(graphDb, publication);
+    graphDb.raw.close();
+
+    const previous = process.env.GRAPH_LEARN_DB;
+    process.env.GRAPH_LEARN_DB = graphPath;
+    try {
+      bindRegaugeMissionAtLaunch(db, {
+        tenantId: "t1",
+        campaignId: "campaign-graph",
+        ownerPrincipalId: "svc-bootstrap",
+        objective: "Runtime upgrade to Node 22",
+        repositories: [{ repositoryId: "repo-exact", snapshotId: "snapshot-exact" }],
+        createdAt: AT,
+      });
+      const mission = resolveMissionForRegaugeCampaign(db, "t1", "campaign-graph");
+      expect(mission?.graphVersionId).toBe(published.versionId);
+      expect(listDomainEvents(db, "t1", "mission", mission!.id)
+        .some((event) => event.event_type === "mission.graph_version_bound")).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = previous;
+      rmSync(graphPath, { force: true });
+      rmSync(`${graphPath}-wal`, { force: true });
+      rmSync(`${graphPath}-shm`, { force: true });
+    }
+  });
+  it("does not fail the launch and leaves the mission unpinned when the graph store errors", () => {
+    const db = fixture();
+    // A path that exists (so openExistingGraphFile does not fail closed as
+    // "graph_file_missing") but cannot be opened as a SQLite database - here a
+    // directory - so openGraphLearnDb throws while opening it. This stands in
+    // for the SQLITE_BUSY / read-only-volume failure the launch-seam guard
+    // exists for, without leaving an open handle that would lock the path.
+    const badGraphPath = join(tmpdir(), `mendpoint-regauge-badgraph-${Date.now()}-${Math.random()}`);
+    mkdirSync(badGraphPath, { recursive: true });
+    const previous = process.env.GRAPH_LEARN_DB;
+    process.env.GRAPH_LEARN_DB = badGraphPath;
+    try {
+      let mission: Mission | undefined;
+      // The launch has already happened by the time the pin runs, so a graph
+      // error must be swallowed: the operator must not get a failure for a
+      // launch that actually succeeded (and would then retry it).
+      expect(() => {
+        mission = bindRegaugeMissionAtLaunch(db, {
+          tenantId: "t1",
+          campaignId: "campaign-badgraph",
+          ownerPrincipalId: "svc-bootstrap",
+          objective: "Runtime upgrade to Node 22",
+          repositories: [{ repositoryId: "repo-exact", snapshotId: "snapshot-exact" }],
+          createdAt: AT,
+        });
+      }).not.toThrow();
+      expect(mission?.state).toBe("executing");
+      const resolved = resolveMissionForRegaugeCampaign(db, "t1", "campaign-badgraph");
+      expect(resolved?.state).toBe("executing");
+      // Left unpinned rather than frozen in a half-bound state.
+      expect(resolved?.graphVersionId).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = previous;
+      rmSync(badGraphPath, { recursive: true, force: true });
+    }
   });
 });

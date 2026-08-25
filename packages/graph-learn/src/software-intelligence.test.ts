@@ -7,6 +7,7 @@ import {
   classifyChangeGraphFailure,
   diffSoftwareGraphVersions,
   getSoftwareGraphHead,
+  listSoftwareGraphHeads,
   publishSoftwareGraphVersion,
   queryFettlerEndpointImpact,
   readSoftwareGraphVersion,
@@ -281,6 +282,11 @@ describe("foundational software intelligence graph", () => {
     const second = publishSoftwareGraphVersion(db, providerB);
     expect(getSoftwareGraphHead(db, "tenant-a", "repo-a", "provider-a")?.versionId).toBe(first.versionId);
     expect(getSoftwareGraphHead(db, "tenant-a", "repo-a", "provider-b")?.versionId).toBe(second.versionId);
+    expect(listSoftwareGraphHeads(db, "tenant-a", "repo-a")).toEqual([
+      expect.objectContaining({ providerId: "provider-a", versionId: first.versionId }),
+      expect.objectContaining({ providerId: "provider-b", versionId: second.versionId }),
+    ]);
+    expect(listSoftwareGraphHeads(db, "tenant-b", "repo-a")).toEqual([]);
   });
 
   it("reports incremental reuse and changed identities without mutating either version", () => {
