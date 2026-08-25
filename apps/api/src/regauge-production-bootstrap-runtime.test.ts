@@ -8,6 +8,7 @@ import {
   getMissionPolicyEnvelope,
   insertRepositorySnapshot,
   listDomainEvents,
+  listMissionTasks,
   listRepositorySnapshots,
   resolveMissionForRegaugeCampaign,
   verifyDomainEventIntegrity,
@@ -25,6 +26,7 @@ import { NODE_RUNTIME_20_TO_22_RECIPE } from "@mendpoint/transformer";
 import { bootstrapRegaugeProductionCampaign } from "./regauge-production-bootstrap.js";
 import {
   createRegaugeProductionBootstrapRuntime,
+  regaugeLaunchMissionTaskId,
   regaugeProductionBootstrapInputFromEnvironment,
 } from "./regauge-production-bootstrap-runtime.js";
 import { TransformerCampaignService } from "./transformer-control-plane.js";
@@ -330,5 +332,12 @@ describe("Regauge production bootstrap runtime", () => {
     // Spec §6.7: the launched Mission references a versioned Policy Envelope.
     expect(mission!.policyEnvelopeVersion).toBe("1");
     expect(getMissionPolicyEnvelope(db, "tenant_regauge_canary", mission!.id)).not.toBeNull();
+    expect(listMissionTasks(db, "tenant_regauge_canary", mission!.id)).toEqual([
+      expect.objectContaining({
+        id: regaugeLaunchMissionTaskId(mission!.id, launchedUnit.snapshot.repositoryId),
+        taskType: "code_migration",
+        status: "unassigned",
+      }),
+    ]);
   }, 20_000);
 });
