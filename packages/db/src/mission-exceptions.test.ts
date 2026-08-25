@@ -89,6 +89,24 @@ describe("mission exception register", () => {
     expect(evalResult.blocking).toHaveLength(0);
   });
 
+  it("carries task_id and category onto a resolved head, not only into history", () => {
+    const db = fixture();
+    const raised = raiseMissionException(db, { tenantId: "t1", missionId: "m1",
+      reason: "graph incomplete for payments", impact: "cannot plan edits", ownerPrincipalId: "p1",
+      resolutionPath: "await_human_resolution", blocking: true, correlationId: "corr", createdAt: T0,
+      taskId: "task-7", category: "graph_incomplete" });
+    const resolved = resolveMissionException(db, { tenantId: "t1", priorExceptionId: raised.id,
+      resolutionNote: "graph reindexed", actorPrincipalId: "p1", correlationId: "corr",
+      createdAt: "2026-01-03T00:00:00.000Z" });
+    // The resolving row is the new head; it must keep the annotation rather than
+    // reading back with a NULL category once the exception is closed.
+    expect(resolved.taskId).toBe("task-7");
+    expect(resolved.category).toBe("graph_incomplete");
+    const head = listMissionExceptions(db, "t1", "m1").find((row) => row.supersededById === null)!;
+    expect(head.id).toBe(resolved.id);
+    expect(head.category).toBe("graph_incomplete");
+  });
+
   // CONTROL: a stale exception does not silently keep blocking. Deleting the
   // staleness branch (treating a context-bound open exception as blocking
   // regardless of current snapshot) fails this test.

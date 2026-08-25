@@ -117,6 +117,14 @@ export type WardenCampaignExecutionResult = Readonly<{
  * identity + typed-edit + artifact-id envelope stays; these fields add why the
  * path is in scope, the graph evidence path, coverage limits, and unresolved
  * uncertainty without compressing them into one score.
+ *
+ * This artifact is produced only for a clean run: the executor throws on any
+ * unverified command or introduced regression before assembling it, so those
+ * outcomes never reach here. Fields whose value is fixed by that precondition
+ * (comparisonOk, introducedFailures, notVerified) are therefore omitted rather
+ * than carried as constants that would read as if they could vary. What can
+ * still vary on a clean run is kept: resolvedFailures, and the coverage/basis
+ * fields derived from the actual gate result.
  */
 export type WardenCampaignReviewPackage = Readonly<{
   schemaVersion: 1;
@@ -160,8 +168,7 @@ export type WardenCampaignReviewPackage = Readonly<{
     gatedOn: readonly ["codeowners", "ci", "runtime_trace"];
   }>;
   uncertainty: Readonly<{
-    notVerified: readonly string[];
-    graphBasis: "exact_commit_evidence";
+    graphBasis: "exact_commit_evidence" | "commit_independent_evidence";
     notes: readonly string[];
   }>;
   risk: Readonly<{
@@ -176,8 +183,6 @@ export type WardenCampaignReviewPackage = Readonly<{
   verification: Readonly<{
     baselineArtifactId: string;
     postEditArtifactId: string;
-    comparisonOk: boolean;
-    introducedFailures: readonly string[];
     resolvedFailures: readonly string[];
   }>;
 }>;
@@ -428,12 +433,22 @@ function graphGateEvidence(
   if (!owner) throw new WardenCampaignExecutionError("warden_owner_gate_failed", false);
   if (!ci) throw new WardenCampaignExecutionError("warden_ci_gate_failed", true);
   if (!runtime) throw new WardenCampaignExecutionError("warden_runtime_gate_failed", true);
+  // Basis and gatedOn are read from the rows that actually satisfied the gate, not
+  // asserted as literals downstream: if gate matching ever stops requiring the
+  // exact commit, the basis downgrades instead of over-claiming exact evidence.
+  const matched = [owner, ci, runtime];
+  const graphBasis: "exact_commit_evidence" | "commit_independent_evidence" =
+    matched.every((row) => row.exactCommit === input.resolvedSha)
+      ? "exact_commit_evidence"
+      : "commit_independent_evidence";
   return Object.freeze({
     snapshotId: input.snapshotId,
     resolvedSha: input.resolvedSha,
     ownerEvidenceId: String(owner.id),
     ciEvidenceId: String(ci.id),
     runtimeEvidenceId: String(runtime.id),
+    graphBasis,
+    gatedOn: Object.freeze(["codeowners", "ci", "runtime_trace"] as const),
   });
 }
 
@@ -464,10 +479,12 @@ export function createWardenCampaignReviewPackage(input: {
   gateArtifactId: string;
 }): WardenCampaignReviewPackage {
   const notes: string[] = [];
-  if (input.comparison.notVerified.length > 0) {
-    notes.push("verification_not_verified");
-  }
-  if (input.approvedCommands.length !== input.commands.length) {
+  // Compare the command sets, not their lengths: duplicates can make the counts
+  // match while an approved command was never actually run, which would silently
+  // suppress the coverage note.
+  const ranCommands = new Set(input.commands);
+  const everyApprovedRan = input.approvedCommands.every((command) => ranCommands.has(command));
+  if (!everyApprovedRan || ranCommands.size !== new Set(input.approvedCommands).size) {
     notes.push("verification_command_subset");
   }
   return Object.freeze({
@@ -513,11 +530,10 @@ export function createWardenCampaignReviewPackage(input: {
     coverageLimits: Object.freeze({
       approvedVerificationCommands: Object.freeze([...input.approvedCommands]),
       ranVerificationCommands: Object.freeze([...input.commands]),
-      gatedOn: Object.freeze(["codeowners", "ci", "runtime_trace"] as const),
+      gatedOn: input.gates.gatedOn,
     }),
     uncertainty: Object.freeze({
-      notVerified: input.comparison.notVerified,
-      graphBasis: "exact_commit_evidence" as const,
+      graphBasis: input.gates.graphBasis,
       notes: Object.freeze(notes),
     }),
     risk: Object.freeze({ reviewRequired: true as const, autoMerge: false as const, autoDeploy: false as const }),
@@ -528,8 +544,6 @@ export function createWardenCampaignReviewPackage(input: {
     verification: Object.freeze({
       baselineArtifactId: input.baselineArtifactId,
       postEditArtifactId: input.postEditArtifactId,
-      comparisonOk: input.comparison.ok,
-      introducedFailures: input.comparison.introducedFailures,
       resolvedFailures: input.comparison.resolvedFailures,
     }),
   });

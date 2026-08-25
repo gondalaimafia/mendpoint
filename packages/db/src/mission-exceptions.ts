@@ -368,6 +368,10 @@ function transition(db: AppDb, input: {
       correlationId: input.correlationId,
       causationId: input.causationId ?? null,
       createdAt: input.createdAt,
+      // Carry the annotation forward so a superseding head keeps its task and
+      // category; without these the resolved head reads back as uncategorised.
+      taskId: prior.task_id,
+      category: prior.category,
     });
     if (owns) db.raw.exec("COMMIT");
     return value;
