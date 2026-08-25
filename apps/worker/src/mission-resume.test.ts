@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  bindMissionGraphVersion,
   createDb,
   createExplicitMemory,
   createMission,
@@ -124,6 +125,79 @@ describe("classifyResumeStanding (pure, fail-closed three-state)", () => {
 });
 
 describe("resolveResumeContext (real stores)", () => {
+  it("loads and binds a graph-pin-only mission after reopening durable state", () => {
+    const initial = fixture();
+    bindMissionGraphVersion(initial, {
+      tenantId: "t1",
+      missionId: "m1",
+      graphVersionId: "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      actorPrincipalId: "human-1",
+      eventId: "graph-bind",
+      idempotencyKey: "graph-bind",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const file = (initial.raw.prepare("PRAGMA database_list").get() as { file: string }).file;
+    initial.raw.close();
+    const reopened = createDb(file);
+    const tracked = opened.find((entry) => entry.db === initial);
+    if (!tracked) throw new Error("fixture_not_tracked");
+    tracked.db = reopened;
+
+    const standing = resolveResumeContext(reopened, {
+      tenantId: "t1",
+      currentRunStatus: "running",
+      missionId: "m1",
+      task: TASK,
+      fallback: FALLBACK,
+    });
+    expect(standing.status).toBe("loaded");
+    if (standing.status !== "loaded") throw new Error("expected loaded");
+    expect(standing.envelope.missionIdentity.graphVersionId).toBe(
+      "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    expect(standing.injection.promptBody).toContain(
+      "graph version sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    expect(standing.refs).toContainEqual({
+      kind: "mission_identity",
+      missionId: "m1",
+      repositoryId: null,
+      snapshotId: null,
+      graphVersionId: "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+  });
+
+  it("does not resolve another tenant's graph-pinned mission", () => {
+    const db = fixture();
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      graphVersionId: "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      actorPrincipalId: "human-1",
+      eventId: "graph-bind",
+      idempotencyKey: "graph-bind",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    db.raw
+      .prepare(
+        `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+         VALUES ('t2','two','Two','team','active',10,?)`,
+      )
+      .run(T0);
+
+    expect(
+      resolveResumeContext(db, {
+        tenantId: "t2",
+        currentRunStatus: "running",
+        missionId: "m1",
+        task: TASK,
+        fallback: FALLBACK,
+      }),
+    ).toEqual({ status: "context_not_loaded", reason: "mission_not_found" });
+  });
+
   it("a task resumed with a mission reads the earlier decision from the compiled envelope", () => {
     const db = fixture();
     recordMissionDecision(db, {
