@@ -12,14 +12,18 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
   createMission,
+  createMissionTask,
   evaluateMissionExceptions,
   getActiveMissionDecisions,
+  getMissionTask,
   insertPrincipal,
   openTaskHandoff,
   recordReviewerDirective,
   resolveTaskHandoff,
   reviseDecisionOnNewEvidence,
+  transitionMissionTask,
   type AppDb,
+  type MissionTask,
 } from "./index.js";
 
 const T0 = "2026-01-01T00:00:00.000Z";
@@ -180,7 +184,7 @@ describe("mission handoff (durable records)", () => {
     expect(active.some((d) => d.decision.includes("raw OAuth flow"))).toBe(true);
   });
 
-  it("CONTROL: handoff reason is persisted as exception category; optional taskId is stored", () => {
+  it("CONTROL: handoff reason is persisted as exception category without a MissionTask", () => {
     const db = fixture();
     const exception = openTaskHandoff(db, {
       tenantId: "t1",
@@ -191,10 +195,9 @@ describe("mission handoff (durable records)", () => {
       ownerPrincipalId: "human-1",
       correlationId: "corr",
       createdAt: T0,
-      taskId: "mt-1",
     });
     expect(exception.category).toBe("verification_failure");
-    expect(exception.taskId).toBe("mt-1");
+    expect(exception.taskId).toBeNull();
   });
 
   it("CONTROL: reviewer directive persists decisionType when the live caller supplies it", () => {
@@ -303,5 +306,103 @@ describe("mission handoff (durable records)", () => {
     });
     // Stored verbatim as data on the decision; the store takes no action on it.
     expect(getActiveMissionDecisions(db, "t1", "m1").find((d) => d.id === decision.id)?.decision).toBe(injection);
+  });
+});
+
+describe("mission handoff mapped onto MissionTask transitions", () => {
+  function workingTask(db: AppDb): MissionTask {
+    let task = createMissionTask(db, {
+      id: "task-1", tenantId: "t1", missionId: "m1", taskType: "code_migration",
+      acceptanceCriteria: "tests pass", risk: "medium", actorPrincipalId: "human-1",
+      eventId: "e-task-1", idempotencyKey: "c-task-1", correlationId: "corr", createdAt: T0,
+    });
+    task = transitionMissionTask(db, {
+      tenantId: "t1", taskId: task.id, expectedRevision: task.revision, to: "agent_assigned",
+      actorPrincipalId: "human-1", eventId: "e-assign", idempotencyKey: "c-assign",
+      correlationId: "corr", createdAt: T0,
+    });
+    return transitionMissionTask(db, {
+      tenantId: "t1", taskId: task.id, expectedRevision: task.revision, to: "agent_working",
+      actorPrincipalId: "human-1", eventId: "e-work", idempotencyKey: "c-work",
+      correlationId: "corr", createdAt: T0,
+    });
+  }
+
+  it("openTaskHandoff moves agent_working to human_review_required; resolve resumes the agent", () => {
+    const db = fixture();
+    workingTask(db);
+    const exception = openTaskHandoff(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      taskId: "task-1",
+      reason: "architecture_decision_required",
+      question: "Should service B migrate before or after service A?",
+      context: "B imports A's client.",
+      ownerPrincipalId: "human-1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    expect(exception.category).toBe("architecture_decision_required");
+    expect(exception.taskId).toBe("task-1");
+    expect(getMissionTask(db, "t1", "task-1")).toMatchObject({
+      status: "human_review_required",
+      ownerType: "human",
+      handoffReason: "architecture_decision_required",
+    });
+
+    resolveTaskHandoff(db, {
+      tenantId: "t1",
+      priorExceptionId: exception.id,
+      taskId: "task-1",
+      resolutionNote: "A first.",
+      decision: "Migrate A before B",
+      scope: "migration_order:A_B",
+      authorPrincipalId: "human-1",
+      correlationId: "corr",
+      createdAt: T1,
+    });
+    expect(getMissionTask(db, "t1", "task-1")).toMatchObject({
+      status: "agent_resume",
+      ownerType: "agent",
+    });
+  });
+
+  it("fails closed when the bound task is not in an agent-working state", () => {
+    const db = fixture();
+    createMissionTask(db, {
+      id: "task-1", tenantId: "t1", missionId: "m1", taskType: "code_migration",
+      acceptanceCriteria: "tests pass", risk: "medium", actorPrincipalId: "human-1",
+      eventId: "e-task-1", idempotencyKey: "c-task-1", correlationId: "corr", createdAt: T0,
+    });
+    expect(() => openTaskHandoff(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      taskId: "task-1",
+      reason: "ambiguous_requirement",
+      question: "Which client?",
+      context: "Two exist.",
+      ownerPrincipalId: "human-1",
+      correlationId: "corr",
+      createdAt: T0,
+    })).toThrow("task_handoff_task_not_agent_working");
+    expect(getMissionTask(db, "t1", "task-1")?.status).toBe("unassigned");
+  });
+
+  it("without taskId, records still write and no MissionTask is required", () => {
+    const db = fixture();
+    const exception = openTaskHandoff(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      reason: "policy_exception",
+      question: "May we touch the billing client?",
+      context: "Policy envelope forbids it.",
+      ownerPrincipalId: "human-1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    expect(exception.blocking).toBe(true);
+    expect(exception.category).toBe("policy_exception");
+    expect(exception.taskId).toBeNull();
+    expect(getMissionTask(db, "t1", "task-1")).toBeUndefined();
   });
 });
