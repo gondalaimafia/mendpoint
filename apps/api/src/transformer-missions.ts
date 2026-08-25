@@ -16,6 +16,12 @@ import {
   type TransformerMutationRequest,
 } from "./transformer-control-plane.js";
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
+import {
+  consultRegaugeGraphDependencies,
+  consultRegaugeOrganizationMemory,
+} from "./regauge-plan-consult.js";
+import type { GraphLearnDb } from "@mendpoint/graph-learn";
+import type { OrganizationMemoryRecord } from "@mendpoint/db";
 
 export interface TransformerMissionRepositoryAuthority {
   load(
@@ -91,6 +97,10 @@ export class TransformerMissionService {
     private readonly recipeCatalog: readonly MigrationRecipeContract[],
     private readonly environment: string,
     private readonly now: () => string = () => new Date().toISOString(),
+    private readonly consults: Readonly<{
+      graph?: GraphLearnDb | null;
+      organizationMemory?: (tenantId: string) => readonly OrganizationMemoryRecord[];
+    }> = {},
   ) {}
 
   plan(request: TransformerMutationRequest, input: TransformerMissionPlanInput) {
@@ -116,6 +126,20 @@ export class TransformerMissionService {
     ) {
       throw new Error("transformer_mission_authority_invalid");
     }
+    const graphPlan = consultRegaugeGraphDependencies({
+      graph: this.consults.graph ?? null,
+      tenantId: request.tenantId,
+      repositoryIds,
+    });
+    const organizationMemory = consultRegaugeOrganizationMemory({
+      tenantId: request.tenantId,
+      records: this.consults.organizationMemory?.(request.tenantId) ?? [],
+      hardPolicy: {
+        tenantId: request.tenantId,
+        id: `organization-constraint:${authority.constraints.digest}`,
+        directive: "organization_constraint_contract",
+      },
+    });
     const planned = planTransformerMission({
       evaluatedAt: input.evaluatedAt,
       plannerActorId: request.actorId,
@@ -125,6 +149,7 @@ export class TransformerMissionService {
       repositories,
       objective: input.objective,
       recipeCatalog: this.recipeCatalog,
+      dependsOnByRepositoryId: graphPlan.dependsOnByRepositoryId,
     });
     if (planned.decision === "abstained") return planned;
     const blueprint = planned.blueprint;
@@ -138,6 +163,14 @@ export class TransformerMissionService {
           .paths.flatMap((path) => path.evidenceRefs),
       ])].sort(compareCodeUnits),
     }));
+    const bsgEdges = blueprint.units.flatMap((unit) =>
+      unit.dependsOn.map((dependencyId) => ({
+        id: `orders:${dependencyId}:${unit.id}`,
+        from: `migration-unit:${dependencyId}`,
+        to: `migration-unit:${unit.id}`,
+        kind: "orders",
+      })),
+    );
     const control = this.control.createBundle(request, {
       campaign: {
         id: input.campaignId,
@@ -151,9 +184,15 @@ export class TransformerMissionService {
         content: blueprint as unknown as Record<string, unknown>,
         policy: blueprintPolicy(blueprint),
       },
-      bsg: { id: `bsg-${blueprint.id}`, nodes: bsgNodes, edges: [] },
+      bsg: { id: `bsg-${blueprint.id}`, nodes: bsgNodes, edges: bsgEdges },
     });
-    return Object.freeze({ decision: "planned" as const, blueprint, control });
+    return Object.freeze({
+      decision: "planned" as const,
+      blueprint,
+      control,
+      graphPlan,
+      organizationMemory,
+    });
   }
 
   launch(request: TransformerMutationRequest, campaignId: string) {

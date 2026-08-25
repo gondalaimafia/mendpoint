@@ -14,6 +14,7 @@ import {
   linkRegaugeCampaignToMission,
   listConnectedRepositories,
   listDomainEvents,
+  listOrganizationMemory,
   listRepositorySnapshots,
   listScmConnections,
   putTenantMembership,
@@ -763,6 +764,10 @@ export async function runRegaugeProductionBootstrapFromEnvironment(
     authority.organizations,
     RECIPE_CATALOG,
     input.environment,
+    () => new Date().toISOString(),
+    {
+      organizationMemory: (tenantId) => listOrganizationMemory(db, { tenantId }),
+    },
   );
   try {
     const runtime = createRegaugeProductionBootstrapRuntime({
