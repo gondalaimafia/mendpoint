@@ -24,7 +24,10 @@ import {
 } from "@mendpoint/transformer";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
 import { resolveRenamedEnv } from "@mendpoint/shared";
-import { assignRegaugeMissionTaskOnClaim } from "./regauge-mission-task-claim.js";
+import {
+  assignRegaugeMissionTaskOnClaim,
+  handoffRegaugeMissionTaskOnReview,
+} from "./regauge-mission-task-claim.js";
 import {
   discardTransformerAdaptiveModelEvidence,
   persistTransformerAdaptiveModelEvidence,
@@ -376,7 +379,28 @@ function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): Transformer
     reserveAdaptiveModelCall: (input) => store.reserveAdaptiveModelCall(input),
     settleAdaptiveModelCall: (input) => store.settleAdaptiveModelCall(input),
     recordAdaptiveCandidateHandoff: (input) => store.recordAdaptiveCandidateHandoff(input),
-    completeAttempt: (input) => store.completeAttempt(input),
+    completeAttempt: (input) => {
+      const completed = store.completeAttempt(input);
+      try {
+        // Verification passing is still review-first, not delivery. Hand the
+        // launch MissionTask to humans on the same complete that closed the
+        // lease. Missing/unbound tasks are a no-op; a raced task must not
+        // un-complete an already-recorded attempt.
+        const repositoryId = completed.units.find((unit) => unit.id === input.unitId)
+          ?.snapshot.repositoryId;
+        if (repositoryId) {
+          handoffRegaugeMissionTaskOnReview(db, {
+            tenantId: input.tenantId,
+            campaignId: input.campaignId,
+            repositoryId,
+            createdAt: input.observedAt,
+          });
+        }
+      } catch {
+        // Observational: the attempt is already completed.
+      }
+      return completed;
+    },
     recordAttemptFailure: (input) => store.recordAttemptFailure(input),
   };
 }

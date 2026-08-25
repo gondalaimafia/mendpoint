@@ -6,6 +6,7 @@
  * Unbound campaigns and pre-launch tasks are a no-op — the enrollment gap
  * stays visible rather than being papered over with a fabricated Mission.
  * A claimed lease must still run if the task is missing or already driven.
+ * A completed attempt must still stay completed if the review handoff misses.
  */
 import { createHash } from "node:crypto";
 import {
@@ -47,6 +48,15 @@ function resolveLaunchTask(
     ?? getMissionTask(db, tenantId, regaugeLaunchMissionTaskId(missionId));
 }
 
+function resolveClaimedTask(
+  db: AppDb,
+  input: RegaugeMissionTaskClaimInput,
+): MissionTask | undefined {
+  const mission = resolveMissionForRegaugeCampaign(db, input.tenantId, input.campaignId);
+  if (!mission) return undefined;
+  return resolveLaunchTask(db, input.tenantId, mission.id, input.repositoryId);
+}
+
 /**
  * Assign and start the launch-created MissionTask for a claimed ReGauge unit.
  * No-op when the campaign has no Mission or the launch task does not exist.
@@ -56,9 +66,7 @@ export function assignRegaugeMissionTaskOnClaim(
   db: AppDb,
   input: RegaugeMissionTaskClaimInput,
 ): MissionTask | undefined {
-  const mission = resolveMissionForRegaugeCampaign(db, input.tenantId, input.campaignId);
-  if (!mission) return undefined;
-  const task = resolveLaunchTask(db, input.tenantId, mission.id, input.repositoryId);
+  const task = resolveClaimedTask(db, input);
   if (!task) return undefined;
   if (task.status === "agent_working") return task;
   if (task.status !== "unassigned" && task.status !== "agent_assigned") return undefined;
@@ -94,4 +102,33 @@ export function assignRegaugeMissionTaskOnClaim(
     });
   }
   return current;
+}
+
+/**
+ * After a successful pilot-lane complete, hand the MissionTask to humans.
+ * The live ReGauge path is review-first: verification passing is not delivery.
+ * No-op when unbound or the task is not on the claimed working path.
+ */
+export function handoffRegaugeMissionTaskOnReview(
+  db: AppDb,
+  input: RegaugeMissionTaskClaimInput,
+): MissionTask | undefined {
+  const task = resolveClaimedTask(db, input);
+  if (!task) return undefined;
+  if (task.status === "human_review_required") return task;
+  if (task.status !== "agent_working") return undefined;
+  const actorId = task.assignedPrincipalId
+    ?? missionTaskAgentPrincipal(db, input.tenantId, input.createdAt).id;
+  return transitionMissionTask(db, {
+    tenantId: input.tenantId,
+    taskId: task.id,
+    expectedRevision: task.revision,
+    to: "human_review_required",
+    actorPrincipalId: actorId,
+    handoffReason: "pilot_lane_review",
+    eventId: `${task.id}-claim-review`,
+    idempotencyKey: `mission-task-claim-review-${task.id}`,
+    correlationId: input.campaignId,
+    createdAt: input.createdAt,
+  });
 }

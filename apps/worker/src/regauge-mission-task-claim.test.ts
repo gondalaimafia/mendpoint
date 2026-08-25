@@ -13,7 +13,10 @@ import {
   transitionMissionTask,
   type AppDb,
 } from "@mendpoint/db";
-import { assignRegaugeMissionTaskOnClaim } from "./regauge-mission-task-claim.js";
+import {
+  assignRegaugeMissionTaskOnClaim,
+  handoffRegaugeMissionTaskOnReview,
+} from "./regauge-mission-task-claim.js";
 
 const at = "2026-08-25T00:00:00.000Z";
 const opened: Array<{ db: AppDb; dir: string }> = [];
@@ -148,5 +151,89 @@ describe("assignRegaugeMissionTaskOnClaim", () => {
       tenantId: "t2", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
     })).toBeUndefined();
     expect(listMissionTasks(db, "t1", missionId)[0]?.status).toBe("unassigned");
+  });
+});
+
+describe("handoffRegaugeMissionTaskOnReview", () => {
+  it("is a no-op when the campaign has no Mission", () => {
+    const { db } = fixture();
+    expect(handoffRegaugeMissionTaskOnReview(db, {
+      tenantId: "t1", campaignId: "unbound", repositoryId: "repo-a", createdAt: at,
+    })).toBeUndefined();
+  });
+
+  it("is a no-op when the launch task does not exist", () => {
+    const { db } = fixture();
+    expect(handoffRegaugeMissionTaskOnReview(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    })).toBeUndefined();
+  });
+
+  it("is a no-op when the task is still unassigned", () => {
+    const { db, missionId } = fixture();
+    launchTask(db, missionId, "repo-a");
+    expect(handoffRegaugeMissionTaskOnReview(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    })).toBeUndefined();
+    expect(listMissionTasks(db, "t1", missionId)[0]?.status).toBe("unassigned");
+  });
+
+  it("hands agent_working -> human_review_required with the pilot-lane reason", () => {
+    const { db, missionId } = fixture();
+    launchTask(db, missionId, "repo-a");
+    assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    });
+    const handed = handoffRegaugeMissionTaskOnReview(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    });
+    expect(handed).toMatchObject({
+      status: "human_review_required",
+      handoffReason: "pilot_lane_review",
+    });
+  });
+
+  it("is idempotent once the task is already human_review_required", () => {
+    const { db, missionId } = fixture();
+    launchTask(db, missionId, "repo-a");
+    assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    });
+    const first = handoffRegaugeMissionTaskOnReview(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    });
+    const second = handoffRegaugeMissionTaskOnReview(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    });
+    expect(second).toEqual(first);
+  });
+
+  it("falls back to the mission-level launch task when no repo task exists", () => {
+    const { db, missionId } = fixture();
+    launchTask(db, missionId);
+    assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-missing", createdAt: at,
+    });
+    const handed = handoffRegaugeMissionTaskOnReview(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-missing", createdAt: at,
+    });
+    expect(handed).toMatchObject({
+      id: regaugeLaunchMissionTaskId(missionId),
+      status: "human_review_required",
+    });
+  });
+
+  it("does not invent a Mission for a different tenant's campaign id", () => {
+    const { db, missionId } = fixture();
+    launchTask(db, missionId, "repo-a");
+    assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    });
+    db.raw.prepare(`INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+      VALUES ('t2','two','Two','team','active',10,?)`).run(at);
+    expect(handoffRegaugeMissionTaskOnReview(db, {
+      tenantId: "t2", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    })).toBeUndefined();
+    expect(listMissionTasks(db, "t1", missionId)[0]?.status).toBe("agent_working");
   });
 });

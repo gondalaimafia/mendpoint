@@ -916,6 +916,50 @@ describe("Transformer production pilot lane", () => {
 
     expect(result).toMatchObject({ attempted: 1, completed: 1, errors: [] });
     expect(getMissionTask(db, "tenant-a", task.id)).toMatchObject({
+      status: "human_review_required",
+      ownerType: "human",
+      handoffReason: "pilot_lane_review",
+    });
+  });
+
+  it("does not hand the launch MissionTask to review when the attempt fails", async () => {
+    const { root, db, store } = setup();
+    const missionId = seedRegaugeMissionForCampaignA(db);
+    const task = createMissionTask(db, {
+      id: regaugeLaunchMissionTaskId(missionId, "repository-a"),
+      tenantId: "tenant-a",
+      missionId,
+      taskType: "code_migration",
+      acceptanceCriteria: "Complete the launched ReGauge unit for repository repository-a.",
+      risk: "medium",
+      actorPrincipalId: "principal-a",
+      eventId: "mt-regauge-fail-created",
+      idempotencyKey: "mt-regauge-fail-create",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-mission-task-fail",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-mission-task-fail",
+      commandRunner: async () => ({
+        exitCode: 9,
+        stdout: "",
+        stderr: "deterministic gate failed",
+      }),
+    });
+
+    expect(result).toMatchObject({ attempted: 1, completed: 0, failed: 1 });
+    expect(getMissionTask(db, "tenant-a", task.id)).toMatchObject({
       status: "agent_working",
       ownerType: "agent",
     });
