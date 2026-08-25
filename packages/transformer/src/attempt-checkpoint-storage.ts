@@ -35,6 +35,7 @@ import {
   type TransformerAttemptCheckpointFailureInput,
   type TransformerAttemptCheckpointFailureReceipt,
   type TransformerAttemptCheckpointHead,
+  type TransformerMissionArtifactRegistrationBinding,
 } from "./pilot-execution.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -173,6 +174,7 @@ export type TransformerPilotCheckpointTerminalFinalizeInput =
     resultBytes: Uint8Array;
     completionIntent: TransformerAttemptCompletionIntent;
     candidateSeal: TransformerCandidateSeal;
+    artifactRegistration?: TransformerMissionArtifactRegistrationBinding;
   }>;
 
 export type TransformerPilotCheckpointTerminalFinalizeResult = Readonly<{
@@ -513,6 +515,9 @@ export async function finalizeTransformerPilotAttemptCheckpoint(
       nextCheckpointHead: checkpointHead,
       candidateSeal: input.candidateSeal,
       completionIntent,
+      ...(input.artifactRegistration === undefined
+        ? {}
+        : { artifactRegistration: input.artifactRegistration }),
       ...(input.gateConfig === undefined ? {} : { gateConfig: input.gateConfig }),
     });
     try {

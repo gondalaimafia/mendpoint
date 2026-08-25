@@ -335,6 +335,14 @@ function seedRegaugeMissionForCampaignA(db: AppDb): string {
     displayName: "Owner A",
     createdAt: CREATED_AT,
   });
+  dbModule.insertPrincipal(db, {
+    id: "regauge-service-a",
+    tenantId: "tenant-a",
+    kind: "service",
+    subject: "service:regauge-production-bootstrap",
+    displayName: "ReGauge production service",
+    createdAt: CREATED_AT,
+  });
   const mission = dbModule.createMission(db, {
     id: "mission-regauge-campaign-a",
     tenantId: "tenant-a",
@@ -895,8 +903,8 @@ describe("Transformer production pilot lane", () => {
     });
   });
 
-  it("drives the launch MissionTask when the live claim takes a lease", async () => {
-    const { root, db, store } = setup();
+  it("reconciles completed Mission artifacts exactly once after coordinator restart without replaying work", async () => {
+    const { root, db, store: initialStore } = setup();
     const missionId = seedRegaugeMissionForCampaignA(db);
     const task = createMissionTask(db, {
       id: regaugeLaunchMissionTaskId(missionId, "repository-a"),
@@ -915,10 +923,11 @@ describe("Transformer production pilot lane", () => {
 
     const result = await runTransformerPilotLaneOnce({
       db,
-      store,
+      store: initialStore,
       gateConfig: gateConfig(),
       tenantId: "tenant-a",
       workerId: "worker-a",
+      regaugeServicePrincipalIdForTenant: () => "regauge-service-a",
       evidenceRoot: join(root, "evidence"),
       candidateRoot: join(root, "candidates"),
       tempRoot: join(root, "workspaces"),
@@ -934,6 +943,73 @@ describe("Transformer production pilot lane", () => {
       ownerType: "human",
       handoffReason: "architecture_decision_required",
     });
+    expect(listMissionArtifacts(db, "tenant-a", missionId)).toEqual([]);
+    expect(initialStore.listPendingMissionArtifactRegistrations("tenant-a", 10)).toHaveLength(1);
+
+    stores.splice(stores.indexOf(initialStore), 1);
+    initialStore.close();
+    const restartedStore = new TransformerPilotExecutionStore(join(root, "pilot.sqlite"));
+    stores.push(restartedStore);
+    const commandRunner = vi.fn(async () => {
+      throw new Error("completed_recipe_work_replayed");
+    });
+    const interruptedStore = new Proxy(restartedStore, {
+      get(target, property, receiver) {
+        if (property === "completeMissionArtifactRegistration") {
+          return () => { throw new Error("simulated_crash_after_mission_registration"); };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as TransformerPilotLaneStore;
+    const interrupted = await runTransformerPilotLaneOnce({
+      db,
+      store: interruptedStore,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-restarted",
+      regaugeServicePrincipalIdForTenant: () => "regauge-service-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-mission-artifact-reconcile",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-restarted",
+      commandRunner,
+    });
+    expect(interrupted).toMatchObject({
+      attempted: 0,
+      completed: 0,
+      infrastructureError: "simulated_crash_after_mission_registration",
+    });
+    expect(commandRunner).not.toHaveBeenCalled();
+    expect(restartedStore.listPendingMissionArtifactRegistrations("tenant-a", 10)).toHaveLength(1);
+    expect(listMissionArtifacts(db, "tenant-a", missionId)).toHaveLength(2);
+
+    const reconciled = await runTransformerPilotLaneOnce({
+      db,
+      store: restartedStore,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-reconciler",
+      regaugeServicePrincipalIdForTenant: () => "regauge-service-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-mission-artifact-reconcile-retry",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-reconciler",
+      commandRunner,
+    });
+    expect(reconciled).toMatchObject({
+      attempted: 0,
+      completed: 0,
+      missionArtifactsRegistered: 1,
+      errors: [],
+    });
+    expect(commandRunner).not.toHaveBeenCalled();
+    expect(restartedStore.listPendingMissionArtifactRegistrations("tenant-a", 10)).toEqual([]);
+
     const missionArtifacts = listMissionArtifacts(db, "tenant-a", missionId);
     expect(missionArtifacts.map((artifact) => artifact.role).sort())
       .toEqual(["candidate_patch", "verification_report"]);
@@ -946,6 +1022,25 @@ describe("Transformer production pilot lane", () => {
         parentArtifactId: candidate.artifactId,
       }),
     ]);
+    const replay = await runTransformerPilotLaneOnce({
+      db,
+      store: restartedStore,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-replay",
+      regaugeServicePrincipalIdForTenant: () => "regauge-service-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-mission-artifact-replay",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-replay",
+      commandRunner,
+    });
+    expect(replay.missionArtifactsRegistered).toBeUndefined();
+    expect(listMissionArtifacts(db, "tenant-a", missionId)).toHaveLength(2);
+    expect(listMissionArtifactLineage(db, "tenant-a", missionId)).toHaveLength(1);
+    expect(commandRunner).not.toHaveBeenCalled();
   });
 
   it("does not hand the launch MissionTask to review when the attempt fails", async () => {

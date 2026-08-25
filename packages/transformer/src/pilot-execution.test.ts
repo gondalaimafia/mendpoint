@@ -195,6 +195,23 @@ function adaptiveAccounting(overrides: Partial<{
   };
 }
 
+function artifactRegistration(lease: TransformerAttemptLease) {
+  const candidateSha256 = "1".repeat(64);
+  const executionSha256 = "2".repeat(64);
+  return {
+    schemaVersion: 1 as const,
+    attemptId: transformerAttemptId(lease),
+    sourceSnapshotId: lease.snapshot.snapshotId,
+    candidateArtifactId: `tcman_${candidateSha256}`,
+    candidateManifestDigest: `sha256:${candidateSha256}`,
+    candidateManifestPath: `tenant-a/campaign-a/${lease.unitId}/${transformerAttemptId(lease)}/manifest.json`,
+    executionArtifactId: `tre_execution_${"3".repeat(64)}`,
+    executionEvidenceDigest: `sha256:${executionSha256}`,
+    executionEvidencePath: `tenant-a/campaign-a/${lease.unitId}/${transformerAttemptId(lease)}/tre_execution_${"3".repeat(64)}.json`,
+    executionSchemaVersion: 3,
+  };
+}
+
 function adaptiveHandoff(
   lease: TransformerAttemptLease,
   leaseToken: string,
@@ -293,6 +310,96 @@ function singleDraftCampaign(): TransformerPilotExecutionStore {
 }
 
 describe("Transformer pilot execution coordinator", () => {
+  it("atomically enqueues one attempt-bound artifact registration with legacy completion", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const leaseToken = "lease-token-artifact-outbox-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-artifact-outbox"), leaseToken, leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    const registration = artifactRegistration(lease);
+    const input = {
+      ...mutation(2, "complete-artifact-outbox"),
+      evidenceRefs: [registration.candidateArtifactId, registration.executionArtifactId],
+      unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      sourceRevision: candidate.snapshot.revision,
+      sourceDigest: candidate.snapshot.digest,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      verificationPassed: true,
+      actualCostUsd: 0.25,
+      accounting: adaptiveAccounting({ actualCostUsd: 0.25 }),
+      artifactRegistration: registration,
+      gateConfig: gateConfig(),
+    };
+
+    store.completeAttempt(input);
+    expect(store.completeAttempt(input).units[0]!.state).toBe("executed");
+    expect(() => store.completeAttempt({
+      ...input,
+      artifactRegistration: {
+        ...registration,
+        executionEvidenceDigest: `sha256:${"4".repeat(64)}`,
+      },
+    })).toThrow("transformer_mission_artifact_registration_fence_invalid");
+    expect(store.listPendingMissionArtifactRegistrations("tenant-a", 10)).toEqual([
+      expect.objectContaining({
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        unitId: "unit-a",
+        attemptId: registration.attemptId,
+        candidateArtifactId: registration.candidateArtifactId,
+        executionArtifactId: registration.executionArtifactId,
+      }),
+    ]);
+  });
+
+  it("rolls back legacy completion when its artifact outbox insert fails", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const leaseToken = "lease-token-artifact-outbox-fail-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-artifact-outbox-fail"), leaseToken, leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    const registration = artifactRegistration(lease);
+    const raw = (store as unknown as { db: DatabaseSync }).db;
+    const realPrepare = raw.prepare.bind(raw);
+    (raw as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      if (sql.includes("INSERT INTO tf_pilot_mission_artifact_outbox")) {
+        return { run: () => { throw new Error("artifact_outbox_insert_boom"); } };
+      }
+      return realPrepare(sql);
+    };
+    try {
+      expect(() => store.completeAttempt({
+        ...mutation(2, "complete-artifact-outbox-fail"),
+        evidenceRefs: [registration.candidateArtifactId, registration.executionArtifactId],
+        unitId: lease.unitId,
+        leaseGeneration: lease.leaseGeneration,
+        leaseToken,
+        sourceRevision: candidate.snapshot.revision,
+        sourceDigest: candidate.snapshot.digest,
+        candidateRevision: candidate.candidateRevision,
+        candidateDigest: candidate.candidateDigest,
+        verificationPassed: true,
+        actualCostUsd: 0.25,
+        accounting: adaptiveAccounting({ actualCostUsd: 0.25 }),
+        artifactRegistration: registration,
+        gateConfig: gateConfig(),
+      })).toThrow("artifact_outbox_insert_boom");
+    } finally {
+      (raw as unknown as { prepare: unknown }).prepare = realPrepare;
+    }
+    expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]!.state).toBe("running");
+    expect(store.listPendingMissionArtifactRegistrations("tenant-a", 10)).toHaveLength(0);
+  });
+
   it("binds a route to the claimed attempt and exposes one exact terminal success settlement", () => {
     const store = new TransformerPilotExecutionStore();
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
@@ -910,6 +1017,7 @@ describe("Transformer pilot execution coordinator", () => {
     });
     const terminal = checkpointHead(lease, 2, "a");
     const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    const registration = artifactRegistration(lease);
     const authorization = gateConfig();
     expect(() => store.completeAttempt({
       ...mutation(3, "complete-checkpoint-terminal-legacy"),
@@ -952,7 +1060,7 @@ describe("Transformer pilot execution coordinator", () => {
       actualCostUsd: 0.25,
       accounting: adaptiveAccounting({ actualCostUsd: 0.25, wallTimeMs: 60_000 }),
       observedAt: time(3),
-      evidenceRefs: ["evidence://operation/complete-checkpoint-terminal"],
+      evidenceRefs: [registration.candidateArtifactId, registration.executionArtifactId],
     } satisfies TransformerAttemptCompletionIntent;
     const completionDigest = createTransformerAttemptCompletionDigest(completionIntent);
     const completionRequestDigest = createTransformerCoordinatorCompletionRequestDigest(
@@ -968,12 +1076,14 @@ describe("Transformer pilot execution coordinator", () => {
     );
     const input = {
       ...mutation(3, "complete-checkpoint-terminal"),
+      evidenceRefs: completionIntent.evidenceRefs,
       idempotencyKey: completionIdentity.idempotencyKey,
       leaseToken,
       expectedStateDigest: current.stateDigest,
       nextCheckpointHead: terminal,
       candidateSeal,
       completionIntent,
+      artifactRegistration: registration,
       advisoryDispatchRequested: false,
       gateConfig: authorization,
     };
@@ -1000,6 +1110,13 @@ describe("Transformer pilot execution coordinator", () => {
       checkpointHead: terminal,
     });
     expect(store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(0);
+    expect(store.listPendingMissionArtifactRegistrations("tenant-a", 10)).toEqual([
+      expect.objectContaining({
+        attemptId: registration.attemptId,
+        candidateArtifactId: registration.candidateArtifactId,
+        executionArtifactId: registration.executionArtifactId,
+      }),
+    ]);
     expect(store.backfillVerifierAdvisoryDispatches({
       tenantId: "tenant-a",
       campaignId: "campaign-a",
@@ -1261,7 +1378,7 @@ describe("Transformer pilot execution coordinator", () => {
     store.close();
   });
 
-  it("rolls back the checkpoint state write when the advisory outbox insert fails, proving one transaction", () => {
+  it("rolls back checkpoint completion when the Mission artifact outbox insert fails", () => {
     const root = mkdtempSync(join(tmpdir(), "transformer-advisory-outbox-atomic-"));
     roots.push(root);
     const path = join(root, "pilot.sqlite");
@@ -1287,6 +1404,7 @@ describe("Transformer pilot execution coordinator", () => {
     });
     const terminal = checkpointHead(lease, 2, "a");
     const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    const registration = artifactRegistration(lease);
     const authorization = gateConfig();
     const candidateSeal = {
       schemaVersion: 1,
@@ -1315,7 +1433,7 @@ describe("Transformer pilot execution coordinator", () => {
       actualCostUsd: 0.25,
       accounting: adaptiveAccounting({ actualCostUsd: 0.25, wallTimeMs: 60_000 }),
       observedAt: time(3),
-      evidenceRefs: ["evidence://operation/complete-outbox-atomic"],
+      evidenceRefs: [registration.candidateArtifactId, registration.executionArtifactId],
     } satisfies TransformerAttemptCompletionIntent;
     const completionDigest = createTransformerAttemptCompletionDigest(completionIntent);
     const completionRequestDigest = createTransformerCoordinatorCompletionRequestDigest(
@@ -1331,29 +1449,31 @@ describe("Transformer pilot execution coordinator", () => {
     );
     const input = {
       ...mutation(3, "complete-outbox-atomic"),
+      evidenceRefs: completionIntent.evidenceRefs,
       idempotencyKey: completionIdentity.idempotencyKey,
       leaseToken,
       expectedStateDigest: current.stateDigest,
       nextCheckpointHead: terminal,
       candidateSeal,
       completionIntent,
-      advisoryDispatchRequested: true,
+      artifactRegistration: registration,
+      advisoryDispatchRequested: false,
       gateConfig: authorization,
     };
 
     // Snapshot the pre-completion state: the checkpoint state write and the
-    // advisory outbox insert must succeed or fail together as one transaction.
+    // Mission artifact outbox insert must succeed or fail together as one transaction.
     const beforeRevision = store.getCampaign("tenant-a", "campaign-a")!.revision;
     const beforeUnitState = store.getCampaign("tenant-a", "campaign-a")!.units[0]!.state;
 
-    // Force only the advisory outbox INSERT to fail. If that insert shared no
+    // Force only the Mission artifact outbox INSERT to fail. If that insert shared no
     // transaction with the checkpoint state write (e.g. it ran after COMMIT),
     // the state write would already be durable and this failure would leave a
     // completed checkpoint with no dispatch.
     const raw = (store as unknown as { db: DatabaseSync }).db;
     const realPrepare = raw.prepare.bind(raw);
     (raw as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
-      if (sql.includes("INSERT INTO tf_pilot_verifier_advisory_outbox")) {
+      if (sql.includes("INSERT INTO tf_pilot_mission_artifact_outbox")) {
         return { run: () => { throw new Error("outbox_insert_boom"); } };
       }
       return realPrepare(sql);
@@ -1372,6 +1492,7 @@ describe("Transformer pilot execution coordinator", () => {
       event.type === "attempt.completed_with_checkpoint"
     )).toHaveLength(0);
     expect(store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(0);
+    expect(store.listPendingMissionArtifactRegistrations("tenant-a", 10)).toHaveLength(0);
     store.close();
   });
 
