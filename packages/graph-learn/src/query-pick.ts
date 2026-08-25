@@ -94,10 +94,10 @@ const RULES: Array<{
     },
     weight: 8,
   },
-  // No rule routes to `invariants_for_symbol` while PRESERVES_INVARIANT has no
-  // ingest producer. `migration_ready_units` is restored now that
-  // ingestManifestDependencies writes DEPENDS_ON; the handler still fails
-  // closed when that relation is empty.
+  // Both `migration_ready_units` and `invariants_for_symbol` now route: their
+  // producers are live (`ingestManifestDependencies` writes DEPENDS_ON,
+  // `ingestInvariantAnnotations` writes PRESERVES_INVARIANT). Each handler still
+  // fails closed when its relation is empty.
   {
     re: /ready\s+units|migration\s+ready|units\s+are\s+ready/i,
     op: "migration_ready_units",
@@ -109,6 +109,19 @@ const RULES: Array<{
       return { op: "migration_ready_units", campaignId };
     },
     weight: 7,
+  },
+  {
+    re: /invariant|preserves\s+behavior|what\s+does\s+\S+\s+preserve/i,
+    op: "invariants_for_symbol",
+    build: (_m, text) => {
+      const name =
+        text.match(/symbol[:\s]+([\w./:-]+)/i)?.[1] ??
+        text.match(/for\s+([A-Za-z_][\w.]*)/)?.[1] ??
+        text.match(/does\s+([A-Za-z_][\w.]*)/)?.[1] ??
+        "unknown";
+      return { op: "invariants_for_symbol", qualifiedName: name };
+    },
+    weight: 8,
   },
   {
     re: /latency|slo|p99|p50/i,

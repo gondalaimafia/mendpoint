@@ -11,6 +11,7 @@ import {
   reconcileAstCallTargets,
 } from "./ast-ingest.js";
 import { ingestManifestDependencies } from "./ingest-manifest-dependencies.js";
+import { ingestInvariantAnnotations } from "./ingest-invariants.js";
 
 export type LspSymbol = {
   name: string;
@@ -127,6 +128,7 @@ export function ingestLspSymbols(
       maxFiles: 200,
     });
     ingestManifestDependencies(db, { repoPath: opts.repoPath, repoId });
+    ingestInvariantAnnotations(db, { repoPath: opts.repoPath, repoId });
     return {
       repoId,
       symbols: ast.symbols,
@@ -203,6 +205,11 @@ export function ingestLspSymbols(
   }
   reconcileAstCallTargets(db, repoId);
   ingestManifestDependencies(db, {
+    repoPath: opts.repoPath,
+    repoId,
+    files: files.map((file) => ({ path: file.path, text: file.text })),
+  });
+  ingestInvariantAnnotations(db, {
     repoPath: opts.repoPath,
     repoId,
     files: files.map((file) => ({ path: file.path, text: file.text })),
