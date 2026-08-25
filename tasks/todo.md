@@ -3111,3 +3111,18 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Historical authority: repository scope, residency, or embedded-time mutations under the deterministic default identifier all fail before restrictive v2 is retained.
 - Egress: the dedicated production profile accepts only `https://api.deepseek.com`; plaintext, alternate-host, path, and whitespace variants fail before coordinator or worker startup.
 - Verification: 39 focused tests pass across 3 files.
+
+### 2026-08-25 Final MissionTask settlement review closure
+
+- [x] RED: prove a successful advisory job cannot remain done while its bound MissionTask remains `agent_working`.
+- [x] Couple fenced job completion and the review-first MissionTask handoff in one SQLite transaction.
+- [x] Prove a crash before commit rolls back both lifecycle writes, then replay reuses durable verifier telemetry without another provider call.
+- [x] Preserve current-main MissionTask claim bridging and refresh the same lease generation after synchronous preparation before a long attempt.
+- [x] Run advisory settlement, MissionTask bridge, and worker lease regressions.
+
+#### Review
+
+- Settlement: successful and already-verified advisory jobs finish with their deterministic job MissionTask at `human_review_required`, never stranded in `agent_working`.
+- Recovery: a simulated crash after handoff but before commit leaves the job running and the task agent-owned; replay performs no repeated provider work and commits both terminal records together.
+- Fencing: the short-lease regression now refreshes the existing generation immediately before the long attempt boundary. Lease ownership and generation checks remain unchanged.
+- Verification: the complete affected worker matrix passes 77 tests across 3 files, including the scheduler-resilient short-lease regression.

@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  claimNextJob, createDb, createMission, enqueueJob, failJob,
+  claimNextJob, createDb, createMission, enqueueJob, failJob, getJob,
+  getMissionTask,
   grantLearningConsent, insertConnectedRepository, insertPrincipal,
   insertRepositorySnapshot, insertTenant, linkRegaugeCampaignToMission,
-  listArtifactManifests, revokeLearningConsent, upsertScmConnection, type AppDb,
+  listArtifactManifests, missionTaskIdForJob, revokeLearningConsent,
+  upsertScmConnection, type AppDb,
 } from "@mendpoint/db";
 import { enqueueVerifierAdvisoryJob } from "@mendpoint/pipeline";
 import type { VerifierHttpRequest } from "@mendpoint/verifier";
@@ -16,6 +18,7 @@ import {
   runVerifierAdvisoryJob,
   VerifierProviderNoResponseError,
 } from "./verifier-advisory-job.js";
+import { bridgeClaimedJobToMissionTask } from "./mission-task-job-bridge.js";
 
 const roots: string[] = [];
 const dbs: AppDb[] = [];
@@ -121,6 +124,48 @@ describe("verifier advisory job runner", () => {
       .resolves.toMatchObject({ status: "verified", jobId: queued.jobId, telemetryDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) });
     expect(listArtifactManifests(db, "tenant_regauge_canary", "agent_verifier_telemetry")).toHaveLength(1);
     expect(transport.mock.calls.length).toBeGreaterThan(1);
+    expect(getMissionTask(db, "tenant_regauge_canary", missionTaskIdForJob(queued.jobId)))
+      .toMatchObject({ status: "human_review_required", handoffReason: "advisory_verification_review" });
+  });
+
+  it("atomically reconciles job completion and the review-first MissionTask handoff", async () => {
+    const db = setup();
+    const queued = enqueue(db);
+    const job = claimNextJob(db, ["verifier.advisory.verify"], {
+      tenantId: "tenant_regauge_canary",
+      workerId: "worker-a",
+      leaseMs: 60_000,
+      now: "2026-08-24T12:01:01.000Z",
+    })!;
+    bridgeClaimedJobToMissionTask(db, job, "2026-08-24T12:01:01.000Z");
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
+
+    await expect(runVerifierAdvisoryJob({
+      db,
+      job,
+      env: env(),
+      transport: { request: transport },
+      now: () => "2026-08-24T12:01:02.000Z",
+      operationHooks: {
+        afterMissionHandoffBeforeCommit: () => { throw new Error("simulated_settlement_crash"); },
+      },
+    })).rejects.toThrow("simulated_settlement_crash");
+    expect(getJob(db, queued.jobId, "tenant_regauge_canary")?.status).toBe("running");
+    expect(getMissionTask(db, "tenant_regauge_canary", missionTaskIdForJob(queued.jobId))?.status)
+      .toBe("agent_working");
+    const providerCalls = transport.mock.calls.length;
+
+    await expect(runVerifierAdvisoryJob({
+      db,
+      job,
+      env: env(),
+      transport: { request: transport },
+      now: () => "2026-08-24T12:01:03.000Z",
+    })).resolves.toMatchObject({ status: "already_verified" });
+    expect(transport).toHaveBeenCalledTimes(providerCalls);
+    expect(getJob(db, queued.jobId, "tenant_regauge_canary")?.status).toBe("done");
+    expect(getMissionTask(db, "tenant_regauge_canary", missionTaskIdForJob(queued.jobId)))
+      .toMatchObject({ status: "human_review_required", handoffReason: "advisory_verification_review" });
   });
 
   it("fails closed without reissuing when a process dies after the provider returns but before a receipt is durable", async () => {

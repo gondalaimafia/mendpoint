@@ -23,6 +23,7 @@ import {
   resolveVerifierGovernance,
   VerifierProviderNoResponseError,
 } from "./verifier-product-shadow.js";
+import { handoffCompletedJobToMissionReview } from "./mission-task-job-bridge.js";
 
 const BOOTSTRAP_PRINCIPAL_SUBJECT = "service:regauge-production-bootstrap";
 
@@ -43,6 +44,7 @@ export async function runVerifierAdvisoryJob(input: Readonly<{
   operationHooks?: Readonly<{
     afterProviderReturn?: () => void;
     afterProviderReceipt?: () => void;
+    afterMissionHandoffBeforeCommit?: () => void;
   }>;
 }>): Promise<RunVerifierAdvisoryJobResult> {
   const env = input.env ?? process.env;
@@ -129,11 +131,22 @@ export async function runVerifierAdvisoryJob(input: Readonly<{
     advisoryOnly: true,
     behaviorChanged: false,
   });
-  if (!completeJob(input.db, input.job.id, outcome, now(), {
-    workerId: input.job.lease_owner,
-    leaseGeneration: input.job.lease_generation,
-  })) {
-    throw new Error("verifier_advisory_lease_lost");
+  const settledAt = now();
+  const ownsTransaction = !input.db.raw.isTransaction;
+  if (ownsTransaction) input.db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    if (!completeJob(input.db, input.job.id, outcome, settledAt, {
+      workerId: input.job.lease_owner,
+      leaseGeneration: input.job.lease_generation,
+    })) {
+      throw new Error("verifier_advisory_lease_lost");
+    }
+    handoffCompletedJobToMissionReview(input.db, input.job, settledAt);
+    input.operationHooks?.afterMissionHandoffBeforeCommit?.();
+    if (ownsTransaction) input.db.raw.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
+    throw error;
   }
   return Object.freeze({
     status: outcome.status,

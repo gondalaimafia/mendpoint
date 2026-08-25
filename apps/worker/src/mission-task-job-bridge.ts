@@ -11,12 +11,14 @@
 import { createHash } from "node:crypto";
 import {
   ensureMissionTaskForJob,
+  getMissionTask,
   getMission,
   insertPrincipal,
   missionTaskIdForJob,
   recordExecutionCostFromRoutingLedger,
   resolveMissionForFettlerCampaign,
   resolveMissionForRegaugeCampaign,
+  transitionMissionTask,
   type ActualExecutionCostEntry,
   type AppDb,
   type Mission,
@@ -51,6 +53,17 @@ function parseRisk(value: unknown): MissionTaskRisk {
     return value;
   }
   return "medium";
+}
+
+function reviewTaskEvent(jobId: string): { eventId: string; idempotencyKey: string } {
+  const digest = createHash("sha256")
+    .update(`mission-task:job:${jobId}:human_review_required`)
+    .digest("hex")
+    .slice(0, 32);
+  return {
+    eventId: `e-mtask-${digest}`,
+    idempotencyKey: `mission-task-job:${jobId}:human_review_required`,
+  };
 }
 
 function missionTaskAgentPrincipal(db: AppDb, tenantId: string, createdAt: string) {
@@ -108,6 +121,40 @@ export function bridgeClaimedJobToMissionTask(
     assignedPrincipalId: agent.id,
     createdAt,
     correlationId: job.id,
+  });
+}
+
+/**
+ * Hand a successfully settled review-first job to a human without leaving its
+ * durable MissionTask in agent_working. Call this in the same transaction as
+ * job completion so a crash cannot commit only one side of the lifecycle.
+ */
+export function handoffCompletedJobToMissionReview(
+  db: AppDb,
+  job: BridgedJob,
+  createdAt: string,
+): MissionTask | undefined {
+  const mission = resolveBoundMissionForJob(db, job);
+  if (!mission) return undefined;
+  const task = bridgeClaimedJobToMissionTask(db, job, createdAt)
+    ?? getMissionTask(db, job.tenant_id, missionTaskIdForJob(job.id));
+  if (!task) throw new Error("mission_task_job_review_task_missing");
+  if (task.status === "human_review_required") return task;
+  if (task.status !== "agent_working" || !task.assignedPrincipalId) {
+    throw new Error("mission_task_job_review_transition_invalid");
+  }
+  const event = reviewTaskEvent(job.id);
+  return transitionMissionTask(db, {
+    tenantId: job.tenant_id,
+    taskId: task.id,
+    expectedRevision: task.revision,
+    to: "human_review_required",
+    actorPrincipalId: task.assignedPrincipalId,
+    assignedPrincipalId: task.assignedPrincipalId,
+    handoffReason: "advisory_verification_review",
+    ...event,
+    correlationId: job.id,
+    createdAt,
   });
 }
 

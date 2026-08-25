@@ -2682,7 +2682,8 @@ async function processJobsOnceUnfenced(
         };
       }
     }
-    const renewal = setInterval(() => {
+    const refreshJobLease = (): boolean => {
+      if (leaseLost) return false;
       try {
         if (
           !renewJobLease(db, job.id, {
@@ -2692,6 +2693,7 @@ async function processJobsOnceUnfenced(
         ) {
           leaseLost = true;
           leaseAbort.abort("lease_lost_during_warden");
+          return false;
         }
       } catch (error) {
         leaseLost = true;
@@ -2701,8 +2703,11 @@ async function processJobsOnceUnfenced(
             error instanceof Error ? error.message : String(error)
           }`,
         );
+        return false;
       }
-    }, Math.max(100, Math.floor(leaseMs / 3)));
+      return true;
+    };
+    const renewal = setInterval(refreshJobLease, Math.max(100, Math.floor(leaseMs / 3)));
     renewal.unref();
     try {
       // D3: when the job is bound to a real mission, put a MissionTask on the
@@ -3329,6 +3334,11 @@ async function processJobsOnceUnfenced(
                   );
                 }
               }
+              // Synchronous snapshot, policy, routing, and context preparation
+              // can consume much of a deliberately short lease before the
+              // attempt yields to the renewal timer. Refresh under the same
+              // generation immediately before the long-running boundary.
+              if (!refreshJobLease()) throw new Error("lease_lost_before_warden_attempt");
               const attempt = await runWardenAttempt({
                 mode: payload.mode ?? "repair",
                 scope: { tenantId: job.tenant_id, attemptId: job.id },

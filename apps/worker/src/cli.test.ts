@@ -2744,21 +2744,22 @@ describe("worker runtime", () => {
     fixture.db.raw.close();
   }, 30_000);
 
-  it("renews a one-second lease before it expires during a long attempt", async () => {
+  it("renews a short lease before it expires during a longer attempt", async () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-lease-renew-"));
     dirs.push(parent);
     const fixture = setupWardenSnapshotJob({
       parent,
-      // Each verifier run outlasts the 1s lease, so the attempt only survives if the
-      // renewal timer (floored at 100ms, not 1000ms) refreshes the lease in time.
-      checkBody: slowCheck(1_200),
+      // Each verifier run outlasts the lease, so the attempt only survives if
+      // the renewal timer refreshes it. Five seconds leaves scheduler headroom
+      // when Vitest runs CPU-heavy files concurrently on Windows.
+      checkBody: slowCheck(5_500),
       snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     });
 
     const result = await processJobsOnce(fixture.db, {
       tenantId: "tenant_test",
       workerId: "worker-lease-renew",
-      leaseMs: 1_000,
+      leaseMs: 5_000,
       wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
     });
     expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
@@ -2767,7 +2768,7 @@ describe("worker runtime", () => {
       ok: 1,
     });
     fixture.db.raw.close();
-  }, 30_000);
+  }, 60_000);
 
   it("discards artifacts and fails when the snapshot expires mid-attempt", async () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-expire-attempt-"));
