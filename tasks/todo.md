@@ -3205,3 +3205,24 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Root cause: the protected environment and pinned Git revision identify `codex/regauge-canary-baseline`, while the shared DeepSeek scope and workflow Policy Envelope required `main`; activation would fail before the dedicated coordinator could start.
 - Authority: the approved scope now names the exact canary branch. The workflow derives the envelope branch from the protected binding and separately rejects every branch except that approved value. Tenant, campaign, repository, model class, external-processing consent, advisory-only behavior, and expiry are unchanged.
 - Verification: 74 focused tests pass across the production workflow, shared advisory scope, worker profile, worker verifier job, coordinator dispatch, and bootstrap runtime. Full workspace typecheck, the optimized 50-route production build, and the complete GA policy and evidence gate pass; YAML parsing and diff integrity are clean. The register remains honest at 28 verified foundational requirements, with ReGauge still explicitly non-GA.
+
+### 2026-08-25 ReGauge authenticated state transfer
+
+- [x] Define a versioned, authenticated, encrypted transfer manifest for the exact four live SQLite stores and immutable authority bindings.
+- [x] Snapshot live WAL databases consistently under a persistent mutation fence and retain integrity, schema, row-count, foreign-key, and ledger-tip evidence.
+- [x] Restore create-only into an empty target, verify exact evidence, and classify rollback as safe only before target authority advances.
+- [x] Add a bounded state-transfer CLI and reuse the immutable object-store publication contract without exposing secrets.
+- [x] Configure both ReGauge manifests for cooperative fencing and require an authenticated restore receipt before target coordinator startup and credential staging.
+- [x] Prove historical checkpoint delivery remains readable while execution and completed provider work cannot replay.
+- [x] Run focused cutover, workflow, checkpoint, typecheck, build, GA, dependency-audit, and diff-integrity gates.
+- [ ] Obtain exact-head review and current-base CI before merge. Do not activate production in this PR.
+
+#### Review
+
+- The transfer engine now uses the production mutation-admission `exclusive.json` marker plus an authenticated cutover marker. New API and worker mutations are refused while the source is frozen, and thaw requires a signed proof that the target ledgers and replay-sensitive activity have not advanced.
+- The exact four live WAL databases are snapshot with `VACUUM INTO`, encrypted independently with AES-256-GCM, and bound by a canonical HMAC manifest to tenant, campaign, source app, source volume, source revision, target app, target volume, object prefix, and fingerprints of the application and checkpoint keys.
+- The bounded state-transfer script publishes an immutable commit-last object bundle, verifies it after download, restores create-only, publishes a signed recovery receipt only after target verification, and refuses key reuse or binding drift. The production workflow now checks that durable receipt before it stages delivery or model credentials or starts either target process.
+- Replay verification: 97 tests pass across checkpoint storage and readability, checkpoint lifecycle, crash resume without replay, pilot execution, adaptive draft delivery, and advisory-provider idempotency.
+- Repository verification: the full test command passes every workspace and all 29 script suites, including 266 script tests. Full workspace typecheck, the optimized 50-route production build, workflow YAML parsing, GA policy checks, diff integrity, and the production dependency audit all pass; the audit reports zero vulnerabilities.
+- The create-only restore now rejects a missing or filesystem-aliased target parent before writing decrypted state outside the intended mounted-volume path.
+- Exact-head review, current-base CI, and the live cutover remain pending. No production activation occurred in this PR.

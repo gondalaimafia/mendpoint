@@ -182,3 +182,23 @@ export {
   type SloEvidence,
   type SloReport,
 } from "./service-health.js";
+export {
+  REGAUGE_TRANSFER_DATABASES,
+  acquireRegaugeCutoverFence,
+  inspectRegaugeCutoverFence,
+  createRegaugeStateTransfer,
+  verifyRegaugeStateTransfer,
+  restoreRegaugeStateTransfer,
+  verifyRestoredRegaugeState,
+  inspectRegaugeLedgerTips,
+  classifyRegaugeSourceRollback,
+  thawRegaugeCutoverFence,
+  type RegaugeTransferDatabase,
+  type RegaugeTransferBindings,
+  type RegaugeLedgerTip,
+  type RegaugeDatabaseEvidence,
+  type RegaugeTransferManifest,
+  type RegaugeRollbackActivity,
+  type RegaugeRollbackProof,
+  type RegaugeCutoverFence,
+} from "./regauge-cutover.js";
