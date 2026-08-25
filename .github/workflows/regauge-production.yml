@@ -151,11 +151,30 @@ jobs:
               }));
             '
           )"
+          policy_envelope="$(jq -cn --arg tenant "$MENDPOINT_REGAUGE_TENANT_ID" '{
+            policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824",
+            tenantId: $tenant,
+            version: 1,
+            repositoryScope: [],
+            branchScope: [],
+            forbiddenZones: [],
+            allowedTools: ["deepseek-verifier"],
+            allowedModelClasses: ["rented_specialist"],
+            externalProcessingAllowed: true,
+            residency: "cn",
+            riskCeiling: "high",
+            reviewRequired: true,
+            deploymentAllowed: false,
+            trainingDataAllowed: false,
+            retentionDays: 90,
+            createdAt: "2026-08-24T00:00:00.000Z"
+          }')"
           {
             echo "MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF=$approval_ref"
             echo "MENDPOINT_REGAUGE_EVIDENCE_REFS=$approval_ref,$evidence_ref"
             echo "MENDPOINT_REGAUGE_GATE=$gate"
             echo "MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT=$activation_expires_at"
+            echo "MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON=$policy_envelope"
           } >> "$GITHUB_ENV"
       - name: Validate exact authority before mutation
         shell: bash
@@ -188,11 +207,18 @@ jobs:
             MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION
             MENDPOINT_REGAUGE_LIVE_EVAL_MAX_USD
             DEEPSEEK_API_KEY MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON
-            MENDPOINT_AGENT_VERIFIER_PRICING_JSON
+            MENDPOINT_AGENT_VERIFIER_PRICING_JSON MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON
           )
           for name in "${required[@]}"; do
             test -n "${!name:-}" || { echo "Missing required Regauge production authority: $name"; exit 1; }
           done
+          jq -e --arg tenant "$MENDPOINT_REGAUGE_TENANT_ID" '
+            .schemaVersion == "2026-08-17.v1"
+            and ([.entries[] | select(.tenantId == $tenant and (.products | index("regauge")))] | length) == 1
+            and ([.entries[] | select(.tenantId == $tenant and (.products | index("regauge")))][0]
+              | .externalModelAllowed == true and .mayLeaveTenantBoundary == true and .consentActive == true)
+          ' <<<"$MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON" >/dev/null \
+            || { echo "regauge_deepseek_governance_not_authorized"; exit 1; }
           mkdir -p test-results/regauge-production
       - name: Verify dedicated app and coordinator volume
         shell: bash
@@ -280,7 +306,7 @@ jobs:
             OPENAI_API_KEY="$OPENAI_API_KEY" \
             DEEPSEEK_VERIFIER_ENABLED=true \
             DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-            MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=shadow \
+            MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=advisory \
             MENDPOINT_AGENT_VERIFIER_SCORING_MODE=nonthinking_logprobs \
             MENDPOINT_AGENT_VERIFIER_EVALUATIONS=1 \
             MENDPOINT_AGENT_VERIFIER_PIVOTS=1 \
@@ -290,6 +316,7 @@ jobs:
             MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES=0 \
             MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON="$MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON" \
             MENDPOINT_AGENT_VERIFIER_PRICING_JSON="$MENDPOINT_AGENT_VERIFIER_PRICING_JSON" \
+            MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON="$MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON" \
             GITHUB_APP_ID="$GITHUB_APP_ID" \
             GITHUB_APP_PRIVATE_KEY="$GITHUB_APP_PRIVATE_KEY" \
             GITHUB_WEBHOOK_SECRET="$GITHUB_WEBHOOK_SECRET" \

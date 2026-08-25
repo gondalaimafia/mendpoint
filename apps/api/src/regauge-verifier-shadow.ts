@@ -1,10 +1,17 @@
 import { createHash } from "node:crypto";
-import { getPrincipalBySubject, type AppDb } from "@mendpoint/db";
+import {
+  getConnectedRepository,
+  getPrincipalBySubject,
+  resolveMissionForRegaugeCampaign,
+  type AppDb,
+} from "@mendpoint/db";
 import type { TransformerAttemptCheckpointCompletionResult } from "@mendpoint/transformer";
 import {
-  observeProductCompletionInShadow,
-  type ProductCompletionShadowInput,
-} from "@mendpoint/worker/verifier-product-shadow";
+  enqueueVerifierAdvisoryJob,
+  reconcileVerifierAdvisoryPolicyAuthority,
+  type EnqueueVerifierAdvisoryResult,
+  type ProductCompletionAdvisoryInput,
+} from "@mendpoint/pipeline";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
@@ -12,7 +19,8 @@ const BOOTSTRAP_PRINCIPAL_SUBJECT = "service:regauge-production-bootstrap";
 
 export function buildDedicatedRegaugeCompletionInput(
   result: TransformerAttemptCheckpointCompletionResult,
-): ProductCompletionShadowInput {
+  missionId: string,
+): ProductCompletionAdvisoryInput {
   const { campaign, receipt } = result;
   const units = campaign.units.filter((candidate) => candidate.id === receipt.unitId);
   const unit = units[0];
@@ -24,7 +32,7 @@ export function buildDedicatedRegaugeCompletionInput(
       !ID.test(unit.snapshot.repositoryId) || !DIGEST.test(unit.snapshot.digest) ||
       !DIGEST.test(unit.candidateDigest) || !DIGEST.test(receipt.completionDigest) ||
       unit.changedPaths.length === 0 || unit.executionEvidenceRefs.length === 0) {
-    throw new Error("regauge_verifier_shadow_completion_invalid");
+    throw new Error("regauge_verifier_advisory_completion_invalid");
   }
   const taskId = `${campaign.campaignId}:${unit.id}`;
   const candidateId = `regauge_${createHash("sha256")
@@ -33,10 +41,11 @@ export function buildDedicatedRegaugeCompletionInput(
     .digest("hex").slice(0, 32)}`;
   return Object.freeze({
     tenantId: campaign.tenantId,
-    missionId: campaign.campaignId,
+    missionId,
     taskId,
     product: "regauge",
     repositoryId: unit.snapshot.repositoryId,
+    snapshotId: unit.snapshot.snapshotId,
     snapshotDigest: unit.snapshot.digest,
     objective: `Execute the bound ${unit.recipe.id} migration for unit ${unit.id}.`,
     risk: "high",
@@ -51,14 +60,16 @@ export function buildDedicatedRegaugeCompletionInput(
   });
 }
 
-export async function observeDedicatedRegaugeCompletionInShadow(input: Readonly<{
+export function enqueueDedicatedRegaugeCompletionForAdvisory(input: Readonly<{
   db: AppDb;
   env?: Readonly<Record<string, string | undefined>>;
   completion: TransformerAttemptCheckpointCompletionResult;
-  transport?: Parameters<typeof observeProductCompletionInShadow>[0]["transport"];
-  observer?: typeof observeProductCompletionInShadow;
-}>): ReturnType<typeof observeProductCompletionInShadow> {
-  const completion = buildDedicatedRegaugeCompletionInput(input.completion);
+}>): EnqueueVerifierAdvisoryResult {
+  const env = input.env ?? process.env;
+  const campaign = input.completion.campaign;
+  const mission = resolveMissionForRegaugeCampaign(input.db, campaign.tenantId, campaign.campaignId);
+  if (!mission) throw new Error("regauge_verifier_advisory_mission_missing");
+  const completion = buildDedicatedRegaugeCompletionInput(input.completion, mission.id);
   const principal = getPrincipalBySubject(
     input.db,
     completion.tenantId,
@@ -68,16 +79,49 @@ export async function observeDedicatedRegaugeCompletionInShadow(input: Readonly<
   if (!principal || principal.revoked_at && principal.revoked_at <= completion.observedAt ||
       principal.expires_at && principal.expires_at <= completion.observedAt ||
       principal.created_at > completion.observedAt) {
-    throw new Error("regauge_verifier_shadow_principal_invalid");
+    throw new Error("regauge_verifier_advisory_principal_invalid");
   }
-  const observer = input.observer ?? observeProductCompletionInShadow;
-  return await observer({
-    db: input.db,
-    env: Object.freeze({
-      ...(input.env ?? process.env),
-      MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID: principal.id,
-    }),
+  const repository = getConnectedRepository(input.db, completion.repositoryId, completion.tenantId);
+  if (!repository || repository.id !== mission.repositoryId || completion.snapshotId !== mission.snapshotId) {
+    throw new Error("regauge_verifier_advisory_mission_scope_invalid");
+  }
+  const processingRegion = resolveProcessingRegion(env, completion.tenantId);
+  const policyEnvelopeJson = env.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON?.trim();
+  if (!policyEnvelopeJson) throw new Error("regauge_verifier_advisory_policy_required");
+  reconcileVerifierAdvisoryPolicyAuthority(input.db, {
     completion,
-    ...(input.transport ? { transport: input.transport } : {}),
+    policyEnvelopeJson,
+    actorPrincipalId: principal.id,
+    branch: repository.selected_branch,
+    processingRegion,
+    createdAt: completion.observedAt,
   });
+  return enqueueVerifierAdvisoryJob(input.db, {
+    completion,
+    producerPrincipalId: principal.id,
+    createdAt: completion.observedAt,
+  });
+}
+
+function resolveProcessingRegion(
+  env: Readonly<Record<string, string | undefined>>,
+  tenantId: string,
+): string {
+  let value: unknown;
+  try { value = JSON.parse(env.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON?.trim() ?? ""); }
+  catch { throw new Error("regauge_verifier_advisory_governance_invalid"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("regauge_verifier_advisory_governance_invalid");
+  }
+  const entries = (value as Record<string, unknown>).entries;
+  if (!Array.isArray(entries)) throw new Error("regauge_verifier_advisory_governance_invalid");
+  const matches = entries.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry) &&
+    (entry as Record<string, unknown>).tenantId === tenantId &&
+    Array.isArray((entry as Record<string, unknown>).products) &&
+    ((entry as Record<string, unknown>).products as unknown[]).includes("regauge"));
+  const region = matches.length === 1 ? (matches[0] as Record<string, unknown>).processingRegion : null;
+  if (typeof region !== "string" || !region.trim()) {
+    throw new Error("regauge_verifier_advisory_governance_invalid");
+  }
+  return region;
 }

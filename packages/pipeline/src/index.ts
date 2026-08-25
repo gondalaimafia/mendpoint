@@ -97,6 +97,7 @@ export * from "./mission-graph-binding.js";
 export * from "./tenant-graph-handle.js";
 export * from "./mission-policy-enforcement.js";
 export * from "./verifier-telemetry.js";
+export * from "./verifier-advisory-job.js";
 export * from "./calibration-report.js";
 import { resolveTenantGraphHandle } from "./tenant-graph-handle.js";
 import { pinPublishedGraphVersionOnSingleRepoFettlerMissions } from "./mission-graph-binding.js";
@@ -2304,4 +2305,3 @@ export function extractPatternsFromPrBody(body: string): string[] {
   }
   return [...out].slice(0, 20);
 }
-

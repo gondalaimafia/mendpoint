@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { findActiveLearningConsent, recordAudit, type AppDb } from "@mendpoint/db";
-import { claimVerifierShadowAttempt, persistVerifierTelemetry } from "@mendpoint/pipeline";
+import {
+  findVerifierTelemetry,
+  persistVerifierTelemetry,
+  type ProductCompletionAdvisoryInput,
+} from "@mendpoint/pipeline";
 import {
   createCompletionVerifierEvidencePack,
   resolveVerifierRuntimeConfig,
@@ -9,9 +13,8 @@ import {
   type VerifierHttpTransport,
   type VerifierPricing,
   type VerifierProduct,
-  type VerifierRisk,
 } from "@mendpoint/verifier";
-import { createVerifierShadowRuntime } from "./verifier-shadow.js";
+import { createVerifierAdvisoryRuntime } from "./verifier-shadow.js";
 
 // The verifier sends tenant repository content to an EXTERNAL third-party model
 // (DeepSeek) for independent scoring. That egress is a categorically different
@@ -21,39 +24,22 @@ import { createVerifierShadowRuntime } from "./verifier-shadow.js";
 // so a grant for one must never be read as a grant for the other. A distinct
 // consent purpose keeps the two authorizations separate.
 export const VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE = "verifier-external-model-egress";
+export const RETRYABLE_VERIFIER_FAILURE_CODES = new Set(["api_failure", "logprob_failure"] as const);
 
-export type ProductCompletionShadowInput = Readonly<{
-  tenantId: string;
-  missionId: string;
-  taskId: string;
-  product: VerifierProduct;
-  repositoryId: string;
-  snapshotDigest: string;
-  objective: string;
-  risk: VerifierRisk;
-  allowedChangedPaths: readonly string[];
-  candidateId: string;
-  candidateDigest: string;
-  changedPaths: readonly string[];
-  observableSummary: string;
-  deterministicEvidenceDigest: string;
-  deterministicEvidenceRefs: readonly string[];
-  observedAt: string;
-}>;
-
-export async function observeProductCompletionInShadow(input: Readonly<{
+export async function observeProductCompletionInAdvisory(input: Readonly<{
   db: AppDb;
   env?: Readonly<Record<string, string | undefined>>;
-  completion: ProductCompletionShadowInput;
+  completion: ProductCompletionAdvisoryInput;
   transport?: VerifierHttpTransport;
+  authorityAt?: string;
 }>): Promise<AgentVerifierResult | null> {
   const env = input.env ?? process.env;
   const runtimeConfig = resolveVerifierRuntimeConfig(env);
   // `off` never observes; `offline` never egresses from this production path
-  // (see createVerifierShadowRuntime). Refuse both before building an evidence
+  // (see createVerifierAdvisoryRuntime). Refuse both before building an evidence
   // pack or claiming an attempt, so offline never even prepares tenant content.
   if (!runtimeConfig.enabled || runtimeConfig.rolloutMode === "off" || runtimeConfig.rolloutMode === "offline") return null;
-  const governance = resolveGovernance(env, input.completion.tenantId, input.completion.product);
+  const governance = resolveVerifierGovernance(env, input.completion.tenantId, input.completion.product);
   // Tenant consent for external-model egress is resolved from the append-only
   // `learning_consents` table, NOT from the process-wide governance env blob, so
   // a tenant that revokes consent stops egressing on the next completion without
@@ -61,7 +47,8 @@ export async function observeProductCompletionInShadow(input: Readonly<{
   // an unreadable table all deny (see resolveExternalModelConsent). The operator
   // env governance is retained as an ADDITIONAL restriction below: consent grants
   // permission but cannot override the operator's off switch.
-  const consent = resolveExternalModelConsent(input.db, input.completion.tenantId, input.completion.observedAt);
+  const authorityAt = input.authorityAt ?? input.completion.observedAt;
+  const consent = resolveExternalModelConsent(input.db, input.completion.tenantId, authorityAt);
   const pricing = resolvePricing(env);
   const principalId = env.MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID?.trim() || null;
   const pack = createCompletionVerifierEvidencePack({
@@ -86,19 +73,30 @@ export async function observeProductCompletionInShadow(input: Readonly<{
     assemblerVersion: "mendpoint-worker-completion-verifier/1",
   });
   const verificationAttemptId = `completion_${input.completion.taskId}`;
-  if (!claimVerifierShadowAttempt(input.db, {
+  // A dispatch intent proves only that work was requested. It is never a replay
+  // terminal: only validated, durable telemetry proves the provider result was
+  // recorded. This lets a queue retry after a timeout without permanently
+  // suppressing the attempt that failed between intent and telemetry.
+  if (findVerifierTelemetry(input.db, {
     tenantId: input.completion.tenantId,
     verificationAttemptId,
     evidencePackDigest: pack.packDigest,
-    observedAt: input.completion.observedAt,
-    producerPrincipalId: principalId,
   })) return null;
-  const runtime = createVerifierShadowRuntime({
+  const runtime = createVerifierAdvisoryRuntime({
     env,
     pricing,
     ...(input.transport ? { transport: input.transport } : {}),
     actorId: principalId ?? "mendpoint-verifier-worker",
-    persistTelemetry: async (telemetry) => { persistVerifierTelemetry(input.db, { telemetry, producerPrincipalId: principalId }); },
+    // A provider or log-probability transport failure is not a completed
+    // verification. The durable queue must retry it, so do not create the
+    // telemetry replay terminal for those two transient outcomes. Credential
+    // access remains audited; a later successful/definitive result is retained.
+    persistTelemetry: async (telemetry) => {
+      if (telemetry.failureCode && RETRYABLE_VERIFIER_FAILURE_CODES.has(
+        telemetry.failureCode as "api_failure" | "logprob_failure",
+      )) return;
+      persistVerifierTelemetry(input.db, { telemetry, producerPrincipalId: principalId });
+    },
     auditCredentialAccess: async (event) => {
       const id = `audit_verifier_${createHash("sha256").update([input.completion.tenantId, event.credentialId, event.requestId ?? "none", event.outcome, event.occurredAt].join("\0")).digest("hex").slice(0, 40)}`;
       recordAudit(input.db, {
@@ -119,11 +117,11 @@ export async function observeProductCompletionInShadow(input: Readonly<{
     pack,
     incumbentCandidateId: input.completion.candidateId,
     verificationAttemptId,
-    observedAt: input.completion.observedAt,
+    observedAt: authorityAt,
   });
 }
 
-function resolveGovernance(env: Readonly<Record<string, string | undefined>>, tenantId: string, product: VerifierProduct): Readonly<{ dataClassification: VerifierDataClassification; requiredRegion: string; processingRegion: string; consentId: string; evidenceRef: string; externalModelAllowed: boolean; mayLeaveTenantBoundary: boolean; consentActive: boolean }> {
+export function resolveVerifierGovernance(env: Readonly<Record<string, string | undefined>>, tenantId: string, product: VerifierProduct): Readonly<{ dataClassification: VerifierDataClassification; requiredRegion: string; processingRegion: string; consentId: string; evidenceRef: string; externalModelAllowed: boolean; mayLeaveTenantBoundary: boolean; consentActive: boolean }> {
   const raw = env.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON?.trim();
   if (!raw) fail("verifier_governance_configuration_required");
   let parsed: unknown;
@@ -185,3 +183,8 @@ function resolvePricing(env: Readonly<Record<string, string | undefined>>): Veri
 function record(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null); }
 function text(value: unknown): value is string { return typeof value === "string" && value.trim() === value && value.length > 0 && value.length <= 1024 && !/[\u0000-\u001f\u007f]/u.test(value); }
 function fail(code: string): never { throw new Error(code); }
+
+/** @deprecated Import ProductCompletionAdvisoryInput from @mendpoint/pipeline. */
+export type ProductCompletionShadowInput = ProductCompletionAdvisoryInput;
+/** @deprecated Import observeProductCompletionInAdvisory. */
+export const observeProductCompletionInShadow = observeProductCompletionInAdvisory;

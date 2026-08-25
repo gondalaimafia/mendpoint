@@ -256,7 +256,7 @@ function secureUrl(value: string | undefined, code: string): void { let parsed: 
 function validateVerifierProfile(env: NodeJS.ProcessEnv, tenantId: string): void {
   const exactProfile = {
     DEEPSEEK_VERIFIER_ENABLED: "true",
-    MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
+    MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory",
     MENDPOINT_AGENT_VERIFIER_SCORING_MODE: "nonthinking_logprobs",
     MENDPOINT_AGENT_VERIFIER_EVALUATIONS: "1",
     MENDPOINT_AGENT_VERIFIER_PIVOTS: "1",
@@ -288,10 +288,30 @@ function validateVerifierProfile(env: NodeJS.ProcessEnv, tenantId: string): void
       typeof entry.externalModelAllowed !== "boolean" ||
       typeof entry.mayLeaveTenantBoundary !== "boolean" ||
       typeof entry.consentActive !== "boolean" ||
-      new Set([entry.externalModelAllowed, entry.mayLeaveTenantBoundary, entry.consentActive]).size !== 1 ||
+      entry.externalModelAllowed !== true || entry.mayLeaveTenantBoundary !== true ||
+      entry.consentActive !== true ||
       typeof entry.consentId !== "string" || !entry.consentId.trim() ||
       typeof entry.evidenceRef !== "string" || !entry.evidenceRef.trim()) {
     throw new Error("transformer_production_verifier_governance_invalid");
+  }
+  let policy: unknown;
+  try { policy = JSON.parse(required(env.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON, "transformer_production_verifier_policy_invalid")); }
+  catch { throw new Error("transformer_production_verifier_policy_invalid"); }
+  const policyKeys = ["allowedModelClasses", "allowedTools", "branchScope", "createdAt",
+    "deploymentAllowed", "externalProcessingAllowed", "forbiddenZones", "policyEnvelopeId",
+    "repositoryScope", "residency", "retentionDays", "reviewRequired", "riskCeiling", "tenantId",
+    "trainingDataAllowed", "version"].sort().join(",");
+  if (!plain(policy) || Object.keys(policy).sort().join(",") !== policyKeys ||
+      policy.tenantId !== tenantId || policy.policyEnvelopeId !== "regauge-deepseek-v4-flash-advisory-20260824" ||
+      policy.version !== 1 || JSON.stringify(policy.repositoryScope) !== "[]" ||
+      JSON.stringify(policy.branchScope) !== "[]" || JSON.stringify(policy.forbiddenZones) !== "[]" ||
+      JSON.stringify(policy.allowedTools) !== JSON.stringify(["deepseek-verifier"]) ||
+      JSON.stringify(policy.allowedModelClasses) !== JSON.stringify(["rented_specialist"]) ||
+      policy.externalProcessingAllowed !== true || policy.residency !== "cn" ||
+      policy.riskCeiling !== "high" || policy.reviewRequired !== true ||
+      policy.deploymentAllowed !== false || policy.trainingDataAllowed !== false ||
+      policy.retentionDays !== 90 || policy.createdAt !== "2026-08-24T00:00:00.000Z") {
+    throw new Error("transformer_production_verifier_policy_invalid");
   }
   let pricing: unknown;
   try { pricing = JSON.parse(required(env.MENDPOINT_AGENT_VERIFIER_PRICING_JSON, "transformer_production_verifier_pricing_invalid")); }

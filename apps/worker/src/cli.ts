@@ -14,7 +14,10 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  enqueueVerifierAdvisoryJob,
+  reconcileVerifierAdvisoryPolicyAuthority,
   runChangePipeline,
+  VERIFIER_ADVISORY_JOB_TYPE,
   type DelegatedPrCandidateOperationDependencies,
   type DelegatedPrVerificationDependencies,
   type PipelineReport,
@@ -67,6 +70,9 @@ import {
   listVersionsForProvider,
   settleActiveWardenModelReservationsForFence,
   settleWardenCiRepairWithoutCandidate,
+  getMission,
+  getPrincipalBySubject,
+  resolveMissionForRegaugeCampaign,
   type AppDb,
   type FeedScheduleRow,
 } from "@mendpoint/db";
@@ -187,7 +193,6 @@ import { resolveBoundMission } from "./job-bound-mission.js";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 import { resolveResumeContext } from "./mission-resume.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
-import { observeProductCompletionInShadow } from "./verifier-product-shadow.js";
 import {
   parseLearningCorpusArgs,
   sealGovernedLearningCorpus,
@@ -196,6 +201,11 @@ import {
   bridgeClaimedJobToMissionTask,
   recordBoundMissionExecutionCost,
 } from "./mission-task-job-bridge.js";
+import {
+  observeProductCompletionInAdvisory,
+  resolveVerifierGovernance,
+} from "./verifier-product-shadow.js";
+import { runVerifierAdvisoryJob } from "./verifier-advisory-job.js";
 
 function verifierDigest(value: string): string {
   if (/^sha256:[a-f0-9]{64}$/.test(value)) return value;
@@ -553,7 +563,7 @@ export function classifyJobFailure(error: unknown): {
     );
   const retryable =
     !authorizationFailure &&
-    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed/.test(
+    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable/.test(
         normalized,
       );
   const errorCode = explicitCode ?? (retryable
@@ -1775,13 +1785,16 @@ export function validateWorkerProductionEnv(
     errors.push("DEEPSEEK_VERIFIER_ENABLED must be exactly true or false");
   }
   if (verifierEnabled === "true") {
-    const rollout = env.MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE?.trim() || "shadow";
-    if (rollout !== "shadow" && rollout !== "offline") {
-      errors.push("The first verifier release permits only offline or shadow rollout");
+    const rollout = env.MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE?.trim() || "advisory";
+    if (rollout !== "advisory" && rollout !== "offline") {
+      errors.push("The production verifier permits only offline or advisory rollout");
     }
     if (!env.DEEPSEEK_API_KEY?.trim()) errors.push("DEEPSEEK_API_KEY is required when independent verification is enabled");
     if (!env.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON?.trim()) errors.push("MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON is required when independent verification is enabled");
     if (!env.MENDPOINT_AGENT_VERIFIER_PRICING_JSON?.trim()) errors.push("MENDPOINT_AGENT_VERIFIER_PRICING_JSON is required when independent verification is enabled");
+    if (rollout === "advisory" && !env.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON?.trim()) {
+      errors.push("MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON is required for advisory verification");
+    }
   }
   const hasAnyAppCredential = Boolean(
     env.GITHUB_APP_ID?.trim() ||
@@ -2603,6 +2616,9 @@ async function processJobsOnceUnfenced(
     const claimedTypes = ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver",
       "warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update",
       "fettler.pr.review", "transformer.adaptive.deliver", LEARNING_OUTCOME_RESOLVE_JOB_TYPE];
+    if (workerEnv.DEEPSEEK_VERIFIER_ENABLED?.trim() === "true") {
+      claimedTypes.push(VERIFIER_ADVISORY_JOB_TYPE);
+    }
     if (delegatedPrVerification?.candidateDependencies.enabled === true &&
         delegatedPrVerification.verificationDependencies.enabled === true) {
       claimedTypes.push(DELEGATED_PR_VERIFICATION_JOB_TYPE);
@@ -2681,6 +2697,11 @@ async function processJobsOnceUnfenced(
       // D3: when the job is bound to a real mission, put a MissionTask on the
       // live claim path (unassigned → agent_working). Unbound jobs stay unbound.
       bridgeClaimedJobToMissionTask(db, job, nowIso());
+      if (job.type === VERIFIER_ADVISORY_JOB_TYPE) {
+        await runVerifierAdvisoryJob({ db, job, env: workerEnv });
+        result.succeeded++;
+        continue;
+      }
       if (job.type === DELEGATED_PR_VERIFICATION_JOB_TYPE) {
         if (!delegatedPrVerification) throw new Error("delegated_pr_verification_disabled");
         const verification = await runDelegatedPrVerificationJob(db, {
@@ -3557,7 +3578,7 @@ async function processJobsOnceUnfenced(
         }
         if (attempt.status === "succeeded") {
           try {
-            await observeProductCompletionInShadow({
+            await observeProductCompletionInAdvisory({
               db,
               env: workerEnv,
               completion: {
@@ -3566,6 +3587,7 @@ async function processJobsOnceUnfenced(
                 taskId: job.id,
                 product: "fettler",
                 repositoryId: binding.repositoryId,
+                snapshotId: binding.snapshotId,
                 snapshotDigest: verifierDigest(binding.manifestSha256),
                 objective: executionGoal,
                 risk: payload.ciFailure ? "high" : "medium",
@@ -4200,27 +4222,59 @@ async function runService(intervalMs: number) {
           shouldContinue: () => !shutdown.signal.aborted,
           adaptiveCandidateDataRoot: dataRoot,
           onVerifiedCandidateCompleted: async ({ lease, execution, artifact, observedAt }) => {
-            await observeProductCompletionInShadow({
-              db: transformerDb,
-              env: process.env,
-              completion: {
-                tenantId: lease.tenantId,
-                missionId: lease.campaignId,
-                taskId: `${lease.campaignId}:${lease.unitId}`,
-                product: "regauge",
-                repositoryId: lease.snapshot.repositoryId,
-                snapshotDigest: verifierDigest(lease.snapshot.digest),
-                objective: `Execute the bound ${lease.recipe.id} migration for unit ${lease.unitId}.`,
-                risk: "high",
-                allowedChangedPaths: lease.changedPaths,
-                candidateId: `regauge_${createHash("sha256").update([lease.campaignId, lease.unitId, String(lease.attemptNumber)].join("\0"), "utf8").digest("hex").slice(0, 32)}`,
-                candidateDigest: verifierDigest(artifact.outputDigest),
-                changedPaths: lease.changedPaths,
-                observableSummary: `The bound recipe completed ${execution.operations.length} operations and ${execution.commands.length} verification commands on the exact snapshot.`,
-                deterministicEvidenceDigest: verifierDigest(execution.evidence.digest),
-                deterministicEvidenceRefs: artifact.evidenceRefs,
-                observedAt,
-              },
+            const mission = resolveMissionForRegaugeCampaign(
+              transformerDb,
+              lease.tenantId,
+              lease.campaignId,
+            );
+            if (!mission) throw new Error("regauge_verifier_advisory_mission_missing");
+            const principal = getPrincipalBySubject(
+              transformerDb,
+              lease.tenantId,
+              "service",
+              "service:regauge-production-bootstrap",
+            );
+            if (!principal) throw new Error("regauge_verifier_advisory_principal_invalid");
+            const repository = getConnectedRepository(
+              transformerDb,
+              lease.snapshot.repositoryId,
+              lease.tenantId,
+            );
+            if (!repository) throw new Error("regauge_verifier_advisory_repository_invalid");
+            const completion = {
+              tenantId: lease.tenantId,
+              missionId: mission.id,
+              taskId: `${lease.campaignId}:${lease.unitId}`,
+              product: "regauge" as const,
+              repositoryId: lease.snapshot.repositoryId,
+              snapshotId: lease.snapshot.snapshotId,
+              snapshotDigest: verifierDigest(lease.snapshot.digest),
+              objective: `Execute the bound ${lease.recipe.id} migration for unit ${lease.unitId}.`,
+              risk: "high" as const,
+              allowedChangedPaths: lease.changedPaths,
+              candidateId: `regauge_${createHash("sha256").update([lease.campaignId, lease.unitId, String(lease.attemptNumber)].join("\0"), "utf8").digest("hex").slice(0, 32)}`,
+              candidateDigest: verifierDigest(artifact.outputDigest),
+              changedPaths: lease.changedPaths,
+              observableSummary: `The bound recipe completed ${execution.operations.length} operations and ${execution.commands.length} verification commands on the exact snapshot.`,
+              deterministicEvidenceDigest: verifierDigest(execution.evidence.digest),
+              deterministicEvidenceRefs: artifact.evidenceRefs,
+              observedAt,
+            };
+            const governance = resolveVerifierGovernance(process.env, lease.tenantId, "regauge");
+            const policyEnvelopeJson = process.env.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON?.trim();
+            if (!policyEnvelopeJson) throw new Error("verifier_advisory_policy_required");
+            reconcileVerifierAdvisoryPolicyAuthority(transformerDb, {
+              completion,
+              policyEnvelopeJson,
+              actorPrincipalId: principal.id,
+              branch: repository.selected_branch,
+              processingRegion: governance.processingRegion,
+              createdAt: observedAt,
+            });
+            enqueueVerifierAdvisoryJob(transformerDb, {
+              completion,
+              producerPrincipalId: principal.id,
+              createdAt: observedAt,
             });
           },
           ...transformerAdaptiveProductionPorts(process.env, transformerDb),

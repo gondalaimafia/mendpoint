@@ -305,7 +305,7 @@ import { createPlatformStateRoutes } from "./platform-state-routes.js";
 import { createTenantCreationRoutes } from "./tenant-creation-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { regaugeProductionBootstrapInputFromEnvironment } from "./regauge-production-bootstrap-runtime.js";
-import { observeDedicatedRegaugeCompletionInShadow } from "./regauge-verifier-shadow.js";
+import { enqueueDedicatedRegaugeCompletionForAdvisory } from "./regauge-verifier-shadow.js";
 import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
 import { loadTransformerRecipeSnapshot } from "@mendpoint/worker/transformer-snapshot-loader";
 import {
@@ -864,11 +864,9 @@ const transformerAttemptCoordinatorRoutes = createTransformerAttemptCoordinatorR
   store: transformerExecutions.store,
   gateConfig: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
   ...(transformerDraftAuthorization ? { draftAuthorization: transformerDraftAuthorization } : {}),
-  observeCompletedAttempt: (completion) => observeDedicatedRegaugeCompletionInShadow({
-    db,
-    env: process.env,
-    completion,
-  }).then(() => undefined),
+  observeCompletedAttempt: async (completion) => {
+    enqueueDedicatedRegaugeCompletionForAdvisory({ db, env: process.env, completion });
+  },
   loadExactSource: (lease, observedAt) => loadTransformerRecipeSnapshot(db, lease, observedAt),
   resolveDraftRepository: createTransformerDraftRepositoryAuthority(db, process.env),
 });

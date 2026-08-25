@@ -189,10 +189,15 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
         await options.observeCompletedAttempt(result as TransformerAttemptCheckpointCompletionResult);
       } catch (error) {
         console.error(JSON.stringify({
-          event: "regauge_verifier_shadow_observation_failed",
-          code: error instanceof Error ? error.message : "verifier_shadow_unknown",
+          event: "regauge_verifier_advisory_dispatch_failed",
+          code: error instanceof Error ? error.message : "verifier_advisory_unknown",
           observedAt,
         }));
+        // Completion is already durable. Return an error so the caller retries
+        // the exact completion receipt; the replay then re-enters this enqueue
+        // seam and either creates the missing advisory job or proves the exact
+        // job already exists. Swallowing here would strand completed work.
+        throw error;
       }
     }
     return c.json({ result: result === undefined ? null : result, serverTime: observedAt });

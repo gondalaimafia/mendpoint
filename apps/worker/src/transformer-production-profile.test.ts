@@ -114,7 +114,7 @@ describe("Transformer production profile", () => {
     });
   });
 
-  it("requires the bounded DeepSeek verifier shadow profile", () => {
+  it("requires the bounded DeepSeek verifier advisory profile", () => {
     for (const [name, value] of [
       ["DEEPSEEK_VERIFIER_ENABLED", "false"],
       ["DEEPSEEK_API_KEY", ""],
@@ -138,8 +138,12 @@ describe("Transformer production profile", () => {
       ...environment(),
       MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "{}",
     }, "coordinator")).toThrow("transformer_production_verifier_pricing_invalid");
+    expect(() => validateTransformerProductionProfile({
+      ...environment(),
+      MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: "{}",
+    }, "coordinator")).toThrow("transformer_production_verifier_policy_invalid");
     const mixedGovernance = JSON.parse(environment().MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON!);
-    mixedGovernance.entries[0].externalModelAllowed = true;
+    mixedGovernance.entries[0].externalModelAllowed = false;
     expect(() => validateTransformerProductionProfile({
       ...environment(),
       MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify(mixedGovernance),
@@ -340,7 +344,7 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() + 60 * 60_000).toISOString(),
     DEEPSEEK_VERIFIER_ENABLED: "true",
     DEEPSEEK_API_KEY: "deepseek-secret",
-    MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "shadow",
+    MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory",
     MENDPOINT_AGENT_VERIFIER_SCORING_MODE: "nonthinking_logprobs",
     MENDPOINT_AGENT_VERIFIER_EVALUATIONS: "1",
     MENDPOINT_AGENT_VERIFIER_PIVOTS: "1",
@@ -348,7 +352,8 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD: "0.05",
     MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS: "8000",
     MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES: "0",
-    MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant-a", products: ["regauge"], dataClassification: "confidential", requiredRegion: "cn", processingRegion: "cn", consentId: "pending-durable-consent", evidenceRef: "github-environment:regauge-production", externalModelAllowed: false, mayLeaveTenantBoundary: false, consentActive: false }] }),
+    MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant-a", products: ["regauge"], dataClassification: "confidential", requiredRegion: "cn", processingRegion: "cn", consentId: "consent-regauge", evidenceRef: "github-environment:regauge-production", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentActive: true }] }),
+    MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: "tenant-a", version: 1, repositoryScope: [], branchScope: [], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
     MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "deepseek-v4-flash-2026-08-21", currency: "USD", effectiveAt: "2026-08-21T00:00:00.000Z", inputPerMillion: 0.14, cachedInputPerMillion: 0.0028, outputPerMillion: 0.28 }),
   };
 }
