@@ -40,7 +40,7 @@ export const REGAUGE_DEEPSEEK_APPROVED_SCOPE = Object.freeze({
   repositoryOwner: "gondalaimafia",
   repositoryName: "mendpoint-canary-drill-20260801",
   repositoryFullName: "gondalaimafia/mendpoint-canary-drill-20260801",
-  branch: "main",
+  branch: "codex/regauge-canary-baseline",
   authorizationDeadline: "2026-11-20T23:59:59.000Z",
 });
 export const REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE =

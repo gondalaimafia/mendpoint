@@ -13,10 +13,12 @@ import {
 } from "@mendpoint/db";
 import type { VerifierTelemetry } from "@mendpoint/verifier";
 import {
+  assertRegaugeDeepSeekApprovedScope,
   enqueueVerifierAdvisoryJob,
   findVerifierTelemetry,
   readVerifierAdvisoryJobInput,
   readVerifierAdvisoryJobSubstantiveEvidence,
+  REGAUGE_DEEPSEEK_APPROVED_SCOPE,
 } from "./verifier-advisory-job.js";
 import { persistVerifierTelemetry } from "./verifier-telemetry.js";
 
@@ -82,6 +84,25 @@ function substantiveEvidence() {
 }
 
 describe("durable verifier advisory jobs", () => {
+  it("binds the authorized ReGauge advisory scope to the pinned canary branch", () => {
+    expect(REGAUGE_DEEPSEEK_APPROVED_SCOPE.branch)
+      .toBe("codex/regauge-canary-baseline");
+    expect(() => assertRegaugeDeepSeekApprovedScope({
+      tenantId: REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId,
+      campaignId: REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId,
+      repositoryOwner: REGAUGE_DEEPSEEK_APPROVED_SCOPE.repositoryOwner,
+      repositoryName: REGAUGE_DEEPSEEK_APPROVED_SCOPE.repositoryName,
+      repositoryBranch: REGAUGE_DEEPSEEK_APPROVED_SCOPE.branch,
+    })).not.toThrow();
+    expect(() => assertRegaugeDeepSeekApprovedScope({
+      tenantId: REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId,
+      campaignId: REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId,
+      repositoryOwner: REGAUGE_DEEPSEEK_APPROVED_SCOPE.repositoryOwner,
+      repositoryName: REGAUGE_DEEPSEEK_APPROVED_SCOPE.repositoryName,
+      repositoryBranch: "main",
+    })).toThrow("verifier_advisory_scope_invalid");
+  });
+
   it("stores content in a content addressed artifact and keeps the queue payload identifier only", () => {
     const db = setup();
     const first = enqueueVerifierAdvisoryJob(db, {
