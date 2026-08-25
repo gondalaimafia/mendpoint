@@ -21,6 +21,7 @@ import {
 import { hostname } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { REGAUGE_CUTOVER_FENCE_NAME } from "./disaster-recovery.js";
 
 export const REGAUGE_TRANSFER_DATABASES = Object.freeze([
   "change-sources.sqlite",
@@ -98,7 +99,7 @@ export type RegaugeCutoverFence = Readonly<{
 }>;
 
 const MANIFEST_NAME = "manifest.json";
-const FENCE_NAME = "regauge-cutover-fence.v1.json";
+const FENCE_NAME = REGAUGE_CUTOVER_FENCE_NAME;
 const EXCLUSIVE_FENCE_NAME = "exclusive.json";
 const RECOVERY_FENCE_NAME = "recovery.json";
 const WRITERS_DIRECTORY_NAME = "writers";

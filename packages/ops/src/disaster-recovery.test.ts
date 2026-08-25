@@ -20,6 +20,7 @@ import {
   createBackupBundle,
   inspectMutationFence,
   isBackupFenceActive,
+  REGAUGE_CUTOVER_FENCE_NAME,
   recoverStaleMutationMarker,
   resolveMutationFenceRoot,
   restoreBackupAtomically,
@@ -833,5 +834,36 @@ describe("disaster recovery", () => {
       ownerTerminationEvidence: "orchestrator-instance-destroyed-456",
     })).toMatchObject({ recovered: true, kind: "exclusive", markerId: exclusive.id });
     expect(isBackupFenceActive(fenceRoot)).toBe(false);
+  });
+
+  it("keeps a persistent ReGauge cutover hold closed against generic recovery", () => {
+    const secure = secureFixture();
+    const fenceRoot = join(secure.root, "regauge-cutover-fence");
+    mkdirSync(join(fenceRoot, "writers"), { recursive: true });
+    const exclusive = {
+      schemaVersion: 1,
+      kind: "exclusive",
+      id: "regauge-cutover",
+      ownerToken: "owner-token-regauge-cutover",
+      hostname: "retired-regauge-instance",
+      pid: 454545,
+      processStartedAt: "2026-08-25T00:00:00.000Z",
+      acquiredAt: "2026-08-25T00:00:00.000Z",
+    };
+    writeFileSync(join(fenceRoot, "exclusive.json"), `${JSON.stringify(exclusive)}\n`);
+    writeFileSync(join(fenceRoot, REGAUGE_CUTOVER_FENCE_NAME), "authenticated-cutover-hold\n");
+    const inspected = inspectMutationFence(fenceRoot).exclusive!;
+
+    expect(() => recoverStaleMutationMarker({
+      fenceRoot,
+      kind: "exclusive",
+      markerId: exclusive.id,
+      expectedMarkerSha256: inspected.markerSha256,
+      ownerTerminationEvidence: "old-regauge-machine-destroyed",
+    })).toThrow("backup_fence_recovery_persistent_hold_active");
+
+    rmSync(join(fenceRoot, "exclusive.json"));
+    expect(isBackupFenceActive(fenceRoot)).toBe(true);
+    expect(tryAcquireMutationLease(fenceRoot)).toBeNull();
   });
 });

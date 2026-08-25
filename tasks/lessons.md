@@ -167,3 +167,8 @@
 **Mistake:** I told Talal to install or enable the Edge integration even though he had already completed that setup.
 **Correction:** Talal confirmed the integration was already installed and the private key was already stored locally.
 **Rule:** When an authenticated browser is not visible, distinguish completed extension setup from a broken active connection. Retry once, run the supported connection diagnostics, and continue through authenticated CLI or local artifacts where possible instead of asking the user to repeat completed steps.
+
+### 2026-08-25 — Fetch the review workflow before draining agent PRs
+**Mistake:** I started a manual Cursor PR review after finding that the installed review skill pointed to a missing workflow.
+**Correction:** Talal required the necessary skills to be fetched and used, and required findings to be fixed before merge.
+**Rule:** When an applicable review skill is incomplete, fetch its current authoritative runtime before continuing. For agent-authored PRs, use the fetched adversarial review and fixer workflow, then re-review the exact fixed head and require current-base CI before merge.
