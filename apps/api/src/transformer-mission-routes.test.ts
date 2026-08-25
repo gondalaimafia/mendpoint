@@ -1,7 +1,28 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Hono } from "hono";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createDb,
+  getMissionPolicyEnvelope,
+  insertPrincipal,
+  resolveMissionForRegaugeCampaign,
+  type AppDb,
+} from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
 import { createTransformerMissionRoutes } from "./transformer-mission-routes.js";
+
+const dirs: string[] = [];
+const appDatabases: AppDb[] = [];
+
+afterEach(() => {
+  while (appDatabases.length) appDatabases.pop()?.raw.close();
+  while (dirs.length) {
+    const dir = dirs.pop();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function fixture(role: "engineer" | "viewer" = "engineer", trust = true) {
   const plan = vi.fn(() => ({ decision: "planned", blueprint: { id: "blueprint-a" } }));
@@ -92,5 +113,78 @@ describe("Transformer mission routes", () => {
       expect.objectContaining({ tenantId: "tenant-a", actorId: "human:issuer|planner" }),
       "mission-a",
     );
+  });
+
+  it("binds the App-DB Mission and default Policy Envelope on HTTP launch", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-mission-launch-bind-"));
+    dirs.push(dir);
+    const appDb = createDb(join(dir, "app.sqlite"));
+    appDatabases.push(appDb);
+    const at = "2026-08-25T00:00:00.000Z";
+    appDb.raw.prepare(
+      `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+       VALUES ('tenant-a','a','Tenant A','team','active',10,?)`,
+    ).run(at);
+    insertPrincipal(appDb, {
+      id: "principal-planner",
+      tenantId: "tenant-a",
+      kind: "human",
+      subject: "planner@example.com",
+      displayName: "Planner",
+      createdAt: at,
+    });
+    appDb.raw.prepare(`INSERT INTO scm_connections
+      (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+      VALUES ('conn-a','tenant-a','github','me://ref','acct','GitHub',?,?)`).run(at, at);
+    appDb.raw.prepare(`INSERT INTO connected_repositories
+      (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
+       environment, retention_days, status, created_at, updated_at)
+      VALUES ('repo-a','tenant-a','conn-a','1','acme','svc','main','main','production',30,'ready',?,?)`)
+      .run(at, at);
+    appDb.raw.prepare(`INSERT INTO repository_snapshots
+      (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+       submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+      VALUES ('snapshot-a','tenant-a','repo-a','main',?,?,'/tmp/snap-a','reject','reject','[]',1,?, '2026-09-01T00:00:00.000Z')`)
+      .run("b".repeat(40), "c".repeat(64), at);
+
+    const plan = vi.fn();
+    const launch = vi.fn(() => ({
+      campaignId: "mission-a",
+      state: "running",
+      units: [{
+        id: "unit-a",
+        snapshot: { repositoryId: "repo-a", snapshotId: "snapshot-a" },
+      }],
+    }));
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("principal", { id: "human:issuer|planner", tenantId: "tenant-a", role: "engineer" });
+      c.set("trustPrincipalId", "principal-planner");
+      c.set("requestId", "request-a");
+      await next();
+    });
+    app.route("/regauge/missions", createTransformerMissionRoutes({
+      service: { plan, launch } as never,
+      now: () => at,
+      appDb,
+    }));
+
+    const response = await app.request("/regauge/missions/mission-a/launch", {
+      method: "POST",
+      headers: { "idempotency-key": "launch-bind" },
+    });
+    expect(response.status).toBe(201);
+    expect(launch).toHaveBeenCalled();
+
+    const mission = resolveMissionForRegaugeCampaign(appDb, "tenant-a", "mission-a");
+    expect(mission).toMatchObject({
+      product: "regauge",
+      state: "executing",
+      ownerPrincipalId: "principal-planner",
+      repositoryId: "repo-a",
+      snapshotId: "snapshot-a",
+      policyEnvelopeVersion: "1",
+    });
+    expect(getMissionPolicyEnvelope(appDb, "tenant-a", mission!.id)).not.toBeNull();
   });
 });

@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { Hono, type Context } from "hono";
 import { can } from "@mendpoint/platform";
 import { resolveRenamedEnv } from "@mendpoint/shared";
+import type { AppDb } from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
+import { bindRegaugeMissionAtLaunch } from "./regauge-production-bootstrap-runtime.js";
 import { TransformerMissionService, type TransformerMissionPlanInput } from "./transformer-missions.js";
 
 const MAX_BODY_BYTES = 256_000;
@@ -83,10 +85,35 @@ function failure(c: Context<ApiEnv>, error: unknown) {
   return c.json({ error: "invalid_request", code }, 400);
 }
 
+function launchScopeRepositories(result: unknown): ReadonlyArray<Readonly<{
+  repositoryId: string;
+  snapshotId: string;
+}>> {
+  if (!result || typeof result !== "object") return [];
+  const units = (result as { units?: unknown }).units;
+  if (!Array.isArray(units)) return [];
+  const seen = new Set<string>();
+  const repositories: Array<{ repositoryId: string; snapshotId: string }> = [];
+  for (const unit of units) {
+    if (!unit || typeof unit !== "object") continue;
+    const snapshot = (unit as { snapshot?: unknown }).snapshot;
+    if (!snapshot || typeof snapshot !== "object") continue;
+    const repositoryId = (snapshot as { repositoryId?: unknown }).repositoryId;
+    const snapshotId = (snapshot as { snapshotId?: unknown }).snapshotId;
+    if (typeof repositoryId !== "string" || typeof snapshotId !== "string" || seen.has(repositoryId)) {
+      continue;
+    }
+    seen.add(repositoryId);
+    repositories.push({ repositoryId, snapshotId });
+  }
+  return repositories;
+}
+
 export function createTransformerMissionRoutes(options: Readonly<{
   service: Pick<TransformerMissionService, "plan" | "launch">;
   environment?: string;
   now?: () => string;
+  appDb?: AppDb;
 }>) {
   const routes = new Hono<ApiEnv>();
   const now = options.now ?? (() => new Date().toISOString());
@@ -116,7 +143,24 @@ export function createTransformerMissionRoutes(options: Readonly<{
   routes.post("/:campaignId/launch", (c) => {
     try {
       const key = idempotencyKey(c);
-      const result = options.service.launch(mutation(c, key), c.req.param("campaignId"));
+      const request = mutation(c, key);
+      const campaignId = c.req.param("campaignId");
+      const result = options.service.launch(request, campaignId);
+      // Surface B HTTP launch is the operator path that has a real App-DB
+      // principal AND the verified per-unit snapshots. Bind the Mission here
+      // the same way the production bootstrap wrapper does after launch.
+      if (options.appDb) {
+        const trustPrincipalId = c.get("trustPrincipalId");
+        if (!trustPrincipalId) throw new Error("transformer_mission_authentication_required");
+        bindRegaugeMissionAtLaunch(options.appDb, {
+          tenantId: request.tenantId,
+          campaignId,
+          ownerPrincipalId: trustPrincipalId,
+          objective: campaignId,
+          repositories: launchScopeRepositories(result),
+          createdAt: now(),
+        });
+      }
       return c.json(result, 201);
     } catch (error) {
       return failure(c, error);
