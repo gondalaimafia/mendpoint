@@ -63,7 +63,7 @@ Register locators for ME-MSN-002 now include `packages/pipeline/src/mission-arti
 | Primitive | Store | Live writer |
 |---|---|---|
 | `MissionDecision` persist | **live** (library) | `recordReviewerDirective` on **regenerate only** on `origin/main` (`apps/api/src/warden-candidate-review.ts`, `decisionType: "verification"`). Reject writer is `#446` |
-| Supersession / retract | **built, uncalled** | `supersedeMissionDecision` / `reviseDecisionOnNewEvidence` — tests + handoff module only |
+| Supersession / retract | **built, uncalled** on `origin/main` | `supersedeMissionDecision` / `reviseDecisionOnNewEvidence` — tests + handoff module only. Open `cursor/reviewer-directive-supersede-f457` supersedes on regenerate when the same scope is reused; reject does **not** retract |
 | `MissionException` raise/resolve | **built, uncalled** on `origin/main` | Only `openTaskHandoff` / `resolveTaskHandoff` (tests + open `#450` Fettler review). Compiler **reads** `evaluateMissionExceptions` on live bound runs (usually empty). `resolveTaskHandoff` remains a follow-up |
 | `MissionArtifact` by-reference register | **partial** | `tryRegisterFettlerCampaignMissionArtifacts` **live** from `executeWardenCampaignTarget`. No ReGauge register seam on `origin/main`. Open `#448` registers on `completeAttempt` when `artifact_manifests` rows exist. Roles such as impact_report / graph_diff unused on live paths |
 | Reviewer **reject** → durable decision (FET-021) | **absent** on live path | Reject branch updates the agent run + audit only on `origin/main`. Write half: `#446`. Consume/filter half: `#381` (needs `#446` or it stays inert) |
@@ -81,10 +81,10 @@ Register locators for ME-MSN-002 now include `packages/pipeline/src/mission-arti
 | Task type, status, owner, risk, handoff reason | **live** on claim/review |
 | Claim → `agent_working` | **live** — Fettler campaign execute, ReGauge pilot, job bridge (`bridgeClaimedJobToMissionTask`) |
 | Review → `human_review_required` | **live** — same seams, via `transitionMissionTask` (string `handoffReason`) on `origin/main`. Fettler review unify is `#450` |
-| `openTaskHandoff` / `resolveTaskHandoff` (exception + MissionTask in one transaction) | **built, uncalled** on `origin/main` — `taskId` **does** transition MissionTask when present. Open `#450` calls `openTaskHandoff` from Fettler review only. `resolveTaskHandoff` / `agent_resume` remain a follow-up |
+| `openTaskHandoff` / `resolveTaskHandoff` (exception + MissionTask in one transaction) | **built, uncalled** on `origin/main` — `taskId` **does** transition MissionTask when present. Open `#450` calls `openTaskHandoff` from Fettler review only. `resolveTaskHandoff` / `agent_resume` remain a follow-up (`#454` landed the resolver; `cursor/mission-task-ready-complete-f457` completes `agent_resume` on bound approve) |
 | `agent_resume` → `agent_working` | **built, uncalled** |
-| `complete` | **built, uncalled** |
-| Dependency DAG / `missionTaskReady` | **built, uncalled** |
+| `complete` | **built, uncalled** on `origin/main`. Open `cursor/mission-task-ready-complete-f457` completes bound `agent_resume` tasks on Warden approve |
+| Dependency DAG / `missionTaskReady` | **built, uncalled** on `origin/main`. Open `cursor/mission-task-ready-complete-f457` gates Fettler/ReGauge/job-bridge claim |
 | Input/output artifact refs and required-approval on the task row | **absent** (those live on other stores) |
 
 Live handoff and the §6.9 exception-driven handoff API are **not unified**. Bound Fettler resume reconstructs context via the compiler, not via `resolveTaskHandoff`.
@@ -136,7 +136,7 @@ Explicit `MENDPOINT_INHERITED_CONTEXT=0`/`false` wins over `missionBound`. Unbou
 | Trajectories | **live** |
 | MissionGraphProjection | **partial** — `compileMissionGraphProjection` exists; worker producer on `origin/main` always `{ consulted: false, reason: "endpoint_key_absent" \| "graph_version_absent" }` even when `graphVersionId` is pinned. Open `#449` consults only when a live `endpointKey` is supplied; it does **not** invent keys |
 | User preferences | **absent** (`store_not_available`) |
-| Mission artifacts | **partial** — no live artifact-store read into the producer |
+| Mission artifacts | **partial** — no live artifact-store read into the producer on `origin/main`. Open `cursor/compiler-mission-artifacts-f457` lists the registry (refs/roles/sha256/label only) |
 | `trajectories.context_refs_json` | **partial** — populated only when compile+inject succeeds |
 | Measurement harness | **built, uncalled** (`mission-context-measure.ts`) |
 
@@ -161,11 +161,11 @@ Explicit `MENDPOINT_INHERITED_CONTEXT=0`/`false` wins over `missionBound`. Unbou
 |---|---|---|
 | Stable repository snapshot binding | **partial** | ReGauge launch yes; Fettler mission row no on `origin/main` (`#447`) |
 | Stable graph snapshot binding | **partial** | Single-repo pin live; multi-repo / missing graph unbound |
-| Decisions persist and can be superseded | **partial** | Persist live on regenerate; supersede **built, uncalled**; reject does not persist on `origin/main` (`#446` write, `#381` filter) |
+| Decisions persist and can be superseded | **partial** | Persist live on regenerate; supersede **built, uncalled** on `origin/main`. Open `cursor/reviewer-directive-supersede-f457` supersedes same-scope regenerate; reject does not persist on `origin/main` (`#446` write, `#381` filter) |
 | Exceptions persist and can be resolved | **built, uncalled** | Store ready; live paths do not raise on `origin/main`. `#450` opens Fettler review; resolve is a follow-up |
 | Verification history scoped to the state it verified | **partial** | Classifier + compiler consume rows; **no live writer** on `origin/main` (`#451`) |
 | Agent → human → agent without losing context | **partial** | Context: **live** on bound Fettler via compiler. Task: live through `human_review_required`, not back through `agent_resume` / `openTaskHandoff` on `origin/main` (`#450` opens; resolve is a follow-up) |
-| Compiler includes relevant active state, excludes stale history | **partial** | Decisions/org-memory/policy live; graph projection and artifacts not consulted on `origin/main` (`#449` when a real endpoint key exists) |
+| Compiler includes relevant active state, excludes stale history | **partial** | Decisions/org-memory/policy live; graph projection and artifacts not consulted on `origin/main` (`#449` when a real endpoint key exists; `cursor/compiler-mission-artifacts-f457` for artifact refs) |
 | Policy Envelope inherited **and** enforced | **partial** | Inherited at create; enforced on bound `agent.run` + ReGauge pilot; not campaign execute on `origin/main` (`#379`) |
 | Organization Memory tenant-scoped, inspectable, disableable, subordinate | **partial** | Store + HTTP + compiler precedence live; no automated observation; H4 blocked |
 | Duplicate callbacks/task completions idempotent | **partial** | Set-once binds and revision CAS live; job `completeJob` is not replay-safe idempotent |
@@ -179,13 +179,13 @@ Explicit `MENDPOINT_INHERITED_CONTEXT=0`/`false` wins over `missionBound`. Unbou
 These are the next honest closes. Do not start the blocked items.
 
 1. **Fettler campaign execute does not enforce the inherited Policy Envelope.** Bind exists at enroll; execute uses snapshot verification policy only. Open: `#379`.
-2. **`openTaskHandoff` / `resolveTaskHandoff` / `agent_resume` are unwired on `origin/main`.** Live claim/review uses `transitionMissionTask`. Open `#450` replaces Fettler review only; `resolveTaskHandoff` / `agent_resume` remain a follow-up. Do not invent task-row artifact refs.
+2. **`openTaskHandoff` / `resolveTaskHandoff` / `agent_resume` are unwired on `origin/main`.** Live claim/review uses `transitionMissionTask`. Open `#450` replaces Fettler review only; `resolveTaskHandoff` / `agent_resume` remain a follow-up. Do not invent task-row artifact refs. Claim `missionTaskReady` + approve-complete is `cursor/mission-task-ready-complete-f457`.
 3. **Reviewer reject does not persist a MissionDecision (FET-021) on `origin/main`.** Only regenerate writes `recordReviewerDirective`. Write: `#446`. Filter: `#381` (land after `#446`; do not duplicate `rejectEditsSupersededByDecisions`).
 4. **`recordMissionVerification` has no live writer on `origin/main`.** Open `#451`. Compiler-visible only after `#447` pins `mission.snapshotId`.
 5. **Fettler mission row does not pin repository/snapshot on `origin/main`.** Open `#447` (single-repo only; multi-repo stays null).
 6. **MissionGraphProjection is not on the live compile path** even when `graphVersionId` is pinned (`endpoint_key_absent`). Open `#449` threads an optional live `endpointKey`; keep `endpoint_key_absent` when none exists. Do not invent keys.
-7. **Exception and decision supersession stores are read-ready and almost unwritten** except regenerate directives.
-8. **Artifact registry is Fettler-execute-only on `origin/main`.** Open `#448` for ReGauge `completeAttempt` when manifests exist. `#418` already landed the helper; do not duplicate it.
+7. **Exception and decision supersession stores are read-ready and almost unwritten** except regenerate directives. Open `cursor/reviewer-directive-supersede-f457` for same-scope regenerate supersede (not retract-on-reject).
+8. **Artifact registry is Fettler-execute-only on `origin/main`.** Open `#448` for ReGauge `completeAttempt` when manifests exist. `#418` already landed the helper; do not duplicate it. Compiler consult of registered artifacts is `cursor/compiler-mission-artifacts-f457`.
 9. **H4 `organization_memory` routing remains blocked.** Taxonomy only. Do not add a sink without the classifier + ADR.
 10. **Structural extractor contract is not the production indexer.** Graphify stays eval/internal (`#331`). Do not treat community detection as architecture truth.
 11. **User-preference store remains absent.** Keep the compiler's `store_not_available`; do not invent one.
@@ -219,6 +219,9 @@ Do not merge these from this analysis. Do not duplicate their work.
 | `#448` | ReGauge `completeAttempt` artifact register when manifests exist (ME-MSN-002). Uses existing `#418` helper |
 | `#449` | MissionGraphProjection producer when a live `endpointKey` exists (ME-MCC-001). Do not invent keys |
 | `#450` | Fettler review uses `openTaskHandoff` with a closed reason + specific question (ME-MTE-001). `resolveTaskHandoff` is a follow-up |
+| `cursor/mission-task-ready-complete-f457` | Claim seams call `missionTaskReady`; bound approve completes `agent_resume` (ME-MTE-001). Does not complete `human_review_required` |
+| `cursor/reviewer-directive-supersede-f457` | Regenerate supersedes an active directive on the same scope (ME-MSN-002). Reject does not retract |
+| `cursor/compiler-mission-artifacts-f457` | Compiler + producer consult Mission artifacts by reference (ME-MCC-001). Refs/roles/sha256/label only; unbound is `no_mission_bound` |
 | `#331` | Pinned Graphify process evaluator (eval only; not production adoption) |
 | `#388` | `PRESERVES_INVARIANT` ingest (graph; not Mission Space) |
 
