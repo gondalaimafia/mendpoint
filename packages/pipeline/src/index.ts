@@ -77,6 +77,7 @@ import {
 } from "@mendpoint/contract";
 import { createWardenDraftPrPackage } from "./warden-pr-package.js";
 export * from "./warden-campaign-executor.js";
+export * from "./mission-artifact-register.js";
 export * from "./software-attestation-operation.js";
 export * from "./delegated-pr-cleanup-operation.js";
 export * from "./delegated-pr-candidate-operation.js";
