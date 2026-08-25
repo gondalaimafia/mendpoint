@@ -64,6 +64,13 @@ export {
 } from "./ingest-manifest-dependencies.js";
 
 export {
+  extractInvariantAnnotations,
+  ingestInvariantAnnotations,
+  type InvariantAnnotation,
+  type InvariantIngestResult,
+} from "./ingest-invariants.js";
+
+export {
   ingestRepositoryEvidence,
   repositorySnapshotNodeId,
   type RepositoryEvidence,
