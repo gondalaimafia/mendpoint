@@ -183,7 +183,6 @@ import {
 import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
 import { persistWardenTrajectory } from "./warden-trajectory.js";
 import { assertAgentRunMissionPolicy } from "./agent-run-policy.js";
-import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 import { resolveResumeContext } from "./mission-resume.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
 import { observeProductCompletionInShadow } from "./verifier-product-shadow.js";
@@ -202,9 +201,11 @@ import { runWardenCiRepairDispatch } from "./warden-ci-repair-dispatch.js";
 import { runFettlerPrReviewDispatch } from "./fettler-pr-review-dispatch.js";
 import {
   WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE,
+  parseWardenCampaignExecuteJob,
   runWardenCampaignExecuteTarget,
   type WardenCampaignExecutor,
 } from "./warden-campaign-execute-dispatch.js";
+import { assignFettlerMissionTaskOnClaim, handoffFettlerMissionTaskOnReview } from "./fettler-mission-task-claim.js";
 import type { FieldRename } from "./warden-campaign-recipe.js";
 import type { WardenCampaignExecutionDependencies } from "@mendpoint/pipeline";
 import {
@@ -2619,6 +2620,17 @@ async function processJobsOnceUnfenced(
         continue;
       }
       if (job.type === WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE && opts.wardenCampaignExecution) {
+        try {
+          const claimed = parseWardenCampaignExecuteJob(job);
+          assignFettlerMissionTaskOnClaim(db, {
+            tenantId: job.tenant_id,
+            campaignId: claimed.campaignId,
+            targetId: claimed.targetId,
+            createdAt: claimed.createdAt,
+          });
+        } catch {
+          // Observational: a missing/raced MissionTask must not fail a claimed execute.
+        }
         // Review-first: the executor drives the target to stage `review` (never
         // delivers). Known outcomes settle here under the lease fence; an
         // unexpected throw propagates to the loop's generic failure path.
@@ -2629,8 +2641,22 @@ async function processJobsOnceUnfenced(
           execute: opts.wardenCampaignExecution.execute,
         });
         if (outcome.status === "executed") {
+          // Settle the execute under the lease FIRST. A lost fence throws here, so
+          // the MissionTask is never advanced to review on the strength of an
+          // outcome the system then declares unowned.
           if (!completeJob(db, job.id, outcome, nowIso(), { ...fence })) {
             throw new Error("warden_campaign_execute_lease_lost");
+          }
+          try {
+            const claimed = parseWardenCampaignExecuteJob(job);
+            handoffFettlerMissionTaskOnReview(db, {
+              tenantId: job.tenant_id,
+              campaignId: claimed.campaignId,
+              targetId: claimed.targetId,
+              createdAt: nowIso(),
+            });
+          } catch {
+            // Observational: review handoff must not un-complete a landed execute.
           }
           result.succeeded++;
           continue;
