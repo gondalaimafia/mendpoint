@@ -3145,3 +3145,4 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Repair: a test-local 15-second deadline matches other heavy integration tests and preserves both the fail-closed negative case and the attested positive control.
 - Evidence: focused regression passed, pipeline workspace passed 200 of 200 tests, and the complete repository test command exited 0 after the repair.
 - Current-main integration: main added an explicit `inconclusive` worker outcome. The coordinator-only advisory filter now asserts that counter remains zero; the final 15-file matrix passes 222 of 222 tests with the new main semantics retained.
+- Claude exact-head review: removed the unused `getMission` import left after advisory dispatch moved to the coordinator. This changes no runtime behavior and removes a false dependency signal.

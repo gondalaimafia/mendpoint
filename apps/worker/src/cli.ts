@@ -68,7 +68,6 @@ import {
   listVersionsForProvider,
   settleActiveWardenModelReservationsForFence,
   settleWardenCiRepairWithoutCandidate,
-  getMission,
   type AppDb,
   type FeedScheduleRow,
 } from "@mendpoint/db";
