@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import type { InheritedContextInjection } from "./types.js";
 import {
   inheritedContextEnabled,
+  inheritedContextShouldCompile,
   MAX_INHERITED_CONTEXT_BYTES,
   renderInheritedContextSystemBlock,
 } from "./inherited-context.js";
@@ -68,5 +69,12 @@ describe("inherited context injection", () => {
     expect(inheritedContextEnabled({ MENDPOINT_INHERITED_CONTEXT: "0" })).toBe(false);
     expect(inheritedContextEnabled({ MENDPOINT_INHERITED_CONTEXT: "1" })).toBe(true);
     expect(inheritedContextEnabled({ MENDPOINT_INHERITED_CONTEXT: "true" })).toBe(true);
+  });
+
+  it("CONTROL: a bound Mission compiles without flipping the global switch", () => {
+    expect(inheritedContextShouldCompile({}, { missionBound: false })).toBe(false);
+    expect(inheritedContextShouldCompile({}, { missionBound: true })).toBe(true);
+    expect(inheritedContextShouldCompile({ MENDPOINT_INHERITED_CONTEXT: "1" }, { missionBound: false })).toBe(true);
+    expect(inheritedContextShouldCompile({ MENDPOINT_INHERITED_CONTEXT: "0" }, { missionBound: true })).toBe(true);
   });
 });
