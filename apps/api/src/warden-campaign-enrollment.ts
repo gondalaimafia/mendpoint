@@ -2,7 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   autoEnrollWardenCampaignOrg,
   createMission,
+  createMissionTask,
   createWardenCampaign,
+  fettlerCampaignMissionTaskId,
   getPrincipal,
   getProviderBySlug,
   getScmConnection,
@@ -276,6 +278,48 @@ async function body(c: Context<ApiEnv>) {
   };
 }
 
+/**
+ * Create the unassigned MissionTask rows enrollment just made real. One task
+ * per enrolled repository; when the scan enrolled none (fail-closed / all
+ * skipped) create a single mission-level task so the work unit still exists.
+ * Uses the campaign's current targets, not just this scan's newly enrolled
+ * set, so a replay does not invent a mission-level task beside existing
+ * per-repo rows. Idempotent. Does not assign or advance the task.
+ */
+function createFettlerEnrollmentMissionTasks(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    missionId: string;
+    campaignId: string;
+    ownerPrincipalId: string;
+    repositories: readonly Readonly<{ repositoryId: string }>[];
+    createdAt: string;
+  }>,
+): void {
+  const repositoryIds = [...new Set(input.repositories.map((repository) => repository.repositoryId))];
+  const scopes = repositoryIds.length > 0 ? repositoryIds : [undefined];
+  for (const repositoryId of scopes) {
+    const taskId = fettlerCampaignMissionTaskId(input.missionId, repositoryId);
+    const acceptanceCriteria = repositoryId
+      ? `Complete the enrolled Fettler unit for repository ${repositoryId}.`
+      : `Complete the enrolled Fettler campaign ${input.campaignId}.`;
+    createMissionTask(db, {
+      id: taskId,
+      tenantId: input.tenantId,
+      missionId: input.missionId,
+      taskType: "code_migration",
+      acceptanceCriteria,
+      risk: "medium",
+      actorPrincipalId: input.ownerPrincipalId,
+      eventId: `${taskId}-created`,
+      idempotencyKey: `mission-task-create-${taskId}`,
+      correlationId: input.campaignId,
+      createdAt: input.createdAt,
+    });
+  }
+}
+
 export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnrollmentOptions) {
   const routes = new Hono<ApiEnv>();
   const now = options.now ?? (() => new Date().toISOString());
@@ -444,8 +488,8 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
       // sat inert — nothing forgot to call it; the callers could not satisfy
       // assertPrincipal. Best-effort: Mission bookkeeping is metadata and must
       // never fail an enrollment (convention in packages/pipeline/src/index.ts);
-      // never a bare catch. createMission/linkFettlerCampaignToMission are
-      // idempotent, so repeated enrollments are safe.
+      // never a bare catch. createMission/linkFettlerCampaignToMission and
+      // createMissionTask are idempotent, so repeated enrollments are safe.
       try {
         const missionId = `mission-fettler-${createHash("sha256")
           .update(`${tenantId}\0${campaignId}`)
@@ -481,6 +525,14 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           missionId,
           actorPrincipalId: trustPrincipalId,
           correlationId: campaignId,
+          createdAt: at,
+        });
+        createFettlerEnrollmentMissionTasks(options.db, {
+          tenantId,
+          missionId,
+          campaignId,
+          ownerPrincipalId: trustPrincipalId,
+          repositories: listWardenCampaignTargets(options.db, tenantId, campaignId),
           createdAt: at,
         });
       } catch (error) {
