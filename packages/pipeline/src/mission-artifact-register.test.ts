@@ -15,6 +15,7 @@ import {
   insertArtifactManifest,
   insertPrincipal,
   linkFettlerCampaignToMission,
+  linkRegaugeCampaignToMission,
   listMissionArtifactLineage,
   listMissionArtifacts,
   type AppDb,
@@ -22,6 +23,7 @@ import {
 import {
   tryRegisterBoundMissionArtifacts,
   tryRegisterFettlerCampaignMissionArtifacts,
+  tryRegisterRegaugeCampaignMissionArtifacts,
 } from "./mission-artifact-register.js";
 
 const T0 = "2026-01-01T00:00:00.000Z";
@@ -179,5 +181,72 @@ describe("tryRegisterFettlerCampaignMissionArtifacts", () => {
     });
     expect(result).toEqual({ status: "registered", missionId: "m1", count: 1 });
     expect(listMissionArtifacts(db, "t1", "m1")).toHaveLength(1);
+  });
+});
+
+describe("tryRegisterRegaugeCampaignMissionArtifacts", () => {
+  it("skips when no manifests are supplied (never invents one)", () => {
+    const db = fixture();
+    createMission(db, {
+      id: "m-rg", tenantId: "t1", product: "regauge", triggerKind: "migration_objective",
+      objective: "Modernize", ownerPrincipalId: "p1", eventId: "ev-rg",
+      idempotencyKey: "cm-rg", correlationId: "corr-rg", createdAt: T0,
+    });
+    linkRegaugeCampaignToMission(db, {
+      tenantId: "t1", missionId: "m-rg", regaugeCampaignId: "tf-campaign-1",
+      actorPrincipalId: "p1", eventId: "linked-rg", idempotencyKey: "linked-rg",
+      correlationId: "corr-rg", createdAt: T0,
+    });
+    const result = tryRegisterRegaugeCampaignMissionArtifacts(db, {
+      tenantId: "t1",
+      campaignId: "tf-campaign-1",
+      producerPrincipalId: "p1",
+      createdAt: T0,
+      artifacts: [],
+    });
+    expect(result).toEqual({ status: "skipped_no_artifacts" });
+    expect(listMissionArtifacts(db, "t1", "m-rg")).toHaveLength(0);
+  });
+
+  it("skips when the campaign is not linked to a Mission", () => {
+    const db = fixture();
+    manifest(db, "art-rg", "transformer-candidate", "patch");
+    const result = tryRegisterRegaugeCampaignMissionArtifacts(db, {
+      tenantId: "t1",
+      campaignId: "tf-missing",
+      producerPrincipalId: "p1",
+      createdAt: T0,
+      artifacts: [{ role: "candidate_patch", artifactId: "art-rg", label: "candidate" }],
+    });
+    expect(result).toEqual({ status: "skipped_unbound" });
+  });
+
+  it("registers against the campaign-linked Mission when manifests exist", () => {
+    const db = fixture();
+    createMission(db, {
+      id: "m-rg", tenantId: "t1", product: "regauge", triggerKind: "migration_objective",
+      objective: "Modernize", ownerPrincipalId: "p1", eventId: "ev-rg",
+      idempotencyKey: "cm-rg", correlationId: "corr-rg", createdAt: T0,
+    });
+    linkRegaugeCampaignToMission(db, {
+      tenantId: "t1", missionId: "m-rg", regaugeCampaignId: "tf-campaign-1",
+      actorPrincipalId: "p1", eventId: "linked-rg", idempotencyKey: "linked-rg",
+      correlationId: "corr-rg", createdAt: T0,
+    });
+    manifest(db, "art-rg", "transformer-candidate", "patch");
+    const result = tryRegisterRegaugeCampaignMissionArtifacts(db, {
+      tenantId: "t1",
+      campaignId: "tf-campaign-1",
+      producerPrincipalId: "p1",
+      createdAt: T0,
+      sourceSnapshot: "snap-rg",
+      artifacts: [{ role: "candidate_patch", artifactId: "art-rg", label: "candidate" }],
+    });
+    expect(result).toEqual({ status: "registered", missionId: "m-rg", count: 1 });
+    expect(listMissionArtifacts(db, "t1", "m-rg")).toEqual([
+      expect.objectContaining({
+        role: "candidate_patch", artifactId: "art-rg", sourceSnapshot: "snap-rg",
+      }),
+    ]);
   });
 });
