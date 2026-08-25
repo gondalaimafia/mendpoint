@@ -18,7 +18,6 @@ import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
-import { openGraphLearnMemory } from "@mendpoint/graph-learn";
 import type {
   WardenCampaignExecutionDependencies,
   WardenSourceEnvelope,
@@ -191,17 +190,20 @@ export function applyFieldRenameEdits(input: {
 
 /**
  * Assemble the deterministic field-rename recipe as executor dependencies. The
- * caller supplies `deriveRename` (the change-source adapter); `verify` is left to
- * the executor's default local runner, and the graph db defaults to an ephemeral
- * in-memory store.
+ * caller supplies `deriveRename` (the change-source adapter) and a real graph
+ * handle. `verify` is left to the executor's default local runner. There is no
+ * in-memory graph default — an empty store is not Change Graph authority
+ * (ADR 2026-08-24-tenant-change-graph-handle).
  */
 export function fieldRenameRecipeDependencies(options: {
   deriveRename: DeriveFieldRename;
-  graphDb?: WardenCampaignExecutionDependencies["graphDb"];
+  graphDb: NonNullable<WardenCampaignExecutionDependencies["graphDb"]>;
 }): WardenCampaignExecutionDependencies {
-  const graphDb = options.graphDb ?? openGraphLearnMemory();
+  if (!options.graphDb) {
+    throw new Error("field_rename_recipe_graph_required");
+  }
   return {
-    graphDb,
+    graphDb: options.graphDb,
     async planEdits(input) {
       const rename = options.deriveRename(input.source);
       if (!rename) return [];
