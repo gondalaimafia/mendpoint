@@ -6,6 +6,7 @@ import {
   createDb,
   createMission,
   createMissionTask,
+  getMissionTask,
   insertPrincipal,
   linkRegaugeCampaignToMission,
   listMissionTasks,
@@ -91,13 +92,45 @@ describe("assignRegaugeMissionTaskOnClaim", () => {
     expect(driven?.assignedPrincipalId).toMatch(/^principal-mtask-agent-/);
   });
 
-  it("falls back to the mission-level launch task when no repo task exists", () => {
+  it("does not resolve a repo-scoped claim to the mission-level launch task", () => {
     const { db, missionId } = fixture();
-    const created = launchTask(db, missionId);
-    const driven = assignRegaugeMissionTaskOnClaim(db, {
-      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-missing", createdAt: at,
+    const missionLevel = launchTask(db, missionId);
+    expect(assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    })).toBeUndefined();
+    expect(getMissionTask(db, "t1", missionLevel.id)?.status).toBe("unassigned");
+  });
+
+  it("does not funnel multiple repo-scoped claims onto one mission-level task", () => {
+    const { db, missionId } = fixture();
+    // Only the mission-level catch-all exists (launch saw no repository scope).
+    const missionLevel = launchTask(db, missionId);
+    const drivenA = assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
     });
-    expect(driven).toMatchObject({ id: created.id, status: "agent_working" });
+    const drivenB = assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-b", createdAt: at,
+    });
+    expect(drivenA).toBeUndefined();
+    expect(drivenB).toBeUndefined();
+    expect(getMissionTask(db, "t1", missionLevel.id)?.status).toBe("unassigned");
+  });
+
+  it("keeps two repo-scoped units on their own launch tasks", () => {
+    const { db, missionId } = fixture();
+    const taskA = launchTask(db, missionId, "repo-a");
+    const taskB = launchTask(db, missionId, "repo-b");
+    const drivenA = assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    });
+    expect(drivenA?.id).toBe(taskA.id);
+    // Driving repo-a's task must not touch repo-b's sibling.
+    expect(getMissionTask(db, "t1", taskB.id)?.status).toBe("unassigned");
+    const drivenB = assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-b", createdAt: at,
+    });
+    expect(drivenB?.id).toBe(taskB.id);
+    expect(drivenA?.id).not.toBe(drivenB?.id);
   });
 
   it("is idempotent once the task is already agent_working", () => {
@@ -208,19 +241,18 @@ describe("handoffRegaugeMissionTaskOnReview", () => {
     expect(second).toEqual(first);
   });
 
-  it("falls back to the mission-level launch task when no repo task exists", () => {
+  it("does not resolve a repo-scoped handoff to the mission-level launch task", () => {
     const { db, missionId } = fixture();
-    launchTask(db, missionId);
-    assignRegaugeMissionTaskOnClaim(db, {
-      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-missing", createdAt: at,
-    });
-    const handed = handoffRegaugeMissionTaskOnReview(db, {
-      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-missing", createdAt: at,
-    });
-    expect(handed).toMatchObject({
-      id: regaugeLaunchMissionTaskId(missionId),
-      status: "human_review_required",
-    });
+    const missionLevel = launchTask(db, missionId);
+    // A repo-scoped claim on a mission-level-only launch is a no-op, so the
+    // handoff has nothing on the working path to hand over.
+    expect(assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    })).toBeUndefined();
+    expect(handoffRegaugeMissionTaskOnReview(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    })).toBeUndefined();
+    expect(getMissionTask(db, "t1", missionLevel.id)?.status).toBe("unassigned");
   });
 
   it("does not invent a Mission for a different tenant's campaign id", () => {
