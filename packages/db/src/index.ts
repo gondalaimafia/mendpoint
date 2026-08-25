@@ -299,6 +299,14 @@ CREATE TABLE IF NOT EXISTS audit_events (
   resource_type TEXT NOT NULL,
   resource_id TEXT,
   metadata_json TEXT,
+  impact_change_id TEXT GENERATED ALWAYS AS (
+    CASE WHEN action = 'impact.analyzed' AND json_valid(metadata_json)
+      THEN json_extract(metadata_json, '$.changeId') END
+  ) VIRTUAL,
+  impact_fallback TEXT GENERATED ALWAYS AS (
+    CASE WHEN action = 'impact.analyzed' AND json_valid(metadata_json)
+      THEN json_extract(metadata_json, '$.fallback') END
+  ) VIRTUAL,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS policies (
@@ -2934,6 +2942,25 @@ function migrateAuditIntegrity(db: AppDb) {
       run(db, `ALTER TABLE audit_events ADD COLUMN ${addition.name} ${addition.sql}`);
     }
   }
+  const generatedAdditions = [
+    {
+      name: "impact_change_id",
+      sql: "TEXT GENERATED ALWAYS AS (CASE WHEN action = 'impact.analyzed' AND json_valid(metadata_json) THEN json_extract(metadata_json, '$.changeId') END) VIRTUAL",
+    },
+    {
+      name: "impact_fallback",
+      sql: "TEXT GENERATED ALWAYS AS (CASE WHEN action = 'impact.analyzed' AND json_valid(metadata_json) THEN json_extract(metadata_json, '$.fallback') END) VIRTUAL",
+    },
+  ];
+  const extendedColumns = all<{ name: string }>(
+    db,
+    `PRAGMA table_xinfo(audit_events)`,
+  ).map((column) => column.name);
+  for (const addition of generatedAdditions) {
+    if (!extendedColumns.includes(addition.name)) {
+      run(db, `ALTER TABLE audit_events ADD COLUMN ${addition.name} ${addition.sql}`);
+    }
+  }
 
   const missing = get<{ count: number }>(
     db,
@@ -2982,6 +3009,19 @@ function migrateAuditIntegrity(db: AppDb) {
     db,
     `CREATE UNIQUE INDEX IF NOT EXISTS audit_events_tenant_sequence_uidx
      ON audit_events(tenant_id, event_sequence)`,
+  );
+  run(
+    db,
+    `CREATE INDEX IF NOT EXISTS audit_events_impact_current_idx
+     ON audit_events(
+       tenant_id,
+       action,
+       impact_change_id,
+       impact_fallback,
+       resource_type,
+       resource_id,
+       event_sequence DESC
+     )`,
   );
 }
 

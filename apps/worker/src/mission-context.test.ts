@@ -277,6 +277,13 @@ describe("worker mission-context producer (real stores)", () => {
 
   it("carries a pinned graph version on mission identity without inventing an impact query", () => {
     const db = fixture();
+    const beforeMission = getMission(db, "t1", "m1")!;
+    const before = buildMissionContext(db, {
+      tenantId: "t1",
+      mission: beforeMission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: beforeMission.objective, repositoryId: beforeMission.repositoryId, snapshotId: beforeMission.snapshotId },
+    });
     bindMissionGraphVersion(db, {
       tenantId: "t1",
       missionId: "m1",
@@ -300,6 +307,44 @@ describe("worker mission-context producer (real stores)", () => {
     expect(compiled.envelope.graphProjection).toEqual({
       status: "not_consulted",
       reason: "endpoint_key_absent",
+    });
+    expect(compiled.injection.digest).not.toBe(before.injection.digest);
+    expect(compiled.injection.promptBody).toContain(
+      "graph version sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    expect(compiled.refs).toContainEqual({
+      kind: "mission_identity",
+      missionId: "m1",
+      repositoryId: "r1",
+      snapshotId: "snapA",
+      graphVersionId: "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+
+    recordTrajectory(db, {
+      id: "traj-graph-pin",
+      tenantId: "t1",
+      product: "fettler",
+      taskKind: "code_migration",
+      taskSummary: "graph-pinned migration",
+      missionId: "m1",
+      runId: "run-graph-pin",
+      jobId: "job-graph-pin",
+      contextRefs: compiled.refs,
+      createdAt: T0,
+    });
+    const file = (db.raw.prepare("PRAGMA database_list").get() as { file: string }).file;
+    db.raw.close();
+    const reopened = createDb(file);
+    const tracked = opened.find((entry) => entry.db === db);
+    if (!tracked) throw new Error("fixture_not_tracked");
+    tracked.db = reopened;
+
+    expect(getTrajectory(reopened, "t1", "traj-graph-pin")?.contextRefs).toContainEqual({
+      kind: "mission_identity",
+      missionId: "m1",
+      repositoryId: "r1",
+      snapshotId: "snapA",
+      graphVersionId: "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     });
   });
 });
