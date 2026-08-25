@@ -241,7 +241,9 @@ describe("GitHub production closure authority", () => {
       }>;
     };
     const job = workflow.jobs["closure-authority"];
+    const mainObservationJob = workflow.jobs["main-authority-observation"];
 
+    expect(workflow.on).toHaveProperty("push");
     expect(workflow.on).toHaveProperty("pull_request_target");
     expect(workflow.on).toHaveProperty("workflow_run");
     expect(workflow.on).toHaveProperty("issues");
@@ -292,6 +294,11 @@ describe("GitHub production closure authority", () => {
     expect(job.steps).toContainEqual(
       expect.objectContaining({ name: "Invalidate prior external authority result" }),
     );
+    expect(
+      job.steps!.findIndex((step) => step.name === "Invalidate prior external authority result"),
+    ).toBeLessThan(
+      job.steps!.findIndex((step) => step.name === "Checkout exact immutable main authority"),
+    );
     expect(job.steps).toContainEqual(
       expect.objectContaining({ name: "Publish dedicated authority App verdict" }),
     );
@@ -299,6 +306,13 @@ describe("GitHub production closure authority", () => {
       expect.objectContaining({
         name: "Enforce protected authority verdict",
         run: expect.stringContaining("set -euo pipefail"),
+      }),
+    );
+    expect(mainObservationJob.steps).toContainEqual(
+      expect.objectContaining({
+        name: "Verify merged main authority",
+        run: "npm run closure:github:check",
+        env: expect.objectContaining({ MENDPOINT_CLOSURE_EVENT_NAME: "push" }),
       }),
     );
   });

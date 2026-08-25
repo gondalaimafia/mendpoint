@@ -9,7 +9,7 @@
   "trustedReviewers": {},
   "productionEvidenceAuthorities": [],
   "protectedFiles": {
-    ".github/workflows/closure-authority.yml": "sha256:71234e071e508e192f370f00e635279703b2cf7576f1cd801cd01f4ff8af70f5",
+    ".github/workflows/closure-authority.yml": "sha256:e7c02ee018fb85044118be46f549402b6c67aff3ee692c507c780ee924d934cc",
     ".github/workflows/ci.yml": "sha256:cd754f91027985a2f65de0cdda6d9bcfcb5b59169a32457367e5bd95f3df025e",
     "package.json": "sha256:ddced0d6ff38b725551141df83b9f5515c90df311c82ad906fc0360dfeb16a7c",
     "package-lock.json": "sha256:193181927b3e5813f43471c60c343c0300c6c71540a9b3921968a215cb57cd0d",
