@@ -2667,10 +2667,20 @@ async function processJobsOnceUnfenced(
             tenantId: job.tenant_id,
             campaignId: claimed.campaignId,
             targetId: claimed.targetId,
-            createdAt: claimed.createdAt,
+            // Stamp the transition at claim time, not the payload's enqueue time,
+            // so the MissionTask `updated_at` never predates the claim (matching
+            // ReGauge's `lease.startedAt` and the review handoff below).
+            createdAt: nowIso(),
           });
-        } catch {
-          // Observational: a missing/raced MissionTask must not fail a claimed execute.
+        } catch (error) {
+          // Observational: a missing/raced MissionTask must not fail a claimed
+          // execute. Surface the code so a driven/absent/revision-conflict/
+          // principal-conflict claim is not indistinguishable from a silent no-op.
+          console.error(
+            `  fettler mission-task claim drive failed job=${job.id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
         }
         // Review-first: the executor drives the target to stage `review` (never
         // delivers). Known outcomes settle here under the lease fence; an
@@ -2696,8 +2706,15 @@ async function processJobsOnceUnfenced(
               targetId: claimed.targetId,
               createdAt: nowIso(),
             });
-          } catch {
+          } catch (error) {
             // Observational: review handoff must not un-complete a landed execute.
+            // Surface the code so a driven/absent/revision-conflict/principal-
+            // conflict handoff is not indistinguishable from a silent no-op.
+            console.error(
+              `  fettler mission-task review handoff failed job=${job.id}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
           }
           recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
           result.succeeded++;
