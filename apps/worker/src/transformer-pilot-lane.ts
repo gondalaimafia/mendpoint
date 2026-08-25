@@ -24,6 +24,7 @@ import {
 } from "@mendpoint/transformer";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
 import { resolveRenamedEnv } from "@mendpoint/shared";
+import { assertRegaugePilotMissionPolicy } from "./regauge-pilot-policy.js";
 import {
   assignRegaugeMissionTaskOnClaim,
   handoffRegaugeMissionTaskOnReview,
@@ -760,6 +761,21 @@ export async function runTransformerPilotLaneOnce(
         continue;
       }
       adaptiveAuthorizationEvidenceRef = authorization.evidenceRef;
+    }
+    try {
+      // Inherited Policy Envelope is an authorization control, not a prompt.
+      // Unbound campaigns proceed; a bound Mission with a missing/invalid
+      // envelope or an explicit deny must not take a lease.
+      assertRegaugePilotMissionPolicy(input.db, {
+        tenantId: campaign.tenantId,
+        campaignId: campaign.campaignId,
+        repositoryId: campaign.repositoryId,
+        externalProcessing: Boolean(adaptiveAdapter),
+      });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : String(error);
+      errors.push(`transformer_lane_policy_denied:${campaign.campaignId}:${code}`);
+      continue;
     }
     const adaptiveProvenanceStart = adaptiveAdapter?.provenance().length ?? 0;
     const adaptiveCostRemaining = 25;

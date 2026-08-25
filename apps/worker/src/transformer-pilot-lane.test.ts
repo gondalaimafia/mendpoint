@@ -26,6 +26,11 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
+import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
+import {
+  canonicalPolicyEnvelopeJson,
+  defaultPolicyEnvelope,
+} from "@mendpoint/policy";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
   RECOMMENDED_REVIEW_TIER_POLICY,
@@ -347,6 +352,13 @@ function seedRegaugeMissionForCampaignA(db: AppDb): string {
     actorPrincipalId: "principal-a",
     eventId: "mission-regauge-campaign-a-linked",
     idempotencyKey: "mission-regauge-campaign-a-link",
+    correlationId: "campaign-a",
+    createdAt: CREATED_AT,
+  });
+  ensureDefaultPolicyEnvelopeBinding(db, {
+    tenantId: "tenant-a",
+    missionId: mission.id,
+    actorPrincipalId: "principal-a",
     correlationId: "campaign-a",
     createdAt: CREATED_AT,
   });
@@ -1042,6 +1054,87 @@ describe("Transformer production pilot lane", () => {
       run_id: attemptId,
       final_outcome: "candidate_review_pending",
     });
+  });
+
+  it("does not claim a bound Mission when the inherited envelope denies the repository", async () => {
+    const { root, db, store } = setup();
+    registerTenantA(db);
+    dbModule.insertPrincipal(db, {
+      id: "principal-a",
+      tenantId: "tenant-a",
+      kind: "human",
+      subject: "owner@tenant-a.example",
+      displayName: "Owner A",
+      createdAt: CREATED_AT,
+    });
+    const mission = dbModule.createMission(db, {
+      id: "mission-regauge-denied",
+      tenantId: "tenant-a",
+      product: "regauge",
+      triggerKind: "migration_objective",
+      objective: "Runtime upgrade for campaign-a",
+      ownerPrincipalId: "principal-a",
+      eventId: "mission-regauge-denied-created",
+      idempotencyKey: "mission-regauge-denied-create",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+    dbModule.linkRegaugeCampaignToMission(db, {
+      tenantId: "tenant-a",
+      missionId: mission.id,
+      regaugeCampaignId: "campaign-a",
+      actorPrincipalId: "principal-a",
+      eventId: "mission-regauge-denied-linked",
+      idempotencyKey: "mission-regauge-denied-link",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+    const envelope = {
+      ...defaultPolicyEnvelope({
+        tenantId: "tenant-a",
+        policyEnvelopeId: "pe-denied-a",
+        createdAt: CREATED_AT,
+        version: 1,
+      }),
+      repositoryScope: Object.freeze(["repository-other"]),
+    };
+    dbModule.createPolicyEnvelope(db, {
+      tenantId: "tenant-a",
+      version: 1,
+      policyEnvelopeId: envelope.policyEnvelopeId,
+      envelopeJson: canonicalPolicyEnvelopeJson(envelope),
+      createdAt: CREATED_AT,
+    });
+    dbModule.bindMissionToPolicyEnvelope(db, {
+      tenantId: "tenant-a",
+      missionId: mission.id,
+      version: 1,
+      actorPrincipalId: "principal-a",
+      eventId: "mission-regauge-denied-bound",
+      idempotencyKey: "mission-regauge-denied-bind",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-policy-denied",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-policy-denied",
+      commandRunner: async () => ({ exitCode: 0, stdout: "verified", stderr: "" }),
+    });
+
+    expect(result.attempted).toBe(0);
+    expect(result.completed).toBe(0);
+    expect(result.errors.some((error) => error.includes("mission_policy_denied"))).toBe(true);
+    expect(store.getCampaign("tenant-a", "campaign-a")?.units[0]?.state).toBe("pending");
   });
 
   it("records a null-mission trajectory for a campaign with no Mission and never fabricates one", async () => {
