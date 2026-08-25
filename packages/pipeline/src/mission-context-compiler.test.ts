@@ -532,6 +532,47 @@ describe("mission context compiler", () => {
     expect(rendered.refs.some((ref) => ref.kind === "mission_artifact")).toBe(false);
   });
 
+  it("drops refs for every lower-priority section displaced by retained artifact context", () => {
+    const artifacts = Array.from({ length: 16 }, (_, index) => ({
+      tenantId: "t1",
+      id: `ma-displacing-${index}`,
+      role: "candidate_patch",
+      artifactId: `art-displacing-${index}`,
+      artifactSha256: "c".repeat(64),
+      label: `retained artifact ${index} ${"a".repeat(1_800)}`,
+    }));
+    const rendered = renderMissionContext(compileMissionContext(baseInput({
+      artifacts: { consulted: true, records: artifacts },
+      verification: {
+        consulted: true,
+        records: [{
+          tenantId: "t1", id: "verification-displaced", statement: `verification marker ${"v".repeat(1_800)}`,
+          verdict: "passed", state: "current_evidence",
+        }],
+      },
+      organizationMemory: {
+        consulted: true,
+        records: [{
+          subjectKey: "memory-displaced",
+          record: memory({ status: "ACTIVE", statement: `memory marker ${"m".repeat(1_800)}` }),
+        }],
+      },
+      graph: { consulted: true, impact: graphImpact() },
+      history: {
+        consulted: true,
+        records: [{ tenantId: "t1", trajectoryRef: "history-displaced", outcome: "failed", summary: "history marker" }],
+      },
+    })));
+
+    expect(rendered.envelope.bounds.promptTruncated).toBe(true);
+    expect(rendered.injection.promptBody).toContain("art-displacing-0");
+    expect(rendered.refs.some((ref) => ref.kind === "mission_artifact")).toBe(true);
+    const displacedKinds = ["verification", "org_memory", "graph_context", "history"] as const;
+    for (const kind of displacedKinds) {
+      expect(rendered.refs.some((ref) => ref.kind === kind), `${kind} ref must leave with its section`).toBe(false);
+    }
+  });
+
   it("an active memory with no higher layer applies and is named", () => {
     const envelope = compileMissionContext(
       baseInput({

@@ -968,6 +968,7 @@ export async function executeWardenCampaignTarget(input: {
       campaignId: input.campaignId,
       producerPrincipalId: input.actorPrincipalId,
       createdAt: input.createdAt,
+      repositoryId: snapshot.repository_id,
       sourceSnapshot: snapshot.id,
       artifacts: [
         {

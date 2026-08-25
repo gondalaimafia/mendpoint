@@ -66,6 +66,7 @@ import {
   listRepositorySnapshots,
   listProviders,
   listVersionsForProvider,
+  missionTaskIdForJob,
   settleActiveWardenModelReservationsForFence,
   settleWardenCiRepairWithoutCandidate,
   type AppDb,
@@ -3356,7 +3357,7 @@ if (job.type === "warden.candidate.cleanup") {
                     currentRunStatus: sessionRun?.status ?? "running",
                     missionId: payload.missionId,
                     task: {
-                      taskId: job.id,
+                      taskId: missionTaskIdForJob(job.id),
                       capability: (payload.mode ?? "repair") === "feature" ? "feature" : "repair",
                       riskClass: repositoryClassification,
                       goal: executionGoal,

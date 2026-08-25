@@ -25,6 +25,7 @@ import {
   createDb,
   bindConsumerRepoSnapshot,
   claimNextJob,
+  createMission,
   createExplicitMemory,
   enqueueJob,
   failJob,
@@ -41,6 +42,7 @@ import {
   getRoutingLedgerForJob,
   insertAgentRun,
   insertApiVersion,
+  insertArtifactManifest,
   insertConsumer,
   insertConsumerRepo,
   insertConnectedRepository,
@@ -55,10 +57,12 @@ import {
   upsertGitHubInstallation,
   getRepairSession,
   listJobs,
+  missionTaskIdForJob,
+  registerMissionArtifact,
 } from "@mendpoint/db";
 import { nowIso } from "@mendpoint/shared";
 import type { AgentPlanner } from "@mendpoint/agent";
-import type { PipelineReport } from "@mendpoint/pipeline";
+import { ensureDefaultPolicyEnvelopeBinding, type PipelineReport } from "@mendpoint/pipeline";
 import {
   GitHubAppDelivery,
   OctokitGitHubDelivery,
@@ -3579,6 +3583,100 @@ describe("worker runtime", () => {
 });
 
 describe("Fettler live resume seam (behavioral, through the job loop)", () => {
+  it("uses the canonical MissionTask id when compiling live job context", () => {
+    const source = readFileSync(join(import.meta.dirname, "cli.ts"), "utf8");
+    expect(source).toContain("taskId: missionTaskIdForJob(job.id)");
+  });
+
+  it("live mission-bound job compiles an artifact registered to its canonical MissionTask", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-resume-mission-artifact-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+    const at = nowIso();
+    fixture.db.raw.prepare(
+      `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+       VALUES ('tenant_test','tenant-test','Tenant Test','team','active',10,?)`,
+    ).run(at);
+    insertPrincipal(fixture.db, {
+      id: "human-mission-artifact",
+      tenantId: "tenant_test",
+      kind: "human",
+      subject: "mission-artifact@example.com",
+      displayName: "Mission Artifact Owner",
+      createdAt: at,
+    });
+    createMission(fixture.db, {
+      id: "mission-live-artifact",
+      tenantId: "tenant_test",
+      product: "fettler",
+      triggerKind: "provider_change",
+      objective: "Repair the exact snapshot",
+      ownerPrincipalId: "human-mission-artifact",
+      repositoryId: "repository-warden-snapshot",
+      snapshotId: "snapshot-warden-a",
+      eventId: "mission-live-artifact-created",
+      idempotencyKey: "mission-live-artifact-created",
+      correlationId: "job-warden-snapshot",
+      createdAt: at,
+    });
+    ensureDefaultPolicyEnvelopeBinding(fixture.db, {
+      tenantId: "tenant_test",
+      missionId: "mission-live-artifact",
+      actorPrincipalId: "human-mission-artifact",
+      correlationId: "job-warden-snapshot",
+      createdAt: at,
+    });
+    const artifactContent = "prior exact-task candidate";
+    insertArtifactManifest(fixture.db, {
+      id: "artifact-live-context",
+      tenantId: "tenant_test",
+      kind: "candidate-edit",
+      schemaVersion: 1,
+      sha256: createHash("sha256").update(artifactContent).digest("hex"),
+      mediaType: "text/plain",
+      sizeBytes: Buffer.byteLength(artifactContent, "utf8"),
+      storageRef: "mem://artifact-live-context",
+      content: artifactContent,
+      createdAt: at,
+    });
+    registerMissionArtifact(fixture.db, {
+      tenantId: "tenant_test",
+      missionId: "mission-live-artifact",
+      role: "candidate_patch",
+      artifactId: "artifact-live-context",
+      label: "prior exact-task candidate",
+      producerPrincipalId: "human-mission-artifact",
+      correlationId: "job-warden-snapshot",
+      createdAt: at,
+      taskId: missionTaskIdForJob("job-warden-snapshot"),
+      sourceSnapshot: "snapshot-warden-a",
+    });
+    const job = getJob(fixture.db, "job-warden-snapshot", "tenant_test")!;
+    fixture.db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?").run(
+      JSON.stringify({ ...JSON.parse(job.payload_json), missionId: "mission-live-artifact" }),
+      job.id,
+      job.tenant_id,
+    );
+
+    const result = await processJobsOnce(fixture.db, {
+      tenantId: "tenant_test",
+      workerId: "worker-live-mission-artifact",
+      leaseMs: 30_000,
+      wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
+    });
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+    const trajectory = getTrajectoryByRun(fixture.db, "tenant_test", "session-warden-snapshot");
+    expect(trajectory?.contextRefs).toContainEqual(expect.objectContaining({
+      kind: "mission_artifact",
+      artifactId: "artifact-live-context",
+    }));
+    fixture.db.raw.close();
+  }, 30_000);
+
   // The live agent.run loop resumes inherited context through
   // resolveResumeContext, whose ownership guard fails closed: only a run the
   // AGENT owns is resumable. Main ships this seam (cli.ts) but no loop-level test

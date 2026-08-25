@@ -948,6 +948,7 @@ function sectionState<T extends { status: string }>(section: T): string {
 export function renderMissionContext(envelope: InheritedContextEnvelope): CompiledMissionContext {
   const refs: ContextRef[] = [];
   const lines: string[] = [];
+  const sectionRefs = new Map<string[], ContextRef[]>();
 
   lines.push(`# Inherited mission context (schema ${envelope.schemaVersion})`);
   lines.push(
@@ -981,6 +982,7 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
   const sections: string[][] = [];
 
   // Policy constraints (highest authority).
+  const policyRefs: ContextRef[] = [];
   const policyLines: string[] = [`## Policy constraints [${sectionState(envelope.policyConstraints)}]`];
   if (envelope.policyConstraints.status === "not_consulted") {
     policyLines.push(`(reason: ${envelope.policyConstraints.reason})`);
@@ -995,36 +997,41 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
     }
     for (const entry of envelope.policyConstraints.entries) {
       policyLines.push(`- [${entry.subjectKey}] ${entry.directive} (source: ${entry.source})`);
-      refs.push(Object.freeze({ kind: "policy_constraint", id: entry.id, subjectKey: entry.subjectKey, source: entry.source }));
+      policyRefs.push(Object.freeze({ kind: "policy_constraint", id: entry.id, subjectKey: entry.subjectKey, source: entry.source }));
     }
   }
   sections.push(policyLines);
+  sectionRefs.set(policyLines, policyRefs);
 
   // Active mission decisions.
+  const decisionRefs: ContextRef[] = [];
   const decisionLines: string[] = [`## Active mission decisions [${sectionState(envelope.activeDecisions)}]`];
   if (envelope.activeDecisions.status === "consulted") {
     if (envelope.activeDecisions.entries.length === 0) decisionLines.push("(none apply to this task)");
     for (const entry of envelope.activeDecisions.entries) {
       decisionLines.push(`- [${entry.subjectKey}] ${entry.directive} (decided ${entry.decidedAt})`);
-      refs.push(Object.freeze({ kind: "mission_decision", id: entry.id, subjectKey: entry.subjectKey }));
+      decisionRefs.push(Object.freeze({ kind: "mission_decision", id: entry.id, subjectKey: entry.subjectKey }));
     }
   } else {
     decisionLines.push(`(reason: ${envelope.activeDecisions.reason})`);
   }
   sections.push(decisionLines);
+  sectionRefs.set(decisionLines, decisionRefs);
 
   // Unresolved exceptions.
+  const exceptionRefs: ContextRef[] = [];
   const exceptionLines: string[] = [`## Unresolved exceptions [${sectionState(envelope.unresolvedExceptions)}]`];
   if (envelope.unresolvedExceptions.status === "consulted") {
     if (envelope.unresolvedExceptions.entries.length === 0) exceptionLines.push("(none open for this task)");
     for (const entry of envelope.unresolvedExceptions.entries) {
       exceptionLines.push(`- ${entry.statement} (status: ${entry.status})`);
-      refs.push(Object.freeze({ kind: "exception", id: entry.id, status: entry.status }));
+      exceptionRefs.push(Object.freeze({ kind: "exception", id: entry.id, status: entry.status }));
     }
   } else {
     exceptionLines.push(`(reason: ${envelope.unresolvedExceptions.reason})`);
   }
   sections.push(exceptionLines);
+  sectionRefs.set(exceptionLines, exceptionRefs);
 
   // Mission artifacts by reference only — role, id, sha256, label; never bodies.
   // v1 callers may omit this additive section; treat that as not consulted.
@@ -1054,9 +1061,11 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
     artifactLines.push(`(reason: ${missionArtifacts.reason})`);
   }
   sections.push(artifactLines);
+  sectionRefs.set(artifactLines, artifactRefs);
 
   // Verification: current evidence and superseded evidence are separated. A stale
   // verification is listed under "superseded" and is NEVER presented as current.
+  const verificationRefs: ContextRef[] = [];
   const verificationLines: string[] = [`## Verification state [${sectionState(envelope.verificationState)}]`];
   if (envelope.verificationState.status === "consulted") {
     // ONLY `current_evidence` is rendered as current. Every other state
@@ -1075,15 +1084,17 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
       );
     }
     for (const entry of envelope.verificationState.entries) {
-      refs.push(Object.freeze({ kind: "verification", id: entry.id, state: entry.state }));
+      verificationRefs.push(Object.freeze({ kind: "verification", id: entry.id, state: entry.state }));
     }
   } else {
     verificationLines.push(`(reason: ${envelope.verificationState.reason})`);
   }
   sections.push(verificationLines);
+  sectionRefs.set(verificationLines, verificationRefs);
 
   // Relevant organization memory (precedence-resolved). Applied vs overridden are
   // both shown, so a consumer learns which memory governed and which was displaced.
+  const memoryRefs: ContextRef[] = [];
   const memoryLines: string[] = [`## Relevant organization memory [${sectionState(envelope.relevantOrgMemory)}]`];
   if (envelope.relevantOrgMemory.status === "consulted") {
     if (envelope.relevantOrgMemory.applied.length === 0 && envelope.relevantOrgMemory.overridden.length === 0) {
@@ -1091,7 +1102,7 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
     }
     for (const entry of envelope.relevantOrgMemory.applied) {
       memoryLines.push(`- applies (${entry.provenance}) [${entry.subjectKey}]: ${entry.reference.statement}`);
-      refs.push(
+      memoryRefs.push(
         Object.freeze({
           kind: "org_memory",
           recordId: entry.reference.recordId,
@@ -1105,7 +1116,7 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
       memoryLines.push(
         `- OVERRIDDEN by ${entry.overriddenBy} [${entry.subjectKey}] (not applied): ${entry.reference.statement}`,
       );
-      refs.push(
+      memoryRefs.push(
         Object.freeze({ kind: "org_memory_overridden", recordId: entry.reference.recordId, overriddenBy: entry.overriddenBy }),
       );
     }
@@ -1113,8 +1124,10 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
     memoryLines.push(`(reason: ${envelope.relevantOrgMemory.reason})`);
   }
   sections.push(memoryLines);
+  sectionRefs.set(memoryLines, memoryRefs);
 
   // Graph projection (bounded, reused compiler).
+  const graphRefs: ContextRef[] = [];
   const graphLines: string[] = [`## Graph projection [${sectionState(envelope.graphProjection)}]`];
   if (envelope.graphProjection.status === "consulted") {
     const projection = envelope.graphProjection.projection;
@@ -1123,7 +1136,7 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
         `graphVersion=${projection.graphVersionId} (${projection.byteLength} bytes)`,
     );
     graphLines.push(projection.content);
-    refs.push(
+    graphRefs.push(
       Object.freeze({
         kind: "graph_context",
         graphVersionId: projection.graphVersionId,
@@ -1135,19 +1148,22 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
     graphLines.push(`(reason: ${envelope.graphProjection.reason})`);
   }
   sections.push(graphLines);
+  sectionRefs.set(graphLines, graphRefs);
 
   // Relevant history (lowest priority: dropped first under the byte ceiling).
+  const historyRefs: ContextRef[] = [];
   const historyLines: string[] = [`## Relevant history [${sectionState(envelope.relevantHistory)}]`];
   if (envelope.relevantHistory.status === "consulted") {
     if (envelope.relevantHistory.entries.length === 0) historyLines.push("(no prior attempts recorded)");
     for (const entry of envelope.relevantHistory.entries) {
       historyLines.push(`- ${entry.trajectoryRef} (${entry.outcome}): ${entry.summary}`);
-      refs.push(Object.freeze({ kind: "history", trajectoryRef: entry.trajectoryRef, outcome: entry.outcome }));
+      historyRefs.push(Object.freeze({ kind: "history", trajectoryRef: entry.trajectoryRef, outcome: entry.outcome }));
     }
   } else {
     historyLines.push(`(reason: ${envelope.relevantHistory.reason})`);
   }
   sections.push(historyLines);
+  sectionRefs.set(historyLines, historyRefs);
 
   for (const ref of envelope.evidenceRefs) refs.push(Object.freeze({ kind: "evidence", ref }));
 
@@ -1159,7 +1175,7 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
     keep.pop();
     promptTruncated = true;
   }
-  if (keep.includes(artifactLines)) refs.push(...artifactRefs);
+  for (const section of keep) refs.push(...(sectionRefs.get(section) ?? []));
   const promptBody = assemble();
   const byteLength = Buffer.byteLength(promptBody, "utf8");
 

@@ -17,6 +17,7 @@ import {
   linkFettlerCampaignToMission,
   listMissionArtifactLineage,
   listMissionArtifacts,
+  fettlerCampaignMissionTaskId,
   type AppDb,
 } from "@mendpoint/db";
 import {
@@ -76,6 +77,8 @@ describe("tryRegisterBoundMissionArtifacts", () => {
       producerPrincipalId: "p1",
       correlationId: "corr",
       createdAt: T0,
+      taskId: "task-1",
+      sourceSnapshot: "snap-1",
       artifacts: [{ role: "candidate_patch", artifactId: "art-patch", label: "patch" }],
     });
     expect(result).toEqual({ status: "skipped_unbound" });
@@ -91,6 +94,8 @@ describe("tryRegisterBoundMissionArtifacts", () => {
       producerPrincipalId: "p1",
       correlationId: "corr",
       createdAt: T0,
+      taskId: "task-1",
+      sourceSnapshot: "snap-1",
       artifacts: [{ role: "candidate_patch", artifactId: "art-patch", label: "patch" }],
     });
     expect(result).toEqual({ status: "skipped_mission_not_found", missionId: "mission-does-not-exist" });
@@ -107,6 +112,7 @@ describe("tryRegisterBoundMissionArtifacts", () => {
       producerPrincipalId: "p1",
       correlationId: "corr",
       createdAt: T0,
+      taskId: "task-1",
       sourceSnapshot: "snap-1",
       artifacts: [
         { role: "candidate_patch", artifactId: "art-patch", label: "patch" },
@@ -117,6 +123,7 @@ describe("tryRegisterBoundMissionArtifacts", () => {
     const registered = listMissionArtifacts(db, "t1", "m1");
     expect(registered.map((row) => row.role).sort()).toEqual(["candidate_patch", "pull_request"]);
     expect(registered.every((row) => row.sourceSnapshot === "snap-1")).toBe(true);
+    expect(registered.every((row) => row.taskId === "task-1")).toBe(true);
     expect(listMissionArtifactLineage(db, "t1", "m1")).toEqual([
       expect.objectContaining({ artifactId: "art-pr", parentArtifactId: "art-patch" }),
     ]);
@@ -130,6 +137,8 @@ describe("tryRegisterBoundMissionArtifacts", () => {
       producerPrincipalId: "p1",
       correlationId: "corr",
       createdAt: T0,
+      taskId: "task-1",
+      sourceSnapshot: "snap-1",
       artifacts: [{ role: "candidate_patch", artifactId: "missing-manifest", label: "patch" }],
     });
     expect(result.status).toBe("failed");
@@ -153,6 +162,8 @@ describe("tryRegisterFettlerCampaignMissionArtifacts", () => {
       campaignId: "campaign-a",
       producerPrincipalId: "p1",
       createdAt: T0,
+      repositoryId: "repo-1",
+      sourceSnapshot: "snap-1",
       artifacts: [{ role: "candidate_patch", artifactId: "art-patch", label: "patch" }],
     });
     expect(result).toEqual({ status: "skipped_unbound" });
@@ -175,9 +186,16 @@ describe("tryRegisterFettlerCampaignMissionArtifacts", () => {
       campaignId: "campaign-a",
       producerPrincipalId: "p1",
       createdAt: T0,
+      repositoryId: "repo-1",
+      sourceSnapshot: "snap-1",
       artifacts: [{ role: "candidate_patch", artifactId: "art-patch", label: "patch" }],
     });
     expect(result).toEqual({ status: "registered", missionId: "m1", count: 1 });
-    expect(listMissionArtifacts(db, "t1", "m1")).toHaveLength(1);
+    expect(listMissionArtifacts(db, "t1", "m1")).toEqual([
+      expect.objectContaining({
+        taskId: fettlerCampaignMissionTaskId("m1", "repo-1"),
+        sourceSnapshot: "snap-1",
+      }),
+    ]);
   });
 });

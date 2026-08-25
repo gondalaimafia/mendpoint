@@ -3327,12 +3327,17 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - [x] Validate every tenant row before applying the section item cap.
 - [x] Emit supplied-context refs only when the corresponding artifact section survives the prompt byte ceiling.
 - [x] Add regressions for legacy envelopes, task and snapshot isolation, capped foreign rows, and budget truncation.
-- [ ] Run affected pipeline and worker tests/typechecks, push a replacement PR, and obtain reciprocal review.
+- [ ] Fail closed when a resolved Mission conflicts with the executing repository or snapshot.
+- [ ] Carry canonical MissionTask ids through the live artifact writer and worker compiler caller.
+- [ ] Exclude legacy null task/snapshot artifacts unless a caller explicitly requests Mission-global context.
+- [ ] Couple every rendered section's context refs to that section's retention under the byte ceiling.
+- [ ] Update the Mission Context Compiler contract without promoting ME-MCC-001 beyond partial/internal.
+- [ ] Run affected pipeline and worker tests/typechecks, diff checks, commit, and push the replacement head.
 
 #### Review
 
 - Compatibility: the v1 envelope field is additive and optional for callers. Rendering normalizes an absent field to `not_consulted: store_not_available`, while compiler output always carries the explicit section.
-- Relevance: the live store producer includes only Mission-wide artifacts or records whose optional `task_id` and `source_snapshot` match the exact compiled task and immutable snapshot.
+- Relevance: review found the earlier wildcard treatment of nullable task/snapshot bindings unsafe. This item remains open until exact task/snapshot and explicit Mission-global behavior are proven.
 - Isolation: all artifact rows are tenant-validated before the 32-item cap, so a foreign row cannot hide beyond the retained slice.
-- Context honesty: artifact refs are staged separately and added to trajectory context only when the whole artifact section survives the prompt byte budget.
-- Verification: all 26 focused compiler and live-store tests pass. Pipeline and worker typechecks pass, dependency audit reports zero vulnerabilities, and diff integrity is clean. The change makes no ReGauge production-readiness claim; it is a shared compiler mechanism with live Fettler store coverage.
+- Context honesty: review found that non-artifact refs still survived after their prompt sections were displaced. This item remains open until all droppable sections own their refs.
+- Verification: prior exact-head checks are superseded by the blocking review. Fresh evidence will be recorded after the fixes. ME-MCC-001 remains partial/internal and this work makes no production-readiness claim.

@@ -46,6 +46,12 @@ export type BuildMissionContextParams = Readonly<{
   task: Readonly<{ taskId: string; capability: string; riskClass: string; goal: string }>;
   /** Fallback identity when no mission is bound (a Fettler repair on a snapshot). */
   fallback: Readonly<{ objective: string; repositoryId: string | null; snapshotId: string | null }>;
+  /**
+   * Explicitly include legacy records whose task and snapshot are both null as
+   * Mission-global context. Omitted/false is the safe default: nullable legacy
+   * rows are not inferred to apply to every task.
+   */
+  includeMissionGlobalArtifacts?: boolean;
   evidenceRefs?: readonly string[];
 }>;
 
@@ -102,6 +108,16 @@ export function buildMissionContext(
   params: BuildMissionContextParams,
 ): CompiledMissionContext {
   const { tenantId, mission } = params;
+
+  // A caller-supplied Mission id is not sufficient authority to cross repository
+  // or snapshot boundaries. Where the Mission carries an exact binding, it must
+  // equal the immutable job binding before any Mission-scoped store is read.
+  if (mission && mission.repositoryId !== params.fallback.repositoryId) {
+    throw new Error("mission_context_repository_binding_mismatch");
+  }
+  if (mission && mission.snapshotId !== params.fallback.snapshotId) {
+    throw new Error("mission_context_snapshot_binding_mismatch");
+  }
 
   // Organization memory is tenant-scoped and applies with or without a mission.
   // Subject key is the memory scope, which decisions share, so a decision and a
@@ -202,9 +218,14 @@ export function buildMissionContext(
     ? {
         consulted: true,
         records: listMissionArtifacts(db, tenantId, mission.id)
-          .filter((artifact) =>
-            (artifact.taskId === null || artifact.taskId === params.task.taskId) &&
-            (artifact.sourceSnapshot === null || artifact.sourceSnapshot === (mission.snapshotId ?? params.fallback.snapshotId)))
+          .filter((artifact) => {
+            const exactTaskArtifact =
+              artifact.taskId === params.task.taskId && artifact.sourceSnapshot === snapshotId;
+            const explicitlyMissionGlobal =
+              params.includeMissionGlobalArtifacts === true &&
+              artifact.taskId === null && artifact.sourceSnapshot === null;
+            return exactTaskArtifact || explicitlyMissionGlobal;
+          })
           .map((artifact) => ({
           tenantId,
           id: artifact.id,

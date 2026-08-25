@@ -441,4 +441,80 @@ describe("worker mission-context producer (real stores)", () => {
       sha256,
     });
   });
+
+  it("fails closed when the Mission repository or snapshot differs from the executing job binding", () => {
+    const db = fixture();
+    const mission = getMission(db, "t1", "m1")!;
+    const compile = (repositoryId: string, snapshotId: string) => buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId, snapshotId },
+    });
+
+    expect(() => compile("r2", "snapA")).toThrow("mission_context_repository_binding_mismatch");
+    expect(() => compile("r1", "snapB")).toThrow("mission_context_snapshot_binding_mismatch");
+
+    createMission(db, {
+      id: "m-global",
+      tenantId: "t1",
+      product: "fettler",
+      triggerKind: "provider_change",
+      objective: "Unscoped legacy mission",
+      ownerPrincipalId: "p1",
+      eventId: "ev-m-global",
+      idempotencyKey: "cm-m-global",
+      correlationId: "corr-global",
+      createdAt: T0,
+    });
+    expect(() => buildMissionContext(db, {
+      tenantId: "t1",
+      mission: getMission(db, "t1", "m-global")!,
+      task: { taskId: "task-1", capability: "repair", riskClass: "medium", goal: "repair r1" },
+      fallback: { objective: "repair r1", repositoryId: "r1", snapshotId: "snapA" },
+    })).toThrow("mission_context_repository_binding_mismatch");
+  });
+
+  it("excludes legacy null task/snapshot artifacts unless Mission-global context is explicit", () => {
+    const db = fixture();
+    const body = "legacy unscoped output";
+    insertArtifactManifest(db, {
+      id: "art-legacy-null",
+      tenantId: "t1",
+      kind: "candidate-edit",
+      schemaVersion: 1,
+      sha256: createHash("sha256").update(body).digest("hex"),
+      mediaType: "text/plain",
+      sizeBytes: Buffer.byteLength(body, "utf8"),
+      storageRef: "mem://art-legacy-null",
+      content: body,
+      createdAt: T0,
+    });
+    registerMissionArtifact(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      role: "candidate_patch",
+      artifactId: "art-legacy-null",
+      label: "legacy null binding",
+      producerPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const params = {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    } as const;
+
+    const scoped = buildMissionContext(db, params);
+    expect(scoped.envelope.missionArtifacts).toEqual({ status: "consulted", entries: [] });
+
+    const missionGlobal = buildMissionContext(db, { ...params, includeMissionGlobalArtifacts: true });
+    expect(missionGlobal.envelope.missionArtifacts.status).toBe("consulted");
+    if (missionGlobal.envelope.missionArtifacts.status !== "consulted") throw new Error("unreachable");
+    expect(missionGlobal.envelope.missionArtifacts.entries.map((entry) => entry.artifactId))
+      .toEqual(["art-legacy-null"]);
+  });
 });

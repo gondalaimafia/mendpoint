@@ -17,6 +17,7 @@ import {
   listMissionArtifactLineage,
   listMissionArtifacts,
   listWardenCampaignTargets,
+  fettlerCampaignMissionTaskId,
   planWardenRollout,
   recordMissionDecision,
   replayWardenRun,
@@ -412,6 +413,7 @@ describe("Warden campaign executor", () => {
     expect(registered.find((row) => row.role === "verification_report")?.artifactId).toBe(result.postEditArtifactId);
     expect(registered.find((row) => row.role === "pull_request")?.artifactId).toBe(result.packageArtifactId);
     expect(registered.every((row) => row.sourceSnapshot === "snapshot-a")).toBe(true);
+    expect(registered.every((row) => row.taskId === fettlerCampaignMissionTaskId("mission-a", "repo-a"))).toBe(true);
     expect(registered.every((row) => row.producerPrincipalId === "worker")).toBe(true);
     const lineage = listMissionArtifactLineage(value.db, "tenant-a", "mission-a");
     expect(lineage).toEqual(expect.arrayContaining([

@@ -9,6 +9,7 @@
  */
 import {
   getMission,
+  fettlerCampaignMissionTaskId,
   recordMissionArtifactLineage,
   registerMissionArtifact,
   resolveMissionForFettlerCampaign,
@@ -45,7 +46,8 @@ export function tryRegisterBoundMissionArtifacts(
     producerPrincipalId: string;
     correlationId: string;
     createdAt: string;
-    sourceSnapshot?: string | null;
+    taskId: string;
+    sourceSnapshot: string;
     artifacts: readonly MissionArtifactRegistration[];
   },
 ): MissionArtifactRegisterResult {
@@ -66,7 +68,8 @@ export function tryRegisterBoundMissionArtifacts(
         producerPrincipalId: input.producerPrincipalId,
         correlationId: input.correlationId,
         createdAt: input.createdAt,
-        sourceSnapshot: input.sourceSnapshot ?? null,
+        taskId: input.taskId,
+        sourceSnapshot: input.sourceSnapshot,
       });
     }
     for (const artifact of input.artifacts) {
@@ -100,17 +103,20 @@ export function tryRegisterFettlerCampaignMissionArtifacts(
     campaignId: string;
     producerPrincipalId: string;
     createdAt: string;
-    sourceSnapshot?: string | null;
+    repositoryId: string;
+    sourceSnapshot: string;
     artifacts: readonly MissionArtifactRegistration[];
   },
 ): MissionArtifactRegisterResult {
   const mission = resolveMissionForFettlerCampaign(db, input.tenantId, input.campaignId);
+  if (!mission) return { status: "skipped_unbound" };
   return tryRegisterBoundMissionArtifacts(db, {
     tenantId: input.tenantId,
-    missionId: mission?.id ?? null,
+    missionId: mission.id,
     producerPrincipalId: input.producerPrincipalId,
     correlationId: input.campaignId,
     createdAt: input.createdAt,
+    taskId: fettlerCampaignMissionTaskId(mission.id, input.repositoryId),
     sourceSnapshot: input.sourceSnapshot,
     artifacts: input.artifacts,
   });

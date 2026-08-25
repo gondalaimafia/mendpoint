@@ -15,7 +15,7 @@ is bounded, not complete.
 | Piece | Location | Role |
 |---|---|---|
 | Compiler + renderer | `packages/pipeline/src/mission-context-compiler.ts` | Pure. Assembles the envelope from already-fetched inputs, resolves precedence, bounds, three-states, and renders the injection + context refs. |
-| Worker producer | `apps/worker/src/mission-context.ts` | Reads the live stores (org memory, decisions, exceptions, verification, history) and calls the compiler. Reads only; tenant is the authenticated job principal. |
+| Worker producer | `apps/worker/src/mission-context.ts` | Reads the live stores (org memory, decisions, exceptions, verification, history, Mission artifact references) and calls the compiler. Reads only; tenant is the authenticated job principal. |
 | Agent injection | `packages/agent/src/inherited-context.ts` + the seam in `packages/agent/src/agent.ts` | Pure renderer that wraps the compiled block in an untrusted-data frame and injects it into the system prompt, gated by a default-off switch. |
 
 ## The envelope
@@ -25,13 +25,13 @@ Conceptual shape (`InheritedContextEnvelope`):
     schemaVersion, tenantId,
     missionIdentity, task,
     graphProjection, relevantHistory, activeDecisions, relevantOrgMemory,
-    policyConstraints, verificationState, unresolvedExceptions,
+    policyConstraints, verificationState, unresolvedExceptions, missionArtifacts,
     evidenceRefs, precedence, bounds
 
 ### Bounds per section
 
 - `maxSectionItems = 32` items per list section (history, decisions, memory,
-  policy, exceptions, verification).
+  policy, exceptions, verification, artifacts).
 - `maxText = 2000` chars per free-text field (truncated, not rejected — the
   stores allow up to 4000).
 - `maxIdentifier = 200` chars per identifier (rejected if over).
@@ -40,7 +40,35 @@ Conceptual shape (`InheritedContextEnvelope`):
   512..262144 ceiling).
 - `maxPromptBytes = 32768` for the whole rendered body; sections are dropped
   lowest-priority-first if the body would exceed it, and `bounds.promptTruncated`
-  records that it happened.
+records that it happened.
+
+Every droppable prompt section owns its own context refs. When the byte ceiling
+removes a section, the compiler removes that section's refs too. A trajectory
+therefore cannot claim that history, graph, verification, memory, artifact,
+decision, exception, or policy context reached the model when its rendered
+section did not.
+
+## Mission and artifact scope
+
+A bound Mission cannot authorize context for a different executing repository or
+snapshot. Its repository and snapshot binding must equal the worker's immutable
+job binding exactly; a legacy null binding does not authorize a repository-bound
+job. Any difference fails closed with
+`mission_context_repository_binding_mismatch` or
+`mission_context_snapshot_binding_mismatch` before Mission-scoped stores are
+read.
+
+Mission artifacts are references only: registration id, role, artifact id,
+canonical SHA-256, and label. Artifact bodies remain in `artifact_manifests` and
+never enter the compiled envelope. The worker selects an artifact only when both
+its `task_id` and `source_snapshot` exactly match the canonical MissionTask and
+immutable snapshot being compiled. Legacy rows with both fields null are
+excluded by default; a caller must explicitly request Mission-global artifact
+context to include them. A partially null row is never inferred to be global.
+
+The live Fettler campaign artifact writer records the deterministic repository
+MissionTask id and exact source snapshot. The live worker compiler uses the
+canonical job MissionTask id rather than the raw jobs-row id.
 
 ## Precedence (property 1 and 2)
 
@@ -119,7 +147,8 @@ trajectory. On current main most Fettler `agent.run` jobs are not bound to a
 - tenant **organization memory** is compiled and can reach the Fettler prompt
   (this is the headline change: today no tenant context reaches the prompt at
   all); and
-- mission-scoped sections (decisions, exceptions, verification, history) report
+- mission-scoped sections (decisions, exceptions, verification, history,
+  Mission artifacts) report
   `no_mission_bound` on that path. Binding a Fettler job to a mission is a
   separate, acknowledged gap; the mission-bound path is fully implemented and
   covered end-to-end by `apps/worker/src/mission-context.test.ts`, but is not
@@ -133,9 +162,11 @@ claim the run received context it did not.
 
 `recordTrajectory`'s `contextRefs` — the previously write-less slot — is now
 populated from the compiler's refs when inherited context is injected. Each ref is
-an identifier/digest object (`graph_context`, `org_memory`, `mission_decision`,
-`policy_constraint`, `verification`, `exception`, `history`, `evidence`), never
-model reasoning. A `graph_context` ref self-identifies so the learning producer's
+an identifier/digest object (`mission_identity`, `graph_context`, `org_memory`,
+`org_memory_overridden`, `mission_decision`, `policy_constraint`,
+`verification`, `exception`, `mission_artifact`, `history`, `evidence`), never
+model reasoning. Droppable section refs are emitted only when their section is
+retained. A `graph_context` ref self-identifies so the learning producer's
 delivery classifier reads it as `recorded_present`.
 
 ## Tenant isolation (property, and property 8 test)
@@ -144,6 +175,13 @@ The compiler asserts every input item's `tenantId` against the envelope tenant a
 throws `mission_context_tenant_mismatch` on any mismatch; the precedence resolver
 independently throws on a cross-tenant layer. Context from one tenant cannot reach
 another tenant's envelope.
+
+## Product requirement status
+
+This implementation does not establish production availability. Requirement
+`ME-MCC-001` remains `implementationStatus: partial`, `availability: internal`,
+and `claimState: internal_only`. The live and external acceptance evidence needed
+for any later promotion is outside this change.
 
 ## Measurement
 
@@ -179,3 +217,7 @@ reverting):
 | `context_refs_json` populated on a real run (real stores) | `apps/worker/src/mission-context.test.ts` — CONTROL 6 |
 | Org memory with instruction-like text does not become an instruction | `packages/agent/src/inherited-context.test.ts` — CONTROL 7 |
 | Context from one tenant never reaches another tenant's envelope | CONTROL 8 |
+| Bound Mission repository/snapshot must match the executing job | `apps/worker/src/mission-context.test.ts` — wrong-binding regression |
+| Legacy null task/snapshot artifacts are excluded unless explicitly Mission-global | `apps/worker/src/mission-context.test.ts` — legacy-null regression |
+| Live artifact writer and compiler caller use canonical MissionTask ids | `mission-artifact-register.test.ts`, `warden-campaign-executor.test.ts`, and `apps/worker/src/cli.test.ts` |
+| Refs leave with every prompt section displaced by artifact context | `mission-context-compiler.test.ts` — displaced-ref regression |
