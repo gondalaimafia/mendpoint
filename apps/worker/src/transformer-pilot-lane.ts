@@ -24,6 +24,7 @@ import {
 } from "@mendpoint/transformer";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
 import { resolveRenamedEnv } from "@mendpoint/shared";
+import { assignRegaugeMissionTaskOnClaim } from "./regauge-mission-task-claim.js";
 import {
   discardTransformerAdaptiveModelEvidence,
   persistTransformerAdaptiveModelEvidence,
@@ -349,9 +350,26 @@ function requireAdaptiveRetention(value: number | undefined): number {
   return retention;
 }
 
-function asCoordinator(store: TransformerPilotLaneStore): TransformerAttemptCoordinatorPort {
+function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): TransformerAttemptCoordinatorPort {
   return {
-    claimNextAttempt: (input) => store.claimNextAttempt(input),
+    claimNextAttempt: (input) => {
+      const lease = store.claimNextAttempt(input);
+      if (!lease) return lease;
+      try {
+        // Drive the launch-created MissionTask on the same claim that took the
+        // lease. Missing/unbound tasks are a no-op; a raced task must not fail
+        // an already-claimed attempt.
+        assignRegaugeMissionTaskOnClaim(db, {
+          tenantId: lease.tenantId,
+          campaignId: lease.campaignId,
+          repositoryId: lease.snapshot.repositoryId,
+          createdAt: lease.startedAt,
+        });
+      } catch {
+        // Observational: the lease is already held.
+      }
+      return lease;
+    },
     renewAttemptLease: (input) => store.renewAttemptLease(input),
     assertCurrentAttemptFence: (input) => store.assertCurrentAttemptFence(input),
     recordAdaptiveAttemptUsage: (input) => store.recordAdaptiveAttemptUsage(input),
@@ -645,7 +663,7 @@ export async function runTransformerPilotLaneOnce(
     }
   }
 
-  const coordinator = asCoordinator(input.store);
+  const coordinator = asCoordinator(input.store, input.db);
   // The shared policy router is the dispatcher for every runnable campaign: it
   // decides (execute vs mandatory human handoff), selects the Transformer
   // executor over Warden under the existing filters and breakers, and persists

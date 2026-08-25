@@ -19,6 +19,7 @@ import {
   listRepositorySnapshots,
   listScmConnections,
   putTenantMembership,
+  regaugeLaunchMissionTaskId,
   regaugeMissionId,
   transitionMission,
   upsertGitHubInstallation,
@@ -224,11 +225,7 @@ export function bindRegaugeMissionAtLaunch(
   return getMission(db, input.tenantId, missionId) ?? current;
 }
 
-/** Deterministic MissionTask id for a launched ReGauge Mission (or one of its repos). */
-export function regaugeLaunchMissionTaskId(missionId: string, repositoryId?: string): string {
-  const material = repositoryId ? `${missionId}\0${repositoryId}` : missionId;
-  return `mt-regauge-${createHash("sha256").update(material, "utf8").digest("hex").slice(0, 24)}`;
-}
+export { regaugeLaunchMissionTaskId };
 
 /**
  * Create the unassigned MissionTask rows the launch just made real. One task per

@@ -14,11 +14,14 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
+  createMissionTask,
+  getMissionTask,
   getRoutingLedgerForJob,
   listAdaptiveCandidates,
   insertConnectedRepository,
   insertRepositorySnapshot,
   insertRepositorySnapshotFiles,
+  regaugeLaunchMissionTaskId,
   upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
@@ -875,6 +878,46 @@ describe("Transformer production pilot lane", () => {
         bodyRequestId: "adaptive-body-request-a",
         headerRequestId: "adaptive-header-request-a",
       })],
+    });
+  });
+
+  it("drives the launch MissionTask when the live claim takes a lease", async () => {
+    const { root, db, store } = setup();
+    const missionId = seedRegaugeMissionForCampaignA(db);
+    const task = createMissionTask(db, {
+      id: regaugeLaunchMissionTaskId(missionId, "repository-a"),
+      tenantId: "tenant-a",
+      missionId,
+      taskType: "code_migration",
+      acceptanceCriteria: "Complete the launched ReGauge unit for repository repository-a.",
+      risk: "medium",
+      actorPrincipalId: "principal-a",
+      eventId: "mt-regauge-claim-created",
+      idempotencyKey: "mt-regauge-claim-create",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+    expect(task.status).toBe("unassigned");
+
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-mission-task-claim",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-mission-task",
+      commandRunner: async () => ({ exitCode: 0, stdout: "verified", stderr: "" }),
+    });
+
+    expect(result).toMatchObject({ attempted: 1, completed: 1, errors: [] });
+    expect(getMissionTask(db, "tenant-a", task.id)).toMatchObject({
+      status: "agent_working",
+      ownerType: "agent",
     });
   });
 
