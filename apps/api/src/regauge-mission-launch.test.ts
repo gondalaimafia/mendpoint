@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ import {
   resolveMissionForRegaugeCampaign,
   verifyDomainEventIntegrity,
   type AppDb,
+  type Mission,
 } from "@mendpoint/db";
 import {
   openGraphLearnDb,
@@ -306,6 +307,43 @@ describe("bindRegaugeMissionAtLaunch", () => {
       rmSync(graphPath, { force: true });
       rmSync(`${graphPath}-wal`, { force: true });
       rmSync(`${graphPath}-shm`, { force: true });
+    }
+  });
+  it("does not fail the launch and leaves the mission unpinned when the graph store errors", () => {
+    const db = fixture();
+    // A path that exists (so openExistingGraphFile does not fail closed as
+    // "graph_file_missing") but cannot be opened as a SQLite database - here a
+    // directory - so openGraphLearnDb throws while opening it. This stands in
+    // for the SQLITE_BUSY / read-only-volume failure the launch-seam guard
+    // exists for, without leaving an open handle that would lock the path.
+    const badGraphPath = join(tmpdir(), `mendpoint-regauge-badgraph-${Date.now()}-${Math.random()}`);
+    mkdirSync(badGraphPath, { recursive: true });
+    const previous = process.env.GRAPH_LEARN_DB;
+    process.env.GRAPH_LEARN_DB = badGraphPath;
+    try {
+      let mission: Mission | undefined;
+      // The launch has already happened by the time the pin runs, so a graph
+      // error must be swallowed: the operator must not get a failure for a
+      // launch that actually succeeded (and would then retry it).
+      expect(() => {
+        mission = bindRegaugeMissionAtLaunch(db, {
+          tenantId: "t1",
+          campaignId: "campaign-badgraph",
+          ownerPrincipalId: "svc-bootstrap",
+          objective: "Runtime upgrade to Node 22",
+          repositories: [{ repositoryId: "repo-exact", snapshotId: "snapshot-exact" }],
+          createdAt: AT,
+        });
+      }).not.toThrow();
+      expect(mission?.state).toBe("executing");
+      const resolved = resolveMissionForRegaugeCampaign(db, "t1", "campaign-badgraph");
+      expect(resolved?.state).toBe("executing");
+      // Left unpinned rather than frozen in a half-bound state.
+      expect(resolved?.graphVersionId).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = previous;
+      rmSync(badGraphPath, { recursive: true, force: true });
     }
   });
 });

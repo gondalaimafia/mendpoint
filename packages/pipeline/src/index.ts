@@ -960,7 +960,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         // Mission that already exists for this consumer repository. Multi-repo
         // campaigns stay unbound. Mission bookkeeping must not fail analysis.
         try {
-          pinPublishedGraphVersionOnSingleRepoFettlerMissions(db, {
+          const missionBinds = pinPublishedGraphVersionOnSingleRepoFettlerMissions(db, {
             tenantId: input.tenantId,
             repositoryId: repo.connected_repository_id ?? repo.id,
             graphVersionId,
@@ -968,6 +968,16 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
             correlationId: changeId,
             createdAt: graphObservedAt,
           });
+          // Pinning is deliberately set-once, but a Mission already pinned to an
+          // older version silently freezes when a newer one publishes. Surface
+          // that conflict so the freeze is auditable instead of invisible.
+          for (const bind of missionBinds) {
+            if (bind.reason === "conflict") {
+              console.error(
+                `fettler mission graph version frozen tenant=${input.tenantId} change=${changeId} mission=${bind.mission?.id ?? "unknown"} pinned=${bind.mission?.graphVersionId ?? "unknown"} published=${graphVersionId}`,
+              );
+            }
+          }
         } catch (error) {
           console.error(
             `fettler mission graph bind failed tenant=${input.tenantId} change=${changeId}: ${

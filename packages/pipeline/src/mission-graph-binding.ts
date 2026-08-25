@@ -2,10 +2,11 @@
  * Pin a published Change Graph version onto a Mission (spec §11.10).
  *
  * The persistence primitive (`bindMissionGraphVersion`) is set-once. This module
- * is the orchestration seam: it never creates a graph database, never overwrites
- * a different pinned version, and leaves a Mission unbound when no published
- * version is uniquely identifiable. Multi-repository Fettler campaigns do not
- * pin a single graph version — that would privilege one repository.
+ * is the orchestration seam: it never creates a graph file (it opens only an
+ * existing one, which `openGraphLearnDb` then migrates in place), never
+ * overwrites a different pinned version, and leaves a Mission unbound when no
+ * published version is uniquely identifiable. Multi-repository Fettler campaigns
+ * do not pin a single graph version — that would privilege one repository.
  */
 import { existsSync } from "node:fs";
 import {
