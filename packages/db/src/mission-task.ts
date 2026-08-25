@@ -140,7 +140,8 @@ export function createMissionTask(db: AppDb, input: {
   const acceptanceCriteria = required("mission_task_acceptance_criteria", input.acceptanceCriteria);
   if (!["low", "medium", "high", "critical"].includes(input.risk)) throw new Error("mission_task_risk_invalid");
   assertPrincipal(db, input.tenantId, input.actorPrincipalId);
-  db.raw.exec("BEGIN IMMEDIATE");
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const existing = one<MissionTaskRow>(db, `SELECT * FROM mission_task WHERE id = ?`, [input.id]);
     if (existing) {
@@ -150,7 +151,7 @@ export function createMissionTask(db: AppDb, input: {
         value.risk !== input.risk) {
         throw new Error("mission_task_id_conflict");
       }
-      db.raw.exec("COMMIT");
+      if (owns) db.raw.exec("COMMIT");
       return value;
     }
     if (!one(db, `SELECT id FROM mission WHERE id = ? AND tenant_id = ?`, [input.missionId, input.tenantId])) {
@@ -168,9 +169,9 @@ export function createMissionTask(db: AppDb, input: {
       payload: { missionId: input.missionId, taskType: input.taskType, risk: input.risk, status: "unassigned" },
       createdAt: input.createdAt });
     const value = hydrate(one<MissionTaskRow>(db, `SELECT * FROM mission_task WHERE id = ? AND tenant_id = ?`, [input.id, input.tenantId])!);
-    db.raw.exec("COMMIT");
+    if (owns) db.raw.exec("COMMIT");
     return value;
-  } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
+  } catch (error) { if (owns) db.raw.exec("ROLLBACK"); throw error; }
 }
 
 /**
@@ -188,12 +189,13 @@ export function transitionMissionTask(db: AppDb, input: {
 }): MissionTask {
   assertPrincipal(db, input.tenantId, input.actorPrincipalId);
   if (input.assignedPrincipalId) assertPrincipal(db, input.tenantId, input.assignedPrincipalId);
-  db.raw.exec("BEGIN IMMEDIATE");
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const current = one<MissionTaskRow>(db, `SELECT * FROM mission_task WHERE id = ? AND tenant_id = ?`, [input.taskId, input.tenantId]);
     if (!current) throw new Error("mission_task_not_found");
     if (current.revision !== input.expectedRevision) throw new Error("mission_task_revision_conflict");
-    if (current.status === input.to) { db.raw.exec("COMMIT"); return hydrate(current); }
+    if (current.status === input.to) { if (owns) db.raw.exec("COMMIT"); return hydrate(current); }
     if (!transitions[current.status].includes(input.to)) throw new Error("mission_task_transition_invalid");
     const ownerType = ownerForStatus(input.to, current.owner_type);
     const assigned = input.assignedPrincipalId ?? current.assigned_principal_id;
@@ -212,9 +214,9 @@ export function transitionMissionTask(db: AppDb, input: {
       payload: { from: current.status, to: input.to, ownerType, retryCount,
         previousRevision: current.revision, revision: current.revision + 1 }, createdAt: input.createdAt });
     const value = hydrate(one<MissionTaskRow>(db, `SELECT * FROM mission_task WHERE id = ? AND tenant_id = ?`, [input.taskId, input.tenantId])!);
-    db.raw.exec("COMMIT");
+    if (owns) db.raw.exec("COMMIT");
     return value;
-  } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
+  } catch (error) { if (owns) db.raw.exec("ROLLBACK"); throw error; }
 }
 
 export function getMissionTask(db: AppDb, tenantId: string, taskId: string): MissionTask | undefined {
@@ -238,7 +240,8 @@ export function addMissionTaskDependency(db: AppDb, input: {
   id: string; tenantId: string; missionId: string; taskId: string; dependsOnTaskId: string; createdAt: string;
 }): void {
   if (input.taskId === input.dependsOnTaskId) throw new Error("mission_task_dependency_self");
-  db.raw.exec("BEGIN IMMEDIATE");
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
     for (const id of [input.taskId, input.dependsOnTaskId]) {
       const row = one<{ mission_id: string }>(db, `SELECT mission_id FROM mission_task WHERE id = ? AND tenant_id = ?`, [id, input.tenantId]);
@@ -248,7 +251,7 @@ export function addMissionTaskDependency(db: AppDb, input: {
     const existing = one<{ id: string }>(db,
       `SELECT id FROM mission_task_dependencies WHERE tenant_id = ? AND task_id = ? AND depends_on_task_id = ?`,
       [input.tenantId, input.taskId, input.dependsOnTaskId]);
-    if (existing) { db.raw.exec("COMMIT"); return; }
+    if (existing) { if (owns) db.raw.exec("COMMIT"); return; }
     // Cycle guard: reject if `taskId` is already a (transitive) prerequisite of
     // `dependsOnTaskId`, which would close a cycle.
     if (dependsOnTransitively(db, input.tenantId, input.dependsOnTaskId, input.taskId)) {
@@ -257,8 +260,8 @@ export function addMissionTaskDependency(db: AppDb, input: {
     db.raw.prepare(`INSERT INTO mission_task_dependencies
       (id, tenant_id, mission_id, task_id, depends_on_task_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(
       input.id, input.tenantId, input.missionId, input.taskId, input.dependsOnTaskId, input.createdAt);
-    db.raw.exec("COMMIT");
-  } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
+    if (owns) db.raw.exec("COMMIT");
+  } catch (error) { if (owns) db.raw.exec("ROLLBACK"); throw error; }
 }
 
 /** Whether `fromTaskId` depends (transitively) on `targetTaskId`. */

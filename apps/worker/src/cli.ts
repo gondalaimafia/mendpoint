@@ -67,10 +67,8 @@ import {
   listVersionsForProvider,
   settleActiveWardenModelReservationsForFence,
   settleWardenCiRepairWithoutCandidate,
-  getMission,
   type AppDb,
   type FeedScheduleRow,
-  type Mission,
 } from "@mendpoint/db";
 import {
   listCatalogFeeds,
@@ -187,6 +185,7 @@ import { persistWardenTrajectory } from "./warden-trajectory.js";
 import { assertAgentRunMissionPolicy } from "./agent-run-policy.js";
 import { resolveBoundMission } from "./job-bound-mission.js";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
+import { resolveResumeContext } from "./mission-resume.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
 import { observeProductCompletionInShadow } from "./verifier-product-shadow.js";
 import {
@@ -3159,32 +3158,17 @@ async function processJobsOnceUnfenced(
                     signal: leaseAbort.signal,
                   }
                 : undefined;
-              // Compile inherited context (organization memory, and — when the
-              // job is mission-bound — decisions/exceptions/verification/history)
-              // instead of rebuilding a tenant-independent prompt from constants.
-              // Gated behind the default-off `MENDPOINT_INHERITED_CONTEXT` switch;
-              // the seam re-checks the same switch. On today's repair path no
-              // mission is bound, so mission-scoped sections report
-              // `no_mission_bound` while tenant organization memory still reaches
-              // the model. Best-effort: a compile failure never blocks the attempt.
+              // Resume with the compiled envelope via resolveResumeContext so
+              // ownership, unresolvable mission ids, and store-load failures
+              // stay distinct (never collapse into "no prior context"). Gated
+              // behind the default-off `MENDPOINT_INHERITED_CONTEXT` switch.
               let inheritedContext: InheritedContextInjection | undefined;
               if (inheritedContextEnabled(process.env)) {
                 try {
-                  // Resume with the compiled envelope for this job's mission when
-                  // one is bound (carried forward across a regenerate). A Fettler
-                  // repair job on current main carries no missionId, so this stays
-                  // null and the mission-scoped sections report `no_mission_bound`
-                  // while tenant organization memory still reaches the model. A
-                  // present-but-unresolvable id is a real fault: fail closed (skip
-                  // injection, log it) rather than compile as if no mission.
-                  let mission: Mission | null = null;
-                  if (payload.missionId) {
-                    mission = getMission(db, job.tenant_id, payload.missionId) ?? null;
-                    if (!mission) throw new Error(`mission_not_found:${payload.missionId}`);
-                  }
-                  const compiled = buildMissionContext(db, {
+                  const standing = resolveResumeContext(db, {
                     tenantId: job.tenant_id,
-                    mission,
+                    currentRunStatus: sessionRun?.status ?? "running",
+                    missionId: payload.missionId,
                     task: {
                       taskId: job.id,
                       capability: (payload.mode ?? "repair") === "feature" ? "feature" : "repair",
@@ -3197,9 +3181,13 @@ async function processJobsOnceUnfenced(
                       snapshotId: binding.snapshotId,
                     },
                   });
-                  if (hasInheritedContent(compiled.envelope)) {
-                    inheritedContext = compiled.injection;
-                    inheritedContextRefs = compiled.refs;
+                  if (standing.status === "loaded") {
+                    inheritedContext = standing.injection;
+                    inheritedContextRefs = standing.refs;
+                  } else if (standing.status === "context_not_loaded" || standing.status === "not_resumable") {
+                    console.error(
+                      `  Fettler resume context ${standing.status} session=${sessionId}: ${standing.reason}`,
+                    );
                   }
                 } catch (error) {
                   console.error(
