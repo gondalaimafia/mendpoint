@@ -12,7 +12,7 @@ import {
   upsertScmConnection, type AppDb,
 } from "@mendpoint/db";
 import { enqueueVerifierAdvisoryJob } from "@mendpoint/pipeline";
-import type { VerifierHttpRequest } from "@mendpoint/verifier";
+import { criteriaForProduct, type VerifierHttpRequest } from "@mendpoint/verifier";
 import { REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE } from "./verifier-product-shadow.js";
 import {
   runVerifierAdvisoryJob,
@@ -352,6 +352,54 @@ describe("verifier advisory job runner", () => {
     expect(getJob(db, queued.jobId, "tenant_regauge_canary")?.status).toBe("done");
     expect(getMissionTask(db, "tenant_regauge_canary", missionTaskIdForJob(queued.jobId)))
       .toMatchObject({ status: "human_review_required", handoffReason: "advisory_verification_review" });
+  });
+
+  it("rejects and withholds the mission-review handoff when the lease is stolen after the provider returns", async () => {
+    const db = setup();
+    const queued = enqueue(db);
+    const job = claimNextJob(db, ["verifier.advisory.verify"], {
+      tenantId: "tenant_regauge_canary",
+      workerId: "worker-a",
+      leaseMs: 60_000,
+      now: "2026-08-24T12:01:01.000Z",
+    })!;
+    bridgeClaimedJobToMissionTask(db, job, "2026-08-24T12:01:01.000Z");
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
+    // Advisory scoring issues one provider request per criterion. Stealing the
+    // lease before the final request would trip the per-request lease guard and
+    // surface as a retryable provider failure, so steal only after the last
+    // receipt is durable, in the window before the runner settles the job.
+    const finalProviderRequest = criteriaForProduct("regauge").length;
+
+    await expect(runVerifierAdvisoryJob({
+      db,
+      job,
+      env: env(),
+      transport: { request: transport },
+      now: () => "2026-08-24T12:01:02.000Z",
+      operationHooks: {
+        // Steal the lease after the last provider receipt is durable but before
+        // the runner settles the job. The post-provider fence must reject the
+        // stale lease rather than completing and handing off to mission review.
+        afterProviderReceipt: () => {
+          if (transport.mock.calls.length < finalProviderRequest) return;
+          failJob(db, job.id, "lease_stolen", "2026-08-24T12:01:01.500Z", {
+            workerId: "worker-a",
+            leaseGeneration: job.lease_generation,
+            errorCode: "transient_dependency",
+            retryable: true,
+            baseDelayMs: 1_000,
+            maxDelayMs: 1_000,
+          });
+        },
+      },
+    })).rejects.toThrow("verifier_advisory_lease_lost");
+
+    // The stolen lease must leave the job un-completed and, decisively, the
+    // MissionTask must NOT have been handed off to human review.
+    expect(getJob(db, queued.jobId, "tenant_regauge_canary")?.status).not.toBe("done");
+    expect(getMissionTask(db, "tenant_regauge_canary", missionTaskIdForJob(queued.jobId))?.status)
+      .not.toBe("human_review_required");
   });
 
   it("fails closed without reissuing when a process dies after the provider returns but before a receipt is durable", async () => {

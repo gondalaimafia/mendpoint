@@ -1261,6 +1261,120 @@ describe("Transformer pilot execution coordinator", () => {
     store.close();
   });
 
+  it("rolls back the checkpoint state write when the advisory outbox insert fails, proving one transaction", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-advisory-outbox-atomic-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    const store = new TransformerPilotExecutionStore(path);
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const leaseToken = "lease-token-outbox-atomic-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-outbox-atomic"),
+      leaseToken,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const current = checkpointHead(lease, 1, "d");
+    store.compareAndSwapAttemptCheckpointHead({
+      ...mutation(2, "outbox-atomic-current"),
+      unitId: lease.unitId,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      expectedStateDigest: null,
+      next: current,
+      gateConfig: gateConfig(),
+    });
+    const terminal = checkpointHead(lease, 2, "a");
+    const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    const authorization = gateConfig();
+    const candidateSeal = {
+      schemaVersion: 1,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      workspaceManifestDigest: digest("d"),
+      workspacePayloadDigest: digest("e"),
+      sealDigest: digest("f"),
+    } satisfies TransformerCandidateSeal;
+    const completionIntent = {
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: terminal.episodeId,
+      candidateSealDigest: candidateSeal.sealDigest,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseTokenDigest: lease.leaseTokenDigest,
+      sourceRevision: candidate.snapshot.revision,
+      sourceDigest: candidate.snapshot.digest,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      authorizationDigest: createTransformerAttemptAuthorizationDigest(authorization),
+      verificationPassed: true,
+      actualCostUsd: 0.25,
+      accounting: adaptiveAccounting({ actualCostUsd: 0.25, wallTimeMs: 60_000 }),
+      observedAt: time(3),
+      evidenceRefs: ["evidence://operation/complete-outbox-atomic"],
+    } satisfies TransformerAttemptCompletionIntent;
+    const completionDigest = createTransformerAttemptCompletionDigest(completionIntent);
+    const completionRequestDigest = createTransformerCoordinatorCompletionRequestDigest(
+      terminal.episodeId,
+      candidateSeal,
+      completionIntent,
+    );
+    const completionIdentity = createTransformerAttemptEffectIdentity(
+      terminal.episodeId,
+      "coordinator_complete",
+      createTransformerCoordinatorCompletionSlot(completionDigest),
+      completionRequestDigest,
+    );
+    const input = {
+      ...mutation(3, "complete-outbox-atomic"),
+      idempotencyKey: completionIdentity.idempotencyKey,
+      leaseToken,
+      expectedStateDigest: current.stateDigest,
+      nextCheckpointHead: terminal,
+      candidateSeal,
+      completionIntent,
+      advisoryDispatchRequested: true,
+      gateConfig: authorization,
+    };
+
+    // Snapshot the pre-completion state: the checkpoint state write and the
+    // advisory outbox insert must succeed or fail together as one transaction.
+    const beforeRevision = store.getCampaign("tenant-a", "campaign-a")!.revision;
+    const beforeUnitState = store.getCampaign("tenant-a", "campaign-a")!.units[0]!.state;
+
+    // Force only the advisory outbox INSERT to fail. If that insert shared no
+    // transaction with the checkpoint state write (e.g. it ran after COMMIT),
+    // the state write would already be durable and this failure would leave a
+    // completed checkpoint with no dispatch.
+    const raw = (store as unknown as { db: DatabaseSync }).db;
+    const realPrepare = raw.prepare.bind(raw);
+    (raw as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      if (sql.includes("INSERT INTO tf_pilot_verifier_advisory_outbox")) {
+        return { run: () => { throw new Error("outbox_insert_boom"); } };
+      }
+      return realPrepare(sql);
+    };
+    try {
+      expect(() => store.completeAttemptWithCheckpointHead(input)).toThrow("outbox_insert_boom");
+    } finally {
+      (raw as unknown as { prepare: unknown }).prepare = realPrepare;
+    }
+
+    // The checkpoint state write must have rolled back with the failed outbox
+    // insert: no revision bump, no unit state transition, no completion event.
+    expect(store.getCampaign("tenant-a", "campaign-a")!.revision).toBe(beforeRevision);
+    expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]!.state).toBe(beforeUnitState);
+    expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.completed_with_checkpoint"
+    )).toHaveLength(0);
+    expect(store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(0);
+    store.close();
+  });
+
   it("does not publish a terminal checkpoint when completion loses its fence", () => {
     const store = new TransformerPilotExecutionStore();
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));

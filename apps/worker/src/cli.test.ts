@@ -1834,6 +1834,35 @@ describe("worker runtime", () => {
       .toContain("MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON is required for advisory verification");
   });
 
+  it("refuses production startup when JOB_LEASE_MS cannot cover the verifier timeout plus its renewal margin", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-verifier-lease-"));
+    dirs.push(root);
+    const advisory = {
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: root,
+      MENDPOINT_REPOS_DIR: root,
+      DEEPSEEK_VERIFIER_ENABLED: "true",
+      DEEPSEEK_API_KEY: "configured",
+      MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: "{}",
+      MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "{}",
+      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory",
+    };
+    // Default verifier timeout is 30_000ms, so the lease must be at least 90_000ms.
+    expect(validateWorkerProductionEnv({ ...advisory, JOB_LEASE_MS: "30000" }))
+      .toContain("JOB_LEASE_MS must be at least 90000 when independent verification is enabled");
+    // The boundary lease exactly covers timeout + margin and is accepted.
+    expect(validateWorkerProductionEnv({ ...advisory, JOB_LEASE_MS: "90000" }))
+      .not.toContain("JOB_LEASE_MS must be at least 90000 when independent verification is enabled");
+    // An unset lease defaults to 900_000ms and is comfortably above the requirement.
+    expect(validateWorkerProductionEnv(advisory).filter((error) => error.startsWith("JOB_LEASE_MS must be at least")))
+      .toEqual([]);
+    // A longer verifier timeout raises the required lease floor accordingly.
+    expect(validateWorkerProductionEnv({ ...advisory, MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS: "660000", JOB_LEASE_MS: "300000" }))
+      .toContain("JOB_LEASE_MS must be at least 720000 when independent verification is enabled");
+  });
+
   it("cryptographically validates Fly sandbox egress authority during production startup", () => {
     const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-sandbox-authority-"));
     dirs.push(root);

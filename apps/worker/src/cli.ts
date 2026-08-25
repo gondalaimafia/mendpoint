@@ -1796,6 +1796,13 @@ export function validateWorkerProductionEnv(
     if (regaugeAdvisory && !env.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON?.trim()) {
       errors.push("MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON is required for advisory verification");
     }
+    const verifierRuntime = resolveVerifierRuntimeConfig(env);
+    if (verifierRuntime.enabled) {
+      const requiredLeaseMs = verifierRuntime.timeoutMs + 60_000;
+      if (parseLeaseMs(env.JOB_LEASE_MS) < requiredLeaseMs) {
+        errors.push(`JOB_LEASE_MS must be at least ${requiredLeaseMs} when independent verification is enabled`);
+      }
+    }
   }
   const hasAnyAppCredential = Boolean(
     env.GITHUB_APP_ID?.trim() ||
