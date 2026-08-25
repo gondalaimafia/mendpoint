@@ -8,6 +8,8 @@ import {
   createMission,
   createMissionTask,
   createWardenCampaign,
+  enqueueJob,
+  getJob,
   getMissionTask,
   insertPrincipal,
   linkFettlerCampaignToMission,
@@ -22,6 +24,7 @@ import {
   recordBoundMissionExecutionCost,
   resolveBoundMissionForJob,
 } from "./mission-task-job-bridge.js";
+import { processJobsOnce } from "./cli.js";
 
 const at = "2026-01-01T00:00:00.000Z";
 const opened: Array<{ db: AppDb; dir: string }> = [];
@@ -165,6 +168,36 @@ describe("mission-task job bridge", () => {
     });
     expect(() => bridgeClaimedJobToMissionTask(db, claimed, at))
       .toThrow("mission_task_dependencies_incomplete");
+    expect(getMissionTask(db, "t1", blocked.id)?.status).toBe("unassigned");
+  });
+
+  it("defers a live generic job dependency wait instead of dead-lettering it", async () => {
+    const db = fixture();
+    const blocked = createMissionTask(db, {
+      id: missionTaskIdForJob("job-live-blocked"), tenantId: "t1", missionId: "m1",
+      taskType: "agent.run", acceptanceCriteria: "run after prerequisite", risk: "medium",
+      actorPrincipalId: "p1", eventId: "e-live-blocked", idempotencyKey: "c-live-blocked",
+      correlationId: "job-live-blocked", createdAt: at,
+    });
+    const prereq = createMissionTask(db, {
+      id: "task-live-prereq", tenantId: "t1", missionId: "m1", taskType: "code_migration",
+      acceptanceCriteria: "first", risk: "medium", actorPrincipalId: "p1",
+      eventId: "e-live-prereq", idempotencyKey: "c-live-prereq", correlationId: "corr", createdAt: at,
+    });
+    addMissionTaskDependency(db, {
+      id: "dep-live", tenantId: "t1", missionId: "m1", taskId: blocked.id,
+      dependsOnTaskId: prereq.id, createdAt: at,
+    });
+    enqueueJob(db, {
+      id: "job-live-blocked", tenantId: "t1", type: "agent.run",
+      payload: { missionId: "m1", goal: "repair", consumerId: "c1" },
+      maxAttempts: 1, createdAt: at,
+    });
+
+    const result = await processJobsOnce(db, { allTenants: true, runWardenMaintenance: false });
+
+    expect(result).toMatchObject({ claimed: 1, succeeded: 0, failed: 0, retried: 1 });
+    expect(getJob(db, "job-live-blocked", "t1")).toMatchObject({ status: "pending", attempts: 0 });
     expect(getMissionTask(db, "t1", blocked.id)?.status).toBe("unassigned");
   });
 

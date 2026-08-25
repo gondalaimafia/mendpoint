@@ -18,6 +18,7 @@ import {
 import {
   assignRegaugeMissionTaskOnClaim,
   handoffRegaugeMissionTaskOnReview,
+  regaugeMissionTaskExecutionReady,
 } from "./regauge-mission-task-claim.js";
 
 const at = "2026-08-25T00:00:00.000Z";
@@ -93,6 +94,9 @@ describe("assignRegaugeMissionTaskOnClaim", () => {
     expect(assignRegaugeMissionTaskOnClaim(db, {
       tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
     })).toBeUndefined();
+    expect(regaugeMissionTaskExecutionReady(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    })).toBe(false);
     expect(getMissionTask(db, "t1", blocked.id)?.status).toBe("unassigned");
   });
 

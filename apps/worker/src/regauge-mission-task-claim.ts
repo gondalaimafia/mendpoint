@@ -66,6 +66,18 @@ function resolveClaimedTask(
   return resolveLaunchTask(db, input.tenantId, mission.id, input.repositoryId);
 }
 
+/** Missing/unbound tasks preserve the existing compatibility path. A bound
+ * task gates execution until its dependencies and ownership state allow work. */
+export function regaugeMissionTaskExecutionReady(
+  db: AppDb,
+  input: RegaugeMissionTaskClaimInput,
+): boolean {
+  const task = resolveClaimedTask(db, input);
+  if (!task) return true;
+  if (!missionTaskReady(db, input.tenantId, task.id)) return false;
+  return task.status === "unassigned" || task.status === "agent_assigned" || task.status === "agent_working";
+}
+
 /**
  * Assign and start the launch-created MissionTask for a claimed ReGauge unit.
  * No-op when the campaign has no Mission or the launch task does not exist.

@@ -116,6 +116,18 @@ function resolveClaimedTask(
   return resolveEnrollmentTask(db, input.tenantId, mission.id, target.repositoryId);
 }
 
+/** Missing/unbound tasks preserve the existing compatibility path. A bound
+ * task gates execution until its dependencies and ownership state allow work. */
+export function fettlerMissionTaskExecutionReady(
+  db: AppDb,
+  input: FettlerMissionTaskClaimInput,
+): boolean {
+  const task = resolveClaimedTask(db, input);
+  if (!task) return true;
+  if (!missionTaskReady(db, input.tenantId, task.id)) return false;
+  return task.status === "unassigned" || task.status === "agent_assigned" || task.status === "agent_working";
+}
+
 /**
  * After a review-first campaign execute lands, hand the MissionTask to humans.
  * No-op when unbound or the task is not on the claimed working path.

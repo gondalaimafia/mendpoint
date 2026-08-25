@@ -5420,6 +5420,41 @@ export function completeJob(
   return Number(completed.changes) === 1;
 }
 
+/**
+ * Return a fenced running job to the pending queue because an external
+ * prerequisite is not ready. This is not a failed attempt: undo the claim's
+ * attempt increment so a dependency wait cannot exhaust the retry budget.
+ */
+export function deferJob(
+  db: AppDb,
+  id: string,
+  reason: string,
+  deferredAt: string,
+  opts: JobLeaseFence & { delayMs?: number; errorCode?: string },
+): boolean {
+  const delayMs = Math.max(1_000, Math.min(opts.delayMs ?? 5_000, 300_000));
+  const availableAt = new Date(Date.parse(deferredAt) + delayMs).toISOString();
+  const deferred = db.raw.prepare(
+    `UPDATE jobs
+     SET status = 'pending', attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+         error = ?, error_code = ?, last_error_at = ?, available_at = ?,
+         started_at = NULL, finished_at = NULL, dead_at = NULL,
+         lease_owner = NULL, lease_expires_at = NULL
+     WHERE id = ? AND status = 'running'
+       AND lease_owner = ? AND lease_generation = ? AND lease_expires_at > ?`,
+  ).run(
+    reason,
+    normalizeJobErrorCode(opts.errorCode ?? reason),
+    deferredAt,
+    availableAt,
+    id,
+    opts.workerId,
+    opts.leaseGeneration,
+    deferredAt,
+  );
+  return Number(deferred.changes) === 1;
+}
+
 export function renewJobLease(
   db: AppDb,
   id: string,

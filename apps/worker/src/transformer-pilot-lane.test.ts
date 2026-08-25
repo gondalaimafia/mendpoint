@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  addMissionTaskDependency,
   createDb,
   createMissionTask,
   getMissionTask,
@@ -932,6 +933,66 @@ describe("Transformer production pilot lane", () => {
       ownerType: "human",
       handoffReason: "pilot_lane_review",
     });
+  });
+
+  it("does not claim or execute a ReGauge attempt while its MissionTask dependency is incomplete", async () => {
+    const { root, db, store } = setup();
+    const missionId = seedRegaugeMissionForCampaignA(db);
+    const blocked = createMissionTask(db, {
+      id: regaugeLaunchMissionTaskId(missionId, "repository-a"),
+      tenantId: "tenant-a",
+      missionId,
+      taskType: "code_migration",
+      acceptanceCriteria: "Complete the launched ReGauge unit for repository repository-a.",
+      risk: "medium",
+      actorPrincipalId: "principal-a",
+      eventId: "mt-regauge-blocked-created",
+      idempotencyKey: "mt-regauge-blocked-create",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+    const prerequisite = createMissionTask(db, {
+      id: "mt-regauge-prerequisite",
+      tenantId: "tenant-a",
+      missionId,
+      taskType: "code_migration",
+      acceptanceCriteria: "Complete the prerequisite.",
+      risk: "medium",
+      actorPrincipalId: "principal-a",
+      eventId: "mt-regauge-prerequisite-created",
+      idempotencyKey: "mt-regauge-prerequisite-create",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+    addMissionTaskDependency(db, {
+      id: "mt-regauge-dependency",
+      tenantId: "tenant-a",
+      missionId,
+      taskId: blocked.id,
+      dependsOnTaskId: prerequisite.id,
+      createdAt: CREATED_AT,
+    });
+    const commandRunner = vi.fn(async () => ({ exitCode: 0, stdout: "verified", stderr: "" }));
+
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-mission-task-blocked",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-mission-blocked",
+      commandRunner,
+    });
+
+    expect(result).toMatchObject({ attempted: 0, completed: 0, failed: 0, idle: 1, errors: [] });
+    expect(commandRunner).not.toHaveBeenCalled();
+    expect(getMissionTask(db, "tenant-a", blocked.id)?.status).toBe("unassigned");
+    expect(store.listRunnableCampaigns("tenant-a")).toHaveLength(1);
   });
 
   it("does not hand the launch MissionTask to review when the attempt fails", async () => {

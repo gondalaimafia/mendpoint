@@ -3295,7 +3295,6 @@ GREEN: a single preparation step now writes only run metadata to a retained arti
 RED: `npm run docs:check` reported exactly `model-router.html`, `model-router.md`, `billing-usage.html`, and `billing-usage.md` as stale.
 
 GREEN: the canonical generator changed only those four artifacts. It removed references to the absent billing and router-runtime test files and aligned the router upload copy with the immutable decision record in the source catalog. `docs:check`, `names:check`, `claims:check`, and the production build pass; strict diff review found no source-catalog rewrite.
-
 ### 2026-08-25 ReGauge authenticated state transfer
 
 - [x] Define a versioned, authenticated, encrypted transfer manifest for the exact four live SQLite stores and immutable authority bindings.
@@ -3319,3 +3318,21 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Review repair: the CLI emits exactly one compact JSON record, so the live target-volume attestation can be parsed without discarding valid multiline output.
 - Review repair: unsafe rollback proof and thaw commands were removed. The old source remains authenticated and fenced; a later two-volume rollback authority must prove fresh target quiescence before any source restart can be enabled.
 - Exact-head review, current-base CI, and the live cutover remain pending. No production activation occurred in this PR.
+
+### 2026-08-25 PR 459 Mission dependency review repair
+
+- [x] Review the Cursor head and trace MissionTask readiness through the live Fettler, ReGauge, and generic job paths.
+- [x] Gate Fettler execution before work and defer a claimed job without consuming its retry budget when prerequisites are incomplete.
+- [x] Gate ReGauge before attempt lease acquisition so a blocked unit does not execute or consume an attempt.
+- [x] Bind candidate approval to the source job's exact MissionTask and leave unrelated resume tasks untouched.
+- [x] Keep dependency waits distinct from terminal worker failures.
+- [x] Add live-path regressions and run affected worker, API, and database tests plus typechecks.
+- [ ] Push a Codex-owned replacement PR and obtain exact-head reciprocal review before merge.
+
+#### Review
+
+- Root cause: readiness was checked only inside MissionTask bookkeeping. Both live product callers ignored an undefined task result, while the generic bridge threw into the terminal job-failure classifier.
+- Queue behavior: a fenced dependency wait now returns a claimed job to pending, restores its pre-claim attempt count, and schedules a bounded retry. It is not reported or stored as a failed execution.
+- ReGauge behavior: the next runnable campaign and repository are checked before the attempt runner claims a lease, so blocked work consumes neither an attempt nor recipe/model execution.
+- Approval binding: only the deterministic MissionTask for the reviewed source job may complete. Another `agent_resume` task in the same Mission remains unchanged.
+- Verification: 138 affected regressions pass across the database, both claim drivers, generic bridge, ReGauge live lane, and candidate review. Database, worker, and API typechecks pass; dependency audit reports zero vulnerabilities and diff integrity is clean.

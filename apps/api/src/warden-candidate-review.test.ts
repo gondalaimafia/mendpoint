@@ -17,6 +17,7 @@ import {
   getWardenCiUpdateByRun,
   insertAgentRun,
   insertPrincipal,
+  missionTaskIdForJob,
   openTaskHandoff,
   recordAudit,
   resolveTaskHandoff,
@@ -580,7 +581,7 @@ describe("Warden candidate human review", () => {
     expect(count.n).toBe(0);
   });
 
-  it("completes agent_resume MissionTasks on mission-bound approve", async () => {
+  it("completes only the source job's exact agent_resume MissionTask on approve", async () => {
     const { app, db } = fixture({
       sealApproval: async () => ({ path: "C:\\sealed-complete.json", sha256: `sha256:${"b".repeat(64)}`, created: true }),
     });
@@ -593,7 +594,7 @@ describe("Warden candidate human review", () => {
     db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
       .run(JSON.stringify({ ...JSON.parse(src.payload_json), missionId: "m1" }));
     let task = createMissionTask(db, {
-      id: "task-complete-1", tenantId: "tenant-a", missionId: "m1", taskType: "code_migration",
+      id: missionTaskIdForJob("source-job-1"), tenantId: "tenant-a", missionId: "m1", taskType: "code_migration",
       acceptanceCriteria: "tests pass", risk: "medium", actorPrincipalId: "trust-human-a",
       eventId: "e-task-1", idempotencyKey: "c-task-1", correlationId: "corr", createdAt: NOW,
     });
@@ -623,6 +624,31 @@ describe("Warden candidate human review", () => {
       correlationId: "corr", createdAt: NOW,
     });
     expect(getMissionTask(db, "tenant-a", task.id)?.status).toBe("agent_resume");
+    let unrelated = createMissionTask(db, {
+      id: "task-unrelated", tenantId: "tenant-a", missionId: "m1", taskType: "code_migration",
+      acceptanceCriteria: "unrelated review", risk: "medium", actorPrincipalId: "trust-human-a",
+      eventId: "e-unrelated", idempotencyKey: "c-unrelated", correlationId: "other", createdAt: NOW,
+    });
+    unrelated = transitionMissionTask(db, {
+      tenantId: "tenant-a", taskId: unrelated.id, expectedRevision: unrelated.revision, to: "agent_assigned",
+      actorPrincipalId: "trust-human-a", eventId: "e-unrelated-assign", idempotencyKey: "c-unrelated-assign",
+      correlationId: "other", createdAt: NOW,
+    });
+    unrelated = transitionMissionTask(db, {
+      tenantId: "tenant-a", taskId: unrelated.id, expectedRevision: unrelated.revision, to: "agent_working",
+      actorPrincipalId: "trust-human-a", eventId: "e-unrelated-work", idempotencyKey: "c-unrelated-work",
+      correlationId: "other", createdAt: NOW,
+    });
+    const unrelatedException = openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: unrelated.id,
+      reason: "architecture_decision_required", question: "Unrelated decision?", context: "Separate work.",
+      ownerPrincipalId: "trust-human-a", correlationId: "other", createdAt: NOW,
+    });
+    resolveTaskHandoff(db, {
+      tenantId: "tenant-a", priorExceptionId: unrelatedException.id, taskId: unrelated.id,
+      resolutionNote: "Resume separately.", decision: "Proceed", scope: "handoff_resolution:other",
+      authorPrincipalId: "trust-human-a", correlationId: "other", createdAt: NOW,
+    });
     seedCiRepairCandidate(db);
     const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
       method: "POST",
@@ -631,6 +657,7 @@ describe("Warden candidate human review", () => {
     });
     expect(response.status).toBe(202);
     expect(getMissionTask(db, "tenant-a", task.id)?.status).toBe("complete");
+    expect(getMissionTask(db, "tenant-a", unrelated.id)?.status).toBe("agent_resume");
   });
 
   it("keeps the committed winner seal through an orchestrated concurrent approval conflict", async () => {

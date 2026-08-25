@@ -11,6 +11,7 @@ import {
   createWardenCampaign,
   enqueueJob,
   fettlerCampaignMissionTaskId,
+  getJob,
   getMissionTask,
   insertConnectedRepository,
   insertPrincipal,
@@ -22,7 +23,11 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import { WardenCampaignExecutionError, type WardenCampaignExecutionDependencies } from "@mendpoint/pipeline";
-import { assignFettlerMissionTaskOnClaim, handoffFettlerMissionTaskOnReview } from "./fettler-mission-task-claim.js";
+import {
+  assignFettlerMissionTaskOnClaim,
+  fettlerMissionTaskExecutionReady,
+  handoffFettlerMissionTaskOnReview,
+} from "./fettler-mission-task-claim.js";
 import { WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE, type WardenCampaignExecutor } from "./warden-campaign-execute-dispatch.js";
 import { processJobsOnce } from "./cli.js";
 
@@ -148,6 +153,9 @@ describe("assignFettlerMissionTaskOnClaim", () => {
     expect(assignFettlerMissionTaskOnClaim(db, {
       tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at,
     })).toBeUndefined();
+    expect(fettlerMissionTaskExecutionReady(db, {
+      tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at,
+    })).toBe(false);
     expect(getMissionTask(db, "t1", blocked.id)?.status).toBe("unassigned");
   });
 
@@ -277,6 +285,45 @@ describe("assignFettlerMissionTaskOnClaim", () => {
 });
 
 describe("campaign execute claim drives MissionTask", () => {
+  it("defers the live execute without spending retry budget while a dependency is incomplete", async () => {
+    const { db, missionId } = fixture();
+    const blocked = enrollTask(db, missionId, "repo-a");
+    const prereq = createMissionTask(db, {
+      id: "task-live-prereq", tenantId: "t1", missionId, taskType: "code_migration",
+      acceptanceCriteria: "first", risk: "medium", actorPrincipalId: "p1",
+      eventId: "e-live-prereq", idempotencyKey: "c-live-prereq", correlationId: "camp-1", createdAt: at,
+    });
+    addMissionTaskDependency(db, {
+      id: "dep-live", tenantId: "t1", missionId, taskId: blocked.id, dependsOnTaskId: prereq.id, createdAt: at,
+    });
+    enqueueJob(db, {
+      id: "job-exec-blocked", tenantId: "t1", type: WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE, createdAt: at,
+      payload: {
+        campaignId: "camp-1", targetId: "tgt-1", rolloutDecisionId: "rd-1",
+        actorPrincipalId: "p1", runId: "run-blocked", createdAt: at,
+        source: { sourceArtifactId: "src-1" },
+        rolloutApproval: { decisionSha256: "a".repeat(64), approvedByPrincipalId: "p1", approvedAt: at },
+        ownerApproval: { ownerPrincipalId: "p1", ownerHandle: "@team", approvedAt: at },
+      },
+    });
+    let executed = 0;
+    const result = await processJobsOnce(db, {
+      allTenants: true,
+      runWardenMaintenance: false,
+      wardenCampaignExecution: {
+        resolveDependencies: () => ({} as WardenCampaignExecutionDependencies),
+        execute: (async () => {
+          executed++;
+          throw new Error("blocked MissionTask executed");
+        }) as unknown as WardenCampaignExecutor,
+      },
+    });
+    expect(result).toMatchObject({ claimed: 1, succeeded: 0, failed: 0, retried: 1 });
+    expect(executed).toBe(0);
+    expect(getJob(db, "job-exec-blocked", "t1")).toMatchObject({ status: "pending", attempts: 0 });
+    expect(getMissionTask(db, "t1", blocked.id)?.status).toBe("unassigned");
+  });
+
   it("assigns the enrollment task when the live loop claims the execute job", async () => {
     const { db, missionId } = fixture();
     const created = enrollTask(db, missionId, "repo-a");

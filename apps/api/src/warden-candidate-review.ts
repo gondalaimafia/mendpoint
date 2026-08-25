@@ -9,9 +9,10 @@ import {
   getAgentRun,
   getJob,
   getMission,
+  getMissionTask,
   getPrincipal,
   getTenantMembership,
-  listMissionTasks,
+  missionTaskIdForJob,
   recordReviewerDirective,
   transitionMissionTask,
   getWardenCandidateDeliveryByRun,
@@ -121,38 +122,36 @@ function regenerationIds(tenantId: string, runId: string) {
 }
 
 /**
- * Terminal approve: complete MissionTasks already in `agent_resume` for a bound
- * Mission. Human_review_required cannot go to complete (legal table); those
- * stay until a resolver moves them to agent_resume (`#454`). Unbound skip.
+ * Terminal approve: complete only the source job's exact MissionTask when it is
+ * already in `agent_resume`. Human_review_required cannot go directly to
+ * complete; a handoff resolver must move it first. Unbound or mismatched skip.
  */
-export function tryCompleteBoundMissionTasksOnApprove(
+export function tryCompleteBoundMissionTaskOnApprove(
   db: AppDb,
   input: {
     tenantId: string;
     missionId: string | null;
+    taskId: string | null;
     actorPrincipalId: string;
     correlationId: string;
     createdAt: string;
   },
-): number {
-  if (!input.missionId || !getMission(db, input.tenantId, input.missionId)) return 0;
-  let completed = 0;
-  for (const task of listMissionTasks(db, input.tenantId, input.missionId)) {
-    if (task.status !== "agent_resume") continue;
-    transitionMissionTask(db, {
-      tenantId: input.tenantId,
-      taskId: task.id,
-      expectedRevision: task.revision,
-      to: "complete",
-      actorPrincipalId: input.actorPrincipalId,
-      eventId: `${task.id}-review-complete`,
-      idempotencyKey: `mission-task-review-complete-${task.id}`,
-      correlationId: input.correlationId,
-      createdAt: input.createdAt,
-    });
-    completed += 1;
-  }
-  return completed;
+): boolean {
+  if (!input.missionId || !input.taskId || !getMission(db, input.tenantId, input.missionId)) return false;
+  const task = getMissionTask(db, input.tenantId, input.taskId);
+  if (!task || task.missionId !== input.missionId || task.status !== "agent_resume") return false;
+  transitionMissionTask(db, {
+    tenantId: input.tenantId,
+    taskId: task.id,
+    expectedRevision: task.revision,
+    to: "complete",
+    actorPrincipalId: input.actorPrincipalId,
+    eventId: `${task.id}-review-complete`,
+    idempotencyKey: `mission-task-review-complete-${task.id}`,
+    correlationId: input.correlationId,
+    createdAt: input.createdAt,
+  });
+  return true;
 }
 
 function sourceBinding(db: AppDb, tenantId: string, result: Record<string, unknown>) {
@@ -511,17 +510,21 @@ export function registerWardenCandidateReviewRoutes(
         }
         const sourceJob = run.job_id ? getJob(db, run.job_id, tenantId) : undefined;
         let approveMissionId: string | null = null;
+        let approveMissionTaskId: string | null = null;
         if (sourceJob) {
           try {
             const payload = JSON.parse(sourceJob.payload_json) as Record<string, unknown>;
             approveMissionId = typeof payload.missionId === "string" ? payload.missionId : null;
+            approveMissionTaskId = approveMissionId ? missionTaskIdForJob(sourceJob.id) : null;
           } catch {
             approveMissionId = null;
+            approveMissionTaskId = null;
           }
         }
-        tryCompleteBoundMissionTasksOnApprove(db, {
+        tryCompleteBoundMissionTaskOnApprove(db, {
           tenantId,
           missionId: approveMissionId,
+          taskId: approveMissionTaskId,
           actorPrincipalId: trustId!,
           correlationId: run.id,
           createdAt: reviewedAt,

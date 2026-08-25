@@ -28,6 +28,7 @@ import { assertRegaugePilotMissionPolicy } from "./regauge-pilot-policy.js";
 import {
   assignRegaugeMissionTaskOnClaim,
   handoffRegaugeMissionTaskOnReview,
+  regaugeMissionTaskExecutionReady,
 } from "./regauge-mission-task-claim.js";
 import {
   discardTransformerAdaptiveModelEvidence,
@@ -715,6 +716,15 @@ export async function runTransformerPilotLaneOnce(
     rawGate,
   )) {
     if (input.shouldContinue?.() === false) break;
+    if (!regaugeMissionTaskExecutionReady(input.db, {
+      tenantId: campaign.tenantId,
+      campaignId: campaign.campaignId,
+      repositoryId: campaign.repositoryId,
+      createdAt: now(),
+    })) {
+      idle++;
+      continue;
+    }
     const decision = authorizeTransformerWorkerAction(
       { tenantId: campaign.tenantId, environment: campaign.environment },
       rawGate,

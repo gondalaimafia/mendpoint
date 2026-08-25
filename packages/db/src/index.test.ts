@@ -35,6 +35,7 @@ import {
   claimNextJob,
   renewJobLease,
   completeJob,
+  deferJob,
   failJob,
   retryJob,
   cancelJob,
@@ -1389,6 +1390,43 @@ describe("db", () => {
     expect(retried?.attempts).toBe(2);
     expect(retried?.lease_owner).toBe("worker-b");
     expect(retried?.lease_generation).toBe(2);
+  });
+
+  it("defers a fenced dependency wait without consuming the retry budget", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-jobs-defer-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "t.sqlite"));
+    dbs.push(db);
+    enqueueJob(db, {
+      id: "job-waiting",
+      tenantId: "tenant-a",
+      type: "agent.run",
+      payload: {},
+      maxAttempts: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const claimed = claimNextJob(db, ["agent.run"], {
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      leaseMs: 60_000,
+      now: "2026-01-01T00:00:01.000Z",
+    })!;
+    expect(claimed.attempts).toBe(1);
+    expect(deferJob(db, claimed.id, "mission_task_dependencies_incomplete", "2026-01-01T00:00:02.000Z", {
+      workerId: "worker-a",
+      leaseGeneration: claimed.lease_generation,
+      delayMs: 5_000,
+    })).toBe(true);
+    expect(getJob(db, claimed.id, "tenant-a")).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      error_code: "mission_task_dependencies_incomplete",
+      available_at: "2026-01-01T00:00:07.000Z",
+    });
+    expect(deferJob(db, claimed.id, "mission_task_dependencies_incomplete", "2026-01-01T00:00:03.000Z", {
+      workerId: "worker-a",
+      leaseGeneration: claimed.lease_generation,
+    })).toBe(false);
   });
 
   it("claims only due jobs and reports tenant recovery state", () => {

@@ -31,6 +31,7 @@ import {
   claimNextJob,
   completeJob,
   createDb,
+  deferJob,
   enqueueJob,
   failJob,
   failWardenCiOperation,
@@ -223,7 +224,11 @@ import {
   runWardenCampaignExecuteTarget,
   type WardenCampaignExecutor,
 } from "./warden-campaign-execute-dispatch.js";
-import { assignFettlerMissionTaskOnClaim, handoffFettlerMissionTaskOnReview } from "./fettler-mission-task-claim.js";
+import {
+  assignFettlerMissionTaskOnClaim,
+  fettlerMissionTaskExecutionReady,
+  handoffFettlerMissionTaskOnReview,
+} from "./fettler-mission-task-claim.js";
 import type { FieldRename } from "./warden-campaign-recipe.js";
 import type { WardenCampaignExecutionDependencies } from "@mendpoint/pipeline";
 import {
@@ -2740,9 +2745,38 @@ async function processJobsOnceUnfenced(
     const renewal = setInterval(refreshJobLease, Math.max(100, Math.floor(leaseMs / 3)));
     renewal.unref();
     try {
+      const deferForMissionDependencies = (): void => {
+        const deferred = deferJob(db, job.id, "mission_task_dependencies_incomplete", nowIso(), {
+          ...fence,
+          errorCode: "mission_task_dependencies_incomplete",
+          delayMs: 5_000,
+        });
+        if (!deferred) throw new Error("lease_lost_before_mission_task_defer");
+        result.retried++;
+      };
+      if (job.type === WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE && opts.wardenCampaignExecution) {
+        const claimed = parseWardenCampaignExecuteJob(job);
+        if (!fettlerMissionTaskExecutionReady(db, {
+          tenantId: job.tenant_id,
+          campaignId: claimed.campaignId,
+          targetId: claimed.targetId,
+          createdAt: nowIso(),
+        })) {
+          deferForMissionDependencies();
+          continue;
+        }
+      }
       // D3: when the job is bound to a real mission, put a MissionTask on the
       // live claim path (unassigned → agent_working). Unbound jobs stay unbound.
-      bridgeClaimedJobToMissionTask(db, job, nowIso());
+      try {
+        bridgeClaimedJobToMissionTask(db, job, nowIso());
+      } catch (error) {
+        if (error instanceof Error && error.message === "mission_task_dependencies_incomplete") {
+          deferForMissionDependencies();
+          continue;
+        }
+        throw error;
+      }
       if (job.type === VERIFIER_ADVISORY_JOB_TYPE) {
         await runVerifierAdvisoryJob({
           db,
