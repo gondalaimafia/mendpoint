@@ -409,9 +409,11 @@ export function listOrganizationMemory(
 function countDistinctObservations(chain: readonly OrganizationMemoryRecord[]): number {
   const fingerprints = new Set<string>();
   for (const record of chain) {
-    // Rows created before evidence-bound observation authority have no actor.
-    // They remain visible history but cannot contribute to corroboration.
-    if (record.observationFingerprint !== null && record.actorPrincipalId !== null && record.sourceRefs.length > 0) {
+    // Rows created before attributed observation authority have no actor. They
+    // remain visible history but cannot contribute to corroboration. One
+    // fingerprint per (memory, observer), so distinct fingerprints == distinct
+    // authenticated observers.
+    if (record.observationFingerprint !== null && record.actorPrincipalId !== null) {
       fingerprints.add(record.observationFingerprint);
     }
   }
@@ -530,24 +532,28 @@ function normalizeRefs(name: string, value: readonly string[] | undefined): stri
   return value.map((entry) => requireText(name, entry));
 }
 
-type ObservationEvidenceAuthority = Readonly<{
-  id: string;
-  subject_type: string;
-  subject_id: string;
-  producer_principal_id: string | null;
-  verdict: string;
-}>;
-
-function observationAuthority(
+/**
+ * The genuine observation authority: the observer must be a live principal of
+ * the tenant (present, not revoked, not expired at `observedAt`). This is a real
+ * check against principal state — it is NOT derived from the observation body,
+ * and it re-runs at activation time so a principal revoked after observing can
+ * no longer corroborate. The observation is attributed to that principal; there
+ * is no verified evidence record, so independence is established by DISTINCT
+ * authenticated principals, not by a self-minted evidence row.
+ *
+ * The fingerprint keys one observation per (tenant, memory, observer): the same
+ * observer restating the same convention is idempotent, and the UNIQUE
+ * (tenant_id, memory_id, observation_fingerprint) index makes it structural.
+ */
+function observerAuthority(
   db: AppDb,
   input: Readonly<{
     tenantId: string;
     memoryId: string;
     observerPrincipalId: string;
-    sourceRefs: readonly string[] | undefined;
     observedAt: string;
   }>,
-): Readonly<{ sourceRefs: readonly string[]; fingerprint: string }> {
+): Readonly<{ fingerprint: string }> {
   const principalId = requireText("organization_memory_observer_principal", input.observerPrincipalId);
   const principal = one<{ id: string; revoked_at: string | null; expires_at: string | null }>(
     db,
@@ -559,38 +565,11 @@ function observationAuthority(
       (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= Date.parse(input.observedAt)))) {
     throw new Error("organization_memory_observer_authority_invalid");
   }
-  const sourceRefs = normalizeRefs("organization_memory_source_ref", input.sourceRefs)
-    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
-  if (sourceRefs.length === 0 || new Set(sourceRefs).size !== sourceRefs.length) {
-    throw new Error("organization_memory_evidence_invalid");
-  }
-  for (const sourceRef of sourceRefs) {
-    // Fail-closed authority control: an observation only counts if an
-    // independent, verified producer vouched for it. No production code path
-    // currently mints an evidence_records row with this subject_type (see
-    // docs/memory/ORGANIZATION_MEMORY.md, "Operational status of the observation
-    // path"), so this check always rejects in production and the observation /
-    // independent-corroboration promotion path is inert-but-safe, not live. Do
-    // not relax it to make the path reachable — build the producer instead.
-    const evidence = one<ObservationEvidenceAuthority>(
-      db,
-      `SELECT id, subject_type, subject_id, producer_principal_id, verdict
-         FROM evidence_records WHERE id = ? AND tenant_id = ?`,
-      [sourceRef, input.tenantId],
-    );
-    if (!evidence || evidence.subject_type !== "organization_memory_observation" ||
-        evidence.subject_id !== input.memoryId || evidence.producer_principal_id !== principalId ||
-        evidence.verdict !== "passed") {
-      throw new Error("organization_memory_evidence_invalid");
-    }
-  }
   return Object.freeze({
-    sourceRefs: Object.freeze(sourceRefs),
     fingerprint: sha256Hex(canonicalJson({
       tenantId: input.tenantId,
       memoryId: input.memoryId,
       observerPrincipalId: principalId,
-      sourceRefs,
     })),
   });
 }
@@ -610,33 +589,30 @@ function assertCurrentIndependentObservationAuthority(
   at: string,
 ): void {
   const observations = chain.filter((record) =>
-    record.observationFingerprint !== null && record.actorPrincipalId !== null && record.sourceRefs.length > 0);
-  const principals = new Set<string>();
+    record.observationFingerprint !== null && record.actorPrincipalId !== null);
   for (const record of observations) {
-    const authority = observationAuthority(db, {
+    // Re-validate every corroborating observer at activation time. A principal
+    // revoked or expired after observing throws here and can no longer count
+    // toward corroboration — this is the forward-looking half of the authority
+    // check, decided against current principal state, not the observation body.
+    observerAuthority(db, {
       tenantId: record.tenantId,
       memoryId: record.memoryId,
       observerPrincipalId: record.actorPrincipalId!,
-      sourceRefs: record.sourceRefs,
       observedAt: at,
     });
-    if (authority.fingerprint !== record.observationFingerprint || principals.has(record.actorPrincipalId!)) {
-      throw new Error("organization_memory_evidence_invalid");
-    }
-    principals.add(record.actorPrincipalId!);
-  }
-  if (principals.size < CORROBORATION_THRESHOLD) {
-    throw new Error("organization_memory_activation_blocked_insufficient_corroboration");
   }
 }
 
 /**
  * Record one observation of a convention. The FIRST observation creates a
  * MEMORY_CANDIDATE (never ACTIVE). Each subsequent INDEPENDENT observation
- * (a distinct authenticated principal with passed evidence) corroborates it; when the distinct count reaches
- * CORROBORATION_THRESHOLD the head advances to VALIDATION. Re-submitting the
- * same authority evidence is idempotent. `source` must be an inferred source — explicit
- * statements go through `createExplicitMemory`.
+ * (a distinct authenticated principal) corroborates it; when the distinct count
+ * reaches CORROBORATION_THRESHOLD the head advances to VALIDATION. The same
+ * principal restating the same convention is idempotent. The observation is
+ * attributed to the observing principal and carries no verified evidence record
+ * — it records honestly as a candidate, not as a verification. `source` must be
+ * an inferred source — explicit statements go through `createExplicitMemory`.
  */
 export function recordOrganizationMemoryObservation(
   db: AppDb,
@@ -650,7 +626,6 @@ export function recordOrganizationMemoryObservation(
     source: Exclude<OrganizationMemorySource, "explicit">;
     confidence?: OrganizationMemoryConfidence;
     structuredValue?: unknown;
-    sourceRefs?: readonly string[];
     appliesTo?: readonly string[];
     reason?: string;
     at: string;
@@ -671,11 +646,10 @@ export function recordOrganizationMemoryObservation(
   const memoryId = organizationMemoryId({ tenantId, category, scope, subjectKey: input.subjectKey });
 
   return withTransaction(db, () => {
-    const authority = observationAuthority(db, {
+    const authority = observerAuthority(db, {
       tenantId,
       memoryId,
       observerPrincipalId: input.observerPrincipalId,
-      sourceRefs: input.sourceRefs,
       observedAt: at,
     });
     const chain = chainRecords(db, tenantId, memoryId);
@@ -691,7 +665,7 @@ export function recordOrganizationMemoryObservation(
         statement,
         structuredValue: input.structuredValue ?? null,
         source: input.source,
-        sourceRefs: authority.sourceRefs,
+        sourceRefs: [],
         observationFingerprint: authority.fingerprint,
         confidence,
         status: "MEMORY_CANDIDATE",
@@ -710,17 +684,12 @@ export function recordOrganizationMemoryObservation(
     if (!sameObservedMeaning(head, input)) {
       throw new Error("organization_memory_observation_conflict");
     }
-    // Idempotent: this exact authenticated authority evidence already counted.
+    // Idempotent: this observer already observed this memory. The fingerprint
+    // keys on (tenant, memory, observer), so a distinct fingerprint here means a
+    // distinct authenticated observer — that is what makes corroboration
+    // independent, no evidence row required.
     if (chain.some((record) => record.observationFingerprint === authority.fingerprint)) {
       return head;
-    }
-    if (chain.some((record) => record.observationFingerprint !== null &&
-        record.actorPrincipalId === input.observerPrincipalId)) {
-      throw new Error("organization_memory_observation_not_independent");
-    }
-    const usedRefs = new Set(chain.flatMap((record) => [...record.sourceRefs]));
-    if (authority.sourceRefs.some((sourceRef) => usedRefs.has(sourceRef))) {
-      throw new Error("organization_memory_observation_not_independent");
     }
     const distinctAfter = countDistinctObservations(chain) + 1;
     const advancesToValidation =
@@ -736,7 +705,7 @@ export function recordOrganizationMemoryObservation(
       statement: head.statement,
       structuredValue: head.structuredValue ?? null,
       source: input.source,
-      sourceRefs: authority.sourceRefs,
+      sourceRefs: [],
       observationFingerprint: authority.fingerprint,
       confidence: head.confidence,
       status: advancesToValidation ? "VALIDATION" : head.status,

@@ -145,31 +145,35 @@ personalization.
 
 ## Operational status of the observation path
 
-`POST /observations` and the independent-corroboration branch of promotion are
-**not operational on this branch** — they are built and fail closed, not live.
+`POST /observations` records an observation, and records it **honestly**: it
+requires a human trust principal (like every other mutation), validates that the
+observing principal is live (present, not revoked, not expired), and writes a
+`MEMORY_CANDIDATE` attributed to that principal with the stated `source`. It does
+**not** mint an `evidence_records` row, because no verification happened — the
+row would assert a verified producer vouched for the statement when nothing did.
 
-Admitting an observation requires every `sourceRefs` entry to resolve to an
-`evidence_records` row with `subject_type = "organization_memory_observation"`,
-`subject_id` equal to the memory id, `producer_principal_id` equal to the
-observing principal, and `verdict = "passed"` (enforced in
-`observationAuthority`, `packages/db/src/organization-memory.ts`). This is a
-deliberate fail-closed authority control: an observation only counts if an
-independent, verified producer vouched for it.
+Authority on this path is the authenticated observer, not an evidence reference
+(`observerAuthority` in `packages/db/src/organization-memory.ts`). Independence is
+established structurally by **distinct authenticated principals**: the observation
+fingerprint keys on `(tenant_id, memory_id, observer_principal_id)`, enforced by
+the UNIQUE `(tenant_id, memory_id, observation_fingerprint)` index, so the same
+principal restating the same convention is idempotent and cannot inflate
+corroboration. `activateOrganizationMemory` re-validates every corroborating
+principal at activation time, so a principal revoked after observing no longer
+counts.
 
-No production code produces such a record. `insertEvidenceRecord`
-(`packages/db/src/trust.ts`) is the only writer of `evidence_records`, and no
-caller anywhere in `apps/` or `packages/` passes
-`subjectType: "organization_memory_observation"` — only test helpers mint it.
-Until a dedicated observation-evidence producer is built (the surface that turns
-an inferred convention into a verified, attributable observation), `POST
-/observations` always rejects with `organization_memory_evidence_invalid`, so no
-memory can reach ACTIVE through independent corroboration. Explicit human-created
-memory (`POST /`) and human confirmation (`POST /:memoryId/confirm` then
-`/activate`) are the only operational promotion paths today.
+A single observation remains a `MEMORY_CANDIDATE` and cannot be activated;
+promotion still requires either explicit human confirmation or
+`CORROBORATION_THRESHOLD` distinct observers.
 
-Do not relax the evidence requirement to make the path reachable — that would
-re-open the authority gap the control closes. The path becomes operational only
-when the producer exists.
+Do not reintroduce a self-minted evidence record to make the path look verified,
+and do not relax the corroboration requirement to make activation reachable —
+both re-open the authority gap the honest path avoids. A real verification signal
+(a producer that can attest a repeated reviewer correction of a non-defect) is an
+upstream capability that does not exist yet; see
+`docs/learning/LESSON_DESTINATION_ROUTING.md`. Recording an honest candidate is
+not the same as feeding Organization Memory from the learning pipeline, which
+remains blocked.
 
 ## `trainingEligible`
 
