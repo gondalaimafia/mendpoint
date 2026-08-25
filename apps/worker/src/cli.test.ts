@@ -28,6 +28,8 @@ import {
   enqueueJob,
   failJob,
   enqueueAdaptiveDelivery,
+  enqueueWardenCiCycle,
+  recordWardenCiObservation,
   getAdaptiveCandidate,
   getAdaptiveDeliveryByCandidate,
   getAgentRun,
@@ -69,6 +71,7 @@ import {
   sandboxEgressAttestationPayloadBytes,
 } from "@mendpoint/platform";
 import {
+  classifyWardenCiRepairDispatch,
   parseArgs,
   parseIntervalMs,
   parseLeaseMs,
@@ -534,7 +537,7 @@ describe("worker runtime", () => {
       ok: true,
       workerId: "worker-test",
       recordedAt: "2026-07-30T00:00:00.000Z",
-      jobs: { claimed: 1, succeeded: 1, failed: 0, retried: 0 },
+      jobs: { claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 },
       feedPollingEnabled: true,
       feedPollOk: true,
     });
@@ -549,7 +552,7 @@ describe("worker runtime", () => {
         ok: true,
         workerId: "worker-test",
         recordedAt: "2026-07-30T00:00:00.000Z",
-        jobs: { claimed: 0, succeeded: 0, failed: 0, retried: 0 },
+        jobs: { claimed: 0, succeeded: 0, failed: 0, retried: 0, inconclusive: 0 },
         feedPollingEnabled: false,
         feedPollOk: true,
       }),
@@ -715,6 +718,7 @@ describe("worker runtime", () => {
       succeeded: 0,
       failed: 0,
       retried: 0,
+      inconclusive: 0,
     });
     expect(listJobs(db, 10, "tenant-a")[0]).toMatchObject({
       id: "job-drain-test",
@@ -746,7 +750,7 @@ describe("worker runtime", () => {
         MENDPOINT_BACKUP_FENCE_ROOT: fenceRoot,
         MENDPOINT_DATA_DIR: join(dir, "data"),
       },
-    })).resolves.toEqual({ claimed: 0, succeeded: 0, failed: 0, retried: 0 });
+    })).resolves.toEqual({ claimed: 0, succeeded: 0, failed: 0, retried: 0, inconclusive: 0 });
     expect(listJobs(db, 10, "tenant-a")[0]).toMatchObject({
       id: "job-backup-fenced",
       status: "pending",
@@ -904,7 +908,7 @@ describe("worker runtime", () => {
       maxJobs: 1,
       runWardenMaintenance: false,
       pipelineRunner,
-    })).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    })).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
 
     expect(pipelineRunner).toHaveBeenCalledWith(expect.objectContaining({
       tenantId: "tenant-a",
@@ -947,7 +951,7 @@ describe("worker runtime", () => {
       maxJobs: 1,
       runWardenMaintenance: false,
       pipelineRunner: staleRunner,
-    })).resolves.toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0 });
+    })).resolves.toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0, inconclusive: 0 });
     expect(listJobs(db, 20, "tenant-a").filter((job) => job.type === "agent.run"))
       .toHaveLength(1);
     db.raw.close();
@@ -1070,7 +1074,7 @@ describe("worker runtime", () => {
       workerId: "worker-real-joined-warden",
       maxJobs: 1,
       runWardenMaintenance: false,
-    })).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    })).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
 
     const jobs = listJobs(db, 20, "tenant-a");
     expect(jobs.find((job) => job.id === "pipeline-real-joined-warden"))
@@ -1217,6 +1221,7 @@ describe("worker runtime", () => {
       succeeded: 1,
       failed: 1,
       retried: 0,
+      inconclusive: 0,
     });
     const jobs = listJobs(db, 10, "tenant_test");
     expect(jobs.find((job) => job.id === "job-runtime-test")).toMatchObject({
@@ -1368,7 +1373,7 @@ describe("worker runtime", () => {
         workerId: "worker-warden-snapshot",
         leaseMs: 30_000,
       });
-      expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+      expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
     } finally {
       if (previousDataRoot === undefined) delete process.env.MENDPOINT_DATA_DIR;
       else process.env.MENDPOINT_DATA_DIR = previousDataRoot;
@@ -1484,7 +1489,7 @@ describe("worker runtime", () => {
       },
     });
 
-    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
     const run = getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test");
     expect(run).toMatchObject({ status: "candidate_ready", ok: 1 });
     const persisted = JSON.parse(run!.result_json!) as {
@@ -1546,7 +1551,7 @@ describe("worker runtime", () => {
       tenantId: "tenant_test",
       workerId: "worker-maintenance",
       wardenEnv: { MENDPOINT_DATA_DIR: dataRoot },
-    })).resolves.toEqual({ claimed: 0, succeeded: 0, failed: 0, retried: 0 });
+    })).resolves.toEqual({ claimed: 0, succeeded: 0, failed: 0, retried: 0, inconclusive: 0 });
     expect(existsSync(workspace)).toBe(false);
     expect(existsSync(manifest)).toBe(false);
     expect(existsSync(evidence)).toBe(false);
@@ -1596,7 +1601,7 @@ describe("worker runtime", () => {
       workerId: "worker-malformed",
       wardenEnv: { MENDPOINT_DATA_DIR: join(parent, "data") },
     });
-    expect(drained).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0 });
+    expect(drained).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0, inconclusive: 0 });
     expect(getAgentRun(db, "session-malformed", "tenant_test")?.status).toBe("failed");
     expect(listJobs(db, 10, "tenant_test")[0]).toMatchObject({ status: "dead_letter" });
     db.raw.close();
@@ -1652,6 +1657,7 @@ describe("worker runtime", () => {
       succeeded: 1,
       failed: 0,
       retried: 0,
+      inconclusive: 0,
     });
     expect(readFileSync(join(repo, "client.ts"), "utf8")).toContain("newField");
     expect(listJobs(db, 10, "tenant_test")[0]).toMatchObject({
@@ -2613,7 +2619,7 @@ describe("worker runtime", () => {
         leaseMs: 5_000,
         wardenEnv: { MENDPOINT_DATA_DIR: badDataDir },
       }),
-    ).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    ).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
 
     expect(
       errorSpy.mock.calls.some((call) =>
@@ -2651,7 +2657,7 @@ describe("worker runtime", () => {
         MENDPOINT_WARDEN_CANDIDATE_QUOTA_BYTES: String(768 * 1024 * 1024),
       },
     });
-    expect(result).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0 });
+    expect(result).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0, inconclusive: 0 });
     const run = getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test")!;
     expect(run.status).toBe("failed");
     expect(JSON.parse(run.result_json!).code).toBe("warden_candidate_storage_quota_exceeded");
@@ -2691,7 +2697,7 @@ describe("worker runtime", () => {
       wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
     });
 
-    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
     expect(getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test"))
       .toMatchObject({ status: "no_action", ok: 1 });
     expect(getWardenCiCycle(fixture.db, "tenant_test", "cycle-ci-no-action")).toMatchObject({
@@ -2718,7 +2724,7 @@ describe("worker runtime", () => {
       leaseMs: 1_000,
       wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
     });
-    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
     expect(getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test")).toMatchObject({
       status: "candidate_ready",
       ok: 1,
@@ -2742,7 +2748,7 @@ describe("worker runtime", () => {
       leaseMs: 30_000,
       wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
     });
-    expect(result).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0 });
+    expect(result).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0, inconclusive: 0 });
     const run = getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test")!;
     expect(run.status).toBe("failed");
     expect(JSON.parse(run.result_json!).code).toBe("warden_snapshot_expired_during_attempt");
@@ -2861,7 +2867,7 @@ describe("worker runtime", () => {
         MENDPOINT_WARDEN_CANDIDATE_QUOTA_BYTES: String(quotaBytes),
       },
     });
-    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
     expect(getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test")).toMatchObject({
       status: "candidate_ready",
       ok: 1,
@@ -2903,7 +2909,7 @@ describe("worker runtime", () => {
       },
     });
 
-    expect(result).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0 });
+    expect(result).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0, inconclusive: 0 });
     expect(planner).not.toHaveBeenCalled();
     const ledger = getRoutingLedgerForJob(fixture.db, "job-warden-snapshot", "tenant_test");
     expect(ledger[0]).toMatchObject({
@@ -2980,7 +2986,7 @@ describe("worker runtime", () => {
       },
     });
 
-    expect(result).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0 });
+    expect(result).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0, inconclusive: 0 });
     expect(listJobs(fixture.db, 10, "tenant_test")[0]).toMatchObject({
       status: "running",
       lease_owner: "worker-successor",
@@ -3117,7 +3123,7 @@ describe("worker runtime", () => {
       wardenPlanner: planner,
       wardenEnv,
     });
-    expect(first).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0 });
+    expect(first).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0, inconclusive: 0 });
     expect(listJobs(fixture.db, 10, "tenant_test")[0]).toMatchObject({
       status: "dead_letter",
       lease_generation: 1,
@@ -3135,7 +3141,7 @@ describe("worker runtime", () => {
       wardenPlanner: planner,
       wardenEnv,
     });
-    expect(second).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(second).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
     expect(listJobs(fixture.db, 10, "tenant_test")[0]).toMatchObject({
       status: "done",
       lease_generation: 2,
@@ -3190,7 +3196,7 @@ describe("worker runtime", () => {
         MENDPOINT_APPLICATION_DATA_KEY: "8".repeat(64),
       },
     });
-    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
     const completedRun = getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test")!;
     expect(completedRun).toMatchObject({
       status: "candidate_ready",
@@ -3263,7 +3269,7 @@ describe("worker runtime", () => {
       leaseMs: 30_000,
       wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
     });
-    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
     expect(getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test")).toMatchObject({
       status: "candidate_ready",
       ok: 1,
@@ -3434,7 +3440,7 @@ describe("worker runtime", () => {
       transformerAdaptiveGithub: github,
     });
 
-    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
     expect(getAdaptiveCandidate(db, "tenant-transformer", candidate.id)?.status).toBe("promoted");
     expect(getAdaptiveDeliveryByCandidate(db, "tenant-transformer", candidate.id)).toMatchObject({
       status: "delivered",
@@ -3529,5 +3535,245 @@ describe("model stop-reason retryability (defect 1)", () => {
     expect(failure.status).toBe("dead_letter");
     expect(getJob(db, "job-invalid")?.status).toBe("dead_letter");
     db.raw.close();
+  });
+});
+
+describe("job-drain outcome counters (third-state)", () => {
+  // A legacy Warden agent.run whose verifier was simulated (dry-run) rather than
+  // executed did not perform the work and did not fail it. The operator-facing
+  // counter must report `inconclusive`, never `succeeded`.
+  it("counts a simulated non-ok legacy Warden run as inconclusive, not succeeded", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-drain-simulated-"));
+    dirs.push(parent);
+    const repo = join(parent, "repo");
+    mkdirSync(repo);
+    writeFileSync(join(repo, "check.mjs"), "process.exit(1);\n");
+    const db = createDb(join(parent, "jobs.sqlite"));
+    insertConsumer(db, {
+      id: "consumer-drain-sim",
+      name: "Drain sim",
+      githubOwner: "acme",
+      githubRepo: "drain-sim",
+      tenantId: "tenant_test",
+      createdAt: nowIso(),
+    });
+    insertConsumerRepo(db, {
+      id: "repo-drain-sim",
+      consumerId: "consumer-drain-sim",
+      localPath: repo,
+      createdAt: nowIso(),
+    });
+    enqueueJob(db, {
+      id: "job-drain-sim",
+      tenantId: "tenant_test",
+      type: "agent.run",
+      maxAttempts: 1,
+      createdAt: nowIso(),
+      payload: {
+        sessionId: "session-drain-sim",
+        goal: "inspect a fixture without executing the verifier",
+        consumerId: "consumer-drain-sim",
+        verifyCommand: "node check.mjs",
+        maxSteps: 1,
+        dryRun: true,
+      },
+    });
+
+    const result = await processJobsOnce(db, {
+      tenantId: "tenant_test",
+      workerId: "worker-drain-sim",
+      leaseMs: 5_000,
+      runWardenMaintenance: false,
+    });
+
+    expect(result).toEqual({
+      claimed: 1,
+      succeeded: 0,
+      failed: 0,
+      retried: 0,
+      inconclusive: 1,
+    });
+    const run = getAgentRun(db, "session-drain-sim", "tenant_test")!;
+    expect(run.ok).toBe(0);
+    expect(JSON.parse(run.result_json!).verifier.status).toBe("simulated");
+    db.raw.close();
+  });
+
+  // The guard that routes a simulated run to `inconclusive` must not swallow a
+  // genuine failure: a real (non-simulated) verifier failure stays `failed`.
+  it("counts a genuinely failed non-simulated legacy Warden run as failed, not inconclusive", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-drain-failed-"));
+    dirs.push(parent);
+    const repo = join(parent, "repo");
+    mkdirSync(repo);
+    writeFileSync(join(repo, "check.mjs"), "process.exit(1);\n");
+    const db = createDb(join(parent, "jobs.sqlite"));
+    insertConsumer(db, {
+      id: "consumer-drain-fail",
+      name: "Drain fail",
+      githubOwner: "acme",
+      githubRepo: "drain-fail",
+      tenantId: "tenant_test",
+      createdAt: nowIso(),
+    });
+    insertConsumerRepo(db, {
+      id: "repo-drain-fail",
+      consumerId: "consumer-drain-fail",
+      localPath: repo,
+      createdAt: nowIso(),
+    });
+    enqueueJob(db, {
+      id: "job-drain-fail",
+      tenantId: "tenant_test",
+      type: "agent.run",
+      maxAttempts: 1,
+      createdAt: nowIso(),
+      payload: {
+        sessionId: "session-drain-fail",
+        goal: "attempt an unrepairable fixture with a real verifier",
+        consumerId: "consumer-drain-fail",
+        verifyCommand: "node check.mjs",
+        maxSteps: 1,
+      },
+    });
+
+    const result = await processJobsOnce(db, {
+      tenantId: "tenant_test",
+      workerId: "worker-drain-fail",
+      leaseMs: 5_000,
+      runWardenMaintenance: false,
+    });
+
+    expect(result).toEqual({
+      claimed: 1,
+      succeeded: 0,
+      failed: 1,
+      retried: 0,
+      inconclusive: 0,
+    });
+    const run = getAgentRun(db, "session-drain-fail", "tenant_test")!;
+    expect(run.ok).toBe(0);
+    expect(JSON.parse(run.result_json!).verifier.status).not.toBe("simulated");
+    db.raw.close();
+  });
+
+  // A `warden.candidate.repair` dispatch that reports budget exhaustion means the
+  // repair never ran. The drain must count it `inconclusive`, not `succeeded`.
+  it("counts a budget-exhausted candidate.repair dispatch as inconclusive, not succeeded", async () => {
+    const sha = (value: string) => value.repeat(40);
+    const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-drain-budget-"));
+    dirs.push(parent);
+    const dataRoot = join(parent, "data");
+    const reposRoot = join(parent, "repos");
+    mkdirSync(dataRoot, { recursive: true });
+    mkdirSync(reposRoot, { recursive: true });
+    const db = createDb(join(parent, "jobs.sqlite"));
+    const at = "2026-08-13T12:00:00.000Z";
+    enqueueJob(db, {
+      id: "initial-agent-job",
+      tenantId: "tenant-a",
+      type: "agent.run",
+      payload: { goal: "Initial change", consumerId: "consumer-a", allowedChangedPaths: ["src/a.ts"], useLlm: true },
+      createdAt: at,
+    });
+    insertAgentRun(db, {
+      id: "run-a",
+      tenantId: "tenant-a",
+      jobId: "initial-agent-job",
+      goal: "Initial change",
+      repoPath: reposRoot,
+      status: "candidate_approved",
+      ok: true,
+      steps: 2,
+      filesChanged: ["src/a.ts"],
+      reportMd: null,
+      resultJson: "{}",
+      createdAt: at,
+      finishedAt: "2026-08-13T12:01:00.000Z",
+    });
+    db.raw.prepare(`INSERT INTO fettler_candidate_deliveries
+      (id, tenant_id, run_id, job_id, status, repository_id, snapshot_id, base_branch,
+       expected_base_revision, sealed_path, sealed_sha256, requester_principal_id, rationale,
+       intent_digest, branch_name, base_revision, commit_sha, draft_pr, draft_pr_number,
+       draft_pr_url, requested_at, delivered_at, updated_at)
+      VALUES ('delivery-a', 'tenant-a', 'run-a', 'delivery-job-a', 'delivered', 'repo-a', 'snapshot-a',
+       'main', ?, 'sealed', ?, 'principal-a', 'approved', ?, 'mendpoint/warden-a', ?, ?, 1, 17,
+       'https://github.com/acme/service/pull/17', ?, ?, ?)`)
+      .run(sha("a"), `sha256:${"b".repeat(64)}`, `sha256:${"c".repeat(64)}`, sha("a"), sha("d"),
+        at, "2026-08-13T12:01:00.000Z", "2026-08-13T12:01:00.000Z");
+    const cycle = enqueueWardenCiCycle(db, {
+      tenantId: "tenant-a",
+      deliveryId: "delivery-a",
+      repositoryId: "repo-a",
+      remoteRepositoryId: 101,
+      installationId: 202,
+      requiredChecks: ["check:77:unit"],
+      allowedChangedPaths: ["src/a.ts"],
+      maxCycles: 2,
+      maxModelCalls: 4,
+      maximumCostUsd: 2,
+      observedAt: "2026-08-13T12:01:00.000Z",
+    });
+    const evidence = Buffer.from(JSON.stringify({ failures: [{ name: "unit", text: "expected 1 received 2" }] }));
+    const evidenceDigest = digest(evidence);
+    recordWardenCiObservation(db, {
+      tenantId: "tenant-a",
+      cycleId: cycle.id,
+      headSha: sha("d"),
+      verdict: "failure",
+      observationDigest: evidenceDigest,
+      evidenceArtifactId: "artifact-failure-a",
+      evidenceDigest,
+      observedAt: "2026-08-13T12:02:00.000Z",
+    });
+    // Only the repair job should be drained; drop the observe job enqueued
+    // alongside it and the seed agent.run job, which are also claimable.
+    db.raw.prepare("DELETE FROM jobs WHERE type IN ('warden.candidate.observe', 'agent.run')").run();
+    // Exhaust the cycle budget so the dispatch reports budget_exhausted.
+    db.raw.prepare("UPDATE fettler_ci_cycles SET used_cycles = max_cycles WHERE id = ? AND tenant_id = ?")
+      .run(cycle.id, "tenant-a");
+
+    const result = await processJobsOnce(db, {
+      tenantId: "tenant-a",
+      workerId: "worker-drain-budget",
+      leaseMs: 60_000,
+      runWardenMaintenance: false,
+      wardenEnv: {
+        MENDPOINT_FETTLER_CI_REENTRY_ENABLED: "1",
+        MENDPOINT_FETTLER_CI_REENTRY_CONFIG_JSON: JSON.stringify({
+          "repo-a": { requiredChecks: ["check:77:unit"], maxCycles: 2, maxModelCalls: 4, maximumCostUsd: 2 },
+        }),
+        MENDPOINT_DATA_DIR: dataRoot,
+        MENDPOINT_REPOS_DIR: reposRoot,
+      },
+    });
+
+    expect(result).toEqual({
+      claimed: 1,
+      succeeded: 0,
+      failed: 0,
+      retried: 0,
+      inconclusive: 1,
+    });
+    expect(getWardenCiCycle(db, "tenant-a", cycle.id)).toMatchObject({ status: "exhausted" });
+    db.raw.close();
+  });
+
+  // A repair that was actually enqueued did the work it exists to do and stays a
+  // success; the exhaustive classifier must route it to `succeeded`, not the new
+  // `inconclusive` bucket (proving the bucket was not over-broadened).
+  it("classifies a repair_enqueued dispatch as succeeded and a budget_exhausted dispatch as inconclusive", () => {
+    expect(
+      classifyWardenCiRepairDispatch({
+        status: "repair_enqueued",
+        cycleId: "cycle-x",
+        repairRunId: "warden-ci-run-x",
+        repairJobId: "warden-ci-job-x",
+      }),
+    ).toBe("succeeded");
+    expect(
+      classifyWardenCiRepairDispatch({ status: "budget_exhausted", cycleId: "cycle-x" }),
+    ).toBe("inconclusive");
   });
 });

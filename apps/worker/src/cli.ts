@@ -265,6 +265,14 @@ export type JobDrainResult = {
   succeeded: number;
   failed: number;
   retried: number;
+  /**
+   * The job reached a terminal state without error, but the work it existed to
+   * do was neither performed nor failed — it was simulated, skipped, or
+   * budget-capped. These are not failures of the work; they are the absence of
+   * a determination. Counting them as `succeeded` reports work that never
+   * happened; counting them as `failed` reports a failure that never happened.
+   */
+  inconclusive: number;
 };
 
 export type WorkerHeartbeat = {
@@ -2275,6 +2283,32 @@ function wardenCiConfigForDeliveryJob(
   return wardenCiConfigForRepository(env, delivery.repositoryId);
 }
 
+/**
+ * Which drain counter a `warden.candidate.repair` dispatch earns.
+ *
+ * `repair_enqueued` is the only outcome where the repair actually happened, so
+ * it is the only success. `budget_exhausted` means the repair did not run — the
+ * work was neither performed nor failed, so it is inconclusive, not a success.
+ * The `never` binding makes any future dispatch status a compile-time error
+ * here rather than letting it fall silently into `succeeded`; if that guard is
+ * ever removed, an unrecognized status counts as inconclusive, not success.
+ */
+export function classifyWardenCiRepairDispatch(
+  dispatch: Awaited<ReturnType<typeof runWardenCiRepairDispatch>>,
+): "succeeded" | "inconclusive" {
+  switch (dispatch.status) {
+    case "repair_enqueued":
+      return "succeeded";
+    case "budget_exhausted":
+      return "inconclusive";
+    default: {
+      const _unhandled: never = dispatch;
+      void _unhandled;
+      return "inconclusive";
+    }
+  }
+}
+
 function assertWardenCiCycleConfiguration(
   cycle: NonNullable<ReturnType<typeof getWardenCiCycle>>,
   env: NodeJS.ProcessEnv,
@@ -2545,6 +2579,7 @@ async function processJobsOnceUnfenced(
     succeeded: 0,
     failed: 0,
     retried: 0,
+    inconclusive: 0,
   };
   if (opts.runWardenMaintenance !== false) {
     try {
@@ -2667,10 +2702,20 @@ async function processJobsOnceUnfenced(
             tenantId: job.tenant_id,
             campaignId: claimed.campaignId,
             targetId: claimed.targetId,
-            createdAt: claimed.createdAt,
+            // Stamp the transition at claim time, not the payload's enqueue time,
+            // so the MissionTask `updated_at` never predates the claim (matching
+            // ReGauge's `lease.startedAt` and the review handoff below).
+            createdAt: nowIso(),
           });
-        } catch {
-          // Observational: a missing/raced MissionTask must not fail a claimed execute.
+        } catch (error) {
+          // Observational: a missing/raced MissionTask must not fail a claimed
+          // execute. Surface the code so a driven/absent/revision-conflict/
+          // principal-conflict claim is not indistinguishable from a silent no-op.
+          console.error(
+            `  fettler mission-task claim drive failed job=${job.id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
         }
         // Review-first: the executor drives the target to stage `review` (never
         // delivers). Known outcomes settle here under the lease fence; an
@@ -2696,8 +2741,15 @@ async function processJobsOnceUnfenced(
               targetId: claimed.targetId,
               createdAt: nowIso(),
             });
-          } catch {
+          } catch (error) {
             // Observational: review handoff must not un-complete a landed execute.
+            // Surface the code so a driven/absent/revision-conflict/principal-
+            // conflict handoff is not indistinguishable from a silent no-op.
+            console.error(
+              `  fettler mission-task review handoff failed job=${job.id}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
           }
           recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
           result.succeeded++;
@@ -2777,7 +2829,7 @@ async function processJobsOnceUnfenced(
         if (!repositoriesRoot || !isAbsolute(repositoriesRoot)) {
           throw new Error("MENDPOINT_REPOS_DIR is required for Fettler CI repair");
         }
-        await runWardenCiRepairDispatch({ db, job,
+        const repairDispatch = await runWardenCiRepairDispatch({ db, job,
           readEvidence: ({ tenantId, artifactId, expectedDigest }) =>
             evidence.read(tenantId, artifactId, expectedDigest),
           materializeHead: async (authority) => materializeWardenCiHead({ db,
@@ -2786,7 +2838,10 @@ async function processJobsOnceUnfenced(
             remoteRepositoryId: authority.remoteRepositoryId, headSha: authority.headSha,
             repositoriesRoot, nodeEnv: workerEnv.NODE_ENV }),
         });
-        result.succeeded++;
+        // Budget exhaustion means the repair did not happen — the case an
+        // operator needs to see, not a success. classifyWardenCiRepairDispatch
+        // routes every dispatch status exhaustively (compile-time never guard).
+        result[classifyWardenCiRepairDispatch(repairDispatch)]++;
         continue;
       }
       if (job.type === "fettler.pr.review") {
@@ -2963,7 +3018,9 @@ async function processJobsOnceUnfenced(
                 simulated: true,
                 stoppedReason: warden.stoppedReason,
               }, legacyRun);
-              result.succeeded++;
+              // The run did not succeed and the verifier was simulated — never
+              // actually run — so the work was neither performed nor failed.
+              result.inconclusive++;
               continue;
             }
             const retryable = isRetryableModelStopReason(warden.stoppedReason);
@@ -3820,7 +3877,7 @@ export async function processJobsOnce(
   if (!fenceEnabled) return processJobsOnceUnfenced(runtimeDb, opts);
   const lease = tryAcquireMutationLease(resolveMutationFenceRoot(env));
   if (!lease) {
-    return { claimed: 0, succeeded: 0, failed: 0, retried: 0 };
+    return { claimed: 0, succeeded: 0, failed: 0, retried: 0, inconclusive: 0 };
   }
   try {
     return await processJobsOnceUnfenced(runtimeDb, opts);
@@ -3884,6 +3941,7 @@ async function runService(intervalMs: number) {
     succeeded: 0,
     failed: 0,
     retried: 0,
+    inconclusive: 0,
   };
   let transformer: TransformerPilotLaneHeartbeat = {
     enabled: Boolean(resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE")?.trim()),
@@ -3902,6 +3960,7 @@ async function runService(intervalMs: number) {
     succeeded: 0,
     failed: 0,
     retried: 0,
+    inconclusive: 0,
   }));
   const shutdown = new AbortController();
   const requestShutdown = () => shutdown.abort();
@@ -4062,6 +4121,7 @@ async function runService(intervalMs: number) {
         succeeded: 0,
         failed: 0,
         retried: 0,
+        inconclusive: 0,
       };
       try {
         laneJobs[lane] = await processJobsOnce(jobDbs[lane]!, {
@@ -4090,8 +4150,9 @@ async function runService(intervalMs: number) {
           succeeded: total.succeeded + laneResult.succeeded,
           failed: total.failed + laneResult.failed,
           retried: total.retried + laneResult.retried,
+          inconclusive: total.inconclusive + laneResult.inconclusive,
         }),
-        { claimed: 0, succeeded: 0, failed: 0, retried: 0 },
+        { claimed: 0, succeeded: 0, failed: 0, retried: 0, inconclusive: 0 },
       );
       failures = laneJobs[lane]!.failed === 0 ? 0 : failures + 1;
       emitHeartbeat();

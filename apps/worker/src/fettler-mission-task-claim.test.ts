@@ -20,7 +20,7 @@ import {
   upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
-import type { WardenCampaignExecutionDependencies } from "@mendpoint/pipeline";
+import { WardenCampaignExecutionError, type WardenCampaignExecutionDependencies } from "@mendpoint/pipeline";
 import { assignFettlerMissionTaskOnClaim, handoffFettlerMissionTaskOnReview } from "./fettler-mission-task-claim.js";
 import { WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE, type WardenCampaignExecutor } from "./warden-campaign-execute-dispatch.js";
 import { processJobsOnce } from "./cli.js";
@@ -133,13 +133,75 @@ describe("assignFettlerMissionTaskOnClaim", () => {
     expect(driven?.assignedPrincipalId).toMatch(/^principal-mtask-agent-/);
   });
 
-  it("falls back to the mission-level enrollment task when no repo task exists", () => {
+  it("does not resolve a repo-scoped claim to the mission-level enrollment task", () => {
     const { db, missionId } = fixture();
-    const created = enrollTask(db, missionId);
-    const driven = assignFettlerMissionTaskOnClaim(db, {
+    const missionLevel = enrollTask(db, missionId);
+    expect(assignFettlerMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at,
+    })).toBeUndefined();
+    expect(getMissionTask(db, "t1", missionLevel.id)?.status).toBe("unassigned");
+  });
+
+  it("does not funnel two repo-scoped targets onto one mission-level task", () => {
+    const { db, missionId } = fixture();
+    insertConnectedRepository(db, {
+      id: "repo-b", tenantId: "t1", connectionId: "conn", remoteId: "2",
+      owner: "acme", name: "web", defaultBranch: "main", status: "ready",
+      createdAt: at, updatedAt: at,
+    });
+    insertRepositorySnapshot(db, {
+      id: "snap-b", tenantId: "t1", repositoryId: "repo-b", requestedRef: "main",
+      resolvedSha: "c".repeat(40), manifestSha256: "d".repeat(64),
+      storagePath: join(tmpdir(), "snap"), createdAt: at, expiresAt: "2026-09-01T00:00:00.000Z",
+    });
+    addWardenCampaignTarget(db, {
+      id: "tgt-2", tenantId: "t1", campaignId: "camp-1", repositoryId: "repo-b",
+      snapshotId: "snap-b", ownerPrincipalId: "p1", eventId: "e-tgt-2",
+      idempotencyKey: "c-tgt-2", correlationId: "camp-1", createdAt: at,
+    });
+    // Only the mission-level catch-all exists (enrollment saw no per-repo scope).
+    const missionLevel = enrollTask(db, missionId);
+    const drivenA = assignFettlerMissionTaskOnClaim(db, {
       tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at,
     });
-    expect(driven).toMatchObject({ id: created.id, status: "agent_working" });
+    const drivenB = assignFettlerMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "camp-1", targetId: "tgt-2", createdAt: at,
+    });
+    expect(drivenA).toBeUndefined();
+    expect(drivenB).toBeUndefined();
+    expect(getMissionTask(db, "t1", missionLevel.id)?.status).toBe("unassigned");
+  });
+
+  it("keeps two repo-scoped targets on their own enrollment tasks", () => {
+    const { db, missionId } = fixture();
+    insertConnectedRepository(db, {
+      id: "repo-b", tenantId: "t1", connectionId: "conn", remoteId: "2",
+      owner: "acme", name: "web", defaultBranch: "main", status: "ready",
+      createdAt: at, updatedAt: at,
+    });
+    insertRepositorySnapshot(db, {
+      id: "snap-b", tenantId: "t1", repositoryId: "repo-b", requestedRef: "main",
+      resolvedSha: "c".repeat(40), manifestSha256: "d".repeat(64),
+      storagePath: join(tmpdir(), "snap"), createdAt: at, expiresAt: "2026-09-01T00:00:00.000Z",
+    });
+    addWardenCampaignTarget(db, {
+      id: "tgt-2", tenantId: "t1", campaignId: "camp-1", repositoryId: "repo-b",
+      snapshotId: "snap-b", ownerPrincipalId: "p1", eventId: "e-tgt-2",
+      idempotencyKey: "c-tgt-2", correlationId: "camp-1", createdAt: at,
+    });
+    const taskA = enrollTask(db, missionId, "repo-a");
+    const taskB = enrollTask(db, missionId, "repo-b");
+    const drivenA = assignFettlerMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at,
+    });
+    expect(drivenA?.id).toBe(taskA.id);
+    // Driving repo-a's task must not touch repo-b's sibling.
+    expect(getMissionTask(db, "t1", taskB.id)?.status).toBe("unassigned");
+    const drivenB = assignFettlerMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "camp-1", targetId: "tgt-2", createdAt: at,
+    });
+    expect(drivenB?.id).toBe(taskB.id);
+    expect(drivenA?.id).not.toBe(drivenB?.id);
   });
 
   it("is idempotent once the task is already agent_working", () => {
@@ -285,6 +347,49 @@ describe("campaign execute claim drives MissionTask", () => {
     expect(getMissionTask(db, "t1", created.id)).toMatchObject({
       status: "agent_working",
     });
+  });
+
+  it("stamps the claim transition at claim time, not the payload enqueue time", async () => {
+    const { db, missionId } = fixture();
+    const created = enrollTask(db, missionId, "repo-a");
+    enqueueJob(db, {
+      id: "job-exec-ts",
+      tenantId: "t1",
+      type: WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE,
+      createdAt: at,
+      payload: {
+        campaignId: "camp-1",
+        targetId: "tgt-1",
+        rolloutDecisionId: "rd-1",
+        actorPrincipalId: "p1",
+        runId: "run-1",
+        createdAt: at,
+        source: { sourceArtifactId: "src-1" },
+        rolloutApproval: {
+          decisionSha256: "a".repeat(64),
+          approvedByPrincipalId: "p1",
+          approvedAt: at,
+        },
+        ownerApproval: { ownerPrincipalId: "p1", ownerHandle: "@team", approvedAt: at },
+      },
+    });
+    // Execute defers (retryable), so the claim drives the task but no review
+    // handoff runs to overwrite `updated_at` — isolating the claim's timestamp.
+    const execute = (async () => {
+      throw new WardenCampaignExecutionError("transient", true);
+    }) as WardenCampaignExecutor;
+    await processJobsOnce(db, {
+      allTenants: true,
+      runWardenMaintenance: false,
+      wardenCampaignExecution: {
+        resolveDependencies: () => ({} as WardenCampaignExecutionDependencies),
+        execute,
+      },
+    });
+    const driven = getMissionTask(db, "t1", created.id);
+    expect(driven?.status).toBe("agent_working");
+    // Stamped at claim time (`nowIso()`), never the payload enqueue time (`at`).
+    expect(driven?.updatedAt).not.toBe(at);
   });
 });
 

@@ -77,6 +77,7 @@ import {
 } from "@mendpoint/contract";
 import { createWardenDraftPrPackage } from "./warden-pr-package.js";
 export * from "./warden-campaign-executor.js";
+export * from "./mission-artifact-register.js";
 export * from "./software-attestation-operation.js";
 export * from "./delegated-pr-cleanup-operation.js";
 export * from "./delegated-pr-candidate-operation.js";
@@ -931,6 +932,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     let graphContextArtifactId: string | undefined;
     let graphContextContent: string | undefined;
     let impactReport: ImpactReport;
+    let rawRetrievalFallback = false;
     const endpointSurface = surfaces.find((surface) => surface.path);
     if (endpointSurface && gldb) {
       try {
@@ -1039,9 +1041,13 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         continue;
       }
     } else {
+      // FET-018: no endpoint surface or no tenant graph handle. The existing
+      // Index→Candidates→Expand→Confirm analyzer is the raw-retrieval path —
+      // stamp that fact rather than inventing a second retriever.
       impactReport = await analyzeImpact(repo.local_path, surfaces, {
         persistIndex: input.persistIndex ?? true,
       });
+      rawRetrievalFallback = true;
     }
     assertActive();
 
@@ -1107,6 +1113,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         confirmed: impactReport.confirmedCount,
         lowNotifications: impactReport.lowConfidenceNotifications.length,
         overallConfidence: impactReport.overallConfidence,
+        ...(rawRetrievalFallback ? { fallback: "raw_retrieval" as const } : {}),
       },
     });
 

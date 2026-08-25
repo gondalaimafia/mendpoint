@@ -675,9 +675,21 @@ function verdictFromSymbols(symbols: readonly SymbolStatus[]): {
   const called = symbols.filter((s) => s.hasNonTestCaller);
   const dead = symbols.filter((s) => !s.hasNonTestCaller);
   if (traced.length > 0) {
+    // A live co-imported symbol must not silently rescue proven-dead symbols
+    // cited alongside it (the ME-WAR-005 shape: DEFAULT_POLICY vouching for a
+    // dead WardenPolicyStore). The aggregate verdict stays `live` — demoting it
+    // has a measured wide blast radius and is deferred — but the dead symbols
+    // are named here and collected into the report's livePartiallyDead list so
+    // an operator can see the partial deadness instead of it rounding up.
+    const base = `traced to an entry path via ${traced.map((s) => s.name).join(", ")}`;
     return {
       verdict: "live",
-      reason: `traced to an entry path via ${traced.map((s) => s.name).join(", ")}`,
+      reason:
+        dead.length > 0
+          ? `${base}; but ${dead
+              .map((s) => s.name)
+              .join(", ")} has no non-test caller (cited alongside proven-dead code)`
+          : base,
     };
   }
   if (called.length === 0) {
@@ -810,6 +822,14 @@ export type ReachabilityReport = Readonly<{
   results: readonly CitationResult[];
   counts: Readonly<Record<ReachabilityVerdict, number>>;
   unreachable: readonly CitationResult[];
+  /**
+   * LIVE citations that also cite at least one proven-dead symbol. These are
+   * NOT failures and do not gate — the aggregate verdict is still live because
+   * a traced symbol exists — but they are the shape where a live co-imported
+   * symbol vouches for dead code (ME-WAR-005), so they are surfaced separately
+   * for an operator to inspect rather than being invisible inside the live set.
+   */
+  livePartiallyDead: readonly CitationResult[];
   /** Verified requirements with no citation traceable to a live path. */
   verifiedWithoutLivePath: readonly string[];
   /** Verified requirements that cite at least one proven-unreachable test. */
@@ -860,6 +880,12 @@ export function runReachabilityReport(root: string): ReachabilityReport {
     results,
     counts,
     unreachable: results.filter((r) => r.verdict === "unreachable"),
+    livePartiallyDead: results.filter(
+      (r) =>
+        r.verdict === "live" &&
+        r.symbols.length > 0 &&
+        r.symbols.some((s) => !s.hasNonTestCaller),
+    ),
     verifiedWithoutLivePath,
     verifiedCitingUnreachable,
     verifiedTotal: verified.length,
@@ -909,6 +935,21 @@ function main(): void {
     console.log("  none");
   } else {
     for (const result of report.unreachable) console.log(formatCitation(result));
+  }
+
+  console.log(
+    `\n--- LIVE but partially dead (${report.livePartiallyDead.length}; reported, does not block) ---`,
+  );
+  console.log(
+    "  These citations are live via a traced symbol but also cite a proven-dead one,",
+  );
+  console.log(
+    "  so a live co-import must not be read as vouching for the dead symbol beside it:",
+  );
+  if (report.livePartiallyDead.length === 0) {
+    console.log("  none");
+  } else {
+    for (const result of report.livePartiallyDead) console.log(formatCitation(result));
   }
 
   const notDetermined = report.results.filter((r) => r.verdict === "not_determined");

@@ -21,14 +21,18 @@ const opened: Array<{ db: AppDb; root: string }> = [];
 const sha = (value: string) => value.repeat(40);
 const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
-function fixture(evidenceDocument: Readonly<Record<string, unknown>> = {
-  failures: [{ name: "unit", text: "expected 1 received 2" }],
-}) {
+function fixture(
+  evidenceDocument: Readonly<Record<string, unknown>> = {
+    failures: [{ name: "unit", text: "expected 1 received 2" }],
+  },
+  sourcePayload: Readonly<Record<string, unknown>> = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-warden-ci-repair-"));
   const db = createDb(join(root, "worker.sqlite"));
   opened.push({ db, root });
   enqueueJob(db, { id: "initial-agent-job", tenantId: "tenant-a", type: "agent.run", payload: {
     goal: "Initial change", consumerId: "consumer-a", allowedChangedPaths: ["src/a.ts"], useLlm: true,
+    ...sourcePayload,
   }, createdAt: "2026-08-13T12:00:00.000Z" });
   insertAgentRun(db, { id: "run-a", tenantId: "tenant-a", jobId: "initial-agent-job", goal: "Initial change",
     repoPath: root, status: "candidate_approved", ok: true, steps: 2, filesChanged: ["src/a.ts"],
@@ -88,6 +92,7 @@ describe("Warden CI repair dispatch", () => {
       snapshotBinding: { repositoryId: "repo-a", snapshotId: "snapshot-repair-a", revision: sha("d") },
       ciFailure: { cycleId: cycle.id, deliveryId: "delivery-a", failedHeadSha: sha("d") },
     });
+    expect(JSON.parse(repairJob.payload_json)).not.toHaveProperty("missionId");
     expect(getJob(db, job.id, "tenant-a")?.status).toBe("done");
     expect(getWardenCiCycle(db, "tenant-a", cycle.id)).toMatchObject({ status: "repair_pending", usedCycles: 1 });
   });
@@ -143,5 +148,40 @@ describe("Warden CI repair dispatch", () => {
     expect(getJob(db, job.id, "tenant-a")?.status).toBe("done");
     expect(listJobs(db, 50, "tenant-a").filter((candidate) => candidate.type === "agent.run"))
       .toHaveLength(1);
+  });
+
+  it("copies a claimed Mission id from the source agent.run onto the repair run", async () => {
+    const { db, evidence, job, root } = fixture(
+      { failures: [{ name: "unit", text: "expected 1 received 2" }] },
+      { missionId: "mission-claimed-a" },
+    );
+    await runWardenCiRepairDispatch({
+      db, job,
+      materializeHead: async () => ({ repositoryId: "repo-a", snapshotId: "snapshot-repair-a",
+        revision: sha("d"), manifestSha256: "e".repeat(64), root }),
+      readEvidence: async () => evidence, now: () => "2026-08-13T12:03:00.000Z",
+    });
+    const repairJob = listJobs(db, 50, "tenant-a").find((candidate) => candidate.type === "agent.run" &&
+      candidate.id !== "initial-agent-job")!;
+    expect(JSON.parse(repairJob.payload_json)).toMatchObject({
+      consumerId: "consumer-a",
+      missionId: "mission-claimed-a",
+    });
+  });
+
+  it("omits padded or empty missionId rather than inventing a Mission", async () => {
+    const { db, evidence, job, root } = fixture(
+      { failures: [{ name: "unit", text: "expected 1 received 2" }] },
+      { missionId: "  mission-padded-a  " },
+    );
+    await runWardenCiRepairDispatch({
+      db, job,
+      materializeHead: async () => ({ repositoryId: "repo-a", snapshotId: "snapshot-repair-a",
+        revision: sha("d"), manifestSha256: "e".repeat(64), root }),
+      readEvidence: async () => evidence, now: () => "2026-08-13T12:03:00.000Z",
+    });
+    const repairJob = listJobs(db, 50, "tenant-a").find((candidate) => candidate.type === "agent.run" &&
+      candidate.id !== "initial-agent-job")!;
+    expect(JSON.parse(repairJob.payload_json)).not.toHaveProperty("missionId");
   });
 });
