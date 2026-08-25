@@ -134,6 +134,15 @@ export type RegaugeProductionBootstrapRuntime = Readonly<{
     control: RegaugeProductionControl;
   }>): Promise<RegaugeProductionControl>;
   readExecution(tenantId: string, campaignId: string): Promise<RegaugeProductionExecution | undefined>;
+  reconcileExisting(input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    reviewerActorId: string;
+    evidenceRefs: readonly string[];
+    requestDigest: string;
+    control: RegaugeProductionControl;
+    execution: RegaugeProductionExecution;
+  }>): Promise<void>;
   launch(input: Readonly<{
     tenantId: string;
     campaignId: string;
@@ -402,6 +411,15 @@ export async function bootstrapRegaugeProductionCampaign(
     const execution = await runtime.readExecution(plan.bootstrap.tenantId, plan.bootstrap.campaignId);
     if (!execution) throw new Error("regauge_production_bootstrap_execution_drift");
     validateExecution(execution, control);
+    await runtime.reconcileExisting({
+      tenantId: plan.bootstrap.tenantId,
+      campaignId: plan.bootstrap.campaignId,
+      reviewerActorId: plan.reviewerActorId,
+      evidenceRefs: plan.bootstrap.evidenceRefs,
+      requestDigest: plan.requestDigest,
+      control,
+      execution,
+    });
     return Object.freeze(structuredClone(existingReceipt));
   }
 

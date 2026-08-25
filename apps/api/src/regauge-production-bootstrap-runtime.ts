@@ -533,6 +533,32 @@ export function createRegaugeProductionBootstrapRuntime(
   options: RuntimeOptions,
 ): RegaugeProductionBootstrapRuntime {
   const now = options.now ?? (() => new Date().toISOString());
+  const reconcileMission = (input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    execution: RegaugeProductionExecution;
+  }>): void => {
+    const owner = getPrincipalBySubject(
+      options.db,
+      input.tenantId,
+      "service",
+      "service:regauge-production-bootstrap",
+    );
+    if (!owner) throw new Error("regauge_production_bootstrap_principal_missing");
+    const campaign = options.control.store.getCampaign(input.tenantId, input.campaignId);
+    bindRegaugeMissionAtLaunch(options.db, {
+      tenantId: input.tenantId,
+      campaignId: input.campaignId,
+      ownerPrincipalId: owner.id,
+      objective: campaign?.name ?? input.campaignId,
+      repositories: [{
+        repositoryId: input.execution.repositoryId,
+        snapshotId: input.execution.snapshotId,
+      }],
+      verifierPolicyAuthority: options.verifierPolicyAuthority,
+      createdAt: now(),
+    });
+  };
   return Object.freeze({
     async prepareRepository({ bootstrap, reviewerActorId }) {
       findRepository(await options.listInstallationRepositories(), bootstrap);
@@ -797,6 +823,13 @@ export function createRegaugeProductionBootstrapRuntime(
       return mapControl(options, input.tenantId, input.campaignId, input.control.snapshotId)!;
     },
     async readExecution(tenantId, campaignId) { return mapExecution(options, tenantId, campaignId); },
+    async reconcileExisting(input) {
+      reconcileMission({
+        tenantId: input.tenantId,
+        campaignId: input.campaignId,
+        execution: input.execution,
+      });
+    },
     async launch(input) {
       options.missions.launch({
         tenantId: input.tenantId,
@@ -808,22 +841,10 @@ export function createRegaugeProductionBootstrapRuntime(
       const execution = mapExecution(options, input.tenantId, input.campaignId)!;
       // Mission state is part of launch authority. Do not return an execution
       // that cannot be joined to the exact durable Mission.
-      const owner = getPrincipalBySubject(
-        options.db,
-        input.tenantId,
-        "service",
-        "service:regauge-production-bootstrap",
-      );
-      if (!owner) throw new Error("regauge_production_bootstrap_principal_missing");
-      const campaign = options.control.store.getCampaign(input.tenantId, input.campaignId);
-      bindRegaugeMissionAtLaunch(options.db, {
+      reconcileMission({
         tenantId: input.tenantId,
         campaignId: input.campaignId,
-        ownerPrincipalId: owner.id,
-        objective: campaign?.name ?? input.campaignId,
-        repositories: [{ repositoryId: execution.repositoryId, snapshotId: execution.snapshotId }],
-        verifierPolicyAuthority: options.verifierPolicyAuthority,
-        createdAt: now(),
+        execution,
       });
       return execution;
     },

@@ -4144,6 +4144,7 @@ export {
   transitionWardenTarget,
 } from "./warden-campaign.js";
 export {
+  advanceMissionPolicyEnvelopeVersion,
   bindMissionGraphVersion,
   bindMissionPolicyEnvelopeVersion,
   bindMissionScope,

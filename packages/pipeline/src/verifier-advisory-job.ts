@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  advanceMissionPolicyEnvelopeVersion,
   bindMissionToPolicyEnvelope,
   createPolicyEnvelope,
   enqueueJob,
@@ -29,6 +30,7 @@ import {
   parsePolicyEnvelope,
   type PolicyEnvelope,
 } from "@mendpoint/policy";
+import { defaultPolicyEnvelopeId } from "./mission-policy-binding.js";
 
 export const VERIFIER_ADVISORY_JOB_TYPE = "verifier.advisory.verify";
 export const REGAUGE_DEEPSEEK_APPROVED_SCOPE = Object.freeze({
@@ -297,7 +299,9 @@ function retainAndBindVerifierPolicy(db: AppDb, input: Readonly<{
   taskId: string;
   createdAt: string;
   envelope: PolicyEnvelope;
+  allowDefaultUpgrade: boolean;
 }>): VerifierAdvisoryPolicyAuthority {
+  const inheritedBefore = getMissionPolicyEnvelope(db, input.tenantId, input.missionId);
   const envelopeJson = canonicalPolicyEnvelopeJson(input.envelope);
   const stored = createPolicyEnvelope(db, {
     tenantId: input.envelope.tenantId,
@@ -306,16 +310,37 @@ function retainAndBindVerifierPolicy(db: AppDb, input: Readonly<{
     envelopeJson,
     createdAt: input.envelope.createdAt,
   });
-  bindMissionToPolicyEnvelope(db, {
-    tenantId: input.tenantId,
-    missionId: input.missionId,
-    version: input.envelope.version,
-    actorPrincipalId: input.actorPrincipalId,
-    eventId: `event-${sha256(`${input.missionId}\0${input.envelope.version}`).slice(0, 40)}`,
-    idempotencyKey: `mission-policy-${input.missionId}-${input.envelope.version}`,
-    correlationId: input.taskId,
-    createdAt: input.createdAt,
-  });
+  if (!inheritedBefore) {
+    bindMissionToPolicyEnvelope(db, {
+      tenantId: input.tenantId,
+      missionId: input.missionId,
+      version: input.envelope.version,
+      actorPrincipalId: input.actorPrincipalId,
+      eventId: `event-${sha256(`${input.missionId}\0${input.envelope.version}`).slice(0, 40)}`,
+      idempotencyKey: `mission-policy-${input.missionId}-${input.envelope.version}`,
+      correlationId: input.taskId,
+      createdAt: input.createdAt,
+    });
+  } else if (inheritedBefore.contentSha256 !== stored.contentSha256 ||
+      inheritedBefore.policyEnvelopeId !== input.envelope.policyEnvelopeId) {
+    if (!input.allowDefaultUpgrade || inheritedBefore.version !== 1 ||
+        inheritedBefore.policyEnvelopeId !== defaultPolicyEnvelopeId(input.tenantId) ||
+        input.envelope.version <= inheritedBefore.version) {
+      throw new Error("verifier_advisory_policy_binding_invalid");
+    }
+    advanceMissionPolicyEnvelopeVersion(db, {
+      tenantId: input.tenantId,
+      missionId: input.missionId,
+      expectedPolicyEnvelopeVersion: String(inheritedBefore.version),
+      nextPolicyEnvelopeVersion: String(input.envelope.version),
+      actorPrincipalId: input.actorPrincipalId,
+      authorityRef: `policy-envelope:${input.envelope.policyEnvelopeId}`,
+      eventId: `event-${sha256(`${input.missionId}\0policy-advance\0${input.envelope.version}`).slice(0, 40)}`,
+      idempotencyKey: `mission-policy-advance-${input.missionId}-${input.envelope.version}`,
+      correlationId: input.taskId,
+      createdAt: input.createdAt,
+    });
+  }
   const inherited = getMissionPolicyEnvelope(db, input.tenantId, input.missionId);
   if (!inherited || inherited.contentSha256 !== stored.contentSha256 ||
       inherited.policyEnvelopeId !== input.envelope.policyEnvelopeId) {
@@ -343,6 +368,7 @@ export function bindVerifierAdvisoryPolicyAuthorityAtMissionLaunch(
     taskId: input.missionId,
     createdAt: input.createdAt,
     envelope,
+    allowDefaultUpgrade: true,
   });
 }
 
@@ -394,6 +420,11 @@ export function reconcileVerifierAdvisoryPolicyAuthority(db: AppDb, input: Reado
     taskId: completion.taskId,
     createdAt: input.createdAt,
     envelope,
+    allowDefaultUpgrade: completion.product === "regauge" &&
+      completion.tenantId === REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId &&
+      input.repositoryScope === REGAUGE_DEEPSEEK_APPROVED_SCOPE.repositoryFullName &&
+      input.branch === REGAUGE_DEEPSEEK_APPROVED_SCOPE.branch &&
+      completion.taskId.startsWith(`${REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId}:`),
   });
 }
 

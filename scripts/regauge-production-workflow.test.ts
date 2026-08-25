@@ -135,6 +135,7 @@ describe("Regauge production workflow", () => {
     expect(authority).toContain("MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT=2026-11-20T23:59:59.000Z");
     expect(authority).toContain('repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"]');
     expect(authority).toContain('branchScope: ["main"]');
+    expect(authority).toContain("version: 2");
     expect(authority).not.toContain("repositoryScope: []");
     expect(authority).not.toContain("branchScope: []");
     const generatedRepositoryScope = authority.match(/repositoryScope:\s*(\[[^\n]+\])/);

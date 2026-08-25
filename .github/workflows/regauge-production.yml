@@ -154,7 +154,7 @@ jobs:
           policy_envelope="$(jq -cn --arg tenant "$MENDPOINT_REGAUGE_TENANT_ID" '{
             policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824",
             tenantId: $tenant,
-            version: 1,
+            version: 2,
             repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"],
             branchScope: ["main"],
             forbiddenZones: [],

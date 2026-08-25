@@ -164,7 +164,7 @@ function environment() {
     MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({
       policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824",
       tenantId: "tenant_regauge_canary",
-      version: 1,
+      version: 2,
       repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"],
       branchScope: ["codex/regauge-canary-baseline"],
       forbiddenZones: [],
@@ -259,18 +259,12 @@ describe("Regauge production bootstrap runtime", () => {
       protectedEnvironment,
       "tenant_regauge_canary",
     );
-    const baseRuntime = createRegaugeProductionBootstrapRuntime({
+    const runtimeOptions = {
       db,
       control,
       executions,
       missions,
       verifierConsentAuthority,
-      verifierPolicyAuthority: {
-        policyEnvelopeJson: protectedEnvironment.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON,
-        repositoryScope: "gondalaimafia/mendpoint-canary-drill-20260801",
-        branch: "codex/regauge-canary-baseline",
-        processingRegion: verifierConsentAuthority.residencyRegion,
-      },
       repositoryDependencies: {
         credentialBroker: broker,
         githubTransport: new GitHubSnapshotTransport(),
@@ -292,17 +286,27 @@ describe("Regauge production bootstrap runtime", () => {
         disabled: false,
       }],
       now: () => new Date().toISOString(),
+    } as const;
+    const legacyBaseRuntime = createRegaugeProductionBootstrapRuntime(runtimeOptions);
+    const baseRuntime = createRegaugeProductionBootstrapRuntime({
+      ...runtimeOptions,
+      verifierPolicyAuthority: {
+        policyEnvelopeJson: protectedEnvironment.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON,
+        repositoryScope: "gondalaimafia/mendpoint-canary-drill-20260801",
+        branch: "codex/regauge-canary-baseline",
+        processingRegion: verifierConsentAuthority.residencyRegion,
+      },
     });
     let preparedDigest = "";
     const runtime = {
-      ...baseRuntime,
-      async prepareRepository(input: Parameters<typeof baseRuntime.prepareRepository>[0]) {
-        const prepared = await baseRuntime.prepareRepository(input);
+      ...legacyBaseRuntime,
+      async prepareRepository(input: Parameters<typeof legacyBaseRuntime.prepareRepository>[0]) {
+        const prepared = await legacyBaseRuntime.prepareRepository(input);
         preparedDigest = prepared.snapshotDigest;
         return prepared;
       },
-      async plan(input: Parameters<typeof baseRuntime.plan>[0]) {
-        const planned = await baseRuntime.plan(input);
+      async plan(input: Parameters<typeof legacyBaseRuntime.plan>[0]) {
+        const planned = await legacyBaseRuntime.plan(input);
         expect(planned.snapshotDigest).toBe(preparedDigest);
         return planned;
       },
@@ -312,6 +316,15 @@ describe("Regauge production bootstrap runtime", () => {
       regaugeProductionBootstrapInputFromEnvironment(environment()),
       runtime,
     );
+    const legacyMission = resolveMissionForRegaugeCampaign(
+      db,
+      "tenant_regauge_canary",
+      "campaign_regauge_canary_20260814",
+    )!;
+    expect(getMissionPolicyEnvelope(db, "tenant_regauge_canary", legacyMission.id)).toMatchObject({
+      policyEnvelopeId: expect.stringMatching(/^pe-default-/),
+      version: 1,
+    });
     const storedSnapshot = listRepositorySnapshots(
       db,
       "tenant_regauge_canary",
@@ -343,7 +356,7 @@ describe("Regauge production bootstrap runtime", () => {
     })).resolves.toMatchObject({ snapshotId: first.snapshotId, revision: REVISION });
     const second = await bootstrapRegaugeProductionCampaign(
       regaugeProductionBootstrapInputFromEnvironment(environment()),
-      runtime,
+      baseRuntime,
     );
 
     expect(second).toEqual(first);
@@ -381,15 +394,16 @@ describe("Regauge production bootstrap runtime", () => {
     expect(missionEvents).toContain("mission.created");
     expect(missionEvents).toContain("mission.regauge_campaign_linked");
     expect(missionEvents).toContain("mission.policy_envelope_bound");
+    expect(missionEvents).toContain("mission.policy_envelope_advanced");
     expect(missionEvents.filter((type) => type === "mission.transitioned")).toHaveLength(4);
     // Spec §6.7: the launched Mission references a versioned Policy Envelope.
-    expect(mission!.policyEnvelopeVersion).toBe("1");
+    expect(mission!.policyEnvelopeVersion).toBe("2");
     expect(mission!.graphVersionId).toBeNull();
     expect(missionEvents).not.toContain("mission.graph_version_bound");
     const inheritedPolicy = getMissionPolicyEnvelope(db, "tenant_regauge_canary", mission!.id);
     expect(inheritedPolicy).toMatchObject({
       policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824",
-      version: 1,
+      version: 2,
     });
     expect(() => reconcileVerifierAdvisoryPolicyAuthority(db, {
       completion: {
