@@ -25,6 +25,7 @@ import {
   createDb,
   bindConsumerRepoSnapshot,
   claimNextJob,
+  createExplicitMemory,
   enqueueJob,
   failJob,
   enqueueAdaptiveDelivery,
@@ -34,6 +35,8 @@ import {
   getAdaptiveDeliveryByCandidate,
   getAgentRun,
   getJob,
+  getTrajectoryByRun,
+  insertPrincipal,
   getWardenCiCycle,
   getRoutingLedgerForJob,
   insertAgentRun,
@@ -3541,6 +3544,135 @@ describe("worker runtime", () => {
       draftPrNumber: 19,
     });
     db.raw.close();
+  }, 30_000);
+});
+
+describe("Fettler live resume seam (behavioral, through the job loop)", () => {
+  // The live agent.run loop resumes inherited context through
+  // resolveResumeContext, whose ownership guard fails closed: only a run the
+  // AGENT owns is resumable. Main ships this seam (cli.ts) but no loop-level test
+  // of it. These drive the REAL job loop with MENDPOINT_INHERITED_CONTEXT=1 and
+  // tenant organization memory present, and assert the observable outcome on
+  // `trajectories.context_refs_json`:
+  //   - an agent-owned run inherits the memory -> an `org_memory` ref lands;
+  //   - a human-owned run is `not_resumable` -> nothing is inherited, no ref
+  //     lands, and the seam logs the standing rather than injecting silently.
+  // Reverting the seam's `currentRunStatus` wiring to a hardcoded "running"
+  // (ownership-blind) makes the human-owned case inject the memory anyway, so the
+  // negative assertion below goes red — the delete-the-check.
+
+  function seedResumeFixture(parent: string) {
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+    // Tenant organization memory is inheritable with or without a mission, so
+    // the resume path is exercised without any mission/policy-envelope setup.
+    fixture.db.raw
+      .prepare(
+        `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+         VALUES ('tenant_test','tenant-test','Tenant Test','team','active',10,?)`,
+      )
+      .run(nowIso());
+    insertPrincipal(fixture.db, {
+      id: "human-resume",
+      tenantId: "tenant_test",
+      kind: "human",
+      subject: "resume@example.com",
+      displayName: "Resume Owner",
+      createdAt: nowIso(),
+    });
+    createExplicitMemory(fixture.db, {
+      tenantId: "tenant_test",
+      category: "CODING_CONVENTION",
+      scope: "imports",
+      subjectKey: "imports",
+      statement: "use the internal auth client, never direct OAuth",
+      actorPrincipalId: "human-resume",
+      reason: "org convention",
+      at: nowIso(),
+    });
+    return fixture;
+  }
+
+  async function withInheritedContextFlag<T>(run: () => Promise<T>): Promise<T> {
+    const previous = process.env.MENDPOINT_INHERITED_CONTEXT;
+    process.env.MENDPOINT_INHERITED_CONTEXT = "1";
+    try {
+      return await run();
+    } finally {
+      if (previous === undefined) delete process.env.MENDPOINT_INHERITED_CONTEXT;
+      else process.env.MENDPOINT_INHERITED_CONTEXT = previous;
+    }
+  }
+
+  it("CONTROL: an agent-owned run inherits tenant organization memory (org_memory ref on the trajectory)", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-resume-agent-owned-"));
+    dirs.push(parent);
+    const fixture = seedResumeFixture(parent);
+    // No agent_runs row for the session, so the seam reads currentRunStatus
+    // "running" (agent_working) — an agent-owned, resumable phase.
+    const result = await withInheritedContextFlag(() =>
+      processJobsOnce(fixture.db, {
+        tenantId: "tenant_test",
+        workerId: "worker-resume-agent",
+        leaseMs: 30_000,
+        wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
+      }),
+    );
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+    expect(getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test"))
+      .toMatchObject({ status: "candidate_ready", ok: 1 });
+    const trajectory = getTrajectoryByRun(fixture.db, "tenant_test", "session-warden-snapshot");
+    expect(trajectory).toBeDefined();
+    const kinds = new Set(
+      (trajectory!.contextRefs ?? []).map((ref) =>
+        typeof ref === "object" && ref !== null ? (ref as { kind?: unknown }).kind : undefined,
+      ),
+    );
+    expect(kinds.has("org_memory")).toBe(true);
+    fixture.db.raw.close();
+  }, 30_000);
+
+  it("a human-owned run is not_resumable: nothing is inherited (no context refs) and the seam says so", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-resume-human-owned-"));
+    dirs.push(parent);
+    const fixture = seedResumeFixture(parent);
+    // Seed the session's agent_run in a HUMAN-owned phase. `candidate_ready`
+    // maps to `human_review_required`; resolveResumeContext must refuse to
+    // resume it. The row carries the job id so the loop's identity guard and the
+    // completion upsert both accept it.
+    insertAgentRun(fixture.db, {
+      id: "session-warden-snapshot",
+      tenantId: "tenant_test",
+      jobId: "job-warden-snapshot",
+      goal: "resume",
+      repoPath: fixture.snapshotRoot,
+      status: "candidate_ready",
+      ok: false,
+      steps: 0,
+      createdAt: nowIso(),
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await withInheritedContextFlag(() =>
+      processJobsOnce(fixture.db, {
+        tenantId: "tenant_test",
+        workerId: "worker-resume-human",
+        leaseMs: 30_000,
+        wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
+      }),
+    );
+    const trajectory = getTrajectoryByRun(fixture.db, "tenant_test", "session-warden-snapshot");
+    expect(trajectory).toBeDefined();
+    // The human-owned run inherited nothing: no context ref of any kind landed.
+    expect(trajectory!.contextRefs ?? []).toHaveLength(0);
+    // ...and the seam reported the fail-closed standing rather than injecting.
+    const loggedNotResumable = errorSpy.mock.calls.some((call) =>
+      call.some((arg) => typeof arg === "string" && arg.includes("not_resumable")),
+    );
+    expect(loggedNotResumable).toBe(true);
+    fixture.db.raw.close();
   }, 30_000);
 });
 
