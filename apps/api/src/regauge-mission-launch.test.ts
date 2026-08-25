@@ -15,6 +15,11 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import {
+  openGraphLearnDb,
+  publishSoftwareGraphVersion,
+  type SoftwareGraphPublicationV1,
+} from "@mendpoint/graph-learn";
+import {
   bindRegaugeMissionAtLaunch,
   regaugeLaunchMissionTaskId,
 } from "./regauge-production-bootstrap-runtime.js";
@@ -224,5 +229,83 @@ describe("bindRegaugeMissionAtLaunch", () => {
         taskType: "code_migration",
       }),
     ]);
+    expect(mission?.graphVersionId).toBeNull();
+  });
+
+  it("pins a unique published graph version on a single-repository launch", () => {
+    const db = fixture();
+    const graphPath = join(tmpdir(), `mendpoint-regauge-graph-${Date.now()}-${Math.random()}.sqlite`);
+    const graphDb = openGraphLearnDb(graphPath);
+    const extractor = Object.freeze({
+      id: "mendpoint.code-index",
+      version: "1.0.0",
+      digest: `sha256:${"1".repeat(64)}`,
+    });
+    const publication: SoftwareGraphPublicationV1 = {
+      schemaVersion: "mendpoint.software-graph.v1",
+      tenantId: "t1",
+      repositoryId: "repo-exact",
+      repositorySnapshotId: "snapshot-exact",
+      repositoryRevision: "a".repeat(40),
+      providerId: "provider-a",
+      providerSnapshotId: "provider-snapshot-1",
+      providerRevision: "2026-08-17",
+      observedAt: "2026-08-17T12:00:00.000Z",
+      entities: [{
+        id: "endpoint:charges-create",
+        kind: "endpoint",
+        canonicalKey: "POST /v1/charges",
+        aliases: ["charges.create"],
+        label: "POST /v1/charges",
+        scope: "provider",
+        evidenceRefs: ["artifact:openapi:v1"],
+        extractor,
+        derivation: "provider_spec",
+        confidenceBasis: "deterministic_exact",
+        status: "active",
+        validFrom: "2026-08-17T12:00:00.000Z",
+      }],
+      relationships: [],
+      coverage: ([
+        "repository_discovery",
+        "language_parsing",
+        "provider_specification",
+        "sdk_resolution",
+        "call_resolution",
+        "test_resolution",
+      ] as const).map((stage) => ({
+        extractor,
+        stage,
+        basis: "complete" as const,
+        analyzed: 1,
+        omitted: 0,
+        evidenceRefs: [`evidence:${stage}`],
+      })),
+    };
+    const published = publishSoftwareGraphVersion(graphDb, publication);
+    graphDb.raw.close();
+
+    const previous = process.env.GRAPH_LEARN_DB;
+    process.env.GRAPH_LEARN_DB = graphPath;
+    try {
+      bindRegaugeMissionAtLaunch(db, {
+        tenantId: "t1",
+        campaignId: "campaign-graph",
+        ownerPrincipalId: "svc-bootstrap",
+        objective: "Runtime upgrade to Node 22",
+        repositories: [{ repositoryId: "repo-exact", snapshotId: "snapshot-exact" }],
+        createdAt: AT,
+      });
+      const mission = resolveMissionForRegaugeCampaign(db, "t1", "campaign-graph");
+      expect(mission?.graphVersionId).toBe(published.versionId);
+      expect(listDomainEvents(db, "t1", "mission", mission!.id)
+        .some((event) => event.event_type === "mission.graph_version_bound")).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = previous;
+      rmSync(graphPath, { force: true });
+      rmSync(`${graphPath}-wal`, { force: true });
+      rmSync(`${graphPath}-shm`, { force: true });
+    }
   });
 });

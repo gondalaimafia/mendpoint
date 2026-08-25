@@ -35,7 +35,10 @@ import {
   resolveGitHubTenantAccountBinding,
   type InstallationRepository,
 } from "@mendpoint/github";
-import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
+import {
+  ensureDefaultPolicyEnvelopeBinding,
+  pinPublishedGraphVersionForSingleRepository,
+} from "@mendpoint/pipeline";
 import {
   CredentialBroker,
   type SecretProvider,
@@ -190,6 +193,18 @@ export function bindRegaugeMissionAtLaunch(
       correlationId: input.campaignId,
       createdAt: input.createdAt,
     });
+    // Spec §11.10: pin a unique published graph version for this single
+    // repository when a real graph file already exists. Multi-repo launches
+    // skip this branch (scope is null) and stay unbound.
+    const pinned = pinPublishedGraphVersionForSingleRepository(db, {
+      tenantId: input.tenantId,
+      missionId,
+      repositoryIds: [scope.repositoryId],
+      actorPrincipalId: input.ownerPrincipalId,
+      correlationId: input.campaignId,
+      createdAt: input.createdAt,
+    });
+    if (pinned.mission) current = pinned.mission;
   }
   // By the time launch runs, the orchestrator has already proven the campaign is
   // reviewed and approved (campaignState === "ready"), so discovery, scoping, and

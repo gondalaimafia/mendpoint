@@ -25,6 +25,11 @@ import {
   upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
+import {
+  openGraphLearnDb,
+  publishSoftwareGraphVersion,
+  type SoftwareGraphPublicationV1,
+} from "@mendpoint/graph-learn";
 import type { InstallationRepository } from "@mendpoint/github";
 import type { ApiEnv } from "./auth.js";
 import { createWardenCampaignEnrollmentRoutes } from "./warden-campaign-enrollment.js";
@@ -314,6 +319,7 @@ describe("Warden campaign org enrollment", () => {
       state: "created",
       fettlerCampaignId: "campaign-a",
       ownerPrincipalId: "trust-tenant-a-writer-a",
+      graphVersionId: null,
     });
 
     expect(listMissionTasks(db, "tenant-a", mission!.id)).toEqual([
@@ -328,6 +334,71 @@ describe("Warden campaign org enrollment", () => {
     expect((await enroll(app)).status).toBe(200);
     expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")?.id).toBe(mission!.id);
     expect(listMissionTasks(db, "tenant-a", mission!.id)).toHaveLength(1);
+  });
+
+  it("pins a published Change Graph version on a single-repo enrollment", async () => {
+    const { app, db, root } = fixture();
+    const graphPath = join(root, "graph-learn.sqlite");
+    const graphDb = openGraphLearnDb(graphPath);
+    const extractor = Object.freeze({
+      id: "mendpoint.code-index",
+      version: "1.0.0",
+      digest: `sha256:${"1".repeat(64)}`,
+    });
+    const publication: SoftwareGraphPublicationV1 = {
+      schemaVersion: "mendpoint.software-graph.v1",
+      tenantId: "tenant-a",
+      repositoryId: "repository-a",
+      repositorySnapshotId: "snapshot-repository-a",
+      repositoryRevision: "a".repeat(40),
+      providerId: "provider-stripe",
+      providerSnapshotId: "provider-snapshot-1",
+      providerRevision: "2026-08-17",
+      observedAt: "2026-08-17T12:00:00.000Z",
+      entities: [{
+        id: "endpoint:charges-create",
+        kind: "endpoint",
+        canonicalKey: "POST /v1/charges",
+        aliases: ["charges.create"],
+        label: "POST /v1/charges",
+        scope: "provider",
+        evidenceRefs: ["artifact:openapi:v1"],
+        extractor,
+        derivation: "provider_spec",
+        confidenceBasis: "deterministic_exact",
+        status: "active",
+        validFrom: "2026-08-17T12:00:00.000Z",
+      }],
+      relationships: [],
+      coverage: ([
+        "repository_discovery",
+        "language_parsing",
+        "provider_specification",
+        "sdk_resolution",
+        "call_resolution",
+        "test_resolution",
+      ] as const).map((stage) => ({
+        extractor,
+        stage,
+        basis: "complete" as const,
+        analyzed: 1,
+        omitted: 0,
+        evidenceRefs: [`evidence:${stage}`],
+      })),
+    };
+    const published = publishSoftwareGraphVersion(graphDb, publication);
+    graphDb.raw.close();
+
+    const previous = process.env.GRAPH_LEARN_DB;
+    process.env.GRAPH_LEARN_DB = graphPath;
+    try {
+      expect((await enroll(app)).status).toBe(200);
+      const mission = resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a");
+      expect(mission?.graphVersionId).toBe(published.versionId);
+    } finally {
+      if (previous === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = previous;
+    }
   });
 
   it("POST /fettler/campaigns/:id/start plans a conservative rollout and marks the campaign running", async () => {

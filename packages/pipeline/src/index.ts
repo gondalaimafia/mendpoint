@@ -93,11 +93,13 @@ export * from "./verifier-learning.js";
 export * from "./organization-memory-precedence.js";
 export * from "./mission-context-compiler.js";
 export * from "./mission-policy-binding.js";
+export * from "./mission-graph-binding.js";
 export * from "./tenant-graph-handle.js";
 export * from "./mission-policy-enforcement.js";
 export * from "./verifier-telemetry.js";
 export * from "./calibration-report.js";
 import { resolveTenantGraphHandle } from "./tenant-graph-handle.js";
+import { pinPublishedGraphVersionOnSingleRepoFettlerMissions } from "./mission-graph-binding.js";
 import {
   ingestControlPlane,
   ingestSpecDiff,
@@ -954,6 +956,25 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         impactReport = graphAnalysis.impactReport;
         graphVersionId = graphAnalysis.graphVersion.versionId;
         graphContextContent = graphAnalysis.context.content;
+        // Spec §11.10: pin the published version on any single-repo Fettler
+        // Mission that already exists for this consumer repository. Multi-repo
+        // campaigns stay unbound. Mission bookkeeping must not fail analysis.
+        try {
+          pinPublishedGraphVersionOnSingleRepoFettlerMissions(db, {
+            tenantId: input.tenantId,
+            repositoryId: repo.connected_repository_id ?? repo.id,
+            graphVersionId,
+            actorPrincipalId: pipelinePrincipal.id,
+            correlationId: changeId,
+            createdAt: graphObservedAt,
+          });
+        } catch (error) {
+          console.error(
+            `fettler mission graph bind failed tenant=${input.tenantId} change=${changeId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
         const graphArtifact = persistJsonArtifact(db, {
           tenantId: input.tenantId,
           kind: "fettler-change-graph-context",

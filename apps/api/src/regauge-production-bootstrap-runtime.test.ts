@@ -331,6 +331,8 @@ describe("Regauge production bootstrap runtime", () => {
     expect(missionEvents.filter((type) => type === "mission.transitioned")).toHaveLength(4);
     // Spec §6.7: the launched Mission references a versioned Policy Envelope.
     expect(mission!.policyEnvelopeVersion).toBe("1");
+    expect(mission!.graphVersionId).toBeNull();
+    expect(missionEvents).not.toContain("mission.graph_version_bound");
     expect(getMissionPolicyEnvelope(db, "tenant_regauge_canary", mission!.id)).not.toBeNull();
     expect(listMissionTasks(db, "tenant_regauge_canary", mission!.id)).toEqual([
       expect.objectContaining({
