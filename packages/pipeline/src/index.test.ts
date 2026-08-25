@@ -344,6 +344,9 @@ describe("pipeline", () => {
       expect(unavailable).toBeDefined();
       expect(JSON.parse(unavailable!.metadata_json!).reason).toBe("path_missing");
       expect(listAudit(db).some((event) => event.action === "graph.updated")).toBe(false);
+      const analyzed = listAudit(db).find((event) => event.action === "impact.analyzed");
+      expect(analyzed).toBeDefined();
+      expect(JSON.parse(analyzed!.metadata_json!).fallback).toBe("raw_retrieval");
     } finally {
       if (previous === undefined) delete process.env.GRAPH_LEARN_DB;
       else process.env.GRAPH_LEARN_DB = previous;
@@ -499,6 +502,9 @@ describe("pipeline", () => {
     expect(listPrs(db).length).toBe(1);
     expect(listAudit(db).some((a) => a.action === "change.normalized")).toBe(true);
     expect(listAudit(db).some((a) => a.action === "pr.draft_opened")).toBe(true);
+    const graphAnalyzed = listAudit(db).find((event) => event.action === "impact.analyzed");
+    expect(graphAnalyzed).toBeDefined();
+    expect(JSON.parse(graphAnalyzed!.metadata_json!).fallback).toBeUndefined();
 
     const prId = report.consumers[0].prId!;
     const artifacts = listArtifactManifests(db, "tenant_default");
