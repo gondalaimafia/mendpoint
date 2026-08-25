@@ -12,6 +12,7 @@ import {
   getMissionTask,
   getWardenCampaignTarget,
   insertPrincipal,
+  missionTaskReady,
   resolveMissionForFettlerCampaign,
   transitionMissionTask,
   type AppDb,
@@ -67,6 +68,7 @@ export function assignFettlerMissionTaskOnClaim(
 ): MissionTask | undefined {
   const task = resolveClaimedTask(db, input);
   if (!task) return undefined;
+  if (!missionTaskReady(db, input.tenantId, task.id)) return undefined;
   if (task.status === "agent_working") return task;
   if (task.status !== "unassigned" && task.status !== "agent_assigned") return undefined;
 

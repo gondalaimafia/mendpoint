@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  addMissionTaskDependency,
   createDb,
   createMission,
   createMissionTask,
@@ -76,6 +77,23 @@ describe("assignRegaugeMissionTaskOnClaim", () => {
       tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
     })).toBeUndefined();
     expect(listMissionTasks(db, "t1", "m1")).toEqual([]);
+  });
+
+  it("does not start a task whose dependencies are not complete", () => {
+    const { db, missionId } = fixture();
+    const blocked = launchTask(db, missionId, "repo-a");
+    const prereq = createMissionTask(db, {
+      id: "task-prereq", tenantId: "t1", missionId, taskType: "code_migration",
+      acceptanceCriteria: "first", risk: "medium", actorPrincipalId: "p1",
+      eventId: "e-prereq", idempotencyKey: "c-prereq", correlationId: "campaign-a", createdAt: at,
+    });
+    addMissionTaskDependency(db, {
+      id: "dep-1", tenantId: "t1", missionId, taskId: blocked.id, dependsOnTaskId: prereq.id, createdAt: at,
+    });
+    expect(assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    })).toBeUndefined();
+    expect(getMissionTask(db, "t1", blocked.id)?.status).toBe("unassigned");
   });
 
   it("drives unassigned -> agent_assigned -> agent_working for a repo task", () => {

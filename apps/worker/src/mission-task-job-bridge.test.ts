@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  addMissionTaskDependency,
   createDb,
   createMission,
+  createMissionTask,
   createWardenCampaign,
   getMissionTask,
   insertPrincipal,
@@ -142,6 +144,28 @@ describe("mission-task job bridge", () => {
       createdAt: at,
     })?.id).toBe(cost!.id);
     expect(listActualExecutionCosts(db, "t1")).toHaveLength(1);
+  });
+
+  it("does not start a job task whose dependencies are not complete", () => {
+    const db = fixture();
+    const claimed = job({ missionId: "m1", goal: "repair", consumerId: "c1" });
+    const blocked = createMissionTask(db, {
+      id: missionTaskIdForJob("job-1"), tenantId: "t1", missionId: "m1",
+      taskType: "agent.run", acceptanceCriteria: "first", risk: "medium",
+      actorPrincipalId: "p1", eventId: "e-blocked", idempotencyKey: "c-blocked",
+      correlationId: "job-1", createdAt: at,
+    });
+    const prereq = createMissionTask(db, {
+      id: "task-prereq", tenantId: "t1", missionId: "m1", taskType: "code_migration",
+      acceptanceCriteria: "first", risk: "medium", actorPrincipalId: "p1",
+      eventId: "e-prereq", idempotencyKey: "c-prereq", correlationId: "corr", createdAt: at,
+    });
+    addMissionTaskDependency(db, {
+      id: "dep-1", tenantId: "t1", missionId: "m1", taskId: blocked.id, dependsOnTaskId: prereq.id, createdAt: at,
+    });
+    expect(() => bridgeClaimedJobToMissionTask(db, claimed, at))
+      .toThrow("mission_task_dependencies_incomplete");
+    expect(getMissionTask(db, "t1", blocked.id)?.status).toBe("unassigned");
   });
 
   it("resolves a Fettler campaignId to the linked mission and skips an unlinked campaign", () => {
