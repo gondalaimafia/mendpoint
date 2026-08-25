@@ -5,9 +5,9 @@
   "workflowPath": ".github/workflows/closure-authority.yml",
   "requiredCiWorkflowPath": ".github/workflows/ci.yml",
   "externalCheckName": "mendpoint-production-closure-authority",
-  "externalCheckAppId": null,
+  "externalCheckAppId": 4718395,
   "controllerCheckName": "mendpoint-production-closure-controller",
-  "controllerCheckAppId": null,
+  "controllerCheckAppId": 15368,
   "protectionMode": "classic_branch",
   "protectionBranch": "main",
   "legacyBootstrapMatrixDigest": "sha256:ed82174b44fbae55d37c5f6fdaed15a1b18992ad66c1beb258d11e62354dc7e9",
@@ -22,10 +22,10 @@
   ],
   "successor": null,
   "trustedReviewers": {
-    "owner": [
+    "Claude": [
       {
-        "login": "gondalaimafia",
-        "userId": 273115720
+        "login": "mendpoint-closure-authority[bot]",
+        "userId": 321156448
       }
     ]
   },

@@ -3319,3 +3319,17 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Review repair: the CLI emits exactly one compact JSON record, so the live target-volume attestation can be parsed without discarding valid multiline output.
 - Review repair: unsafe rollback proof and thaw commands were removed. The old source remains authenticated and fenced; a later two-volume rollback authority must prove fresh target quiescence before any source restart can be enabled.
 - Exact-head review, current-base CI, and the live cutover remain pending. No production activation occurred in this PR.
+
+### 2026-08-25 Repair merged closure authority root
+
+- [x] Reproduce the merged `trustedReviewers.owner` configuration failure against the runtime parser.
+- [x] Derive the installed App identity in memory from the authorized local private key without printing the key or JWT.
+- [x] Bind the external check to App `4718395`, the controller check to GitHub Actions App `15368`, and the exact App bot reviewer identity.
+- [x] Add a regression that loads and parses the checked-in policy instead of testing only synthetic fixtures.
+- [x] Run the focused authority suites, script typecheck, and diff integrity.
+- [ ] Obtain exact-head review and current-base CI.
+- [ ] Configure both live required checks and merge only under explicit one-time bootstrap authority because the pre-bootstrap policy cannot authorize its own repair.
+
+#### Review
+
+Main revision `c8d51caa` merged a reviewer key that the runtime ignores and retained null App IDs. The repair uses the verified, nonsecret identity tuple for `mendpoint-closure-authority[bot]` and the observed GitHub Actions App ID. The bot is temporarily bound under `Claude`, which permits reciprocal review of the current Codex and Cursor queue; a second distinct reviewer identity is still required before Claude-owned pull requests can satisfy the same invariant. The 26 GitHub-authority tests, 30 matrix tests, and 12 proposal-authority tests pass, the scripts TypeScript project passes, and `git diff --check` is clean.
