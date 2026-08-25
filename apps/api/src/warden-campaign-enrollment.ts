@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   autoEnrollWardenCampaignOrg,
+  bindMissionScope,
   createMission,
   createMissionTask,
   createWardenCampaign,
   fettlerCampaignMissionTaskId,
+  getMission,
   getPrincipal,
   getProviderBySlug,
   getScmConnection,
@@ -498,6 +500,7 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           .update(`${tenantId}\0${campaignId}`)
           .digest("hex")
           .slice(0, 32)}`;
+        const existingMission = getMission(options.db, tenantId, missionId);
         createMission(options.db, {
           id: missionId,
           tenantId,
@@ -505,6 +508,8 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           triggerKind: "provider_change",
           objective: `Fettler campaign ${campaignId}`.slice(0, 200),
           ownerPrincipalId: trustPrincipalId,
+          repositoryId: existingMission?.repositoryId ?? null,
+          snapshotId: existingMission?.snapshotId ?? null,
           eventId: `${missionId}-created`,
           idempotencyKey: `mission-create-${missionId}`,
           correlationId: campaignId,
@@ -530,6 +535,21 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           correlationId: campaignId,
           createdAt: at,
         });
+        const enrolledTargets = listWardenCampaignTargets(options.db, tenantId, campaignId);
+        if (enrolledTargets.length === 1) {
+          const only = enrolledTargets[0]!;
+          bindMissionScope(options.db, {
+            tenantId,
+            missionId,
+            repositoryId: only.repositoryId,
+            snapshotId: only.snapshotId,
+            actorPrincipalId: trustPrincipalId,
+            eventId: `${missionId}-scope-bound`,
+            idempotencyKey: `mission-scope-${missionId}`,
+            correlationId: campaignId,
+            createdAt: at,
+          });
+        }
         createFettlerEnrollmentMissionTasks(options.db, {
           tenantId,
           missionId,

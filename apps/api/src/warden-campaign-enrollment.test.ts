@@ -320,6 +320,8 @@ describe("Warden campaign org enrollment", () => {
       fettlerCampaignId: "campaign-a",
       ownerPrincipalId: "trust-tenant-a-writer-a",
       graphVersionId: null,
+      repositoryId: "repository-a",
+      snapshotId: "snapshot-repository-a",
     });
 
     expect(listMissionTasks(db, "tenant-a", mission!.id)).toEqual([
@@ -334,6 +336,18 @@ describe("Warden campaign org enrollment", () => {
     expect((await enroll(app)).status).toBe(200);
     expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")?.id).toBe(mission!.id);
     expect(listMissionTasks(db, "tenant-a", mission!.id)).toHaveLength(1);
+  });
+
+  it("leaves mission repository and snapshot unbound when enrollment is multi-repo", async () => {
+    const { app, db } = fixture();
+    insertMonitoredApi(db, {
+      id: "monitor-repository-b", consumerId: "consumer-repository-b",
+      providerId: "provider-stripe", detectionSource: "detected",
+    });
+    expect((await enroll(app)).status).toBe(200);
+    expect(listWardenCampaignTargets(db, "tenant-a", "campaign-a")).toHaveLength(2);
+    const mission = resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a");
+    expect(mission).toMatchObject({ repositoryId: null, snapshotId: null });
   });
 
   it("pins a published Change Graph version on a single-repo enrollment", async () => {
