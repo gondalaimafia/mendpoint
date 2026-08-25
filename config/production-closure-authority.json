@@ -22,10 +22,10 @@
   ],
   "successor": null,
   "trustedReviewers": {
-    "owner": [
+    "Claude": [
       {
-        "login": "gondalaimafia",
-        "userId": 273115720
+        "login": "mendpoint-closure-authority[bot]",
+        "userId": 321156448
       }
     ]
   },
