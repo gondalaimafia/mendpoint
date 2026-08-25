@@ -859,6 +859,24 @@ function runGraphQueryInner(
         };
       }
       const edges = symbols.flatMap((symbol) => edgesFrom(db, symbol.id, ["PRESERVES_INVARIANT"]));
+      if (edges.length === 0) {
+        // The symbol is in the graph but carries no PRESERVES_INVARIANT edge.
+        // Annotations are opt-in source comments most code lacks, so `0
+        // invariant(s)` for an existing symbol is absence of evidence, not a
+        // definitive "this symbol preserves nothing". Fail closed at the level
+        // people actually query rather than reporting a false `complete`.
+        return {
+          op: q.op,
+          nodes: collectNodes(db, new Set(symbols.map((symbol) => symbol.id))),
+          edges: [],
+          summary: `no source-annotated invariants recorded for ${needle}`,
+          coverage: {
+            basis: "target_absent",
+            reason: `${needle} has no PRESERVES_INVARIANT annotation; absence of an annotation is not proof it preserves nothing`,
+          },
+          rows: [],
+        };
+      }
       const nodes = collectNodes(db, new Set([
         ...symbols.map((symbol) => symbol.id),
         ...edges.map((edge) => edge.target),
@@ -867,7 +885,10 @@ function runGraphQueryInner(
         op: q.op,
         nodes,
         edges,
-        summary: `${edges.length} invariant(s) for ${needle}`,
+        // These are unverified author assertions from source comments, not checked
+        // properties: report the count without implying verification. Each row
+        // carries the provenance and binding basis so a planner sees what backs it.
+        summary: `${edges.length} invariant(s) from source annotations for ${needle} (unverified)`,
         coverage: { basis: "complete" },
         rows: edges.map((edge) => {
           const invariant = getNode(db, edge.target);
@@ -877,6 +898,12 @@ function runGraphQueryInner(
             qualifiedName: String(symbol?.props?.qualified_name ?? ""),
             statement: String(invariant?.props?.statement ?? invariant?.label ?? ""),
             invariantId: edge.target,
+            // What backs the edge: a human source annotation, bound to the symbol
+            // by static analysis at this basis, with no verification of the claim.
+            source: String(edge.props?.source ?? invariant?.props?.source ?? "annotation"),
+            confidenceBasis: String(edge.props?.confidence_basis ?? ""),
+            confidence: edge.confidence ?? null,
+            verified: edge.props?.verified === true,
           };
         }),
       };

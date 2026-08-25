@@ -14,8 +14,9 @@ Spec §11 and §28.1.1 require important Change Graph edges to have a producer w
 
 Add `ingestInvariantAnnotations` and wire it from the live `ingestLspSymbols` path (heuristic files and AST-fallback repo walk).
 
-- Only explicit `@invariant` / `invariant:` annotations adjacent to a function or class become Invariant nodes and Symbol `PRESERVES_INVARIANT` Invariant edges. Unannotated symbols are skipped, never guessed.
-- `invariants_for_symbol` still fails closed when the tenant graph has no `PRESERVES_INVARIANT` edges. Once the relation is populated it returns the annotated invariants for a matched symbol, or `target_absent` when the symbol is missing.
+- Only explicit `@invariant` / `invariant:` comments become Invariant nodes and Symbol `PRESERVES_INVARIANT` Invariant edges. Detection is a line-by-line comment scan (regex), not an AST walk. A comment that leads a declaration (only blank or comment lines between them) binds with basis `static_analysis_high`; a comment inside/after a body or trailing a declaration binds to the nearest symbol within an 8-line window as a `static_analysis_low` heuristic guess. An annotation that matches no symbol in range is dropped, never attached to a guessed one; unannotated symbols are left alone.
+- The edge records honest provenance rather than a verified-sounding claim: `source_system: "human"` (an unverified author assertion, since nothing parses the invariant or checks it holds), with `confidence_basis`, `verified: false`, and `source: "annotation"` in props. `invariants_for_symbol` surfaces the basis, provenance, and `verified` flag per row so a planner sees what backs each edge.
+- `invariants_for_symbol` still fails closed when the tenant graph has no `PRESERVES_INVARIANT` edges. It also returns `target_absent` for a symbol that exists but carries no annotation (opt-in comments most code lacks, so `0 invariant(s)` there is absence of evidence, not "preserves nothing"), and `target_absent` when the symbol is missing entirely. It reports `complete` only when it actually enumerates annotated invariants.
 - `GRAPH_RAG_TOOLS` and the query-pick rule for `invariants_for_symbol` are restored in the same change as the producer. `migration_ready_units` stays unadvertised until its own DEPENDS_ON producer lands.
 
 ## Alternatives considered
