@@ -255,11 +255,21 @@ describe("GitHub production closure authority", () => {
 
     expect(workflow.on).toHaveProperty("push");
     expect(workflow.on).toHaveProperty("pull_request_target");
-    expect(workflow.on).toHaveProperty("workflow_run");
-    expect(workflow.on).toHaveProperty("issues");
     expect(workflow.on).toHaveProperty("schedule");
-    expect(workflow.on).toHaveProperty("pull_request_review");
-    expect(workflow.concurrency).toBeUndefined();
+    // Trigger economics (#453): workflow_run, issues, and pull_request_review were
+    // removed deliberately — each fired a full per-PR authority sweep on events that
+    // change no validated input, exhausting the installation API budget. Assert they
+    // stay removed so a future edit cannot quietly reintroduce the self-DoS.
+    expect(workflow.on).not.toHaveProperty("workflow_run");
+    expect(workflow.on).not.toHaveProperty("issues");
+    expect(workflow.on).not.toHaveProperty("pull_request_review");
+    // Workflow-level concurrency collapses redundant sweeps during merge bursts;
+    // PR-scoped events collapse per PR. Added by #453, deliberately.
+    expect(workflow.concurrency).toEqual({
+      group:
+        "closure-authority-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || 'sweep' }}",
+      "cancel-in-progress": true,
+    });
     expect(workflow.permissions).toEqual({
       actions: "read",
       contents: "read",
