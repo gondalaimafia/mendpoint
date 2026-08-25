@@ -94,12 +94,22 @@ const RULES: Array<{
     },
     weight: 8,
   },
-  // No rule routes to `migration_ready_units` or `invariants_for_symbol` while
-  // their source relations (DEPENDS_ON / PRESERVES_INVARIANT) have no ingest
-  // producer: a natural-language readiness or invariant question must not be
-  // steered to an op that can only return an empty result. The handlers still
-  // exist and answer `target_absent` for direct callers; restore a rule here
-  // (and the entry in GRAPH_RAG_TOOLS) when a producer lands.
+  // No rule routes to `invariants_for_symbol` while PRESERVES_INVARIANT has no
+  // ingest producer. `migration_ready_units` is restored now that
+  // ingestManifestDependencies writes DEPENDS_ON; the handler still fails
+  // closed when that relation is empty.
+  {
+    re: /ready\s+units|migration\s+ready|units\s+are\s+ready/i,
+    op: "migration_ready_units",
+    build: (_m, text) => {
+      const campaignId =
+        text.match(/campaign[:\s]+([\w-]+)/i)?.[1] ??
+        text.match(/\bcamp-[\w-]+\b/i)?.[0] ??
+        "unknown";
+      return { op: "migration_ready_units", campaignId };
+    },
+    weight: 7,
+  },
   {
     re: /latency|slo|p99|p50/i,
     op: "latency_stats",
