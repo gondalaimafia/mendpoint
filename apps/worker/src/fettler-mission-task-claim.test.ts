@@ -237,6 +237,55 @@ describe("campaign execute claim drives MissionTask", () => {
       handoffReason: "campaign_execute_review",
     });
   });
+
+  it("does not advance the MissionTask to review when the execute lease is lost", async () => {
+    const { db, missionId } = fixture();
+    const created = enrollTask(db, missionId, "repo-a");
+    enqueueJob(db, {
+      id: "job-exec-lost",
+      tenantId: "t1",
+      type: WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE,
+      createdAt: at,
+      payload: {
+        campaignId: "camp-1",
+        targetId: "tgt-1",
+        rolloutDecisionId: "rd-1",
+        actorPrincipalId: "p1",
+        runId: "run-1",
+        createdAt: at,
+        source: { sourceArtifactId: "src-1" },
+        rolloutApproval: {
+          decisionSha256: "a".repeat(64),
+          approvedByPrincipalId: "p1",
+          approvedAt: at,
+        },
+        ownerApproval: { ownerPrincipalId: "p1", ownerHandle: "@team", approvedAt: at },
+      },
+    });
+    // The target lands in review, but the lease is stolen (new generation) mid
+    // execute, so completeJob's fence rejects the settlement.
+    const execute = (async () => {
+      db.raw
+        .prepare(`UPDATE jobs SET lease_generation = lease_generation + 1 WHERE id = 'job-exec-lost'`)
+        .run();
+      return { stage: "review" } as Awaited<ReturnType<WardenCampaignExecutor>>;
+    }) as WardenCampaignExecutor;
+    const result = await processJobsOnce(db, {
+      allTenants: true,
+      runWardenMaintenance: false,
+      wardenCampaignExecution: {
+        resolveDependencies: () => ({} as WardenCampaignExecutionDependencies),
+        execute,
+      },
+    });
+    // The job did not complete; the outcome is unowned.
+    expect(result).toMatchObject({ claimed: 1, succeeded: 0 });
+    // The MissionTask must NOT be at human_review_required on the strength of an
+    // outcome the system disowned: it stays where the claim left it.
+    expect(getMissionTask(db, "t1", created.id)).toMatchObject({
+      status: "agent_working",
+    });
+  });
 });
 
 describe("handoffFettlerMissionTaskOnReview", () => {

@@ -117,14 +117,17 @@ export function handoffFettlerMissionTaskOnReview(
   if (!task) return undefined;
   if (task.status === "human_review_required") return task;
   if (task.status !== "agent_working") return undefined;
-  const actorId = task.assignedPrincipalId
-    ?? missionTaskAgentPrincipal(db, input.tenantId, input.createdAt).id;
+  // A task only reaches agent_working through assignFettlerMissionTaskOnClaim,
+  // which records the driving agent as the assignee. A missing assignee here means
+  // the owner is unknown; refuse rather than mint a fresh principal that would
+  // paper over "I do not know who owned this" and hand off under a fabricated actor.
+  if (!task.assignedPrincipalId) throw new Error("mission_task_review_actor_unknown");
   return transitionMissionTask(db, {
     tenantId: input.tenantId,
     taskId: task.id,
     expectedRevision: task.revision,
     to: "human_review_required",
-    actorPrincipalId: actorId,
+    actorPrincipalId: task.assignedPrincipalId,
     handoffReason: "campaign_execute_review",
     eventId: `${task.id}-claim-review`,
     idempotencyKey: `mission-task-claim-review-${task.id}`,

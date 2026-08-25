@@ -2643,6 +2643,12 @@ async function processJobsOnceUnfenced(
           execute: opts.wardenCampaignExecution.execute,
         });
         if (outcome.status === "executed") {
+          // Settle the execute under the lease FIRST. A lost fence throws here, so
+          // the MissionTask is never advanced to review on the strength of an
+          // outcome the system then declares unowned.
+          if (!completeJob(db, job.id, outcome, nowIso(), { ...fence })) {
+            throw new Error("warden_campaign_execute_lease_lost");
+          }
           try {
             const claimed = parseWardenCampaignExecuteJob(job);
             handoffFettlerMissionTaskOnReview(db, {
@@ -2653,9 +2659,6 @@ async function processJobsOnceUnfenced(
             });
           } catch {
             // Observational: review handoff must not un-complete a landed execute.
-          }
-          if (!completeJob(db, job.id, outcome, nowIso(), { ...fence })) {
-            throw new Error("warden_campaign_execute_lease_lost");
           }
           result.succeeded++;
           continue;
