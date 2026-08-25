@@ -109,6 +109,7 @@ import {
   listConsumersImpactedByChange,
   registrySummaryMarkdown,
 } from "@mendpoint/db";
+import { parseAuditExportLimit } from "./audit-export.js";
 import {
   detectVendors,
   listCatalog,
@@ -2849,7 +2850,12 @@ app.get("/consumers/:id/exposure.md", (c) => {
 /** Audit export for enterprise / compliance */
 app.get("/audit/export", (c) => {
   const format = c.req.query("format") ?? "json";
-  const limit = Math.min(Number(c.req.query("limit") ?? 2000), 20_000);
+  let limit: number;
+  try {
+    limit = parseAuditExportLimit(c.req.query("limit"));
+  } catch {
+    return c.json({ error: "audit_export_limit_invalid" }, 400);
+  }
   if (format === "csv") {
     const csv = exportAuditCsv(db, limit, requestTenantId(c));
     return c.body(csv, 200, {
