@@ -38,7 +38,7 @@ kill_timeout = 45
   GITHUB_MODE = "real"
 
 [[mounts]]
-  source = "mendpoint_regauge_production_data"
+  source = "mendpoint_regauge_prod_data"
   destination = "/data"
   processes = ["coordinator"]
   initial_size = "20gb"
