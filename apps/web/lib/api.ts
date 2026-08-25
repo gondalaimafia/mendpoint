@@ -87,6 +87,8 @@ export type ChangeImpactCoverage = {
   reason: string | null;
   findingCount: number;
   prCount: number;
+  /** FET-018: present when impact analysis used the raw-retrieval path. */
+  fallback?: "raw_retrieval" | null;
 };
 
 export type ApiChange = {

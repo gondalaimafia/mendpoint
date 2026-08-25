@@ -62,6 +62,9 @@ function renderGraphPath(graphPath: FindingGraphPath) {
 }
 
 function emptyFindingsCopy(coverage?: ChangeImpactCoverage): string {
+  if (coverage?.impact === "no_impact" && coverage.fallback === "raw_retrieval") {
+    return "No impact — analyzed without a tenant graph. This is not a graph-authoritative no-impact result; Fettler used bounded raw retrieval.";
+  }
   if (coverage?.impact === "no_impact") {
     return "No impact — verified. Fettler analyzed the in-scope code with full coverage and found nothing affected.";
   }
@@ -174,6 +177,11 @@ export default async function ChangeDetailPage({
       </table>
 
       <h2>Impact findings</h2>
+      {data.findings.length > 0 && data.impactCoverage?.fallback === "raw_retrieval" && (
+        <p className="muted">
+          Impact was analyzed via raw retrieval, not a tenant graph.
+        </p>
+      )}
       <table>
         <thead>
           <tr>
