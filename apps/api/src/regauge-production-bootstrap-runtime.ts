@@ -557,12 +557,23 @@ export function createRegaugeProductionBootstrapRuntime(
         throw new Error("regauge_production_bootstrap_reviewer_drift");
       }
       if (options.verifierConsentAuthority) {
-        ensureRegaugeVerifierConsent(options.db, {
+        const verifierConsent = ensureRegaugeVerifierConsent(options.db, {
           tenantId: bootstrap.tenantId,
           reviewerPrincipalId,
           authority: options.verifierConsentAuthority,
           createdAt: at,
         });
+        if (verifierConsent.status === "disabled") {
+          console.warn(JSON.stringify({
+            event: "regauge_verifier_disabled",
+            reason: verifierConsent.reason,
+            tenantId: bootstrap.tenantId,
+            campaignId: bootstrap.campaignId,
+            latestConsentId: verifierConsent.latestConsentId,
+            latestConsentVersion: verifierConsent.latestConsentVersion,
+            observedAt: at,
+          }));
+        }
       }
       upsertGitHubInstallation(options.db, {
         id: stableId("github-installation", bootstrap.repository.installationId),

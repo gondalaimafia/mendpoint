@@ -971,6 +971,7 @@ describe("Transformer pilot execution coordinator", () => {
       nextCheckpointHead: terminal,
       candidateSeal,
       completionIntent,
+      advisoryDispatchRequested: true,
       gateConfig: authorization,
     };
 

@@ -1,6 +1,7 @@
 import {
   findActiveLearningConsent,
   grantLearningConsent,
+  listLearningConsentHistory,
   type AppDb,
   type LearningConsentRow,
 } from "@mendpoint/db";
@@ -19,6 +20,18 @@ export type RegaugeVerifierConsentAuthority = Readonly<{
   effectiveAt: string;
   expiresAt: string;
 }>;
+
+export type RegaugeVerifierConsentReadiness =
+  | Readonly<{ status: "active"; consent: LearningConsentRow }>
+  | Readonly<{
+      status: "disabled";
+      reason: "historical_consent_inactive" | "explicit_versioned_consent_required";
+      latestConsentId: string;
+      latestConsentVersion: number;
+      requestedConsentId?: string;
+      requiredConsentVersion?: number;
+      supersedesConsentId?: string;
+    }>;
 
 export function regaugeVerifierConsentAuthorityFromEnvironment(
   env: Readonly<Record<string, string | undefined>>,
@@ -66,7 +79,7 @@ export function ensureRegaugeVerifierConsent(
     authority: RegaugeVerifierConsentAuthority;
     createdAt: string;
   }>,
-): LearningConsentRow {
+): RegaugeVerifierConsentReadiness {
   if (input.tenantId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId) {
     throw new Error("regauge_verifier_consent_scope_invalid");
   }
@@ -76,7 +89,34 @@ export function ensureRegaugeVerifierConsent(
     purpose: REGAUGE_VERIFIER_CONSENT_PURPOSE,
     at,
   });
-  if (current) return exact(current, input) ? current : fail("regauge_verifier_consent_drift");
+  if (current) {
+    return exact(current, input)
+      ? Object.freeze({ status: "active", consent: current })
+      : fail("regauge_verifier_consent_drift");
+  }
+  const history = listLearningConsentHistory(db, {
+    tenantId: input.tenantId,
+    purpose: REGAUGE_VERIFIER_CONSENT_PURPOSE,
+  });
+  const latest = history[0];
+  if (latest) {
+    const replacementRequired = !history.some((record) =>
+      record.action === "granted" && record.id === input.authority.consentId
+    );
+    return Object.freeze({
+      status: "disabled",
+      reason: replacementRequired
+        ? "explicit_versioned_consent_required"
+        : "historical_consent_inactive",
+      latestConsentId: latest.id,
+      latestConsentVersion: latest.consent_version,
+      ...(replacementRequired ? {
+        requestedConsentId: input.authority.consentId,
+        requiredConsentVersion: latest.consent_version + 1,
+        supersedesConsentId: latest.id,
+      } : {}),
+    });
+  }
   grantLearningConsent(db, {
     id: input.authority.consentId,
     tenantId: input.tenantId,
@@ -96,7 +136,9 @@ export function ensureRegaugeVerifierConsent(
     purpose: REGAUGE_VERIFIER_CONSENT_PURPOSE,
     at,
   });
-  return stored && exact(stored, input) ? stored : fail("regauge_verifier_consent_inactive");
+  return stored && exact(stored, input)
+    ? Object.freeze({ status: "active", consent: stored })
+    : fail("regauge_verifier_consent_inactive");
 }
 
 function exact(row: LearningConsentRow, input: Readonly<{

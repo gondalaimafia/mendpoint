@@ -322,6 +322,7 @@ describe("real Transformer multi-node coordinator", () => {
         activationExpiresAt: new Date(Date.parse(coordinatorNow) + 60 * 60_000).toISOString(),
         maximumDrafts: 1,
       },
+      verifierAdvisoryScope: { tenantId: "tenant-a", campaignId: "campaign-a" },
       observeCompletedAttempt: completedObserver,
       loadExactSource: () => ({ repositoryId: "repo-a", revision: revision("a"), digest: snapshotDigest, files, fileModes: { "package.json": "100644" } }),
       resolveDraftRepository: () => ({ owner: "acme", repo: "repo-a", baseBranch: "main", installationId: 42, remoteRepositoryId: 84 }),

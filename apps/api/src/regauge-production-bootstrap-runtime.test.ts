@@ -386,6 +386,7 @@ describe("Regauge production bootstrap runtime", () => {
     await expect(baseRuntime.prepareRepository({
       bootstrap: regaugeProductionBootstrapInputFromEnvironment(environment()),
       reviewerActorId: "human:https://github.com|gondalaimafia",
+      requestDigest: first.requestDigest,
     })).resolves.toMatchObject({ repositoryId: first.repositoryId });
     expect(findActiveLearningConsent(db, {
       tenantId: "tenant_regauge_canary",

@@ -119,6 +119,17 @@ describe("ReGauge verifier consent bootstrap", () => {
       consentId: "consent_regauge_20260824_v3",
       evidenceRef: "approval:user:2026-08-24:v3",
     };
+    expect(ensureRegaugeVerifierConsent(db, {
+      ...input,
+      authority: replacementAuthority,
+      createdAt: "2026-08-24T12:02:30.000Z",
+    })).toMatchObject({
+      status: "disabled",
+      reason: "explicit_versioned_consent_required",
+      requestedConsentId: replacementAuthority.consentId,
+      requiredConsentVersion: 3,
+      supersedesConsentId: "consent_regauge_revoked_20260824",
+    });
     grantLearningConsent(db, {
       id: replacementAuthority.consentId,
       tenantId: "tenant_regauge_canary",

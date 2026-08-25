@@ -9,6 +9,8 @@ import {
   applyRecipe,
   type ExactSourceSnapshot,
   type TransformerAttemptCheckpointCompletionResult,
+  type TransformerPilotExecutionStore,
+  type TransformerVerifierAdvisoryDispatch,
 } from "@mendpoint/transformer";
 import {
   assertRegaugeDeepSeekApprovedScope,
@@ -32,9 +34,10 @@ export function buildDedicatedRegaugeCompletionInput(
   const units = campaign.units.filter((candidate) => candidate.id === receipt.unitId);
   const unit = units[0];
   if (campaign.tenantId !== receipt.tenantId || campaign.campaignId !== receipt.campaignId ||
-      campaign.revision !== receipt.campaignRevision || units.length !== 1 || !unit ||
-      unit.state !== "executed" || unit.verificationPassed !== true ||
-      unit.executedAt !== receipt.observedAt || campaign.updatedAt !== receipt.observedAt ||
+      campaign.revision < receipt.campaignRevision || units.length !== 1 || !unit ||
+      !["executed", "draft", "accepted", "merged"].includes(unit.state) ||
+      unit.verificationPassed !== true || unit.executedAt !== receipt.observedAt ||
+      Date.parse(campaign.updatedAt) < Date.parse(receipt.observedAt) ||
       !ID.test(campaign.tenantId) || !ID.test(campaign.campaignId) || !ID.test(unit.id) ||
       !ID.test(unit.snapshot.repositoryId) || !DIGEST.test(unit.snapshot.digest) ||
       !DIGEST.test(unit.candidateDigest) || !DIGEST.test(receipt.completionDigest) ||
@@ -65,6 +68,85 @@ export function buildDedicatedRegaugeCompletionInput(
     deterministicEvidenceRefs: Object.freeze([...unit.executionEvidenceRefs]),
     observedAt: receipt.observedAt,
   });
+}
+
+export type RegaugeVerifierAdvisoryDispatchOutcome = Readonly<{
+  dispatchId: string;
+  status: "enqueued" | "failed";
+  jobId?: string;
+  errorCode?: string;
+}>;
+
+export async function drainDedicatedRegaugeAdvisoryOutbox(input: Readonly<{
+  db: AppDb;
+  store: TransformerPilotExecutionStore;
+  env?: Readonly<Record<string, string | undefined>>;
+  tenantId: string;
+  limit?: number;
+  now?: () => string;
+  loadExactSource(
+    completion: TransformerAttemptCheckpointCompletionResult,
+    dispatch: TransformerVerifierAdvisoryDispatch,
+  ): ExactSourceSnapshot | Promise<ExactSourceSnapshot>;
+}>): Promise<readonly RegaugeVerifierAdvisoryDispatchOutcome[]> {
+  if (input.tenantId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId) {
+    throw new Error("verifier_advisory_scope_invalid");
+  }
+  const now = input.now ?? (() => new Date().toISOString());
+  const pending = input.store.listPendingVerifierAdvisoryDispatches(
+    input.tenantId,
+    input.limit ?? 25,
+  );
+  const outcomes: RegaugeVerifierAdvisoryDispatchOutcome[] = [];
+  for (const dispatch of pending) {
+    if (dispatch.campaignId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId) {
+      input.store.recordVerifierAdvisoryDispatchResult({
+        ...dispatch,
+        status: "failed",
+        errorCode: "verifier_advisory_scope_invalid",
+        observedAt: now(),
+      });
+      outcomes.push(Object.freeze({
+        dispatchId: dispatch.dispatchId,
+        status: "failed",
+        errorCode: "verifier_advisory_scope_invalid",
+      }));
+      continue;
+    }
+    try {
+      const completion = input.store.readVerifierAdvisoryCompletion(dispatch);
+      const exactSource = await input.loadExactSource(completion, dispatch);
+      const queued = enqueueDedicatedRegaugeCompletionForAdvisory({
+        db: input.db,
+        env: input.env,
+        completion,
+        exactSource,
+      });
+      input.store.recordVerifierAdvisoryDispatchResult({
+        ...dispatch,
+        status: "enqueued",
+        jobId: queued.jobId,
+        observedAt: now(),
+      });
+      outcomes.push(Object.freeze({
+        dispatchId: dispatch.dispatchId,
+        status: "enqueued",
+        jobId: queued.jobId,
+      }));
+    } catch (error) {
+      const errorCode = error instanceof Error && ID.test(error.message)
+        ? error.message
+        : "verifier_advisory_dispatch_failed";
+      input.store.recordVerifierAdvisoryDispatchResult({
+        ...dispatch,
+        status: "failed",
+        errorCode,
+        observedAt: now(),
+      });
+      outcomes.push(Object.freeze({ dispatchId: dispatch.dispatchId, status: "failed", errorCode }));
+    }
+  }
+  return Object.freeze(outcomes);
 }
 
 export function enqueueDedicatedRegaugeCompletionForAdvisory(input: Readonly<{

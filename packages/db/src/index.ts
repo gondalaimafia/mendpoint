@@ -4110,6 +4110,7 @@ export {
   grantLearningConsent,
   listAdmittableLearningRecords,
   listEligibleLearningDatasetMembers,
+  listLearningConsentHistory,
   listLearningRecordLineage,
   revokeLearningConsent,
   sealLearningDatasetVersion,

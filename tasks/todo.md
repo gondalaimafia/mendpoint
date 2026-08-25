@@ -3044,10 +3044,17 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 
 ### 2026-08-24 Final spec review closure: completion outbox and revoked consent
 
-- [ ] RED: prove ReGauge completion acknowledges independently when advisory dispatch fails, while a tenant-bound identifier-and-digest-only outbox remains durable and retryable.
-- [ ] RED: prove outbox replay is idempotent and rejects tenant or completion-digest mismatches.
-- [ ] RED: prove coordinator bootstrap restarts after consent revocation without creating a replacement grant, while new verifier egress remains disabled.
-- [ ] Implement the smallest transactional completion outbox and asynchronous advisory drain through the existing verifier job lane.
-- [ ] Make revoked or otherwise inactive historical consent an explicit verifier-disabled bootstrap result that requires a new versioned operator grant before future egress.
-- [ ] Run the focused Mission, Policy, campaign, advisory, bootstrap, and coordinator matrices plus affected typechecks and diff integrity.
-- [ ] Review and commit the closure without rebasing, pushing, or merging.
+- [x] RED: prove ReGauge completion acknowledges independently when advisory dispatch fails, while a tenant-bound identifier-and-digest-only outbox remains durable and retryable.
+- [x] RED: prove outbox replay is idempotent and rejects tenant or completion-digest mismatches.
+- [x] RED: prove coordinator bootstrap restarts after consent revocation without creating a replacement grant, while new verifier egress remains disabled.
+- [x] Implement the smallest transactional completion outbox and asynchronous advisory drain through the existing verifier job lane.
+- [x] Make revoked or otherwise inactive historical consent an explicit verifier-disabled bootstrap result that requires a new versioned operator grant before future egress.
+- [x] Run the focused Mission, Policy, campaign, advisory, bootstrap, and coordinator matrices plus affected typechecks and diff integrity.
+- [x] Review and commit the closure without rebasing, pushing, or merging.
+
+#### Review
+
+- RED: the transactional completion test had no outbox API, the coordinator returned an advisory queue failure after the terminal attempt was already committed, and bootstrap rejected a revoked consent replay with `regauge_verifier_consent_inactive`.
+- GREEN: the exact configured coordinator lane now adds one tenant-bound identifier-and-digest-only outbox row in the same SQLite transaction as `attempt.completed_with_checkpoint`. Non-authorized tenant and campaign completions do not request an outbox row. Queue and evidence work runs asynchronously, records append-only failure or enqueued outcomes, and replays the existing identifier-only verifier job without changing execution or delivery.
+- Consent: an existing revoked or inactive consent keeps ReGauge bootstrap available and emits a visible verifier-disabled event. Changing protected authority returns the exact next version and supersession requirement but never creates a grant; an explicitly recorded next-version grant re-enables the existing active-consent gate.
+- Verification: 163 focused Transformer, Mission, Policy, consent, coordinator, advisory, worker, workflow, and production-proof tests pass across 11 files. Database, Transformer, and API typechecks pass, and diff integrity is clean.

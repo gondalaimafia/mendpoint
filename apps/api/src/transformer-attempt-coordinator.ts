@@ -53,7 +53,9 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
   now?: () => string;
   gateConfig?: string;
   draftAuthorization?: TransformerProductionDraftAuthorization;
+  verifierAdvisoryScope?: Readonly<{ tenantId: string; campaignId: string }>;
   observeCompletedAttempt?(result: TransformerAttemptCheckpointCompletionResult): Promise<void>;
+  drainPendingCompletedAttempts?(): Promise<void>;
   readVerifierObservations?(input: Readonly<{ tenantId: string; campaignId: string }>): unknown;
   loadExactSource(lease: TransformerExecutableAttemptLease, observedAt: string): ExactSourceSnapshot | Promise<ExactSourceSnapshot>;
   resolveDraftRepository?(input: Readonly<{
@@ -75,6 +77,19 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
     configuredAt,
   );
   const authority = createTransformerPilotCheckpointAuthority(options.store);
+  const scheduleAdvisoryDispatch = (
+    dispatch: (() => Promise<void>) | undefined,
+    observedAt: string,
+  ): void => {
+    if (!dispatch) return;
+    void Promise.resolve().then(dispatch).catch((error) => {
+      console.error(JSON.stringify({
+        event: "regauge_verifier_advisory_dispatch_failed",
+        code: error instanceof Error ? error.message : "verifier_advisory_unknown",
+        observedAt,
+      }));
+    });
+  };
   app.use("*", async (c, next) => options.enabled === true ? next() : c.json({ error: "not_found" }, 404));
   app.post("/readyz", (c) => handled(c, async () => {
     requireWorker(c);
@@ -87,6 +102,7 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
     if (!campaign) {
       throw new Error("coordinator_campaign_not_ready");
     }
+    scheduleAdvisoryDispatch(options.drainPendingCompletedAttempts, serverTime(now));
     return c.json({
       result: { ready: true, campaignId: campaign.campaignId, state: campaign.state },
       serverTime: serverTime(now),
@@ -198,24 +214,21 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
       }
     }
     const preserveBoundTime = operation === "completeWithHead" || operation === "failWithHead";
-    const bound = { ...input, ...(!preserveBoundTime && operation !== "readHead" && operation !== "readBindingAuthority" ? { observedAt } : {}), gateConfig: options.gateConfig };
+    const verifierAdvisoryScope = options.verifierAdvisoryScope;
+    const advisoryDispatchRequested = operation === "completeWithHead" &&
+      verifierAdvisoryScope?.tenantId === input.tenantId &&
+      verifierAdvisoryScope?.campaignId === input.campaignId;
+    const bound = {
+      ...input,
+      ...(!preserveBoundTime && operation !== "readHead" && operation !== "readBindingAuthority" ? { observedAt } : {}),
+      ...(operation === "completeWithHead" ? { advisoryDispatchRequested } : {}),
+      gateConfig: options.gateConfig,
+    };
     const method = authority[operation] as unknown as (value: Json) => unknown;
     const result = await method.call(authority, bound);
     if (operation === "completeWithHead" && options.observeCompletedAttempt) {
-      try {
-        await options.observeCompletedAttempt(result as TransformerAttemptCheckpointCompletionResult);
-      } catch (error) {
-        console.error(JSON.stringify({
-          event: "regauge_verifier_advisory_dispatch_failed",
-          code: error instanceof Error ? error.message : "verifier_advisory_unknown",
-          observedAt,
-        }));
-        // Completion is already durable. Return an error so the caller retries
-        // the exact completion receipt; the replay then re-enters this enqueue
-        // seam and either creates the missing advisory job or proves the exact
-        // job already exists. Swallowing here would strand completed work.
-        throw error;
-      }
+      const completion = result as TransformerAttemptCheckpointCompletionResult;
+      scheduleAdvisoryDispatch(() => options.observeCompletedAttempt!(completion), observedAt);
     }
     return c.json({ result: result === undefined ? null : result, serverTime: observedAt });
   }));

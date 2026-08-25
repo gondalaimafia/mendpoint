@@ -138,3 +138,8 @@
 **Mistake:** I allowed active ReGauge and verifier wiring to retain pilot and shadow deployment semantics after the product direction had moved to production.
 **Correction:** Talal required every completed product capability to run in production, with nothing left in pilot, shadow, or demo mode.
 **Rule:** For production-directed work, reject active pilot, shadow, and demo bindings during review. Compatibility names may remain only when they are inactive and explicitly bounded; the deployed app, workflow, rollout mode, and evidence must all identify the production surface.
+
+### 2026-08-24 — Suppress generated storage credentials
+**Mistake:** A first `fly storage create` invocation allowed generated credential values to appear in command output.
+**Correction:** Generated credentials must never be exposed while provisioning storage authority.
+**Rule:** Always suppress output on the first `fly storage create` invocation, verify only secret names and status, and rotate or destroy the credentials immediately if any values appear.

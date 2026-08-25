@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb, createMission, getJob, getMission, insertConnectedRepository,
   insertPrincipal, insertRepositorySnapshot, insertTenant,
@@ -13,9 +13,12 @@ import {
   NODE_RUNTIME_18_TO_20_RECIPE, applyRecipe, recipeFilesDigest, recipeReference,
   type ExactSourceSnapshot, type RecipeFiles,
   type TransformerAttemptCheckpointCompletionResult,
+  type TransformerPilotExecutionStore,
+  type TransformerVerifierAdvisoryDispatch,
 } from "@mendpoint/transformer";
 import {
   buildDedicatedRegaugeCompletionInput,
+  drainDedicatedRegaugeAdvisoryOutbox,
   enqueueDedicatedRegaugeCompletionForAdvisory,
 } from "./regauge-verifier-shadow.js";
 
@@ -115,5 +118,60 @@ describe("dedicated ReGauge advisory dispatch", () => {
       .toThrow("verifier_advisory_scope_invalid");
     expect(listArtifactManifests(store, "tenant_regauge_canary", "agent_verifier_advisory_input"))
       .toHaveLength(0);
+  });
+
+  it("records a failed outbox drain, retries it, and replays one verifier job idempotently", async () => {
+    const store = db();
+    const completion = completed();
+    const dispatch: TransformerVerifierAdvisoryDispatch = Object.freeze({
+      schemaVersion: 1,
+      dispatchId: "regauge_advisory_dispatch_a",
+      tenantId: completion.receipt.tenantId,
+      campaignId: completion.receipt.campaignId,
+      campaignRevision: completion.receipt.campaignRevision,
+      unitId: completion.receipt.unitId,
+      episodeId: completion.receipt.episodeId,
+      completionDigest: completion.receipt.completionDigest,
+      authorizationDigest: digest("authorization"),
+      checkpointStateDigest: completion.receipt.checkpointHead.stateDigest,
+      observedAt: completion.receipt.observedAt,
+    });
+    const recorded: Array<Record<string, unknown>> = [];
+    const pilotStore = {
+      listPendingVerifierAdvisoryDispatches: () => [dispatch],
+      readVerifierAdvisoryCompletion: () => completion,
+      recordVerifierAdvisoryDispatchResult: vi.fn((result: Record<string, unknown>) => {
+        recorded.push(result);
+        return {};
+      }),
+    } as unknown as TransformerPilotExecutionStore;
+    const common = {
+      db: store,
+      store: pilotStore,
+      tenantId: "tenant_regauge_canary",
+      now: () => "2026-08-24T12:02:00.000Z",
+      loadExactSource: () => exactSource(),
+    };
+
+    await expect(drainDedicatedRegaugeAdvisoryOutbox({
+      ...common,
+      env: { ...env(), MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: "{}" },
+    })).resolves.toEqual([{
+      dispatchId: dispatch.dispatchId,
+      status: "failed",
+      errorCode: "verifier_advisory_policy_invalid",
+    }]);
+    const first = await drainDedicatedRegaugeAdvisoryOutbox({ ...common, env: env() });
+    const replay = await drainDedicatedRegaugeAdvisoryOutbox({ ...common, env: env() });
+    expect(first).toEqual([expect.objectContaining({
+      dispatchId: dispatch.dispatchId,
+      status: "enqueued",
+      jobId: expect.any(String),
+    })]);
+    expect(replay).toEqual(first);
+    expect(recorded.map((result) => result.status)).toEqual(["failed", "enqueued", "enqueued"]);
+    expect(getJob(store, String(first[0]!.jobId), "tenant_regauge_canary")).not.toBeNull();
+    expect((store.raw.prepare("SELECT COUNT(*) count FROM jobs WHERE type = ?").get("verifier.advisory.verify") as { count: number }).count)
+      .toBe(1);
   });
 });
