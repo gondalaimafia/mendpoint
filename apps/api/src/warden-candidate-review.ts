@@ -8,10 +8,12 @@ import {
   enqueueWardenCiUpdate,
   getAgentRun,
   getJob,
+  getActiveMissionDecisions,
   getMission,
   getPrincipal,
   getTenantMembership,
   recordReviewerDirective,
+  supersedeMissionDecision,
   getWardenCandidateDeliveryByRun,
   getWardenCiCycle,
   getWardenCiUpdateByRun,
@@ -115,6 +117,31 @@ function parseDecision(value: unknown): { decision: ReviewDecision; rationale: s
 function regenerationIds(tenantId: string, runId: string) {
   const digest = createHash("sha256").update([tenantId, runId, "regenerate"].join("\0"), "utf8").digest("hex");
   return { jobId: `warden-regenerate-job-${digest.slice(0, 32)}`, runId: `warden-regenerate-run-${digest.slice(32)}` };
+}
+
+/**
+ * Persist a reviewer directive, superseding any active decision on the same
+ * scope. Distinct regenerate scopes (`reviewer_directive:${runId}`) stay
+ * concurrently active. Reusing a scope is a deliberate replacement.
+ */
+export function recordReviewerDirectiveMaybeSupersede(
+  db: AppDb,
+  input: Parameters<typeof recordReviewerDirective>[1],
+) {
+  const prior = getActiveMissionDecisions(db, input.tenantId, input.missionId)
+    .find((decision) => decision.scope === input.scope);
+  if (!prior) return recordReviewerDirective(db, input);
+  return supersedeMissionDecision(db, {
+    tenantId: input.tenantId,
+    priorDecisionId: prior.id,
+    decision: input.directive,
+    scope: input.scope,
+    authorPrincipalId: input.authorPrincipalId,
+    ...(input.evidence ? { evidence: input.evidence } : {}),
+    correlationId: input.correlationId,
+    createdAt: input.createdAt,
+    decisionType: input.decisionType ?? null,
+  });
 }
 
 function sourceBinding(db: AppDb, tenantId: string, result: Record<string, unknown>) {
@@ -355,7 +382,7 @@ export function registerWardenCandidateReviewRoutes(
         const regenerateMissionId = typeof originalPayload.missionId === "string"
           ? originalPayload.missionId : null;
         if (regenerateMissionId && getMission(db, tenantId, regenerateMissionId)) {
-          recordReviewerDirective(db, {
+          recordReviewerDirectiveMaybeSupersede(db, {
             tenantId,
             missionId: regenerateMissionId,
             directive: body.rationale,

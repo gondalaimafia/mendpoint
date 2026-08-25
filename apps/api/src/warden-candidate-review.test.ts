@@ -20,7 +20,7 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
-import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
+import { registerWardenCandidateReviewRoutes, recordReviewerDirectiveMaybeSupersede } from "./warden-candidate-review.js";
 import { enqueueDelegatedPrVerificationJob } from "@mendpoint/worker/delegated-pr-verification-job";
 
 const NOW = "2026-08-06T12:00:00.000Z";
@@ -528,6 +528,74 @@ describe("Warden candidate human review", () => {
     // No mission exists and none is fabricated: the decision store stays empty.
     const count = db.raw.prepare("SELECT COUNT(*) AS n FROM mission_decisions").get() as { n: number };
     expect(count.n).toBe(0);
+  });
+
+  it("supersedes an active reviewer directive when the same scope is reused", () => {
+    const { db } = fixture();
+    createMission(db, {
+      id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
+      objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-m1", idempotencyKey: "cm-m1", correlationId: "corr", createdAt: NOW,
+    });
+    const first = recordReviewerDirectiveMaybeSupersede(db, {
+      tenantId: "tenant-a",
+      missionId: "m1",
+      directive: "Avoid raw OAuth.",
+      scope: "auth_flow",
+      authorPrincipalId: "trust-human-a",
+      evidence: ["agent_run:warden-run-1"],
+      correlationId: "corr-1",
+      createdAt: NOW,
+      decisionType: "verification",
+    });
+    const second = recordReviewerDirectiveMaybeSupersede(db, {
+      tenantId: "tenant-a",
+      missionId: "m1",
+      directive: "Raw OAuth is permitted after the waiver.",
+      scope: "auth_flow",
+      authorPrincipalId: "trust-human-a",
+      evidence: ["policy_waiver:PW-1"],
+      correlationId: "corr-2",
+      createdAt: NOW,
+      decisionType: "verification",
+    });
+    const active = getActiveMissionDecisions(db, "tenant-a", "m1");
+    expect(active.map((row) => row.id)).toEqual([second.id]);
+    expect(active[0]?.decision).toBe("Raw OAuth is permitted after the waiver.");
+    expect(active.map((row) => row.id)).not.toContain(first.id);
+  });
+
+  it("does not retract an active reviewer directive on reject", async () => {
+    const { app, db } = fixture();
+    createMission(db, {
+      id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
+      objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-m1", idempotencyKey: "cm-m1", correlationId: "corr", createdAt: NOW,
+    });
+    recordReviewerDirectiveMaybeSupersede(db, {
+      tenantId: "tenant-a",
+      missionId: "m1",
+      directive: "Avoid raw OAuth.",
+      scope: "auth_flow",
+      authorPrincipalId: "trust-human-a",
+      evidence: ["agent_run:warden-run-1"],
+      correlationId: "corr-1",
+      createdAt: NOW,
+      decisionType: "verification",
+    });
+    const src = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(src.payload_json), missionId: "m1" }));
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "reject", rationale: "The candidate changes the public contract." }),
+    });
+    expect(response.status).toBe(200);
+    const active = getActiveMissionDecisions(db, "tenant-a", "m1");
+    expect(active).toHaveLength(1);
+    expect(active[0]?.decision).toBe("Avoid raw OAuth.");
+    expect(active[0]?.scope).toBe("auth_flow");
   });
 
   it("keeps the committed winner seal through an orchestrated concurrent approval conflict", async () => {
