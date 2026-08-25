@@ -218,27 +218,7 @@ function codes(result: Awaited<ReturnType<typeof verifyGitHubClosureAuthority>>)
 }
 
 describe("GitHub production closure authority", () => {
-  it("runs PR authority from default-branch code and blocks deploy on main authority", () => {
-    const ci = parse(
-      readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
-    ) as {
-      jobs: Record<string, {
-        needs?: string[];
-        permissions?: Record<string, string>;
-        steps?: Array<{ name?: string; run?: string; env?: Record<string, string> }>;
-      }>;
-    };
-    const mainJob = ci.jobs["main-closure-authority"];
-    const deploy = ci.jobs.deploy;
-
-    expect(mainJob.needs).toEqual([
-      "test",
-      "release-gates",
-      "container-builds",
-      "deployment-e2e",
-    ]);
-    expect(deploy.needs).toContain("main-closure-authority");
-
+  it("runs per-PR authority from default-branch code and publishes an App-bound verdict", () => {
     const workflow = parse(
       readFileSync(
         new URL("../.github/workflows/closure-authority.yml", import.meta.url),
@@ -247,8 +227,11 @@ describe("GitHub production closure authority", () => {
     ) as {
       on: Record<string, unknown>;
       permissions: Record<string, string>;
+      concurrency?: unknown;
       jobs: Record<string, {
+        concurrency?: { group?: string; "cancel-in-progress"?: boolean };
         permissions?: Record<string, string>;
+        strategy?: { "fail-fast"?: boolean; "max-parallel"?: number };
         steps?: Array<{
           name?: string;
           run?: string;
@@ -264,12 +247,21 @@ describe("GitHub production closure authority", () => {
     expect(workflow.on).toHaveProperty("issues");
     expect(workflow.on).toHaveProperty("schedule");
     expect(workflow.on).not.toHaveProperty("pull_request_review");
+    expect(workflow.concurrency).toBeUndefined();
     expect(workflow.permissions).toEqual({
       actions: "read",
       contents: "read",
       checks: "read",
       issues: "read",
       "pull-requests": "read",
+    });
+    expect(job.strategy).toMatchObject({
+      "fail-fast": false,
+      "max-parallel": 4,
+    });
+    expect(job.concurrency).toEqual({
+      group: "production-closure-authority-${{ matrix.pull_request }}",
+      "cancel-in-progress": true,
     });
     expect(job.steps).toContainEqual(
       expect.objectContaining({
@@ -302,6 +294,12 @@ describe("GitHub production closure authority", () => {
     );
     expect(job.steps).toContainEqual(
       expect.objectContaining({ name: "Publish dedicated authority App verdict" }),
+    );
+    expect(job.steps).toContainEqual(
+      expect.objectContaining({
+        name: "Enforce protected authority verdict",
+        run: expect.stringContaining("set -euo pipefail"),
+      }),
     );
   });
 

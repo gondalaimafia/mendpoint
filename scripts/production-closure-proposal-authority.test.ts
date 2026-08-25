@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   releaseTrainIntegrityDigest,
@@ -9,6 +10,7 @@ import {
 } from "./production-closure-matrix.js";
 import {
   verifyProductionClosureProposal,
+  writeProposalAuthorityFailureObservation,
   type ProposalAuthorityClient,
 } from "./production-closure-proposal-authority.js";
 
@@ -40,6 +42,7 @@ class FixtureClient implements ProposalAuthorityClient {
       .split(/\r?\n/)
       .filter(Boolean));
     paths.add("config/production-closure-authority.json");
+    for (const path of Object.keys(policy().protectedFiles)) paths.add(path);
     for (const path of paths) {
       const bytes = readFileSync(resolve(root, path));
       const blobSha = sha(bytes);
@@ -192,5 +195,36 @@ describe("production closure proposal authority", () => {
     );
 
     expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_POLICY_DRIFT");
+  });
+
+  it("prevents a proposal from changing a pinned authority runtime file", async () => {
+    const client = new FixtureClient();
+    client.replace(".github/workflows/ci.yml", "changed CI authority");
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+    );
+
+    expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
+  });
+
+  it("writes a secret-free failure artifact when protected configuration fails early", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-proposal-authority-"));
+    const path = join(directory, "observation.json");
+    try {
+      writeProposalAuthorityFailureObservation(path, OBSERVED_AT);
+      const artifact = readFileSync(path, "utf8");
+      expect(JSON.parse(artifact)).toMatchObject({
+        verdict: "fail",
+        issues: [{ code: "PROPOSAL_AUTHORITY_CONFIGURATION_INVALID" }],
+      });
+      expect(artifact).not.toContain("token");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

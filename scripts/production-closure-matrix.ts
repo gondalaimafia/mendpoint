@@ -8,7 +8,7 @@ import type {
   ProductImplementationStatus,
   ProductRequirement,
   ProductRequirementManifest,
-} from "@mendpoint/contract";
+} from "../packages/contract/src/product-requirements.js";
 
 export interface ProductionClosureStatus {
   implementationStatus: ProductImplementationStatus;

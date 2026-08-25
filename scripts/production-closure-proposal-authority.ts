@@ -5,11 +5,13 @@ import { pathToFileURL } from "node:url";
 import {
   canonicalTextSha256,
   validateProductRequirements,
-  validatePublicClaimRegistry,
   type ProductRequirement,
   type ProductRequirementManifest,
+} from "../packages/contract/src/product-requirements.js";
+import {
+  validatePublicClaimRegistry,
   type PublicClaimRegistry,
-} from "@mendpoint/contract";
+} from "../packages/contract/src/public-claims.js";
 import {
   parseProductionEvidenceTrustRoots,
   releaseTrainObservationIssues,
@@ -41,6 +43,7 @@ interface AuthorityPolicy {
   externalCheckName: string;
   trustedReviewers: Record<string, Array<{ login: string; userId: number }>>;
   productionEvidenceAuthorities: ProductionEvidenceTrustRoot[];
+  protectedFiles: Record<string, string>;
 }
 
 export interface ProposalBlobObservation {
@@ -59,6 +62,27 @@ export interface ProposalAuthorityObservation {
   fetchedBlobs: ProposalBlobObservation[];
   verdict: "pass" | "fail";
   issues: ProductionClosureMatrixIssue[];
+}
+
+export function writeProposalAuthorityFailureObservation(
+  path: string,
+  observedAt = new Date().toISOString(),
+): void {
+  const observation: ProposalAuthorityObservation = {
+    schemaVersion: 1,
+    repository: "unavailable",
+    repositoryId: 0,
+    proposalRevision: "unavailable",
+    observedAt,
+    fetchedBlobs: [],
+    verdict: "fail",
+    issues: [{
+      code: "PROPOSAL_AUTHORITY_CONFIGURATION_INVALID",
+      subject: "configuration",
+      message: "protected proposal authority configuration or execution failed closed",
+    }],
+  };
+  writeFileSync(path, `${JSON.stringify(observation, null, 2)}\n`, { mode: 0o600 });
 }
 
 export interface ProposalAuthorityClient {
@@ -118,6 +142,7 @@ function referencedPaths(
   manifest: ProductRequirementManifest,
   matrix: ProductionClosureMatrix,
   claims: PublicClaimRegistry,
+  policy: AuthorityPolicy,
 ): Set<string> {
   const paths = new Set([
     "docs/PRODUCT_REQUIREMENTS.json",
@@ -152,6 +177,7 @@ function referencedPaths(
       if (!["live", "external"].includes(evidence.type)) paths.add(evidence.locator);
     }
   }
+  for (const path of Object.keys(policy.protectedFiles ?? {})) paths.add(path);
   return paths;
 }
 
@@ -205,6 +231,8 @@ export async function verifyProductionClosureProposal(
       policy.schemaVersion !== 1 ||
       repository !== policy.repository ||
       (await client.getRepositoryId()) !== policy.repositoryId ||
+      !policy.protectedFiles ||
+      Object.keys(policy.protectedFiles).length === 0 ||
       !SHA.test(proposalRevision)
     ) {
       add(issues, "PROPOSAL_AUTHORITY_IDENTITY_INVALID", "policy", "repository policy and proposal identity must match");
@@ -280,7 +308,18 @@ export async function verifyProductionClosureProposal(
       );
     }
 
-    for (const path of referencedPaths(manifest, matrix, claims)) await readProposalPath(path);
+    for (const path of referencedPaths(manifest, matrix, claims, policy)) await readProposalPath(path);
+    for (const [path, expectedDigest] of Object.entries(policy.protectedFiles)) {
+      const bytes = bytesByPath.get(normalizedPath(path) ?? "");
+      if (!bytes || digest(bytes) !== expectedDigest) {
+        add(
+          issues,
+          "PROPOSAL_AUTHORITY_SURFACE_DRIFT",
+          path,
+          "a product proposal cannot modify or remove a pinned authority surface",
+        );
+      }
+    }
     issues.push(...validateProductRequirements(manifest));
     const specBytes = typeof manifest.spec?.path === "string"
       ? bytesByPath.get(normalizedPath(manifest.spec.path) ?? "")
@@ -434,6 +473,14 @@ async function main(): Promise<void> {
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   void main().catch(() => {
+    const outputPath = process.env.MENDPOINT_PROPOSAL_OBSERVATION_PATH?.trim();
+    if (outputPath) {
+      try {
+        writeProposalAuthorityFailureObservation(outputPath);
+      } catch {
+        // The console verdict remains fail closed if the artifact path is also unavailable.
+      }
+    }
     console.error("PROPOSAL_AUTHORITY_UNAVAILABLE github: protected proposal authority failed closed");
     process.exitCode = 1;
   });
