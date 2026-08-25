@@ -171,11 +171,27 @@ function seedConsumer(
   });
 }
 
+type ChangeDetailResponse = {
+  impactCoverage: {
+    impact: string;
+    coverageBasis: string | null;
+    reason: string | null;
+    findingCount: number;
+    prCount: number;
+    fallback: "raw_retrieval" | null;
+  };
+  findings: unknown[];
+  prs: Array<{ id: string }>;
+};
+
 async function getChangeJson(app: Hono<ApiEnv>, token: string) {
   const response = await app.request(`/changes/${CHANGE_ID}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  return { status: response.status, body: await response.json() };
+  return {
+    status: response.status,
+    body: (await response.json()) as ChangeDetailResponse,
+  };
 }
 
 describe("GET /changes/:id impact coverage + FET-018 audit", () => {
