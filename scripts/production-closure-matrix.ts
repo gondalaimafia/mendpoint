@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -24,6 +25,34 @@ export interface ProductionClosureRequirement {
   pullRequests: number[];
   testEvidenceIds: string[];
   productionEvidenceIds: string[];
+  productionEvidenceBindings?: ProductionEvidenceBinding[];
+}
+
+export interface ProductionEvidenceBinding {
+  evidenceId: string;
+  receipt: {
+    schemaVersion: 1;
+    evidenceId: string;
+    locator: string;
+    observedAt: string;
+    freshUntil: string;
+    deployedRevision: string;
+    versionLocator: string;
+    versionObservedRevision: string;
+    authorityId: string;
+    authorityKeyId: string;
+    observationEvidence: EvidenceArtifactRef;
+    versionEvidence: EvidenceArtifactRef;
+    rollbackEvidence: EvidenceArtifactRef;
+    failureEvidence: EvidenceArtifactRef;
+  };
+  receiptDigest: string;
+  signature: string;
+}
+
+export interface EvidenceArtifactRef {
+  locator: string;
+  digest: string;
 }
 
 export interface ReleaseTrainBlocker {
@@ -39,6 +68,8 @@ export interface ProductionEvidenceTrustRoot {
 
 export interface ReleaseTrainPullRequest {
   number: number;
+  state: "open" | "merged" | "closed";
+  url: string;
   title: string;
   headBranch: string;
   baseBranch: string;
@@ -50,6 +81,7 @@ export interface ReleaseTrainPullRequest {
   disposition:
     | "merge_after_rebase_and_review"
     | "extract_smaller_replacement"
+    | "merged"
     | "superseded"
     | "blocked_explicit_dependency";
   dependencies: {
@@ -62,8 +94,30 @@ export interface ReleaseTrainPullRequest {
     | "conflicting"
     | "behind"
     | "checks_running"
+    | "checks_failed"
+    | "checks_green_unreviewed"
     | "stale_checks"
     | "stacked_unverified";
+  headRevision: string;
+  mergeRevision: string | null;
+  checks: Array<{
+    name: string;
+    status: "completed" | "in_progress" | "queued";
+    conclusion: "success" | "failure" | "skipped" | "cancelled" | null;
+    headRevision: string;
+    detailsUrl: string;
+  }>;
+  review: {
+    state: "approved" | "changes_requested" | "none";
+    reviewedHeadRevision: string | null;
+    reviewer: string | null;
+    reviewerAgent: "Codex" | "Claude" | "Cursor" | null;
+    source: "github" | "claude_session" | "codex_review" | null;
+    reviewId: string | null;
+    url: string | null;
+    submittedAt: string | null;
+    attributable: boolean;
+  };
   blockers: ReleaseTrainBlocker[];
   reviewRemediationPullRequest?: number | null;
 }
@@ -93,8 +147,18 @@ export interface CurrentPullRequestBootstrap {
   remediatesPullRequests: number[];
 }
 
+export interface IssueAuthorityRecord {
+  number: number;
+  state: "open" | "closed";
+  owner: string;
+  title: string;
+  url: string;
+  updatedAt: string;
+  requirementIds: string[];
+}
+
 export interface ProductionClosureMatrix {
-  schemaVersion: 1;
+  schemaVersion: 2;
   canonicalRegister: {
     path: "docs/PRODUCT_REQUIREMENTS.json";
     includeAdditionalRegisterSets: true;
@@ -112,8 +176,11 @@ export interface ProductionClosureMatrix {
     issues: IssueAuthorityRecord[];
   };
   releaseTrain: {
+    provider: "github";
+    repository: "gondalaimafia/mendpoint";
     observedAt: string;
     observedMainRevision: string;
+    observationDigest: string;
     ownershipAuthority: "provisional_branch_prefix_only";
     currentPullRequestBootstrap: CurrentPullRequestBootstrap;
     pullRequests: ReleaseTrainPullRequest[];
@@ -171,6 +238,32 @@ const TEST_EVIDENCE_TYPES = new Set([
   "security",
 ]);
 const SHA = /^[a-f0-9]{40}$/;
+const SHA256 = /^sha256:[a-f0-9]{64}$/;
+const PR_STATES = new Set(["open", "merged", "closed"]);
+const PR_DISPOSITIONS = new Set([
+  "merge_after_rebase_and_review",
+  "extract_smaller_replacement",
+  "merged",
+  "superseded",
+  "blocked_explicit_dependency",
+]);
+const PR_CHECK_STATES = new Set([
+  "current_checks_green",
+  "conflicting",
+  "behind",
+  "checks_running",
+  "checks_failed",
+  "checks_green_unreviewed",
+  "stale_checks",
+  "stacked_unverified",
+]);
+const REQUIRED_RELEASE_CHECKS = [
+  "test",
+  "release-gates",
+  "container-builds",
+  "deployment-e2e",
+] as const;
+const ARTIFACT_LOCATOR = /^docs\/evidence\/[A-Za-z0-9._/-]+$/;
 // A live observation older than this is treated as decayed: the open-PR
 // snapshot is a point-in-time read that goes stale within hours, so a bounded
 // age converts silent rot into a visible refresh obligation without CI needing
@@ -300,6 +393,8 @@ export function releaseTrainObservationIssues(
   matrix: ProductionClosureMatrix,
   options: {
     revisionExists: (revision: string) => boolean;
+    revisionIsAncestor?: (revision: string, descendant: string) => boolean;
+    readArtifact?: (locator: string) => Buffer | null;
     now: Date;
   },
 ): ProductionClosureMatrixIssue[] {
@@ -317,6 +412,14 @@ export function releaseTrainObservationIssues(
   const observedMs = Date.parse(observedAt);
   if (!Number.isNaN(observedMs)) {
     const ageMs = options.now.getTime() - observedMs;
+    if (ageMs < 0) {
+      add(
+        issues,
+        "RELEASE_SNAPSHOT_FROM_FUTURE",
+        "releaseTrain",
+        `observedAt ${observedAt} is later than the validation clock`,
+      );
+    }
     if (ageMs > OBSERVATION_MAX_AGE_DAYS * 24 * 60 * 60 * 1000) {
       add(
         issues,
@@ -457,6 +560,22 @@ function gitRevisionExists(repoRoot: string, revision: string): boolean {
   }
 }
 
+function gitRevisionIsAncestor(
+  repoRoot: string,
+  revision: string,
+  descendant: string,
+): boolean {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", revision, descendant], {
+      cwd: repoRoot,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function validateProductionClosureMatrix(
   manifest: ProductRequirementManifest,
   matrix: ProductionClosureMatrix,
@@ -468,9 +587,10 @@ export function validateProductionClosureMatrix(
     canonical.map((entry) => [entry.requirement.id, entry] as const),
   );
   const rowsById = new Map<string, ProductionClosureRequirement>();
+  const authorityIssueByNumber = new Map<number, IssueAuthorityRecord>();
 
-  if (matrix.schemaVersion !== 1) {
-    add(issues, "SCHEMA_VERSION", "matrix", "schemaVersion must equal 1");
+  if (matrix.schemaVersion !== 2) {
+    add(issues, "SCHEMA_VERSION", "matrix", "schemaVersion must equal 2");
   }
   if (
     matrix.canonicalRegister?.path !== "docs/PRODUCT_REQUIREMENTS.json" ||
@@ -573,6 +693,23 @@ export function validateProductionClosureMatrix(
     for (const issue of row.issues ?? []) {
       if (!Number.isInteger(issue) || issue < 1) {
         add(issues, "ISSUE_REFERENCE", row.requirementId, `invalid issue ${issue}`);
+      } else {
+        const authority = authorityIssueByNumber.get(issue);
+        if (!authority) {
+          add(
+            issues,
+            "ISSUE_AUTHORITY_MISSING",
+            row.requirementId,
+            `issue ${issue} has no authoritative GitHub observation`,
+          );
+        } else if (!authority.requirementIds.includes(row.requirementId)) {
+          add(
+            issues,
+            "ISSUE_REQUIREMENT_MISMATCH",
+            row.requirementId,
+            `issue ${issue} does not map back to the requirement`,
+          );
+        }
       }
     }
     for (const pullRequest of row.pullRequests ?? []) {
@@ -753,6 +890,19 @@ export function validateProductionClosureMatrix(
       );
     }
   }
+  for (const issue of authorityIssueByNumber.values()) {
+    for (const requirementId of issue.requirementIds) {
+      const row = rowsById.get(requirementId);
+      if (row && !row.issues.includes(issue.number)) {
+        add(
+          issues,
+          "ISSUE_REQUIREMENT_MISMATCH",
+          String(issue.number),
+          `requirement ${requirementId} does not map back to the issue`,
+        );
+      }
+    }
+  }
 
   if (!SHA.test(matrix.releaseTrain?.observedMainRevision ?? "")) {
     add(
@@ -859,7 +1009,7 @@ export function validateProductionClosureMatrix(
   }
 
   const releasePrs = new Map<number, ReleaseTrainPullRequest>();
-  for (const pullRequest of matrix.releaseTrain?.openPullRequests ?? []) {
+  for (const pullRequest of matrix.releaseTrain?.pullRequests ?? []) {
     if (!Number.isInteger(pullRequest.number) || pullRequest.number < 1) {
       add(
         issues,
@@ -868,6 +1018,17 @@ export function validateProductionClosureMatrix(
         `invalid pull request ${pullRequest.number}`,
       );
       continue;
+    }
+    if (
+      pullRequest.url !==
+      `https://github.com/gondalaimafia/mendpoint/pull/${pullRequest.number}`
+    ) {
+      add(
+        issues,
+        "PR_AUTHORITY_URL_INVALID",
+        String(pullRequest.number),
+        "pull request authority URL must identify the exact repository pull request",
+      );
     }
     if (releasePrs.has(pullRequest.number)) {
       add(
@@ -1085,6 +1246,14 @@ export function validateProductionClosureMatrix(
           "PR_REFERENCE",
           String(pullRequest.number),
           `invalid dependency pull request ${dependency}`,
+        );
+      }
+      if (dependency === pullRequest.number) {
+        add(
+          issues,
+          "PR_DEPENDENCY_SELF",
+          String(pullRequest.number),
+          "a pull request cannot depend on itself",
         );
       }
     }
@@ -1318,6 +1487,13 @@ function main() {
   const issues = [
     ...releaseTrainObservationIssues(matrix, {
       revisionExists: (revision) => gitRevisionExists(root, revision),
+      revisionIsAncestor: (revision, descendant) =>
+        gitRevisionIsAncestor(root, revision, descendant),
+      readArtifact: (locator) => {
+        if (!ARTIFACT_LOCATOR.test(locator) || locator.includes("..")) return null;
+        const artifactPath = resolve(root, locator);
+        return existsSync(artifactPath) ? readFileSync(artifactPath) : null;
+      },
       now: new Date(),
     }),
     ...validateProductionClosureMatrix(manifest, matrix, {

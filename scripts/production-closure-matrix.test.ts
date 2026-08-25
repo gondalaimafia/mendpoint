@@ -1,4 +1,9 @@
 import { readFileSync } from "node:fs";
+import {
+  createHash,
+  generateKeyPairSync,
+  sign,
+} from "node:crypto";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ProductRequirementManifest } from "@mendpoint/contract";
@@ -193,7 +198,7 @@ describe("production closure matrix", () => {
   it("fails unknown requirement links and malformed pull request references", () => {
     const manifest = loadManifest();
     const matrix = loadMatrix();
-    matrix.releaseTrain.openPullRequests[0].requirementIds.push("ME-UNKNOWN-999");
+    matrix.releaseTrain.pullRequests[0].requirementIds.push("ME-UNKNOWN-999");
     matrix.requirements[0].pullRequests.push(0);
 
     expect(codes(manifest, matrix)).toEqual(
