@@ -71,7 +71,7 @@ CMD ["node", "--import", "tsx", "apps/worker/src/cli.ts", "run-jobs", "--interva
 
 FROM api AS transformer
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends gosu \
+RUN apt-get update && apt-get install -y --no-install-recommends gosu rclone \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /data /tmp/mendpoint-transformer \
   && chown -R node:node /data /tmp/mendpoint-transformer \

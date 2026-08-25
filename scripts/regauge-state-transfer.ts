@@ -12,7 +12,6 @@ import {
   thawRegaugeCutoverFence,
   verifyRegaugeStateTransfer,
   verifyRestoredRegaugeState,
-  type RegaugeRollbackActivity,
   type RegaugeRollbackProof,
   type RegaugeTransferBindings,
   type RegaugeTransferManifest,
@@ -138,22 +137,6 @@ function assertExpectedBindings(
   }
 }
 
-function parseActivity(value: string | undefined, name: string): RegaugeRollbackActivity {
-  let parsed: unknown;
-  try { parsed = JSON.parse(value ?? ""); }
-  catch { throw new Error(`regauge_state_transfer_${name}_invalid`); }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
-      Object.keys(parsed).sort().join(",") !==
-        ["authorityEventCount", "deliveryClaimCount", "providerObservationCount"].sort().join(",")) {
-    throw new Error(`regauge_state_transfer_${name}_invalid`);
-  }
-  const activity = parsed as RegaugeRollbackActivity;
-  if (!Object.values(activity).every((count) => Number.isSafeInteger(count) && count >= 0)) {
-    throw new Error(`regauge_state_transfer_${name}_invalid`);
-  }
-  return Object.freeze({ ...activity });
-}
-
 async function downloadTransfer(
   runtime: RegaugeStateTransferRuntime,
   transport: CustomerObjectStoreTransport,
@@ -192,6 +175,7 @@ export async function freezeAndExportRegaugeState(
   acquireRegaugeCutoverFence({
     fenceRoot: runtime.fenceRoot,
     fenceId: runtime.fenceId,
+    transferId: runtime.transferId,
     createdAt: runtime.createdAt,
     sourceApp: runtime.bindings.sourceApp,
     sourceVolume: runtime.bindings.sourceVolume,
@@ -337,10 +321,11 @@ export async function attestRestoredRegaugeState(
       key: runtime.transferKey,
       config: runtime.objectStore,
     }, transport);
+    const verifiedAt = new Date().toISOString();
     const receipt = await publishCustomerBackupRecoveryReceipt({
       backupId: runtime.transferId,
       keyId: runtime.transferKeyId,
-      verifiedAt: new Date().toISOString(),
+      verifiedAt,
       manifestAuthentication: manifest.authentication.value,
       publication,
       key: runtime.transferKey,
@@ -352,6 +337,10 @@ export async function attestRestoredRegaugeState(
       manifestAuthentication: manifest.authentication.value,
       recoveryReceiptDigest: receipt.integrity.digest,
       attested: true,
+      verifiedAt,
+      sourceRevision: manifest.bindings.sourceRevision,
+      targetApp: manifest.bindings.targetApp,
+      targetVolume: manifest.bindings.targetVolume,
     });
   } finally {
     rmSync(downloaded.bundleRoot, { recursive: true, force: true });
@@ -361,8 +350,6 @@ export async function attestRestoredRegaugeState(
 export async function createRegaugeRollbackProof(
   runtime: RegaugeStateTransferRuntime,
   transport: CustomerObjectStoreTransport,
-  importActivity: RegaugeRollbackActivity,
-  currentActivity: RegaugeRollbackActivity,
 ): Promise<RegaugeRollbackProof> {
   const downloaded = await downloadTransfer(runtime, transport);
   try {
@@ -370,8 +357,7 @@ export async function createRegaugeRollbackProof(
       importManifest: downloaded.manifest,
       transferKey: runtime.transferKey,
       targetRoot: runtime.targetRoot,
-      importActivity,
-      currentActivity,
+      fenceRoot: runtime.fenceRoot,
       assessedAt: new Date().toISOString(),
     });
   } finally {
@@ -398,17 +384,13 @@ export async function runRegaugeStateTransferCommand(
   if (command === "restore") return await restorePublishedRegaugeState(runtime, transport);
   if (command === "attest-restored") return await attestRestoredRegaugeState(runtime, transport);
   if (command === "rollback-check") {
-    return await createRegaugeRollbackProof(
-      runtime,
-      transport,
-      parseActivity(env.MENDPOINT_REGAUGE_IMPORT_ACTIVITY_JSON, "import_activity"),
-      parseActivity(env.MENDPOINT_REGAUGE_CURRENT_ACTIVITY_JSON, "current_activity"),
-    );
+    return await createRegaugeRollbackProof(runtime, transport);
   }
   if (command === "thaw") {
     thawRegaugeCutoverFence({
       fenceRoot: runtime.fenceRoot,
       fenceId: runtime.fenceId,
+      transferId: runtime.transferId,
       transferKey: runtime.transferKey,
       rollbackProof: parseRollbackProof(env.MENDPOINT_REGAUGE_ROLLBACK_PROOF_JSON),
     });

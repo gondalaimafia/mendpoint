@@ -155,6 +155,10 @@ describe("ReGauge state transfer CLI", () => {
     await expect(attestRestoredRegaugeState(runtime, transport)).resolves.toMatchObject({
       transferId: runtime.transferId,
       attested: true,
+      sourceRevision: "a".repeat(40),
+      targetApp: "mendpoint-regauge-production",
+      targetVolume: "vol_target",
+      verifiedAt: expect.any(String),
     });
     await expect(verifyRegaugeRestoreReceipt(runtime, transport)).resolves.toMatchObject({
       transferId: runtime.transferId,
@@ -167,8 +171,7 @@ describe("ReGauge state transfer CLI", () => {
       });
     } finally { restored.close(); }
 
-    const activity = { providerObservationCount: 0, deliveryClaimCount: 0, authorityEventCount: 1 };
-    const proof = await createRegaugeRollbackProof(runtime, transport, activity, activity);
+    const proof = await createRegaugeRollbackProof(runtime, transport);
     expect(proof.authentication.value).toMatch(/^[a-f0-9]{64}$/);
     await runRegaugeStateTransferCommand("thaw", {
       ...fx.env,

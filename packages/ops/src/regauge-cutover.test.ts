@@ -107,12 +107,17 @@ function fixture() {
   };
 }
 
-function transfer(fx: ReturnType<typeof fixture>) {
+function transfer(
+  fx: ReturnType<typeof fixture>,
+  transferId = "cutover-001",
+  fenceId = "fence-old-worker-quiesced",
+) {
   const fenceRoot = join(fx.root, "cutover-fence");
   if (!existsSync(join(fenceRoot, "regauge-cutover-fence.v1.json"))) {
     acquireRegaugeCutoverFence({
       fenceRoot,
-      fenceId: "fence-old-worker-quiesced",
+      fenceId,
+      transferId,
       createdAt: "2026-08-25T11:59:00.000Z",
       sourceApp: BINDINGS.sourceApp,
       sourceVolume: BINDINGS.sourceVolume,
@@ -121,14 +126,14 @@ function transfer(fx: ReturnType<typeof fixture>) {
     });
   }
   return createRegaugeStateTransfer({
-    transferId: "cutover-001",
+    transferId,
     createdAt: "2026-08-25T12:00:00.000Z",
     sourceRoot: fx.sourceRoot,
     bundleRoot: fx.bundleRoot,
     bindings: BINDINGS,
     transferKey: KEY,
     fenceRoot,
-    fenceId: "fence-old-worker-quiesced",
+    fenceId,
   });
 }
 
@@ -187,6 +192,7 @@ describe("ReGauge state transfer", () => {
       schemaVersion: 1,
       kind: "mendpoint.regauge.cutover-fence",
       fenceId: "fence-old-worker-quiesced",
+      transferId: "cutover-001",
       createdAt: "2026-08-25T11:59:00.000Z",
       sourceApp: BINDINGS.sourceApp,
       sourceVolume: BINDINGS.sourceVolume,
@@ -207,6 +213,7 @@ describe("ReGauge state transfer", () => {
     expect(() => acquireRegaugeCutoverFence({
       fenceRoot: existingRoot,
       fenceId: "replacement-fence",
+      transferId: "cutover-001",
       createdAt: "2026-08-25T11:59:00.000Z",
       sourceApp: BINDINGS.sourceApp,
       sourceVolume: BINDINGS.sourceVolume,
@@ -222,6 +229,7 @@ describe("ReGauge state transfer", () => {
     expect(() => acquireRegaugeCutoverFence({
       fenceRoot: writerRoot,
       fenceId: "writer-blocked-fence",
+      transferId: "cutover-001",
       createdAt: "2026-08-25T11:59:00.000Z",
       sourceApp: BINDINGS.sourceApp,
       sourceVolume: BINDINGS.sourceVolume,
@@ -362,17 +370,15 @@ describe("ReGauge state transfer", () => {
     expect(existsSync(failed.targetRoot)).toBe(false);
   });
 
-  it("allows rollback only while target ledgers and replay-sensitive activity equal import", () => {
+  it("allows rollback only while the complete target evidence and exact cutover fence equal import", () => {
     const fx = fixture();
     const manifest = transfer(fx);
     restoreRegaugeStateTransfer({ bundleRoot: fx.bundleRoot, targetRoot: fx.targetRoot, transferKey: KEY });
-    const activity = { providerObservationCount: 0, deliveryClaimCount: 0, authorityEventCount: 1 };
     expect(classifyRegaugeSourceRollback({
       importManifest: manifest,
       transferKey: KEY,
       targetRoot: fx.targetRoot,
-      importActivity: activity,
-      currentActivity: activity,
+      fenceRoot: join(fx.root, "cutover-fence"),
       assessedAt: "2026-08-25T12:05:00.000Z",
     })).toMatchObject({
       schemaVersion: 1,
@@ -380,6 +386,8 @@ describe("ReGauge state transfer", () => {
       transferId: manifest.transferId,
       fenceId: manifest.fence.id,
       reason: "target_unchanged_since_import",
+      fenceMarkerSha256: manifest.fence.markerSha256,
+      targetEvidenceSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       authentication: { algorithm: "hmac-sha256", keyId: BINDINGS.transferKeyId },
     });
 
@@ -387,13 +395,13 @@ describe("ReGauge state transfer", () => {
       importManifest: manifest,
       transferKey: KEY,
       targetRoot: fx.targetRoot,
-      importActivity: activity,
-      currentActivity: activity,
+      fenceRoot: join(fx.root, "cutover-fence"),
       assessedAt: "2026-08-25T12:05:00.000Z",
     });
     thawRegaugeCutoverFence({
       fenceRoot: join(fx.root, "cutover-fence"),
       fenceId: "fence-old-worker-quiesced",
+      transferId: manifest.transferId,
       transferKey: KEY,
       rollbackProof: proof,
     });
@@ -403,50 +411,53 @@ describe("ReGauge state transfer", () => {
     expect(lease).not.toBeNull();
     lease?.release();
 
-    const forged = transfer(fixture());
-    const forgedRoot = roots.at(-1)!;
+    const laterFx = fixture();
+    const later = transfer(laterFx, "cutover-002");
+    restoreRegaugeStateTransfer({ bundleRoot: laterFx.bundleRoot, targetRoot: laterFx.targetRoot, transferKey: KEY });
     expect(() => thawRegaugeCutoverFence({
-      fenceRoot: join(forgedRoot, "cutover-fence"),
+      fenceRoot: join(laterFx.root, "cutover-fence"),
+      fenceId: later.fence.id,
+      transferId: later.transferId,
+      transferKey: KEY,
+      rollbackProof: proof,
+    })).toThrow("regauge_rollback_proof_invalid");
+
+    const forgedFx = fixture();
+    const forged = transfer(forgedFx);
+    expect(() => thawRegaugeCutoverFence({
+      fenceRoot: join(forgedFx.root, "cutover-fence"),
       fenceId: forged.fence.id,
+      transferId: forged.transferId,
       transferKey: KEY,
       rollbackProof: { ...proof, authentication: { ...proof.authentication, value: "0".repeat(64) } },
     })).toThrow("regauge_rollback_proof_authentication_failed");
 
+    const nonLedgerFx = fixture();
+    const nonLedgerManifest = transfer(nonLedgerFx);
+    restoreRegaugeStateTransfer({ bundleRoot: nonLedgerFx.bundleRoot, targetRoot: nonLedgerFx.targetRoot, transferKey: KEY });
+    const nonLedgerTarget = new DatabaseSync(join(nonLedgerFx.targetRoot, "change-sources.sqlite"));
+    try { nonLedgerTarget.exec("INSERT INTO parent VALUES (2, 'changed outside a ledger')"); }
+    finally { nonLedgerTarget.close(); }
     expect(() => classifyRegaugeSourceRollback({
-      importManifest: manifest,
+      importManifest: nonLedgerManifest,
       transferKey: KEY,
-      targetRoot: fx.targetRoot,
-      importActivity: activity,
-      currentActivity: { ...activity, providerObservationCount: 1 },
-      assessedAt: "2026-08-25T12:05:00.000Z",
-    })).toThrow("regauge_rollback_replay_risk");
-    expect(() => classifyRegaugeSourceRollback({
-      importManifest: manifest,
-      transferKey: KEY,
-      targetRoot: fx.targetRoot,
-      importActivity: activity,
-      currentActivity: { ...activity, deliveryClaimCount: 1 },
-      assessedAt: "2026-08-25T12:05:00.000Z",
-    })).toThrow("regauge_rollback_replay_risk");
-    expect(() => classifyRegaugeSourceRollback({
-      importManifest: manifest,
-      transferKey: KEY,
-      targetRoot: fx.targetRoot,
-      importActivity: activity,
-      currentActivity: { ...activity, authorityEventCount: 2 },
+      targetRoot: nonLedgerFx.targetRoot,
+      fenceRoot: join(nonLedgerFx.root, "cutover-fence"),
       assessedAt: "2026-08-25T12:05:00.000Z",
     })).toThrow("regauge_rollback_replay_risk");
 
-    const target = new DatabaseSync(join(fx.targetRoot, "transformer-pilot.sqlite"));
+    const ledgerFx = fixture();
+    const ledgerManifest = transfer(ledgerFx);
+    restoreRegaugeStateTransfer({ bundleRoot: ledgerFx.bundleRoot, targetRoot: ledgerFx.targetRoot, transferKey: KEY });
+    const target = new DatabaseSync(join(ledgerFx.targetRoot, "transformer-pilot.sqlite"));
     try {
       target.exec("INSERT INTO tf_pilot_events (type, payload_json) VALUES ('delivery.draft_claimed', '{}')");
     } finally { target.close(); }
     expect(() => classifyRegaugeSourceRollback({
-      importManifest: manifest,
+      importManifest: ledgerManifest,
       transferKey: KEY,
-      targetRoot: fx.targetRoot,
-      importActivity: activity,
-      currentActivity: activity,
+      targetRoot: ledgerFx.targetRoot,
+      fenceRoot: join(ledgerFx.root, "cutover-fence"),
       assessedAt: "2026-08-25T12:05:00.000Z",
     })).toThrow("regauge_rollback_replay_risk");
   });

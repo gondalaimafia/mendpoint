@@ -83,12 +83,6 @@ export type RegaugeTransferManifest = Readonly<{
   }>;
 }>;
 
-export type RegaugeRollbackActivity = Readonly<{
-  providerObservationCount: number;
-  deliveryClaimCount: number;
-  authorityEventCount: number;
-}>;
-
 export type RegaugeRollbackProof = Readonly<{
   schemaVersion: 1;
   kind: "mendpoint.regauge.rollback-proof";
@@ -97,8 +91,8 @@ export type RegaugeRollbackProof = Readonly<{
   assessedAt: string;
   reason: "target_unchanged_since_import";
   manifestAuthentication: string;
-  activity: RegaugeRollbackActivity;
-  ledgerTipsSha256: string;
+  fenceMarkerSha256: string;
+  targetEvidenceSha256: string;
   authentication: Readonly<{ algorithm: "hmac-sha256"; keyId: string; value: string }>;
 }>;
 
@@ -106,6 +100,7 @@ export type RegaugeCutoverFence = Readonly<{
   schemaVersion: 1;
   kind: "mendpoint.regauge.cutover-fence";
   fenceId: string;
+  transferId: string;
   createdAt: string;
   sourceApp: string;
   sourceVolume: string;
@@ -284,7 +279,7 @@ function validateFence(value: unknown): RegaugeCutoverFence {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("regauge_cutover_fence_invalid");
   const fence = value as RegaugeCutoverFence;
   exactKeys(value as Record<string, unknown>, [
-    "schemaVersion", "kind", "fenceId", "createdAt", "sourceApp", "sourceVolume", "transferKeyId", "nonce",
+    "schemaVersion", "kind", "fenceId", "transferId", "createdAt", "sourceApp", "sourceVolume", "transferKeyId", "nonce",
     "exclusiveMarkerSha256",
     "authentication",
   ], "regauge_cutover_fence_invalid");
@@ -292,6 +287,7 @@ function validateFence(value: unknown): RegaugeCutoverFence {
     fail("regauge_cutover_fence_invalid");
   }
   requiredText(fence.fenceId, "regauge_cutover_fence_invalid");
+  requiredText(fence.transferId, "regauge_cutover_fence_invalid");
   assertIso(requiredText(fence.createdAt, "regauge_cutover_fence_invalid"));
   requiredText(fence.sourceApp, "regauge_cutover_fence_invalid");
   requiredText(fence.sourceVolume, "regauge_cutover_fence_invalid");
@@ -341,6 +337,7 @@ function assertCooperativeExclusiveFence(fenceRoot: string, fence: RegaugeCutove
 export function acquireRegaugeCutoverFence(input: Readonly<{
   fenceRoot: string;
   fenceId: string;
+  transferId: string;
   createdAt: string;
   sourceApp: string;
   sourceVolume: string;
@@ -349,6 +346,7 @@ export function acquireRegaugeCutoverFence(input: Readonly<{
 }>): RegaugeCutoverFence {
   assertKey(input.transferKey);
   requiredText(input.fenceId, "regauge_cutover_fence_id_invalid");
+  requiredText(input.transferId, "regauge_transfer_id_invalid");
   assertIso(input.createdAt);
   requiredText(input.sourceApp, "regauge_cutover_fence_source_invalid");
   requiredText(input.sourceVolume, "regauge_cutover_fence_source_invalid");
@@ -384,6 +382,7 @@ export function acquireRegaugeCutoverFence(input: Readonly<{
     schemaVersion: 1 as const,
     kind: "mendpoint.regauge.cutover-fence" as const,
     fenceId: input.fenceId,
+    transferId: input.transferId,
     createdAt: input.createdAt,
     sourceApp: input.sourceApp,
     sourceVolume: input.sourceVolume,
@@ -609,7 +608,8 @@ export function createRegaugeStateTransfer(input: Readonly<{
       fenceId: input.fenceId,
       transferKey: input.transferKey,
     });
-    if (inspected.fence.sourceApp !== input.bindings.sourceApp ||
+    if (inspected.fence.transferId !== input.transferId ||
+        inspected.fence.sourceApp !== input.bindings.sourceApp ||
         inspected.fence.sourceVolume !== input.bindings.sourceVolume ||
         inspected.fence.transferKeyId !== input.bindings.transferKeyId) {
       fail("regauge_cutover_fence_binding_mismatch");
@@ -762,26 +762,32 @@ export function classifyRegaugeSourceRollback(input: Readonly<{
   importManifest: RegaugeTransferManifest;
   transferKey: Buffer;
   targetRoot: string;
-  importActivity: RegaugeRollbackActivity;
-  currentActivity: RegaugeRollbackActivity;
+  fenceRoot: string;
   assessedAt: string;
 }>): RegaugeRollbackProof {
   assertKey(input.transferKey);
   assertIso(input.assessedAt);
   const manifest = validateManifest(input.importManifest);
   verifyAuthentication(manifest, input.transferKey);
-  const currentTips = inspectRegaugeLedgerTips(input.targetRoot);
-  const baselineTips = Object.fromEntries(manifest.resources.map((resource) => [resource.name, resource.ledgerTips]));
-  const validActivity = (activity: RegaugeRollbackActivity) => Object.values(activity).every(
-    (count) => Number.isSafeInteger(count) && count >= 0,
-  );
-  if (!validActivity(input.importActivity) || !validActivity(input.currentActivity) ||
-      canonical(currentTips) !== canonical(baselineTips) ||
-      input.currentActivity.providerObservationCount !== input.importActivity.providerObservationCount ||
-      input.currentActivity.deliveryClaimCount !== input.importActivity.deliveryClaimCount ||
-      input.currentActivity.authorityEventCount !== input.importActivity.authorityEventCount) {
+  try {
+    verifyRestoredRegaugeState({
+      targetRoot: input.targetRoot,
+      importManifest: manifest,
+      transferKey: input.transferKey,
+    });
+  } catch {
+    return fail("regauge_rollback_replay_risk");
+  }
+  const inspectedFence = inspectRegaugeCutoverFence({
+    fenceRoot: input.fenceRoot,
+    fenceId: manifest.fence.id,
+    transferKey: input.transferKey,
+  });
+  if (inspectedFence.fence.transferId !== manifest.transferId ||
+      inspectedFence.markerSha256 !== manifest.fence.markerSha256) {
     fail("regauge_rollback_replay_risk");
   }
+  const targetEvidenceSha256 = sha256(canonical(manifest.resources.map(evidenceComparable)));
   const body = {
     schemaVersion: 1 as const,
     kind: "mendpoint.regauge.rollback-proof" as const,
@@ -790,8 +796,8 @@ export function classifyRegaugeSourceRollback(input: Readonly<{
     assessedAt: input.assessedAt,
     reason: "target_unchanged_since_import" as const,
     manifestAuthentication: manifest.authentication.value,
-    activity: Object.freeze({ ...input.currentActivity }),
-    ledgerTipsSha256: sha256(canonical(currentTips)),
+    fenceMarkerSha256: inspectedFence.markerSha256,
+    targetEvidenceSha256,
   };
   return Object.freeze({
     ...body,
@@ -807,20 +813,24 @@ export function classifyRegaugeSourceRollback(input: Readonly<{
 export function thawRegaugeCutoverFence(input: Readonly<{
   fenceRoot: string;
   fenceId: string;
+  transferId: string;
   transferKey: Buffer;
   rollbackProof: RegaugeRollbackProof;
 }>): void {
   assertKey(input.transferKey);
+  requiredText(input.transferId, "regauge_transfer_id_invalid");
   const proof = input.rollbackProof;
   if (!proof || typeof proof !== "object") fail("regauge_rollback_proof_invalid");
   exactKeys(proof as unknown as Record<string, unknown>, [
     "schemaVersion", "kind", "transferId", "fenceId", "assessedAt", "reason",
-    "manifestAuthentication", "activity", "ledgerTipsSha256", "authentication",
+    "manifestAuthentication", "fenceMarkerSha256", "targetEvidenceSha256", "authentication",
   ], "regauge_rollback_proof_invalid");
   if (proof.schemaVersion !== 1 || proof.kind !== "mendpoint.regauge.rollback-proof" ||
-      proof.fenceId !== input.fenceId || proof.reason !== "target_unchanged_since_import" ||
+      proof.transferId !== input.transferId || proof.fenceId !== input.fenceId ||
+      proof.reason !== "target_unchanged_since_import" ||
       !/^[a-f0-9]{64}$/.test(proof.manifestAuthentication) ||
-      !/^[a-f0-9]{64}$/.test(proof.ledgerTipsSha256)) fail("regauge_rollback_proof_invalid");
+      !/^[a-f0-9]{64}$/.test(proof.fenceMarkerSha256) ||
+      !/^[a-f0-9]{64}$/.test(proof.targetEvidenceSha256)) fail("regauge_rollback_proof_invalid");
   assertIso(proof.assessedAt);
   const { authentication, ...body } = proof;
   if (!authentication || authentication.algorithm !== "hmac-sha256" ||
@@ -836,6 +846,10 @@ export function thawRegaugeCutoverFence(input: Readonly<{
   const actual = Buffer.from(authentication.value, "hex");
   if (expected.byteLength !== actual.byteLength || !timingSafeEqual(expected, actual)) {
     fail("regauge_rollback_proof_authentication_failed");
+  }
+  if (proof.transferId !== inspected.fence.transferId ||
+      proof.fenceMarkerSha256 !== inspected.markerSha256) {
+    fail("regauge_rollback_proof_cutover_mismatch");
   }
   rmSync(fencePath(input.fenceRoot));
   rmSync(exclusiveFencePath(input.fenceRoot));
