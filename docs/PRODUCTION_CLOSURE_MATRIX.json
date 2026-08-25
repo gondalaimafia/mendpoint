@@ -1150,9 +1150,7 @@
         "claimState": "experimental_only"
       },
       "issues": [],
-      "pullRequests": [
-        406
-      ],
+      "pullRequests": [],
       "testEvidenceIds": [
         "ME-ENT-005-AC01-EV01",
         "ME-ENT-005-AC01-EV02"
@@ -1557,7 +1555,6 @@
         383,
         402,
         403,
-        411,
         413,
         415,
         417,
@@ -1587,7 +1584,6 @@
         408,
         409,
         410,
-        411,
         417,
         419
       ],
@@ -1665,8 +1661,8 @@
     }
   ],
   "releaseTrain": {
-    "observedAt": "2026-08-25T02:22:34.9988613Z",
-    "observedMainRevision": "0b9bcc4cebf775ad87249f495b556dfe62b46d98",
+    "observedAt": "2026-08-25T02:57:03.6044314Z",
+    "observedMainRevision": "cc21717080a7c6a940ff7837d034ec45c0797a9b",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "openPullRequests": [
       {
@@ -1688,7 +1684,7 @@
           "ME-FND-010",
           "ME-GTM-003"
         ],
-        "checkState": "stale_checks",
+        "checkState": "conflicting",
         "blockers": []
       },
       {
@@ -1713,7 +1709,7 @@
           "ME-WAR-008",
           "ME-RTR-006"
         ],
-        "checkState": "stale_checks",
+        "checkState": "conflicting",
         "blockers": [
           {
             "priority": "P1",
@@ -1802,7 +1798,7 @@
           "ME-SXT-001",
           "ME-GTM-003"
         ],
-        "checkState": "stale_checks",
+        "checkState": "conflicting",
         "blockers": [
           {
             "priority": "P1",
@@ -1895,7 +1891,7 @@
           "ME-PEV-001",
           "ME-WAR-005"
         ],
-        "checkState": "behind",
+        "checkState": "checks_running",
         "blockers": []
       },
       {
@@ -1966,7 +1962,7 @@
           "ME-GRF-001",
           "ME-GRF-003"
         ],
-        "checkState": "stale_checks",
+        "checkState": "checks_running",
         "blockers": [
           {
             "priority": "P1",
@@ -2039,7 +2035,7 @@
           "ME-GRF-001",
           "ME-GRF-006"
         ],
-        "checkState": "stale_checks",
+        "checkState": "behind",
         "blockers": [
           {
             "priority": "P1",
@@ -2167,7 +2163,7 @@
           "ME-GRF-001",
           "ME-ENT-002"
         ],
-        "checkState": "stale_checks",
+        "checkState": "conflicting",
         "blockers": []
       },
       {
@@ -2298,27 +2294,6 @@
         "blockers": []
       },
       {
-        "number": 406,
-        "title": "Expose production readiness probe",
-        "headBranch": "codex/add-public-readyz",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Codex",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [
-          "ME-ENT-005"
-        ],
-        "checkState": "checks_running",
-        "blockers": []
-      },
-      {
         "number": 407,
         "title": "worker: drive ReGauge MissionTasks on the live pilot-lane claim",
         "headBranch": "cursor/regauge-pilot-mission-task-claim-f457",
@@ -2425,31 +2400,7 @@
           "ME-WAR-004",
           "ME-WAR-006"
         ],
-        "checkState": "checks_running",
-        "blockers": []
-      },
-      {
-        "number": 411,
-        "title": "api: bind POST /agent/runs to a claimed Mission when the body names one",
-        "headBranch": "cursor/agent-run-mission-id-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [
-            374
-          ],
-          "branches": []
-        },
-        "requirementIds": [
-          "ME-MSN-003",
-          "ME-MTE-001"
-        ],
-        "checkState": "checks_running",
+        "checkState": "conflicting",
         "blockers": []
       },
       {
@@ -2626,7 +2577,7 @@
           "ME-MSN-002",
           "ME-MTE-001"
         ],
-        "checkState": "behind",
+        "checkState": "stale_checks",
         "blockers": []
       },
       {
@@ -2679,7 +2630,7 @@
           "ME-MSN-003",
           "ME-MCC-001"
         ],
-        "checkState": "behind",
+        "checkState": "stale_checks",
         "blockers": []
       }
     ]
