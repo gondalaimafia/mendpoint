@@ -3183,10 +3183,25 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - [x] Bind the workflow and manifest to the existing encrypted 20 GB `sjc` production volume.
 - [x] Remove the opaque hardware-zone pin and require at least 14 days of scheduled snapshot retention.
 - [x] Run the focused workflow regression, affected typechecks, YAML parsing, and diff integrity checks.
-- [ ] Obtain exact-head reciprocal review and current-base CI before merge.
+- [x] Obtain exact-head reciprocal review and current-base CI before merge.
 
 #### Review
 
 - RED: the protected workflow and Fly manifest required `mendpoint_regauge_production_data`, which exceeds Fly's 30-character volume-name limit. A direct creation attempt was rejected before mutation. The already provisioned `mendpoint_regauge_prod_data` volume is encrypted, 20 GB, in `sjc`, healthy, unattached, has scheduled backups, and retains snapshots for 30 days.
 - The workflow also pinned opaque Fly hardware zone `b376`, while the healthy allocated volume is in zone `2618`. The production contract requires region, encryption, backups, and retention, not a hardware allocation identifier.
 - GREEN: all 9 protected-workflow regressions pass, the scripts TypeScript project checks cleanly, the workflow parses as YAML, and diff integrity passes.
+- Release: exact-head reciprocal review found no P0, P1, or P2 findings. PR #442 merged as `644488aa17114e3cfb3ada5e28e64d3afcac2dac`; current-main tests, release gates, container startup, deployment E2E, and deploy all passed. Production reports the exact revision and all four health endpoints return 200.
+
+### 2026-08-25 ReGauge canary branch authority closure
+
+- [x] Bind the approved DeepSeek scope to the exact canary branch that contains the pinned revision.
+- [x] Derive the protected Policy Envelope branch scope from the protected environment binding while retaining an exact fail-closed branch assertion.
+- [x] Update ReGauge production profile, verifier, and workflow regressions without changing repository, tenant, campaign, or advisory-only authority.
+- [x] Run the focused ReGauge and DeepSeek matrix, affected typechecks, workflow parsing, build, and diff integrity.
+- [ ] Obtain exact-head review and current-base CI before merge.
+
+#### Review
+
+- Root cause: the protected environment and pinned Git revision identify `codex/regauge-canary-baseline`, while the shared DeepSeek scope and workflow Policy Envelope required `main`; activation would fail before the dedicated coordinator could start.
+- Authority: the approved scope now names the exact canary branch. The workflow derives the envelope branch from the protected binding and separately rejects every branch except that approved value. Tenant, campaign, repository, model class, external-processing consent, advisory-only behavior, and expiry are unchanged.
+- Verification: 74 focused tests pass across the production workflow, shared advisory scope, worker profile, worker verifier job, coordinator dispatch, and bootstrap runtime. Full workspace typecheck, the optimized 50-route production build, and the complete GA policy and evidence gate pass; YAML parsing and diff integrity are clean. The register remains honest at 28 verified foundational requirements, with ReGauge still explicitly non-GA.

@@ -374,7 +374,7 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID: "123456",
     MENDPOINT_REGAUGE_CANARY_OWNER: "gondalaimafia",
     MENDPOINT_REGAUGE_CANARY_REPOSITORY: "mendpoint-canary-drill-20260801",
-    MENDPOINT_REGAUGE_CANARY_BRANCH: "main",
+    MENDPOINT_REGAUGE_CANARY_BRANCH: "codex/regauge-canary-baseline",
     MENDPOINT_REGAUGE_CANARY_REVISION: CANARY_REVISION,
     MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF: approval,
     MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() + 60 * 60_000).toISOString(),
@@ -391,7 +391,7 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT: "2026-08-24T00:00:00.000Z",
     MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT: "2026-11-20T23:59:59.000Z",
     MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: TENANT, products: ["regauge"], dataClassification: "confidential", requiredRegion: "cn", processingRegion: "cn", consentId: "consent-regauge", evidenceRef: "github-environment:regauge-production", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentActive: true }] }),
-    MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: TENANT, version: 2, repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"], branchScope: ["main"], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
+    MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: TENANT, version: 2, repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"], branchScope: ["codex/regauge-canary-baseline"], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
     MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "deepseek-v4-flash-2026-08-21", currency: "USD", effectiveAt: "2026-08-21T00:00:00.000Z", inputPerMillion: 0.14, cachedInputPerMillion: 0.0028, outputPerMillion: 0.28 }),
   };
 }

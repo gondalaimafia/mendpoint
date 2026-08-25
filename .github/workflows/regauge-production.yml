@@ -151,12 +151,12 @@ jobs:
               }));
             '
           )"
-          policy_envelope="$(jq -cn --arg tenant "$MENDPOINT_REGAUGE_TENANT_ID" '{
+          policy_envelope="$(jq -cn --arg tenant "$MENDPOINT_REGAUGE_TENANT_ID" --arg branch "$MENDPOINT_REGAUGE_CANARY_BRANCH" '{
             policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824",
             tenantId: $tenant,
             version: 2,
             repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"],
-            branchScope: ["main"],
+            branchScope: [$branch],
             forbiddenZones: [],
             allowedTools: ["deepseek-verifier"],
             allowedModelClasses: ["rented_specialist"],
@@ -221,7 +221,7 @@ jobs:
           test "$MENDPOINT_REGAUGE_CAMPAIGN_ID" = "campaign_regauge_canary_20260814"
           test "$MENDPOINT_REGAUGE_CANARY_OWNER" = "gondalaimafia"
           test "$MENDPOINT_REGAUGE_CANARY_REPOSITORY" = "mendpoint-canary-drill-20260801"
-          test "$MENDPOINT_REGAUGE_CANARY_BRANCH" = "main"
+          test "$MENDPOINT_REGAUGE_CANARY_BRANCH" = "codex/regauge-canary-baseline"
           jq -e --arg tenant "$MENDPOINT_REGAUGE_TENANT_ID" '
             .schemaVersion == "2026-08-17.v1"
             and ([.entries[] | select(.tenantId == $tenant and (.products | index("regauge")))] | length) == 1
