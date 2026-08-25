@@ -288,13 +288,21 @@ jobs:
         run: |
           set -euo pipefail
           storage_secrets="$(flyctl secrets list --app mendpoint-regauge-production --json)"
-          for name in AWS_ENDPOINT_URL_S3 AWS_REGION BUCKET_NAME AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
-            MENDPOINT_REGAUGE_TRANSFER_KEY MENDPOINT_APPLICATION_DATA_KEY MENDPOINT_REGAUGE_CHECKPOINT_KEY; do
+          for name in AWS_ENDPOINT_URL_S3 AWS_REGION BUCKET_NAME AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
             jq -e --arg name "$name" \
               '.[] | select(.name == $name and (.status == "Staged" or .status == "Deployed"))' \
               <<<"$storage_secrets" >/dev/null \
               || { echo "regauge_storage_bootstrap_required:$name"; exit 1; }
           done
+          if [[ -n "${MENDPOINT_REGAUGE_TRANSFER_ID:-}" ]]; then
+            for name in MENDPOINT_REGAUGE_TRANSFER_KEY MENDPOINT_APPLICATION_DATA_KEY \
+              MENDPOINT_REGAUGE_CHECKPOINT_KEY; do
+              jq -e --arg name "$name" \
+                '.[] | select(.name == $name and (.status == "Staged" or .status == "Deployed"))' \
+                <<<"$storage_secrets" >/dev/null \
+                || { echo "regauge_storage_bootstrap_required:$name"; exit 1; }
+            done
+          fi
       - name: Attest exact restored state on target volume
         if: ${{ vars.REGAUGE_TRANSFER_ID != '' }}
         shell: bash

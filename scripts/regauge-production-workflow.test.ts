@@ -106,6 +106,23 @@ describe("Regauge production workflow", () => {
     expect(storage.run).toContain("regauge_storage_bootstrap_required");
     expect(storage.run).not.toContain("flyctl storage status");
     expect(storage.run).not.toContain("flyctl storage create");
+    // The five base storage credentials stay unconditional; the three transfer
+    // keys are required only when a transfer is configured, and a configured
+    // transfer missing any of them still hard-fails with the same message shape.
+    const unconditionalLoop = storage.run.match(/for name in ([^\n]*?); do/)?.[1] ?? "";
+    for (const name of [
+      "AWS_ENDPOINT_URL_S3",
+      "AWS_REGION",
+      "BUCKET_NAME",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+    ]) expect(unconditionalLoop).toContain(name);
+    for (const name of [
+      "MENDPOINT_REGAUGE_TRANSFER_KEY",
+      "MENDPOINT_APPLICATION_DATA_KEY",
+      "MENDPOINT_REGAUGE_CHECKPOINT_KEY",
+    ]) expect(unconditionalLoop).not.toContain(name);
+    expect(storage.run).toContain('if [[ -n "${MENDPOINT_REGAUGE_TRANSFER_ID:-}" ]]; then');
     expect(source).not.toContain("secrets.MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID");
     expect(source).not.toContain("secrets.MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY");
   });
