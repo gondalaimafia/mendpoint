@@ -31,6 +31,7 @@ import {
   recordMissionDecision,
   supersedeMissionDecision,
   type MissionDecision,
+  type MissionDecisionType,
 } from "./mission-decisions.js";
 
 /**
@@ -89,6 +90,11 @@ export function openTaskHandoff(
     correlationId: string;
     causationId?: string | null;
     createdAt: string;
+    /**
+     * Optional MissionTask id. Annotation only — this wrapper does not
+     * transition a MissionTask (that belongs to a later handoff stack).
+     */
+    taskId?: string | null;
   },
 ): MissionException {
   const reason = assertHandoffReason(input.reason);
@@ -110,6 +116,8 @@ export function openTaskHandoff(
     correlationId: input.correlationId,
     causationId: input.causationId ?? null,
     createdAt: input.createdAt,
+    category: reason,
+    ...(input.taskId ? { taskId: input.taskId } : {}),
   });
 }
 
@@ -162,6 +170,7 @@ export function resolveTaskHandoff(
       correlationId: input.correlationId,
       causationId: input.causationId ?? null,
       createdAt: input.createdAt,
+      decisionType: "exception_resolution",
     });
     if (owns) db.raw.exec("COMMIT");
     return { exception, decision };
@@ -191,6 +200,8 @@ export function recordReviewerDirective(
     correlationId: string;
     causationId?: string | null;
     createdAt: string;
+    /** Closed-set label from §8.19. Omitted persists as null. */
+    decisionType?: MissionDecisionType | null;
   },
 ): MissionDecision {
   return recordMissionDecision(db, {
@@ -203,6 +214,7 @@ export function recordReviewerDirective(
     correlationId: input.correlationId,
     causationId: input.causationId ?? null,
     createdAt: input.createdAt,
+    decisionType: input.decisionType ?? null,
   });
 }
 
