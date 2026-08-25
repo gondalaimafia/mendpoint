@@ -96,8 +96,8 @@ export * from "./tenant-graph-handle.js";
 export * from "./mission-policy-enforcement.js";
 export * from "./verifier-telemetry.js";
 export * from "./calibration-report.js";
+import { resolveTenantGraphHandle } from "./tenant-graph-handle.js";
 import {
-  getGraphLearnDb,
   ingestControlPlane,
   ingestSpecDiff,
   ingestImpactFindings,
@@ -220,7 +220,9 @@ export type PipelineInput = {
   consumerIds?: string[];
   db?: AppDb;
   graphDb?: GraphLearnDb;
-  /** Optional bounded graph analyzer dependency. The graph remains shadow evidence. */
+  /** Optional graph analyzer. When a graph handle is present, its result is
+   * authoritative: analysis failure abstains rather than falling back to raw
+   * impact as if the graph had succeeded. */
   softwareGraphAnalyzer?: typeof analyzeImpactWithSoftwareGraph;
   github?: GitHubDelivery;
   persistIndex?: boolean;
@@ -711,57 +713,87 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     createdAt: nowIso(),
   });
 
-  // Dimension 6: graph learning substrate ingest + blast-radius query for planner
-  const gldb = input.graphDb ?? getGraphLearnDb();
+  // Dimension 6: graph learning substrate ingest + blast-radius query for planner.
+  // Production never defaults to getGraphLearnDb() (that creates an empty file).
+  // An injected graphDb is a test/explicit handle. Otherwise resolve a real
+  // tenant graph; if it is not ready, skip ingest and use non-graph impact.
   const graphProviderSlug = `${input.tenantId}:${provider.slug}`;
   const graphScope = {
     tenantId: input.tenantId,
     consumerIds: registryHits.map((h) => `${input.tenantId}:${h.consumerId}`),
   };
-  ingestControlPlane(
-    gldb,
-    {
-      provider: {
-        id: `${input.tenantId}:${provider.id}`,
-        slug: graphProviderSlug,
-        name: provider.name,
-      },
-      consumers: registryHits.map((h) => ({
-        id: `${input.tenantId}:${h.consumerId}`,
-        name: h.consumerName,
-        githubOwner: h.githubOwner,
-        githubRepo: h.githubRepo,
-      })),
-      monitors: registryHits.map((h) => ({
-        consumerId: `${input.tenantId}:${h.consumerId}`,
-        providerId: `${input.tenantId}:${provider.id}`,
-      })),
-    },
-    input.tenantId,
-  );
-  ingestSpecDiff(
-    gldb,
-    {
-      providerSlug: graphProviderSlug,
-      changeId,
-      diff,
-      surfaces,
-    },
-    input.tenantId,
-  );
-  // Scope the blast radius to this tenant. The change and surface nodes are
-  // stamped with the tenant above, so the fail-closed view returns this
-  // tenant's own impact graph and can never reach another tenant's nodes
-  // through shared surface identifiers.
-  const blast = runGraphQuery(
-    gldb,
-    {
-      op: "blast_radius",
-      nodeId: `change:${changeId}`,
-      maxHops: 2,
-    },
-    graphScope,
-  );
+  const resolvedGraph = input.graphDb
+    ? undefined
+    : resolveTenantGraphHandle({
+        tenantId: input.tenantId,
+        consumerIds: graphScope.consumerIds,
+      });
+  const gldb = input.graphDb ?? (resolvedGraph?.status === "ready" ? resolvedGraph.graphDb : undefined);
+  if (!gldb && resolvedGraph?.status === "unavailable") {
+    recordAudit(db, {
+      tenantId: input.tenantId,
+      actor: "pipeline",
+      action: "graph.handle_unavailable",
+      resourceType: "graph",
+      resourceId: `change:${changeId}`,
+      metadata: { reason: resolvedGraph.reason, detail: resolvedGraph.detail },
+    });
+  }
+  const blast = gldb
+    ? (() => {
+        ingestControlPlane(
+          gldb,
+          {
+            provider: {
+              id: `${input.tenantId}:${provider.id}`,
+              slug: graphProviderSlug,
+              name: provider.name,
+            },
+            consumers: registryHits.map((h) => ({
+              id: `${input.tenantId}:${h.consumerId}`,
+              name: h.consumerName,
+              githubOwner: h.githubOwner,
+              githubRepo: h.githubRepo,
+            })),
+            monitors: registryHits.map((h) => ({
+              consumerId: `${input.tenantId}:${h.consumerId}`,
+              providerId: `${input.tenantId}:${provider.id}`,
+            })),
+          },
+          input.tenantId,
+        );
+        ingestSpecDiff(
+          gldb,
+          {
+            providerSlug: graphProviderSlug,
+            changeId,
+            diff,
+            surfaces,
+          },
+          input.tenantId,
+        );
+        return runGraphQuery(
+          gldb,
+          {
+            op: "blast_radius",
+            nodeId: `change:${changeId}`,
+            maxHops: 2,
+          },
+          graphScope,
+        );
+      })()
+    : {
+        op: "blast_radius",
+        nodes: [],
+        edges: [],
+        summary: "graph handle unavailable",
+        coverage: { basis: "unknown" as const, reason: "graph_handle_unavailable" },
+      };
+  // Render the blast unconditionally. Without a handle it carries
+  // basis "unknown" / reason "graph_handle_unavailable", and
+  // formatQueryForPlanner prints that. Emitting "" instead would drop the
+  // one signal distinguishing "no graph was consulted" from "the graph was
+  // consulted and found nothing" — the honest object is already built above.
   const graphRagMd = formatQueryForPlanner(blast);
 
   // Graph-update audit at the ingest entry point. Keep the replay identity and
@@ -769,23 +801,25 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
   // include impact edges added later in the same pipeline and therefore are not
   // stable across crash recovery. The v2 identity lets installations that have
   // already written the old count-bearing audit converge without conflict.
-  recordAudit(db, {
-    id: `audit-graph-updated-v2-${input.tenantId}-${changeId}`,
-    tenantId: input.tenantId,
-    actor: "pipeline",
-    action: "graph.updated",
-    resourceType: "graph",
-    resourceId: `change:${changeId}`,
-    metadata: {
-      source: "spec_diff",
-      changeId,
-      providerSlug: graphProviderSlug,
-      surfaces: surfaces.length,
-      endpointSurfaces: surfaces.filter((surface) => Boolean(surface.path)).length,
-      fieldSurfaces: surfaces.filter((surface) => Boolean(surface.field || surface.fromField))
-        .length,
-    },
-  });
+  if (gldb) {
+    recordAudit(db, {
+      id: `audit-graph-updated-v2-${input.tenantId}-${changeId}`,
+      tenantId: input.tenantId,
+      actor: "pipeline",
+      action: "graph.updated",
+      resourceType: "graph",
+      resourceId: `change:${changeId}`,
+      metadata: {
+        source: "spec_diff",
+        changeId,
+        providerSlug: graphProviderSlug,
+        surfaces: surfaces.length,
+        endpointSurfaces: surfaces.filter((surface) => Boolean(surface.path)).length,
+        fieldSurfaces: surfaces.filter((surface) => Boolean(surface.field || surface.fromField))
+          .length,
+      },
+    });
+  }
 
   recordAudit(db, {
     tenantId: input.tenantId,
@@ -887,115 +921,122 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     }
 
     // Stages 2–6: Index → Candidates → Expand → Confirm → ImpactReport.
-    // When an endpoint surface exists, the same index also publishes the first
-    // immutable endpoint-to-test software relationship version. This remains a
-    // shadow evidence path until the graph benchmark clears its authority gate.
-    // Bind publication to the durable change observation. A retry after graph
-    // persistence but before delivery must replay the exact graph version.
+    // When an endpoint surface exists and a graph handle is present, the same
+    // index publishes the immutable endpoint-to-test software relationship
+    // version. That result is authoritative: unknown impact abstains. Bind
+    // publication to the durable change observation so a retry after graph
+    // persistence but before delivery replays the exact graph version.
     const graphObservedAt = changeResult.change.created_at;
     let graphVersionId: string | undefined;
     let graphContextArtifactId: string | undefined;
     let graphContextContent: string | undefined;
     let impactReport: ImpactReport;
     const endpointSurface = surfaces.find((surface) => surface.path);
-    if (endpointSurface) {
+    if (endpointSurface && gldb) {
       try {
-      const graphAnalysis = await (input.softwareGraphAnalyzer ?? analyzeImpactWithSoftwareGraph)(repo.local_path, surfaces, {
-        graphDb: gldb,
-        tenantId: input.tenantId,
-        repositoryId: repo.connected_repository_id ?? repo.id,
-        providerId: provider.id,
-        providerSnapshotId: to.id,
-        providerRevision: to.version_label,
-        providerSdkPackage: provider.slug,
-        providerSdkVersion: to.version_label,
-        providerEvidenceRefs: [sourceArtifacts[1]!.id],
-        observedAt: graphObservedAt,
-        maxCallerHops: 4,
-        maxContextBytes: 32_768,
-        impact: { persistIndex: input.persistIndex ?? true },
-      });
-      impactReport = graphAnalysis.impactReport;
-      graphVersionId = graphAnalysis.graphVersion.versionId;
-      graphContextContent = graphAnalysis.context.content;
-      const graphArtifact = persistJsonArtifact(db, {
-        tenantId: input.tenantId,
-        kind: "fettler-change-graph-context",
-        mediaType: "application/vnd.mendpoint.fettler-change-graph-context+json",
-        value: JSON.parse(graphAnalysis.context.content),
-        producerPrincipalId: pipelinePrincipal.id,
-        createdAt: graphObservedAt,
-      });
-      graphContextArtifactId = graphArtifact.id;
-      insertEvidenceRecord(db, {
-        id: trustId("evidence", input.tenantId, consumer.id, graphVersionId, graphArtifact.id),
-        tenantId: input.tenantId,
-        subjectType: "api_change",
-        subjectId: changeId,
-        artifactId: graphArtifact.id,
-        inputArtifactId: sourceArtifacts[1]!.id,
-        producerPrincipalId: pipelinePrincipal.id,
-        tool: "mendpoint-change-graph",
-        toolVersion: "1",
-        verdict: graphAnalysis.graphImpact.coverage.basis === "complete" ? "passed" : "failed",
-        createdAt: graphObservedAt,
-      });
-      recordAudit(db, {
-        tenantId: input.tenantId,
-        actor: "pipeline",
-        action: "graph.software_version_published",
-        resourceType: "consumer",
-        resourceId: consumer.id,
-        metadata: {
-          graphVersionId,
-          graphContextArtifactId,
-          impact: graphAnalysis.graphImpact.impact,
-          coverage: graphAnalysis.graphImpact.coverage,
-        },
-      });
-      appendDomainEvent(db, {
-        id: trustId("event", input.tenantId, changeId, consumer.id, graphVersionId),
-        tenantId: input.tenantId,
-        schemaVersion: 1,
-        eventType: "change_graph.context_recorded",
-        aggregateType: "api_change",
-        aggregateId: changeId,
-        actorPrincipalId: pipelinePrincipal.id,
-        correlationId: changeId,
-        causationId: trustId("event", input.tenantId, changeId, "normalized"),
-        idempotencyKey: `api_change:${changeId}:change_graph:${consumer.id}:${graphVersionId}`,
-        payload: {
-          consumerId: consumer.id,
-          graphVersionId,
-          graphContentDigest: graphAnalysis.graphImpact.graphContentDigest,
-          contextArtifactId: graphContextArtifactId,
-          contextDigest: graphAnalysis.context.contentDigest,
-          impact: graphAnalysis.graphImpact.impact,
-          coverage: graphAnalysis.graphImpact.coverage,
-          learningDestination: "graph_representation",
-          modelWeightEligible: false,
-        },
-        createdAt: graphObservedAt,
-      });
-      } catch (error) {
-        impactReport = await analyzeImpact(repo.local_path, surfaces, {
-          persistIndex: input.persistIndex ?? true,
+        const graphAnalysis = await (input.softwareGraphAnalyzer ?? analyzeImpactWithSoftwareGraph)(repo.local_path, surfaces, {
+          graphDb: gldb,
+          tenantId: input.tenantId,
+          repositoryId: repo.connected_repository_id ?? repo.id,
+          providerId: provider.id,
+          providerSnapshotId: to.id,
+          providerRevision: to.version_label,
+          providerSdkPackage: provider.slug,
+          providerSdkVersion: to.version_label,
+          providerEvidenceRefs: [sourceArtifacts[1]!.id],
+          observedAt: graphObservedAt,
+          maxCallerHops: 4,
+          maxContextBytes: 32_768,
+          impact: { persistIndex: input.persistIndex ?? true },
         });
+        impactReport = graphAnalysis.impactReport;
+        graphVersionId = graphAnalysis.graphVersion.versionId;
+        graphContextContent = graphAnalysis.context.content;
+        const graphArtifact = persistJsonArtifact(db, {
+          tenantId: input.tenantId,
+          kind: "fettler-change-graph-context",
+          mediaType: "application/vnd.mendpoint.fettler-change-graph-context+json",
+          value: JSON.parse(graphAnalysis.context.content),
+          producerPrincipalId: pipelinePrincipal.id,
+          createdAt: graphObservedAt,
+        });
+        graphContextArtifactId = graphArtifact.id;
+        insertEvidenceRecord(db, {
+          id: trustId("evidence", input.tenantId, consumer.id, graphVersionId, graphArtifact.id),
+          tenantId: input.tenantId,
+          subjectType: "api_change",
+          subjectId: changeId,
+          artifactId: graphArtifact.id,
+          inputArtifactId: sourceArtifacts[1]!.id,
+          producerPrincipalId: pipelinePrincipal.id,
+          tool: "mendpoint-change-graph",
+          toolVersion: "1",
+          verdict: graphAnalysis.graphImpact.coverage.basis === "complete" ? "passed" : "failed",
+          createdAt: graphObservedAt,
+        });
+        recordAudit(db, {
+          tenantId: input.tenantId,
+          actor: "pipeline",
+          action: "graph.software_version_published",
+          resourceType: "consumer",
+          resourceId: consumer.id,
+          metadata: {
+            graphVersionId,
+            graphContextArtifactId,
+            impact: graphAnalysis.graphImpact.impact,
+            coverage: graphAnalysis.graphImpact.coverage,
+          },
+        });
+        appendDomainEvent(db, {
+          id: trustId("event", input.tenantId, changeId, consumer.id, graphVersionId),
+          tenantId: input.tenantId,
+          schemaVersion: 1,
+          eventType: "change_graph.context_recorded",
+          aggregateType: "api_change",
+          aggregateId: changeId,
+          actorPrincipalId: pipelinePrincipal.id,
+          correlationId: changeId,
+          causationId: trustId("event", input.tenantId, changeId, "normalized"),
+          idempotencyKey: `api_change:${changeId}:change_graph:${consumer.id}:${graphVersionId}`,
+          payload: {
+            consumerId: consumer.id,
+            graphVersionId,
+            graphContentDigest: graphAnalysis.graphImpact.graphContentDigest,
+            contextArtifactId: graphContextArtifactId,
+            contextDigest: graphAnalysis.context.contentDigest,
+            impact: graphAnalysis.graphImpact.impact,
+            coverage: graphAnalysis.graphImpact.coverage,
+            learningDestination: "graph_representation",
+            modelWeightEligible: false,
+          },
+          createdAt: graphObservedAt,
+        });
+      } catch (error) {
         const code = error instanceof Error && /^[a-z0-9._:-]{1,160}$/i.test(error.message)
           ? error.message
-          : "change_graph_shadow_failed";
+          : "change_graph_analysis_failed";
         try {
           recordAudit(db, {
             tenantId: input.tenantId,
             actor: "pipeline",
-            action: "graph.shadow_failed",
+            action: "graph.analysis_failed",
             resourceType: "consumer",
             resourceId: consumer.id,
             metadata: { code },
           });
         } catch {
-          // Shadow evidence must never become delivery authority.
+          /* abstain even if the audit write fails */
         }
+        report.consumers.push({
+          consumerId: consumer.id,
+          name: consumer.name,
+          findings: 0,
+          candidates: 0,
+          confirmed: 0,
+          prStatus: "package_failed",
+          deliveryError: code,
+        });
+        continue;
       }
     } else {
       impactReport = await analyzeImpact(repo.local_path, surfaces, {
@@ -1005,15 +1046,17 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     assertActive();
 
     const rawFindings = reportToFindings(impactReport);
-    ingestImpactFindings(gldb, {
-      changeId,
-      consumerId: `${input.tenantId}:${consumer.id}`,
-      findings: rawFindings.map((f) => ({
-        filePath: f.filePath,
-        symbol: f.symbol,
-        confidence: f.confidence,
-      })),
-    });
+    if (gldb) {
+      ingestImpactFindings(gldb, {
+        changeId,
+        consumerId: `${input.tenantId}:${consumer.id}`,
+        findings: rawFindings.map((f) => ({
+          filePath: f.filePath,
+          symbol: f.symbol,
+          confidence: f.confidence,
+        })),
+      });
+    }
     // Phase C: feedback learning — drop suppressed patterns (closed PRs taught us)
     const findings = rawFindings.filter((f) => {
       const keys = [f.symbol, f.filePath, f.fixHint ?? "", ...(f.relatedOps ?? [])];
@@ -2039,6 +2082,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     }
   }
 
+  if (resolvedGraph?.status === "ready") resolvedGraph.close();
   return report;
 }
 
@@ -2107,10 +2151,14 @@ export async function applyPrFeedback(
 
   const experiment = resolveExperimentArm(pr.body, opts.experiment);
   const planId = resolvePlanIdFromPr(pr.body, opts.planId);
-  const graphDb = opts.graphDb ?? getGraphLearnDb();
+  const resolvedFeedbackGraph = opts.graphDb
+    ? undefined
+    : resolveTenantGraphHandle({ tenantId: opts.tenantId });
+  const graphDb = opts.graphDb
+    ?? (resolvedFeedbackGraph?.status === "ready" ? resolvedFeedbackGraph.graphDb : undefined);
 
   // Dimension 6: label outcome edges with experiment + plan attribution
-  if (pr && (outcome === "merged" || outcome === "closed")) {
+  if (graphDb && pr && (outcome === "merged" || outcome === "closed")) {
     try {
       labelPrOutcome(
         graphDb,
@@ -2155,29 +2203,31 @@ export async function applyPrFeedback(
         });
       }
       let graphLabeled = false;
-      try {
-        labelPrOutcome(
-          graphDb,
-          {
-            prId,
-            changeId: pr.change_id,
-            consumerId: pr.consumer_id,
-            outcome: "broke",
-            title: pr.title,
-            experiment,
-            planId,
-          },
-          opts.tenantId,
-        );
-        graphLabeled = true;
-      } catch (error) {
-        // Non-fatal, but never claim the graph write happened: graphLabeled
-        // below reflects the real outcome, and the failure is logged.
-        console.error(
-          `pr broke-outcome graph write failed pr=${prId} tenant=${opts.tenantId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
+      if (graphDb) {
+        try {
+          labelPrOutcome(
+            graphDb,
+            {
+              prId,
+              changeId: pr.change_id,
+              consumerId: pr.consumer_id,
+              outcome: "broke",
+              title: pr.title,
+              experiment,
+              planId,
+            },
+            opts.tenantId,
+          );
+          graphLabeled = true;
+        } catch (error) {
+          // Non-fatal, but never claim the graph write happened: graphLabeled
+          // below reflects the real outcome, and the failure is logged.
+          console.error(
+            `pr broke-outcome graph write failed pr=${prId} tenant=${opts.tenantId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
       }
       recordAudit(db, {
         id: replayId("patterns_suppressed"),
@@ -2196,6 +2246,7 @@ export async function applyPrFeedback(
       });
     }
   }
+  if (resolvedFeedbackGraph?.status === "ready") resolvedFeedbackGraph.close();
 }
 
 /** Pull symbol-like tokens from PR evidence lines for suppression. */
