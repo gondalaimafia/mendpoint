@@ -221,8 +221,7 @@ describe("campaign execute claim drives MissionTask", () => {
         ownerApproval: { ownerPrincipalId: "p1", ownerHandle: "@team", approvedAt: at },
       },
     });
-    const execute = (async () => ({ stage: "review" }) as Awaited<ReturnType<WardenCampaignExecutor>>)
-      as WardenCampaignExecutor;
+    const execute = (async () => ({ stage: "review" }) as Awaited<ReturnType<WardenCampaignExecutor>>) as WardenCampaignExecutor;
     const result = await processJobsOnce(db, {
       allTenants: true,
       runWardenMaintenance: false,
