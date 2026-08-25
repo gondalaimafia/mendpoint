@@ -1,4 +1,5 @@
 import { parseTransformerGateConfig, resolveReleaseRevision } from "@mendpoint/ops";
+import { REGAUGE_DEEPSEEK_APPROVED_SCOPE } from "@mendpoint/pipeline";
 import { resolveEitherRenamedEnv, resolveRenamedEnv } from "@mendpoint/shared";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
@@ -148,7 +149,7 @@ export function validateTransformerProductionProfile(
   const campaignId = identifier(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_CAMPAIGN_ID"), "transformer_production_campaign_required");
   const environment = identifier(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ENVIRONMENT"), "transformer_production_environment_required");
   if (environment !== "production") throw new Error("transformer_production_environment_invalid");
-  validateVerifierProfile(env, tenantId);
+  validateVerifierProfile(env, tenantId, campaignId, deploymentProfile);
   const gate = parseTransformerGateConfig(required(resolveRenamedEnv(env, "MENDPOINT_REGAUGE_GATE"), "transformer_production_gate_required"));
   const grant = gate.grants.find((candidate) => candidate.tenantId === tenantId && candidate.environment === environment);
   if (!grant || !["api_control_plane", "worker_action", "delivery"].every((boundary) => grant.boundaries.includes(boundary as never))) {
@@ -253,7 +254,20 @@ function required(value: string | undefined, code: string): string { if (!value?
 function identifier(value: string | undefined, code: string): string { const result = required(value, code); if (!ID.test(result)) throw new Error(code); return result; }
 function key(value: string | undefined, code: string): void { const encoded = required(value, code); const bytes = Buffer.from(encoded, "base64"); if (bytes.byteLength !== 32 || bytes.toString("base64") !== encoded) throw new Error(code); }
 function secureUrl(value: string | undefined, code: string): void { let parsed: URL; try { parsed = new URL(required(value, code)); } catch { throw new Error(code); } if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error(code); }
-function validateVerifierProfile(env: NodeJS.ProcessEnv, tenantId: string): void {
+function validateVerifierProfile(
+  env: NodeJS.ProcessEnv,
+  tenantId: string,
+  campaignId: string,
+  deploymentProfile: TransformerProductionDeploymentProfile,
+): void {
+  if (deploymentProfile === "regauge_production" &&
+      (tenantId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId ||
+       campaignId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId ||
+       env.MENDPOINT_REGAUGE_CANARY_OWNER !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.repositoryOwner ||
+       env.MENDPOINT_REGAUGE_CANARY_REPOSITORY !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.repositoryName ||
+       env.MENDPOINT_REGAUGE_CANARY_BRANCH !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.branch)) {
+    throw new Error("transformer_production_verifier_scope_invalid");
+  }
   const exactProfile = {
     DEEPSEEK_VERIFIER_ENABLED: "true",
     MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory",
@@ -311,10 +325,12 @@ function validateVerifierProfile(env: NodeJS.ProcessEnv, tenantId: string): void
     "deploymentAllowed", "externalProcessingAllowed", "forbiddenZones", "policyEnvelopeId",
     "repositoryScope", "residency", "retentionDays", "reviewRequired", "riskCeiling", "tenantId",
     "trainingDataAllowed", "version"].sort().join(",");
+  const expectedRepositoryScope = JSON.stringify([REGAUGE_DEEPSEEK_APPROVED_SCOPE.repositoryFullName]);
+  const expectedBranchScope = JSON.stringify([REGAUGE_DEEPSEEK_APPROVED_SCOPE.branch]);
   if (!plain(policy) || Object.keys(policy).sort().join(",") !== policyKeys ||
       policy.tenantId !== tenantId || policy.policyEnvelopeId !== "regauge-deepseek-v4-flash-advisory-20260824" ||
-      policy.version !== 1 || JSON.stringify(policy.repositoryScope) !== "[]" ||
-      JSON.stringify(policy.branchScope) !== "[]" || JSON.stringify(policy.forbiddenZones) !== "[]" ||
+      policy.version !== 1 || JSON.stringify(policy.repositoryScope) !== expectedRepositoryScope ||
+      JSON.stringify(policy.branchScope) !== expectedBranchScope || JSON.stringify(policy.forbiddenZones) !== "[]" ||
       JSON.stringify(policy.allowedTools) !== JSON.stringify(["deepseek-verifier"]) ||
       JSON.stringify(policy.allowedModelClasses) !== JSON.stringify(["rented_specialist"]) ||
       policy.externalProcessingAllowed !== true || policy.residency !== "cn" ||

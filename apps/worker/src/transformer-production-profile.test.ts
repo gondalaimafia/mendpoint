@@ -10,10 +10,12 @@ import {
 
 const CANARY_REVISION = "a".repeat(40);
 const RELEASE_REVISION = "b".repeat(40);
+const TENANT = "tenant_regauge_canary";
+const CAMPAIGN = "campaign_regauge_canary_20260814";
 const testPrivateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
   .privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-const approval = `approval:regauge:tenant-a:campaign-a:repository:123456:revision:${CANARY_REVISION}:draft:1:run:98765:attempt:1`;
-const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [approval] }] });
+const approval = `approval:regauge:${TENANT}:${CAMPAIGN}:repository:123456:revision:${CANARY_REVISION}:draft:1:run:98765:attempt:1`;
+const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: [TENANT], environmentAllowlist: ["production"], grants: [{ tenantId: TENANT, environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [approval] }] });
 
 describe("Transformer production profile", () => {
   it("builds and runs the hardened transformer image stage", () => {
@@ -88,8 +90,8 @@ describe("Transformer production profile", () => {
     expect(validateApiEnv(env)).toMatchObject({ ok: true, errors: [] });
     expect(validateTransformerProductionProfile(env, "coordinator")).toMatchObject({
       role: "coordinator",
-      tenantId: "tenant-a",
-      campaignId: "campaign-a",
+      tenantId: TENANT,
+      campaignId: CAMPAIGN,
       environment: "production",
     });
     expect(validateTransformerProductionProfile(env, "worker")).toMatchObject({
@@ -107,11 +109,11 @@ describe("Transformer production profile", () => {
   });
 
   it("accepts the exact coordinator and worker production boundaries", () => {
-    expect(validateTransformerProductionProfile(environment(), "coordinator")).toEqual({ role: "coordinator", tenantId: "tenant-a", campaignId: "campaign-a", environment: "production" });
+    expect(validateTransformerProductionProfile(environment(), "coordinator")).toEqual({ role: "coordinator", tenantId: TENANT, campaignId: CAMPAIGN, environment: "production" });
     expect(validateTransformerProductionProfile(environment(), "worker")).toEqual({
       role: "worker",
-      tenantId: "tenant-a",
-      campaignId: "campaign-a",
+      tenantId: TENANT,
+      campaignId: CAMPAIGN,
       environment: "production",
       workerId: "fly-abcd1234abcd12",
     });
@@ -257,7 +259,7 @@ describe("Transformer production profile", () => {
     ["MENDPOINT_REGAUGE_ARTIFACT_BACKEND", "filesystem", "transformer_production_s3_required"],
     ["MENDPOINT_REGAUGE_COORDINATOR_TOKEN", "known-token", "transformer_production_worker_token_invalid"],
     ["MENDPOINT_REGAUGE_COORDINATOR_URL", "http://coordinator.internal", "transformer_production_coordinator_url_invalid"],
-    ["MENDPOINT_REGAUGE_S3_PREFIX", "transformer/tenant-b/campaign-a", "transformer_production_s3_prefix_invalid"],
+    ["MENDPOINT_REGAUGE_S3_PREFIX", `transformer/tenant-b/${CAMPAIGN}`, "transformer_production_s3_prefix_invalid"],
     ["MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT", "2026-11-21T00:00:00.000Z", "transformer_production_verifier_consent_invalid"],
     ["MENDPOINT_PILOT_SEED", "1", "transformer_production_seed_forbidden"],
   ])("rejects unsafe %s configuration", (name, value, code) => {
@@ -265,19 +267,19 @@ describe("Transformer production profile", () => {
   });
 
   it("rejects client activation without the exact server grant", () => {
-    const wrongGate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["ui"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [] }] });
+    const wrongGate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: [TENANT], environmentAllowlist: ["production"], grants: [{ tenantId: TENANT, environment: "production", boundaries: ["ui"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [] }] });
     expect(() => validateTransformerProductionProfile({ ...environment(), MENDPOINT_REGAUGE_GATE: wrongGate }, "worker")).toThrow("transformer_production_gate_scope_invalid");
   });
 
   it("requires a single-run draft approval bound to campaign, repository, and canary source revision", () => {
     for (const value of [
       "approval:pilot",
-      approval.replace("campaign-a", "campaign-b"),
+      approval.replace(CAMPAIGN, "campaign-b"),
       approval.replace("repository:123456", "repository:654321"),
       approval.replace(`revision:${CANARY_REVISION}`, `revision:${"c".repeat(40)}`),
       approval.replace("draft:1", "draft:2"),
     ]) {
-      const changedGate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["production"], grants: [{ tenantId: "tenant-a", environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [value] }] });
+      const changedGate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: [TENANT], environmentAllowlist: ["production"], grants: [{ tenantId: TENANT, environment: "production", boundaries: ["api_control_plane", "worker_action", "delivery"], acceptanceEvidenceRefs: ["acceptance:pilot"], productionDeliveryApprovalRefs: [value] }] });
       expect(() => validateTransformerProductionProfile({
         ...environment(),
         MENDPOINT_REGAUGE_GATE: changedGate,
@@ -330,19 +332,22 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_DEPLOYMENT_PROFILE: "regauge_production", MENDPOINT_DEPLOYMENT_CLASS: "customer", MENDPOINT_REGAUGE_ENABLED: "1",
     MENDPOINT_REGAUGE_MULTINODE_COORDINATOR_ENABLED: "1", MENDPOINT_REGAUGE_MULTINODE_ENABLED: "1",
     MENDPOINT_REGAUGE_ARTIFACT_BACKEND: "s3", MENDPOINT_PILOT_SEED: "0", MENDPOINT_FEED_POLLING_ENABLED: "0",
-    MENDPOINT_REGAUGE_TENANT_ID: "tenant-a", MENDPOINT_REGAUGE_CAMPAIGN_ID: "campaign-a", MENDPOINT_REGAUGE_ENVIRONMENT: "production",
+    MENDPOINT_REGAUGE_TENANT_ID: TENANT, MENDPOINT_REGAUGE_CAMPAIGN_ID: CAMPAIGN, MENDPOINT_REGAUGE_ENVIRONMENT: "production",
     MENDPOINT_REGAUGE_GATE: gate, MENDPOINT_REGAUGE_COORDINATOR_TOKEN: `me_${"a".repeat(40)}`,
     MENDPOINT_REGAUGE_COORDINATOR_URL: "https://mendpoint-regauge-production.fly.dev/",
     MENDPOINT_REGAUGE_CHECKPOINT_KEY: Buffer.alloc(32, 1).toString("base64"), MENDPOINT_REGAUGE_OPERATION_SECRET: Buffer.alloc(32, 2).toString("base64"),
     MENDPOINT_REGAUGE_S3_ENDPOINT: "https://s3.example.com", MENDPOINT_REGAUGE_S3_REGION: "auto", MENDPOINT_REGAUGE_S3_BUCKET: "pilot",
-    MENDPOINT_REGAUGE_S3_PREFIX: "transformer/tenant-a/campaign-a", MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID: "access", MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY: "secret",
+    MENDPOINT_REGAUGE_S3_PREFIX: `transformer/${TENANT}/${CAMPAIGN}`, MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID: "access", MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY: "secret",
     MENDPOINT_REGAUGE_EXECUTOR_DIGEST: `sha256:${"e".repeat(64)}`, MENDPOINT_REGAUGE_EVIDENCE_REFS: `${approval},evidence:pilot`,
     MENDPOINT_REGAUGE_READINESS_HOST: "0.0.0.0", MENDPOINT_DATA_DIR: "/data/db", GITHUB_APP_ID: "42", GITHUB_APP_PRIVATE_KEY: "private",
-    GITHUB_WEBHOOK_SECRET: "webhook", GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant-a"}',
+    GITHUB_WEBHOOK_SECRET: "webhook", GITHUB_APP_ACCOUNT_TENANT_BINDINGS: `{"7123456":"${TENANT}"}`,
     FLY_MACHINE_ID: "abcd1234abcd12",
     MENDPOINT_RELEASE_REVISION: RELEASE_REVISION,
     MENDPOINT_REGAUGE_BOOTSTRAP_ENABLED: "1",
     MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID: "123456",
+    MENDPOINT_REGAUGE_CANARY_OWNER: "gondalaimafia",
+    MENDPOINT_REGAUGE_CANARY_REPOSITORY: "mendpoint-canary-drill-20260801",
+    MENDPOINT_REGAUGE_CANARY_BRANCH: "main",
     MENDPOINT_REGAUGE_CANARY_REVISION: CANARY_REVISION,
     MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF: approval,
     MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT: new Date(Date.now() + 60 * 60_000).toISOString(),
@@ -358,8 +363,8 @@ function environment(): NodeJS.ProcessEnv {
     MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES: "0",
     MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT: "2026-08-24T00:00:00.000Z",
     MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT: "2026-11-20T23:59:59.000Z",
-    MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant-a", products: ["regauge"], dataClassification: "confidential", requiredRegion: "cn", processingRegion: "cn", consentId: "consent-regauge", evidenceRef: "github-environment:regauge-production", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentActive: true }] }),
-    MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: "tenant-a", version: 1, repositoryScope: [], branchScope: [], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
+    MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: TENANT, products: ["regauge"], dataClassification: "confidential", requiredRegion: "cn", processingRegion: "cn", consentId: "consent-regauge", evidenceRef: "github-environment:regauge-production", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentActive: true }] }),
+    MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: TENANT, version: 1, repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"], branchScope: ["main"], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
     MENDPOINT_AGENT_VERIFIER_PRICING_JSON: JSON.stringify({ version: "deepseek-v4-flash-2026-08-21", currency: "USD", effectiveAt: "2026-08-21T00:00:00.000Z", inputPerMillion: 0.14, cachedInputPerMillion: 0.0028, outputPerMillion: 0.28 }),
   };
 }

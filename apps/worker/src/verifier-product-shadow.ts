@@ -3,6 +3,8 @@ import { findActiveLearningConsent, recordAudit, type AppDb } from "@mendpoint/d
 import {
   findVerifierTelemetry,
   persistVerifierTelemetry,
+  REGAUGE_DEEPSEEK_APPROVED_SCOPE,
+  REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
   type ProductCompletionAdvisoryInput,
 } from "@mendpoint/pipeline";
 import {
@@ -24,6 +26,7 @@ import { createVerifierAdvisoryRuntime } from "./verifier-shadow.js";
 // so a grant for one must never be read as a grant for the other. A distinct
 // consent purpose keeps the two authorizations separate.
 export const VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE = "verifier-external-model-egress";
+export { REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE };
 export const RETRYABLE_VERIFIER_FAILURE_CODES = new Set(["api_failure", "logprob_failure"] as const);
 
 export async function observeProductCompletionInAdvisory(input: Readonly<{
@@ -48,8 +51,15 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
   // env governance is retained as an ADDITIONAL restriction below: consent grants
   // permission but cannot override the operator's off switch.
   const authorityAt = input.authorityAt ?? input.completion.observedAt;
-  const consent = resolveExternalModelConsent(input.db, input.completion.tenantId, authorityAt);
-  const exactConsent = consent.active && consent.consentId === governance.consentId;
+  const consentPurpose = input.completion.product === "regauge"
+    ? REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE
+    : VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE;
+  const consent = resolveExternalModelConsent(input.db, input.completion.tenantId, authorityAt, consentPurpose);
+  const exactConsent = consent.active && consent.consentId === governance.consentId &&
+    (input.completion.product !== "regauge" ||
+      consent.effectiveAt < authorityAt && consent.grantedAt < authorityAt &&
+      consent.expiresAt !== null && consent.expiresAt > authorityAt &&
+      consent.expiresAt <= REGAUGE_DEEPSEEK_APPROVED_SCOPE.authorizationDeadline);
   const pricing = resolvePricing(env);
   const principalId = env.MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID?.trim() || null;
   const pack = createCompletionVerifierEvidencePack({
@@ -145,7 +155,7 @@ export function resolveVerifierGovernance(env: Readonly<Record<string, string | 
 }
 
 type ExternalModelConsent =
-  | Readonly<{ active: true; consentId: string }>
+  | Readonly<{ active: true; consentId: string; effectiveAt: string; grantedAt: string; expiresAt: string | null }>
   | Readonly<{ active: false; consentId: null }>;
 
 /**
@@ -159,14 +169,20 @@ type ExternalModelConsent =
  * granted. This resolves consent only; the operator env governance switch is an
  * additional restriction applied by the caller and by the evidence-pack gate.
  */
-function resolveExternalModelConsent(db: AppDb, tenantId: string, at: string): ExternalModelConsent {
+function resolveExternalModelConsent(db: AppDb, tenantId: string, at: string, purpose: string): ExternalModelConsent {
   try {
     const consent = findActiveLearningConsent(db, {
       tenantId,
-      purpose: VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
+      purpose,
       at,
     });
-    return consent ? Object.freeze({ active: true, consentId: consent.id }) : Object.freeze({ active: false, consentId: null });
+    return consent ? Object.freeze({
+      active: true,
+      consentId: consent.id,
+      effectiveAt: consent.effective_at,
+      grantedAt: consent.created_at,
+      expiresAt: consent.expires_at,
+    }) : Object.freeze({ active: false, consentId: null });
   } catch {
     return Object.freeze({ active: false, consentId: null });
   }

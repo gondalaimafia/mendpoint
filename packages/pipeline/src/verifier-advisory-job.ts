@@ -27,6 +27,17 @@ import {
 } from "@mendpoint/policy";
 
 export const VERIFIER_ADVISORY_JOB_TYPE = "verifier.advisory.verify";
+export const REGAUGE_DEEPSEEK_APPROVED_SCOPE = Object.freeze({
+  tenantId: "tenant_regauge_canary",
+  campaignId: "campaign_regauge_canary_20260814",
+  repositoryOwner: "gondalaimafia",
+  repositoryName: "mendpoint-canary-drill-20260801",
+  repositoryFullName: "gondalaimafia/mendpoint-canary-drill-20260801",
+  branch: "main",
+  authorizationDeadline: "2026-11-20T23:59:59.000Z",
+});
+export const REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE =
+  `verifier-external-model-egress:regauge:${REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId}:${REGAUGE_DEEPSEEK_APPROVED_SCOPE.repositoryFullName}`;
 const INPUT_KIND = "agent_verifier_advisory_input";
 const INPUT_MEDIA_TYPE = "application/vnd.mendpoint.agent-verifier-advisory-input.v1+json";
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -74,6 +85,22 @@ export type VerifierAdvisoryPolicyAuthority = Readonly<{
   policyEnvelopeSha256: string;
   reviewRequired: true;
 }>;
+
+export function assertRegaugeDeepSeekApprovedScope(input: Readonly<{
+  tenantId: string;
+  campaignId: string;
+  repositoryOwner: string;
+  repositoryName: string;
+  repositoryBranch: string;
+}>): void {
+  if (input.tenantId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId ||
+      input.campaignId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId ||
+      input.repositoryOwner !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.repositoryOwner ||
+      input.repositoryName !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.repositoryName ||
+      input.repositoryBranch !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.branch) {
+    throw new Error("verifier_advisory_scope_invalid");
+  }
+}
 
 function canonical(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -162,6 +189,7 @@ export function reconcileVerifierAdvisoryPolicyAuthority(db: AppDb, input: Reado
   policyEnvelopeJson: string;
   actorPrincipalId: string;
   branch: string;
+  repositoryScope: string;
   processingRegion: string;
   createdAt: string;
 }>): VerifierAdvisoryPolicyAuthority {
@@ -172,18 +200,14 @@ export function reconcileVerifierAdvisoryPolicyAuthority(db: AppDb, input: Reado
   let template: PolicyEnvelope;
   try { template = parsePolicyEnvelope(unsafe); }
   catch { throw new Error("verifier_advisory_policy_invalid"); }
-  // Repository and branch ids are created or authenticated during bootstrap, so
-  // the protected template deliberately leaves only those two arrays empty. We
-  // bind them to the Mission's exact durable scope before retaining the actual
-  // envelope. Empty never reaches evaluation or storage as unrestricted scope.
-  if (template.repositoryScope.length !== 0 || template.branchScope.length !== 0) {
+  // Protected configuration must name the complete repository and branch
+  // authority. Runtime state may confirm that scope, but may never expand an
+  // empty or broader template into authority discovered after deployment.
+  if (!exactList(template.repositoryScope, [input.repositoryScope]) ||
+      !exactList(template.branchScope, [input.branch])) {
     throw new Error("verifier_advisory_policy_template_scope_invalid");
   }
-  const envelope = Object.freeze({
-    ...template,
-    repositoryScope: Object.freeze([completion.repositoryId]),
-    branchScope: Object.freeze([input.branch]),
-  });
+  const envelope = template;
   const mission = getMission(db, completion.tenantId, completion.missionId);
   const repository = getConnectedRepository(db, completion.repositoryId, completion.tenantId);
   const snapshot = listRepositorySnapshots(db, completion.tenantId, completion.repositoryId)
@@ -191,7 +215,7 @@ export function reconcileVerifierAdvisoryPolicyAuthority(db: AppDb, input: Reado
   if (!mission || mission.product !== completion.product || mission.repositoryId !== completion.repositoryId ||
       mission.snapshotId !== completion.snapshotId || snapshot.length !== 1 || !repository ||
       repository.selected_branch !== input.branch || envelope.tenantId !== completion.tenantId ||
-      !exactList(envelope.repositoryScope, [completion.repositoryId]) ||
+      !exactList(envelope.repositoryScope, [input.repositoryScope]) ||
       !exactList(envelope.branchScope, [input.branch]) ||
       !exactList(envelope.allowedTools, ["deepseek-verifier"]) ||
       !exactList(envelope.allowedModelClasses, ["rented_specialist"]) ||
@@ -203,7 +227,7 @@ export function reconcileVerifierAdvisoryPolicyAuthority(db: AppDb, input: Reado
     throw new Error("verifier_advisory_policy_authority_invalid");
   }
   const decision = evaluatePolicyEnvelope(envelope, {
-    repositoryId: completion.repositoryId,
+    repositoryId: input.repositoryScope,
     branch: input.branch,
     targetPaths: completion.changedPaths,
     tool: "deepseek-verifier",

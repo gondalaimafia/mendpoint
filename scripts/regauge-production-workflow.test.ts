@@ -169,6 +169,15 @@ describe("Regauge production workflow", () => {
       "MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF",
       "MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT",
     ]) expect(stage).toContain(`${name}=\"$${name}\"`);
+    expect(validation).toContain('test "$MENDPOINT_REGAUGE_TENANT_ID" = "tenant_regauge_canary"');
+    expect(validation).toContain('test "$MENDPOINT_REGAUGE_CAMPAIGN_ID" = "campaign_regauge_canary_20260814"');
+    expect(validation).toContain('test "$MENDPOINT_REGAUGE_CANARY_OWNER" = "gondalaimafia"');
+    expect(validation).toContain('test "$MENDPOINT_REGAUGE_CANARY_REPOSITORY" = "mendpoint-canary-drill-20260801"');
+    expect(validation).toContain('test "$MENDPOINT_REGAUGE_CANARY_BRANCH" = "main"');
+    expect(validation).toContain('.repositoryScope == ["gondalaimafia/mendpoint-canary-drill-20260801"]');
+    expect(validation).toContain('.branchScope == [$branch]');
+    expect(stage).toContain('MENDPOINT_REGAUGE_S3_PREFIX="transformer/$MENDPOINT_REGAUGE_TENANT_ID/$MENDPOINT_REGAUGE_CAMPAIGN_ID"');
+    expect(stage).not.toContain('MENDPOINT_REGAUGE_S3_PREFIX="regauge/');
   });
 
   it("stages only the bounded DeepSeek advisory verifier authority", () => {

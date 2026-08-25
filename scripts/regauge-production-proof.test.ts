@@ -88,6 +88,9 @@ describe("Regauge production proof", () => {
         provider: "deepseek", model: "deepseek-v4-flash", backendRevision: "deepseek-v4-flash-2026-08-24",
         observedAt: "2026-08-24T12:05:00.000Z", totalTokens: 44, estimatedCostUsd: 0.001,
         latencyMs: 320, scoreEvidenceDigests: [digest("c")], advisoryOnly: true, behaviorChanged: false,
+        consentId: "consent_regauge_20260824", consentEffectiveAt: "2026-08-24T11:00:00.000Z",
+        consentGrantedAt: "2026-08-24T11:01:00.000Z", consentExpiresAt: "2026-11-20T23:59:59.000Z",
+        providerProcessedAt: "2026-08-24T12:05:00.000Z", consentRecordDigest: digest("d"),
       }],
       serverTime: "2026-08-24T12:05:01.000Z",
     }), { status: 200, headers: { "content-type": "application/json" } }));
@@ -96,13 +99,37 @@ describe("Regauge production proof", () => {
       token: `me_${"a".repeat(40)}`,
       tenantId: "tenant-a",
       campaignId: "campaign-a",
+      expectedConsentId: "consent_regauge_20260824",
       fetchImpl,
     });
-    expect(result.observation).toMatchObject({ provider: "deepseek", model: "deepseek-v4-flash", advisoryOnly: true, behaviorChanged: false });
+    expect(result.observation).toMatchObject({ provider: "deepseek", model: "deepseek-v4-flash", consentId: "consent_regauge_20260824", providerProcessedAt: "2026-08-24T12:05:00.000Z", advisoryOnly: true, behaviorChanged: false });
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://mendpoint-regauge-production.fly.dev/v1/regauge/attempt-coordinator/verifier-observations",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("rejects verifier evidence when durable consent did not predate provider processing", async () => {
+    const digest = (value: string) => `sha256:${value.repeat(64).slice(0, 64)}`;
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      result: [{
+        telemetryDigest: digest("a"), evidencePackDigest: digest("b"), provider: "deepseek",
+        model: "deepseek-v4-flash", backendRevision: "revision", observedAt: "2026-08-24T12:05:00.000Z",
+        totalTokens: 12, estimatedCostUsd: 0.001, latencyMs: 2, scoreEvidenceDigests: [digest("c")],
+        consentId: "consent_regauge_20260824", consentEffectiveAt: "2026-08-24T12:05:00.000Z",
+        consentGrantedAt: "2026-08-24T12:05:01.000Z", consentExpiresAt: "2026-11-20T23:59:59.000Z",
+        providerProcessedAt: "2026-08-24T12:05:00.000Z", consentRecordDigest: digest("d"),
+        advisoryOnly: true, behaviorChanged: false,
+      }], serverTime: "2026-08-24T12:05:02.000Z",
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    await expect(observeRegaugeVerifierEvidence({
+      coordinatorUrl: "https://mendpoint-regauge-production.fly.dev/",
+      token: `me_${"a".repeat(40)}`,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      expectedConsentId: "consent_regauge_20260824",
+      fetchImpl,
+    })).rejects.toThrow("regauge_production_verifier_evidence_invalid");
   });
 
   it("runs a bounded read only readiness soak against the exact deployment revision", async () => {

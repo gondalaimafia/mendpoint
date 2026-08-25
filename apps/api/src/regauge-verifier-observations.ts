@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
 import {
+  findActiveLearningConsent,
   getPrincipal,
   listArtifactManifests,
   listEvidenceRecords,
   resolveMissionForRegaugeCampaign,
   type AppDb,
 } from "@mendpoint/db";
+import { REGAUGE_DEEPSEEK_APPROVED_SCOPE } from "@mendpoint/pipeline";
 import { verifyVerifierTelemetry } from "@mendpoint/verifier";
+import { REGAUGE_VERIFIER_CONSENT_PURPOSE } from "./regauge-verifier-consent.js";
 
 export type RegaugeVerifierObservation = Readonly<{
   telemetryDigest: string;
@@ -19,6 +22,12 @@ export type RegaugeVerifierObservation = Readonly<{
   estimatedCostUsd: number;
   latencyMs: number;
   scoreEvidenceDigests: readonly string[];
+  consentId: string;
+  consentEffectiveAt: string;
+  consentGrantedAt: string;
+  consentExpiresAt: string;
+  consentRecordDigest: string;
+  providerProcessedAt: string;
   advisoryOnly: true;
   behaviorChanged: false;
 }>;
@@ -27,6 +36,10 @@ export function readRegaugeVerifierObservations(
   db: AppDb,
   input: Readonly<{ tenantId: string; campaignId: string }>,
 ): readonly RegaugeVerifierObservation[] {
+  if (input.tenantId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId ||
+      input.campaignId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId) {
+    throw new Error("regauge_verifier_observation_scope_invalid");
+  }
   const mission = resolveMissionForRegaugeCampaign(db, input.tenantId, input.campaignId);
   if (!mission) throw new Error("regauge_verifier_observation_mission_missing");
   const taskPrefix = `${input.campaignId}:`;
@@ -40,6 +53,11 @@ export function readRegaugeVerifierObservations(
       try {
         const telemetry = verifyVerifierTelemetry(JSON.parse(artifact.content_text));
         const producer = getPrincipal(db, input.tenantId, artifact.producer_principal_id);
+        const consent = findActiveLearningConsent(db, {
+          tenantId: input.tenantId,
+          purpose: REGAUGE_VERIFIER_CONSENT_PURPOSE,
+          at: telemetry.observedAt,
+        });
         const evidence = listEvidenceRecords(
           db,
           input.tenantId,
@@ -58,7 +76,20 @@ export function readRegaugeVerifierObservations(
             telemetry.usage.totalTokens <= 0 || telemetry.scoreEvidenceDigests.length === 0 ||
             !producer || producer.kind !== "service" || producer.created_at > telemetry.observedAt ||
             producer.revoked_at && producer.revoked_at <= telemetry.observedAt ||
-            producer.expires_at && producer.expires_at <= telemetry.observedAt || evidence.length !== 1) return [];
+            producer.expires_at && producer.expires_at <= telemetry.observedAt || evidence.length !== 1 ||
+            !consent || consent.created_at >= telemetry.observedAt ||
+            consent.effective_at >= telemetry.observedAt || consent.expires_at === null ||
+            consent.expires_at <= telemetry.observedAt ||
+            consent.expires_at > REGAUGE_DEEPSEEK_APPROVED_SCOPE.authorizationDeadline) return [];
+        const consentRecordDigest = `sha256:${sha256(JSON.stringify({
+          consentId: consent.id,
+          tenantId: consent.tenant_id,
+          purpose: consent.purpose,
+          authorizedByPrincipalId: consent.authorized_by_principal_id,
+          effectiveAt: consent.effective_at,
+          expiresAt: consent.expires_at,
+          createdAt: consent.created_at,
+        }))}`;
         return [Object.freeze({
           telemetryDigest: telemetry.telemetryDigest,
           evidencePackDigest: telemetry.evidencePackDigest,
@@ -70,6 +101,12 @@ export function readRegaugeVerifierObservations(
           estimatedCostUsd: telemetry.estimatedCostUsd,
           latencyMs: telemetry.latencyMs,
           scoreEvidenceDigests: Object.freeze([...telemetry.scoreEvidenceDigests]),
+          consentId: consent.id,
+          consentEffectiveAt: consent.effective_at,
+          consentGrantedAt: consent.created_at,
+          consentExpiresAt: consent.expires_at,
+          consentRecordDigest,
+          providerProcessedAt: telemetry.observedAt,
           advisoryOnly: true as const,
           behaviorChanged: false as const,
         })];

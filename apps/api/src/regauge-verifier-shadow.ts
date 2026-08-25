@@ -7,7 +7,9 @@ import {
 } from "@mendpoint/db";
 import type { TransformerAttemptCheckpointCompletionResult } from "@mendpoint/transformer";
 import {
+  assertRegaugeDeepSeekApprovedScope,
   enqueueVerifierAdvisoryJob,
+  REGAUGE_DEEPSEEK_APPROVED_SCOPE,
   reconcileVerifierAdvisoryPolicyAuthority,
   type EnqueueVerifierAdvisoryResult,
   type ProductCompletionAdvisoryInput,
@@ -67,6 +69,10 @@ export function enqueueDedicatedRegaugeCompletionForAdvisory(input: Readonly<{
 }>): EnqueueVerifierAdvisoryResult {
   const env = input.env ?? process.env;
   const campaign = input.completion.campaign;
+  if (campaign.tenantId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId ||
+      campaign.campaignId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId) {
+    throw new Error("verifier_advisory_scope_invalid");
+  }
   const mission = resolveMissionForRegaugeCampaign(input.db, campaign.tenantId, campaign.campaignId);
   if (!mission) throw new Error("regauge_verifier_advisory_mission_missing");
   const completion = buildDedicatedRegaugeCompletionInput(input.completion, mission.id);
@@ -85,6 +91,13 @@ export function enqueueDedicatedRegaugeCompletionForAdvisory(input: Readonly<{
   if (!repository || repository.id !== mission.repositoryId || completion.snapshotId !== mission.snapshotId) {
     throw new Error("regauge_verifier_advisory_mission_scope_invalid");
   }
+  assertRegaugeDeepSeekApprovedScope({
+    tenantId: completion.tenantId,
+    campaignId: campaign.campaignId,
+    repositoryOwner: repository.owner,
+    repositoryName: repository.name,
+    repositoryBranch: repository.selected_branch,
+  });
   const processingRegion = resolveProcessingRegion(env, completion.tenantId);
   const policyEnvelopeJson = env.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON?.trim();
   if (!policyEnvelopeJson) throw new Error("regauge_verifier_advisory_policy_required");
@@ -93,6 +106,7 @@ export function enqueueDedicatedRegaugeCompletionForAdvisory(input: Readonly<{
     policyEnvelopeJson,
     actorPrincipalId: principal.id,
     branch: repository.selected_branch,
+    repositoryScope: `${repository.owner}/${repository.name}`,
     processingRegion,
     createdAt: completion.observedAt,
   });

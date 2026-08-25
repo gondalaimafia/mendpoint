@@ -4,9 +4,13 @@ import {
   type AppDb,
   type LearningConsentRow,
 } from "@mendpoint/db";
+import {
+  REGAUGE_DEEPSEEK_APPROVED_SCOPE,
+  REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
+} from "@mendpoint/pipeline";
 
-export const REGAUGE_VERIFIER_CONSENT_PURPOSE = "verifier-external-model-egress";
-export const REGAUGE_VERIFIER_AUTHORIZATION_DEADLINE = "2026-11-20T23:59:59.000Z";
+export const REGAUGE_VERIFIER_CONSENT_PURPOSE = REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE;
+export const REGAUGE_VERIFIER_AUTHORIZATION_DEADLINE = REGAUGE_DEEPSEEK_APPROVED_SCOPE.authorizationDeadline;
 
 export type RegaugeVerifierConsentAuthority = Readonly<{
   consentId: string;
@@ -20,6 +24,9 @@ export function regaugeVerifierConsentAuthorityFromEnvironment(
   env: Readonly<Record<string, string | undefined>>,
   tenantId: string,
 ): RegaugeVerifierConsentAuthority {
+  if (tenantId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId) {
+    throw new Error("regauge_verifier_consent_scope_invalid");
+  }
   let governance: unknown;
   try { governance = JSON.parse(required(env.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON)); }
   catch { throw new Error("regauge_verifier_consent_governance_invalid"); }
@@ -60,6 +67,9 @@ export function ensureRegaugeVerifierConsent(
     createdAt: string;
   }>,
 ): LearningConsentRow {
+  if (input.tenantId !== REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId) {
+    throw new Error("regauge_verifier_consent_scope_invalid");
+  }
   const at = exactIso(input.createdAt);
   const current = findActiveLearningConsent(db, {
     tenantId: input.tenantId,
@@ -77,7 +87,7 @@ export function ensureRegaugeVerifierConsent(
     supersedesConsentId: null,
     effectiveAt: input.authority.effectiveAt,
     expiresAt: input.authority.expiresAt,
-    reason: `Authorized DeepSeek advisory verification: ${input.authority.evidenceRef}`,
+    reason: reason(input.authority.evidenceRef),
     idempotencyKey: `regauge-verifier-consent:${input.authority.consentId}`,
     createdAt: at,
   });
@@ -98,7 +108,11 @@ function exact(row: LearningConsentRow, input: Readonly<{
     row.residency_region === input.authority.residencyRegion &&
     row.effective_at === input.authority.effectiveAt &&
     row.expires_at === input.authority.expiresAt &&
-    row.reason === `Authorized DeepSeek advisory verification: ${input.authority.evidenceRef}`;
+    row.reason === reason(input.authority.evidenceRef);
+}
+
+function reason(evidenceRef: string): string {
+  return `Authorized DeepSeek advisory verification for ${REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId} at ${REGAUGE_DEEPSEEK_APPROVED_SCOPE.repositoryFullName}: ${evidenceRef}`;
 }
 
 function record(value: unknown): value is Record<string, unknown> {

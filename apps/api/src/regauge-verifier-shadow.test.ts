@@ -58,7 +58,7 @@ function completed(): TransformerAttemptCheckpointCompletionResult {
 function env(): Record<string, string> {
   return {
     MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant_regauge_canary", products: ["regauge"], dataClassification: "confidential", requiredRegion: "cn", processingRegion: "cn", consentId: "consent-regauge", evidenceRef: "github-environment:regauge-production", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentActive: true }] }),
-    MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: "tenant_regauge_canary", version: 1, repositoryScope: [], branchScope: [], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
+    MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: "tenant_regauge_canary", version: 1, repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"], branchScope: ["main"], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
   };
 }
 
@@ -88,6 +88,19 @@ describe("dedicated ReGauge advisory dispatch", () => {
     const wrong = completed();
     (wrong.campaign as { campaignId: string }).campaignId = "other-campaign";
     expect(() => enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: env(), completion: wrong }))
-      .toThrow("regauge_verifier_advisory_mission_missing");
+      .toThrow("verifier_advisory_scope_invalid");
+    const dynamicTemplate = env();
+    dynamicTemplate.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON = JSON.stringify({
+      ...JSON.parse(dynamicTemplate.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON),
+      repositoryScope: [], branchScope: [],
+    });
+    expect(() => enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: dynamicTemplate, completion: completed() }))
+      .toThrow("verifier_advisory_policy_template_scope_invalid");
+    store.raw.prepare("UPDATE connected_repositories SET name = ? WHERE id = ?")
+      .run("different-repository", "repo-a");
+    expect(() => enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: env(), completion: completed() }))
+      .toThrow("verifier_advisory_scope_invalid");
+    expect(listArtifactManifests(store, "tenant_regauge_canary", "agent_verifier_advisory_input"))
+      .toHaveLength(0);
   });
 });

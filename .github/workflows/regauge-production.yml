@@ -215,6 +215,11 @@ jobs:
           for name in "${required[@]}"; do
             test -n "${!name:-}" || { echo "Missing required Regauge production authority: $name"; exit 1; }
           done
+          test "$MENDPOINT_REGAUGE_TENANT_ID" = "tenant_regauge_canary"
+          test "$MENDPOINT_REGAUGE_CAMPAIGN_ID" = "campaign_regauge_canary_20260814"
+          test "$MENDPOINT_REGAUGE_CANARY_OWNER" = "gondalaimafia"
+          test "$MENDPOINT_REGAUGE_CANARY_REPOSITORY" = "mendpoint-canary-drill-20260801"
+          test "$MENDPOINT_REGAUGE_CANARY_BRANCH" = "main"
           jq -e --arg tenant "$MENDPOINT_REGAUGE_TENANT_ID" '
             .schemaVersion == "2026-08-17.v1"
             and ([.entries[] | select(.tenantId == $tenant and (.products | index("regauge")))] | length) == 1
@@ -222,6 +227,18 @@ jobs:
               | .externalModelAllowed == true and .mayLeaveTenantBoundary == true and .consentActive == true)
           ' <<<"$MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON" >/dev/null \
             || { echo "regauge_deepseek_governance_not_authorized"; exit 1; }
+          jq -e --arg tenant "$MENDPOINT_REGAUGE_TENANT_ID" --arg branch "$MENDPOINT_REGAUGE_CANARY_BRANCH" '
+            .tenantId == $tenant
+            and .repositoryScope == ["gondalaimafia/mendpoint-canary-drill-20260801"]
+            and .branchScope == [$branch]
+            and .allowedTools == ["deepseek-verifier"]
+            and .allowedModelClasses == ["rented_specialist"]
+            and .externalProcessingAllowed == true
+            and .reviewRequired == true
+            and .deploymentAllowed == false
+            and .trainingDataAllowed == false
+          ' <<<"$MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON" >/dev/null \
+            || { echo "regauge_deepseek_policy_not_authorized"; exit 1; }
           mkdir -p test-results/regauge-production
       - name: Verify dedicated app and coordinator volume
         shell: bash
@@ -281,7 +298,7 @@ jobs:
             MENDPOINT_REGAUGE_CHECKPOINT_KEY="$MENDPOINT_REGAUGE_CHECKPOINT_KEY" \
             MENDPOINT_REGAUGE_OPERATION_SECRET="$MENDPOINT_REGAUGE_OPERATION_SECRET" \
             MENDPOINT_APPLICATION_DATA_KEY="$MENDPOINT_APPLICATION_DATA_KEY" \
-            MENDPOINT_REGAUGE_S3_PREFIX="regauge/$MENDPOINT_REGAUGE_TENANT_ID/$MENDPOINT_REGAUGE_CAMPAIGN_ID" \
+            MENDPOINT_REGAUGE_S3_PREFIX="transformer/$MENDPOINT_REGAUGE_TENANT_ID/$MENDPOINT_REGAUGE_CAMPAIGN_ID" \
             MENDPOINT_REGAUGE_EXECUTOR_DIGEST="$executor_digest" \
             MENDPOINT_REGAUGE_EVIDENCE_REFS="$MENDPOINT_REGAUGE_EVIDENCE_REFS" \
             MENDPOINT_REGAUGE_CANARY_OWNER="$MENDPOINT_REGAUGE_CANARY_OWNER" \

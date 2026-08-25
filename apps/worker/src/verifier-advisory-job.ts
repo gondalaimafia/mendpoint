@@ -6,6 +6,7 @@ import {
   type JobRow,
 } from "@mendpoint/db";
 import {
+  assertRegaugeDeepSeekApprovedScope,
   readVerifierAdvisoryJobInput,
   reconcileVerifierAdvisoryPolicyAuthority,
   VERIFIER_ADVISORY_JOB_TYPE,
@@ -61,6 +62,14 @@ export async function runVerifierAdvisoryJob(input: Readonly<{
   }
   const repository = getConnectedRepository(input.db, completion.repositoryId, completion.tenantId);
   if (!repository) throw new Error("verifier_advisory_repository_invalid");
+  const campaignId = completion.taskId.slice(0, completion.taskId.lastIndexOf(":"));
+  assertRegaugeDeepSeekApprovedScope({
+    tenantId: completion.tenantId,
+    campaignId,
+    repositoryOwner: repository.owner,
+    repositoryName: repository.name,
+    repositoryBranch: repository.selected_branch,
+  });
   const governance = resolveVerifierGovernance(env, completion.tenantId, completion.product);
   const policyEnvelopeJson = env.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON?.trim();
   if (!policyEnvelopeJson) throw new Error("verifier_advisory_policy_required");
@@ -69,6 +78,7 @@ export async function runVerifierAdvisoryJob(input: Readonly<{
     policyEnvelopeJson,
     actorPrincipalId: principal.id,
     branch: repository.selected_branch,
+    repositoryScope: `${repository.owner}/${repository.name}`,
     processingRegion: governance.processingRegion,
     createdAt: authorityAt,
   });
