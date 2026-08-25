@@ -587,7 +587,7 @@
       "requirementId": "ME-WAR-005",
       "registerSet": "foundational",
       "status": {
-        "implementationStatus": "verified",
+        "implementationStatus": "scaffold",
         "availability": "experimental",
         "claimState": "experimental_only"
       },

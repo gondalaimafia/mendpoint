@@ -127,6 +127,88 @@ describe("evidence reachability — live tracing", () => {
   });
 });
 
+describe("evidence reachability — a live co-import does not rescue a dead symbol", () => {
+  // The ME-WAR-005 shape: a test imports a genuinely live symbol (liveThing,
+  // traced from an entry) and a proven-dead one (deadLeaf) from the same
+  // package. The aggregate verdict stays `live` because a traced symbol exists
+  // — demoting it has a measured wide blast radius and is deferred — but the
+  // dead symbol must be SURFACED, not silently rounded up. Reverting the
+  // surfacing (the reason augmentation, or the report's livePartiallyDead list)
+  // makes these assertions die.
+  function writeReport(files: Record<string, string>): string {
+    const root = mkdtempSync(join(tmpdir(), "reach-mixed-"));
+    tempRoots.push(root);
+    for (const [rel, content] of Object.entries(files)) {
+      const abs = join(root, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, content, "utf8");
+    }
+    return root;
+  }
+
+  it("surfaces the dead symbol in the reason without hiding it inside a live verdict", () => {
+    const index = baselineRepo({
+      "packages/core/src/mixed.test.ts":
+        `import { liveThing, deadLeaf } from "./index.js";\nliveThing();\ndeadLeaf();\n`,
+    });
+    const result = cite(index, "packages/core/src/mixed.test.ts");
+    // Aggregate verdict is deliberately still live (a traced symbol exists)...
+    expect(result.verdict).toBe("live");
+    // ...but both symbols are reported per-symbol...
+    expect(result.symbols.find((s) => s.name === "liveThing")?.entryTraced).toBe(true);
+    expect(result.symbols.find((s) => s.name === "deadLeaf")?.hasNonTestCaller).toBe(false);
+    // ...and the dead symbol is named in the reason, so the live co-import
+    // (liveThing) does not silently vouch for the dead one (deadLeaf).
+    expect(result.reason).toContain("deadLeaf");
+    expect(result.reason).toContain("proven-dead");
+  });
+
+  it("collects a live-but-partially-dead citation into a non-gating report list", () => {
+    const root = writeReport({
+      "package.json": JSON.stringify({ name: "fixture", scripts: {} }),
+      "apps/api/package.json": JSON.stringify({ name: "@mendpoint/api" }),
+      "apps/api/src/server.ts": `import { liveThing } from "@mendpoint/core";\nliveThing();\n`,
+      "packages/core/package.json": JSON.stringify({ name: "@mendpoint/core", main: "./src/index.ts" }),
+      "packages/core/src/index.ts":
+        `export { liveThing } from "./live.js";\nexport { deadLeaf } from "./dead.js";\n`,
+      "packages/core/src/live.ts": `export function liveThing(): number {\n  return 1;\n}\n`,
+      "packages/core/src/dead.ts": `export function deadLeaf(): number {\n  return 2;\n}\n`,
+      "packages/core/src/mixed.test.ts":
+        `import { liveThing, deadLeaf } from "./index.js";\nliveThing();\ndeadLeaf();\n`,
+      "docs/PRODUCT_REQUIREMENTS.json": JSON.stringify({
+        requirements: [
+          {
+            id: "ME-TST-001",
+            implementationStatus: "verified",
+            acceptance: [
+              {
+                id: "ME-TST-001-AC01",
+                evidence: [
+                  {
+                    id: "ME-TST-001-AC01-EV01",
+                    type: "unit",
+                    locator: "packages/core/src/mixed.test.ts",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    const report = runReachabilityReport(root);
+    // The mixed citation is surfaced as live-but-partially-dead...
+    expect(report.livePartiallyDead.map((r) => r.locator)).toContain(
+      "packages/core/src/mixed.test.ts",
+    );
+    // ...but this is deliberately NON-gating: the live co-import keeps it out of
+    // the unreachable set, so the strict gate stays green even on a verified
+    // requirement. (Enforcing on partial deadness is deferred; see PR body.)
+    expect(report.verifiedCitingUnreachable).toEqual([]);
+    expect(evaluateStrictGate(report).failed).toBe(false);
+  });
+});
+
 describe("evidence reachability — the third state is visible", () => {
   it("reports not_determined (not unreachable) when a caller exists but is not entry-traced", () => {
     // deadViaOrphan is called by orphanThing (a real non-test caller), but
@@ -228,10 +310,13 @@ describe("evidence reachability — real register invariants", () => {
   });
 
   it("exposes both traceability deliverables without collapsing not-determined into fine", () => {
-    // The ten document-only ME-FND requirements are now `documented`, not
-    // `verified`, so the verified set is the 29 requirements that carry
-    // code-verifiable evidence, and every one of them traces to a live path.
-    expect(report.verifiedTotal).toBe(29);
+    // The ten document-only ME-FND requirements are `documented`, not
+    // `verified`. ME-WAR-005 was downgraded from `verified` to `scaffold`
+    // because its policy subsystem (WardenPolicyStore, resolveWardenPolicy)
+    // has no non-test caller, so the verified set is the 28 requirements that
+    // carry code-verifiable evidence, and every one of them traces to a live
+    // path.
+    expect(report.verifiedTotal).toBe(28);
     expect(report.verifiedWithoutLivePath).toEqual([]);
     // ME-SCM-006 and ME-GRF-006 were downgraded to partial and their
     // proven-dead citations removed, so no verified requirement now rests on a
