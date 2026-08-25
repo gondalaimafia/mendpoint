@@ -72,6 +72,7 @@ export function initializeApiRuntime(
       transformerMissionRoutes: createTransformerMissionRoutes({
         service: transformerMissions,
         environment: resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ENVIRONMENT"),
+        appDb: db,
       }),
       changeSourceRoutes: createChangeSourceRoutes(),
       billingRoutes: createBillingEconomicsRoutes({ db }),
