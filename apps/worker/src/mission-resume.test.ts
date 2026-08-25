@@ -5,7 +5,7 @@
  * "context not loaded", "no mission bound", and "not resumable" stay four
  * distinct standings that never collapse into a reassuring one.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -226,5 +226,26 @@ describe("resolveResumeContext (real stores)", () => {
     expect(block).toContain(injectionText);
     const headerEnd = block.indexOf("<<<INHERITED_CONTEXT_DATA>>>");
     expect(block.indexOf(injectionText)).toBeGreaterThan(headerEnd);
+  });
+});
+
+describe("Fettler live resume seam (cli.ts)", () => {
+  // CONTROL: the live Fettler agent.run path must call resolveResumeContext so
+  // ownership, unresolvable mission ids, and store-load failures stay distinct.
+  // Compiling via buildMissionContext + hasInheritedContent collapses those
+  // absences into "inject if any content". Deleting the resolveResumeContext
+  // call in cli.ts, or reverting to the producer, makes this die.
+  it("CONTROL: Fettler agent.run resume injects only a loaded standing from resolveResumeContext", () => {
+    const cli = readFileSync(join(import.meta.dirname, "cli.ts"), "utf8");
+    expect(cli).toContain('from "./mission-resume.js"');
+    expect(cli).toMatch(/const standing = resolveResumeContext\(/);
+    expect(cli).toMatch(/currentRunStatus:\s*sessionRun\?\.status \?\? "running"/);
+    expect(cli).toMatch(/missionId:\s*payload\.missionId/);
+    expect(cli).toMatch(/standing\.status === "loaded"/);
+    expect(cli).toMatch(/standing\.status === "context_not_loaded"/);
+    expect(cli).toMatch(/standing\.status === "not_resumable"/);
+    expect(cli).not.toMatch(/buildMissionContext\s*\(/);
+    expect(cli).not.toMatch(/hasInheritedContent\s*\(/);
+    expect(cli).not.toMatch(/getMission\s*\(/);
   });
 });
