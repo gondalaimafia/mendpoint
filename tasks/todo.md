@@ -3352,11 +3352,13 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 ### 2026-08-25 PR 466 semantic replay follow-up
 
-- [ ] RED: prove an identical reviewer directive with a fresh timestamp replays the existing row without adding a supersession or event.
-- [ ] Remove wall-clock time from semantic replay identity while preserving candidate, source run, directive, author, and evidence discrimination.
-- [ ] Run focused database and API tests, affected typechecks, and diff integrity.
-- [ ] Record exact verification evidence, commit, and push the existing branch without merging or reviewing it.
+- [x] RED: prove an identical reviewer directive with a fresh timestamp replays the existing row without adding a supersession or event.
+- [x] Remove wall-clock time from semantic replay identity while preserving candidate, source run, directive, author, and evidence discrimination.
+- [x] Run focused database and API tests, affected typechecks, and diff integrity.
+- [x] Record exact verification evidence, commit, and push the existing branch without merging or reviewing it.
 
 #### Review
 
-- Pending focused verification.
+- RED: a semantic retry at `T2` after the initial `T1` write returned a different decision id, reproducing the reviewed timestamp-dependent successor.
+- GREEN: replay matching no longer uses wall-clock time. Candidate digest, source run evidence, normalized directive, author, decision type, scope, tenant, and mission still discriminate the operation. The regression returns the original row and original `createdAt`, with unchanged decision history and domain-event counts.
+- Verification: all 15 Mission handoff database tests and 21 candidate-review API tests pass. Database and API typechecks pass, and diff integrity is clean.

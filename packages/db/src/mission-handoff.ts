@@ -379,10 +379,11 @@ export function replaceReviewerDirective(
       decision.decisionType === "verification" &&
       decision.evidence.includes(candidateEvidence) &&
       decision.evidence.some((ref) => ref.startsWith("agent_run:") && ref.length > "agent_run:".length));
+    // createdAt records the first write; it is not part of the semantic operation
+    // identity because a transport retry observes a new wall-clock time.
     const replay = heads.find((decision) =>
       decision.decision === directive &&
       decision.authorPrincipalId === input.authorPrincipalId &&
-      decision.createdAt === input.createdAt &&
       sameEvidence(decision.evidence, evidence));
     const survivor = replay ?? heads.at(-1);
     for (const head of heads) {

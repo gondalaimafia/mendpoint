@@ -219,7 +219,7 @@ describe("mission handoff (durable records)", () => {
     expect(getActiveMissionDecisions(db, "t1", "m1")[0]!.decisionType).toBe("verification");
   });
 
-  it("replays an identical reviewer directive instead of extending its supersession chain", () => {
+  it("replays an identical reviewer directive with a fresh timestamp", () => {
     const db = fixture();
     const input = {
       tenantId: "t1", missionId: "m1", directive: "  Keep the public signature stable.  ",
