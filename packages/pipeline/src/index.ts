@@ -93,6 +93,7 @@ export * from "./organization-memory-precedence.js";
 export * from "./mission-context-compiler.js";
 export * from "./mission-policy-binding.js";
 export * from "./tenant-graph-handle.js";
+export * from "./mission-policy-enforcement.js";
 export * from "./verifier-telemetry.js";
 export * from "./calibration-report.js";
 import {
