@@ -3327,17 +3327,19 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - [x] Validate every tenant row before applying the section item cap.
 - [x] Emit supplied-context refs only when the corresponding artifact section survives the prompt byte ceiling.
 - [x] Add regressions for legacy envelopes, task and snapshot isolation, capped foreign rows, and budget truncation.
-- [ ] Fail closed when a resolved Mission conflicts with the executing repository or snapshot.
-- [ ] Carry canonical MissionTask ids through the live artifact writer and worker compiler caller.
-- [ ] Exclude legacy null task/snapshot artifacts unless a caller explicitly requests Mission-global context.
-- [ ] Couple every rendered section's context refs to that section's retention under the byte ceiling.
-- [ ] Update the Mission Context Compiler contract without promoting ME-MCC-001 beyond partial/internal.
-- [ ] Run affected pipeline and worker tests/typechecks, diff checks, commit, and push the replacement head.
+- [x] Fail closed when a resolved Mission conflicts with the executing repository or snapshot.
+- [x] Carry canonical MissionTask ids through the live artifact writer and worker compiler caller.
+- [x] Exclude legacy null task/snapshot artifacts unless a caller explicitly requests Mission-global context.
+- [x] Couple every rendered section's context refs to that section's retention under the byte ceiling.
+- [x] Update the Mission Context Compiler contract without promoting ME-MCC-001 beyond partial/internal.
+- [x] Run affected pipeline and worker tests/typechecks, documentation and diff checks on merge base `a43bbd71`.
+- [ ] Push the replacement head and obtain independent exact-head review. Do not merge in this task.
 
 #### Review
 
 - Compatibility: the v1 envelope field is additive and optional for callers. Rendering normalizes an absent field to `not_consulted: store_not_available`, while compiler output always carries the explicit section.
-- Relevance: review found the earlier wildcard treatment of nullable task/snapshot bindings unsafe. This item remains open until exact task/snapshot and explicit Mission-global behavior are proven.
+- Relevance: a bound Mission must now match the worker's immutable repository and snapshot exactly. Artifacts require the exact canonical MissionTask id and snapshot; legacy null/null rows are excluded unless Mission-global inclusion is explicit, and partially null rows never match.
 - Isolation: all artifact rows are tenant-validated before the 32-item cap, so a foreign row cannot hide beyond the retained slice.
-- Context honesty: review found that non-artifact refs still survived after their prompt sections were displaced. This item remains open until all droppable sections own their refs.
-- Verification: prior exact-head checks are superseded by the blocking review. Fresh evidence will be recorded after the fixes. ME-MCC-001 remains partial/internal and this work makes no production-readiness claim.
+- Context honesty: policy, decision, exception, artifact, verification, memory, graph, and history refs now belong to their rendered section and leave when the byte ceiling drops that section.
+- Live seams: the campaign executor registers artifacts under `fettlerCampaignMissionTaskId(missionId, repositoryId)`, and the real worker job loop compiles against `missionTaskIdForJob(job.id)`. The live-loop regression proves an exact-task artifact reaches `trajectories.context_refs_json`.
+- Verification: 123 focused tests pass across the compiler, registration helper, campaign executor, worker producer, and full worker CLI suite. Pipeline and worker typechecks pass; `docs:check` reports the public bundle current; `git diff --check` is clean. The branch is rebased onto exact `a43bbd71`, preserving both task-ledger sections. `ME-MCC-001` remains partial/internal and this work makes no production-readiness claim.
