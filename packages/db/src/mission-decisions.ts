@@ -179,6 +179,10 @@ function insertDecision(db: AppDb, input: {
 }): MissionDecision {
   const body = decisionDigestBody(input);
   const digest = contentDigest(body);
+  // decision_type is outside the content digest, so validate it before the
+  // replay branch; otherwise an invalid type is rejected on first write but
+  // silently accepted when an identical body replays.
+  const decisionType = normalizeDecisionType(input.decisionType);
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
@@ -197,7 +201,7 @@ function insertDecision(db: AppDb, input: {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       digest, input.tenantId, input.missionId, input.decision, input.scope, input.authorPrincipalId,
       JSON.stringify(input.evidence), input.status, input.supersedesId, digest, input.createdAt,
-      normalizeDecisionType(input.decisionType));
+      decisionType);
     appendDomainEvent(db, {
       id: `mission-decision:${digest}`,
       tenantId: input.tenantId,
@@ -283,6 +287,7 @@ export function supersedeMissionDecision(db: AppDb, input: {
   correlationId: string;
   causationId?: string | null;
   createdAt: string;
+  decisionType?: string | null;
 }): MissionDecision {
   const decision = boundedText(input.decision, "mission_decision_text_invalid", MAX_DECISION);
   const scope = boundedText(input.scope, "mission_decision_scope_invalid", MAX_SCOPE);
@@ -316,6 +321,9 @@ export function supersedeMissionDecision(db: AppDb, input: {
       correlationId,
       causationId: input.causationId ?? null,
       createdAt,
+      // Keep the decision labelled: use the caller's type when supplied, else
+      // inherit the prior head so a superseded decision is not left unlabeled.
+      decisionType: input.decisionType ?? prior.decision_type,
     });
     if (owns) db.raw.exec("COMMIT");
     return value;

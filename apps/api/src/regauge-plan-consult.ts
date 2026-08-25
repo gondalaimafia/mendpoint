@@ -33,13 +33,20 @@ export type RegaugeGraphPlanConsult = Readonly<{
   dependsOnByRepositoryId: Readonly<Record<string, readonly string[]>>;
 }>;
 
-export type RegaugeOrgMemoryConsult = Readonly<{
-  consulted: true;
-  winner: PrecedenceResult["winner"];
-  reason: string;
-  appliedMemoryId: string | null;
-  overriddenMemoryIds: readonly string[];
-}>;
+export type RegaugeOrgMemoryConsult =
+  | Readonly<{
+      consulted: false;
+      basis: "not_consulted";
+      reason: string;
+    }>
+  | Readonly<{
+      consulted: true;
+      basis: "resolved";
+      winner: PrecedenceResult["winner"];
+      reason: string;
+      appliedMemoryId: string | null;
+      overriddenMemoryIds: readonly string[];
+    }>;
 
 function serviceMatchesRepository(nodeId: string, label: string, repositoryId: string): boolean {
   return (
@@ -61,9 +68,7 @@ export function consultRegaugeGraphDependencies(input: {
       dependsOnByRepositoryId: Object.freeze({}),
     });
   }
-  const scoped = input.graph.path === ":memory:"
-    ? input.graph
-    : createTenantGraphView(input.graph, { tenantId: input.tenantId });
+  const scoped = createTenantGraphView(input.graph, { tenantId: input.tenantId });
   try {
     const populated = listAllEdges(scoped).some((edge) => edge.kind === "DEPENDS_ON");
     if (!populated) {
@@ -108,48 +113,58 @@ export function consultRegaugeGraphDependencies(input: {
   }
 }
 
+function memoryReference(record: MemoryHead) {
+  return {
+    tenantId: record.tenantId,
+    memoryId: record.memoryId,
+    recordId: record.recordId,
+    status: record.status,
+    statement: record.statement,
+  };
+}
+
 export function consultRegaugeOrganizationMemory(input: {
   tenantId: string;
-  records: readonly MemoryHead[];
+  records: readonly MemoryHead[] | null;
   hardPolicy: Readonly<{ tenantId: string; id: string; directive: string }>;
 }): RegaugeOrgMemoryConsult {
-  const confirmed = input.records.find((record) =>
-    organizationMemoryPrecedenceLayer(record) === "confirmed_org_memory",
-  );
-  const inferred = input.records.find((record) =>
-    organizationMemoryPrecedenceLayer(record) === "inferred_candidate",
-  );
+  // No provider wired is not the same as a provider that returned nothing. A
+  // null record source means Organization Memory was never consulted, so it is
+  // declared as such rather than resolved into an empty "found nothing" result.
+  if (input.records === null) {
+    return Object.freeze({
+      consulted: false,
+      basis: "not_consulted" as const,
+      reason: "organization_memory_not_supplied",
+    });
+  }
+  // Deterministic, layer-ordered selection so the resolver names a stable memory
+  // and every participating record is carried, not just the first per layer.
+  const byRecordId = (a: MemoryHead, b: MemoryHead) => a.recordId.localeCompare(b.recordId);
+  const confirmed = input.records
+    .filter((record) => organizationMemoryPrecedenceLayer(record) === "confirmed_org_memory")
+    .sort(byRecordId);
+  const inferred = input.records
+    .filter((record) => organizationMemoryPrecedenceLayer(record) === "inferred_candidate")
+    .sort(byRecordId);
   const resolved = resolveOrganizationDecision({
     tenantId: input.tenantId,
     hardPolicy: input.hardPolicy,
-    ...(confirmed
-      ? {
-          confirmedOrgMemory: {
-            tenantId: confirmed.tenantId,
-            memoryId: confirmed.memoryId,
-            recordId: confirmed.recordId,
-            status: confirmed.status,
-            statement: confirmed.statement,
-          },
-        }
-      : {}),
-    ...(inferred
-      ? {
-          inferredCandidate: {
-            tenantId: inferred.tenantId,
-            memoryId: inferred.memoryId,
-            recordId: inferred.recordId,
-            status: inferred.status,
-            statement: inferred.statement,
-          },
-        }
-      : {}),
+    ...(confirmed[0] ? { confirmedOrgMemory: memoryReference(confirmed[0]) } : {}),
+    ...(inferred[0] ? { inferredCandidate: memoryReference(inferred[0]) } : {}),
   });
+  const appliedMemoryId = resolved.appliedMemory?.memoryId ?? null;
+  // Every present-but-outranked memory, strongest layer first — records beyond
+  // the resolver's per-layer representative are surfaced here, never dropped.
+  const overriddenMemoryIds = [...confirmed, ...inferred]
+    .map((record) => record.memoryId)
+    .filter((memoryId) => memoryId !== appliedMemoryId);
   return Object.freeze({
     consulted: true,
+    basis: "resolved" as const,
     winner: resolved.winner,
     reason: resolved.reason,
-    appliedMemoryId: resolved.appliedMemory?.memoryId ?? null,
-    overriddenMemoryIds: Object.freeze(resolved.overriddenMemory.map((entry) => entry.memory.memoryId)),
+    appliedMemoryId,
+    overriddenMemoryIds: Object.freeze(overriddenMemoryIds),
   });
 }

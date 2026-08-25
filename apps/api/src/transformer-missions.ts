@@ -133,7 +133,9 @@ export class TransformerMissionService {
     });
     const organizationMemory = consultRegaugeOrganizationMemory({
       tenantId: request.tenantId,
-      records: this.consults.organizationMemory?.(request.tenantId) ?? [],
+      records: this.consults.organizationMemory
+        ? this.consults.organizationMemory(request.tenantId)
+        : null,
       hardPolicy: {
         tenantId: request.tenantId,
         id: `organization-constraint:${authority.constraints.digest}`,

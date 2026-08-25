@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
@@ -110,15 +111,38 @@ describe("§8.19–8.21 annotation columns", () => {
   });
 
   it("converges annotation columns on an aged volume via ADD COLUMN", () => {
-    const db = fixture();
-    for (const [table, column] of [
+    const additiveColumns = [
       ["mission_decisions", "decision_type"],
       ["mission_exceptions", "task_id"],
       ["mission_exceptions", "category"],
       ["mission_artifacts", "task_id"],
       ["mission_artifacts", "source_snapshot"],
-    ] as const) {
-      const names = (db.raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+    ] as const;
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-ann-upgrade-"));
+    const path = join(dir, "aged.sqlite");
+
+    // Seed a current-schema volume, then strip the annotation columns to emulate a
+    // database created before §8.19–8.21 shipped. Using the real DROP COLUMN path
+    // (not a fresh createDb) is what makes this exercise the ADD COLUMN upgrade.
+    const seeded = createDb(path);
+    seeded.raw.close();
+    const legacy = new DatabaseSync(path);
+    for (const [table, column] of additiveColumns) {
+      legacy.exec(`ALTER TABLE ${table} DROP COLUMN ${column};`);
+    }
+    for (const [table, column] of additiveColumns) {
+      const names = (legacy.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+        .map((row) => row.name);
+      expect(names).not.toContain(column);
+    }
+    legacy.close();
+
+    // Reopening runs ensureTables, whose additive path must ADD COLUMN each
+    // annotation back onto the aged volume.
+    const migrated = createDb(path);
+    opened.push({ db: migrated, dir });
+    for (const [table, column] of additiveColumns) {
+      const names = (migrated.raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
         .map((row) => row.name);
       expect(names).toContain(column);
     }
