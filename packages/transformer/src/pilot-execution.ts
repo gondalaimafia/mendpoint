@@ -545,6 +545,7 @@ export type TransformerRunnableCampaign = Readonly<{
   taskSnapshotId: string;
   expectedBaseRevision: string;
   sourceArtifactIds: readonly string[];
+  changedPaths: readonly string[];
 }>;
 
 export type TransformerExpiredAttempt = Readonly<{
@@ -1586,6 +1587,10 @@ export class TransformerPilotExecutionStore {
             `manifest:${unit.snapshot.manifestSha256}`,
             unit.snapshot.digest,
           ]),
+          // The exact paths this unit rewrites, carried so the pilot-lane policy
+          // seam can enforce the envelope's forbidden zones against real targets
+          // (guaranteed non-empty at campaign creation, see enqueue guard).
+          changedPaths: Object.freeze([...unit.changedPaths]),
         };
       });
     return deepFreeze(runnable);
