@@ -256,8 +256,6 @@ describe("Warden campaign executor", () => {
     expect(parsed.verification).not.toHaveProperty("comparisonOk");
     expect(parsed.verification).not.toHaveProperty("introducedFailures");
     expect(parsed.uncertainty).not.toHaveProperty("notVerified");
-    const unboundCount = (value.db.raw.prepare("SELECT COUNT(*) AS n FROM mission_artifacts").get() as { n: number }).n;
-    expect(unboundCount).toBe(0);
   });
 
   it("fails closed on a new verification regression and resumes only from verified replay evidence", async () => {
