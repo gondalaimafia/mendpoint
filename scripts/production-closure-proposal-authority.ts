@@ -185,7 +185,6 @@ function referencedPaths(
       if (!["live", "external"].includes(evidence.type)) paths.add(evidence.locator);
     }
   }
-  for (const path of Object.keys(policy.protectedFiles ?? {})) paths.add(path);
   for (const path of Object.keys(proposedPolicy.protectedFiles ?? {})) paths.add(path);
   paths.add(policy.authorityRotationManifestPath);
   for (const path of policy.authorityRotationAuxiliaryFiles ?? []) paths.add(path);
@@ -232,7 +231,9 @@ function stableAuthorityRotationMatrixView(matrix: ProductionClosureMatrix): unk
 function successorWorkflowSafetyIssues(
   path: string,
   contents: Buffer | undefined,
+  templateContents: Buffer | undefined,
   successor: AuthoritySuccessorTuple,
+  basePolicy: ClosureAuthorityPolicy,
 ): ProductionClosureMatrixIssue[] {
   const issues: ProductionClosureMatrixIssue[] = [];
   try {
@@ -246,6 +247,11 @@ function successorWorkflowSafetyIssues(
       .map((match) => match[1].trim());
     if (
       !contents ||
+      !templateContents ||
+      !contents.equals(templateContents) ||
+      basePolicy.protectedFiles[successor.templatePath] !== successor.workflowSha256 ||
+      digest(contents) !== successor.workflowSha256 ||
+      digest(templateContents) !== successor.workflowSha256 ||
       !triggers?.pull_request_target ||
       triggers.pull_request !== undefined ||
       permissions?.statuses !== "write" ||
@@ -264,7 +270,7 @@ function successorWorkflowSafetyIssues(
         issues,
         "AUTHORITY_SUCCESSOR_WORKFLOW_UNSAFE",
         path,
-        "a staged successor must be a pinned default-branch controller with least authority and unique declared checks",
+        "a staged successor must be an exact workflow digest pre-authorized on the base revision, with a pinned default-branch controller, least authority, and unique declared checks",
       );
     }
   } catch {
@@ -558,7 +564,9 @@ export async function verifyProductionClosureProposal(
           ...successorWorkflowSafetyIssues(
             receipt.successor.workflowPath,
             bytesByPath.get(receipt.successor.workflowPath),
+            bytesByPath.get(receipt.successor.templatePath),
             receipt.successor,
+            policy,
           ),
         );
       }

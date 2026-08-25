@@ -107,6 +107,18 @@ class FixtureClient implements ProposalAuthorityClient {
     this.blobs.set(blobSha, bytes);
     this.pathToSha.set(path, blobSha);
   }
+  add(path: string, bytes: Buffer, includeInBase = true): void {
+    const blobSha = sha(bytes);
+    this.blobs.set(blobSha, bytes);
+    this.pathToSha.set(path, blobSha);
+    this.modes.set(path, "100644");
+    if (includeInBase) this.basePathToSha.set(path, blobSha);
+  }
+  remove(path: string): void {
+    this.pathToSha.delete(path);
+    this.basePathToSha.delete(path);
+    this.modes.delete(path);
+  }
   async getRepositoryId(): Promise<number> {
     return 1309389373;
   }
@@ -367,6 +379,48 @@ describe("production closure proposal authority", () => {
     );
 
     expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
+  });
+
+  it("accepts a normal product proposal after successor activation removed the predecessor", async () => {
+    const client = new FixtureClient();
+    const predecessorPath = ".github/workflows/closure-authority.yml";
+    const successorPath = ".github/workflows/closure-authority-v2.yml";
+    const workflowBytes = client.blobs.get(client.pathToSha.get(predecessorPath)!)!;
+    const activePolicy = policy();
+    activePolicy.workflowPath = successorPath;
+    activePolicy.externalCheckName = "mendpoint-production-closure-authority-v2";
+    activePolicy.externalCheckAppId = 123;
+    activePolicy.controllerCheckName = "mendpoint-production-closure-controller-v2";
+    activePolicy.controllerCheckAppId = 15368;
+    activePolicy.successor = null;
+    delete activePolicy.protectedFiles[predecessorPath];
+    activePolicy.protectedFiles[successorPath] = sha256(workflowBytes);
+    const activePolicyBytes = Buffer.from(JSON.stringify(activePolicy));
+    client.remove(predecessorPath);
+    client.add(successorPath, workflowBytes);
+    client.replace("config/production-closure-authority.json", activePolicyBytes);
+    client.basePathToSha.set(
+      "config/production-closure-authority.json",
+      client.pathToSha.get("config/production-closure-authority.json")!,
+    );
+    const authority = {
+      revision: BASE,
+      policyBytes: activePolicyBytes,
+      rotationLedgerBytes: readFileSync(
+        resolve(root, "config", "production-closure-authority-rotation.json"),
+      ),
+    };
+
+    const result = await verifyProductionClosureProposal(
+      activePolicy,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      authority,
+    );
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
   });
 
   it("writes a secret-free failure artifact when protected configuration fails early", () => {

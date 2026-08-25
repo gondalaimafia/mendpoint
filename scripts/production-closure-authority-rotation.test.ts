@@ -219,15 +219,21 @@ describe("production closure authority rotation", () => {
     const receipt = input.proposedLedger.rotations.at(-1)!;
     const successorBytes = Buffer.from("name: successor\n");
     const successor = {
+      templatePath: "config/production-closure-successors/closure-authority-v2.yml",
       workflowPath: ".github/workflows/closure-authority-v2.yml",
       workflowSha256: digest(successorBytes),
       externalCheckName: "mendpoint-production-closure-authority-v2",
       externalCheckAppId: 123,
       controllerCheckName: "mendpoint-production-closure-controller-v2",
       controllerCheckAppId: 15368,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
       activationDeadline: receipt.expiresAt,
     };
+    input.basePolicy.protectedFiles[successor.templatePath] = successor.workflowSha256;
+    input.basePolicyBytes = Buffer.from(JSON.stringify(input.basePolicy));
     receipt.kind = "stage_successor";
+    receipt.basePolicySha256 = digest(input.basePolicyBytes);
     receipt.successor = successor;
     input.proposedPolicy = structuredClone(input.basePolicy);
     input.proposedPolicy.successor = {
@@ -239,10 +245,14 @@ describe("production closure authority rotation", () => {
     input.proposedPolicy.protectedFiles[successor.workflowPath] = successor.workflowSha256;
     input.proposedPolicyBytes = Buffer.from(JSON.stringify(input.proposedPolicy));
     receipt.proposedPolicySha256 = digest(input.proposedPolicyBytes);
-    const policyChange = input.changedFiles[0];
-    policyChange.toSha256 = digest(input.proposedPolicyBytes);
     input.changedFiles = [
-      policyChange,
+      {
+        path: "config/production-closure-authority.json",
+        fromSha256: digest(input.basePolicyBytes),
+        toSha256: digest(input.proposedPolicyBytes),
+        fromMode: "100644",
+        toMode: "100644",
+      },
       {
         path: successor.workflowPath,
         fromSha256: null,
@@ -254,6 +264,8 @@ describe("production closure authority rotation", () => {
     receipt.changes = input.changedFiles.map((change) => ({ ...change }));
     input.proposedFileContents.set(successor.workflowPath, successorBytes);
     input.proposedFileDigests.set(successor.workflowPath, successor.workflowSha256);
+    input.proposedFileContents.set(successor.templatePath, successorBytes);
+    input.proposedFileDigests.set(successor.templatePath, successor.workflowSha256);
     input.proposedFileContents.set("scripts/a.ts", Buffer.from("base"));
     input.proposedFileDigests.set("scripts/a.ts", digest("base"));
     (input.proposedPaths as Set<string>).add(successor.workflowPath);
@@ -261,17 +273,81 @@ describe("production closure authority rotation", () => {
     expect(verifyAuthorityRotation(input)).toEqual([]);
   });
 
-  it("rejects a staged successor that changes the active workflow or reuses a context", () => {
+  it("keeps preauthorization inert and rejects staged bytes that differ from the base template", () => {
+    const input = fixture();
+    const receipt = input.proposedLedger.rotations.at(-1)!;
+    const templateBytes = Buffer.from("name: approved-successor\n");
+    const executableBytes = Buffer.from("name: changed-successor\n");
+    const successor = {
+      templatePath: "config/production-closure-successors/closure-authority-v2.yml",
+      workflowPath: ".github/workflows/closure-authority-v2.yml",
+      workflowSha256: digest(templateBytes),
+      externalCheckName: "mendpoint-production-closure-authority-v2",
+      externalCheckAppId: 123,
+      controllerCheckName: "mendpoint-production-closure-controller-v2",
+      controllerCheckAppId: 15368,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
+      activationDeadline: receipt.expiresAt,
+    };
+    input.basePolicy.protectedFiles[successor.templatePath] = successor.workflowSha256;
+    expect(input.basePolicy.protectedFiles[successor.workflowPath]).toBeUndefined();
+    input.basePolicyBytes = Buffer.from(JSON.stringify(input.basePolicy));
+    receipt.kind = "stage_successor";
+    receipt.basePolicySha256 = digest(input.basePolicyBytes);
+    receipt.successor = successor;
+    input.proposedPolicy = structuredClone(input.basePolicy);
+    input.proposedPolicy.successor = {
+      phase: "staged",
+      stagedByRotationId: receipt.rotationId,
+      activatedByRotationId: null,
+      ...successor,
+    };
+    input.proposedPolicy.protectedFiles[successor.workflowPath] = successor.workflowSha256;
+    input.proposedPolicyBytes = Buffer.from(JSON.stringify(input.proposedPolicy));
+    receipt.proposedPolicySha256 = digest(input.proposedPolicyBytes);
+    input.changedFiles = [
+      {
+        path: "config/production-closure-authority.json",
+        fromSha256: digest(input.basePolicyBytes),
+        toSha256: digest(input.proposedPolicyBytes),
+        fromMode: "100644",
+        toMode: "100644",
+      },
+      {
+        path: successor.workflowPath,
+        fromSha256: null,
+        toSha256: digest(executableBytes),
+        fromMode: null,
+        toMode: "100644",
+      },
+    ];
+    receipt.changes = input.changedFiles.map((change) => ({ ...change }));
+    input.proposedFileContents.set(successor.templatePath, templateBytes);
+    input.proposedFileDigests.set(successor.templatePath, successor.workflowSha256);
+    input.proposedFileContents.set(successor.workflowPath, executableBytes);
+    input.proposedFileDigests.set(successor.workflowPath, digest(executableBytes));
+    (input.proposedPaths as Set<string>).add(successor.workflowPath);
+
+    expect(verifyAuthorityRotation(input).map((issue) => issue.code)).toContain(
+      "AUTHORITY_SUCCESSOR_WORKFLOW_NOT_PINNED",
+    );
+  });
+
+  it("rejects a staged successor that changes active identity, App authority, or context", () => {
     const input = fixture();
     const receipt = input.proposedLedger.rotations.at(-1)!;
     receipt.kind = "stage_successor";
     receipt.successor = {
+      templatePath: "config/production-closure-successors/closure-authority-v2.yml",
       workflowPath: ".github/workflows/closure-authority-v2.yml",
       workflowSha256: digest("successor"),
       externalCheckName: input.basePolicy.externalCheckName,
-      externalCheckAppId: 123,
+      externalCheckAppId: 999,
       controllerCheckName: "mendpoint-production-closure-controller-v2",
       controllerCheckAppId: 15368,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
       activationDeadline: receipt.expiresAt,
     };
     input.proposedPolicy.workflowPath = ".github/workflows/closure-authority-replaced.yml";
@@ -288,6 +364,7 @@ describe("production closure authority rotation", () => {
     const codes = verifyAuthorityRotation(input).map((issue) => issue.code);
     expect(codes).toContain("AUTHORITY_SUCCESSOR_STAGE_ACTIVE_DRIFT");
     expect(codes).toContain("AUTHORITY_SUCCESSOR_CONTEXT_COLLISION");
+    expect(codes).toContain("AUTHORITY_SUCCESSOR_APP_IDENTITY_DRIFT");
   });
 
   it("fails closed on malformed successor data and cross-context collisions", () => {
@@ -295,12 +372,15 @@ describe("production closure authority rotation", () => {
     const malformedReceipt = malformed.proposedLedger.rotations.at(-1)!;
     malformedReceipt.kind = "stage_successor";
     malformedReceipt.successor = {
+      templatePath: "config/production-closure-successors/closure-authority-v2.yml",
       workflowPath: ".github/workflows/closure-authority-v2.yml",
       workflowSha256: digest("successor"),
       externalCheckName: undefined as unknown as string,
       externalCheckAppId: 123,
       controllerCheckName: "mendpoint-production-closure-controller-v2",
       controllerCheckAppId: 15368,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
       activationDeadline: malformedReceipt.expiresAt,
     };
     expect(() => verifyAuthorityRotation(malformed)).not.toThrow();
@@ -312,12 +392,15 @@ describe("production closure authority rotation", () => {
     const collisionReceipt = collision.proposedLedger.rotations.at(-1)!;
     collisionReceipt.kind = "stage_successor";
     collisionReceipt.successor = {
+      templatePath: "config/production-closure-successors/closure-authority-v2.yml",
       workflowPath: ".github/workflows/closure-authority-v2.yml",
       workflowSha256: digest("successor"),
       externalCheckName: collision.basePolicy.controllerCheckName,
       externalCheckAppId: 123,
       controllerCheckName: "mendpoint-production-closure-controller-v2",
       controllerCheckAppId: 15368,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
       activationDeadline: collisionReceipt.expiresAt,
     };
     collision.proposedPolicy.successor = {
@@ -336,16 +419,19 @@ describe("production closure authority rotation", () => {
     );
   });
 
-  it("activates only the unchanged staged successor while retaining both workflows", () => {
+  it("activates the unchanged staged successor and atomically removes the predecessor", () => {
     const input = fixture();
     const successorBytes = Buffer.from("name: successor\n");
     const successor = {
+      templatePath: "config/production-closure-successors/closure-authority-v2.yml",
       workflowPath: ".github/workflows/closure-authority-v2.yml",
       workflowSha256: digest(successorBytes),
       externalCheckName: "mendpoint-production-closure-authority-v2",
       externalCheckAppId: 123,
       controllerCheckName: "mendpoint-production-closure-controller-v2",
       controllerCheckAppId: 15368,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
       activationDeadline: "2026-08-26T12:00:00.000Z",
     };
     input.basePolicy.successor = {
@@ -355,6 +441,7 @@ describe("production closure authority rotation", () => {
       ...successor,
     };
     input.basePolicy.protectedFiles[successor.workflowPath] = successor.workflowSha256;
+    input.basePolicy.protectedFiles[successor.templatePath] = successor.workflowSha256;
     input.basePolicyBytes = Buffer.from(JSON.stringify(input.basePolicy));
     input.baseLedger = {
       schemaVersion: 1,
@@ -375,19 +462,25 @@ describe("production closure authority rotation", () => {
     input.proposedPolicy.externalCheckAppId = successor.externalCheckAppId;
     input.proposedPolicy.controllerCheckName = successor.controllerCheckName;
     input.proposedPolicy.controllerCheckAppId = successor.controllerCheckAppId;
-    input.proposedPolicy.successor = {
-      ...input.basePolicy.successor,
-      phase: "active",
-      activatedByRotationId: "rotation-20260825-activate",
-    };
+    input.proposedPolicy.successor = null;
+    delete input.proposedPolicy.protectedFiles[input.basePolicy.workflowPath];
     input.proposedPolicyBytes = Buffer.from(JSON.stringify(input.proposedPolicy));
-    input.changedFiles = [{
-      path: "config/production-closure-authority.json",
-      fromSha256: digest(input.basePolicyBytes),
-      toSha256: digest(input.proposedPolicyBytes),
-      fromMode: "100644",
-      toMode: "100644",
-    }];
+    input.changedFiles = [
+      {
+        path: "config/production-closure-authority.json",
+        fromSha256: digest(input.basePolicyBytes),
+        toSha256: digest(input.proposedPolicyBytes),
+        fromMode: "100644",
+        toMode: "100644",
+      },
+      {
+        path: input.basePolicy.workflowPath,
+        fromSha256: input.basePolicy.protectedFiles[input.basePolicy.workflowPath],
+        toSha256: null,
+        fromMode: "100644",
+        toMode: null,
+      },
+    ];
     input.proposedLedger = {
       schemaVersion: 1,
       rotations: [
@@ -409,22 +502,30 @@ describe("production closure authority rotation", () => {
     };
     input.proposedFileContents.set(successor.workflowPath, successorBytes);
     input.proposedFileDigests.set(successor.workflowPath, successor.workflowSha256);
+    input.proposedFileContents.set(successor.templatePath, successorBytes);
+    input.proposedFileDigests.set(successor.templatePath, successor.workflowSha256);
+    input.proposedFileContents.delete(input.basePolicy.workflowPath);
+    input.proposedFileDigests.delete(input.basePolicy.workflowPath);
     input.proposedFileContents.set("scripts/a.ts", Buffer.from("base"));
     input.proposedFileDigests.set("scripts/a.ts", digest("base"));
     (input.proposedPaths as Set<string>).add(successor.workflowPath);
+    (input.proposedPaths as Set<string>).delete(input.basePolicy.workflowPath);
 
     expect(verifyAuthorityRotation(input)).toEqual([]);
   });
 
-  it("rejects activation after the deadline or with staged workflow drift or predecessor removal", () => {
+  it("rejects activation after the deadline, staged workflow drift, or predecessor retention", () => {
     const input = fixture();
     const successor = {
+      templatePath: "config/production-closure-successors/closure-authority-v2.yml",
       workflowPath: ".github/workflows/closure-authority-v2.yml",
       workflowSha256: digest("staged-successor"),
       externalCheckName: "mendpoint-production-closure-authority-v2",
       externalCheckAppId: 123,
       controllerCheckName: "mendpoint-production-closure-controller-v2",
       controllerCheckAppId: 15368,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
       activationDeadline: "2026-08-25T11:30:00.000Z",
     };
     input.basePolicy.successor = {
@@ -434,6 +535,7 @@ describe("production closure authority rotation", () => {
       ...successor,
     };
     input.basePolicy.protectedFiles[successor.workflowPath] = successor.workflowSha256;
+    input.basePolicy.protectedFiles[successor.templatePath] = successor.workflowSha256;
     input.basePolicyBytes = Buffer.from(JSON.stringify(input.basePolicy));
     input.baseLedger = {
       schemaVersion: 1,
@@ -448,13 +550,8 @@ describe("production closure authority rotation", () => {
     input.baseLedgerBytes = Buffer.from(JSON.stringify(input.baseLedger));
     input.proposedPolicy = structuredClone(input.basePolicy);
     input.proposedPolicy.workflowPath = successor.workflowPath;
-    delete input.proposedPolicy.protectedFiles[input.basePolicy.workflowPath];
     input.proposedPolicy.protectedFiles[successor.workflowPath] = digest("drifted-successor");
-    input.proposedPolicy.successor = {
-      ...input.basePolicy.successor,
-      phase: "active",
-      activatedByRotationId: "rotation-20260825-activate",
-    };
+    input.proposedPolicy.successor = null;
     input.proposedPolicyBytes = Buffer.from(JSON.stringify(input.proposedPolicy));
     const receipt = input.proposedLedger.rotations.at(-1)!;
     receipt.kind = "activate_successor";
@@ -469,6 +566,74 @@ describe("production closure authority rotation", () => {
     const codes = verifyAuthorityRotation(input).map((issue) => issue.code);
     expect(codes).toContain("AUTHORITY_SUCCESSOR_ACTIVATION_EXPIRED");
     expect(codes).toContain("AUTHORITY_SUCCESSOR_STAGED_BYTES_DRIFT");
-    expect(codes).toContain("AUTHORITY_SUCCESSOR_PREDECESSOR_NOT_RETAINED");
+    expect(codes).toContain("AUTHORITY_SUCCESSOR_PREDECESSOR_NOT_REMOVED");
+  });
+
+  it("allows a second successor to be staged after an activation cleared prior state", () => {
+    const input = fixture();
+    const successorBytes = Buffer.from("name: successor-v3\n");
+    const successor = {
+      templatePath: "config/production-closure-successors/closure-authority-v3.yml",
+      workflowPath: ".github/workflows/closure-authority-v3.yml",
+      workflowSha256: digest(successorBytes),
+      externalCheckName: "mendpoint-production-closure-authority-v3",
+      externalCheckAppId: 123,
+      controllerCheckName: "mendpoint-production-closure-controller-v3",
+      controllerCheckAppId: 15368,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
+      activationDeadline: "2026-08-26T11:00:00.000Z",
+    };
+    input.basePolicy.successor = null;
+    input.basePolicy.workflowPath = ".github/workflows/closure-authority-v2.yml";
+    input.basePolicy.protectedFiles = {
+      ".github/workflows/closure-authority-v2.yml": digest("workflow-v2"),
+      [successor.templatePath]: successor.workflowSha256,
+      "scripts/a.ts": digest("base"),
+    };
+    input.basePolicyBytes = Buffer.from(JSON.stringify(input.basePolicy));
+    input.proposedPolicy = structuredClone(input.basePolicy);
+    input.proposedPolicy.successor = {
+      phase: "staged",
+      stagedByRotationId: "rotation-20260825-003",
+      activatedByRotationId: null,
+      ...successor,
+    };
+    input.proposedPolicy.protectedFiles[successor.workflowPath] = successor.workflowSha256;
+    input.proposedPolicyBytes = Buffer.from(JSON.stringify(input.proposedPolicy));
+    input.changedFiles = [
+      {
+        path: "config/production-closure-authority.json",
+        fromSha256: digest(input.basePolicyBytes),
+        toSha256: digest(input.proposedPolicyBytes),
+        fromMode: "100644",
+        toMode: "100644",
+      },
+      {
+        path: successor.workflowPath,
+        fromSha256: null,
+        toSha256: successor.workflowSha256,
+        fromMode: null,
+        toMode: "100644",
+      },
+    ];
+    const receipt = input.proposedLedger.rotations.at(-1)!;
+    receipt.kind = "stage_successor";
+    receipt.rotationId = "rotation-20260825-003";
+    receipt.basePolicySha256 = digest(input.basePolicyBytes);
+    receipt.proposedPolicySha256 = digest(input.proposedPolicyBytes);
+    receipt.successor = successor;
+    receipt.changes = input.changedFiles.map((change) => ({ ...change }));
+    input.proposedFileContents.clear();
+    input.proposedFileContents.set(".github/workflows/closure-authority-v2.yml", Buffer.from("workflow-v2"));
+    input.proposedFileContents.set(successor.templatePath, successorBytes);
+    input.proposedFileContents.set(successor.workflowPath, successorBytes);
+    input.proposedFileContents.set("scripts/a.ts", Buffer.from("base"));
+    input.proposedFileDigests = new Map(
+      [...input.proposedFileContents].map(([path, bytes]) => [path, digest(bytes)]),
+    );
+    input.proposedPaths = new Set(input.proposedFileContents.keys());
+
+    expect(verifyAuthorityRotation(input)).toEqual([]);
   });
 });

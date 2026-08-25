@@ -432,12 +432,15 @@ describe("GitHub production closure authority", () => {
       basePolicySha256: `sha256:${"1".repeat(64)}`,
       proposedPolicySha256: `sha256:${"2".repeat(64)}`,
       successor: {
+        templatePath: "config/production-closure-successors/closure-authority-v2.yml",
         workflowPath: ".github/workflows/closure-authority-v2.yml",
         workflowSha256: `sha256:${"3".repeat(64)}`,
         externalCheckName: "mendpoint-production-closure-authority-v2",
         externalCheckAppId: 123,
         controllerCheckName: "mendpoint-production-closure-controller-v2",
         controllerCheckAppId: 15368,
+        controllerStatusCreatorLogin: "github-actions[bot]",
+        controllerStatusCreatorUserId: 41898282,
         activationDeadline: "2026-08-26T11:00:00.000Z",
       },
     };
@@ -487,6 +490,11 @@ describe("GitHub production closure authority", () => {
     client.trackedChecks.at(-1)!.app = { id: 999 };
     const wrongApp = await verifyGitHubClosureAuthority(configured, context(), client);
     expect(codes(wrongApp)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+
+    client.trackedChecks.at(-1)!.app = { id: 123 };
+    client.trackedStatuses[0].creator = { login: "untrusted-bot", id: 999 };
+    const wrongControllerProducer = await verifyGitHubClosureAuthority(configured, context(), client);
+    expect(codes(wrongControllerProducer)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
   });
 
   it("fails closed when the live open PR set is incomplete", async () => {

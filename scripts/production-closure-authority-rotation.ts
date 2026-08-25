@@ -12,19 +12,22 @@ export interface AuthorityReviewerIdentity {
 }
 
 export interface AuthoritySuccessorTuple {
+  templatePath: string;
   workflowPath: string;
   workflowSha256: string;
   externalCheckName: string;
   externalCheckAppId: number;
   controllerCheckName: string;
   controllerCheckAppId: number;
+  controllerStatusCreatorLogin: string;
+  controllerStatusCreatorUserId: number;
   activationDeadline: string;
 }
 
 export interface AuthoritySuccessorState extends AuthoritySuccessorTuple {
-  phase: "staged" | "active";
+  phase: "staged";
   stagedByRotationId: string;
-  activatedByRotationId: string | null;
+  activatedByRotationId: null;
 }
 
 export interface ClosureAuthorityPolicy {
@@ -149,12 +152,15 @@ function exactSuccessorTuple(
   right: AuthoritySuccessorTuple | null | undefined,
 ): boolean {
   const tuple = (value: AuthoritySuccessorTuple | null | undefined) => value ? {
+    templatePath: value.templatePath,
     workflowPath: value.workflowPath,
     workflowSha256: value.workflowSha256,
     externalCheckName: value.externalCheckName,
     externalCheckAppId: value.externalCheckAppId,
     controllerCheckName: value.controllerCheckName,
     controllerCheckAppId: value.controllerCheckAppId,
+    controllerStatusCreatorLogin: value.controllerStatusCreatorLogin,
+    controllerStatusCreatorUserId: value.controllerStatusCreatorUserId,
     activationDeadline: value.activationDeadline,
   } : null;
   return JSON.stringify(tuple(left)) === JSON.stringify(tuple(right));
@@ -165,6 +171,8 @@ function validSuccessorTuple(
 ): successor is AuthoritySuccessorTuple {
   return Boolean(
     successor &&
+    normalizedPath(successor.templatePath) === successor.templatePath &&
+    /^config\/production-closure-successors\/closure-authority-[a-z0-9-]+\.yml$/.test(successor.templatePath) &&
     normalizedPath(successor.workflowPath) === successor.workflowPath &&
     /^\.github\/workflows\/closure-authority-[a-z0-9-]+\.yml$/.test(successor.workflowPath) &&
     SHA256.test(successor.workflowSha256) &&
@@ -173,10 +181,16 @@ function validSuccessorTuple(
     typeof successor.controllerCheckName === "string" &&
     successor.controllerCheckName.trim() &&
     successor.externalCheckName !== successor.controllerCheckName &&
+    successor.templatePath.split("/").at(-1) === successor.workflowPath.split("/").at(-1) &&
     Number.isInteger(successor.externalCheckAppId) &&
     successor.externalCheckAppId > 0 &&
     Number.isInteger(successor.controllerCheckAppId) &&
     successor.controllerCheckAppId > 0 &&
+    typeof successor.controllerStatusCreatorLogin === "string" &&
+    successor.controllerStatusCreatorLogin.trim() === successor.controllerStatusCreatorLogin &&
+    successor.controllerStatusCreatorLogin.length > 0 &&
+    Number.isInteger(successor.controllerStatusCreatorUserId) &&
+    successor.controllerStatusCreatorUserId > 0 &&
     canonicalTime(successor.activationDeadline)
   );
 }
@@ -410,14 +424,31 @@ export function verifyAuthorityRotation(
       );
     }
     if (
+      input.basePolicy.protectedFiles[successor.templatePath] !== successor.workflowSha256 ||
+      input.proposedPolicy.protectedFiles[successor.templatePath] !== successor.workflowSha256 ||
       input.proposedPolicy.protectedFiles[successor.workflowPath] !== successor.workflowSha256 ||
-      input.proposedFileDigests.get(successor.workflowPath) !== successor.workflowSha256
+      input.proposedFileDigests.get(successor.templatePath) !== successor.workflowSha256 ||
+      input.proposedFileDigests.get(successor.workflowPath) !== successor.workflowSha256 ||
+      !input.proposedFileContents.get(successor.templatePath)?.equals(
+        input.proposedFileContents.get(successor.workflowPath) ?? Buffer.alloc(0),
+      )
     ) {
       add(
         issues,
         "AUTHORITY_SUCCESSOR_WORKFLOW_NOT_PINNED",
         successor.workflowPath,
-        "the staged successor workflow must be present and pinned to its exact proposal bytes",
+        "staging must copy one exact inert base-protected template into the executable successor workflow without changing its bytes",
+      );
+    }
+    if (
+      successor.externalCheckAppId !== input.basePolicy.externalCheckAppId ||
+      successor.controllerCheckAppId !== input.basePolicy.controllerCheckAppId
+    ) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_APP_IDENTITY_DRIFT",
+        successor.workflowPath,
+        "the successor must retain the active external and controller App identities used by the protected credentials",
       );
     }
     if (
@@ -434,12 +465,6 @@ export function verifyAuthorityRotation(
   } else if (transitionKind === "activate_successor") {
     const successor = receipt.successor;
     const staged = input.basePolicy.successor;
-    const expectedActiveState: AuthoritySuccessorState = {
-      phase: "active",
-      stagedByRotationId: staged?.stagedByRotationId ?? "",
-      activatedByRotationId: receipt.rotationId,
-      ...successor,
-    };
     if (
       !staged ||
       staged.phase !== "staged" ||
@@ -448,13 +473,13 @@ export function verifyAuthorityRotation(
       baseReceipt.rotationId !== staged.stagedByRotationId ||
       !exactSuccessorTuple(baseReceipt.successor, successor) ||
       !exactSuccessorTuple(staged, successor) ||
-      JSON.stringify(input.proposedPolicy.successor) !== JSON.stringify(expectedActiveState)
+      input.proposedPolicy.successor !== null
     ) {
       add(
         issues,
         "AUTHORITY_SUCCESSOR_ACTIVATION_STATE_INVALID",
         receipt.rotationId,
-        "activation must immediately follow and exactly consume the staged successor state",
+        "activation must immediately follow and clear the exact staged successor state",
       );
     }
     if (JSON.stringify(activeIdentity(input.proposedPolicy)) !== JSON.stringify(successorActiveIdentity(successor))) {
@@ -463,6 +488,17 @@ export function verifyAuthorityRotation(
         "AUTHORITY_SUCCESSOR_ACTIVATION_IDENTITY_INVALID",
         receipt.rotationId,
         "the proposed active workflow and check identity must equal the staged successor tuple",
+      );
+    }
+    if (
+      successor.externalCheckAppId !== input.basePolicy.externalCheckAppId ||
+      successor.controllerCheckAppId !== input.basePolicy.controllerCheckAppId
+    ) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_APP_IDENTITY_DRIFT",
+        successor.workflowPath,
+        "activation must retain the App identities already bound to the predecessor and protected credentials",
       );
     }
     if (observedAt > Date.parse(successor.activationDeadline)) {
@@ -486,18 +522,29 @@ export function verifyAuthorityRotation(
         "activation cannot change the successor bytes that were staged and proven from main",
       );
     }
+    const predecessorDeletion = input.changedFiles.find(
+      (change) => change.path === input.basePolicy.workflowPath,
+    );
     if (
-      input.proposedPolicy.protectedFiles[input.basePolicy.workflowPath] !==
-      input.basePolicy.protectedFiles[input.basePolicy.workflowPath]
+      input.basePolicy.workflowPath === successor.workflowPath ||
+      input.basePolicy.protectedFiles[input.basePolicy.workflowPath] === undefined ||
+      input.basePolicy.workflowPath in input.proposedPolicy.protectedFiles ||
+      input.proposedPaths.has(input.basePolicy.workflowPath) ||
+      !predecessorDeletion ||
+      predecessorDeletion.fromSha256 !== input.basePolicy.protectedFiles[input.basePolicy.workflowPath] ||
+      predecessorDeletion.toSha256 !== null ||
+      predecessorDeletion.fromMode === null ||
+      predecessorDeletion.toMode !== null
     ) {
       add(
         issues,
-        "AUTHORITY_SUCCESSOR_PREDECESSOR_NOT_RETAINED",
+        "AUTHORITY_SUCCESSOR_PREDECESSOR_NOT_REMOVED",
         input.basePolicy.workflowPath,
-        "activation must retain the predecessor workflow for fail-closed handoff and later cleanup",
+        "activation must atomically remove the exact predecessor workflow after the dual-authority handoff",
       );
     }
     for (const [path, expectedDigest] of Object.entries(input.basePolicy.protectedFiles)) {
+      if (path === input.basePolicy.workflowPath) continue;
       if (input.proposedPolicy.protectedFiles[path] !== expectedDigest) {
         add(
           issues,
@@ -509,7 +556,10 @@ export function verifyAuthorityRotation(
     }
   }
 
-  if (input.changedFiles.some((change) => change.path === input.basePolicy.workflowPath)) {
+  if (
+    transitionKind !== "activate_successor" &&
+    input.changedFiles.some((change) => change.path === input.basePolicy.workflowPath)
+  ) {
     add(
       issues,
       "AUTHORITY_ROTATION_WORKFLOW_SUCCESSOR_REQUIRED",
@@ -538,6 +588,7 @@ export function verifyAuthorityRotation(
   const authorityAdditionAllowed = (path: string): boolean =>
     /^scripts\/production-closure-[a-z0-9-]+(?:\.test)?\.ts$/.test(path) ||
     /^scripts\/fixtures\/production-closure-[a-z0-9-]+\.json$/.test(path) ||
+    /^config\/production-closure-successors\/closure-authority-[a-z0-9-]+\.yml$/.test(path) ||
     /^\.github\/workflows\/closure-authority-[a-z0-9-]+\.yml$/.test(path);
   const changedPaths = new Set<string>();
   for (const change of input.changedFiles) {
@@ -572,6 +623,7 @@ export function verifyAuthorityRotation(
   }
 
   for (const path of Object.keys(input.basePolicy.protectedFiles)) {
+    if (transitionKind === "activate_successor" && path === input.basePolicy.workflowPath) continue;
     if (!(path in input.proposedPolicy.protectedFiles)) {
       add(issues, "AUTHORITY_ROTATION_PROTECTED_FILE_REMOVED", path, "runtime rotations cannot remove a base protected file");
     }

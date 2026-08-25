@@ -153,12 +153,15 @@ export interface CurrentPullRequestBootstrap {
     basePolicySha256: string;
     proposedPolicySha256: string;
     successor?: {
+      templatePath: string;
       workflowPath: string;
       workflowSha256: string;
       externalCheckName: string;
       externalCheckAppId: number;
       controllerCheckName: string;
       controllerCheckAppId: number;
+      controllerStatusCreatorLogin: string;
+      controllerStatusCreatorUserId: number;
       activationDeadline: string;
     };
   };
@@ -1009,7 +1012,9 @@ export function validateProductionClosureMatrix(
       (authorityRotation.kind === "runtime" && authorityRotation.successor !== undefined) ||
       (authorityRotation.kind !== "runtime" && (
         !authorityRotation.successor ||
+        !/^config\/production-closure-successors\/closure-authority-[a-z0-9-]+\.yml$/.test(authorityRotation.successor.templatePath) ||
         !/^\.github\/workflows\/closure-authority-[a-z0-9-]+\.yml$/.test(authorityRotation.successor.workflowPath) ||
+        authorityRotation.successor.templatePath.split("/").at(-1) !== authorityRotation.successor.workflowPath.split("/").at(-1) ||
         !SHA256.test(authorityRotation.successor.workflowSha256) ||
         !authorityRotation.successor.externalCheckName?.trim() ||
         !Number.isInteger(authorityRotation.successor.externalCheckAppId) ||
@@ -1017,6 +1022,9 @@ export function validateProductionClosureMatrix(
         !authorityRotation.successor.controllerCheckName?.trim() ||
         !Number.isInteger(authorityRotation.successor.controllerCheckAppId) ||
         authorityRotation.successor.controllerCheckAppId < 1 ||
+        !authorityRotation.successor.controllerStatusCreatorLogin?.trim() ||
+        !Number.isInteger(authorityRotation.successor.controllerStatusCreatorUserId) ||
+        authorityRotation.successor.controllerStatusCreatorUserId < 1 ||
         !canonicalTime(authorityRotation.successor.activationDeadline)
       ))
     )

@@ -105,12 +105,15 @@ export interface ProviderResolvedPullRequest {
     basePolicySha256: string;
     proposedPolicySha256: string;
     successor?: {
+      templatePath: string;
       workflowPath: string;
       workflowSha256: string;
       externalCheckName: string;
       externalCheckAppId: number;
       controllerCheckName: string;
       controllerCheckAppId: number;
+      controllerStatusCreatorLogin: string;
+      controllerStatusCreatorUserId: number;
       activationDeadline: string;
     };
   };
@@ -744,7 +747,10 @@ export async function verifyGitHubClosureAuthority(
           .filter(
             (status) =>
               status.context === successor.controllerCheckName &&
-              status.state === "success",
+              status.state === "success" &&
+              status.creator.login.toLowerCase() ===
+                successor.controllerStatusCreatorLogin.toLowerCase() &&
+              status.creator.id === successor.controllerStatusCreatorUserId,
           )
           .sort((left, right) => right.id - left.id)[0];
         const checkRunId = /\/actions\/runs\/(\d+)(?:\/|$)/.exec(
