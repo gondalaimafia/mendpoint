@@ -97,8 +97,10 @@ this section reports `not_consulted` (`graph_version_absent`).
 The compiled block is injected into the system prompt at
 `packages/agent/src/agent.ts`, in the direct-backend model call, **after** the
 tenant model-tier guard and **after** the existing prompt-injection defence line.
-It is gated behind `MENDPOINT_INHERITED_CONTEXT` (default off): with the switch
-unset, the prompt is byte-for-byte today's constant.
+It is gated by `inheritedContextShouldCompile`: unbound jobs still require
+`MENDPOINT_INHERITED_CONTEXT` (default off); a bound Mission compiles and
+injects even with that switch unset. Unbound jobs with the switch unset keep
+today's constant prompt byte-for-byte.
 
 Untrusted-data framing: organization memory and reviewer rationales are
 tenant-authored data. `renderInheritedContextSystemBlock` wraps the whole block
@@ -107,11 +109,12 @@ header, re-verifies the block's digest and byte bound, and returns nothing (no
 injection) on any mismatch. An imperative sentence inside the context reads to the
 model as quoted data.
 
-**What is and is not live.** The injection seam is wired and gated. The worker
-producer runs on the real Fettler dispatch (`apps/worker/src/cli.ts`) behind the
-same switch and, when it produces any inherited content, injects it and writes the
-context refs onto the trajectory. On current main a Fettler `agent.run` job is not
-bound to a `mission` row (its payload carries no campaign or mission id), so:
+**What is and is not live.** The injection seam is wired. The worker producer
+runs on the real Fettler dispatch (`apps/worker/src/cli.ts`). Unbound jobs still
+need `MENDPOINT_INHERITED_CONTEXT`. A bound Mission compiles even with the
+switch unset, injects a `loaded` standing, and writes context refs onto the
+trajectory. On current main most Fettler `agent.run` jobs are not bound to a
+`mission` row (payload carries no campaign or mission id), so:
 
 - tenant **organization memory** is compiled and can reach the Fettler prompt
   (this is the headline change: today no tenant context reaches the prompt at
