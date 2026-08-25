@@ -45,9 +45,12 @@ function requireChangeId(changeId: string): string {
  * is refused here so a blank caller cannot scan every tenant's stamps.
  *
  * `fallback` is `raw_retrieval` when the latest analysis for any matching
- * consumer carries that stamp. A later graph-authoritative analysis for the
- * same consumer clears its historical raw-retrieval label without deleting
- * audit history. Does not mutate coverage or the graph.
+ * consumer carries that stamp. Only a later graph-authoritative analysis --
+ * one whose `impact_fallback` is NULL (no recognised or unrecognised fallback
+ * label) -- clears the historical raw-retrieval label without deleting audit
+ * history. A later analysis that itself carries a fallback label, including an
+ * unrecognised value, does not clear the stamp. Does not mutate coverage or the
+ * graph.
  */
 export function lookupChangeImpactAudit(
   db: AppDb,
@@ -70,6 +73,7 @@ export function lookupChangeImpactAudit(
            WHERE later.tenant_id = current.tenant_id
              AND later.action = current.action
              AND later.impact_change_id = current.impact_change_id
+             AND later.impact_fallback IS NULL
              AND later.resource_type = current.resource_type
              AND later.resource_id IS current.resource_id
              AND later.event_sequence > current.event_sequence

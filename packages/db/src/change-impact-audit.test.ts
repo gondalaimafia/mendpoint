@@ -205,6 +205,28 @@ describe("lookupChangeImpactAudit", () => {
     expect(lookupChangeImpactAudit(db, "tenant-a", "chg-1")).toEqual({ fallback: null });
   });
 
+  it("keeps a raw-retrieval stamp when a later analysis carries an unrecognised fallback", () => {
+    const db = openDb();
+    stamp(db, {
+      id: "audit-raw",
+      tenantId: "tenant-a",
+      changeId: "chg-1",
+      fallback: "raw_retrieval",
+    });
+    recordAudit(db, {
+      id: "audit-invented",
+      tenantId: "tenant-a",
+      actor: "pipeline",
+      action: "impact.analyzed",
+      resourceType: "consumer",
+      resourceId: "consumer-tenant-a",
+      metadata: { changeId: "chg-1", findings: 0, fallback: "invented" },
+    });
+    expect(lookupChangeImpactAudit(db, "tenant-a", "chg-1")).toEqual({
+      fallback: "raw_retrieval",
+    });
+  });
+
   it("creates normalized indexed projections for the bounded current-analysis lookup", () => {
     const db = openDb();
     const columns = db.raw
