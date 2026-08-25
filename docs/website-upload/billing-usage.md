@@ -48,7 +48,7 @@ Assign the tenant an approved plan and entitlement before starting model or migr
 
 ## Evidence and verification
 
-- Billing domain: `packages/billing/src/usage-evidence.test.ts`
+- Usage ledger domain: `packages/db/src/usage.test.ts`
 - API plan control: `apps/api/src/billing-plan-control.test.ts`
 - Model accounting: `apps/worker/src/warden-model-accounting.test.ts`
 

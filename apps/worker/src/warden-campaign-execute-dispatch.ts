@@ -149,7 +149,7 @@ export async function runWardenCampaignExecuteTarget(input: {
   job: WardenCampaignExecuteJob;
   /** Build the executor dependencies from the renames the diff carried in the
    * job payload (per job — each campaign target carries its own change). */
-  resolveDependencies: (renames: readonly FieldRename[]) => WardenCampaignExecutionDependencies;
+  resolveDependencies: (renames: readonly FieldRename[], tenantId: string) => WardenCampaignExecutionDependencies;
   execute?: WardenCampaignExecutor;
 }): Promise<WardenCampaignExecuteOutcome> {
   const execute = input.execute ?? executeWardenCampaignTarget;
@@ -172,7 +172,7 @@ export async function runWardenCampaignExecuteTarget(input: {
       actorPrincipalId: payload.actorPrincipalId,
       runId: payload.runId,
       createdAt: payload.createdAt,
-      dependencies: input.resolveDependencies(payload.renames),
+      dependencies: input.resolveDependencies(payload.renames, input.job.tenant_id),
     });
     return { status: "executed", stage: result.stage };
   } catch (error) {

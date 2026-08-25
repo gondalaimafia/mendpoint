@@ -42,6 +42,7 @@ export type MissionDecision = Readonly<{
   supersedesId: string | null;
   contentDigest: string;
   createdAt: string;
+  decisionType: string | null;
 }>;
 
 // A decision annotated with its position in the supersession chain.
@@ -60,7 +61,26 @@ type MissionDecisionRow = {
   supersedes_id: string | null;
   content_digest: string;
   created_at: string;
+  decision_type: string | null;
 };
+
+export const MISSION_DECISION_TYPES = [
+  "architecture",
+  "migration",
+  "policy",
+  "verification",
+  "exception_resolution",
+  "preference",
+  "other",
+] as const;
+export type MissionDecisionType = (typeof MISSION_DECISION_TYPES)[number];
+const DECISION_TYPE_SET = new Set<string>(MISSION_DECISION_TYPES);
+
+function normalizeDecisionType(value: string | null | undefined): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (!DECISION_TYPE_SET.has(value)) throw new Error("mission_decision_type_invalid");
+  return value;
+}
 
 const MAX_DECISION = 4_000;
 const MAX_SCOPE = 512;
@@ -111,6 +131,7 @@ function hydrate(row: MissionDecisionRow): MissionDecision {
     supersedesId: row.supersedes_id,
     contentDigest: row.content_digest,
     createdAt: row.created_at,
+    decisionType: row.decision_type ?? null,
   });
 }
 
@@ -154,9 +175,14 @@ function insertDecision(db: AppDb, input: {
   correlationId: string;
   causationId?: string | null;
   createdAt: string;
+  decisionType?: string | null;
 }): MissionDecision {
   const body = decisionDigestBody(input);
   const digest = contentDigest(body);
+  // decision_type is outside the content digest, so validate it before the
+  // replay branch; otherwise an invalid type is rejected on first write but
+  // silently accepted when an identical body replays.
+  const decisionType = normalizeDecisionType(input.decisionType);
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
@@ -171,10 +197,11 @@ function insertDecision(db: AppDb, input: {
     }
     db.raw.prepare(`INSERT INTO mission_decisions
       (id, tenant_id, mission_id, decision, scope, author_principal_id, evidence_json,
-       status, supersedes_id, content_digest, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+       status, supersedes_id, content_digest, created_at, decision_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       digest, input.tenantId, input.missionId, input.decision, input.scope, input.authorPrincipalId,
-      JSON.stringify(input.evidence), input.status, input.supersedesId, digest, input.createdAt);
+      JSON.stringify(input.evidence), input.status, input.supersedesId, digest, input.createdAt,
+      decisionType);
     appendDomainEvent(db, {
       id: `mission-decision:${digest}`,
       tenantId: input.tenantId,
@@ -214,6 +241,7 @@ export function recordMissionDecision(db: AppDb, input: {
   correlationId: string;
   causationId?: string | null;
   createdAt: string;
+  decisionType?: string | null;
 }): MissionDecision {
   const decision = boundedText(input.decision, "mission_decision_text_invalid", MAX_DECISION);
   const scope = boundedText(input.scope, "mission_decision_scope_invalid", MAX_SCOPE);
@@ -234,6 +262,7 @@ export function recordMissionDecision(db: AppDb, input: {
     correlationId,
     causationId: input.causationId ?? null,
     createdAt,
+    decisionType: input.decisionType ?? null,
   });
 }
 
@@ -258,6 +287,7 @@ export function supersedeMissionDecision(db: AppDb, input: {
   correlationId: string;
   causationId?: string | null;
   createdAt: string;
+  decisionType?: string | null;
 }): MissionDecision {
   const decision = boundedText(input.decision, "mission_decision_text_invalid", MAX_DECISION);
   const scope = boundedText(input.scope, "mission_decision_scope_invalid", MAX_SCOPE);
@@ -291,6 +321,9 @@ export function supersedeMissionDecision(db: AppDb, input: {
       correlationId,
       causationId: input.causationId ?? null,
       createdAt,
+      // Keep the decision labelled: use the caller's type when supplied, else
+      // inherit the prior head so a superseded decision is not left unlabeled.
+      decisionType: input.decisionType ?? prior.decision_type,
     });
     if (owns) db.raw.exec("COMMIT");
     return value;

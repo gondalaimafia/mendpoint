@@ -10,7 +10,9 @@ import {
   getMissionTask,
   insertPrincipal,
   listMissionTasks,
+  fettlerCampaignMissionTaskId,
   missionTaskReady,
+  regaugeLaunchMissionTaskId,
   transitionMissionTask,
   verifyDomainEventIntegrity,
   type AppDb,
@@ -55,6 +57,32 @@ function move(db: AppDb, current: MissionTask, to: MissionTaskStatus, extra: { a
 }
 
 describe("mission task engine", () => {
+  it("derives a stable ReGauge launch task id from mission and optional repository", () => {
+    expect(regaugeLaunchMissionTaskId("mission-a")).toBe(regaugeLaunchMissionTaskId("mission-a"));
+    expect(regaugeLaunchMissionTaskId("mission-a", "repo-a")).toBe(
+      regaugeLaunchMissionTaskId("mission-a", "repo-a"),
+    );
+    expect(regaugeLaunchMissionTaskId("mission-a")).not.toBe(regaugeLaunchMissionTaskId("mission-a", "repo-a"));
+    expect(regaugeLaunchMissionTaskId("mission-a", "repo-a")).not.toBe(
+      regaugeLaunchMissionTaskId("mission-a", "repo-b"),
+    );
+    expect(regaugeLaunchMissionTaskId("mission-a")).toMatch(/^mt-regauge-[0-9a-f]{24}$/);
+  });
+
+  it("derives a stable Fettler campaign task id from mission and optional repository", () => {
+    expect(fettlerCampaignMissionTaskId("mission-a")).toBe(fettlerCampaignMissionTaskId("mission-a"));
+    expect(fettlerCampaignMissionTaskId("mission-a", "repo-a")).toBe(
+      fettlerCampaignMissionTaskId("mission-a", "repo-a"),
+    );
+    expect(fettlerCampaignMissionTaskId("mission-a")).not.toBe(
+      fettlerCampaignMissionTaskId("mission-a", "repo-a"),
+    );
+    expect(fettlerCampaignMissionTaskId("mission-a", "repo-a")).not.toBe(
+      fettlerCampaignMissionTaskId("mission-a", "repo-b"),
+    );
+    expect(fettlerCampaignMissionTaskId("mission-a")).toMatch(/^mt-fettler-[0-9a-f]{24}$/);
+  });
+
   it("creates an unassigned task, is idempotent on the id, and conflicts on a changed field", () => {
     const db = fixture();
     const t = task(db);

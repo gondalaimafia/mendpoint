@@ -57,6 +57,27 @@ describe("mission decision log", () => {
     expect(events).toContain("mission.decision_recorded");
   });
 
+  it("carries decision_type onto a superseded head unless the caller overrides it", () => {
+    const db = fixture();
+    const first = recordMissionDecision(db, { tenantId: "t1", missionId: "m1",
+      decision: "freeze the generated SDK", scope: "sdk", authorPrincipalId: "p1",
+      correlationId: "corr", createdAt: T0, decisionType: "migration" });
+    expect(first.decisionType).toBe("migration");
+    // Supersede without a type: the new head inherits the prior label rather than
+    // reading back unlabeled.
+    const inherited = supersedeMissionDecision(db, { tenantId: "t1", priorDecisionId: first.id,
+      decision: "freeze the generated SDK and pin the version", scope: "sdk", authorPrincipalId: "p1",
+      correlationId: "corr", createdAt: "2026-01-02T00:00:00.000Z" });
+    expect(inherited.decisionType).toBe("migration");
+    expect(getActiveMissionDecisions(db, "t1", "m1")[0]!.decisionType).toBe("migration");
+    // A caller-supplied type wins over the inherited one.
+    const relabeled = supersedeMissionDecision(db, { tenantId: "t1", priorDecisionId: inherited.id,
+      decision: "freeze the generated SDK, pin it, and document it", scope: "sdk",
+      authorPrincipalId: "p1", correlationId: "corr", createdAt: "2026-01-03T00:00:00.000Z",
+      decisionType: "architecture" });
+    expect(relabeled.decisionType).toBe("architecture");
+  });
+
   // CONTROL: supersession is a chain, not an overwrite. Deleting this behaviour
   // (or overwriting instead of chaining) fails this test.
   it("keeps a superseded decision readable and the chain intact", () => {

@@ -221,6 +221,59 @@ describe("public claim registry validation", () => {
     staleLive.freshUntil = "2026-08-02T11:59:59.000Z";
     expect(validate(stale).some((issue) => issue.code === "LIVE_EVIDENCE_STALE")).toBe(true);
   });
+
+  it("rejects live evidence whose freshUntil precedes observedAt", () => {
+    const input = registry();
+    const live = input.claims[0].evidence[0];
+    if (live.type !== "live") throw new Error("expected live evidence");
+    live.observedAt = "2026-08-02T10:00:00.000Z";
+    live.freshUntil = "2026-08-02T09:00:00.000Z";
+    expect(
+      validate(input).some((issue) => issue.code === "LIVE_EVIDENCE_FRESHNESS_WINDOW"),
+    ).toBe(true);
+  });
+
+  it("flags a second-resolution observedAt reused across live locators as a batch stamp", () => {
+    const input = registry();
+    const live = input.claims[0].evidence[0];
+    if (live.type !== "live") throw new Error("expected live evidence");
+    live.observedAt = "2026-08-02T10:00:00.000Z";
+    input.claims[0].evidence.push({
+      id: "CLM-001-EV02",
+      type: "live",
+      locator: "https://mendpoint-talal.fly.dev/healthz",
+      observedAt: "2026-08-02T10:00:00.000Z",
+      freshUntil: "2026-08-03T10:00:00.000Z",
+      revision: AUDITED_REVISION,
+    });
+    const batch = validate(input).filter(
+      (issue) => issue.code === "LIVE_EVIDENCE_BATCH_STAMP",
+    );
+    expect(batch.map((issue) => issue.subject).sort()).toEqual([
+      "CLM-001-EV01",
+      "CLM-001-EV02",
+    ]);
+    expect(batch[0].message).toContain("CLM-001-EV01");
+    expect(batch[0].message).toContain("CLM-001-EV02");
+  });
+
+  it("accepts a shared sub-second observedAt across live locators (single probe run)", () => {
+    const input = registry();
+    const live = input.claims[0].evidence[0];
+    if (live.type !== "live") throw new Error("expected live evidence");
+    live.observedAt = "2026-08-02T10:00:00.565Z";
+    input.claims[0].evidence.push({
+      id: "CLM-001-EV02",
+      type: "live",
+      locator: "https://mendpoint-talal.fly.dev/healthz",
+      observedAt: "2026-08-02T10:00:00.565Z",
+      freshUntil: "2026-08-03T10:00:00.000Z",
+      revision: AUDITED_REVISION,
+    });
+    expect(
+      validate(input).some((issue) => issue.code === "LIVE_EVIDENCE_BATCH_STAMP"),
+    ).toBe(false);
+  });
 });
 
 describe("published no-auto-merge guardrail (CLM-006)", () => {

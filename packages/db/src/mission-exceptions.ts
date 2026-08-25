@@ -55,6 +55,8 @@ export type MissionException = Readonly<{
   supersedesId: string | null;
   contentDigest: string;
   createdAt: string;
+  taskId: string | null;
+  category: string | null;
 }>;
 
 export type MissionExceptionView = MissionException &
@@ -84,11 +86,35 @@ type MissionExceptionRow = {
   supersedes_id: string | null;
   content_digest: string;
   created_at: string;
+  task_id: string | null;
+  category: string | null;
 };
 
 const MAX_REASON = 4_000;
 const MAX_IMPACT = 4_000;
 const MAX_RESOLUTION = 4_000;
+
+export const MISSION_EXCEPTION_CATEGORIES = [
+  "graph_incomplete",
+  "high_risk_change",
+  "ambiguous_requirement",
+  "policy_exception",
+  "verification_failure",
+  "architecture_decision_required",
+  "other",
+] as const;
+export type MissionExceptionCategory = (typeof MISSION_EXCEPTION_CATEGORIES)[number];
+const EXCEPTION_CATEGORY_SET = new Set<string>(MISSION_EXCEPTION_CATEGORIES);
+
+function normalizeExceptionCategory(value: string | null | undefined): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (!EXCEPTION_CATEGORY_SET.has(value)) throw new Error("mission_exception_category_invalid");
+  return value;
+}
+function normalizeTaskId(value: string | null | undefined): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  return boundedText(value, "mission_exception_task_id_invalid", 256);
+}
 
 function exceptionDigestBody(input: {
   tenantId: string;
@@ -155,6 +181,8 @@ function hydrate(row: MissionExceptionRow): MissionException {
     supersedesId: row.supersedes_id,
     contentDigest: row.content_digest,
     createdAt: row.created_at,
+    taskId: row.task_id ?? null,
+    category: row.category ?? null,
   });
 }
 
@@ -188,6 +216,8 @@ function insertException(db: AppDb, input: {
   correlationId: string;
   causationId?: string | null;
   createdAt: string;
+  taskId?: string | null;
+  category?: string | null;
 }): MissionException {
   const body = exceptionDigestBody(input);
   const digest = contentDigest(body);
@@ -202,11 +232,13 @@ function insertException(db: AppDb, input: {
     }
     db.raw.prepare(`INSERT INTO mission_exceptions
       (id, tenant_id, mission_id, reason, impact, owner_principal_id, resolution_path, blocking,
-       status, observed_snapshot_id, observed_resolved_sha, supersedes_id, content_digest, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+       status, observed_snapshot_id, observed_resolved_sha, supersedes_id, content_digest, created_at,
+       task_id, category)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       digest, input.tenantId, input.missionId, input.reason, input.impact, input.ownerPrincipalId,
       input.resolutionPath, input.blocking ? 1 : 0, input.status, input.observedSnapshotId,
-      input.observedResolvedSha, input.supersedesId, digest, input.createdAt);
+      input.observedResolvedSha, input.supersedesId, digest, input.createdAt,
+      normalizeTaskId(input.taskId), normalizeExceptionCategory(input.category));
     appendDomainEvent(db, {
       id: `mission-exception:${digest}`,
       tenantId: input.tenantId,
@@ -253,6 +285,8 @@ export function raiseMissionException(db: AppDb, input: {
   correlationId: string;
   causationId?: string | null;
   createdAt: string;
+  taskId?: string | null;
+  category?: string | null;
 }): MissionException {
   const reason = boundedText(input.reason, "mission_exception_reason_invalid", MAX_REASON);
   const impact = boundedText(input.impact, "mission_exception_impact_invalid", MAX_IMPACT);
@@ -280,6 +314,8 @@ export function raiseMissionException(db: AppDb, input: {
     correlationId,
     causationId: input.causationId ?? null,
     createdAt,
+    taskId: input.taskId ?? null,
+    category: input.category ?? null,
   });
 }
 
@@ -332,6 +368,10 @@ function transition(db: AppDb, input: {
       correlationId: input.correlationId,
       causationId: input.causationId ?? null,
       createdAt: input.createdAt,
+      // Carry the annotation forward so a superseding head keeps its task and
+      // category; without these the resolved head reads back as uncategorised.
+      taskId: prior.task_id,
+      category: prior.category,
     });
     if (owns) db.raw.exec("COMMIT");
     return value;

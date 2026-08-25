@@ -184,9 +184,15 @@ import {
 } from "./warden-model-accounting.js";
 import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
 import { persistWardenTrajectory } from "./warden-trajectory.js";
+import { assertAgentRunMissionPolicy } from "./agent-run-policy.js";
+import { resolveBoundMission } from "./job-bound-mission.js";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
 import { observeProductCompletionInShadow } from "./verifier-product-shadow.js";
+import {
+  parseLearningCorpusArgs,
+  sealGovernedLearningCorpus,
+} from "./learning-corpus-cli.js";
 
 function verifierDigest(value: string): string {
   if (/^sha256:[a-f0-9]{64}$/.test(value)) return value;
@@ -198,11 +204,17 @@ import { runWardenCiRepairDispatch } from "./warden-ci-repair-dispatch.js";
 import { runFettlerPrReviewDispatch } from "./fettler-pr-review-dispatch.js";
 import {
   WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE,
+  parseWardenCampaignExecuteJob,
   runWardenCampaignExecuteTarget,
   type WardenCampaignExecutor,
 } from "./warden-campaign-execute-dispatch.js";
+import { assignFettlerMissionTaskOnClaim, handoffFettlerMissionTaskOnReview } from "./fettler-mission-task-claim.js";
 import type { FieldRename } from "./warden-campaign-recipe.js";
 import type { WardenCampaignExecutionDependencies } from "@mendpoint/pipeline";
+import {
+  campaignExecuteClaimEnabled,
+  productionCampaignResolveDependencies,
+} from "./warden-campaign-execute-activation.js";
 import {
   createInstallationAccountFetcher,
   reconcileNullInstallationAccounts,
@@ -2475,7 +2487,7 @@ async function processJobsOnceUnfenced(
     // not claim `warden.campaign.execute-target` so the job waits for a
     // configured worker rather than failing closed on every drain.
     wardenCampaignExecution?: Readonly<{
-      resolveDependencies: (renames: readonly FieldRename[]) => WardenCampaignExecutionDependencies;
+      resolveDependencies: (renames: readonly FieldRename[], _tenantId: string) => WardenCampaignExecutionDependencies;
       execute?: WardenCampaignExecutor;
     }>;
     delegatedPrVerification?: Readonly<{
@@ -2611,6 +2623,17 @@ async function processJobsOnceUnfenced(
         continue;
       }
       if (job.type === WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE && opts.wardenCampaignExecution) {
+        try {
+          const claimed = parseWardenCampaignExecuteJob(job);
+          assignFettlerMissionTaskOnClaim(db, {
+            tenantId: job.tenant_id,
+            campaignId: claimed.campaignId,
+            targetId: claimed.targetId,
+            createdAt: claimed.createdAt,
+          });
+        } catch {
+          // Observational: a missing/raced MissionTask must not fail a claimed execute.
+        }
         // Review-first: the executor drives the target to stage `review` (never
         // delivers). Known outcomes settle here under the lease fence; an
         // unexpected throw propagates to the loop's generic failure path.
@@ -2621,8 +2644,22 @@ async function processJobsOnceUnfenced(
           execute: opts.wardenCampaignExecution.execute,
         });
         if (outcome.status === "executed") {
+          // Settle the execute under the lease FIRST. A lost fence throws here, so
+          // the MissionTask is never advanced to review on the strength of an
+          // outcome the system then declares unowned.
           if (!completeJob(db, job.id, outcome, nowIso(), { ...fence })) {
             throw new Error("warden_campaign_execute_lease_lost");
+          }
+          try {
+            const claimed = parseWardenCampaignExecuteJob(job);
+            handoffFettlerMissionTaskOnReview(db, {
+              tenantId: job.tenant_id,
+              campaignId: claimed.campaignId,
+              targetId: claimed.targetId,
+              createdAt: nowIso(),
+            });
+          } catch {
+            // Observational: review handoff must not un-complete a landed execute.
           }
           result.succeeded++;
           continue;
@@ -2954,6 +2991,17 @@ async function processJobsOnceUnfenced(
         }
         const repository = getConnectedRepository(db, binding.repositoryId, job.tenant_id);
         if (!repository) throw new Error("warden_connected_repository_not_found");
+        if (payload.missionId) {
+          assertAgentRunMissionPolicy(db, {
+            tenantId: job.tenant_id,
+            missionId: payload.missionId,
+            repositoryId: binding.repositoryId,
+            branch: repository.selected_branch || repository.default_branch || "main",
+            targetPaths: allowedChangedPaths,
+            useLlm,
+            risk: payload.ciFailure ? "high" : "medium",
+          });
+        }
         const repositoryClassification = modelSourcePolicy
           ? resolveWardenRepositoryClassification(job.tenant_id, repository.remote_id, workerEnv)
           : "restricted";
@@ -3281,11 +3329,20 @@ async function processJobsOnceUnfenced(
         // Tenant is the authenticated job principal, never a request body.
         if (attempt.capture) {
           try {
+            // "No mission claimed" is a legitimate NULL binding; a claim that does
+            // not resolve for this tenant is a fault recorded in provenance, never
+            // bound (the DB guard rejects a foreign FK, the inherited-context path
+            // fails closed on its own).
+            const boundMission = resolveBoundMission(db, job.tenant_id, payload.missionId);
             persistWardenTrajectory(db, {
               tenantId: job.tenant_id,
               capture: attempt.capture,
               jobId: job.id,
               runId: sessionId,
+              ...(boundMission.kind === "bound" ? { missionId: boundMission.missionId } : {}),
+              ...(boundMission.kind === "rejected"
+                ? { rejectedMissionClaim: boundMission.claimedMissionId }
+                : {}),
               ...(inheritedContextRefs ? { contextRefs: inheritedContextRefs } : {}),
               createdAt: nowIso(),
             });
@@ -3747,7 +3804,11 @@ async function runJobWorker(intervalMs: number) {
   let failures = 0;
   for (;;) {
     try {
-      const result = await processJobsOnce(db);
+      const result = await processJobsOnce(db, {
+        wardenCampaignExecution: campaignExecuteClaimEnabled()
+          ? { resolveDependencies: productionCampaignResolveDependencies() }
+          : undefined,
+      });
       failures = result.failed > 0 ? failures + 1 : 0;
     } catch (error) {
       failures++;
@@ -3980,6 +4041,9 @@ async function runService(intervalMs: number) {
           maxRunningPerTenant: 1,
           runWardenMaintenance: lane === 0,
           shouldContinue: () => !shutdown.signal.aborted,
+          wardenCampaignExecution: campaignExecuteClaimEnabled()
+            ? { resolveDependencies: productionCampaignResolveDependencies() }
+            : undefined,
           onActiveJob: (job) => {
             if (job) activeJobs.set(lane, job);
             else activeJobs.delete(lane);
@@ -4214,8 +4278,20 @@ async function main() {
     } finally {
       db.raw.close();
     }
+  } else if (cmd === "learning-corpus") {
+    // H3: seal a governed learning dataset version through the existing
+    // pipeline sealer. Does not train and does not invent organization-memory
+    // routing. Requires an active consent for --purpose.
+    const input = parseLearningCorpusArgs(process.argv.slice(3));
+    const db = initializeWorkerDurableState(() => createDb());
+    try {
+      const sealed = sealGovernedLearningCorpus(db, input);
+      console.log(JSON.stringify(sealed, null, 2));
+    } finally {
+      db.raw.close();
+    }
   } else {
-    console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|run-transformer-service|sdk-signals|reconcile-installations]
+    console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|run-transformer-service|sdk-signals|reconcile-installations|learning-corpus]
   poll-once [--local] [--no-pipeline] [--slug acme-payments]
   poll [--local] [--interval 60000]
   process-jobs
@@ -4223,7 +4299,8 @@ async function main() {
   run-service [--interval 5000]
   run-transformer-service
   sdk-signals [--local]
-  reconcile-installations [--tenant tenant_default] [--installation 151614362]`);
+  reconcile-installations [--tenant tenant_default] [--installation 151614362]
+  learning-corpus --tenant <id> --purpose <purpose> --cutoff <iso> --actor <principal-id> --idempotency-key <key> [--created-at <iso>]`);
     process.exitCode = 1;
   }
 }

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { openGraphLearnMemory } from "./store.js";
 import {
   compileFettlerImpactContext,
+  compileMissionGraphProjection,
   classifyChangeGraphFailure,
   diffSoftwareGraphVersions,
   getSoftwareGraphHead,
@@ -602,6 +603,30 @@ describe("foundational software intelligence graph", () => {
     expect(first.content).not.toContain('"targetId"');
     expect(first.content).not.toContain('"id":"endpoint:');
     expect(first.byteLength).toBeLessThan(1_800);
+  });
+
+  it("names the compiled impact a MissionGraphProjection without dumping the graph", () => {
+    const db = openGraphLearnMemory();
+    const version = publishSoftwareGraphVersion(db, publication());
+    const result = queryFettlerEndpointImpact(db, {
+      tenantId: "tenant-a",
+      repositoryId: "repo-a",
+      graphVersionId: version.versionId,
+      endpointKey: "POST /v1/charges",
+      maxHops: 6,
+      maxEntities: 20,
+      maxRelationships: 20,
+    });
+    const projection = compileMissionGraphProjection({
+      impact: result,
+      missionId: "mission-a",
+      maxBytes: 8_192,
+    });
+    expect(projection.schemaVersion).toBe("mendpoint.mission-graph-projection.v1");
+    expect(projection.missionId).toBe("mission-a");
+    expect(projection.graphVersionId).toBe(result.graphVersionId);
+    expect(projection.compiled).toEqual(compileFettlerImpactContext(result, { maxBytes: 8_192 }));
+    expect(projection.compiled.content).not.toContain("props_json");
   });
 
   it("routes representation failures away from model weight training", () => {

@@ -2,11 +2,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { openGraphLearnMemory } from "@mendpoint/graph-learn";
 import {
   applyFieldRenameEdits,
   decodeRenamePostcondition,
   encodeRenamePostcondition,
   extractFieldRenames,
+  fieldRenameRecipeDependencies,
   payloadRenameDeriver,
   planFieldRenameEdits,
 } from "./warden-campaign-recipe.js";
@@ -121,5 +123,22 @@ describe("payloadRenameDeriver", () => {
 
   it("returns null when no rename was carried (executor fails closed)", () => {
     expect(payloadRenameDeriver([])({ sourceArtifactId: "src-1" } as never)).toBeNull();
+  });
+});
+
+describe("fieldRenameRecipeDependencies", () => {
+  it("uses the supplied graph handle and refuses a missing one", () => {
+    const graphDb = openGraphLearnMemory();
+    const deps = fieldRenameRecipeDependencies({
+      deriveRename: () => ({ from: "amount_cents", to: "amount" }),
+      graphDb,
+    });
+    expect(deps.graphDb).toBe(graphDb);
+    expect(() =>
+      fieldRenameRecipeDependencies({
+        deriveRename: () => ({ from: "amount_cents", to: "amount" }),
+        graphDb: undefined as never,
+      }),
+    ).toThrow(/field_rename_recipe_graph_required/);
   });
 });

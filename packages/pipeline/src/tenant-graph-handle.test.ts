@@ -16,7 +16,7 @@ import {
 const opened: Array<{ db?: GraphLearnDb; dir?: string; close?: () => void }> = [];
 
 afterEach(() => {
-  for (const item of opened.splice(0)) {
+  for (const item of opened.splice(0).reverse()) {
     item.close?.();
     try { item.db?.raw.close(); } catch { /* already closed */ }
     if (item.dir) rmSync(item.dir, { recursive: true, force: true });
@@ -123,6 +123,22 @@ describe("resolveTenantGraphHandle", () => {
     }
     const missing = resolveTenantGraphHandle({ tenantId: "tenant-c", graphPath: path });
     expect(missing).toMatchObject({ status: "unavailable", reason: "empty_tenant_view" });
+  });
+
+  it("returns a ready handle for an empty tenant view only when allowEmpty is set", () => {
+    const { path } = persistentGraph("");
+    const closed = resolveTenantGraphHandle({ tenantId: "tenant-a", graphPath: path });
+    expect(closed).toMatchObject({ status: "unavailable", reason: "empty_tenant_view" });
+    const ingest = resolveTenantGraphHandle({
+      tenantId: "tenant-a",
+      graphPath: path,
+      allowEmpty: true,
+    });
+    expect(ingest.status).toBe("ready");
+    if (ingest.status === "ready") {
+      opened.push({ close: ingest.close });
+      expect(ingest.stats.nodes).toBe(0);
+    }
   });
 
   it("reports open_failed without leaking an ephemeral memory store", () => {

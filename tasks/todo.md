@@ -2925,3 +2925,30 @@ GREEN: a single preparation step now writes only run metadata to a retained arti
 - Pull request `318` carried red deployment-boundary regressions at the Transformer package and authenticated coordinator seams. It did not rebuild the campaign, rematerialize the repository, weaken execution replay, or broaden delivery authority.
 - Protected run `32592758400` then passed preflight, exact authority validation, coordinator and worker deployment, bounded live model evaluation, the exact real draft canary, a five-minute read-only readiness soak, containment, and evidence upload. It ran from `19:07:02Z` to `19:19:00Z` against exact revision `1c6c9e9`.
 - The speed came from using the durable event trace as a debugging cursor. Once the first missing transition was isolated, the existing completed attempt, authorization, checkpoint, encrypted workspace, and production campaign were treated as valid evidence to replay, not work to recreate.
+
+## 2026-08-25 Public readiness route
+
+- [x] Add a public `/readyz` route that reuses the existing full deployment readiness contract.
+- [x] Keep `/readyz` outside the operator access gate and cover the middleware boundary.
+- [x] Run focused web tests, web typecheck, production build, GA checks, and diff integrity.
+- [ ] Publish a narrow PR, require current-base CI, merge, and verify the exact deployed route.
+
+Acceptance: `/readyz` returns the same fail-closed API, authentication, worker, feed, recovery, and ReGauge infrastructure readiness verdict as `/healthz`; it is publicly probeable and does not create a weaker duplicate readiness implementation.
+
+### Review
+
+RED: the public production probe surface had no `/readyz` route, so the Phase 1 readiness assertion redirected to the operator access page rather than returning machine-readable readiness evidence.
+
+GREEN: `/readyz` now re-exports the established `/healthz` readiness handler and is explicitly public in middleware. The focused route and middleware suite passes 38 of 38 tests, the web typecheck passes, the optimized web build includes `/readyz`, `npm run ga:check` passes, and `git diff --check` is clean.
+## 2026-08-22 Public documentation drift
+
+- [x] Reproduce the exact generated-file drift without rewriting source content.
+- [x] Regenerate only the stale website-upload artifacts from the canonical catalog.
+- [x] Run documentation checks, names and claims gates, production build, and strict diff review.
+- [ ] Publish a separate protected pull request and leave deployment gated on live health.
+
+### Review
+
+RED: `npm run docs:check` reported exactly `model-router.html`, `model-router.md`, `billing-usage.html`, and `billing-usage.md` as stale.
+
+GREEN: the canonical generator changed only those four artifacts. It removed references to the absent billing and router-runtime test files and aligned the router upload copy with the immutable decision record in the source catalog. `docs:check`, `names:check`, `claims:check`, and the production build pass; strict diff review found no source-catalog rewrite.

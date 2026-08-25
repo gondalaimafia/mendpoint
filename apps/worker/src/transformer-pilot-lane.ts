@@ -25,6 +25,10 @@ import {
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
 import { resolveRenamedEnv } from "@mendpoint/shared";
 import {
+  assignRegaugeMissionTaskOnClaim,
+  handoffRegaugeMissionTaskOnReview,
+} from "./regauge-mission-task-claim.js";
+import {
   discardTransformerAdaptiveModelEvidence,
   persistTransformerAdaptiveModelEvidence,
   type TransformerAdaptiveModelEvidenceSummary,
@@ -349,16 +353,54 @@ function requireAdaptiveRetention(value: number | undefined): number {
   return retention;
 }
 
-function asCoordinator(store: TransformerPilotLaneStore): TransformerAttemptCoordinatorPort {
+function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): TransformerAttemptCoordinatorPort {
   return {
-    claimNextAttempt: (input) => store.claimNextAttempt(input),
+    claimNextAttempt: (input) => {
+      const lease = store.claimNextAttempt(input);
+      if (!lease) return lease;
+      try {
+        // Drive the launch-created MissionTask on the same claim that took the
+        // lease. Missing/unbound tasks are a no-op; a raced task must not fail
+        // an already-claimed attempt.
+        assignRegaugeMissionTaskOnClaim(db, {
+          tenantId: lease.tenantId,
+          campaignId: lease.campaignId,
+          repositoryId: lease.snapshot.repositoryId,
+          createdAt: lease.startedAt,
+        });
+      } catch {
+        // Observational: the lease is already held.
+      }
+      return lease;
+    },
     renewAttemptLease: (input) => store.renewAttemptLease(input),
     assertCurrentAttemptFence: (input) => store.assertCurrentAttemptFence(input),
     recordAdaptiveAttemptUsage: (input) => store.recordAdaptiveAttemptUsage(input),
     reserveAdaptiveModelCall: (input) => store.reserveAdaptiveModelCall(input),
     settleAdaptiveModelCall: (input) => store.settleAdaptiveModelCall(input),
     recordAdaptiveCandidateHandoff: (input) => store.recordAdaptiveCandidateHandoff(input),
-    completeAttempt: (input) => store.completeAttempt(input),
+    completeAttempt: (input) => {
+      const completed = store.completeAttempt(input);
+      try {
+        // Verification passing is still review-first, not delivery. Hand the
+        // launch MissionTask to humans on the same complete that closed the
+        // lease. Missing/unbound tasks are a no-op; a raced task must not
+        // un-complete an already-recorded attempt.
+        const repositoryId = completed.units.find((unit) => unit.id === input.unitId)
+          ?.snapshot.repositoryId;
+        if (repositoryId) {
+          handoffRegaugeMissionTaskOnReview(db, {
+            tenantId: input.tenantId,
+            campaignId: input.campaignId,
+            repositoryId,
+            createdAt: input.observedAt,
+          });
+        }
+      } catch {
+        // Observational: the attempt is already completed.
+      }
+      return completed;
+    },
     recordAttemptFailure: (input) => store.recordAttemptFailure(input),
   };
 }
@@ -645,7 +687,7 @@ export async function runTransformerPilotLaneOnce(
     }
   }
 
-  const coordinator = asCoordinator(input.store);
+  const coordinator = asCoordinator(input.store, input.db);
   // The shared policy router is the dispatcher for every runnable campaign: it
   // decides (execute vs mandatory human handoff), selects the Transformer
   // executor over Warden under the existing filters and breakers, and persists

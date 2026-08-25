@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { AppDb } from "./index.js";
 import { appendDomainEvent } from "./trust.js";
@@ -33,6 +34,26 @@ export type MissionTask = Readonly<{
   createdAt: string;
   updatedAt: string;
 }>;
+
+/**
+ * Deterministic MissionTask id for a launched ReGauge Mission (or one of its
+ * repos). Shared by the launch writer (API) and the claim driver (worker) so
+ * both sides resolve the same row without the worker importing `apps/api`.
+ */
+export function regaugeLaunchMissionTaskId(missionId: string, repositoryId?: string): string {
+  const material = repositoryId ? `${missionId}\0${repositoryId}` : missionId;
+  return `mt-regauge-${createHash("sha256").update(material, "utf8").digest("hex").slice(0, 24)}`;
+}
+
+/**
+ * Deterministic MissionTask id for a Fettler campaign Mission (or one of its
+ * enrolled repositories). Shared by the enrollment writer and a later claim
+ * driver so both sides resolve the same row.
+ */
+export function fettlerCampaignMissionTaskId(missionId: string, repositoryId?: string): string {
+  const material = repositoryId ? `${missionId}\0${repositoryId}` : missionId;
+  return `mt-fettler-${createHash("sha256").update(material, "utf8").digest("hex").slice(0, 24)}`;
+}
 
 type MissionTaskRow = {
   id: string; tenant_id: string; mission_id: string; task_type: string;

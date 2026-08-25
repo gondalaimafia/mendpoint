@@ -22,6 +22,7 @@
     "./verifier-shadow": "./src/verifier-shadow.ts",
     "./verifier-product-shadow": "./src/verifier-product-shadow.ts",
     "./warden-candidate-delivery": "./src/warden-candidate-delivery.ts",
+    "./warden-campaign-execute-activation": "./src/warden-campaign-execute-activation.ts",
     "./delegated-pr-verification-job": "./src/delegated-pr-verification-job.ts"
   },
   "scripts": {

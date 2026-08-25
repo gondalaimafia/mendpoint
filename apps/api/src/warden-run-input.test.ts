@@ -94,6 +94,28 @@ describe("Warden run input", () => {
     });
   });
 
+  it("accepts an optional missionId and rejects an empty or padded one", () => {
+    expect(parseWardenRunInput(valid({ missionId: "mission-a" }))).toMatchObject({
+      ok: true,
+      value: { missionId: "mission-a" },
+    });
+    const omitted = parseWardenRunInput(valid());
+    expect(omitted.ok).toBe(true);
+    if (omitted.ok) expect(omitted.value.missionId).toBeUndefined();
+    expect(parseWardenRunInput(valid({ missionId: "" }))).toEqual({
+      ok: false,
+      error: "missionId must be a nonempty mission id",
+    });
+    expect(parseWardenRunInput(valid({ missionId: " mission-a" }))).toEqual({
+      ok: false,
+      error: "missionId must be a nonempty mission id",
+    });
+    expect(parseWardenRunInput(valid({ missionId: 12 }))).toEqual({
+      ok: false,
+      error: "missionId must be a nonempty mission id",
+    });
+  });
+
   it("rejects invalid types and budgets", () => {
     expect(parseWardenRunInput(valid({ useLlm: "yes" })))
       .toEqual({ ok: false, error: "useLlm must be a boolean" });

@@ -1,4 +1,6 @@
-import { createDb } from "@mendpoint/db";
+import { createDb, listOrganizationMemory } from "@mendpoint/db";
+import { existsSync } from "node:fs";
+import { openGraphLearnDb, type GraphLearnDb } from "@mendpoint/graph-learn";
 import { resolveRenamedEnv } from "@mendpoint/shared";
 import { TransformerCampaignService } from "./transformer-control-plane.js";
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
@@ -27,6 +29,14 @@ export function synchronousPipelineExecutionAllowed(
   return env.MENDPOINT_PROCESS_ROLE?.trim() !== "transformer_coordinator";
 }
 
+function liveGraphIfPresent(
+  env: Readonly<Record<string, string | undefined>>,
+): GraphLearnDb | null {
+  const path = env.GRAPH_LEARN_DB?.trim();
+  if (!path || !existsSync(path)) return null;
+  return openGraphLearnDb(path);
+}
+
 export function initializeApiRuntime(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ) {
@@ -49,6 +59,11 @@ export function initializeApiRuntime(
         REACT_DOM_17_TO_18_RECIPE,
       ],
       resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ENVIRONMENT") ?? "",
+      () => new Date().toISOString(),
+      {
+        graph: liveGraphIfPresent(env),
+        organizationMemory: (tenantId) => listOrganizationMemory(db, { tenantId }),
+      },
     );
     return {
       db,
@@ -57,6 +72,7 @@ export function initializeApiRuntime(
       transformerMissionRoutes: createTransformerMissionRoutes({
         service: transformerMissions,
         environment: resolveRenamedEnv(env, "MENDPOINT_REGAUGE_ENVIRONMENT"),
+        appDb: db,
       }),
       changeSourceRoutes: createChangeSourceRoutes(),
       billingRoutes: createBillingEconomicsRoutes({ db }),

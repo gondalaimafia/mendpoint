@@ -200,7 +200,7 @@ describe("graph-learn substrate", () => {
     expect(endpoint.coverage.basis).toBe("target_absent");
   });
 
-  it("migration_ready_units fails closed because DEPENDS_ON has no producer", () => {
+  it("migration_ready_units fails closed when DEPENDS_ON is empty", () => {
     const db = openGraphLearnMemory();
     upsertNode(db, {
       id: "migration-unit:u1",
@@ -242,20 +242,15 @@ describe("graph-learn substrate", () => {
     expect(formatQueryForPlanner(r)).not.toContain("Coverage: complete");
   });
 
-  it("does not advertise the stubbed graph ops in the planner tool surface", () => {
-    // While DEPENDS_ON / PRESERVES_INVARIANT have no ingest producer, these ops
-    // can only ever return an empty result, so they must not be offered to the
-    // planner as usable tools.
-    expect(GRAPH_RAG_TOOLS).not.toContain("migration_ready_units");
+  it("does not advertise invariants_for_symbol while PRESERVES_INVARIANT has no producer", () => {
+    expect(GRAPH_RAG_TOOLS).toContain("migration_ready_units");
     expect(GRAPH_RAG_TOOLS).not.toContain("invariants_for_symbol");
   });
 
-  it("does not route a natural-language readiness question to the guaranteed-empty stub", () => {
-    // Previously "ready units in campaign camp-1" matched the migration rule at
-    // weight 7 and ran a stub that always returns empty. With that rule removed,
-    // the picker must land on some other op, never migration_ready_units.
+  it("routes a natural-language readiness question to migration_ready_units", () => {
     const pick = pickGraphQuery("which units are ready for migration in campaign camp-1");
-    expect(pick.query.op).not.toBe("migration_ready_units");
+    expect(pick.query.op).toBe("migration_ready_units");
+    expect(pick.query).toMatchObject({ campaignId: "camp-1" });
   });
 
   it("ingests spec surfaces and blast radius", () => {
