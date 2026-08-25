@@ -12,6 +12,8 @@ import {
   getMissionTask,
   getWardenCampaignTarget,
   insertPrincipal,
+  listRepositorySnapshots,
+  openTaskHandoff,
   resolveMissionForFettlerCampaign,
   transitionMissionTask,
   type AppDb,
@@ -115,8 +117,11 @@ function resolveClaimedTask(
 }
 
 /**
- * After a review-first campaign execute lands, hand the MissionTask to humans.
- * No-op when unbound or the task is not on the claimed working path.
+ * After a review-first campaign execute lands, hand the MissionTask to humans
+ * through `openTaskHandoff` (blocking exception + MissionTask in one
+ * transaction). No-op when unbound or the task is not on the claimed working
+ * path. A generic "please review" is refused by the store; the question names
+ * the campaign target that just passed post-edit verification.
  */
 export function handoffFettlerMissionTaskOnReview(
   db: AppDb,
@@ -131,16 +136,27 @@ export function handoffFettlerMissionTaskOnReview(
   // the owner is unknown; refuse rather than mint a fresh principal that would
   // paper over "I do not know who owned this" and hand off under a fabricated actor.
   if (!task.assignedPrincipalId) throw new Error("mission_task_review_actor_unknown");
-  return transitionMissionTask(db, {
+  const target = getWardenCampaignTarget(db, input.tenantId, input.campaignId, input.targetId);
+  const snapshot = target
+    ? listRepositorySnapshots(db, input.tenantId, target.repositoryId)
+      .find((row) => row.id === target.snapshotId)
+    : undefined;
+  openTaskHandoff(db, {
     tenantId: input.tenantId,
+    missionId: task.missionId,
     taskId: task.id,
-    expectedRevision: task.revision,
-    to: "human_review_required",
-    actorPrincipalId: task.assignedPrincipalId,
-    handoffReason: "campaign_execute_review",
-    eventId: `${task.id}-claim-review`,
-    idempotencyKey: `mission-task-claim-review-${task.id}`,
+    reason: "architecture_decision_required",
+    question:
+      `Should campaign ${input.campaignId} target ${input.targetId}` +
+      `${target ? ` (repository ${target.repositoryId} snapshot ${target.snapshotId})` : ""}` +
+      ` proceed to draft delivery after post-edit verification passed?`,
+    context:
+      `Campaign execute reached review for target ${input.targetId}. ` +
+      `Verification comparison passed. Human approval is required before delivery.`,
+    ownerPrincipalId: task.assignedPrincipalId,
+    ...(snapshot ? { observedAgainst: { snapshotId: snapshot.id, resolvedSha: snapshot.resolved_sha } } : {}),
     correlationId: input.campaignId,
     createdAt: input.createdAt,
   });
+  return getMissionTask(db, input.tenantId, task.id);
 }
