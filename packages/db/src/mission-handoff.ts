@@ -385,7 +385,9 @@ export function replaceReviewerDirective(
       decision.decision === directive &&
       decision.authorPrincipalId === input.authorPrincipalId &&
       sameEvidence(decision.evidence, evidence));
-    const survivor = replay ?? heads.at(-1);
+    // Authority follows the newest legitimate active head, even when a delayed
+    // transport retry semantically matches an older legacy duplicate.
+    const survivor = heads.at(-1);
     for (const head of heads) {
       if (head.id === survivor?.id) continue;
       retractMissionDecision(db, {
@@ -398,7 +400,7 @@ export function replaceReviewerDirective(
         createdAt: input.createdAt,
       });
     }
-    const value = replay ?? (survivor
+    const value = replay && survivor ? survivor : (survivor
       ? supersedeMissionDecision(db, {
           tenantId: input.tenantId,
           priorDecisionId: survivor.id,

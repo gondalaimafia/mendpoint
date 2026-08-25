@@ -3365,11 +3365,13 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 ### 2026-08-25 PR 466 delayed replay authority follow-up
 
-- [ ] RED: prove an older `T0` directive replayed at `T2` cannot displace a newer `T1` active directive across legacy duplicate heads.
-- [ ] Select the newest legitimate active head independently of semantic replay matching.
-- [ ] Run focused database and API tests, affected typechecks, and diff integrity.
-- [ ] Record exact evidence and push the rebased branch without approving or merging it.
+- [x] RED: prove an older `T0` directive replayed at `T2` cannot displace a newer `T1` active directive across legacy duplicate heads.
+- [x] Select the newest legitimate active head independently of semantic replay matching.
+- [x] Run focused database and API tests, affected typechecks, and diff integrity.
+- [x] Record exact evidence and push the rebased branch without approving or merging it.
 
 #### Review
 
-- Pending focused verification.
+- RED: with two legitimate active legacy heads at `T0` and `T1`, replaying the older semantic operation at `T2` returned the older id and retracted the newer directive.
+- GREEN: the survivor is now always the newest legitimate active head in stable creation and id order. Semantic matching only distinguishes replay from a new directive, so the delayed older retry returns the newer authority, reconciles the older duplicate, and never supersedes the newer row.
+- Verification: rebased onto `origin/main` `a43bbd71`. All 16 Mission handoff database tests and 21 candidate-review API tests pass. Database and API typechecks pass, and diff integrity is clean.
