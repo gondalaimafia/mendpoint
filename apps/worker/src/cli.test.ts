@@ -454,7 +454,8 @@ describe("worker runtime", () => {
   it("leaves ReGauge advisory dispatch to the durable coordinator", () => {
     const source = readFileSync(new URL("./cli.ts", import.meta.url), "utf8");
     expect(source).not.toContain("onVerifiedCandidateCompleted:");
-    expect(source).toContain("runVerifierAdvisoryJob({ db, job, env: workerEnv })");
+    expect(source).toContain("runVerifierAdvisoryJob({");
+    expect(source).toContain("refreshProviderLease: refreshJobLease");
   });
 
   it("allows model source only for an explicitly configured tenant and model", () => {
@@ -762,6 +763,25 @@ describe("worker runtime", () => {
       id: "unrelated-pipeline-job",
       status: "pending",
     });
+    db.raw.close();
+  });
+
+  it("requires a verifier job lease longer than the provider deadline", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-verifier-lease-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a",
+      leaseMs: 120_000,
+      runWardenMaintenance: false,
+      logWhenIdle: false,
+      jobTypes: ["verifier.advisory.verify"],
+      wardenEnv: {
+        DEEPSEEK_VERIFIER_ENABLED: "true",
+        MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS: "660000",
+      },
+    })).rejects.toThrow("verifier_advisory_job_lease_too_short");
     db.raw.close();
   });
 

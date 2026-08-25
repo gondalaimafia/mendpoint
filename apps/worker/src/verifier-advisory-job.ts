@@ -46,6 +46,7 @@ export async function runVerifierAdvisoryJob(input: Readonly<{
     afterProviderReceipt?: () => void;
     afterMissionHandoffBeforeCommit?: () => void;
   }>;
+  refreshProviderLease?: () => boolean;
 }>): Promise<RunVerifierAdvisoryJobResult> {
   const env = input.env ?? process.env;
   const now = input.now ?? (() => new Date().toISOString());
@@ -106,6 +107,9 @@ export async function runVerifierAdvisoryJob(input: Readonly<{
     authorityAt,
     now,
     beforeProviderRequest: (requestedAt) => {
+      if (input.refreshProviderLease && !input.refreshProviderLease()) {
+        throw new Error("verifier_advisory_lease_lost_before_provider_request");
+      }
       const current = getJob(input.db, input.job.id, input.job.tenant_id);
       if (!current || current.status !== "running" || current.lease_owner !== input.job.lease_owner ||
           current.lease_generation !== input.job.lease_generation || !current.lease_expires_at ||

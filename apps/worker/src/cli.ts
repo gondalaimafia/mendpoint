@@ -78,6 +78,7 @@ import {
   runFeedSchedules,
 } from "@mendpoint/catalog";
 import { assessFeedFreshness, nowIso, resolveRenamedEnv } from "@mendpoint/shared";
+import { resolveVerifierRuntimeConfig } from "@mendpoint/verifier";
 import { pageWorkerHeartbeat } from "@mendpoint/notify";
 import {
   createAppDelivery,
@@ -2637,6 +2638,12 @@ async function processJobsOnceUnfenced(
       claimedTypes.some((type) => !supportedTypes.includes(type))) {
     throw new Error("worker_job_type_filter_invalid");
   }
+  if (claimedTypes.includes(VERIFIER_ADVISORY_JOB_TYPE)) {
+    const verifierConfig = resolveVerifierRuntimeConfig(workerEnv);
+    if (!verifierConfig.enabled || leaseMs < verifierConfig.timeoutMs + 60_000) {
+      throw new Error("verifier_advisory_job_lease_too_short");
+    }
+  }
   for (; result.claimed < maxJobs && opts.shouldContinue?.() !== false; ) {
     const job = claimNextJob(
       db,
@@ -2713,7 +2720,12 @@ async function processJobsOnceUnfenced(
       // live claim path (unassigned → agent_working). Unbound jobs stay unbound.
       bridgeClaimedJobToMissionTask(db, job, nowIso());
       if (job.type === VERIFIER_ADVISORY_JOB_TYPE) {
-        await runVerifierAdvisoryJob({ db, job, env: workerEnv });
+        await runVerifierAdvisoryJob({
+          db,
+          job,
+          env: workerEnv,
+          refreshProviderLease: refreshJobLease,
+        });
         result.succeeded++;
         continue;
       }

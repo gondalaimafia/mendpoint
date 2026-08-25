@@ -154,6 +154,85 @@ describe("verifier advisory job runner", () => {
     expect(transport.mock.calls.length).toBeGreaterThan(1);
   });
 
+  it("does not mark an earlier successful provider receipt retryable after a later no-dispatch failure", async () => {
+    const db = setup();
+    enqueue(db);
+    const first = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
+    let call = 0;
+    let providerAvailable = false;
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => {
+      call++;
+      if (call === 1 || providerAvailable) return successfulProviderResponse();
+      throw new VerifierProviderNoResponseError("connection_refused_before_send");
+    });
+
+    await expect(runVerifierAdvisoryJob({ db, job: first, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:02.000Z" }))
+      .rejects.toThrow("verifier_advisory_provider_retryable:api_failure");
+    const firstRequestId = transport.mock.calls[0]![0].headers["x-mendpoint-request-id"];
+    expect(firstRequestId).toBeTruthy();
+    failJob(db, first.id, "connect_refused", "2026-08-24T12:01:03.000Z", { workerId: "worker-a", leaseGeneration: first.lease_generation, errorCode: "transient_dependency", retryable: true, baseDelayMs: 1_000, maxDelayMs: 1_000 });
+
+    providerAvailable = true;
+    const second = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-b", leaseMs: 60_000, now: "2026-08-24T12:01:04.000Z" })!;
+    await expect(runVerifierAdvisoryJob({ db, job: second, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:05.000Z" }))
+      .resolves.toMatchObject({ status: "verified" });
+    expect(transport.mock.calls.filter(([request]) =>
+      request.headers["x-mendpoint-request-id"] === firstRequestId)).toHaveLength(1);
+  });
+
+  it("rejects backend-local retries on the durable ReGauge transport", async () => {
+    const db = setup();
+    enqueue(db);
+    const job = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
+
+    await expect(runVerifierAdvisoryJob({
+      db,
+      job,
+      env: { ...env(), MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES: "1" },
+      transport: { request: transport },
+      now: () => "2026-08-24T12:01:02.000Z",
+    })).rejects.toThrow("verifier_advisory_durable_retries_must_be_zero");
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the fenced job lease before every provider request", async () => {
+    const db = setup();
+    enqueue(db);
+    const job = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 900_000, now: "2026-08-24T12:01:01.000Z" })!;
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
+    const refreshProviderLease = vi.fn(() => true);
+
+    await expect(runVerifierAdvisoryJob({
+      db,
+      job,
+      env: env(),
+      transport: { request: transport },
+      refreshProviderLease,
+      now: () => "2026-08-24T12:01:02.000Z",
+    })).resolves.toMatchObject({ status: "verified" });
+    expect(refreshProviderLease).toHaveBeenCalledTimes(transport.mock.calls.length);
+    expect(refreshProviderLease.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("does not create an intent or call the provider when lease refresh fails", async () => {
+    const db = setup();
+    enqueue(db);
+    const job = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 900_000, now: "2026-08-24T12:01:01.000Z" })!;
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
+
+    await expect(runVerifierAdvisoryJob({
+      db,
+      job,
+      env: env(),
+      transport: { request: transport },
+      refreshProviderLease: () => false,
+      now: () => "2026-08-24T12:01:02.000Z",
+    })).rejects.toThrow("verifier_advisory_provider_retryable:api_failure");
+    expect(transport).not.toHaveBeenCalled();
+    expect(listArtifactManifests(db, "tenant_regauge_canary", "agent_verifier_provider_request_intent")).toHaveLength(0);
+  });
+
   it.each([
     { label: "connection reset", error: Object.assign(new Error("socket reset after write"), { code: "ECONNRESET" }) },
     { label: "generic timeout", error: Object.assign(new Error("socket timed out"), { code: "ETIMEDOUT" }) },

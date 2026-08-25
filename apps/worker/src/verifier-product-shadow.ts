@@ -60,6 +60,12 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
   // (see createVerifierAdvisoryRuntime). Refuse both before building an evidence
   // pack or claiming an attempt, so offline never even prepares tenant content.
   if (!runtimeConfig.enabled || runtimeConfig.rolloutMode === "off" || runtimeConfig.rolloutMode === "offline") return null;
+  if (input.completion.product === "regauge" && runtimeConfig.maximumRetries !== 0) {
+    // The durable transport classifies each definitive response before another
+    // operation can be minted. Backend-local retries would only recover that
+    // same receipt, so ReGauge retries belong to the fenced durable job lane.
+    throw new Error("verifier_advisory_durable_retries_must_be_zero");
+  }
   const governance = resolveVerifierGovernance(env, input.completion.tenantId, input.completion.product);
   // Tenant consent for external-model egress is resolved from the append-only
   // `learning_consents` table, NOT from the process-wide governance env blob, so
@@ -114,7 +120,7 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
   })) return null;
   const now = input.now ?? (() => new Date().toISOString());
   const providerTransport = input.transport ?? createFetchVerifierTransport();
-  const startedProviderOperationIds: string[] = [];
+  const attemptedProviderOperationIds: string[] = [];
   const settledProviderOperationIds: string[] = [];
   const completedProviderOperationIds: string[] = [];
   const unknownProviderOperationIds: string[] = [];
@@ -130,7 +136,7 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
       now,
       beforeProviderRequest: input.beforeProviderRequest,
       hooks: input.operationHooks,
-      startedOperationIds: startedProviderOperationIds,
+      attemptedOperationIds: attemptedProviderOperationIds,
       settledOperationIds: settledProviderOperationIds,
       completedOperationIds: completedProviderOperationIds,
       unknownOperationIds: unknownProviderOperationIds,
@@ -176,7 +182,7 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
   if (result.failureCode && RETRYABLE_VERIFIER_FAILURE_CODES.has(
     result.failureCode as "api_failure" | "logprob_failure",
   ) && (unknownProviderOperationIds.length > 0 ||
-    startedProviderOperationIds.some((operationId) =>
+    attemptedProviderOperationIds.some((operationId) =>
       !settledProviderOperationIds.includes(operationId)))) {
     // A request intent without either a durable response receipt or proof that
     // the provider was never reached is not retryable. The provider may have
@@ -187,8 +193,8 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
   if (result.failureCode && RETRYABLE_VERIFIER_FAILURE_CODES.has(
     result.failureCode as "api_failure" | "logprob_failure",
   )) {
-    const operationId = completedProviderOperationIds.at(-1);
-    if (operationId) {
+    const operationId = attemptedProviderOperationIds.at(-1);
+    if (operationId && completedProviderOperationIds.includes(operationId)) {
       persistVerifierAdvisoryProviderRetryableResponse(input.db, {
         tenantId: input.completion.tenantId,
         operationId,
@@ -212,7 +218,7 @@ function durableRegaugeTransport(input: Readonly<{
   now: () => string;
   beforeProviderRequest?: (requestedAt: string) => void;
   hooks?: Readonly<{ afterProviderReturn?: () => void; afterProviderReceipt?: () => void }>;
-  startedOperationIds: string[];
+  attemptedOperationIds: string[];
   settledOperationIds: string[];
   completedOperationIds: string[];
   unknownOperationIds: string[];
@@ -243,12 +249,12 @@ function durableRegaugeTransport(input: Readonly<{
         }
         throw error;
       }
+      input.attemptedOperationIds.push(operation.operationId);
       if (operation.status === "recover") {
         input.settledOperationIds.push(operation.operationId);
         input.completedOperationIds.push(operation.operationId);
         return operation.response!;
       }
-      input.startedOperationIds.push(operation.operationId);
       try {
         const response = await input.providerTransport.request(request);
         input.hooks?.afterProviderReturn?.();
