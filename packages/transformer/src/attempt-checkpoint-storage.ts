@@ -7,6 +7,7 @@ import type {
   TransformerAttemptCheckpointState,
   TransformerCandidateSeal,
   TransformerEncryptedArtifact,
+  TransformerMissionArtifactRegistrationBinding,
 } from "./attempt-checkpoint.js";
 import {
   createTransformerAttemptEffectIdentity,
@@ -35,7 +36,6 @@ import {
   type TransformerAttemptCheckpointFailureInput,
   type TransformerAttemptCheckpointFailureReceipt,
   type TransformerAttemptCheckpointHead,
-  type TransformerMissionArtifactRegistrationBinding,
 } from "./pilot-execution.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -495,6 +495,7 @@ export async function finalizeTransformerPilotAttemptCheckpoint(
     completionIntent.episodeId,
     input.candidateSeal,
     completionIntent,
+    input.artifactRegistration,
   );
   const identity = createTransformerAttemptEffectIdentity(
     completionIntent.episodeId,

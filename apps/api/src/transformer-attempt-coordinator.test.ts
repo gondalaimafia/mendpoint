@@ -280,6 +280,45 @@ describe("real Transformer multi-node coordinator", () => {
     await expect(response.json()).resolves.toEqual({ error: "coordinator_campaign_not_ready" });
   });
 
+  it("fails worker readiness closed when the coordinator artifact drain fails", async () => {
+    const service = new TransformerPilotExecutionService(":memory:", {
+      rawGateConfig: gate,
+      environment: "test",
+    });
+    services.push(service);
+    vi.spyOn(service.store, "getCampaign").mockReturnValue({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      state: "running",
+    } as never);
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("principal", { id: "api-key:worker", tenantId: "tenant-a", role: "agent" });
+      c.set("authScopes", ["transformer:worker"]);
+      await next();
+    });
+    app.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+      enabled: true,
+      store: service.store,
+      gateConfig: gate,
+      drainPendingMissionArtifacts: async () => {
+        throw new Error("regauge_mission_artifact_shared_evidence_missing");
+      },
+      loadExactSource: () => { throw new Error("must_not_load"); },
+    }));
+
+    const response = await app.request("/v1/regauge/attempt-coordinator/readyz", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenantId: "tenant-a", campaignId: "campaign-a" }),
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "coordinator_unavailable",
+    });
+  });
+
   it("delivers an authenticated terminal checkpoint after the executor deployment changes", async () => {
     const root = mkdtempSync(join(tmpdir(), "transformer-real-multinode-")); roots.push(root);
     let coordinatorNow = "2026-08-12T12:00:00.000Z";
@@ -292,6 +331,7 @@ describe("real Transformer multi-node coordinator", () => {
     service.store.createCampaign({ tenantId: "tenant-a", organizationId: "org-a", campaignId: "campaign-a", environment: "test", constraints: constraint, units: [{ id: "unit-a", title: "Migrate node", ownerId: "owner-a", reviewerIds: ["reviewer-a"], dependsOn: [], snapshot: { snapshotId: "snapshot-a", repositoryId: "repo-a", revision: revision("a"), manifestSha256: "a".repeat(64), digest: snapshotDigest, evidenceRefs: ["evidence:snapshot:a"] }, candidateRevision: revision("c"), candidateDigest: applied.outputDigest, recipe: recipeReference(NODE_RUNTIME_18_TO_20_RECIPE), changedPaths: ["package.json"] }], observedAt: "2026-08-12T12:00:00.000Z", evidenceRefs: ["evidence:create"], idempotencyKey: "create-a", gateConfig: gate });
     const app = new Hono<ApiEnv>();
     let failFirstAdvisoryDispatch = true;
+    const drainPendingCompletedAttempts = vi.fn(async () => undefined);
     const completedObserver = vi.fn(async (completion) => {
       expect(buildDedicatedRegaugeCompletionInput(completion, "mission-regauge-a")).toMatchObject({
         tenantId: "tenant-a",
@@ -324,6 +364,7 @@ describe("real Transformer multi-node coordinator", () => {
       },
       verifierAdvisoryScope: { tenantId: "tenant-a", campaignId: "campaign-a" },
       observeCompletedAttempt: completedObserver,
+      drainPendingCompletedAttempts,
       loadExactSource: () => ({ repositoryId: "repo-a", revision: revision("a"), digest: snapshotDigest, files, fileModes: { "package.json": "100644" } }),
       resolveDraftRepository: () => ({ owner: "acme", repo: "repo-a", baseBranch: "main", installationId: 42, remoteRepositoryId: 84 }),
     }));
@@ -333,6 +374,7 @@ describe("real Transformer multi-node coordinator", () => {
       body: JSON.stringify({ tenantId: "tenant-a", campaignId: "campaign-a" }),
     });
     expect(readyResponse.status).toBe(200);
+    await vi.waitFor(() => expect(drainPendingCompletedAttempts).toHaveBeenCalledTimes(1));
     let loseCompletionResponse = true;
     let loseDraftCompletionResponse = true;
     const completionHttpStatuses: number[] = [];

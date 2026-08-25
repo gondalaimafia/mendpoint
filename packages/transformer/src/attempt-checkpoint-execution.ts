@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   advanceTransformerAttemptCheckpoint,
   commitTransformerAttemptCheckpointGenesis,
@@ -12,6 +13,7 @@ import {
   createTransformerEffectRequestArtifact,
   createTransformerEffectResultArtifact,
   createTransformerEpisodeId,
+  createTransformerMissionEvidenceArtifact,
   createTransformerVerificationPlanDigest,
   createTransformerVerifierEffectResultArtifact,
   createTransformerWorkspaceArtifact,
@@ -24,6 +26,7 @@ import {
   openTransformerWorkspaceArtifact,
   openTransformerWorkspaceTransitionRequest,
   supersedeTransformerAttemptCheckpointCoordinatorCompletion,
+  upgradeTransformerAttemptCheckpointCoordinatorCompletionRequest,
   supersedeTransformerAttemptCheckpointFailedVerifier,
   verifyTransformerEffectRequestArtifact,
   verifyTransformerEffectResultArtifact,
@@ -33,6 +36,7 @@ import {
   type TransformerAttemptCheckpointEnvelope,
   type TransformerAttemptCheckpointState,
   type TransformerEncryptedArtifact,
+  type TransformerMissionArtifactRegistrationBinding,
   type TransformerVerifierEffectResult,
   type TransformerWorkspaceArtifact,
   type TransformerWorkspaceArtifactFile,
@@ -428,6 +432,44 @@ async function openController(context: Readonly<{
         await factory.artifactStore.recordReferenced(storageKey));
     }
     assertSignal(signal);
+  };
+  const publishMissionRegistration = async (
+    registration: TransformerMissionArtifactRegistrationBinding,
+    localPaths: Readonly<{ candidateManifestPath: string; executionEvidencePath: string }>,
+    signal: AbortSignal,
+  ): Promise<TransformerMissionArtifactRegistrationBinding> => {
+    if (registration.schemaVersion === 2) return registration;
+    const candidateBytes = new Uint8Array(readFileSync(localPaths.candidateManifestPath));
+    const executionBytes = new Uint8Array(readFileSync(localPaths.executionEvidencePath));
+    if (sha256(candidateBytes) !== registration.candidateManifestDigest ||
+        sha256(executionBytes) !== registration.executionEvidenceDigest) {
+      throw new Error("transformer_mission_artifact_registration_evidence_mismatch");
+    }
+    const candidate = createTransformerMissionEvidenceArtifact({
+      tenantId: binding.tenantId,
+      episodeId,
+      artifactId: registration.candidateArtifactId,
+    }, candidateBytes, encryptionKey);
+    const execution = createTransformerMissionEvidenceArtifact({
+      tenantId: binding.tenantId,
+      episodeId,
+      artifactId: registration.executionArtifactId,
+    }, executionBytes, encryptionKey);
+    await publish(candidate.artifact.storageKey, candidate.bytes, candidate.artifact.ciphertextDigest, signal);
+    await publish(execution.artifact.storageKey, execution.bytes, execution.artifact.ciphertextDigest, signal);
+    return Object.freeze({
+      schemaVersion: 2,
+      episodeId,
+      attemptId: registration.attemptId,
+      sourceSnapshotId: registration.sourceSnapshotId,
+      candidateArtifactId: registration.candidateArtifactId,
+      candidateManifestDigest: registration.candidateManifestDigest,
+      candidateManifestArtifact: candidate.artifact,
+      executionArtifactId: registration.executionArtifactId,
+      executionEvidenceDigest: registration.executionEvidenceDigest,
+      executionEvidenceArtifact: execution.artifact,
+      executionSchemaVersion: registration.executionSchemaVersion,
+    });
   };
   const readArtifact = async (
     storageKey: string,
@@ -1035,6 +1077,7 @@ async function openController(context: Readonly<{
       let completionDigest: string;
       let identity: ReturnType<typeof createTransformerAttemptEffectIdentity>;
       let completionObservedAt: string;
+      let artifactRegistration = completion.artifactRegistration;
       const existingCoordinator = readState().pendingEffect;
       if (existingCoordinator.kind === "coordinator_complete") {
         const requestBytes = await readArtifact(
@@ -1072,18 +1115,79 @@ async function openController(context: Readonly<{
           intent = existingRequest.completionIntent;
           completionDigest = existingRequest.completionDigest;
           completionObservedAt = intent.observedAt;
-          identity = createTransformerAttemptEffectIdentity(
-            episodeId,
-            "coordinator_complete",
-            existingCoordinator.slot,
-            existingCoordinator.requestDigest,
-          );
+          if (existingRequest.artifactRegistration) {
+            artifactRegistration = existingRequest.artifactRegistration;
+            identity = createTransformerAttemptEffectIdentity(
+              episodeId,
+              "coordinator_complete",
+              existingCoordinator.slot,
+              existingCoordinator.requestDigest,
+            );
+          } else {
+            artifactRegistration = await publishMissionRegistration(artifactRegistration, {
+              candidateManifestPath: completion.artifact.manifestPath,
+              executionEvidencePath: completion.execution.evidence.path,
+            }, completion.signal);
+            const requestPayload = createTransformerCoordinatorCompletionRequest(
+              episodeId,
+              candidateSeal,
+              intent,
+              artifactRegistration,
+            );
+            const requestDigest = sha256(requestPayload);
+            identity = createTransformerAttemptEffectIdentity(
+              episodeId,
+              "coordinator_complete",
+              existingCoordinator.slot,
+              requestDigest,
+            );
+            const request = createTransformerEffectRequestArtifact(
+              { tenantId: binding.tenantId, episodeId, effectId: identity.effectId },
+              requestPayload,
+              encryptionKey,
+            );
+            await publish(
+              request.artifact.storageKey,
+              request.bytes,
+              request.artifact.ciphertextDigest,
+              completion.signal,
+            );
+            head = await boundedOperation(completion.signal, factory.operationTimeoutMs, async () =>
+              await upgradeTransformerAttemptCheckpointCoordinatorCompletionRequest(
+                journal,
+                head.stateDigest,
+                Object.freeze({
+                  kind: "coordinator_complete",
+                  state: "prepared",
+                  slot: existingCoordinator.slot,
+                  ...identity,
+                  requestDigest,
+                  requestArtifact: request.artifact,
+                }),
+                completionObservedAt,
+                encryptionKey,
+                binding,
+              ));
+            state = openTransformerAttemptCheckpoint(head, encryptionKey, binding);
+            if (artifactRegistration.schemaVersion !== 2) {
+              throw new Error("transformer_mission_artifact_registration_shared_invalid");
+            }
+            await markReferenced([
+              request.artifact.storageKey,
+              artifactRegistration.candidateManifestArtifact.storageKey,
+              artifactRegistration.executionEvidenceArtifact.storageKey,
+            ], completion.signal);
+          }
         } else {
           completionObservedAt = assertTimestamp(factory.now());
           intent = buildIntent(completionObservedAt);
+          artifactRegistration = await publishMissionRegistration(artifactRegistration, {
+            candidateManifestPath: completion.artifact.manifestPath,
+            executionEvidencePath: completion.execution.evidence.path,
+          }, completion.signal);
           completionDigest = createTransformerAttemptCompletionDigest(intent);
           const requestPayload = createTransformerCoordinatorCompletionRequest(
-            episodeId, candidateSeal, intent,
+            episodeId, candidateSeal, intent, artifactRegistration,
           );
           const requestDigest = sha256(requestPayload);
           const slot = createTransformerCoordinatorCompletionSlot(completionDigest);
@@ -1118,14 +1222,26 @@ async function openController(context: Readonly<{
               binding,
             ));
           state = openTransformerAttemptCheckpoint(head, encryptionKey, binding);
-          await markReferenced([request.artifact.storageKey], completion.signal);
+          await markReferenced([
+            request.artifact.storageKey,
+            ...(artifactRegistration.schemaVersion === 2
+              ? [
+                  artifactRegistration.candidateManifestArtifact.storageKey,
+                  artifactRegistration.executionEvidenceArtifact.storageKey,
+                ]
+              : []),
+          ], completion.signal);
         }
       } else {
         completionObservedAt = assertTimestamp(factory.now());
         intent = buildIntent(completionObservedAt);
+        artifactRegistration = await publishMissionRegistration(artifactRegistration, {
+          candidateManifestPath: completion.artifact.manifestPath,
+          executionEvidencePath: completion.execution.evidence.path,
+        }, completion.signal);
         completionDigest = createTransformerAttemptCompletionDigest(intent);
         const requestPayload = createTransformerCoordinatorCompletionRequest(
-          episodeId, candidateSeal, intent,
+          episodeId, candidateSeal, intent, artifactRegistration,
         );
         const requestDigest = sha256(requestPayload);
         const slot = createTransformerCoordinatorCompletionSlot(completionDigest);
@@ -1147,7 +1263,15 @@ async function openController(context: Readonly<{
           kind: "coordinator_complete", state: "prepared", slot, ...identity,
           requestDigest, requestArtifact: request.artifact,
         }) }, completionObservedAt, completion.signal);
-        await markReferenced([request.artifact.storageKey], completion.signal);
+        await markReferenced([
+          request.artifact.storageKey,
+          ...(artifactRegistration?.schemaVersion === 2
+            ? [
+                artifactRegistration.candidateManifestArtifact.storageKey,
+                artifactRegistration.executionEvidenceArtifact.storageKey,
+              ]
+            : []),
+        ], completion.signal);
       }
       const coordinatorEffect = readState().pendingEffect;
       if (coordinatorEffect.kind !== "coordinator_complete" ||
@@ -1180,7 +1304,7 @@ async function openController(context: Readonly<{
           resultBytes: accepted.bytes,
           completionIntent: intent,
           candidateSeal,
-          artifactRegistration: completion.artifactRegistration,
+          artifactRegistration,
         }));
       assertSignal(completion.signal);
       head = finalized.envelope;

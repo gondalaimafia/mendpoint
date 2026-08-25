@@ -54,6 +54,12 @@ describe("Transformer production profile", () => {
     expect(roleEntrypoint).toContain("processJobsOnce");
     expect(roleEntrypoint).toContain("jobTypes: [VERIFIER_ADVISORY_JOB_TYPE]");
     expect(roleEntrypoint).toContain("runWardenMaintenance: false");
+    const coordinatorServer = readFileSync(
+      resolve(import.meta.dirname, "../../api/src/server.ts"),
+      "utf8",
+    );
+    expect(coordinatorServer).toContain("drainRegaugeMissionArtifactOutbox");
+    expect(coordinatorServer).toContain("drainPendingMissionArtifacts: drainRegaugeMissionArtifacts");
   });
 
   it.each([

@@ -26,8 +26,10 @@ import {
   createTransformerAttemptEffectIdentity,
   createTransformerCoordinatorCompletionRequestDigest,
   createTransformerCoordinatorCompletionSlot,
+  requireTransformerMissionArtifactRegistrationBinding,
   type TransformerAttemptCheckpointLease,
   type TransformerCandidateSeal,
+  type TransformerMissionArtifactRegistrationBinding,
 } from "./attempt-checkpoint.js";
 import {
   createTransformerAttemptAuthorizationDigest,
@@ -661,19 +663,6 @@ export type TransformerAttemptCheckpointCompletionInput =
     gateConfig?: string;
   }>;
 
-export type TransformerMissionArtifactRegistrationBinding = Readonly<{
-  schemaVersion: 1;
-  attemptId: string;
-  sourceSnapshotId: string;
-  candidateArtifactId: string;
-  candidateManifestDigest: string;
-  candidateManifestPath: string;
-  executionArtifactId: string;
-  executionEvidenceDigest: string;
-  executionEvidencePath: string;
-  executionSchemaVersion: number;
-}>;
-
 export type TransformerMissionArtifactRegistration =
   TransformerMissionArtifactRegistrationBinding & Readonly<{
     registrationId: string;
@@ -683,6 +672,22 @@ export type TransformerMissionArtifactRegistration =
     unitId: string;
     observedAt: string;
   }>;
+
+export type TransformerMissionArtifactAdoptionCandidate = Readonly<{
+  schemaVersion: 1;
+  tenantId: string;
+  campaignId: string;
+  campaignRevision: number;
+  unitId: string;
+  terminalEventSequence: number;
+  terminalEventType: "attempt.completed" | "attempt.completed_with_checkpoint";
+  observedAt: string;
+  episodeId: string;
+  attemptId: string;
+  sourceSnapshotId: string;
+  candidateArtifactId: string;
+  executionArtifactId: string;
+}>;
 
 export type TransformerAttemptCheckpointCompletionReceipt = Readonly<{
   schemaVersion: 1;
@@ -844,16 +849,7 @@ function verifierAdvisoryDispatchId(input: Readonly<{
 function requireMissionArtifactRegistrationBinding(
   value: TransformerMissionArtifactRegistrationBinding,
 ): TransformerMissionArtifactRegistrationBinding {
-  if (!value || typeof value !== "object" || value.schemaVersion !== 1 ||
-      !ID.test(value.attemptId) || !ID.test(value.sourceSnapshotId) ||
-      !ID.test(value.candidateArtifactId) || !DIGEST.test(value.candidateManifestDigest) ||
-      !CHECKPOINT_STORAGE_KEY.test(value.candidateManifestPath) || value.candidateManifestPath.includes("\\") ||
-      !ID.test(value.executionArtifactId) || !DIGEST.test(value.executionEvidenceDigest) ||
-      !CHECKPOINT_STORAGE_KEY.test(value.executionEvidencePath) || value.executionEvidencePath.includes("\\") ||
-      !Number.isSafeInteger(value.executionSchemaVersion) || value.executionSchemaVersion < 1) {
-    throw new Error("transformer_mission_artifact_registration_invalid");
-  }
-  return deepFreeze({ ...value });
+  return deepFreeze(requireTransformerMissionArtifactRegistrationBinding(value));
 }
 
 function missionArtifactRegistrationId(input: Readonly<{
@@ -1789,6 +1785,200 @@ export class TransformerPilotExecutionStore {
       evidenceRefs: JSON.parse(row.evidence_refs_json as string) as string[],
       payload: JSON.parse(row.payload_json as string) as Record<string, unknown>,
     }));
+  }
+
+  listMissionArtifactAdoptionCandidates(
+    tenantId: string,
+    limit = 25,
+  ): TransformerMissionArtifactAdoptionCandidate[] {
+    requireId(tenantId, "transformer_mission_artifact_registration_scope_invalid");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error("transformer_mission_artifact_registration_limit_invalid");
+    }
+    const rows = this.db.prepare(`
+      SELECT e.* FROM tf_pilot_events e
+      WHERE e.tenant_id = ?
+        AND e.type IN ('attempt.completed', 'attempt.completed_with_checkpoint')
+      ORDER BY e.sequence
+    `).all(tenantId) as Array<Record<string, unknown>>;
+    const candidates: TransformerMissionArtifactAdoptionCandidate[] = [];
+    for (const row of rows) {
+      if (candidates.length >= limit) break;
+      const campaignId = String(row.campaign_id);
+      const payload = JSON.parse(String(row.payload_json)) as Record<string, unknown>;
+      const unitId = typeof payload.unitId === "string" ? payload.unitId : "";
+      const leaseGeneration = Number(payload.leaseGeneration);
+      const evidenceRefs = JSON.parse(String(row.evidence_refs_json)) as unknown;
+      const campaign = this.getCampaign(tenantId, campaignId);
+      const unit = campaign?.units.find((candidate) => candidate.id === unitId);
+      const attemptNumber = payload.attemptNumber === undefined
+        ? unit?.attemptNumber ?? Number.NaN
+        : Number(payload.attemptNumber);
+      if (!campaign || !unit || !Number.isSafeInteger(leaseGeneration) || leaseGeneration < 1 ||
+          !Number.isSafeInteger(attemptNumber) || attemptNumber < 1 || unit.attemptNumber !== attemptNumber ||
+          !["executed", "draft", "accepted", "merged"].includes(unit.state) || !Array.isArray(evidenceRefs)) {
+        continue;
+      }
+      const candidateIds = evidenceRefs.filter((value): value is string =>
+        typeof value === "string" && /^tcman_[a-f0-9]{64}$/.test(value));
+      const executionIds = evidenceRefs.filter((value): value is string =>
+        typeof value === "string" && /^tre_execution_[a-f0-9]{64}$/.test(value));
+      if (candidateIds.length !== 1 || executionIds.length !== 1) continue;
+      const existing = this.db.prepare(`
+        SELECT 1 FROM tf_pilot_mission_artifact_outbox
+        WHERE tenant_id = ? AND campaign_id = ? AND unit_id = ?
+        LIMIT 1
+      `).get(tenantId, campaignId, unitId);
+      if (existing) continue;
+      const sequence = Number(row.sequence);
+      const campaignRevision = Number(row.campaign_revision);
+      const observedAt = String(row.observed_at);
+      const episodeId = typeof payload.episodeId === "string" && ID.test(payload.episodeId)
+        ? payload.episodeId
+        : `tfepisode_${sha256({ tenantId, campaignId, unitId, sequence }).slice(7, 39)}`;
+      if (!Number.isSafeInteger(sequence) || sequence < 1 ||
+          !Number.isSafeInteger(campaignRevision) || campaignRevision < 1) continue;
+      candidates.push(deepFreeze({
+        schemaVersion: 1,
+        tenantId,
+        campaignId,
+        campaignRevision,
+        unitId,
+        terminalEventSequence: sequence,
+        terminalEventType: row.type as "attempt.completed" | "attempt.completed_with_checkpoint",
+        observedAt,
+        episodeId,
+        attemptId: expectedAttemptId({
+          tenantId,
+          campaignId,
+          unitId,
+          attemptNumber,
+          leaseGeneration,
+        }),
+        sourceSnapshotId: unit.snapshot.snapshotId,
+        candidateArtifactId: candidateIds[0]!,
+        executionArtifactId: executionIds[0]!,
+      }));
+    }
+    return candidates;
+  }
+
+  adoptMissionArtifactRegistration(input: Readonly<{
+    candidate: TransformerMissionArtifactAdoptionCandidate;
+    registration: TransformerMissionArtifactRegistrationBinding;
+  }>): TransformerMissionArtifactRegistration {
+    const candidate = input.candidate;
+    const binding = requireMissionArtifactRegistrationBinding(input.registration);
+    const terminalEvent = this.listEvents(candidate.tenantId, candidate.campaignId)
+      .find((event) => event.sequence === candidate.terminalEventSequence);
+    const campaign = this.getCampaign(candidate.tenantId, candidate.campaignId);
+    const unit = campaign?.units.find((value) => value.id === candidate.unitId);
+    const leaseGeneration = Number(terminalEvent?.payload.leaseGeneration);
+    const attemptNumber = terminalEvent?.payload.attemptNumber === undefined
+      ? unit?.attemptNumber ?? Number.NaN
+      : Number(terminalEvent.payload.attemptNumber);
+    const expectedCandidate = terminalEvent && unit &&
+      (terminalEvent.type === "attempt.completed" ||
+       terminalEvent.type === "attempt.completed_with_checkpoint") &&
+      Number.isSafeInteger(leaseGeneration) && leaseGeneration >= 1 &&
+      Number.isSafeInteger(attemptNumber) && attemptNumber >= 1
+      ? deepFreeze({
+          schemaVersion: 1 as const,
+          tenantId: candidate.tenantId,
+          campaignId: candidate.campaignId,
+          campaignRevision: terminalEvent.campaignRevision,
+          unitId: candidate.unitId,
+          terminalEventSequence: terminalEvent.sequence,
+          terminalEventType: terminalEvent.type,
+          observedAt: terminalEvent.observedAt,
+          episodeId: typeof terminalEvent.payload.episodeId === "string" && ID.test(terminalEvent.payload.episodeId)
+            ? terminalEvent.payload.episodeId
+            : `tfepisode_${sha256({
+                tenantId: candidate.tenantId,
+                campaignId: candidate.campaignId,
+                unitId: candidate.unitId,
+                sequence: terminalEvent.sequence,
+              }).slice(7, 39)}`,
+          attemptId: expectedAttemptId({
+            tenantId: candidate.tenantId,
+            campaignId: candidate.campaignId,
+            unitId: candidate.unitId,
+            attemptNumber,
+            leaseGeneration,
+          }),
+          sourceSnapshotId: unit.snapshot.snapshotId,
+          candidateArtifactId: candidate.candidateArtifactId,
+          executionArtifactId: candidate.executionArtifactId,
+        })
+      : undefined;
+    if (binding.schemaVersion !== 2 || candidate.schemaVersion !== 1 ||
+        !expectedCandidate || sha256(expectedCandidate) !== sha256(candidate) ||
+        !terminalEvent!.evidenceRefs.includes(candidate.candidateArtifactId) ||
+        !terminalEvent!.evidenceRefs.includes(candidate.executionArtifactId) ||
+        binding.episodeId !== candidate.episodeId || binding.attemptId !== candidate.attemptId ||
+        binding.sourceSnapshotId !== candidate.sourceSnapshotId ||
+        binding.candidateArtifactId !== candidate.candidateArtifactId ||
+        binding.executionArtifactId !== candidate.executionArtifactId) {
+      throw new Error("transformer_mission_artifact_adoption_fence_invalid");
+    }
+    const registrationId = missionArtifactRegistrationId({
+      tenantId: candidate.tenantId,
+      campaignId: candidate.campaignId,
+      unitId: candidate.unitId,
+      binding,
+    });
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const existingForUnit = this.db.prepare(`
+        SELECT * FROM tf_pilot_mission_artifact_outbox
+        WHERE tenant_id = ? AND campaign_id = ? AND unit_id = ?
+        ORDER BY registration_id
+        LIMIT 1
+      `).get(
+        candidate.tenantId,
+        candidate.campaignId,
+        candidate.unitId,
+      ) as Record<string, unknown> | undefined;
+      if (existingForUnit && String(existingForUnit.registration_id) !== registrationId) {
+        throw new Error("transformer_mission_artifact_adoption_fence_invalid");
+      }
+      const existingRow = this.db.prepare(`
+        SELECT * FROM tf_pilot_mission_artifact_outbox
+        WHERE tenant_id = ? AND registration_id = ?
+      `).get(candidate.tenantId, registrationId) as Record<string, unknown> | undefined;
+      if (existingRow) {
+        const existing = missionArtifactRegistrationFromRow(existingRow);
+        if (existing.campaignId !== candidate.campaignId || existing.unitId !== candidate.unitId ||
+            existing.campaignRevision !== candidate.campaignRevision ||
+            existing.observedAt !== candidate.observedAt) {
+          throw new Error("transformer_mission_artifact_adoption_fence_invalid");
+        }
+        this.db.exec("COMMIT");
+        return existing;
+      }
+      this.db.prepare(`
+        INSERT INTO tf_pilot_mission_artifact_outbox
+          (tenant_id, registration_id, campaign_id, campaign_revision, unit_id,
+           observed_at, binding_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        candidate.tenantId,
+        registrationId,
+        candidate.campaignId,
+        candidate.campaignRevision,
+        candidate.unitId,
+        candidate.observedAt,
+        JSON.stringify(binding),
+      );
+      this.db.exec("COMMIT");
+      return missionArtifactRegistrationFromRow(this.db.prepare(`
+        SELECT * FROM tf_pilot_mission_artifact_outbox
+        WHERE tenant_id = ? AND registration_id = ?
+      `).get(candidate.tenantId, registrationId) as Record<string, unknown>);
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   listPendingMissionArtifactRegistrations(
@@ -3362,6 +3552,10 @@ export class TransformerPilotExecutionStore {
     const intent = openTransformerAttemptCompletionPayload(
       createTransformerAttemptCompletionPayload(input.completionIntent),
     );
+    if (input.artifactRegistration?.schemaVersion === 2 &&
+        input.artifactRegistration.episodeId !== intent.episodeId) {
+      throw new Error("transformer_mission_artifact_registration_binding_invalid");
+    }
     const evidenceRefs = requireEvidence(input.evidenceRefs);
     if (intent.tenantId !== input.tenantId || intent.campaignId !== input.campaignId ||
         intent.observedAt !== input.observedAt ||
@@ -3375,6 +3569,7 @@ export class TransformerPilotExecutionStore {
       intent.episodeId,
       input.candidateSeal,
       intent,
+      input.artifactRegistration,
     );
     const completionIdentity = createTransformerAttemptEffectIdentity(
       intent.episodeId,
@@ -4638,20 +4833,18 @@ export class TransformerPilotExecutionStore {
     `).get(input.tenantId, registrationId) as Record<string, unknown> | undefined;
     if (!row) throw new Error("transformer_mission_artifact_registration_fence_invalid");
     const stored = missionArtifactRegistrationFromRow(row);
+    const {
+      registrationId: _registrationId,
+      tenantId: _tenantId,
+      campaignId: _campaignId,
+      campaignRevision: _campaignRevision,
+      unitId: _unitId,
+      observedAt: _observedAt,
+      ...storedBinding
+    } = stored;
     if (stored.tenantId !== input.tenantId || stored.campaignId !== input.campaignId ||
         stored.unitId !== input.unitId || stored.observedAt !== input.observedAt ||
-        sha256(binding) !== sha256({
-          schemaVersion: stored.schemaVersion,
-          attemptId: stored.attemptId,
-          sourceSnapshotId: stored.sourceSnapshotId,
-          candidateArtifactId: stored.candidateArtifactId,
-          candidateManifestDigest: stored.candidateManifestDigest,
-          candidateManifestPath: stored.candidateManifestPath,
-          executionArtifactId: stored.executionArtifactId,
-          executionEvidenceDigest: stored.executionEvidenceDigest,
-          executionEvidencePath: stored.executionEvidencePath,
-          executionSchemaVersion: stored.executionSchemaVersion,
-        })) {
+        sha256(binding) !== sha256(storedBinding)) {
       throw new Error("transformer_mission_artifact_registration_fence_invalid");
     }
   }

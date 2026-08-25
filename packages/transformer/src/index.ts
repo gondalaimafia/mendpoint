@@ -363,7 +363,7 @@ export {
   type TransformerAttemptLease,
   type TransformerAttemptCheckpointCompletionResult,
   type TransformerMissionArtifactRegistration,
-  type TransformerMissionArtifactRegistrationBinding,
+  type TransformerMissionArtifactAdoptionCandidate,
   type TransformerVerifierAdvisoryDispatch,
   type TransformerVerifierAdvisoryDispatchResult,
   type TransformerExpiredAttempt,

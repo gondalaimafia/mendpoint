@@ -82,6 +82,33 @@ export type TransformerEncryptedArtifact = Readonly<{
   codec: "aes-256-gcm-v1";
 }>;
 
+export type TransformerMissionArtifactRegistrationBinding =
+  | Readonly<{
+      schemaVersion: 1;
+      attemptId: string;
+      sourceSnapshotId: string;
+      candidateArtifactId: string;
+      candidateManifestDigest: string;
+      candidateManifestPath: string;
+      executionArtifactId: string;
+      executionEvidenceDigest: string;
+      executionEvidencePath: string;
+      executionSchemaVersion: number;
+    }>
+  | Readonly<{
+      schemaVersion: 2;
+      episodeId: string;
+      attemptId: string;
+      sourceSnapshotId: string;
+      candidateArtifactId: string;
+      candidateManifestDigest: string;
+      candidateManifestArtifact: TransformerEncryptedArtifact;
+      executionArtifactId: string;
+      executionEvidenceDigest: string;
+      executionEvidenceArtifact: TransformerEncryptedArtifact;
+      executionSchemaVersion: number;
+    }>;
+
 export type TransformerWorkspaceArtifact = TransformerEncryptedArtifact & Readonly<{
   kind: "content_addressed_archive";
   manifestDigest: string;
@@ -132,6 +159,7 @@ export type TransformerCoordinatorCompletionRequest = Readonly<{
   seal: TransformerCandidateSeal;
   completionDigest: string;
   completionIntent: TransformerAttemptCompletionIntent;
+  artifactRegistration?: TransformerMissionArtifactRegistrationBinding;
 }>;
 
 type EffectCommon = Readonly<{
@@ -419,6 +447,65 @@ function validateEncryptedArtifact(artifact: TransformerEncryptedArtifact, code:
   }
 }
 
+export function requireTransformerMissionArtifactRegistrationBinding(
+  value: TransformerMissionArtifactRegistrationBinding,
+): TransformerMissionArtifactRegistrationBinding {
+  const code = "transformer_mission_artifact_registration_invalid";
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(code);
+  const common = value as TransformerMissionArtifactRegistrationBinding;
+  const commonKeys = [
+    "schemaVersion", "attemptId", "sourceSnapshotId", "candidateArtifactId",
+    "candidateManifestDigest", "executionArtifactId", "executionEvidenceDigest",
+    "executionSchemaVersion",
+  ];
+  if (common.schemaVersion === 1) {
+    exactKeys(common, [...commonKeys, "candidateManifestPath", "executionEvidencePath"], code);
+    if (!validPath(common.candidateManifestPath) || !validPath(common.executionEvidencePath)) {
+      throw new Error(code);
+    }
+  } else if (common.schemaVersion === 2) {
+    exactKeys(common, [...commonKeys, "episodeId", "candidateManifestArtifact", "executionEvidenceArtifact"], code);
+    validateEncryptedArtifact(common.candidateManifestArtifact, code);
+    validateEncryptedArtifact(common.executionEvidenceArtifact, code);
+    if (common.candidateManifestArtifact.payloadDigest !== common.candidateManifestDigest ||
+        common.executionEvidenceArtifact.payloadDigest !== common.executionEvidenceDigest) {
+      throw new Error(code);
+    }
+  } else {
+    throw new Error(code);
+  }
+  if (!ID.test(common.attemptId) || !ID.test(common.sourceSnapshotId) ||
+      (common.schemaVersion === 2 && !ID.test(common.episodeId)) ||
+      !/^tcman_[a-f0-9]{64}$/.test(common.candidateArtifactId) ||
+      !/^tre_execution_[a-f0-9]{64}$/.test(common.executionArtifactId) ||
+      !DIGEST.test(common.candidateManifestDigest) || !DIGEST.test(common.executionEvidenceDigest) ||
+      !Number.isSafeInteger(common.executionSchemaVersion) || common.executionSchemaVersion < 1) {
+    throw new Error(code);
+  }
+  return Object.freeze({ ...common });
+}
+
+export function createTransformerMissionArtifactRegistrationPayload(
+  value: TransformerMissionArtifactRegistrationBinding,
+): Uint8Array {
+  return Buffer.from(canonical(requireTransformerMissionArtifactRegistrationBinding(value)), "utf8");
+}
+
+export function openTransformerMissionArtifactRegistrationPayload(
+  value: Uint8Array,
+): TransformerMissionArtifactRegistrationBinding {
+  try {
+    const source = Buffer.from(value);
+    const parsed = requireTransformerMissionArtifactRegistrationBinding(
+      JSON.parse(source.toString("utf8")) as TransformerMissionArtifactRegistrationBinding,
+    );
+    if (canonical(parsed) !== source.toString("utf8")) throw new Error("noncanonical");
+    return parsed;
+  } catch {
+    throw new Error("transformer_mission_artifact_registration_invalid");
+  }
+}
+
 function validateWorkspaceArtifact(artifact: TransformerWorkspaceArtifact): void {
   exactKeys(artifact, [
     "schemaVersion", "kind", "storageKey", "ciphertextDigest", "payloadDigest",
@@ -435,7 +522,7 @@ function validateWorkspaceArtifact(artifact: TransformerWorkspaceArtifact): void
 }
 
 function artifactAad(input: Readonly<{
-  purpose: "workspace" | "effect-request" | "effect-result";
+  purpose: "workspace" | "effect-request" | "effect-result" | "mission-evidence";
   tenantId: string;
   episodeId: string;
   keyId: string;
@@ -443,8 +530,38 @@ function artifactAad(input: Readonly<{
   manifestDigest?: string;
   filesDigest?: string;
   effectId?: string;
+  artifactId?: string;
 }>): Buffer {
   return Buffer.from(canonical({ protocol: `${PROTOCOL}:artifact`, ...input }), "utf8");
+}
+
+export function createTransformerMissionEvidenceArtifact(
+  scope: Readonly<{ tenantId: string; episodeId: string; artifactId: string }>,
+  payload: Uint8Array,
+  key: Uint8Array,
+): Readonly<{ artifact: TransformerEncryptedArtifact; bytes: Uint8Array }> {
+  if (!ID.test(scope.tenantId) || !ID.test(scope.episodeId) || !ID.test(scope.artifactId) ||
+      !(payload instanceof Uint8Array) || payload.byteLength < 1 || payload.byteLength > MAX_EFFECT_OUTPUT_BYTES) {
+    throw new Error("transformer_mission_evidence_artifact_invalid");
+  }
+  return encryptArtifact(
+    `tenants/${scope.tenantId}/episodes/${scope.episodeId}/mission-evidence/${scope.artifactId}`,
+    payload,
+    key,
+    { purpose: "mission-evidence", ...scope },
+  );
+}
+
+export function openTransformerMissionEvidenceArtifact(
+  artifact: TransformerEncryptedArtifact,
+  bytes: Uint8Array,
+  key: Uint8Array,
+  scope: Readonly<{ tenantId: string; episodeId: string; artifactId: string }>,
+): Uint8Array {
+  if (!ID.test(scope.tenantId) || !ID.test(scope.episodeId) || !ID.test(scope.artifactId)) {
+    throw new Error("transformer_mission_evidence_artifact_invalid");
+  }
+  return decryptArtifact(artifact, bytes, key, { purpose: "mission-evidence", ...scope });
 }
 
 function encryptArtifact(
@@ -914,11 +1031,13 @@ export function createTransformerCoordinatorCompletionRequestDigest(
   episodeId: string,
   seal: TransformerCandidateSeal,
   completionIntent: TransformerAttemptCompletionIntent,
+  artifactRegistration?: TransformerMissionArtifactRegistrationBinding,
 ): string {
   return sha256(createTransformerCoordinatorCompletionRequest(
     episodeId,
     seal,
     completionIntent,
+    artifactRegistration,
   ));
 }
 
@@ -926,18 +1045,23 @@ export function createTransformerCoordinatorCompletionRequest(
   episodeId: string,
   seal: TransformerCandidateSeal,
   completionIntent: TransformerAttemptCompletionIntent,
+  artifactRegistration?: TransformerMissionArtifactRegistrationBinding,
 ): Uint8Array {
   const normalizedIntent = openTransformerAttemptCompletionPayload(
     createTransformerAttemptCompletionPayload(completionIntent),
   );
   validateCoordinatorCompletionRequestBinding(episodeId, seal, normalizedIntent);
   const completionDigest = createTransformerAttemptCompletionDigest(normalizedIntent);
+  const registration = artifactRegistration === undefined
+    ? undefined
+    : requireTransformerMissionArtifactRegistrationBinding(artifactRegistration);
   return Buffer.from(canonical({
     protocol: `${PROTOCOL}:coordinator-completion`,
     episodeId,
     seal,
     completionDigest,
     completionIntent: normalizedIntent,
+    ...(registration === undefined ? {} : { artifactRegistration: registration }),
   }), "utf8");
 }
 
@@ -978,8 +1102,10 @@ export function openTransformerCoordinatorCompletionRequest(
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("transformer_attempt_checkpoint_terminal_invalid");
     }
+    const hasArtifactRegistration = Object.hasOwn(parsed, "artifactRegistration");
     exactKeys(parsed, [
       "protocol", "episodeId", "seal", "completionDigest", "completionIntent",
+      ...(hasArtifactRegistration ? ["artifactRegistration"] : []),
     ], "transformer_attempt_checkpoint_terminal_invalid");
     if (parsed.protocol !== `${PROTOCOL}:coordinator-completion` ||
         typeof parsed.episodeId !== "string") {
@@ -989,6 +1115,11 @@ export function openTransformerCoordinatorCompletionRequest(
       Buffer.from(canonical(parsed.completionIntent), "utf8"),
     );
     const seal = parsed.seal as TransformerCandidateSeal;
+    const artifactRegistration = hasArtifactRegistration
+      ? requireTransformerMissionArtifactRegistrationBinding(
+          parsed.artifactRegistration as TransformerMissionArtifactRegistrationBinding,
+        )
+      : undefined;
     validateCoordinatorCompletionRequestBinding(parsed.episodeId, seal, completionIntent);
     const completionDigest = createTransformerAttemptCompletionDigest(completionIntent);
     if (parsed.completionDigest !== completionDigest || canonical(parsed) !== source.toString("utf8")) {
@@ -999,6 +1130,7 @@ export function openTransformerCoordinatorCompletionRequest(
       seal: Object.freeze({ ...seal }),
       completionDigest,
       completionIntent,
+      ...(artifactRegistration === undefined ? {} : { artifactRegistration }),
     });
   } catch {
     throw new Error("transformer_attempt_checkpoint_terminal_invalid");
@@ -2145,6 +2277,84 @@ export async function supersedeTransformerAttemptCheckpointCoordinatorCompletion
   })) {
     return next;
   }
+  const raced = await journal.read(current.episodeId);
+  if (raced !== null && sameState(raced, nextState, key)) return raced;
+  throw new Error("transformer_attempt_checkpoint_head_conflict");
+}
+
+export async function upgradeTransformerAttemptCheckpointCoordinatorCompletionRequest(
+  journal: TransformerAttemptCheckpointJournal,
+  expectedHeadDigest: string,
+  nextEffect: Exclude<TransformerAttemptCheckpointEffect, Readonly<{ kind: "none" }>>,
+  createdAt: string,
+  key: Uint8Array,
+  expectedBinding: TransformerAttemptCheckpointBinding,
+): Promise<TransformerAttemptCheckpointEnvelope> {
+  requireDigest(expectedHeadDigest, "transformer_attempt_checkpoint_head_invalid");
+  const currentEnvelope = await journal.read(createTransformerEpisodeId(expectedBinding));
+  if (currentEnvelope === null || currentEnvelope.stateDigest !== expectedHeadDigest) {
+    throw new Error("transformer_attempt_checkpoint_head_conflict");
+  }
+  const current = openTransformerAttemptCheckpoint(currentEnvelope, key, expectedBinding);
+  const activeLease = await journal.readLease(current.episodeId);
+  if (activeLease === null) throw new Error("transformer_attempt_checkpoint_lease_mismatch");
+  validateLease(activeLease);
+  const sameLease = activeLease.attemptNumber === current.attemptNumber &&
+    activeLease.generation === current.writerLeaseGeneration &&
+    activeLease.tokenDigest === current.writerLeaseTokenDigest;
+  const previousEffect = current.pendingEffect;
+  if (!sameLease || current.stage !== "completion_prepared" || current.candidateSeal === null ||
+      previousEffect.kind !== "coordinator_complete" ||
+      (previousEffect.state !== "prepared" && previousEffect.state !== "dispatched") ||
+      nextEffect.kind !== "coordinator_complete" || nextEffect.state !== "prepared" ||
+      nextEffect.slot !== previousEffect.slot ||
+      !Number.isFinite(Date.parse(createdAt)) || new Date(Date.parse(createdAt)).toISOString() !== createdAt ||
+      Date.parse(createdAt) < Date.parse(current.createdAt)) {
+    throw new Error("transformer_attempt_checkpoint_completion_upgrade_invalid");
+  }
+  const [previousBytes, nextBytes] = await Promise.all([
+    journal.readArtifact(previousEffect.requestArtifact.storageKey),
+    journal.readArtifact(nextEffect.requestArtifact.storageKey),
+  ]);
+  if (previousBytes === null || nextBytes === null) {
+    throw new Error("transformer_attempt_checkpoint_artifact_missing");
+  }
+  const previousPayload = verifyTransformerEffectRequestArtifact(
+    previousEffect.requestArtifact,
+    previousBytes,
+    key,
+    { tenantId: current.binding.tenantId, episodeId: current.episodeId, effectId: previousEffect.effectId },
+  );
+  const nextPayload = verifyTransformerEffectRequestArtifact(
+    nextEffect.requestArtifact,
+    nextBytes,
+    key,
+    { tenantId: current.binding.tenantId, episodeId: current.episodeId, effectId: nextEffect.effectId },
+  );
+  const previousRequest = openTransformerCoordinatorCompletionRequest(previousPayload);
+  const nextRequest = openTransformerCoordinatorCompletionRequest(nextPayload);
+  if (previousRequest.artifactRegistration !== undefined ||
+      nextRequest.artifactRegistration?.schemaVersion !== 2 ||
+      canonical({ ...previousRequest, artifactRegistration: undefined }) !==
+        canonical({ ...nextRequest, artifactRegistration: undefined })) {
+    throw new Error("transformer_attempt_checkpoint_completion_upgrade_invalid");
+  }
+  const nextState = {
+    ...current,
+    generation: current.generation + 1,
+    pendingEffect: nextEffect,
+    previousCheckpointDigest: currentEnvelope.stateDigest,
+    createdAt,
+  } satisfies TransformerAttemptCheckpointState;
+  validateState(nextState);
+  await verifyPendingEffectRequestStored(journal, nextState, key);
+  const next = seal(nextState, key);
+  if (await journal.compareAndSwap({
+    episodeId: current.episodeId,
+    expectedStateDigest: currentEnvelope.stateDigest,
+    activeLease,
+    next,
+  })) return next;
   const raced = await journal.read(current.episodeId);
   if (raced !== null && sameState(raced, nextState, key)) return raced;
   throw new Error("transformer_attempt_checkpoint_head_conflict");
