@@ -4,7 +4,6 @@
  */
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
-  getGraphLearnDb,
   labelPrOutcome,
   runGraphQuery,
   formatQueryForPlanner,
@@ -29,8 +28,13 @@ import {
   type QueryPick,
   type AbReport,
   type AstIngestResult,
+  type GraphLearnDb,
   type Promotion,
 } from "@mendpoint/graph-learn";
+import {
+  resolveTenantGraphHandle,
+  type TenantGraphHandleUnavailableReason,
+} from "@mendpoint/pipeline";
 import {
   executePlan,
   helloWorldRun,
@@ -125,14 +129,74 @@ export type PlatformClient = {
 };
 
 /**
- * Build a platform client bound to a single tenant. Every graph read and write
- * is scoped to `scope`, so an SDK consumer can never reach another tenant's
- * graph. The scope is mandatory: there is no unscoped/global client.
+ * Fail-closed signal raised when no ready tenant Change Graph handle exists.
+ * Carries the same structured `{error, reason, detail}` fields the API graph
+ * surface returns, so callers branch on `reason`/`detail` instead of parsing a
+ * string message.
  */
-export function createPlatform(scope: GraphTenantScope): PlatformClient {
+export class GraphHandleUnavailableError extends Error {
+  readonly error = "graph_handle_unavailable" as const;
+  readonly reason: TenantGraphHandleUnavailableReason;
+  readonly detail: string;
+  constructor(reason: TenantGraphHandleUnavailableReason, detail: string) {
+    super(`graph_handle_unavailable:${reason}`);
+    this.name = "GraphHandleUnavailableError";
+    this.reason = reason;
+    this.detail = detail;
+  }
+}
+
+/**
+ * Resolve a tenant graph handle for one call and run `fn` against it. Every
+ * handle flows through `resolveTenantGraphHandle`: there is no in-process handle
+ * injection, so an ephemeral/empty store can never bypass the guard. Tests point
+ * at a real on-disk graph via `graphPath`; production leaves it undefined and the
+ * resolver reads `GRAPH_LEARN_DB`.
+ */
+function withTenantGraph<T>(
+  scope: GraphTenantScope,
+  graphPath: string | null | undefined,
+  fn: (graphDb: GraphLearnDb) => T,
+  opts?: { allowEmpty?: boolean },
+): T {
+  const resolved = resolveTenantGraphHandle({
+    tenantId: scope.tenantId,
+    consumerIds: scope.consumerIds,
+    allowEmpty: opts?.allowEmpty,
+    graphPath,
+  });
+  if (resolved.status !== "ready") {
+    throw new GraphHandleUnavailableError(resolved.reason, resolved.detail);
+  }
+  try {
+    return fn(resolved.graphDb);
+  } finally {
+    resolved.close();
+  }
+}
+
+/**
+ * Build a platform client bound to a single tenant. Tenant-partitioned graph
+ * reads and writes are scoped to `scope`, so an SDK consumer cannot reach
+ * another tenant's graph. The scope is mandatory: there is no unscoped/global
+ * client. One documented exception: `backfillGit` writes repo-scoped
+ * git-temporal history through `backfillGitTemporal`, which keys nodes by repo
+ * and takes no tenant scope; it is a bootstrap ingest, not a cross-tenant read.
+ *
+ * Every graph handle is resolved by `resolveTenantGraphHandle`, in tests too:
+ * production reads `GRAPH_LEARN_DB`, tests pass an explicit `graphPath` to a real
+ * on-disk graph. There is no in-process handle injection, so an ephemeral/empty
+ * store can never be presented as a tenant Change Graph handle.
+ */
+export function createPlatform(
+  scope: GraphTenantScope,
+  opts?: { graphPath?: string | null },
+): PlatformClient {
+  const graph = <T>(fn: (graphDb: GraphLearnDb) => T, allowEmpty = false) =>
+    withTenantGraph(scope, opts?.graphPath, fn, { allowEmpty });
   return {
     graphQuery(q) {
-      const r = runGraphQuery(getGraphLearnDb(), q, scope);
+      const r = graph((graphDb) => runGraphQuery(graphDb, q, scope));
       return { ...r, markdown: formatQueryForPlanner(r) };
     },
     planSpecDiff(input) {
@@ -160,34 +224,46 @@ export function createPlatform(scope: GraphTenantScope): PlatformClient {
       return helloWorldRun(baseDir, scope);
     },
     recordOutcome(input) {
-      labelPrOutcome(getGraphLearnDb(), input, scope.tenantId);
+      // Write path: the first outcome may be labeled before any read-worthy node
+      // exists, so an existing-but-empty tenant view is allowed here (allowEmpty).
+      graph((graphDb) => labelPrOutcome(graphDb, input, scope.tenantId), true);
     },
     plannerContext(agent) {
       let mem = createMemory();
       mem = seedMemoryForAgent(agent, mem);
+      const base = memoryForPlanner(mem);
+      let rates: GraphQueryResult;
       try {
-        const rates = runGraphQuery(getGraphLearnDb(), {
+        rates = graph((graphDb) => runGraphQuery(graphDb, {
           op: "pattern_success_rates",
           minSamples: 1,
-        }, scope);
-        if (rates.rows?.length) {
-          const top = rates.rows
-            .slice(0, 3)
-            .map(
-              (r) =>
-                `- pattern ${r.pattern}: ${(Number(r.successRate) * 100).toFixed(0)}% (${r.samples} samples)`,
-            )
-            .join("\n");
-          return `${memoryForPlanner(mem)}\n\n## Historical patterns\n${top}`;
+        }, scope));
+      } catch (error) {
+        // Fail closed without collapsing "graph unavailable" into "no patterns":
+        // surface the structured reason so a caller can tell the graph was never
+        // consulted apart from the case where it was consulted and found none.
+        if (error instanceof GraphHandleUnavailableError) {
+          return `${base}\n\n## Change Graph unavailable\n- reason: ${error.reason}\n- detail: ${error.detail}`;
         }
-      } catch {
-        /* */
+        throw error;
       }
-      return memoryForPlanner(mem);
+      if (rates.rows?.length) {
+        const top = rates.rows
+          .slice(0, 3)
+          .map(
+            (r) =>
+              `- pattern ${r.pattern}: ${(Number(r.successRate) * 100).toFixed(0)}% (${r.samples} samples)`,
+          )
+          .join("\n");
+        return `${base}\n\n## Historical patterns\n${top}`;
+      }
+      return `${base}\n\n## Historical patterns\n- none above minSamples`;
     },
     planToMarkdown,
     backfillGit(opts) {
-      return backfillGitTemporal(getGraphLearnDb(), opts);
+      // Bootstrap ingest: git-temporal history is keyed by repo (not tenant) and
+      // may run before any node exists, so allow an empty tenant view (allowEmpty).
+      return graph((graphDb) => backfillGitTemporal(graphDb, opts), true);
     },
     latencySlo() {
       const report = latencyReport();
@@ -213,30 +289,30 @@ export function createPlatform(scope: GraphTenantScope): PlatformClient {
       return pickGraphQuery(q);
     },
     promotePatterns() {
-      return promotePatterns(getGraphLearnDb(), {}, scope);
+      return graph((graphDb) => promotePatterns(graphDb, {}, scope));
     },
     abLift() {
-      const report = measureAbLift(getGraphLearnDb());
+      const report = graph((graphDb) => measureAbLift(graphDb, undefined, scope));
       return { ...report, markdown: formatAbReport(report) };
     },
     ingestAst(repoPath, repoId) {
-      return ingestAstRepo(getGraphLearnDb(), { repoPath, repoId, maxFiles: 200 });
+      return graph((graphDb) => ingestAstRepo(graphDb, { repoPath, repoId, maxFiles: 200 }), true);
     },
     ingestLsp(repoPath, repoId) {
-      return ingestLspSymbols(getGraphLearnDb(), { repoPath, repoId });
+      return graph((graphDb) => ingestLspSymbols(graphDb, { repoPath, repoId }), true);
     },
     incremental(repoPath, repoId) {
-      return incrementalReingest(getGraphLearnDb(), {
+      return graph((graphDb) => incrementalReingest(graphDb, {
         repoPath,
         repoId,
         maxFiles: 200,
-      });
+      }), true);
     },
     gnnExport(outPath) {
       if (outPath) {
-        return writeGnnExport(getGraphLearnDb(), outPath, scope);
+        return graph((graphDb) => writeGnnExport(graphDb, outPath, scope));
       }
-      const exp = exportGnnFeatures(getGraphLearnDb(), scope);
+      const exp = graph((graphDb) => exportGnnFeatures(graphDb, scope));
       return { nodes: exp.nodes.length, edges: exp.edges.length };
     },
     vmStatus() {

@@ -17,9 +17,11 @@ export async function wardenSpecDiffStub(opts: {
   execute?: boolean;
   /** Tenant that owns this specialist run's graph reads/writes. */
   tenantId?: string;
+  /** Test/explicit graph file path. Production resolves GRAPH_LEARN_DB and fails closed. */
+  graphPath?: string | null;
 }) {
   const scope = { tenantId: opts.tenantId ?? "sdk-specialist-demo" };
-  const platform = createPlatform(scope);
+  const platform = createPlatform(scope, opts.graphPath ? { graphPath: opts.graphPath } : undefined);
   const oldSpec = JSON.parse(readFileSync(opts.oldSpecPath, "utf8"));
   const newSpec = JSON.parse(readFileSync(opts.newSpecPath, "utf8"));
 
