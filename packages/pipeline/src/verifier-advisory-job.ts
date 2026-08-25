@@ -26,6 +26,7 @@ import {
 } from "@mendpoint/verifier";
 import {
   canonicalPolicyEnvelopeJson,
+  defaultPolicyEnvelope,
   evaluatePolicyEnvelope,
   parsePolicyEnvelope,
   type PolicyEnvelope,
@@ -303,6 +304,38 @@ function retainAndBindVerifierPolicy(db: AppDb, input: Readonly<{
 }>): VerifierAdvisoryPolicyAuthority {
   const inheritedBefore = getMissionPolicyEnvelope(db, input.tenantId, input.missionId);
   const envelopeJson = canonicalPolicyEnvelopeJson(input.envelope);
+  const envelopeSha256 = sha256(envelopeJson);
+  const requiresAdvance = inheritedBefore !== null &&
+    (inheritedBefore.contentSha256 !== envelopeSha256 ||
+      inheritedBefore.policyEnvelopeId !== input.envelope.policyEnvelopeId);
+
+  // Validate the only privileged upgrade before retaining any new authority.
+  // A predictable legacy id is not sufficient: the retained bytes and digest
+  // must be the exact canonical default v1 body, and the target must be v2.
+  if (requiresAdvance) {
+    if (!input.allowDefaultUpgrade || inheritedBefore.version !== 1 ||
+        inheritedBefore.policyEnvelopeId !== defaultPolicyEnvelopeId(input.tenantId) ||
+        input.envelope.version !== 2) {
+      throw new Error("verifier_advisory_policy_binding_invalid");
+    }
+    let inheritedEnvelope: PolicyEnvelope;
+    try { inheritedEnvelope = parsePolicyEnvelope(JSON.parse(inheritedBefore.envelopeJson)); }
+    catch { throw new Error("verifier_advisory_policy_prior_default_invalid"); }
+    const canonicalInherited = canonicalPolicyEnvelopeJson(inheritedEnvelope);
+    const expectedDefault = canonicalPolicyEnvelopeJson(defaultPolicyEnvelope({
+      tenantId: input.tenantId,
+      policyEnvelopeId: defaultPolicyEnvelopeId(input.tenantId),
+      version: 1,
+      residency: inheritedEnvelope.residency,
+      createdAt: inheritedEnvelope.createdAt,
+    }));
+    if (canonicalInherited !== inheritedBefore.envelopeJson ||
+        sha256(canonicalInherited) !== inheritedBefore.contentSha256 ||
+        canonicalInherited !== expectedDefault) {
+      throw new Error("verifier_advisory_policy_prior_default_invalid");
+    }
+  }
+
   const stored = createPolicyEnvelope(db, {
     tenantId: input.envelope.tenantId,
     version: input.envelope.version,
@@ -321,13 +354,7 @@ function retainAndBindVerifierPolicy(db: AppDb, input: Readonly<{
       correlationId: input.taskId,
       createdAt: input.createdAt,
     });
-  } else if (inheritedBefore.contentSha256 !== stored.contentSha256 ||
-      inheritedBefore.policyEnvelopeId !== input.envelope.policyEnvelopeId) {
-    if (!input.allowDefaultUpgrade || inheritedBefore.version !== 1 ||
-        inheritedBefore.policyEnvelopeId !== defaultPolicyEnvelopeId(input.tenantId) ||
-        input.envelope.version <= inheritedBefore.version) {
-      throw new Error("verifier_advisory_policy_binding_invalid");
-    }
+  } else if (requiresAdvance) {
     advanceMissionPolicyEnvelopeVersion(db, {
       tenantId: input.tenantId,
       missionId: input.missionId,

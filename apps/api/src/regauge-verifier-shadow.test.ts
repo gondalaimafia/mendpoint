@@ -4,11 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  createDb, createMission, getJob, getMission, insertConnectedRepository,
+  bindMissionToPolicyEnvelope, createDb, createMission, createPolicyEnvelope,
+  getJob, getMission, insertConnectedRepository,
   insertPrincipal, insertRepositorySnapshot, insertTenant,
   linkRegaugeCampaignToMission, listArtifactManifests, upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
+import {
+  defaultPolicyEnvelopeId,
+} from "@mendpoint/pipeline";
+import {
+  canonicalPolicyEnvelopeJson,
+  defaultPolicyEnvelope,
+} from "@mendpoint/policy";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE, applyRecipe, recipeFilesDigest, recipeReference,
   type ExactSourceSnapshot, type RecipeFiles,
@@ -73,7 +81,7 @@ function completed(): TransformerAttemptCheckpointCompletionResult {
 function env(): Record<string, string> {
   return {
     MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({ schemaVersion: "2026-08-17.v1", entries: [{ tenantId: "tenant_regauge_canary", products: ["regauge"], dataClassification: "confidential", requiredRegion: "cn", processingRegion: "cn", consentId: "consent-regauge", evidenceRef: "github-environment:regauge-production", externalModelAllowed: true, mayLeaveTenantBoundary: true, consentActive: true }] }),
-    MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: "tenant_regauge_canary", version: 1, repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"], branchScope: ["main"], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
+    MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({ policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824", tenantId: "tenant_regauge_canary", version: 2, repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"], branchScope: ["main"], forbiddenZones: [], allowedTools: ["deepseek-verifier"], allowedModelClasses: ["rented_specialist"], externalProcessingAllowed: true, residency: "cn", riskCeiling: "high", reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: 90, createdAt: "2026-08-24T00:00:00.000Z" }),
   };
 }
 
@@ -89,12 +97,54 @@ describe("dedicated ReGauge advisory dispatch", () => {
     const first = enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: env(), completion: completed(), exactSource: exactSource() });
     const second = enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: env(), completion: completed(), exactSource: exactSource() });
     expect(second).toEqual({ ...first, status: "duplicate" });
-    expect(getMission(store, "tenant_regauge_canary", "mission-regauge-a")?.policyEnvelopeVersion).toBe("1");
+    expect(getMission(store, "tenant_regauge_canary", "mission-regauge-a")?.policyEnvelopeVersion).toBe("2");
     const job = getJob(store, first.jobId, "tenant_regauge_canary")!;
     expect(job.type).toBe("verifier.advisory.verify");
     expect(job.payload_json).not.toContain("package.json");
     expect(listArtifactManifests(store, "tenant_regauge_canary", "agent_verifier_advisory_input")).toHaveLength(1);
     expect(listArtifactManifests(store, "tenant_regauge_canary", "agent_verifier_advisory_substantive_evidence")).toHaveLength(1);
+  });
+
+  it("rejects a forged legacy default before retaining the privileged v2 policy", () => {
+    const store = db();
+    const forged = canonicalPolicyEnvelopeJson({
+      ...defaultPolicyEnvelope({
+        tenantId: "tenant_regauge_canary",
+        policyEnvelopeId: defaultPolicyEnvelopeId("tenant_regauge_canary"),
+        version: 1,
+        createdAt: "2026-08-24T12:00:00.000Z",
+      }),
+      repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"],
+    });
+    createPolicyEnvelope(store, {
+      tenantId: "tenant_regauge_canary",
+      version: 1,
+      policyEnvelopeId: defaultPolicyEnvelopeId("tenant_regauge_canary"),
+      envelopeJson: forged,
+      createdAt: "2026-08-24T12:00:00.000Z",
+    });
+    bindMissionToPolicyEnvelope(store, {
+      tenantId: "tenant_regauge_canary",
+      missionId: "mission-regauge-a",
+      version: 1,
+      actorPrincipalId: "verifier_service",
+      eventId: "mission-policy-forged",
+      idempotencyKey: "mission-policy-forged",
+      correlationId: "campaign_regauge_canary_20260814",
+      createdAt: "2026-08-24T12:00:00.000Z",
+    });
+
+    expect(() => enqueueDedicatedRegaugeCompletionForAdvisory({
+      db: store,
+      env: env(),
+      completion: completed(),
+      exactSource: exactSource(),
+    })).toThrow("verifier_advisory_policy_prior_default_invalid");
+    expect((store.raw.prepare(`SELECT COUNT(*) count FROM policy_envelopes
+      WHERE tenant_id = ? AND version = ?`).get(
+      "tenant_regauge_canary",
+      2,
+    ) as { count: number }).count).toBe(0);
   });
 
   it("fails closed before enqueue when Mission or policy authority does not match", () => {

@@ -533,6 +533,31 @@ export function createRegaugeProductionBootstrapRuntime(
   options: RuntimeOptions,
 ): RegaugeProductionBootstrapRuntime {
   const now = options.now ?? (() => new Date().toISOString());
+  const reconcileVerifierConsent = (input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    reviewerPrincipalId: string;
+    createdAt: string;
+  }>): void => {
+    if (!options.verifierConsentAuthority) return;
+    const verifierConsent = ensureRegaugeVerifierConsent(options.db, {
+      tenantId: input.tenantId,
+      reviewerPrincipalId: input.reviewerPrincipalId,
+      authority: options.verifierConsentAuthority,
+      createdAt: input.createdAt,
+    });
+    if (verifierConsent.status === "disabled") {
+      console.warn(JSON.stringify({
+        event: "regauge_verifier_disabled",
+        reason: verifierConsent.reason,
+        tenantId: input.tenantId,
+        campaignId: input.campaignId,
+        latestConsentId: verifierConsent.latestConsentId,
+        latestConsentVersion: verifierConsent.latestConsentVersion,
+        observedAt: input.createdAt,
+      }));
+    }
+  };
   const reconcileMission = (input: Readonly<{
     tenantId: string;
     campaignId: string;
@@ -610,25 +635,12 @@ export function createRegaugeProductionBootstrapRuntime(
       if (reviewerActorId !== `human:${reviewerSubject}`) {
         throw new Error("regauge_production_bootstrap_reviewer_drift");
       }
-      if (options.verifierConsentAuthority) {
-        const verifierConsent = ensureRegaugeVerifierConsent(options.db, {
-          tenantId: bootstrap.tenantId,
-          reviewerPrincipalId,
-          authority: options.verifierConsentAuthority,
-          createdAt: at,
-        });
-        if (verifierConsent.status === "disabled") {
-          console.warn(JSON.stringify({
-            event: "regauge_verifier_disabled",
-            reason: verifierConsent.reason,
-            tenantId: bootstrap.tenantId,
-            campaignId: bootstrap.campaignId,
-            latestConsentId: verifierConsent.latestConsentId,
-            latestConsentVersion: verifierConsent.latestConsentVersion,
-            observedAt: at,
-          }));
-        }
-      }
+      reconcileVerifierConsent({
+        tenantId: bootstrap.tenantId,
+        campaignId: bootstrap.campaignId,
+        reviewerPrincipalId,
+        createdAt: at,
+      });
       upsertGitHubInstallation(options.db, {
         id: stableId("github-installation", bootstrap.repository.installationId),
         installationId: bootstrap.repository.installationId,
@@ -824,6 +836,19 @@ export function createRegaugeProductionBootstrapRuntime(
     },
     async readExecution(tenantId, campaignId) { return mapExecution(options, tenantId, campaignId); },
     async reconcileExisting(input) {
+      const reviewerSubject = input.reviewerActorId.startsWith("human:")
+        ? input.reviewerActorId.slice("human:".length)
+        : "";
+      const reviewer = reviewerSubject
+        ? getPrincipalBySubject(options.db, input.tenantId, "human", reviewerSubject)
+        : undefined;
+      if (!reviewer) throw new Error("regauge_production_bootstrap_reviewer_drift");
+      reconcileVerifierConsent({
+        tenantId: input.tenantId,
+        campaignId: input.campaignId,
+        reviewerPrincipalId: reviewer.id,
+        createdAt: now(),
+      });
       reconcileMission({
         tenantId: input.tenantId,
         campaignId: input.campaignId,

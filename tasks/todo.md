@@ -3082,3 +3082,17 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Concurrency: append-only tenant-scoped claim and claim-result ledgers enforce one live lease, monotonic fencing, one terminal result per claim, takeover only after expiry, exponential retry backoff, and a terminal eight-failure ceiling. Two SQLite coordinator connections cannot claim the same dispatch.
 - Isolation: readiness drains backfill only the configured exact ReGauge campaign, claim before loading evidence or enqueueing, and retain the deterministic verifier job identity. Completion, candidate selection, execution, delivery, merge, and deployment authority are unchanged.
 - Verification: 56 direct store and drain regressions pass. The 11-file ReGauge advisory, consent, coordinator, worker, workflow, and proof matrix passes 163 tests. Transformer and API typechecks pass, and diff integrity is clean.
+
+### 2026-08-24 Final reciprocal review closure: replay consent and canonical legacy policy
+
+- [x] RED: prove an existing bootstrap receipt created before verifier activation has no consent, then gains the exact configured durable consent on replay without relaunching the campaign.
+- [x] RED: prove a legacy v1 Policy Envelope with the deterministic default identifier but altered semantics cannot receive the privileged v2 advance.
+- [x] Reconcile verifier consent on the validated existing-receipt path through the same grant-or-disabled authority used by fresh bootstrap.
+- [x] Validate the full canonical default v1 body, digest, identifier, and exact v1-to-v2 transition before retaining any new Policy Envelope authority.
+- [x] Run the focused bootstrap, policy, advisory, and workflow regressions plus affected typechecks and diff integrity.
+
+#### Review
+
+- Consent: an authenticated existing bootstrap receipt now reconciles the protected durable consent before Mission policy reconciliation. A missing historical grant is created once; an inactive or revoked version remains disabled and is never silently replaced.
+- Policy: the privileged migrated-state path accepts only the byte-identical canonical tenant default v1 and exact restrictive v2 target. A forged but internally consistent default identifier fails before v2 is inserted.
+- Verification: 20 focused bootstrap, Policy Envelope, advisory, and protected-workflow tests pass across 4 files. Diff integrity is clean.

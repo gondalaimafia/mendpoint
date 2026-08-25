@@ -264,7 +264,6 @@ describe("Regauge production bootstrap runtime", () => {
       control,
       executions,
       missions,
-      verifierConsentAuthority,
       repositoryDependencies: {
         credentialBroker: broker,
         githubTransport: new GitHubSnapshotTransport(),
@@ -290,6 +289,7 @@ describe("Regauge production bootstrap runtime", () => {
     const legacyBaseRuntime = createRegaugeProductionBootstrapRuntime(runtimeOptions);
     const baseRuntime = createRegaugeProductionBootstrapRuntime({
       ...runtimeOptions,
+      verifierConsentAuthority,
       verifierPolicyAuthority: {
         policyEnvelopeJson: protectedEnvironment.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON,
         repositoryScope: "gondalaimafia/mendpoint-canary-drill-20260801",
@@ -316,6 +316,11 @@ describe("Regauge production bootstrap runtime", () => {
       regaugeProductionBootstrapInputFromEnvironment(environment()),
       runtime,
     );
+    expect(findActiveLearningConsent(db, {
+      tenantId: "tenant_regauge_canary",
+      purpose: REGAUGE_VERIFIER_CONSENT_PURPOSE,
+      at: new Date().toISOString(),
+    })).toBeUndefined();
     const legacyMission = resolveMissionForRegaugeCampaign(
       db,
       "tenant_regauge_canary",
