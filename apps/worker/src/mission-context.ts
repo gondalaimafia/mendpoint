@@ -238,6 +238,7 @@ export function buildMissionContext(
  * prompt is not grown for nothing.
  */
 export function hasInheritedContent(envelope: InheritedContextEnvelope): boolean {
+  if (envelope.missionIdentity.graphVersionId !== null) return true;
   if (envelope.relevantOrgMemory.status === "consulted" && envelope.relevantOrgMemory.applied.length > 0) {
     return true;
   }

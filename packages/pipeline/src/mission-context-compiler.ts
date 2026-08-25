@@ -846,6 +846,13 @@ export function compileMissionContext(input: MissionContextInput): InheritedCont
  * reads it as `recorded_present`.
  */
 export type ContextRef =
+  | Readonly<{
+      kind: "mission_identity";
+      missionId: string;
+      repositoryId: string | null;
+      snapshotId: string | null;
+      graphVersionId: string;
+    }>
   | Readonly<{ kind: "graph_context"; graphVersionId: string; contentDigest: string; byteLength: number }>
   | Readonly<{ kind: "org_memory"; recordId: string; memoryId: string; status: OrganizationMemoryStatus; provenance: "confirmed" | "inferred" }>
   | Readonly<{ kind: "org_memory_overridden"; recordId: string; overriddenBy: PrecedenceLayerName }>
@@ -884,6 +891,25 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
     `Mission ${envelope.missionIdentity.missionId ?? "(none — task not part of a formal mission)"} ` +
       `(${envelope.missionIdentity.product}); objective: ${envelope.missionIdentity.objective}`,
   );
+  if (
+    envelope.missionIdentity.missionId &&
+    envelope.missionIdentity.graphVersionId
+  ) {
+    lines.push(
+      `Mission bindings: repository ${envelope.missionIdentity.repositoryId ?? "(none)"}; ` +
+        `snapshot ${envelope.missionIdentity.snapshotId ?? "(none)"}; ` +
+        `graph version ${envelope.missionIdentity.graphVersionId}`,
+    );
+    refs.push(
+      Object.freeze({
+        kind: "mission_identity",
+        missionId: envelope.missionIdentity.missionId,
+        repositoryId: envelope.missionIdentity.repositoryId,
+        snapshotId: envelope.missionIdentity.snapshotId,
+        graphVersionId: envelope.missionIdentity.graphVersionId,
+      }),
+    );
+  }
   lines.push(`Task ${envelope.task.taskId}; capability ${envelope.task.capability}; risk ${envelope.task.riskClass}`);
   lines.push(`Task goal: ${envelope.task.goal}`);
 
