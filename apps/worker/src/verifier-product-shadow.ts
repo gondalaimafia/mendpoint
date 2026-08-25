@@ -36,6 +36,11 @@ export const VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE = "verifier-external-model-
 export { REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE };
 export const RETRYABLE_VERIFIER_FAILURE_CODES = new Set(["api_failure", "logprob_failure"] as const);
 
+type ProviderInvocationOutcome = {
+  kind: "none" | "no_operation" | "attempted" | "settled" | "completed" | "unknown";
+  operationId: string | null;
+};
+
 export class VerifierProviderNoResponseError extends Error {
   readonly code = "verifier_transport_not_sent";
 }
@@ -122,8 +127,8 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
   const providerTransport = input.transport ?? createFetchVerifierTransport();
   const attemptedProviderOperationIds: string[] = [];
   const settledProviderOperationIds: string[] = [];
-  const completedProviderOperationIds: string[] = [];
   const unknownProviderOperationIds: string[] = [];
+  const latestProviderInvocation: ProviderInvocationOutcome = { kind: "none", operationId: null };
   const transport = input.completion.product === "regauge"
     ? durableRegaugeTransport({
       db: input.db,
@@ -138,8 +143,8 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
       hooks: input.operationHooks,
       attemptedOperationIds: attemptedProviderOperationIds,
       settledOperationIds: settledProviderOperationIds,
-      completedOperationIds: completedProviderOperationIds,
       unknownOperationIds: unknownProviderOperationIds,
+      latestInvocation: latestProviderInvocation,
     })
     : input.transport;
   const runtime = createVerifierAdvisoryRuntime({
@@ -193,8 +198,10 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
   if (result.failureCode && RETRYABLE_VERIFIER_FAILURE_CODES.has(
     result.failureCode as "api_failure" | "logprob_failure",
   )) {
-    const operationId = attemptedProviderOperationIds.at(-1);
-    if (operationId && completedProviderOperationIds.includes(operationId)) {
+    const operationId = latestProviderInvocation.kind === "completed"
+      ? latestProviderInvocation.operationId
+      : null;
+    if (operationId) {
       persistVerifierAdvisoryProviderRetryableResponse(input.db, {
         tenantId: input.completion.tenantId,
         operationId,
@@ -220,14 +227,19 @@ function durableRegaugeTransport(input: Readonly<{
   hooks?: Readonly<{ afterProviderReturn?: () => void; afterProviderReceipt?: () => void }>;
   attemptedOperationIds: string[];
   settledOperationIds: string[];
-  completedOperationIds: string[];
   unknownOperationIds: string[];
+  latestInvocation: ProviderInvocationOutcome;
 }>): VerifierHttpTransport {
   return Object.freeze({
     request: async (request: VerifierHttpRequest) => {
       const providerRequestId = request.headers["x-mendpoint-request-id"];
       if (!providerRequestId) throw new Error("verifier_advisory_provider_request_invalid");
       const requestedAt = input.now();
+      // Reset before any lease, consent, or intent work. A failure at one of
+      // those gates belongs to this invocation and must never be attributed to
+      // an earlier completed provider receipt.
+      input.latestInvocation.kind = "no_operation";
+      input.latestInvocation.operationId = null;
       input.beforeProviderRequest?.(requestedAt);
       let operation: ReturnType<typeof beginVerifierAdvisoryProviderOperation>;
       try {
@@ -246,13 +258,16 @@ function durableRegaugeTransport(input: Readonly<{
       } catch (error) {
         if (error instanceof Error && error.message === "verifier_advisory_provider_outcome_unknown") {
           input.unknownOperationIds.push(providerRequestId);
+          input.latestInvocation.kind = "unknown";
         }
         throw error;
       }
       input.attemptedOperationIds.push(operation.operationId);
+      input.latestInvocation.kind = "attempted";
+      input.latestInvocation.operationId = operation.operationId;
       if (operation.status === "recover") {
         input.settledOperationIds.push(operation.operationId);
-        input.completedOperationIds.push(operation.operationId);
+        input.latestInvocation.kind = "completed";
         return operation.response!;
       }
       try {
@@ -266,8 +281,9 @@ function durableRegaugeTransport(input: Readonly<{
           producerPrincipalId: input.producerPrincipalId,
         });
         input.settledOperationIds.push(operation.operationId);
+        input.latestInvocation.kind = "settled";
         input.hooks?.afterProviderReceipt?.();
-        input.completedOperationIds.push(operation.operationId);
+        input.latestInvocation.kind = "completed";
         return response;
       } catch (error) {
         const noResponseCode = provableNoResponseCode(error);
@@ -280,6 +296,7 @@ function durableRegaugeTransport(input: Readonly<{
             producerPrincipalId: input.producerPrincipalId,
           });
           input.settledOperationIds.push(operation.operationId);
+          input.latestInvocation.kind = "settled";
         }
         throw error;
       }

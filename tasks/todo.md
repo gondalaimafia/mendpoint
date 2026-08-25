@@ -3157,16 +3157,19 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - [x] Refuse a pre-aborted verifier request before invoking the transport.
 - [x] Align the dedicated production timeout with the provider queue boundary while keeping it below the renewing job lease.
 - [x] Bind retryable response classification to the latest attempted operation so a later no-dispatch failure cannot supersede an earlier successful receipt.
+- [x] Bind classification to the current provider invocation so a later lease or authority failure before intent cannot supersede earlier paid work.
 - [x] Refresh the same fenced lease before every provider request and reject worker lease configurations shorter than the provider deadline plus settlement margin.
 - [x] Reject backend-local retries for the durable ReGauge transport; retries remain owned by the classified, fenced job lane.
 - [x] Run the complete changed-area ReGauge and DeepSeek matrix plus affected typechecks and diff integrity.
-- [ ] Rebase onto current main, obtain exact-head reciprocal and attributable Claude review, then require fresh protected CI before merge.
+- [x] Rebase onto current main while retaining the pinned Mission graph version and migrated verifier Policy Envelope authority.
+- [ ] Obtain exact-head reciprocal and attributable Claude review, then require fresh protected CI before merge.
 
 #### Review
 
 - Retry safety: only `ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN`, `EHOSTUNREACH`, `ENETUNREACH`, `EADDRNOTAVAIL`, and `UND_ERR_CONNECT_TIMEOUT` can create the signed no-response path. Every reset, generic timeout, pipe, abort, socket, header, or body failure remains outcome unknown because provider work may have occurred.
 - Lifecycle: the worker tracks request intents and durable response or no-dispatch settlements around the existing provider operation ledger. A retryable verifier result with any unsettled operation is promoted to the explicit nonretryable reconciliation error immediately; replay consults the retained intent and never reissues it.
 - Operation binding: only the most recently attempted operation may receive a retryable-response classification, and only when that same operation has a durable response receipt. A later pre-connect failure cannot mark an earlier successful call retryable.
+- Invocation binding: the durable transport clears its classification target before lease, consent, and intent gates. A later failure before creating an operation leaves an explicit no-operation outcome, so an earlier paid response remains recoverable and is never repeated.
 - Lease safety: every long provider boundary refreshes the same job owner and generation before creating an intent. The worker rejects a configured lease that cannot cover the provider deadline plus a 60 second settlement margin; production retains 240 seconds of margin.
 - Deadline: the dedicated production profile waits 660 seconds, covering DeepSeek's documented ten minute queue behavior while remaining below the default renewing 900 second job lease. The deadline still seals an ambiguous operation rather than pretending the provider did no work.
-- Verification: 67 focused transport, profile, workflow, and verifier tests pass. After reciprocal-review fixes, the complete 17-file changed-area matrix passes 265 of 265 tests, worker and verifier typechecks pass, and diff integrity is clean.
+- Verification: the new multi-criterion lease-loss regression failed against the reviewed implementation, then all 27 advisory-job tests passed after current-invocation binding. The earlier 17-file matrix remains historical evidence and will be rerun on the final exact head before merge.

@@ -233,6 +233,44 @@ describe("verifier advisory job runner", () => {
     expect(listArtifactManifests(db, "tenant_regauge_canary", "agent_verifier_provider_request_intent")).toHaveLength(0);
   });
 
+  it("does not supersede earlier paid work when a later request loses its lease before intent", async () => {
+    const db = setup();
+    enqueue(db);
+    const first = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 900_000, now: "2026-08-24T12:01:01.000Z" })!;
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
+    let refreshCount = 0;
+
+    await expect(runVerifierAdvisoryJob({
+      db,
+      job: first,
+      env: env(),
+      transport: { request: transport },
+      refreshProviderLease: () => ++refreshCount === 1,
+      now: () => "2026-08-24T12:01:02.000Z",
+    })).rejects.toThrow("verifier_advisory_provider_retryable:api_failure");
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    const firstRequestId = transport.mock.calls[0]![0].headers["x-mendpoint-request-id"];
+    expect(listArtifactManifests(
+      db,
+      "tenant_regauge_canary",
+      "agent_verifier_provider_retryable_response",
+    )).toHaveLength(0);
+
+    failJob(db, first.id, "lease_lost", "2026-08-24T12:01:03.000Z", { workerId: "worker-a", leaseGeneration: first.lease_generation, errorCode: "transient_dependency", retryable: true, baseDelayMs: 1_000, maxDelayMs: 1_000 });
+    const second = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-b", leaseMs: 900_000, now: "2026-08-24T12:01:04.000Z" })!;
+    await expect(runVerifierAdvisoryJob({
+      db,
+      job: second,
+      env: env(),
+      transport: { request: transport },
+      refreshProviderLease: () => true,
+      now: () => "2026-08-24T12:01:05.000Z",
+    })).resolves.toMatchObject({ status: "verified" });
+    expect(transport.mock.calls.filter(([request]) =>
+      request.headers["x-mendpoint-request-id"] === firstRequestId)).toHaveLength(1);
+  });
+
   it.each([
     { label: "connection reset", error: Object.assign(new Error("socket reset after write"), { code: "ECONNRESET" }) },
     { label: "generic timeout", error: Object.assign(new Error("socket timed out"), { code: "ETIMEDOUT" }) },
