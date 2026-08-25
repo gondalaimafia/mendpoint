@@ -41,6 +41,7 @@ import {
   type MissionTask,
   type MissionTaskStatus,
 } from "./mission-task.js";
+import { listDomainEvents } from "./trust.js";
 
 /**
  * Why a task is being handed to a human. An explicit, closed enum: a handoff
@@ -337,6 +338,54 @@ function sameEvidence(left: readonly string[], right: readonly string[]): boolea
   return left.length === right.length && left.every((ref, index) => ref === right[index]);
 }
 
+function reviewerDirectiveRunId(
+  decision: MissionDecision,
+  scope: string,
+  candidateEvidence: string,
+): string | null {
+  if (decision.decisionType !== "verification") return null;
+  const candidateRefs = decision.evidence.filter((ref) => ref.startsWith("candidate:"));
+  if (candidateRefs.length !== 1 || candidateRefs[0] !== candidateEvidence) return null;
+  const runRefs = decision.evidence.filter((ref) => ref.startsWith("agent_run:"));
+  if (runRefs.length !== 1 || runRefs[0]!.length <= "agent_run:".length) return null;
+  const runId = runRefs[0]!.slice("agent_run:".length);
+  // The released writer scoped each directive by the exact source run. Accept
+  // that shape only when the scope and evidence agree; an arbitrary same-prefix
+  // scope is not authority to retire a decision.
+  if (decision.scope !== scope && decision.scope !== `reviewer_directive:${runId}`) return null;
+  return runId;
+}
+
+function orderReviewerDirectiveHeads(
+  db: AppDb,
+  tenantId: string,
+  missionId: string,
+  heads: readonly MissionDecision[],
+): MissionDecision[] {
+  const events = new Map(listDomainEvents(db, tenantId, "mission", missionId).map((event) => [event.id, event]));
+  return heads.map((decision) => {
+    const event = events.get(`mission-decision:${decision.id}`);
+    let payload: Record<string, unknown> | null = null;
+    try {
+      const parsed = event ? JSON.parse(event.payload_json) as unknown : null;
+      payload = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : null;
+    } catch {
+      payload = null;
+    }
+    if (!event || !Number.isSafeInteger(event.event_sequence) || event.event_sequence < 1 ||
+        (event.event_type !== "mission.decision_recorded" && event.event_type !== "mission.decision_superseded") ||
+        event.aggregate_type !== "mission" || event.aggregate_id !== missionId ||
+        event.actor_principal_id !== decision.authorPrincipalId || event.created_at !== decision.createdAt ||
+        payload?.decisionId !== decision.id || payload.scope !== decision.scope ||
+        payload.status !== decision.status || payload.supersedesId !== decision.supersedesId) {
+      throw new Error("reviewer_directive_event_binding_invalid");
+    }
+    return { decision, sequence: event.event_sequence };
+  }).sort((left, right) => left.sequence - right.sequence).map(({ decision }) => decision);
+}
+
 /**
  * Record the current human directive for one durable candidate identity. This
  * is deliberately narrower than a generic MissionDecision replacement: only
@@ -374,19 +423,21 @@ export function replaceReviewerDirective(
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
-    const heads = getActiveMissionDecisions(db, input.tenantId, input.missionId).filter((decision) =>
-      decision.scope === scope &&
-      decision.decisionType === "verification" &&
-      decision.evidence.includes(candidateEvidence) &&
-      decision.evidence.some((ref) => ref.startsWith("agent_run:") && ref.length > "agent_run:".length));
+    const heads = orderReviewerDirectiveHeads(
+      db,
+      input.tenantId,
+      input.missionId,
+      getActiveMissionDecisions(db, input.tenantId, input.missionId).filter((decision) =>
+        reviewerDirectiveRunId(decision, scope, candidateEvidence) !== null),
+    );
     // createdAt records the first write; it is not part of the semantic operation
     // identity because a transport retry observes a new wall-clock time.
     const replay = heads.find((decision) =>
       decision.decision === directive &&
       decision.authorPrincipalId === input.authorPrincipalId &&
       sameEvidence(decision.evidence, evidence));
-    // Authority follows the newest legitimate active head, even when a delayed
-    // transport retry semantically matches an older legacy duplicate.
+    // Authority follows the newest legitimate ledger event, even when wall-clock
+    // timestamps collide or a delayed retry matches an older legacy duplicate.
     const survivor = heads.at(-1);
     for (const head of heads) {
       if (head.id === survivor?.id) continue;

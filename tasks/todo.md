@@ -3375,3 +3375,20 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - RED: with two legitimate active legacy heads at `T0` and `T1`, replaying the older semantic operation at `T2` returned the older id and retracted the newer directive.
 - GREEN: the survivor is now always the newest legitimate active head in stable creation and id order. Semantic matching only distinguishes replay from a new directive, so the delayed older retry returns the newer authority, reconciles the older duplicate, and never supersedes the newer row.
 - Verification: rebased onto `origin/main` `14bea3a0`. All 16 Mission handoff database tests and 21 candidate-review API tests pass. Database and API typechecks pass, and diff integrity is clean.
+
+### 2026-08-25 PR 466 released-scope and causal-order repair
+
+- [x] RED: seed the exact released `reviewer_directive:<run.id>` scope and prove candidate replacement leaves the legacy directive active.
+- [x] RED: seed candidate-bound duplicate heads at the same timestamp and prove content-hash ordering can retain the wrong authority.
+- [x] Reconcile only exact candidate-bound current heads and released legacy heads whose scope agrees with their `agent_run:` evidence.
+- [x] Replace timestamp/hash survivor selection with the smallest durable causal ordering or fail-closed ambiguity rule.
+- [x] Run focused API and database tests, affected typechecks, and diff integrity on current `origin/main`.
+- [ ] Commit and push the Codex-owned branch without merging or self-approving.
+
+#### Review
+
+RED: the exact released-scope API fixture retained all three verification heads, and the equal-timestamp database fixture returned the lexicographically largest content hash instead of the later ledger event.
+
+GREEN: eligible heads now require exactly one candidate reference for the requested digest and exactly one non-empty agent-run reference. The current candidate scope is accepted; the released run scope is accepted only when its suffix equals that exact agent-run reference. Foreign decision types, mismatched legacy scope/evidence, and other candidates remain untouched. Eligible heads are ordered by their tenant-scoped Mission domain-event sequence, with exact decision/event binding checks that fail closed instead of falling back to timestamps or hashes.
+
+Verification: rebased onto current `origin/main` `c8d51caa`. All 18 Mission handoff database tests and 21 candidate-review API tests pass. Database and API typechecks pass, and diff integrity is clean.

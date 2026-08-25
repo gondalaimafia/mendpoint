@@ -568,18 +568,18 @@ describe("Warden candidate human review", () => {
     const source = getJob(db, "source-job-1", "tenant-a")!;
     db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
       .run(JSON.stringify({ ...JSON.parse(source.payload_json), missionId: "m1" }));
-    const scope = `reviewer_directive:candidate:${CANDIDATE_DIGEST}`;
     for (const [runId, directive, createdAt] of [
       ["legacy-run-1", "Keep the signature stable.", "2026-08-06T11:58:00.000Z"],
       ["legacy-run-2", "Keep the signature stable and preserve retries.", "2026-08-06T11:59:00.000Z"],
     ] as const) {
       recordReviewerDirective(db, {
-        tenantId: "tenant-a", missionId: "m1", directive, scope,
+        tenantId: "tenant-a", missionId: "m1", directive, scope: `reviewer_directive:${runId}`,
         authorPrincipalId: "trust-human-a",
         evidence: [`agent_run:${runId}`, `candidate:${CANDIDATE_DIGEST}`],
         correlationId: runId, createdAt, decisionType: "verification",
       });
     }
+    const scope = `reviewer_directive:candidate:${CANDIDATE_DIGEST}`;
     const policy = recordMissionDecision(db, {
       tenantId: "tenant-a", missionId: "m1", decision: "OAuth changes require security approval.", scope,
       authorPrincipalId: "trust-human-a", evidence: ["policy:security"], correlationId: "policy-corr",

@@ -269,6 +269,59 @@ describe("mission handoff (durable records)", () => {
     expect(history.find((decision) => decision.id === older.id)?.effectiveStatus).toBe("superseded");
   });
 
+  it("uses durable event order when duplicate heads have the same timestamp", () => {
+    const db = fixture();
+    const candidateDigest = "f".repeat(64);
+    const scope = `reviewer_directive:candidate:${candidateDigest}`;
+    const older = recordReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Keep the public signature stable.", scope,
+      authorPrincipalId: "human-1", evidence: ["agent_run:run-same-time-b", `candidate:${candidateDigest}`],
+      correlationId: "corr-same-time-b", createdAt: T1, decisionType: "verification",
+    });
+    const newer = recordReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Keep the signature and add bounded retries.", scope,
+      authorPrincipalId: "human-1", evidence: ["agent_run:run-same-time-a", `candidate:${candidateDigest}`],
+      correlationId: "corr-same-time-a", createdAt: T1, decisionType: "verification",
+    });
+    // This fixture deliberately makes hash ordering disagree with insertion
+    // order, so the regression proves that content hashes are not authority.
+    expect(older.id > newer.id).toBe(true);
+
+    const replay = replaceReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: older.decision,
+      candidateDigest, sourceRunId: "run-same-time-b", authorPrincipalId: "human-1",
+      correlationId: "corr-delayed-same-time", createdAt: T2,
+    });
+
+    expect(replay.id).toBe(newer.id);
+    expect(getActiveMissionDecisions(db, "t1", "m1").filter((decision) =>
+      decision.scope === scope && decision.decisionType === "verification")).toEqual([
+      expect.objectContaining({ id: newer.id, decision: newer.decision }),
+    ]);
+  });
+
+  it("leaves a legacy-shaped head active when its scope and run evidence disagree", () => {
+    const db = fixture();
+    const candidateDigest = "9".repeat(64);
+    const malformed = recordReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Do not treat this as released legacy authority.",
+      scope: "reviewer_directive:run-in-scope", authorPrincipalId: "human-1",
+      evidence: ["agent_run:different-run-in-evidence", `candidate:${candidateDigest}`],
+      correlationId: "corr-mismatched-legacy", createdAt: T0, decisionType: "verification",
+    });
+
+    const replacement = replaceReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Use the exact candidate-bound directive.",
+      candidateDigest, sourceRunId: "run-current", authorPrincipalId: "human-1",
+      correlationId: "corr-current", createdAt: T1,
+    });
+
+    expect(getActiveMissionDecisions(db, "t1", "m1").map((decision) => decision.id)).toEqual([
+      malformed.id,
+      replacement.id,
+    ]);
+  });
+
   it("preserves causation on the superseding reviewer directive event", () => {
     const db = fixture();
     const candidateDigest = "b".repeat(64);
