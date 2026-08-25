@@ -631,7 +631,7 @@ export function compileMissionGraphProjection(input: {
     graphContentDigest: input.impact.graphContentDigest,
     resultDigest: input.impact.resultDigest,
     impact: input.impact.impact,
-    coverage: Object.freeze({ ...input.impact.coverage, reasons: Object.freeze([...input.impact.coverage.reasons]) }),
+    coverage: Object.freeze({ ...input.impact.coverage, reasons: [...input.impact.coverage.reasons] }),
     compiled,
   });
 }
