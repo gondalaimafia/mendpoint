@@ -20,7 +20,16 @@ would say the agent still owns finished work.
   the matching launch task `agent_working → human_review_required` with handoff
   reason `pilot_lane_review`.
 - Repository identity comes from the completed campaign unit snapshot. The
-  worker does not invent a second complete path.
+  handoff wraps the coordinator's `completeAttempt`, so the nominal lane has one
+  complete path.
+- Known gap: `TransformerPilotStore.completeAttemptWithCheckpointHead`
+  (`packages/transformer/src/pilot-execution.ts`) is a second store-level
+  complete path that records a verified candidate without routing through the
+  coordinator wrapper, so a checkpoint-enabled campaign would complete and never
+  hand off. It is latent — `checkpointForCampaign` has no production caller — so
+  the live loop only reaches `completeAttempt`. Covering the checkpoint path is
+  deferred until it has a caller; this ADR no longer claims there is no second
+  complete path anywhere.
 - Missing Mission or missing task is a no-op (pre-#404 / unbound Surface A).
 - A MissionTask glitch must not un-complete an already-recorded attempt.
 - Failed or adaptive-failed attempts do not hand off.

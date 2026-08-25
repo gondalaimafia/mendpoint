@@ -38,14 +38,22 @@ function missionTaskAgentPrincipal(db: AppDb, tenantId: string, createdAt: strin
   });
 }
 
+/**
+ * Resolve the launch task for a claimed repo-scoped unit, scoped to that
+ * repository only. A repo-scoped claim must never fall back to the mission-level
+ * catch-all: launch writes that catch-all only when the campaign had no
+ * repository scope, so falling back would funnel every repository onto the same
+ * single row — the first complete would hand the whole Mission to review while
+ * its siblings are still `agent_working`. A missing repo task stays a visible
+ * launch gap, never a silently shared row.
+ */
 function resolveLaunchTask(
   db: AppDb,
   tenantId: string,
   missionId: string,
   repositoryId: string,
 ): MissionTask | undefined {
-  return getMissionTask(db, tenantId, regaugeLaunchMissionTaskId(missionId, repositoryId))
-    ?? getMissionTask(db, tenantId, regaugeLaunchMissionTaskId(missionId));
+  return getMissionTask(db, tenantId, regaugeLaunchMissionTaskId(missionId, repositoryId));
 }
 
 function resolveClaimedTask(
