@@ -44,7 +44,7 @@ describe("Regauge production workflow", () => {
     expect(preflight.environment).toBeUndefined();
     expect(preflight.env.FLY_API_TOKEN).toBe("${{ secrets.FLY_API_TOKEN }}");
     expect(deploy.needs).toBe("preflight");
-    expect(deploy.if).toBe("${{ inputs.phase == 'activate' }}");
+    expect(deploy.if).toBe("${{ inputs.phase == 'activate' && github.repository == 'gondalaimafia/mendpoint' && github.ref == 'refs/heads/main' }}");
     expect(source).toContain("flyctl auth whoami");
     expect(source).toContain("flyctl orgs list --json");
     expect(source).toContain("flyctl status --app mendpoint-regauge-production --json");
@@ -165,6 +165,8 @@ describe("Regauge production workflow", () => {
     const validation = workflow.jobs.deploy.steps.find(
       (step: Record<string, unknown>) => step.name === "Validate exact authority before mutation",
     ).run as string;
+    expect(validation).toContain('test "$GITHUB_REPOSITORY" = "gondalaimafia/mendpoint"');
+    expect(validation).toContain('test "$GITHUB_REF" = "refs/heads/main"');
     expect(validation).toContain("MENDPOINT_APPLICATION_DATA_KEY");
     for (const name of [
       "MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID",

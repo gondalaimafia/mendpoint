@@ -36,6 +36,7 @@ import {
   type InstallationRepository,
 } from "@mendpoint/github";
 import {
+  bindVerifierAdvisoryPolicyAuthorityAtMissionLaunch,
   ensureDefaultPolicyEnvelopeBinding,
   pinPublishedGraphVersionForSingleRepository,
 } from "@mendpoint/pipeline";
@@ -141,6 +142,12 @@ export function bindRegaugeMissionAtLaunch(
     ownerPrincipalId: string;
     objective: string;
     repositories: readonly Readonly<{ repositoryId: string; snapshotId: string }>[];
+    verifierPolicyAuthority?: Readonly<{
+      policyEnvelopeJson: string;
+      repositoryScope: string;
+      branch: string;
+      processingRegion: string;
+    }>;
     createdAt: string;
   }>,
 ): Mission {
@@ -173,16 +180,6 @@ export function bindRegaugeMissionAtLaunch(
     actorPrincipalId: input.ownerPrincipalId,
     eventId: `${missionId}-linked`,
     idempotencyKey: `mission-link-${missionId}`,
-    correlationId: input.campaignId,
-    createdAt: input.createdAt,
-  });
-  // Spec §6.7: every Mission MUST reference a versioned Policy Envelope. Bind the
-  // tenant's default envelope set-once at launch (idempotent), mirroring the
-  // Fettler enrollment path, so ReGauge tasks inherit an enforceable boundary.
-  current = ensureDefaultPolicyEnvelopeBinding(db, {
-    tenantId: input.tenantId,
-    missionId,
-    actorPrincipalId: input.ownerPrincipalId,
     correlationId: input.campaignId,
     createdAt: input.createdAt,
   });
@@ -222,6 +219,31 @@ export function bindRegaugeMissionAtLaunch(
         }`,
       );
     }
+  }
+  // A production advisory Mission must inherit the exact restrictive verifier
+  // envelope before execution starts. Other launch callers retain the explicit
+  // default envelope behavior.
+  if (input.verifierPolicyAuthority) {
+    if (!scope) throw new Error("verifier_advisory_policy_authority_invalid");
+    bindVerifierAdvisoryPolicyAuthorityAtMissionLaunch(db, {
+      tenantId: input.tenantId,
+      missionId,
+      product: "regauge",
+      repositoryId: scope.repositoryId,
+      snapshotId: scope.snapshotId,
+      actorPrincipalId: input.ownerPrincipalId,
+      createdAt: input.createdAt,
+      ...input.verifierPolicyAuthority,
+    });
+    current = getMission(db, input.tenantId, missionId) ?? current;
+  } else {
+    current = ensureDefaultPolicyEnvelopeBinding(db, {
+      tenantId: input.tenantId,
+      missionId,
+      actorPrincipalId: input.ownerPrincipalId,
+      correlationId: input.campaignId,
+      createdAt: input.createdAt,
+    });
   }
   // By the time launch runs, the orchestrator has already proven the campaign is
   // reviewed and approved (campaignState === "ready"), so discovery, scoping, and
@@ -361,6 +383,12 @@ type RuntimeOptions = Readonly<{
   missions: TransformerMissionService;
   repositoryDependencies: RepositoryConnectionDependencies;
   verifierConsentAuthority?: RegaugeVerifierConsentAuthority;
+  verifierPolicyAuthority?: Readonly<{
+    policyEnvelopeJson: string;
+    repositoryScope: string;
+    branch: string;
+    processingRegion: string;
+  }>;
   listInstallationRepositories(): Promise<readonly InstallationRepository[]>;
   now?: () => string;
 }>;
@@ -794,6 +822,7 @@ export function createRegaugeProductionBootstrapRuntime(
         ownerPrincipalId: owner.id,
         objective: campaign?.name ?? input.campaignId,
         repositories: [{ repositoryId: execution.repositoryId, snapshotId: execution.snapshotId }],
+        verifierPolicyAuthority: options.verifierPolicyAuthority,
         createdAt: now(),
       });
       return execution;
@@ -887,6 +916,12 @@ export async function runRegaugeProductionBootstrapFromEnvironment(
         requestId: `bootstrap-materialize-${input.campaignId}`,
       },
       verifierConsentAuthority,
+      verifierPolicyAuthority: {
+        policyEnvelopeJson: required(env, "MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON"),
+        repositoryScope: `${input.repository.owner}/${input.repository.name}`,
+        branch: input.repository.selectedBranch,
+        processingRegion: verifierConsentAuthority.residencyRegion,
+      },
       listInstallationRepositories: async () => defaultListInstallationRepositories(await token.get()),
     });
     return await bootstrapRegaugeProductionCampaign(input, runtime);

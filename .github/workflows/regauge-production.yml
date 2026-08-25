@@ -69,7 +69,7 @@ jobs:
 
   deploy:
     needs: preflight
-    if: ${{ inputs.phase == 'activate' }}
+    if: ${{ inputs.phase == 'activate' && github.repository == 'gondalaimafia/mendpoint' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: regauge-production
@@ -186,6 +186,8 @@ jobs:
           READINESS_SOAK_SECONDS: ${{ inputs.readiness_soak_seconds }}
         run: |
           set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "gondalaimafia/mendpoint"
+          test "$GITHUB_REF" = "refs/heads/main"
           test "$CONFIRMATION" = "REGAUGE_DRAFT_ONLY"
           test "$LIVE_EVAL_REPETITIONS" -ge 3
           test "$LIVE_EVAL_REPETITIONS" -le 10

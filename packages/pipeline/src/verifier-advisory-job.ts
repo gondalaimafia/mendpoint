@@ -110,6 +110,20 @@ export type VerifierAdvisoryPolicyAuthority = Readonly<{
   reviewRequired: true;
 }>;
 
+export type VerifierAdvisoryMissionPolicyBinding = Readonly<{
+  tenantId: string;
+  missionId: string;
+  product: VerifierProduct;
+  repositoryId: string;
+  snapshotId: string;
+  policyEnvelopeJson: string;
+  actorPrincipalId: string;
+  branch: string;
+  repositoryScope: string;
+  processingRegion: string;
+  createdAt: string;
+}>;
+
 export type VerifierAdvisoryConsentBinding = Readonly<{
   consentId: string;
   consentRecordDigest: string;
@@ -224,6 +238,114 @@ function exactList(actual: readonly string[], expected: readonly string[]): bool
   return canonical([...actual]) === canonical([...expected]);
 }
 
+function verifierPolicyEnvelope(input: Readonly<{
+  tenantId: string;
+  policyEnvelopeJson: string;
+  branch: string;
+  repositoryScope: string;
+  processingRegion: string;
+  createdAt: string;
+}>): PolicyEnvelope {
+  let unsafe: unknown;
+  try { unsafe = JSON.parse(input.policyEnvelopeJson); }
+  catch { throw new Error("verifier_advisory_policy_invalid"); }
+  let envelope: PolicyEnvelope;
+  try { envelope = parsePolicyEnvelope(unsafe); }
+  catch { throw new Error("verifier_advisory_policy_invalid"); }
+  if (!exactIso(input.createdAt) || envelope.tenantId !== input.tenantId ||
+      !exactList(envelope.repositoryScope, [input.repositoryScope]) ||
+      !exactList(envelope.branchScope, [input.branch])) {
+    throw new Error("verifier_advisory_policy_template_scope_invalid");
+  }
+  if (!exactList(envelope.allowedTools, ["deepseek-verifier"]) ||
+      !exactList(envelope.allowedModelClasses, ["rented_specialist"]) ||
+      !envelope.externalProcessingAllowed || envelope.residency !== input.processingRegion ||
+      envelope.riskCeiling !== "high" || !envelope.reviewRequired ||
+      envelope.deploymentAllowed || envelope.trainingDataAllowed ||
+      envelope.retentionDays === null || envelope.retentionDays > 90 ||
+      !exactIso(envelope.createdAt) || envelope.createdAt > input.createdAt) {
+    throw new Error("verifier_advisory_policy_authority_invalid");
+  }
+  return envelope;
+}
+
+function assertVerifierMissionScope(db: AppDb, input: Readonly<{
+  tenantId: string;
+  missionId: string;
+  product: VerifierProduct;
+  repositoryId: string;
+  snapshotId: string;
+  branch: string;
+  repositoryScope: string;
+}>): void {
+  const mission = getMission(db, input.tenantId, input.missionId);
+  const repository = getConnectedRepository(db, input.repositoryId, input.tenantId);
+  const snapshot = listRepositorySnapshots(db, input.tenantId, input.repositoryId)
+    .filter((candidate) => candidate.id === input.snapshotId);
+  if (!mission || mission.product !== input.product || mission.repositoryId !== input.repositoryId ||
+      mission.snapshotId !== input.snapshotId || snapshot.length !== 1 || !repository ||
+      repository.selected_branch !== input.branch ||
+      `${repository.owner}/${repository.name}` !== input.repositoryScope) {
+    throw new Error("verifier_advisory_policy_authority_invalid");
+  }
+}
+
+function retainAndBindVerifierPolicy(db: AppDb, input: Readonly<{
+  tenantId: string;
+  missionId: string;
+  actorPrincipalId: string;
+  taskId: string;
+  createdAt: string;
+  envelope: PolicyEnvelope;
+}>): VerifierAdvisoryPolicyAuthority {
+  const envelopeJson = canonicalPolicyEnvelopeJson(input.envelope);
+  const stored = createPolicyEnvelope(db, {
+    tenantId: input.envelope.tenantId,
+    version: input.envelope.version,
+    policyEnvelopeId: input.envelope.policyEnvelopeId,
+    envelopeJson,
+    createdAt: input.envelope.createdAt,
+  });
+  bindMissionToPolicyEnvelope(db, {
+    tenantId: input.tenantId,
+    missionId: input.missionId,
+    version: input.envelope.version,
+    actorPrincipalId: input.actorPrincipalId,
+    eventId: `event-${sha256(`${input.missionId}\0${input.envelope.version}`).slice(0, 40)}`,
+    idempotencyKey: `mission-policy-${input.missionId}-${input.envelope.version}`,
+    correlationId: input.taskId,
+    createdAt: input.createdAt,
+  });
+  const inherited = getMissionPolicyEnvelope(db, input.tenantId, input.missionId);
+  if (!inherited || inherited.contentSha256 !== stored.contentSha256 ||
+      inherited.policyEnvelopeId !== input.envelope.policyEnvelopeId) {
+    throw new Error("verifier_advisory_policy_binding_invalid");
+  }
+  return Object.freeze({
+    policyEnvelopeId: input.envelope.policyEnvelopeId,
+    policyEnvelopeVersion: input.envelope.version,
+    policyEnvelopeSha256: stored.contentSha256,
+    reviewRequired: true,
+  });
+}
+
+/** Bind the exact restrictive verifier envelope before a ReGauge Mission starts. */
+export function bindVerifierAdvisoryPolicyAuthorityAtMissionLaunch(
+  db: AppDb,
+  input: VerifierAdvisoryMissionPolicyBinding,
+): VerifierAdvisoryPolicyAuthority {
+  const envelope = verifierPolicyEnvelope(input);
+  assertVerifierMissionScope(db, input);
+  return retainAndBindVerifierPolicy(db, {
+    tenantId: input.tenantId,
+    missionId: input.missionId,
+    actorPrincipalId: input.actorPrincipalId,
+    taskId: input.missionId,
+    createdAt: input.createdAt,
+    envelope,
+  });
+}
+
 /**
  * Retain, bind, and evaluate the exact external verifier authority before a
  * durable job can be enqueued. A running Mission may predate this release, so
@@ -240,38 +362,16 @@ export function reconcileVerifierAdvisoryPolicyAuthority(db: AppDb, input: Reado
   createdAt: string;
 }>): VerifierAdvisoryPolicyAuthority {
   const completion = verifyProductCompletionAdvisoryInput(input.completion);
-  let unsafe: unknown;
-  try { unsafe = JSON.parse(input.policyEnvelopeJson); }
-  catch { throw new Error("verifier_advisory_policy_invalid"); }
-  let template: PolicyEnvelope;
-  try { template = parsePolicyEnvelope(unsafe); }
-  catch { throw new Error("verifier_advisory_policy_invalid"); }
-  // Protected configuration must name the complete repository and branch
-  // authority. Runtime state may confirm that scope, but may never expand an
-  // empty or broader template into authority discovered after deployment.
-  if (!exactList(template.repositoryScope, [input.repositoryScope]) ||
-      !exactList(template.branchScope, [input.branch])) {
-    throw new Error("verifier_advisory_policy_template_scope_invalid");
-  }
-  const envelope = template;
-  const mission = getMission(db, completion.tenantId, completion.missionId);
-  const repository = getConnectedRepository(db, completion.repositoryId, completion.tenantId);
-  const snapshot = listRepositorySnapshots(db, completion.tenantId, completion.repositoryId)
-    .filter((candidate) => candidate.id === completion.snapshotId);
-  if (!mission || mission.product !== completion.product || mission.repositoryId !== completion.repositoryId ||
-      mission.snapshotId !== completion.snapshotId || snapshot.length !== 1 || !repository ||
-      repository.selected_branch !== input.branch || envelope.tenantId !== completion.tenantId ||
-      !exactList(envelope.repositoryScope, [input.repositoryScope]) ||
-      !exactList(envelope.branchScope, [input.branch]) ||
-      !exactList(envelope.allowedTools, ["deepseek-verifier"]) ||
-      !exactList(envelope.allowedModelClasses, ["rented_specialist"]) ||
-      !envelope.externalProcessingAllowed || envelope.residency !== input.processingRegion ||
-      envelope.riskCeiling !== "high" || !envelope.reviewRequired ||
-      envelope.deploymentAllowed || envelope.trainingDataAllowed ||
-      envelope.retentionDays === null || envelope.retentionDays > 90 ||
-      !exactIso(envelope.createdAt) || envelope.createdAt > input.createdAt) {
-    throw new Error("verifier_advisory_policy_authority_invalid");
-  }
+  const envelope = verifierPolicyEnvelope({ ...input, tenantId: completion.tenantId });
+  assertVerifierMissionScope(db, {
+    tenantId: completion.tenantId,
+    missionId: completion.missionId,
+    product: completion.product,
+    repositoryId: completion.repositoryId,
+    snapshotId: completion.snapshotId,
+    branch: input.branch,
+    repositoryScope: input.repositoryScope,
+  });
   const decision = evaluatePolicyEnvelope(envelope, {
     repositoryId: input.repositoryScope,
     branch: input.branch,
@@ -287,34 +387,13 @@ export function reconcileVerifierAdvisoryPolicyAuthority(db: AppDb, input: Reado
   if (!decision.allowed || !decision.reviewRequired) {
     throw new Error(`verifier_advisory_policy_denied:${decision.violations.map((item) => item.code).join(",")}`);
   }
-  const envelopeJson = canonicalPolicyEnvelopeJson(envelope);
-  const stored = createPolicyEnvelope(db, {
-    tenantId: envelope.tenantId,
-    version: envelope.version,
-    policyEnvelopeId: envelope.policyEnvelopeId,
-    envelopeJson,
-    createdAt: envelope.createdAt,
-  });
-  bindMissionToPolicyEnvelope(db, {
+  return retainAndBindVerifierPolicy(db, {
     tenantId: completion.tenantId,
     missionId: completion.missionId,
-    version: envelope.version,
     actorPrincipalId: input.actorPrincipalId,
-    eventId: `event-${sha256(`${completion.missionId}\0${envelope.version}`).slice(0, 40)}`,
-    idempotencyKey: `mission-policy-${completion.missionId}-${envelope.version}`,
-    correlationId: completion.taskId,
+    taskId: completion.taskId,
     createdAt: input.createdAt,
-  });
-  const inherited = getMissionPolicyEnvelope(db, completion.tenantId, completion.missionId);
-  if (!inherited || inherited.contentSha256 !== stored.contentSha256 ||
-      inherited.policyEnvelopeId !== envelope.policyEnvelopeId) {
-    throw new Error("verifier_advisory_policy_binding_invalid");
-  }
-  return Object.freeze({
-    policyEnvelopeId: envelope.policyEnvelopeId,
-    policyEnvelopeVersion: envelope.version,
-    policyEnvelopeSha256: stored.contentSha256,
-    reviewRequired: true,
+    envelope,
   });
 }
 
