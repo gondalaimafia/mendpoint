@@ -5,16 +5,19 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
+  findActiveLearningConsent,
   getMissionPolicyEnvelope,
   insertRepositorySnapshot,
   listDomainEvents,
   listMissionTasks,
   listRepositorySnapshots,
   resolveMissionForRegaugeCampaign,
+  revokeLearningConsent,
   verifyDomainEventIntegrity,
   type AppDb,
 } from "@mendpoint/db";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
+import { reconcileVerifierAdvisoryPolicyAuthority } from "@mendpoint/pipeline";
 import {
   CredentialBroker,
   MemorySecretProvider,
@@ -29,6 +32,10 @@ import {
   regaugeLaunchMissionTaskId,
   regaugeProductionBootstrapInputFromEnvironment,
 } from "./regauge-production-bootstrap-runtime.js";
+import {
+  REGAUGE_VERIFIER_CONSENT_PURPOSE,
+  regaugeVerifierConsentAuthorityFromEnvironment,
+} from "./regauge-verifier-consent.js";
 import { TransformerCampaignService } from "./transformer-control-plane.js";
 import { createAppDbTransformerMissionAuthority } from "./transformer-mission-authority.js";
 import { TransformerMissionService } from "./transformer-missions.js";
@@ -138,6 +145,40 @@ function environment() {
     MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF: APPROVAL,
     MENDPOINT_REGAUGE_GATE: gate(),
     MENDPOINT_REGAUGE_EVIDENCE_REFS: `${APPROVAL},evidence:regauge:acceptance`,
+    MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: JSON.stringify({
+      schemaVersion: "2026-08-17.v1",
+      entries: [{
+        tenantId: "tenant_regauge_canary",
+        products: ["regauge"],
+        consentId: "consent_regauge_20260824",
+        evidenceRef: "approval:user:2026-08-24",
+        requiredRegion: "cn",
+        processingRegion: "cn",
+        externalModelAllowed: true,
+        mayLeaveTenantBoundary: true,
+        consentActive: true,
+      }],
+    }),
+    MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT: "2026-08-24T00:00:00.000Z",
+    MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT: "2026-11-20T23:59:59.000Z",
+    MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: JSON.stringify({
+      policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824",
+      tenantId: "tenant_regauge_canary",
+      version: 2,
+      repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"],
+      branchScope: ["codex/regauge-canary-baseline"],
+      forbiddenZones: [],
+      allowedTools: ["deepseek-verifier"],
+      allowedModelClasses: ["rented_specialist"],
+      externalProcessingAllowed: true,
+      residency: "cn",
+      riskCeiling: "high",
+      reviewRequired: true,
+      deploymentAllowed: false,
+      trainingDataAllowed: false,
+      retentionDays: 90,
+      createdAt: "2026-08-24T00:00:00.000Z",
+    }),
     GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7654321":"tenant_regauge_canary"}',
   };
 }
@@ -213,7 +254,12 @@ describe("Regauge production bootstrap runtime", () => {
     );
     const secrets = new MemorySecretProvider({ installation: "test-installation-token" });
     const broker = new CredentialBroker({ providers: [secrets], audit: () => undefined });
-    const baseRuntime = createRegaugeProductionBootstrapRuntime({
+    const protectedEnvironment = environment();
+    const verifierConsentAuthority = regaugeVerifierConsentAuthorityFromEnvironment(
+      protectedEnvironment,
+      "tenant_regauge_canary",
+    );
+    const runtimeOptions = {
       db,
       control,
       executions,
@@ -239,17 +285,28 @@ describe("Regauge production bootstrap runtime", () => {
         disabled: false,
       }],
       now: () => new Date().toISOString(),
+    } as const;
+    const legacyBaseRuntime = createRegaugeProductionBootstrapRuntime(runtimeOptions);
+    const baseRuntime = createRegaugeProductionBootstrapRuntime({
+      ...runtimeOptions,
+      verifierConsentAuthority,
+      verifierPolicyAuthority: {
+        policyEnvelopeJson: protectedEnvironment.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON,
+        repositoryScope: "gondalaimafia/mendpoint-canary-drill-20260801",
+        branch: "codex/regauge-canary-baseline",
+        processingRegion: verifierConsentAuthority.residencyRegion,
+      },
     });
     let preparedDigest = "";
     const runtime = {
-      ...baseRuntime,
-      async prepareRepository(input: Parameters<typeof baseRuntime.prepareRepository>[0]) {
-        const prepared = await baseRuntime.prepareRepository(input);
+      ...legacyBaseRuntime,
+      async prepareRepository(input: Parameters<typeof legacyBaseRuntime.prepareRepository>[0]) {
+        const prepared = await legacyBaseRuntime.prepareRepository(input);
         preparedDigest = prepared.snapshotDigest;
         return prepared;
       },
-      async plan(input: Parameters<typeof baseRuntime.plan>[0]) {
-        const planned = await baseRuntime.plan(input);
+      async plan(input: Parameters<typeof legacyBaseRuntime.plan>[0]) {
+        const planned = await legacyBaseRuntime.plan(input);
         expect(planned.snapshotDigest).toBe(preparedDigest);
         return planned;
       },
@@ -259,6 +316,20 @@ describe("Regauge production bootstrap runtime", () => {
       regaugeProductionBootstrapInputFromEnvironment(environment()),
       runtime,
     );
+    expect(findActiveLearningConsent(db, {
+      tenantId: "tenant_regauge_canary",
+      purpose: REGAUGE_VERIFIER_CONSENT_PURPOSE,
+      at: new Date().toISOString(),
+    })).toBeUndefined();
+    const legacyMission = resolveMissionForRegaugeCampaign(
+      db,
+      "tenant_regauge_canary",
+      "campaign_regauge_canary_20260814",
+    )!;
+    expect(getMissionPolicyEnvelope(db, "tenant_regauge_canary", legacyMission.id)).toMatchObject({
+      policyEnvelopeId: expect.stringMatching(/^pe-default-/),
+      version: 1,
+    });
     const storedSnapshot = listRepositorySnapshots(
       db,
       "tenant_regauge_canary",
@@ -290,7 +361,7 @@ describe("Regauge production bootstrap runtime", () => {
     })).resolves.toMatchObject({ snapshotId: first.snapshotId, revision: REVISION });
     const second = await bootstrapRegaugeProductionCampaign(
       regaugeProductionBootstrapInputFromEnvironment(environment()),
-      runtime,
+      baseRuntime,
     );
 
     expect(second).toEqual(first);
@@ -328,12 +399,44 @@ describe("Regauge production bootstrap runtime", () => {
     expect(missionEvents).toContain("mission.created");
     expect(missionEvents).toContain("mission.regauge_campaign_linked");
     expect(missionEvents).toContain("mission.policy_envelope_bound");
+    expect(missionEvents).toContain("mission.policy_envelope_advanced");
     expect(missionEvents.filter((type) => type === "mission.transitioned")).toHaveLength(4);
     // Spec §6.7: the launched Mission references a versioned Policy Envelope.
-    expect(mission!.policyEnvelopeVersion).toBe("1");
+    expect(mission!.policyEnvelopeVersion).toBe("2");
     expect(mission!.graphVersionId).toBeNull();
     expect(missionEvents).not.toContain("mission.graph_version_bound");
-    expect(getMissionPolicyEnvelope(db, "tenant_regauge_canary", mission!.id)).not.toBeNull();
+    const inheritedPolicy = getMissionPolicyEnvelope(db, "tenant_regauge_canary", mission!.id);
+    expect(inheritedPolicy).toMatchObject({
+      policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824",
+      version: 2,
+    });
+    expect(() => reconcileVerifierAdvisoryPolicyAuthority(db, {
+      completion: {
+        tenantId: "tenant_regauge_canary",
+        missionId: mission!.id,
+        taskId: "campaign_regauge_canary_20260814:unit-1",
+        product: "regauge",
+        repositoryId: launchedUnit.snapshot.repositoryId,
+        snapshotId: launchedUnit.snapshot.snapshotId,
+        snapshotDigest: launchedUnit.snapshot.digest,
+        objective: "Verify the completed migration.",
+        risk: "high",
+        allowedChangedPaths: ["package.json"],
+        candidateId: "candidate-regauge-bootstrap",
+        candidateDigest: `sha256:${"a".repeat(64)}`,
+        changedPaths: ["package.json"],
+        observableSummary: "The exact bootstrap candidate passed deterministic verification.",
+        deterministicEvidenceDigest: `sha256:${"b".repeat(64)}`,
+        deterministicEvidenceRefs: ["evidence:regauge:acceptance"],
+        observedAt: new Date().toISOString(),
+      },
+      policyEnvelopeJson: protectedEnvironment.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON,
+      actorPrincipalId: mission!.ownerPrincipalId,
+      branch: "codex/regauge-canary-baseline",
+      repositoryScope: "gondalaimafia/mendpoint-canary-drill-20260801",
+      processingRegion: "cn",
+      createdAt: new Date().toISOString(),
+    })).not.toThrow();
     expect(listMissionTasks(db, "tenant_regauge_canary", mission!.id)).toEqual([
       expect.objectContaining({
         id: regaugeLaunchMissionTaskId(mission!.id, launchedUnit.snapshot.repositoryId),
@@ -341,5 +444,33 @@ describe("Regauge production bootstrap runtime", () => {
         status: "unassigned",
       }),
     ]);
+
+    const consent = findActiveLearningConsent(db, {
+      tenantId: "tenant_regauge_canary",
+      purpose: REGAUGE_VERIFIER_CONSENT_PURPOSE,
+      at: new Date().toISOString(),
+    })!;
+    revokeLearningConsent(db, {
+      id: "consent_regauge_revoked_after_bootstrap",
+      tenantId: "tenant_regauge_canary",
+      consentId: consent.id,
+      consentVersion: consent.consent_version + 1,
+      authorizedByPrincipalId: consent.authorized_by_principal_id,
+      reason: "Operator revoked DeepSeek advisory processing.",
+      idempotencyKey: "regauge-bootstrap-consent-revoked",
+      createdAt: new Date().toISOString(),
+    });
+    await expect(baseRuntime.prepareRepository({
+      bootstrap: regaugeProductionBootstrapInputFromEnvironment(environment()),
+      reviewerActorId: "human:https://github.com|gondalaimafia",
+      requestDigest: first.requestDigest,
+    })).resolves.toMatchObject({ repositoryId: first.repositoryId });
+    expect(findActiveLearningConsent(db, {
+      tenantId: "tenant_regauge_canary",
+      purpose: REGAUGE_VERIFIER_CONSENT_PURPOSE,
+      at: new Date().toISOString(),
+    })).toBeUndefined();
+    expect((db.raw.prepare("SELECT COUNT(*) count FROM learning_consents").get() as { count: number }).count)
+      .toBe(2);
   }, 20_000);
 });

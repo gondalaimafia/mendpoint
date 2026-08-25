@@ -4110,6 +4110,7 @@ export {
   grantLearningConsent,
   listAdmittableLearningRecords,
   listEligibleLearningDatasetMembers,
+  listLearningConsentHistory,
   listLearningRecordLineage,
   revokeLearningConsent,
   sealLearningDatasetVersion,
@@ -4143,6 +4144,7 @@ export {
   transitionWardenTarget,
 } from "./warden-campaign.js";
 export {
+  advanceMissionPolicyEnvelopeVersion,
   bindMissionGraphVersion,
   bindMissionPolicyEnvelopeVersion,
   bindMissionScope,

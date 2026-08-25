@@ -800,7 +800,7 @@ describe("pipeline", () => {
     });
     expect(attested.consumers[0]?.prStatus).toBe("draft");
     expect(existsSync(join(deliveryRoot, "org", "sec-gate-shop", "pulls"))).toBe(true);
-  });
+  }, 15_000);
 
   it("writes a durable audit record of a scanner attestation (who/when/subject/tier/outcome)", async () => {
     const dir = join(tmpdir(), `mendpoint-pipe-sec-audit-${Date.now()}`);

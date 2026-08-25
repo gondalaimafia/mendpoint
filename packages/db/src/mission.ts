@@ -339,6 +339,76 @@ export function bindMissionPolicyEnvelopeVersion(db: AppDb, input: {
   });
 }
 
+/**
+ * Explicitly advance an active Mission from one retained Policy Envelope to a
+ * later retained version. The prior envelope and binding event remain immutable;
+ * this appends a separate advancement event and uses a revision-fenced write.
+ */
+export function advanceMissionPolicyEnvelopeVersion(db: AppDb, input: {
+  tenantId: string; missionId: string; expectedPolicyEnvelopeVersion: string;
+  nextPolicyEnvelopeVersion: string; actorPrincipalId: string; authorityRef: string;
+  eventId: string; idempotencyKey: string; correlationId: string;
+  causationId?: string | null; createdAt: string;
+}): Mission {
+  assertPrincipal(db, input.tenantId, input.actorPrincipalId);
+  const expected = required("mission_policy_envelope_version", input.expectedPolicyEnvelopeVersion);
+  const next = required("mission_policy_envelope_version", input.nextPolicyEnvelopeVersion);
+  const authorityRef = required("mission_policy_envelope_authority_ref", input.authorityRef);
+  const expectedNumber = Number(expected);
+  const nextNumber = Number(next);
+  if (!Number.isInteger(expectedNumber) || expectedNumber < 1 ||
+      !Number.isInteger(nextNumber) || nextNumber <= expectedNumber) {
+    throw new Error("mission_policy_envelope_advance_invalid");
+  }
+  if (!one(db, `SELECT tenant_id FROM policy_envelopes WHERE tenant_id = ? AND version = ?`,
+    [input.tenantId, nextNumber])) {
+    throw new Error("mission_policy_envelope_not_found");
+  }
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const current = one<MissionRow>(db, `SELECT * FROM mission WHERE id = ? AND tenant_id = ?`,
+      [input.missionId, input.tenantId]);
+    if (!current) throw new Error("mission_not_found");
+    if (current.policy_envelope_version === next) {
+      db.raw.exec("COMMIT");
+      return mission(current);
+    }
+    if (["accepted", "rejected", "partial", "failed", "cancelled"].includes(current.state)) {
+      throw new Error("mission_policy_envelope_advance_terminal");
+    }
+    if (current.policy_envelope_version !== expected) {
+      throw new Error("mission_policy_envelope_version_conflict");
+    }
+    const changed = db.raw.prepare(`UPDATE mission
+      SET policy_envelope_version = ?, revision = revision + 1, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND revision = ? AND policy_envelope_version = ?`).run(
+      next, input.createdAt, input.missionId, input.tenantId, current.revision, expected);
+    if (Number(changed.changes) !== 1) throw new Error("mission_revision_conflict");
+    event(db, {
+      tenantId: input.tenantId,
+      missionId: input.missionId,
+      actorPrincipalId: input.actorPrincipalId,
+      eventId: input.eventId,
+      eventType: "mission.policy_envelope_advanced",
+      idempotencyKey: input.idempotencyKey,
+      correlationId: input.correlationId,
+      causationId: input.causationId ?? null,
+      createdAt: input.createdAt,
+      payload: {
+        fromPolicyEnvelopeVersion: expected,
+        toPolicyEnvelopeVersion: next,
+        authorityRef,
+        previousRevision: current.revision,
+        revision: current.revision + 1,
+      },
+    });
+    const updated = mission(one<MissionRow>(db,
+      `SELECT * FROM mission WHERE id = ? AND tenant_id = ?`, [input.missionId, input.tenantId])!);
+    db.raw.exec("COMMIT");
+    return updated;
+  } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
+}
+
 // Fettler/Warden linkage: the mission projects the campaign identity through the
 // `mission.fettler_campaign_id` foreign key (same database). Set-once, unique per
 // tenant, and the referenced campaign must be tenant-owned.

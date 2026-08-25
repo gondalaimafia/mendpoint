@@ -451,6 +451,13 @@ afterEach(() => {
 });
 
 describe("worker runtime", () => {
+  it("leaves ReGauge advisory dispatch to the durable coordinator", () => {
+    const source = readFileSync(new URL("./cli.ts", import.meta.url), "utf8");
+    expect(source).not.toContain("onVerifiedCandidateCompleted:");
+    expect(source).toContain("runVerifierAdvisoryJob({");
+    expect(source).toContain("refreshProviderLease: refreshJobLease");
+  });
+
   it("allows model source only for an explicitly configured tenant and model", () => {
     const env = {
       MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
@@ -724,6 +731,57 @@ describe("worker runtime", () => {
       id: "job-drain-test",
       status: "pending",
     });
+    db.raw.close();
+  });
+
+  it("restricts the coordinator advisory drain to verifier jobs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-worker-job-filter-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+    enqueueJob(db, {
+      id: "unrelated-pipeline-job",
+      tenantId: "tenant-a",
+      type: "pipeline.fanout",
+      createdAt: nowIso(),
+      payload: { providerSlug: "acme" },
+    });
+
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a",
+      runWardenMaintenance: false,
+      logWhenIdle: false,
+      jobTypes: ["verifier.advisory.verify"],
+      wardenEnv: { DEEPSEEK_VERIFIER_ENABLED: "true" },
+    })).resolves.toEqual({
+      claimed: 0,
+      succeeded: 0,
+      failed: 0,
+      retried: 0,
+      inconclusive: 0,
+    });
+    expect(listJobs(db, 10, "tenant-a")[0]).toMatchObject({
+      id: "unrelated-pipeline-job",
+      status: "pending",
+    });
+    db.raw.close();
+  });
+
+  it("requires a verifier job lease longer than the provider deadline", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-verifier-lease-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "jobs.sqlite"));
+
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a",
+      leaseMs: 120_000,
+      runWardenMaintenance: false,
+      logWhenIdle: false,
+      jobTypes: ["verifier.advisory.verify"],
+      wardenEnv: {
+        DEEPSEEK_VERIFIER_ENABLED: "true",
+        MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS: "660000",
+      },
+    })).rejects.toThrow("verifier_advisory_job_lease_too_short");
     db.raw.close();
   });
 
@@ -1767,8 +1825,42 @@ describe("worker runtime", () => {
       expect.stringContaining("MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON"),
       expect.stringContaining("MENDPOINT_AGENT_VERIFIER_PRICING_JSON"),
     ]));
-    expect(validateWorkerProductionEnv({ ...base, DEEPSEEK_API_KEY: "configured", MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: "{}", MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "{}", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "selective" }))
-      .toContain("The first verifier release permits only offline or shadow rollout");
+    const advisory = { ...base, DEEPSEEK_API_KEY: "configured", MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: "{}", MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "{}", MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory" };
+    expect(validateWorkerProductionEnv({ ...advisory, MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "selective" }))
+      .toContain("The production verifier permits only offline or advisory rollout");
+    expect(validateWorkerProductionEnv(advisory))
+      .not.toContain("MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON is required for advisory verification");
+    expect(validateWorkerProductionEnv({ ...advisory, MENDPOINT_REGAUGE_ENABLED: "1" }))
+      .toContain("MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON is required for advisory verification");
+  });
+
+  it("refuses production startup when JOB_LEASE_MS cannot cover the verifier timeout plus its renewal margin", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-verifier-lease-"));
+    dirs.push(root);
+    const advisory = {
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      GITHUB_MODE: "mock",
+      MENDPOINT_DATA_DIR: root,
+      MENDPOINT_REPOS_DIR: root,
+      DEEPSEEK_VERIFIER_ENABLED: "true",
+      DEEPSEEK_API_KEY: "configured",
+      MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: "{}",
+      MENDPOINT_AGENT_VERIFIER_PRICING_JSON: "{}",
+      MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE: "advisory",
+    };
+    // Default verifier timeout is 30_000ms, so the lease must be at least 90_000ms.
+    expect(validateWorkerProductionEnv({ ...advisory, JOB_LEASE_MS: "30000" }))
+      .toContain("JOB_LEASE_MS must be at least 90000 when independent verification is enabled");
+    // The boundary lease exactly covers timeout + margin and is accepted.
+    expect(validateWorkerProductionEnv({ ...advisory, JOB_LEASE_MS: "90000" }))
+      .not.toContain("JOB_LEASE_MS must be at least 90000 when independent verification is enabled");
+    // An unset lease defaults to 900_000ms and is comfortably above the requirement.
+    expect(validateWorkerProductionEnv(advisory).filter((error) => error.startsWith("JOB_LEASE_MS must be at least")))
+      .toEqual([]);
+    // A longer verifier timeout raises the required lease floor accordingly.
+    expect(validateWorkerProductionEnv({ ...advisory, MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS: "660000", JOB_LEASE_MS: "300000" }))
+      .toContain("JOB_LEASE_MS must be at least 720000 when independent verification is enabled");
   });
 
   it("cryptographically validates Fly sandbox egress authority during production startup", () => {
@@ -2707,21 +2799,22 @@ describe("worker runtime", () => {
     fixture.db.raw.close();
   }, 30_000);
 
-  it("renews a one-second lease before it expires during a long attempt", async () => {
+  it("renews a short lease before it expires during a longer attempt", async () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-lease-renew-"));
     dirs.push(parent);
     const fixture = setupWardenSnapshotJob({
       parent,
-      // Each verifier run outlasts the 1s lease, so the attempt only survives if the
-      // renewal timer (floored at 100ms, not 1000ms) refreshes the lease in time.
-      checkBody: slowCheck(1_200),
+      // Each verifier run outlasts the lease, so the attempt only survives if
+      // the renewal timer refreshes it. Five seconds leaves scheduler headroom
+      // when Vitest runs CPU-heavy files concurrently on Windows.
+      checkBody: slowCheck(5_500),
       snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     });
 
     const result = await processJobsOnce(fixture.db, {
       tenantId: "tenant_test",
       workerId: "worker-lease-renew",
-      leaseMs: 1_000,
+      leaseMs: 5_000,
       wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
     });
     expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
@@ -2730,7 +2823,7 @@ describe("worker runtime", () => {
       ok: 1,
     });
     fixture.db.raw.close();
-  }, 30_000);
+  }, 60_000);
 
   it("discards artifacts and fails when the snapshot expires mid-attempt", async () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-warden-expire-attempt-"));

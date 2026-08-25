@@ -15,7 +15,7 @@ on:
           - preflight
           - activate
       confirmation:
-        description: Type REGAUGE_DRAFT_ONLY to authorize one draft only pilot
+        description: Type REGAUGE_DRAFT_ONLY to authorize one draft only production delivery
         required: true
         type: string
       live_eval_repetitions:
@@ -48,7 +48,7 @@ jobs:
           flyctl auth whoami >/dev/null
           flyctl orgs list --json \
             | tee test-results/regauge-production/preflight/fly-orgs.json
-          if flyctl status --app mendpoint-transformer-pilot --json \
+          if flyctl status --app mendpoint-regauge-production --json \
             >test-results/regauge-production/preflight/fly-status-raw.json 2>/dev/null; then
             jq '{exists: true, status: .}' \
               test-results/regauge-production/preflight/fly-status-raw.json \
@@ -69,7 +69,7 @@ jobs:
 
   deploy:
     needs: preflight
-    if: ${{ inputs.phase == 'activate' }}
+    if: ${{ inputs.phase == 'activate' && github.repository == 'gondalaimafia/mendpoint' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: regauge-production
@@ -110,7 +110,7 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: ${{ vars.REGAUGE_DEEPSEEK_GOVERNANCE_JSON }}
       MENDPOINT_AGENT_VERIFIER_PRICING_JSON: ${{ vars.REGAUGE_DEEPSEEK_PRICING_JSON }}
-      MENDPOINT_REGAUGE_COORDINATOR_URL: https://mendpoint-transformer-pilot.fly.dev/
+      MENDPOINT_REGAUGE_COORDINATOR_URL: https://mendpoint-regauge-production.fly.dev/
       MENDPOINT_RELEASE_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -151,11 +151,32 @@ jobs:
               }));
             '
           )"
+          policy_envelope="$(jq -cn --arg tenant "$MENDPOINT_REGAUGE_TENANT_ID" '{
+            policyEnvelopeId: "regauge-deepseek-v4-flash-advisory-20260824",
+            tenantId: $tenant,
+            version: 2,
+            repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"],
+            branchScope: ["main"],
+            forbiddenZones: [],
+            allowedTools: ["deepseek-verifier"],
+            allowedModelClasses: ["rented_specialist"],
+            externalProcessingAllowed: true,
+            residency: "cn",
+            riskCeiling: "high",
+            reviewRequired: true,
+            deploymentAllowed: false,
+            trainingDataAllowed: false,
+            retentionDays: 90,
+            createdAt: "2026-08-24T00:00:00.000Z"
+          }')"
           {
             echo "MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF=$approval_ref"
             echo "MENDPOINT_REGAUGE_EVIDENCE_REFS=$approval_ref,$evidence_ref"
             echo "MENDPOINT_REGAUGE_GATE=$gate"
             echo "MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT=$activation_expires_at"
+            echo "MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON=$policy_envelope"
+            echo "MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT=2026-08-24T00:00:00.000Z"
+            echo "MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT=2026-11-20T23:59:59.000Z"
           } >> "$GITHUB_ENV"
       - name: Validate exact authority before mutation
         shell: bash
@@ -165,6 +186,8 @@ jobs:
           READINESS_SOAK_SECONDS: ${{ inputs.readiness_soak_seconds }}
         run: |
           set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "gondalaimafia/mendpoint"
+          test "$GITHUB_REF" = "refs/heads/main"
           test "$CONFIRMATION" = "REGAUGE_DRAFT_ONLY"
           test "$LIVE_EVAL_REPETITIONS" -ge 3
           test "$LIVE_EVAL_REPETITIONS" -le 10
@@ -188,22 +211,46 @@ jobs:
             MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION
             MENDPOINT_REGAUGE_LIVE_EVAL_MAX_USD
             DEEPSEEK_API_KEY MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON
-            MENDPOINT_AGENT_VERIFIER_PRICING_JSON
+            MENDPOINT_AGENT_VERIFIER_PRICING_JSON MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON
+            MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT
           )
           for name in "${required[@]}"; do
             test -n "${!name:-}" || { echo "Missing required Regauge production authority: $name"; exit 1; }
           done
+          test "$MENDPOINT_REGAUGE_TENANT_ID" = "tenant_regauge_canary"
+          test "$MENDPOINT_REGAUGE_CAMPAIGN_ID" = "campaign_regauge_canary_20260814"
+          test "$MENDPOINT_REGAUGE_CANARY_OWNER" = "gondalaimafia"
+          test "$MENDPOINT_REGAUGE_CANARY_REPOSITORY" = "mendpoint-canary-drill-20260801"
+          test "$MENDPOINT_REGAUGE_CANARY_BRANCH" = "main"
+          jq -e --arg tenant "$MENDPOINT_REGAUGE_TENANT_ID" '
+            .schemaVersion == "2026-08-17.v1"
+            and ([.entries[] | select(.tenantId == $tenant and (.products | index("regauge")))] | length) == 1
+            and ([.entries[] | select(.tenantId == $tenant and (.products | index("regauge")))][0]
+              | .externalModelAllowed == true and .mayLeaveTenantBoundary == true and .consentActive == true)
+          ' <<<"$MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON" >/dev/null \
+            || { echo "regauge_deepseek_governance_not_authorized"; exit 1; }
+          jq -e --arg tenant "$MENDPOINT_REGAUGE_TENANT_ID" --arg branch "$MENDPOINT_REGAUGE_CANARY_BRANCH" '
+            .tenantId == $tenant
+            and .repositoryScope == ["gondalaimafia/mendpoint-canary-drill-20260801"]
+            and .branchScope == [$branch]
+            and .allowedTools == ["deepseek-verifier"]
+            and .allowedModelClasses == ["rented_specialist"]
+            and .externalProcessingAllowed == true
+            and .reviewRequired == true
+            and .deploymentAllowed == false
+            and .trainingDataAllowed == false
+          ' <<<"$MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON" >/dev/null \
+            || { echo "regauge_deepseek_policy_not_authorized"; exit 1; }
           mkdir -p test-results/regauge-production
       - name: Verify dedicated app and coordinator volume
         shell: bash
         run: |
           set -euo pipefail
-          flyctl status --app mendpoint-transformer-pilot >/dev/null 2>&1 \
+          flyctl status --app mendpoint-regauge-production >/dev/null 2>&1 \
             || { echo "regauge_fly_app_bootstrap_required"; exit 1; }
-          volume_json="$(flyctl volumes list --app mendpoint-transformer-pilot --json \
+          volume_json="$(flyctl volumes list --app mendpoint-regauge-production --json \
             | jq -ce '[.[] | select(
-                .id == "vol_4y83e8lm03q5x03r"
-                and .name == "mendpoint_transformer_data_v2"
+                .name == "mendpoint_regauge_production_data"
                 and .state == "created"
                 and .size_gb == 20
                 and .region == "sjc"
@@ -217,7 +264,7 @@ jobs:
           printf '%s\n' "$volume_json" > test-results/regauge-production/coordinator-volume.json
           attached_machine_id="$(jq -r '.attached_machine_id // empty' <<<"$volume_json")"
           if [[ -n "$attached_machine_id" ]]; then
-            flyctl machines list --app mendpoint-transformer-pilot --json \
+            flyctl machines list --app mendpoint-regauge-production --json \
               | jq -e --arg machine_id "$attached_machine_id" \
                 '[.[] | select(
                   .id == $machine_id
@@ -232,7 +279,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          storage_secrets="$(flyctl secrets list --app mendpoint-transformer-pilot --json)"
+          storage_secrets="$(flyctl secrets list --app mendpoint-regauge-production --json)"
           for name in AWS_ENDPOINT_URL_S3 AWS_REGION BUCKET_NAME AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
             jq -e --arg name "$name" \
               '.[] | select(.name == $name and (.status == "Staged" or .status == "Deployed"))' \
@@ -244,7 +291,7 @@ jobs:
         run: |
           set -euo pipefail
           executor_digest="sha256:$(printf '%s' "$GITHUB_SHA" | sha256sum | cut -d' ' -f1)"
-          flyctl secrets set --stage --app mendpoint-transformer-pilot \
+          flyctl secrets set --stage --app mendpoint-regauge-production \
             MENDPOINT_REGAUGE_TENANT_ID="$MENDPOINT_REGAUGE_TENANT_ID" \
             MENDPOINT_REGAUGE_CAMPAIGN_ID="$MENDPOINT_REGAUGE_CAMPAIGN_ID" \
             MENDPOINT_REGAUGE_ENVIRONMENT=production \
@@ -280,16 +327,19 @@ jobs:
             OPENAI_API_KEY="$OPENAI_API_KEY" \
             DEEPSEEK_VERIFIER_ENABLED=true \
             DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-            MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=shadow \
+            MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=advisory \
             MENDPOINT_AGENT_VERIFIER_SCORING_MODE=nonthinking_logprobs \
             MENDPOINT_AGENT_VERIFIER_EVALUATIONS=1 \
             MENDPOINT_AGENT_VERIFIER_PIVOTS=1 \
             MENDPOINT_AGENT_VERIFIER_MAXIMUM_CANDIDATES=1 \
             MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD=0.05 \
-            MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS=8000 \
+            MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS=660000 \
             MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES=0 \
             MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON="$MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON" \
             MENDPOINT_AGENT_VERIFIER_PRICING_JSON="$MENDPOINT_AGENT_VERIFIER_PRICING_JSON" \
+            MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON="$MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON" \
+            MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT="$MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT" \
+            MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT="$MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT" \
             GITHUB_APP_ID="$GITHUB_APP_ID" \
             GITHUB_APP_PRIVATE_KEY="$GITHUB_APP_PRIVATE_KEY" \
             GITHUB_WEBHOOK_SECRET="$GITHUB_WEBHOOK_SECRET" \
@@ -299,8 +349,8 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
-            if output="$(flyctl deploy --remote-only --ha=false --app mendpoint-transformer-pilot \
-              --config fly.transformer.toml --env MENDPOINT_RELEASE_REVISION=${{ github.sha }} \
+            if output="$(flyctl deploy --remote-only --ha=false --app mendpoint-regauge-production \
+              --config fly.regauge.toml --env MENDPOINT_RELEASE_REVISION=${{ github.sha }} \
               --process-groups coordinator 2>&1)"; then
               printf '%s\n' "$output"
               exit 0
@@ -316,31 +366,31 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in {1..60}; do
-            revision="$(curl --fail --silent --max-time 10 https://mendpoint-transformer-pilot.fly.dev/version | jq -r '.revision')" || true
-            ready="$(curl --fail --silent --max-time 10 https://mendpoint-transformer-pilot.fly.dev/ready | jq -r '.status')" || true
+            revision="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/version | jq -r '.revision')" || true
+            ready="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/ready | jq -r '.status')" || true
             if test "$revision" = "$GITHUB_SHA" && test "$ready" = "ok"; then exit 0; fi
             test "$attempt" -lt 60
             sleep 2
           done
       - name: Deploy worker
         run: >-
-          flyctl deploy --remote-only --ha=false --app mendpoint-transformer-pilot
-          --config fly.transformer.toml --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
+          flyctl deploy --remote-only --ha=false --app mendpoint-regauge-production
+          --config fly.regauge.toml --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
           --process-groups worker
       - name: Verify exact deployed revision and process health
         shell: bash
         run: |
           set -euo pipefail
-          flyctl status --app mendpoint-transformer-pilot --json | tee test-results/regauge-production/fly-status.json
-          flyctl scale count coordinator=1 worker=1 --app mendpoint-transformer-pilot --yes
+          flyctl status --app mendpoint-regauge-production --json | tee test-results/regauge-production/fly-status.json
+          flyctl scale count coordinator=1 worker=1 --app mendpoint-regauge-production --yes
           for attempt in {1..60}; do
-            revision="$(curl --fail --silent --max-time 10 https://mendpoint-transformer-pilot.fly.dev/version | jq -r '.revision')" || true
-            ready="$(curl --fail --silent --max-time 10 https://mendpoint-transformer-pilot.fly.dev/ready | jq -r '.status')" || true
+            revision="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/version | jq -r '.revision')" || true
+            ready="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/ready | jq -r '.status')" || true
             if test "$revision" = "$GITHUB_SHA" && test "$ready" = "ok"; then break; fi
             test "$attempt" -lt 60
             sleep 2
           done
-          flyctl checks list --app mendpoint-transformer-pilot | tee test-results/regauge-production/fly-checks.txt
+          flyctl checks list --app mendpoint-regauge-production | tee test-results/regauge-production/fly-checks.txt
       - name: Run budget bounded live Regauge evaluation
         env:
           MENDPOINT_EVAL_LIVE_REGAUGE: "1"
@@ -366,38 +416,44 @@ jobs:
             test "$attempt" -lt 60
             sleep 10
           done
+      - name: Wait for durable DeepSeek advisory evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..60}; do
+            if npm run regauge:production:proof -- \
+              --mode=verifier-evidence \
+              --output=test-results/regauge-production/verifier-evidence.json; then
+              exit 0
+            fi
+            rm -f test-results/regauge-production/verifier-evidence.json
+            test "$attempt" -lt 60
+            sleep 10
+          done
       - name: Run read only production readiness soak
         run: >-
           npm run regauge:production:proof -- --mode=readiness-soak
           --duration-seconds=${{ inputs.readiness_soak_seconds }} --interval-seconds=10
           --output=test-results/regauge-production/readiness-soak.json
-      - name: Contain one-draft activation
-        if: ${{ always() }}
+      - name: Preserve continuous production after activation
+        if: ${{ success() }}
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
           mkdir -p test-results/regauge-production
-          app_exists=false
-          contained=true
-          if flyctl status --app mendpoint-transformer-pilot >/dev/null 2>&1; then
-            app_exists=true
-            if ! machines="$(flyctl machines list --app mendpoint-transformer-pilot --json)"; then
-              contained=false
-            elif ! jq -e "length == 0" <<<"$machines" >/dev/null; then
-              if ! flyctl scale count coordinator=1 worker=0 --app mendpoint-transformer-pilot --yes; then
-                contained=false
-              fi
-            fi
-          fi
+          flyctl scale count coordinator=1 worker=1 --app mendpoint-regauge-production --yes
+          machines="$(flyctl machines list --app mendpoint-regauge-production --json)"
+          continuous="$(jq -e '
+            ([.[] | select(.config.metadata.fly_process_group == "coordinator" and .state == "started")] | length) == 1
+            and ([.[] | select(.config.metadata.fly_process_group == "worker" and .state == "started")] | length) == 1
+          ' <<<"$machines")"
           jq -n \
-            --argjson appExists "$app_exists" \
-            --argjson workerContained "$contained" \
+            --argjson continuousProduction "$continuous" \
             --arg runId "$GITHUB_RUN_ID" \
             --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
             --arg revision "$GITHUB_SHA" \
-            '{appExists: $appExists, workerContained: $workerContained, runId: $runId, runAttempt: $runAttempt, revision: $revision}' \
-            > test-results/regauge-production/containment.json
-          test "$contained" = true
+            '{continuousProduction: $continuousProduction, runId: $runId, runAttempt: $runAttempt, revision: $revision}' \
+            > test-results/regauge-production/continuous-production.json
       - name: Upload Regauge production evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

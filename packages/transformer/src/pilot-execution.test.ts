@@ -885,7 +885,10 @@ describe("Transformer pilot execution coordinator", () => {
   });
 
   it("atomically completes an attempt with its terminal checkpoint head", () => {
-    const store = new TransformerPilotExecutionStore();
+    const root = mkdtempSync(join(tmpdir(), "transformer-advisory-dispatch-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    const store = new TransformerPilotExecutionStore(path);
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
     const leaseToken = "lease-token-checkpoint-terminal-0001";
     const lease = store.claimNextAttempt({
@@ -971,6 +974,7 @@ describe("Transformer pilot execution coordinator", () => {
       nextCheckpointHead: terminal,
       candidateSeal,
       completionIntent,
+      advisoryDispatchRequested: false,
       gateConfig: authorization,
     };
 
@@ -980,7 +984,10 @@ describe("Transformer pilot execution coordinator", () => {
       verificationPassed: true,
       attemptCheckpointHead: terminal,
     });
-    expect(store.completeAttemptWithCheckpointHead(input)).toEqual(completed);
+    expect(store.completeAttemptWithCheckpointHead({
+      ...input,
+      advisoryDispatchRequested: true,
+    })).toEqual(completed);
     expect(completed.receipt).toEqual({
       schemaVersion: 1,
       tenantId: "tenant-a",
@@ -992,6 +999,132 @@ describe("Transformer pilot execution coordinator", () => {
       observedAt: time(3),
       checkpointHead: terminal,
     });
+    expect(store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(0);
+    expect(store.backfillVerifierAdvisoryDispatches({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+    })).toEqual({ inserted: 1, existing: 0 });
+    expect(store.backfillVerifierAdvisoryDispatches({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+    })).toEqual({ inserted: 0, existing: 1 });
+    const concurrentStore = new TransformerPilotExecutionStore(path);
+    const advisoryOutbox = store.listPendingVerifierAdvisoryDispatches("tenant-a", 10);
+    expect(advisoryOutbox).toEqual([expect.objectContaining({
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      campaignRevision: completed.campaign.revision,
+      unitId: lease.unitId,
+      episodeId: terminal.episodeId,
+      completionDigest,
+      authorizationDigest: completionIntent.authorizationDigest,
+      checkpointStateDigest: terminal.stateDigest,
+      observedAt: time(3),
+    })]);
+    expect(JSON.stringify(advisoryOutbox)).not.toContain("package.json");
+    const dispatch = advisoryOutbox[0]!;
+    const firstClaim = store.claimNextVerifierAdvisoryDispatch({
+      tenantId: "tenant-a",
+      claimantId: "drainer-a",
+      claimId: "claim-a",
+      leaseToken: "advisory-lease-a",
+      leaseDurationMs: 60_000,
+      observedAt: time(4),
+    })!;
+    expect(firstClaim.dispatch).toEqual(dispatch);
+    expect(concurrentStore.claimNextVerifierAdvisoryDispatch({
+      tenantId: "tenant-a",
+      claimantId: "drainer-b",
+      claimId: "claim-b-blocked",
+      leaseToken: "advisory-lease-b-blocked",
+      leaseDurationMs: 60_000,
+      observedAt: time(4),
+    })).toBeNull();
+    expect(() => store.recordVerifierAdvisoryDispatchClaimResult({
+      ...firstClaim,
+      tenantId: "tenant-b",
+      leaseToken: "advisory-lease-a",
+      status: "failed",
+      errorCode: "queue_unavailable",
+      observedAt: time(4),
+    })).toThrow("transformer_verifier_advisory_dispatch_scope_invalid");
+    expect(() => store.recordVerifierAdvisoryDispatchClaimResult({
+      ...firstClaim,
+      leaseToken: "wrong-advisory-lease",
+      status: "failed",
+      errorCode: "queue_unavailable",
+      observedAt: time(4),
+    })).toThrow("transformer_verifier_advisory_dispatch_fence_invalid");
+    const secondClaim = store.claimNextVerifierAdvisoryDispatch({
+      tenantId: "tenant-a",
+      claimantId: "drainer-b",
+      claimId: "claim-b",
+      leaseToken: "advisory-lease-b",
+      leaseDurationMs: 60_000,
+      observedAt: time(5),
+    })!;
+    expect(secondClaim.leaseGeneration).toBe(2);
+    expect(() => store.recordVerifierAdvisoryDispatchClaimResult({
+      ...firstClaim,
+      leaseToken: "advisory-lease-a",
+      status: "failed",
+      errorCode: "queue_unavailable",
+      observedAt: time(5),
+    })).toThrow("transformer_verifier_advisory_dispatch_fence_invalid");
+    store.recordVerifierAdvisoryDispatchClaimResult({
+      ...secondClaim,
+      leaseToken: "advisory-lease-b",
+      status: "failed",
+      errorCode: "queue_unavailable",
+      observedAt: time(5),
+    });
+    expect(() => store.recordVerifierAdvisoryDispatchClaimResult({
+      ...secondClaim,
+      leaseToken: "advisory-lease-b",
+      status: "failed",
+      errorCode: "queue_unavailable",
+      observedAt: time(5),
+    })).toThrow("transformer_verifier_advisory_dispatch_result_exists");
+    expect(store.claimNextVerifierAdvisoryDispatch({
+      tenantId: "tenant-a",
+      claimantId: "drainer-c",
+      claimId: "claim-c-backoff",
+      leaseToken: "advisory-lease-c-backoff",
+      leaseDurationMs: 60_000,
+      observedAt: time(5),
+    })).toBeNull();
+    expect(store.listVerifierAdvisoryDispatchResults("tenant-a", dispatch.dispatchId))
+      .toEqual([expect.objectContaining({ status: "failed", errorCode: "queue_unavailable" })]);
+    for (let failureNumber = 2; failureNumber <= 8; failureNumber += 1) {
+      const observedAt = time(6 + ((failureNumber - 2) * 6));
+      const leaseTokenForFailure = `advisory-lease-${failureNumber}-bounded`;
+      const claim = store.claimNextVerifierAdvisoryDispatch({
+        tenantId: "tenant-a",
+        claimantId: `drainer-${failureNumber}`,
+        claimId: `claim-${failureNumber}`,
+        leaseToken: leaseTokenForFailure,
+        leaseDurationMs: 60_000,
+        observedAt,
+      })!;
+      expect(claim.leaseGeneration).toBe(failureNumber + 1);
+      store.recordVerifierAdvisoryDispatchClaimResult({
+        ...claim,
+        leaseToken: leaseTokenForFailure,
+        status: "failed",
+        errorCode: "queue_unavailable",
+        observedAt,
+      });
+    }
+    expect(store.claimNextVerifierAdvisoryDispatch({
+      tenantId: "tenant-a",
+      claimantId: "drainer-after-limit",
+      claimId: "claim-after-limit",
+      leaseToken: "advisory-lease-after-limit",
+      leaseDurationMs: 60_000,
+      observedAt: time(54),
+    })).toBeNull();
+    expect(store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(0);
     store.authorizeCurrentWaveDrafts({
       ...mutation(4, "authorize-checkpoint-draft"),
       gateConfig: authorization,
@@ -1104,6 +1237,141 @@ describe("Transformer pilot execution coordinator", () => {
     expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
       event.type === "attempt.completed_with_checkpoint"
     )).toHaveLength(1);
+    expect(store.listVerifierAdvisoryDispatchResults("tenant-a", dispatch.dispatchId))
+      .toHaveLength(8);
+    concurrentStore.close();
+    const raw = (store as unknown as { db: DatabaseSync }).db;
+    raw.exec(`
+      DROP TRIGGER tf_pilot_verifier_advisory_outbox_no_delete;
+      DROP TRIGGER tf_pilot_events_no_update;
+      DROP TRIGGER tf_pilot_verifier_advisory_dispatch_claim_results_no_delete;
+      DROP TRIGGER tf_pilot_verifier_advisory_dispatch_claims_no_delete;
+      DELETE FROM tf_pilot_verifier_advisory_dispatch_claim_results;
+      DELETE FROM tf_pilot_verifier_advisory_dispatch_claims;
+      DELETE FROM tf_pilot_verifier_advisory_outbox;
+      UPDATE tf_pilot_events
+      SET payload_json = json_set(payload_json, '$.completionDigest', '${digest("9")}')
+      WHERE type = 'attempt.completed_with_checkpoint';
+    `);
+    expect(() => store.backfillVerifierAdvisoryDispatches({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+    })).toThrow("transformer_verifier_advisory_backfill_invalid");
+    expect(store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(0);
+    store.close();
+  });
+
+  it("rolls back the checkpoint state write when the advisory outbox insert fails, proving one transaction", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-advisory-outbox-atomic-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    const store = new TransformerPilotExecutionStore(path);
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const leaseToken = "lease-token-outbox-atomic-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-outbox-atomic"),
+      leaseToken,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const current = checkpointHead(lease, 1, "d");
+    store.compareAndSwapAttemptCheckpointHead({
+      ...mutation(2, "outbox-atomic-current"),
+      unitId: lease.unitId,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      expectedStateDigest: null,
+      next: current,
+      gateConfig: gateConfig(),
+    });
+    const terminal = checkpointHead(lease, 2, "a");
+    const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    const authorization = gateConfig();
+    const candidateSeal = {
+      schemaVersion: 1,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      workspaceManifestDigest: digest("d"),
+      workspacePayloadDigest: digest("e"),
+      sealDigest: digest("f"),
+    } satisfies TransformerCandidateSeal;
+    const completionIntent = {
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: lease.unitId,
+      episodeId: terminal.episodeId,
+      candidateSealDigest: candidateSeal.sealDigest,
+      attemptNumber: lease.attemptNumber,
+      leaseGeneration: lease.leaseGeneration,
+      leaseTokenDigest: lease.leaseTokenDigest,
+      sourceRevision: candidate.snapshot.revision,
+      sourceDigest: candidate.snapshot.digest,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      authorizationDigest: createTransformerAttemptAuthorizationDigest(authorization),
+      verificationPassed: true,
+      actualCostUsd: 0.25,
+      accounting: adaptiveAccounting({ actualCostUsd: 0.25, wallTimeMs: 60_000 }),
+      observedAt: time(3),
+      evidenceRefs: ["evidence://operation/complete-outbox-atomic"],
+    } satisfies TransformerAttemptCompletionIntent;
+    const completionDigest = createTransformerAttemptCompletionDigest(completionIntent);
+    const completionRequestDigest = createTransformerCoordinatorCompletionRequestDigest(
+      terminal.episodeId,
+      candidateSeal,
+      completionIntent,
+    );
+    const completionIdentity = createTransformerAttemptEffectIdentity(
+      terminal.episodeId,
+      "coordinator_complete",
+      createTransformerCoordinatorCompletionSlot(completionDigest),
+      completionRequestDigest,
+    );
+    const input = {
+      ...mutation(3, "complete-outbox-atomic"),
+      idempotencyKey: completionIdentity.idempotencyKey,
+      leaseToken,
+      expectedStateDigest: current.stateDigest,
+      nextCheckpointHead: terminal,
+      candidateSeal,
+      completionIntent,
+      advisoryDispatchRequested: true,
+      gateConfig: authorization,
+    };
+
+    // Snapshot the pre-completion state: the checkpoint state write and the
+    // advisory outbox insert must succeed or fail together as one transaction.
+    const beforeRevision = store.getCampaign("tenant-a", "campaign-a")!.revision;
+    const beforeUnitState = store.getCampaign("tenant-a", "campaign-a")!.units[0]!.state;
+
+    // Force only the advisory outbox INSERT to fail. If that insert shared no
+    // transaction with the checkpoint state write (e.g. it ran after COMMIT),
+    // the state write would already be durable and this failure would leave a
+    // completed checkpoint with no dispatch.
+    const raw = (store as unknown as { db: DatabaseSync }).db;
+    const realPrepare = raw.prepare.bind(raw);
+    (raw as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      if (sql.includes("INSERT INTO tf_pilot_verifier_advisory_outbox")) {
+        return { run: () => { throw new Error("outbox_insert_boom"); } };
+      }
+      return realPrepare(sql);
+    };
+    try {
+      expect(() => store.completeAttemptWithCheckpointHead(input)).toThrow("outbox_insert_boom");
+    } finally {
+      (raw as unknown as { prepare: unknown }).prepare = realPrepare;
+    }
+
+    // The checkpoint state write must have rolled back with the failed outbox
+    // insert: no revision bump, no unit state transition, no completion event.
+    expect(store.getCampaign("tenant-a", "campaign-a")!.revision).toBe(beforeRevision);
+    expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]!.state).toBe(beforeUnitState);
+    expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "attempt.completed_with_checkpoint"
+    )).toHaveLength(0);
+    expect(store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(0);
     store.close();
   });
 

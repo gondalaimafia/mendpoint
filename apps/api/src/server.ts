@@ -115,7 +115,11 @@ import {
   pollAllFeeds,
   probeKnownSdks,
 } from "@mendpoint/catalog";
-import { applyPrFeedback, runChangePipeline } from "@mendpoint/pipeline";
+import {
+  applyPrFeedback,
+  REGAUGE_DEEPSEEK_APPROVED_SCOPE,
+  runChangePipeline,
+} from "@mendpoint/pipeline";
 import {
   withTenantGraphHandle,
   type GraphHandleFailure,
@@ -305,7 +309,8 @@ import { createPlatformStateRoutes } from "./platform-state-routes.js";
 import { createTenantCreationRoutes } from "./tenant-creation-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { regaugeProductionBootstrapInputFromEnvironment } from "./regauge-production-bootstrap-runtime.js";
-import { observeDedicatedRegaugeCompletionInShadow } from "./regauge-verifier-shadow.js";
+import { drainDedicatedRegaugeAdvisoryOutbox } from "./regauge-verifier-shadow.js";
+import { readRegaugeVerifierObservations } from "./regauge-verifier-observations.js";
 import { createTransformerDraftRepositoryAuthority } from "./transformer-draft-repository.js";
 import { loadTransformerRecipeSnapshot } from "@mendpoint/worker/transformer-snapshot-loader";
 import {
@@ -859,16 +864,39 @@ const transformerDraftAuthorization = transformerAttemptCoordinatorEnabled
       });
     })()
   : undefined;
+const drainRegaugeAdvisoryOutbox = async (): Promise<void> => {
+  if (!transformerDraftAuthorization) return;
+  await drainDedicatedRegaugeAdvisoryOutbox({
+    db,
+    store: transformerExecutions.store,
+    env: process.env,
+    tenantId: transformerDraftAuthorization.tenantId,
+    loadExactSource: (completion) => {
+      const unit = completion.campaign.units.find(
+        (candidate) => candidate.id === completion.receipt.unitId,
+      );
+      if (!unit) throw new Error("regauge_verifier_advisory_completion_invalid");
+      return loadTransformerRecipeSnapshot(db, {
+        tenantId: completion.campaign.tenantId,
+        snapshot: unit.snapshot,
+        recipe: unit.recipe,
+      }, completion.receipt.observedAt);
+    },
+  });
+};
 const transformerAttemptCoordinatorRoutes = createTransformerAttemptCoordinatorRoutes({
   enabled: transformerAttemptCoordinatorEnabled,
   store: transformerExecutions.store,
   gateConfig: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
   ...(transformerDraftAuthorization ? { draftAuthorization: transformerDraftAuthorization } : {}),
-  observeCompletedAttempt: (completion) => observeDedicatedRegaugeCompletionInShadow({
-    db,
-    env: process.env,
-    completion,
-  }).then(() => undefined),
+  verifierAdvisoryScope: {
+    tenantId: REGAUGE_DEEPSEEK_APPROVED_SCOPE.tenantId,
+    campaignId: REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId,
+  },
+  observeCompletedAttempt: async () => drainRegaugeAdvisoryOutbox(),
+  drainPendingCompletedAttempts: drainRegaugeAdvisoryOutbox,
+  readVerifierObservations: ({ tenantId, campaignId }) =>
+    readRegaugeVerifierObservations(db, { tenantId, campaignId }),
   loadExactSource: (lease, observedAt) => loadTransformerRecipeSnapshot(db, lease, observedAt),
   resolveDraftRepository: createTransformerDraftRepositoryAuthority(db, process.env),
 });

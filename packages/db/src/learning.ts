@@ -1049,6 +1049,21 @@ export function findActiveLearningConsent(
   return active.length === 1 ? active[0] : undefined;
 }
 
+export function listLearningConsentHistory(
+  db: AppDb,
+  input: { tenantId: string; purpose: string },
+): LearningConsentRow[] {
+  requireText("learning_tenant_id", input.tenantId);
+  requireText("learning_purpose", input.purpose);
+  return many<LearningConsentRow>(
+    db,
+    `SELECT * FROM learning_consents
+     WHERE tenant_id = ? AND purpose = ?
+     ORDER BY consent_version DESC, created_at DESC, id DESC`,
+    [input.tenantId, input.purpose],
+  );
+}
+
 /**
  * Records that are candidates for dataset membership: matching purpose and
  * residency, observed strictly before the temporal cutoff, and not deleted.
