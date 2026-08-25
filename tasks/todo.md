@@ -3175,3 +3175,18 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Deadline: the dedicated production profile waits 660 seconds, covering DeepSeek's documented ten minute queue behavior while remaining below the default renewing 900 second job lease. The deadline still seals an ambiguous operation rather than pretending the provider did no work.
 - Verification: the new multi-criterion lease-loss regression failed against the reviewed implementation, then all 27 advisory-job tests passed after current-invocation binding. On rebased head `88a01c0b`, the complete 17-file matrix passes 266 of 266 tests, full workspace typecheck passes, the optimized 50-route production build passes, GA policy checks pass while retaining the non-GA ReGauge disclosure, and the production dependency audit reports zero vulnerabilities.
 - Reciprocal review: exact-head review against `edd22d0a` reports no P0, P1, or P2 findings and independently passes 61 focused verifier and profile tests.
+
+### 2026-08-25 ReGauge production volume contract closure
+
+- [x] Read the live dedicated-app volume metadata before changing the deployment contract.
+- [x] Reproduce Fly's rejection of the manifest's overlength volume name.
+- [x] Bind the workflow and manifest to the existing encrypted 20 GB `sjc` production volume.
+- [x] Remove the opaque hardware-zone pin and require at least 14 days of scheduled snapshot retention.
+- [x] Run the focused workflow regression, affected typechecks, YAML parsing, and diff integrity checks.
+- [ ] Obtain exact-head reciprocal review and current-base CI before merge.
+
+#### Review
+
+- RED: the protected workflow and Fly manifest required `mendpoint_regauge_production_data`, which exceeds Fly's 30-character volume-name limit. A direct creation attempt was rejected before mutation. The already provisioned `mendpoint_regauge_prod_data` volume is encrypted, 20 GB, in `sjc`, healthy, unattached, has scheduled backups, and retains snapshots for 30 days.
+- The workflow also pinned opaque Fly hardware zone `b376`, while the healthy allocated volume is in zone `2618`. The production contract requires region, encryption, backups, and retention, not a hardware allocation identifier.
+- GREEN: all 9 protected-workflow regressions pass, the scripts TypeScript project checks cleanly, the workflow parses as YAML, and diff integrity passes.

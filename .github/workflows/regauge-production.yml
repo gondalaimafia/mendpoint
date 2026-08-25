@@ -250,13 +250,12 @@ jobs:
             || { echo "regauge_fly_app_bootstrap_required"; exit 1; }
           volume_json="$(flyctl volumes list --app mendpoint-regauge-production --json \
             | jq -ce '[.[] | select(
-                .name == "mendpoint_regauge_production_data"
+                .name == "mendpoint_regauge_prod_data"
                 and .state == "created"
                 and .size_gb == 20
                 and .region == "sjc"
-                and .zone == "b376"
                 and .encrypted == true
-                and .snapshot_retention == 14
+                and .snapshot_retention >= 14
                 and .auto_backup_enabled == true
                 and .host_status == "ok"
               )] | if length == 1 then .[0] else error("regauge_fly_volume_authority_invalid") end')" \
