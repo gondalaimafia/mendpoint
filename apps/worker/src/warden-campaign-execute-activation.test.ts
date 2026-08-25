@@ -6,11 +6,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   addWardenCampaignTarget,
   createDb,
+  createMission,
   createWardenCampaign,
   enqueueJob,
   insertPrincipal,
   insertRepositorySnapshot,
   insertRepositorySnapshotPolicy,
+  linkFettlerCampaignToMission,
   listJobs,
   listWardenCampaignTargets,
   planWardenRollout,
@@ -19,7 +21,10 @@ import {
 } from "@mendpoint/db";
 import { ingestRepositoryEvidence, openGraphLearnMemory, type GraphLearnDb } from "@mendpoint/graph-learn";
 import type { UnifiedSourceArtifact } from "@mendpoint/change-intel";
-import type { WardenCampaignExecutionDependencies } from "@mendpoint/pipeline";
+import {
+  ensureDefaultPolicyEnvelopeBinding,
+  type WardenCampaignExecutionDependencies,
+} from "@mendpoint/pipeline";
 import { WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE } from "./warden-campaign-execute-dispatch.js";
 import { fieldRenameRecipeDependencies, payloadRenameDeriver } from "./warden-campaign-recipe.js";
 import { processJobsOnce } from "./cli.js";
@@ -80,6 +85,20 @@ function fixture() {
   createWardenCampaign(db, { id: "campaign-a", tenantId: "tenant-a", name: "Payments update",
     ownerPrincipalId: "owner", concurrencyLimit: 1, completionPolicy: "all", eventId: "campaign-created",
     idempotencyKey: "campaign-created", correlationId: "campaign-a", createdAt });
+  createMission(db, {
+    id: "mission-a", tenantId: "tenant-a", product: "fettler", triggerKind: "provider_change",
+    objective: "Payments update", ownerPrincipalId: "owner", eventId: "mission-created",
+    idempotencyKey: "mission-created", correlationId: "campaign-a", createdAt,
+  });
+  linkFettlerCampaignToMission(db, {
+    tenantId: "tenant-a", campaignId: "campaign-a", missionId: "mission-a",
+    actorPrincipalId: "owner", eventId: "mission-linked", idempotencyKey: "mission-linked",
+    correlationId: "campaign-a", createdAt,
+  });
+  ensureDefaultPolicyEnvelopeBinding(db, {
+    tenantId: "tenant-a", missionId: "mission-a", actorPrincipalId: "owner",
+    correlationId: "campaign-a", createdAt,
+  });
   addWardenCampaignTarget(db, { id: "target-a", tenantId: "tenant-a", campaignId: "campaign-a",
     repositoryId: "repo-a", snapshotId: "snapshot-a", ownerPrincipalId: "owner", maxAttempts: 2,
     eventId: "target-created", idempotencyKey: "target-created", correlationId: "campaign-a", createdAt });
