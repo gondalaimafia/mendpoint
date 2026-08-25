@@ -35,7 +35,7 @@ The 2026-08-21 finding was "most of what a Mission Space needs is already writte
 | `context_refs_json` zero writers | Written when inherited context compiles and injects on bound Fettler runs |
 | No graph/policy version on the mission row | Columns + set-once bind helpers **live** on single-repo enroll/launch |
 
-Register locators for ME-MSN-002 now include `packages/pipeline/src/mission-artifact-register.ts` and its unit tests (`#418` + `#421`). FET-017/FET-018 impact coverage (`#395`, `#401`, `#427`) is a Fettler epistemics close, not a v4-platform row.
+Register locators for ME-MSN-002 now include `packages/pipeline/src/mission-artifact-register.ts` and its unit tests (`#418` + `#421`). FET-017 has implementation evidence and FET-018 has partial observability evidence (`#395`, `#401`, `#427`); neither requirement is closed, and neither is a v4-platform row.
 
 ---
 
@@ -190,7 +190,7 @@ These are the next honest closes. Do not start the blocked items.
 10. **Structural extractor contract is not the production indexer.** Graphify stays eval/internal (`#331`). Do not treat community detection as architecture truth.
 11. **User-preference store remains absent.** Keep the compiler's `store_not_available`; do not invent one.
 
-MCU attribution, `context_refs_json`, and compiler injection all follow **mission binding**. Unbound Fettler repair jobs are still the common case and will keep looking like the 2026-08-21 world until enroll/claim always stamps `payload.missionId`.
+MCU attribution, `context_refs_json`, and compiler injection all follow **mission binding**. Any unbound Fettler repair job will keep looking like the 2026-08-21 world until enroll/claim always stamps `payload.missionId`.
 
 ---
 
@@ -222,7 +222,7 @@ Do not merge these from this analysis. Do not duplicate their work.
 | `#331` | Pinned Graphify process evaluator (eval only; not production adoption) |
 | `#388` | `PRESERVES_INVARIANT` ingest (graph; not Mission Space) |
 
-Do not flip matching `v4-platform` rows to `verified` from primitives plus tests. Do not close Production Closure Authority in code: restore `MENDPOINT_CLOSURE_GITHUB_APP_ID` + App private key on the repo/org (ops; all open PRs fail the same token step).
+Do not flip matching `v4-platform` rows to `verified` from primitives plus tests. Do not diagnose Production Closure Authority from this static analysis; use the exact-head `mendpoint-production-closure-authority` check and its retained evidence. The current observed blocker is GitHub installation API rate limiting after successful dedicated App authentication, not missing App credentials.
 
 ---
 

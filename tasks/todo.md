@@ -3205,3 +3205,15 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Root cause: the protected environment and pinned Git revision identify `codex/regauge-canary-baseline`, while the shared DeepSeek scope and workflow Policy Envelope required `main`; activation would fail before the dedicated coordinator could start.
 - Authority: the approved scope now names the exact canary branch. The workflow derives the envelope branch from the protected binding and separately rejects every branch except that approved value. Tenant, campaign, repository, model class, external-processing consent, advisory-only behavior, and expiry are unchanged.
 - Verification: 74 focused tests pass across the production workflow, shared advisory scope, worker profile, worker verifier job, coordinator dispatch, and bootstrap runtime. Full workspace typecheck, the optimized 50-route production build, and the complete GA policy and evidence gate pass; YAML parsing and diff integrity are clean. The register remains honest at 28 verified foundational requirements, with ReGauge still explicitly non-GA.
+### 2026-08-25 PR #445 review remediation
+
+- [x] Verify the three review findings against the exact PR head and canonical register.
+- [x] Remove the stale credential diagnosis from the closure-authority section.
+- [x] Replace unsupported requirement-closure and production-frequency claims with evidence-bounded wording.
+- [x] Run documentation integrity checks.
+- [ ] Obtain exact-head reciprocal review.
+
+#### Review
+
+- `git diff --check` and `npm run names:check` pass. `npm run spec:check` could not use this worktree through the shared dependency junction because its workspace link resolved `@mendpoint/contract` from a different checkout; the original exact head already has current GitHub CI, and this child changes only documentation wording.
+- Reciprocal review remains pending on the Codex-owned child branch.
