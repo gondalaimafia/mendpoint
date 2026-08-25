@@ -965,6 +965,53 @@ describe("Transformer production pilot lane", () => {
     });
   });
 
+  it("does not hand the launch MissionTask to review when completing loses the lease", async () => {
+    const { root, db, store } = setup();
+    const missionId = seedRegaugeMissionForCampaignA(db);
+    const task = createMissionTask(db, {
+      id: regaugeLaunchMissionTaskId(missionId, "repository-a"),
+      tenantId: "tenant-a",
+      missionId,
+      taskType: "code_migration",
+      acceptanceCriteria: "Complete the launched ReGauge unit for repository repository-a.",
+      risk: "medium",
+      actorPrincipalId: "principal-a",
+      eventId: "mt-regauge-lease-lost-created",
+      idempotencyKey: "mt-regauge-lease-lost-create",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+    // The lease is lost at completion: `store.completeAttempt` throws on the fence
+    // (the reference lease discipline), so the review handoff must never run.
+    const complete = vi.spyOn(store, "completeAttempt").mockImplementation(() => {
+      throw new Error("transformer_pilot_fence_stale");
+    });
+
+    await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-mission-task-lease-lost",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-mission-task-lease-lost",
+      commandRunner: async () => ({ exitCode: 0, stdout: "verified", stderr: "" }),
+    }).catch(() => undefined);
+
+    expect(complete).toHaveBeenCalled();
+    // The claim drove the task to agent_working; a lost-lease complete must leave
+    // it there, never at human_review_required.
+    expect(getMissionTask(db, "tenant-a", task.id)).toMatchObject({
+      status: "agent_working",
+      ownerType: "agent",
+    });
+    complete.mockRestore();
+  });
+
   it("stamps the campaign Mission id onto the trajectory a ReGauge run produces", async () => {
     const fixture = setup();
     const missionId = seedRegaugeMissionForCampaignA(fixture.db);
