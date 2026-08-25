@@ -111,6 +111,74 @@ function gitBlobDigest(bytes: Buffer): string {
     .digest("hex");
 }
 
+// The root package.json is a high-churn product manifest: product proposals add
+// and remove npm scripts and dependencies constantly. Pinning its whole-file
+// sha256 froze the entire file, so any script or dependency edit tripped
+// PROPOSAL_AUTHORITY_SURFACE_DRIFT. What actually needs protecting is the
+// authority wiring: the exact commands of the scripts that CI and the closure
+// controller invoke to enforce a gate. A hostile proposal that rewrote, for
+// example, "closure:proposal:check" to "true" would neuter the gate while
+// leaving the rest of the manifest untouched. AUTHORITY_CRITICAL_SCRIPTS is that
+// enforcement surface, enumerated from .github/workflows/ci.yml and
+// .github/workflows/closure-authority.yml plus the fan-out of the "ga:check"
+// aggregate in this package.json (each constituent is listed so the aggregate
+// cannot be hollowed out one script at a time). package.json is validated by an
+// exact digest over this slice; every other script and dependency may change
+// freely. To change a pinned command, rotate this pin like any other protected
+// surface.
+const AUTHORITY_MANIFEST_PATH = "package.json";
+const AUTHORITY_CRITICAL_SCRIPTS = [
+  "test",
+  "typecheck",
+  "ga:check",
+  "spec:check",
+  "closure:check",
+  "closure:github:check",
+  "closure:proposal:check",
+  "claims:check",
+  "actions:check",
+  "architecture:check",
+  "model:check",
+  "names:check",
+  "adr:check",
+  "third-state:check",
+  "evidence:reachability:check",
+  "reverts:check",
+  "eval:agents",
+  "eval:synthetic:check",
+] as const;
+
+// Deterministic digest over the authority-critical script slice of the root
+// manifest. Every pinned script name maps to its exact command string, or to
+// null when the script is absent or not a string, so removing or renaming a
+// pinned script changes the digest and fails closed. A manifest that does not
+// parse as an object also fails closed, because its slice can never equal a
+// pinned value.
+function authorityScriptSliceDigest(bytes: Buffer): string {
+  let scripts: Record<string, unknown> = {};
+  try {
+    const manifest = JSON.parse(bytes.toString("utf8")) as { scripts?: unknown };
+    if (manifest && typeof manifest === "object" && manifest.scripts && typeof manifest.scripts === "object") {
+      scripts = manifest.scripts as Record<string, unknown>;
+    } else {
+      return "sha256:invalid-package-manifest";
+    }
+  } catch {
+    return "sha256:invalid-package-manifest";
+  }
+  const slice = [...AUTHORITY_CRITICAL_SCRIPTS]
+    .sort()
+    .map((name) => [name, typeof scripts[name] === "string" ? (scripts[name] as string) : null] as const);
+  return digest(Buffer.from(JSON.stringify(slice)));
+}
+
+// The pinned digest for an authority surface. package.json is pinned to its
+// authority-critical script slice; every other protected file is pinned to its
+// exact whole-file bytes.
+function protectedSurfaceDigest(path: string, bytes: Buffer): string {
+  return path === AUTHORITY_MANIFEST_PATH ? authorityScriptSliceDigest(bytes) : digest(bytes);
+}
+
 function normalizedPath(locator: string): string | null {
   const path = locator.split("#", 1)[0];
   if (
@@ -451,7 +519,7 @@ export async function verifyProductionClosureProposal(
     if (!rotationRequested) {
       for (const [path, expectedDigest] of Object.entries(policy.protectedFiles)) {
         const bytes = bytesByPath.get(normalizedPath(path) ?? "");
-        if (!bytes || digest(bytes) !== expectedDigest) {
+        if (!bytes || protectedSurfaceDigest(path, bytes) !== expectedDigest) {
           add(
             issues,
             "PROPOSAL_AUTHORITY_SURFACE_DRIFT",
@@ -541,7 +609,7 @@ export async function verifyProductionClosureProposal(
         });
       }
       const proposedFileDigests = new Map<string, string>();
-      for (const [path, bytes] of bytesByPath) proposedFileDigests.set(path, digest(bytes));
+      for (const [path, bytes] of bytesByPath) proposedFileDigests.set(path, protectedSurfaceDigest(path, bytes));
       const rotationIssues = verifyAuthorityRotation({
         basePolicy: policy,
         proposedPolicy,

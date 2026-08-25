@@ -381,6 +381,44 @@ describe("production closure proposal authority", () => {
     expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
   });
 
+  it("drifts when a product proposal neuters an authority-critical npm script", async () => {
+    const client = new FixtureClient();
+    const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+    manifest.scripts["closure:proposal:check"] = "true";
+    client.replace("package.json", manifest);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    const drift = result.issues.filter((issue) => issue.code === "PROPOSAL_AUTHORITY_SURFACE_DRIFT");
+    expect(drift.map((issue) => issue.subject)).toEqual(["package.json"]);
+  });
+
+  it("accepts a product proposal that adds unrelated npm scripts", async () => {
+    const client = new FixtureClient();
+    const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+    manifest.scripts["verifier:deepseek:smoke"] = "tsx scripts/verifier-deepseek-smoke.ts";
+    manifest.scripts["graphify:process:smoke"] = "tsx scripts/graphify-process-smoke.ts";
+    client.replace("package.json", manifest);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+  });
+
   it("accepts a normal product proposal after successor activation removed the predecessor", async () => {
     const client = new FixtureClient();
     const predecessorPath = ".github/workflows/closure-authority.yml";
