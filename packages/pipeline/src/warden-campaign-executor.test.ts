@@ -16,6 +16,7 @@ import {
   linkFettlerCampaignToMission,
   listMissionArtifactLineage,
   listMissionArtifacts,
+  listMissionVerifications,
   listWardenCampaignTargets,
   planWardenRollout,
   recordMissionDecision,
@@ -435,6 +436,31 @@ describe("Warden campaign executor", () => {
     expect(source).toContain('role: "verification_report"');
     expect(source).toContain('role: "pull_request"');
   });
+
+  it("records a snapshot-bound Mission verification after a passing comparison", async () => {
+    // The default fixture already binds campaign-a to mission-a, so this test
+    // exercises the bound path directly rather than re-creating the mission.
+    const value = fixture();
+    await executeWardenCampaignTarget(executionInput(value));
+    const records = listMissionVerifications(value.db, "tenant-a", "mission-a");
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      missionId: "mission-a",
+      status: "passed",
+      snapshotId: "snapshot-a",
+      resolvedSha,
+      manifestSha256,
+      scope: "warden.campaign.execute:campaign-a:target-a",
+      verifierPrincipalId: "worker",
+    });
+  });
+
+  // The behavioral test above ("records a snapshot-bound Mission verification
+  // after a passing comparison") is the real control for this wiring: it executes
+  // the seam and asserts a mission_verifications row, so deleting the
+  // tryRecordFettlerCampaignMissionVerification call turns it red. A source-regex
+  // control was removed here because it matched the function DECLARATION too and
+  // stayed green when the call was deleted.
 });
 
 function reviewPackageInput(
