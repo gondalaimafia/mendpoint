@@ -21,7 +21,7 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import type { WardenCampaignExecutionDependencies } from "@mendpoint/pipeline";
-import { assignFettlerMissionTaskOnClaim } from "./fettler-mission-task-claim.js";
+import { assignFettlerMissionTaskOnClaim, handoffFettlerMissionTaskOnReview } from "./fettler-mission-task-claim.js";
 import { WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE, type WardenCampaignExecutor } from "./warden-campaign-execute-dispatch.js";
 import { processJobsOnce } from "./cli.js";
 
@@ -232,8 +232,38 @@ describe("campaign execute claim drives MissionTask", () => {
     });
     expect(result).toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
     expect(getMissionTask(db, "t1", created.id)).toMatchObject({
-      status: "agent_working",
-      ownerType: "agent",
+      status: "human_review_required",
+      ownerType: "human",
+      handoffReason: "campaign_execute_review",
     });
+  });
+});
+
+describe("handoffFettlerMissionTaskOnReview", () => {
+  it("is a no-op when the task is not agent_working", () => {
+    const { db, missionId } = fixture();
+    enrollTask(db, missionId, "repo-a");
+    expect(handoffFettlerMissionTaskOnReview(db, {
+      tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at,
+    })).toBeUndefined();
+  });
+
+  it("hands an agent_working task to human_review_required", () => {
+    const { db, missionId } = fixture();
+    enrollTask(db, missionId, "repo-a");
+    assignFettlerMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at,
+    });
+    const handed = handoffFettlerMissionTaskOnReview(db, {
+      tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at,
+    });
+    expect(handed).toMatchObject({
+      status: "human_review_required",
+      ownerType: "human",
+      handoffReason: "campaign_execute_review",
+    });
+    expect(handoffFettlerMissionTaskOnReview(db, {
+      tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at,
+    })).toEqual(handed);
   });
 });

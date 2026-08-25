@@ -207,7 +207,7 @@ import {
   runWardenCampaignExecuteTarget,
   type WardenCampaignExecutor,
 } from "./warden-campaign-execute-dispatch.js";
-import { assignFettlerMissionTaskOnClaim } from "./fettler-mission-task-claim.js";
+import { assignFettlerMissionTaskOnClaim, handoffFettlerMissionTaskOnReview } from "./fettler-mission-task-claim.js";
 import type { FieldRename } from "./warden-campaign-recipe.js";
 import type { WardenCampaignExecutionDependencies } from "@mendpoint/pipeline";
 import {
@@ -2643,6 +2643,17 @@ async function processJobsOnceUnfenced(
           execute: opts.wardenCampaignExecution.execute,
         });
         if (outcome.status === "executed") {
+          try {
+            const claimed = parseWardenCampaignExecuteJob(job);
+            handoffFettlerMissionTaskOnReview(db, {
+              tenantId: job.tenant_id,
+              campaignId: claimed.campaignId,
+              targetId: claimed.targetId,
+              createdAt: nowIso(),
+            });
+          } catch {
+            // Observational: review handoff must not un-complete a landed execute.
+          }
           if (!completeJob(db, job.id, outcome, nowIso(), { ...fence })) {
             throw new Error("warden_campaign_execute_lease_lost");
           }

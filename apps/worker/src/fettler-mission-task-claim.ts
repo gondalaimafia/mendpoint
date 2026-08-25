@@ -56,11 +56,7 @@ export function assignFettlerMissionTaskOnClaim(
   db: AppDb,
   input: FettlerMissionTaskClaimInput,
 ): MissionTask | undefined {
-  const mission = resolveMissionForFettlerCampaign(db, input.tenantId, input.campaignId);
-  if (!mission) return undefined;
-  const target = getWardenCampaignTarget(db, input.tenantId, input.campaignId, input.targetId);
-  if (!target) return undefined;
-  const task = resolveEnrollmentTask(db, input.tenantId, mission.id, target.repositoryId);
+  const task = resolveClaimedTask(db, input);
   if (!task) return undefined;
   if (task.status === "agent_working") return task;
   if (task.status !== "unassigned" && task.status !== "agent_assigned") return undefined;
@@ -96,4 +92,43 @@ export function assignFettlerMissionTaskOnClaim(
     });
   }
   return current;
+}
+
+function resolveClaimedTask(
+  db: AppDb,
+  input: FettlerMissionTaskClaimInput,
+): MissionTask | undefined {
+  const mission = resolveMissionForFettlerCampaign(db, input.tenantId, input.campaignId);
+  if (!mission) return undefined;
+  const target = getWardenCampaignTarget(db, input.tenantId, input.campaignId, input.targetId);
+  if (!target) return undefined;
+  return resolveEnrollmentTask(db, input.tenantId, mission.id, target.repositoryId);
+}
+
+/**
+ * After a review-first campaign execute lands, hand the MissionTask to humans.
+ * No-op when unbound or the task is not on the claimed working path.
+ */
+export function handoffFettlerMissionTaskOnReview(
+  db: AppDb,
+  input: FettlerMissionTaskClaimInput,
+): MissionTask | undefined {
+  const task = resolveClaimedTask(db, input);
+  if (!task) return undefined;
+  if (task.status === "human_review_required") return task;
+  if (task.status !== "agent_working") return undefined;
+  const actorId = task.assignedPrincipalId
+    ?? missionTaskAgentPrincipal(db, input.tenantId, input.createdAt).id;
+  return transitionMissionTask(db, {
+    tenantId: input.tenantId,
+    taskId: task.id,
+    expectedRevision: task.revision,
+    to: "human_review_required",
+    actorPrincipalId: actorId,
+    handoffReason: "campaign_execute_review",
+    eventId: `${task.id}-claim-review`,
+    idempotencyKey: `mission-task-claim-review-${task.id}`,
+    correlationId: input.campaignId,
+    createdAt: input.createdAt,
+  });
 }
