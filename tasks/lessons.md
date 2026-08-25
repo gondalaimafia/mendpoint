@@ -162,3 +162,8 @@
 **Mistake:** I resumed the non-ReGauge backlog without explicitly carrying the outstanding DeepSeek verifier slice into the active sequence.
 **Correction:** Talal called out that the DeepSeek and verifier work was still outstanding and asked me to complete it too.
 **Rule:** Before resuming a parked backlog, reconcile the active plan against every previously accepted inventory item and environment blocker. Preserve named slices explicitly so sequencing one item cannot silently omit another.
+
+### 2026-08-25 — Verify the browser connection before repeating setup
+**Mistake:** I told Talal to install or enable the Edge integration even though he had already completed that setup.
+**Correction:** Talal confirmed the integration was already installed and the private key was already stored locally.
+**Rule:** When an authenticated browser is not visible, distinguish completed extension setup from a broken active connection. Retry once, run the supported connection diagnostics, and continue through authenticated CLI or local artifacts where possible instead of asking the user to repeat completed steps.

@@ -7,11 +7,11 @@ import { isBackupFenceActive } from "@mendpoint/ops";
 import type { CustomerObjectStoreTransport } from "./customer-object-store.js";
 import {
   attestRestoredRegaugeState,
-  createRegaugeRollbackProof,
   freezeAndExportRegaugeState,
   loadRegaugeStateTransferRuntime,
   restorePublishedRegaugeState,
   runRegaugeStateTransferCommand,
+  serializeRegaugeStateTransferResult,
   verifyRegaugeRestoreReceipt,
   verifyPublishedRegaugeState,
 } from "./regauge-state-transfer.js";
@@ -130,7 +130,7 @@ describe("ReGauge state transfer CLI", () => {
     })).toThrow("regauge_state_transfer_key_must_be_distinct");
   });
 
-  it("freezes, publishes, verifies, restores, proves rollback safety, and thaws", async () => {
+  it("freezes, publishes, verifies, restores, and keeps the source fenced", async () => {
     const fx = fixture();
     const transport = new MemoryTransport();
     const runtime = loadRegaugeStateTransferRuntime(fx.env, new Date("2026-08-25T12:00:00.000Z"));
@@ -171,12 +171,12 @@ describe("ReGauge state transfer CLI", () => {
       });
     } finally { restored.close(); }
 
-    const proof = await createRegaugeRollbackProof(runtime, transport);
-    expect(proof.authentication.value).toMatch(/^[a-f0-9]{64}$/);
-    await runRegaugeStateTransferCommand("thaw", {
-      ...fx.env,
-      MENDPOINT_REGAUGE_ROLLBACK_PROOF_JSON: JSON.stringify(proof),
-    }, new Date("2026-08-25T12:10:00.000Z"), transport);
-    expect(isBackupFenceActive(runtime.fenceRoot)).toBe(false);
+    expect(isBackupFenceActive(runtime.fenceRoot)).toBe(true);
+  });
+
+  it("serializes one compact JSON record for workflow parsing", () => {
+    const encoded = serializeRegaugeStateTransferResult({ transferId: "cutover-1", attested: true });
+    expect(encoded).toBe('{"transferId":"cutover-1","attested":true}\n');
+    expect(encoded.trim().split(/\r?\n/)).toHaveLength(1);
   });
 });

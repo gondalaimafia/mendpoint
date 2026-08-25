@@ -191,13 +191,10 @@ export {
   restoreRegaugeStateTransfer,
   verifyRestoredRegaugeState,
   inspectRegaugeLedgerTips,
-  classifyRegaugeSourceRollback,
-  thawRegaugeCutoverFence,
   type RegaugeTransferDatabase,
   type RegaugeTransferBindings,
   type RegaugeLedgerTip,
   type RegaugeDatabaseEvidence,
   type RegaugeTransferManifest,
-  type RegaugeRollbackProof,
   type RegaugeCutoverFence,
 } from "./regauge-cutover.js";

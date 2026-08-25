@@ -4,15 +4,12 @@ import { fileURLToPath } from "node:url";
 import { isAbsolute, resolve } from "node:path";
 import {
   acquireRegaugeCutoverFence,
-  classifyRegaugeSourceRollback,
   createRegaugeStateTransfer,
   inspectRegaugeCutoverFence,
   parseCustomerBackupKey,
   restoreRegaugeStateTransfer,
-  thawRegaugeCutoverFence,
   verifyRegaugeStateTransfer,
   verifyRestoredRegaugeState,
-  type RegaugeRollbackProof,
   type RegaugeTransferBindings,
   type RegaugeTransferManifest,
 } from "@mendpoint/ops";
@@ -35,8 +32,6 @@ export type RegaugeStateTransferCommand =
   | "verify-receipt"
   | "restore"
   | "attest-restored"
-  | "rollback-check"
-  | "thaw"
   | "inspect-fence";
 
 export type RegaugeStateTransferRuntime = Readonly<{
@@ -347,35 +342,12 @@ export async function attestRestoredRegaugeState(
   }
 }
 
-export async function createRegaugeRollbackProof(
-  runtime: RegaugeStateTransferRuntime,
-  transport: CustomerObjectStoreTransport,
-): Promise<RegaugeRollbackProof> {
-  const downloaded = await downloadTransfer(runtime, transport);
-  try {
-    return classifyRegaugeSourceRollback({
-      importManifest: downloaded.manifest,
-      transferKey: runtime.transferKey,
-      targetRoot: runtime.targetRoot,
-      fenceRoot: runtime.fenceRoot,
-      assessedAt: new Date().toISOString(),
-    });
-  } finally {
-    rmSync(downloaded.bundleRoot, { recursive: true, force: true });
-  }
-}
-
-function parseRollbackProof(value: string | undefined): RegaugeRollbackProof {
-  try { return JSON.parse(value ?? "") as RegaugeRollbackProof; }
-  catch { throw new Error("regauge_state_transfer_rollback_proof_invalid"); }
-}
-
 export async function runRegaugeStateTransferCommand(
   command: RegaugeStateTransferCommand,
   env: Readonly<Record<string, string | undefined>> = process.env,
   now = new Date(),
   providedTransport?: CustomerObjectStoreTransport,
-): Promise<Record<string, unknown> | RegaugeRollbackProof> {
+): Promise<Record<string, unknown>> {
   const runtime = loadRegaugeStateTransferRuntime(env, now);
   const transport = providedTransport ?? createRcloneCustomerObjectStoreTransport(runtime.objectStore, process.env);
   if (command === "freeze-export") return await freezeAndExportRegaugeState(runtime, transport);
@@ -383,19 +355,6 @@ export async function runRegaugeStateTransferCommand(
   if (command === "verify-receipt") return await verifyRegaugeRestoreReceipt(runtime, transport);
   if (command === "restore") return await restorePublishedRegaugeState(runtime, transport);
   if (command === "attest-restored") return await attestRestoredRegaugeState(runtime, transport);
-  if (command === "rollback-check") {
-    return await createRegaugeRollbackProof(runtime, transport);
-  }
-  if (command === "thaw") {
-    thawRegaugeCutoverFence({
-      fenceRoot: runtime.fenceRoot,
-      fenceId: runtime.fenceId,
-      transferId: runtime.transferId,
-      transferKey: runtime.transferKey,
-      rollbackProof: parseRollbackProof(env.MENDPOINT_REGAUGE_ROLLBACK_PROOF_JSON),
-    });
-    return Object.freeze({ transferId: runtime.transferId, fenceId: runtime.fenceId, thawed: true });
-  }
   const inspected = inspectRegaugeCutoverFence({
     fenceRoot: runtime.fenceRoot,
     fenceId: runtime.fenceId,
@@ -411,13 +370,17 @@ export async function runRegaugeStateTransferCommand(
   });
 }
 
+export function serializeRegaugeStateTransferResult(result: Record<string, unknown>): string {
+  return `${JSON.stringify(result)}\n`;
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2] as RegaugeStateTransferCommand | undefined;
-  if (!command || !["freeze-export", "verify", "verify-receipt", "restore", "attest-restored", "rollback-check", "thaw", "inspect-fence"].includes(command)) {
+  if (!command || !["freeze-export", "verify", "verify-receipt", "restore", "attest-restored", "inspect-fence"].includes(command)) {
     throw new Error("regauge_state_transfer_command_invalid");
   }
   const result = await runRegaugeStateTransferCommand(command);
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  process.stdout.write(serializeRegaugeStateTransferResult(result));
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
