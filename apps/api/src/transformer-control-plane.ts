@@ -27,6 +27,7 @@ import {
   recordAudit,
   type AppDb,
 } from "@mendpoint/db";
+import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
 import type { ApiEnv } from "./auth.js";
 import {
   mappedErrorResponse,
@@ -943,6 +944,18 @@ export function registerTransformerControlPlaneRoutes(
           actorPrincipalId: trustPrincipalId,
           eventId: `${missionId}-linked`,
           idempotencyKey: `mission-link-${missionId}`,
+          correlationId: campaignId,
+          createdAt,
+        });
+        // Spec §6.7: every Mission MUST reference a versioned Policy Envelope.
+        // Surface A creates the Mission at campaign POST; bind the tenant default
+        // here (idempotent, set-once) so this path matches Fettler enrollment and
+        // the ReGauge bootstrap launch writer. Replay after launch already bound
+        // the envelope is a no-op.
+        ensureDefaultPolicyEnvelopeBinding(appDb, {
+          tenantId,
+          missionId,
+          actorPrincipalId: trustPrincipalId,
           correlationId: campaignId,
           createdAt,
         });
