@@ -1,7 +1,14 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  verifyAuthorityRotation,
+  type AuthorityRotationFileChange,
+  type AuthorityRotationLedger,
+  type ClosureAuthorityPolicy,
+} from "./production-closure-authority-rotation.js";
 import {
   canonicalTextSha256,
   validateProductRequirements,
@@ -34,19 +41,6 @@ interface GitTreeEntry {
   size?: number;
 }
 
-interface AuthorityPolicy {
-  schemaVersion: 1;
-  repositoryId: number;
-  repository: string;
-  workflowPath: string;
-  requiredCiWorkflowPath: string;
-  externalCheckName: string;
-  legacyBootstrapMatrixDigest: string;
-  trustedReviewers: Record<string, Array<{ login: string; userId: number }>>;
-  productionEvidenceAuthorities: ProductionEvidenceTrustRoot[];
-  protectedFiles: Record<string, string>;
-}
-
 export interface ProposalBlobObservation {
   path: string;
   gitBlobSha: string;
@@ -61,6 +55,13 @@ export interface ProposalAuthorityObservation {
   proposalRevision: string;
   observedAt: string;
   fetchedBlobs: ProposalBlobObservation[];
+  authorityRotation: {
+    rotationId: string;
+    issuedAt: string;
+    expiresAt: string;
+    basePolicySha256: string;
+    proposedPolicySha256: string;
+  } | null;
   verdict: "pass" | "fail";
   issues: ProductionClosureMatrixIssue[];
 }
@@ -76,6 +77,7 @@ export function writeProposalAuthorityFailureObservation(
     proposalRevision: "unavailable",
     observedAt,
     fetchedBlobs: [],
+    authorityRotation: null,
     verdict: "fail",
     issues: [{
       code: "PROPOSAL_AUTHORITY_CONFIGURATION_INVALID",
@@ -143,7 +145,8 @@ function referencedPaths(
   manifest: ProductRequirementManifest,
   matrix: ProductionClosureMatrix,
   claims: PublicClaimRegistry,
-  policy: AuthorityPolicy,
+  policy: ClosureAuthorityPolicy,
+  proposedPolicy: ClosureAuthorityPolicy,
 ): Set<string> {
   const paths = new Set([
     "docs/PRODUCT_REQUIREMENTS.json",
@@ -179,6 +182,9 @@ function referencedPaths(
     }
   }
   for (const path of Object.keys(policy.protectedFiles ?? {})) paths.add(path);
+  for (const path of Object.keys(proposedPolicy.protectedFiles ?? {})) paths.add(path);
+  paths.add(policy.authorityRotationManifestPath);
+  for (const path of policy.authorityRotationAuxiliaryFiles ?? []) paths.add(path);
   return paths;
 }
 
@@ -209,12 +215,27 @@ function referencedRevisions(
   return revisions;
 }
 
+function stableAuthorityRotationMatrixView(matrix: ProductionClosureMatrix): unknown {
+  const copy = JSON.parse(JSON.stringify(matrix)) as ProductionClosureMatrix;
+  const releaseTrain = copy.releaseTrain as unknown as Record<string, unknown>;
+  delete releaseTrain.observedMainRevision;
+  delete releaseTrain.observationDigest;
+  delete releaseTrain.currentPullRequestBootstrap;
+  delete releaseTrain.pullRequests;
+  return copy;
+}
+
 export async function verifyProductionClosureProposal(
-  policy: AuthorityPolicy,
+  policy: ClosureAuthorityPolicy,
   repository: string,
   proposalRevision: string,
   client: ProposalAuthorityClient,
   observedAt = new Date().toISOString(),
+  baseAuthority: {
+    revision?: string;
+    policyBytes?: Buffer;
+    rotationLedgerBytes?: Buffer;
+  } = {},
 ): Promise<ProposalAuthorityObservation> {
   const issues: ProductionClosureMatrixIssue[] = [];
   const observation: ProposalAuthorityObservation = {
@@ -224,6 +245,7 @@ export async function verifyProductionClosureProposal(
     proposalRevision,
     observedAt,
     fetchedBlobs: [],
+    authorityRotation: null,
     verdict: "fail",
     issues,
   };
@@ -299,28 +321,240 @@ export async function verifyProductionClosureProposal(
     const manifest = await readJson<ProductRequirementManifest>("docs/PRODUCT_REQUIREMENTS.json");
     const matrix = await readJson<ProductionClosureMatrix>("docs/PRODUCTION_CLOSURE_MATRIX.json");
     const claims = await readJson<PublicClaimRegistry>("docs/PUBLIC_CLAIMS.json");
-    const proposedPolicy = await readJson<AuthorityPolicy>("config/production-closure-authority.json");
-    if (!manifest || !matrix || !claims || !proposedPolicy) return observation;
-    if (JSON.stringify(proposedPolicy) !== JSON.stringify(policy)) {
+    const proposedPolicy = await readJson<ClosureAuthorityPolicy>("config/production-closure-authority.json");
+    const proposedLedger = await readJson<AuthorityRotationLedger>(policy.authorityRotationManifestPath);
+    if (!manifest || !matrix || !claims || !proposedPolicy || !proposedLedger) return observation;
+
+    const baseRevision = baseAuthority.revision;
+    const basePolicyBytes = baseAuthority.policyBytes;
+    const baseLedgerBytes = baseAuthority.rotationLedgerBytes;
+    const proposedPolicyBytes = bytesByPath.get("config/production-closure-authority.json");
+    const proposedLedgerBytes = bytesByPath.get(policy.authorityRotationManifestPath);
+    if (
+      !baseRevision ||
+      !SHA.test(baseRevision) ||
+      !basePolicyBytes ||
+      !baseLedgerBytes ||
+      !proposedPolicyBytes ||
+      !proposedLedgerBytes
+    ) {
+      add(
+        issues,
+        "PROPOSAL_BASE_AUTHORITY_INVALID",
+        "configuration",
+        "proposal validation requires the exact checked-out base revision, policy, and rotation ledger bytes",
+      );
+      return observation;
+    }
+    let baseLedger: AuthorityRotationLedger;
+    try {
+      const parsedBasePolicy = JSON.parse(basePolicyBytes.toString("utf8")) as ClosureAuthorityPolicy;
+      baseLedger = JSON.parse(baseLedgerBytes.toString("utf8")) as AuthorityRotationLedger;
+      if (JSON.stringify(parsedBasePolicy) !== JSON.stringify(policy)) throw new Error("base policy mismatch");
+    } catch {
+      add(
+        issues,
+        "PROPOSAL_BASE_AUTHORITY_INVALID",
+        "configuration",
+        "checked-out base authority bytes are not the configured authority",
+      );
+      return observation;
+    }
+
+    for (const path of referencedPaths(manifest, matrix, claims, policy, proposedPolicy)) {
+      await readProposalPath(path);
+    }
+    for (const [path, entry] of entries) {
+      if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path) || path === policy.workflowPath) {
+        continue;
+      }
+      if (entry.type !== "blob") continue;
+      const contents = (await readProposalPath(path))?.toString("utf8");
+      if (
+        contents &&
+        (/\bstatuses\s*:\s*write\b/.test(contents) ||
+          /\bchecks\s*:\s*write\b/.test(contents) ||
+          contents.includes(policy.controllerCheckName) ||
+          /environment\s*:\s*production-closure-authority\b/.test(contents))
+      ) {
+        add(
+          issues,
+          "PROPOSAL_CONTROLLER_SURFACE_COLLISION",
+          path,
+          "only the exact pinned controller workflow may write or host production closure authority",
+        );
+      }
+    }
+
+    const bootstrapRotation = matrix.releaseTrain?.currentPullRequestBootstrap?.authorityRotation;
+    const policyChanged = !proposedPolicyBytes.equals(basePolicyBytes);
+    const ledgerChanged = !proposedLedgerBytes.equals(baseLedgerBytes);
+    const rotationRequested = policyChanged || ledgerChanged || bootstrapRotation !== undefined;
+    if (!rotationRequested) {
+      for (const [path, expectedDigest] of Object.entries(policy.protectedFiles)) {
+        const bytes = bytesByPath.get(normalizedPath(path) ?? "");
+        if (!bytes || digest(bytes) !== expectedDigest) {
+          add(
+            issues,
+            "PROPOSAL_AUTHORITY_SURFACE_DRIFT",
+            path,
+            "a product proposal cannot modify or remove a pinned authority surface",
+          );
+        }
+      }
+    } else {
+      const baseTree = await client.getRecursiveTree(baseRevision);
+      if (baseTree.truncated) {
+        add(issues, "PROPOSAL_BASE_TREE_TRUNCATED", baseRevision, "GitHub did not return the complete base authority tree");
+        return observation;
+      }
+      const baseEntries = new Map(baseTree.tree.map((entry) => [entry.path, entry] as const));
+      const baseBytesByPath = new Map<string, Buffer>();
+      const readBasePath = async (path: string): Promise<Buffer | null> => {
+        const cached = baseBytesByPath.get(path);
+        if (cached) return cached;
+        const entry = baseEntries.get(path);
+        if (
+          !entry ||
+          entry.type !== "blob" ||
+          !["100644", "100755"].includes(entry.mode) ||
+          !SHA.test(entry.sha) ||
+          (entry.size ?? 0) > MAX_BLOB_BYTES
+        ) {
+          add(issues, "PROPOSAL_BASE_BLOB_INVALID", path, "base authority content must be a bounded regular Git blob");
+          return null;
+        }
+        const bytes = await client.getBlob(entry.sha);
+        totalBytes += bytes.length;
+        if (
+          bytes.length > MAX_BLOB_BYTES ||
+          totalBytes > MAX_TOTAL_BYTES ||
+          gitBlobDigest(bytes) !== entry.sha
+        ) {
+          add(issues, "PROPOSAL_BASE_BLOB_INVALID", path, "base authority bytes must be bounded and match the exact Git blob");
+          return null;
+        }
+        baseBytesByPath.set(path, bytes);
+        return bytes;
+      };
+      const exactBasePolicyBytes = await readBasePath("config/production-closure-authority.json");
+      const exactBaseLedgerBytes = await readBasePath(policy.authorityRotationManifestPath);
+      if (
+        !exactBasePolicyBytes?.equals(basePolicyBytes) ||
+        !exactBaseLedgerBytes?.equals(baseLedgerBytes)
+      ) {
+        add(
+          issues,
+          "PROPOSAL_BASE_AUTHORITY_MISMATCH",
+          baseRevision,
+          "checked-out base policy and ledger must match the exact provider base revision",
+        );
+        return observation;
+      }
+      const changedFiles: AuthorityRotationFileChange[] = [];
+      const allPaths = new Set([...baseEntries.keys(), ...entries.keys()]);
+      for (const path of [...allPaths].sort()) {
+        const from = baseEntries.get(path);
+        const to = entries.get(path);
+        if (from?.sha === to?.sha && from?.mode === to?.mode && from?.type === to?.type) continue;
+        if (from?.type === "tree" && to?.type === "tree") continue;
+        if ((!from && to?.type === "tree") || (!to && from?.type === "tree")) continue;
+        if (path === policy.authorityRotationManifestPath) continue;
+        if (
+          (from && (from.type !== "blob" || !["100644", "100755"].includes(from.mode))) ||
+          (to && (to.type !== "blob" || !["100644", "100755"].includes(to.mode)))
+        ) {
+          add(issues, "AUTHORITY_ROTATION_TREE_ENTRY_INVALID", path, "rotation changes must be regular Git blobs");
+          continue;
+        }
+        let fromSha256: string | null = null;
+        if (from) {
+          const bytes = await readBasePath(path);
+          if (!bytes) continue;
+          fromSha256 = digest(bytes);
+        }
+        const proposedBytes = to ? await readProposalPath(path) : null;
+        changedFiles.push({
+          path,
+          fromSha256,
+          toSha256: proposedBytes ? digest(proposedBytes) : null,
+          fromMode: from?.mode as "100644" | "100755" | undefined ?? null,
+          toMode: to?.mode as "100644" | "100755" | undefined ?? null,
+        });
+      }
+      const proposedFileDigests = new Map<string, string>();
+      for (const [path, bytes] of bytesByPath) proposedFileDigests.set(path, digest(bytes));
+      const rotationIssues = verifyAuthorityRotation({
+        basePolicy: policy,
+        proposedPolicy,
+        basePolicyBytes,
+        proposedPolicyBytes,
+        baseLedgerBytes,
+        baseLedger,
+        proposedLedger,
+        baseRevision,
+        observedAt,
+        changedFiles,
+        proposedFileDigests,
+        proposedFileContents: bytesByPath,
+        proposedPaths: new Set(entries.keys()),
+      });
+      issues.push(...rotationIssues);
+      try {
+        const baseMatrixBytes = await readBasePath("docs/PRODUCTION_CLOSURE_MATRIX.json");
+        if (
+          !baseMatrixBytes ||
+          JSON.stringify(stableAuthorityRotationMatrixView(JSON.parse(baseMatrixBytes.toString("utf8")))) !==
+            JSON.stringify(stableAuthorityRotationMatrixView(matrix))
+        ) {
+          add(
+            issues,
+            "AUTHORITY_ROTATION_MATRIX_SCOPE_INVALID",
+            "docs/PRODUCTION_CLOSURE_MATRIX.json",
+            "authority rotation may update only provider-verified release-train observation fields",
+          );
+        }
+      } catch {
+        add(
+          issues,
+          "AUTHORITY_ROTATION_MATRIX_SCOPE_INVALID",
+          "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "base and proposed closure matrices must remain structurally comparable",
+        );
+      }
+      const receipt = proposedLedger.rotations?.at(-1) ?? null;
+      if (
+        !receipt ||
+        !bootstrapRotation ||
+        bootstrapRotation.rotationId !== receipt.rotationId ||
+        bootstrapRotation.issuedAt !== receipt.issuedAt ||
+        bootstrapRotation.expiresAt !== receipt.expiresAt ||
+        bootstrapRotation.basePolicySha256 !== receipt.basePolicySha256 ||
+        bootstrapRotation.proposedPolicySha256 !== receipt.proposedPolicySha256
+      ) {
+        add(
+          issues,
+          "AUTHORITY_ROTATION_BOOTSTRAP_MISMATCH",
+          String(matrix.releaseTrain?.currentPullRequestBootstrap?.number ?? "current pull request"),
+          "the current pull request declaration must bind the exact authority rotation receipt",
+        );
+      } else if (rotationIssues.length === 0) {
+        observation.authorityRotation = {
+          rotationId: receipt.rotationId,
+          issuedAt: receipt.issuedAt,
+          expiresAt: receipt.expiresAt,
+          basePolicySha256: receipt.basePolicySha256,
+          proposedPolicySha256: receipt.proposedPolicySha256,
+        };
+      }
+    }
+    if (policyChanged && !ledgerChanged && bootstrapRotation === undefined) {
       add(
         issues,
         "PROPOSAL_AUTHORITY_POLICY_DRIFT",
         "config/production-closure-authority.json",
         "a product proposal cannot modify its own pinned trust policy",
       );
-    }
-
-    for (const path of referencedPaths(manifest, matrix, claims, policy)) await readProposalPath(path);
-    for (const [path, expectedDigest] of Object.entries(policy.protectedFiles)) {
-      const bytes = bytesByPath.get(normalizedPath(path) ?? "");
-      if (!bytes || digest(bytes) !== expectedDigest) {
-        add(
-          issues,
-          "PROPOSAL_AUTHORITY_SURFACE_DRIFT",
-          path,
-          "a product proposal cannot modify or remove a pinned authority surface",
-        );
-      }
     }
     issues.push(...validateProductRequirements(manifest));
     const specBytes = typeof manifest.spec?.path === "string"
@@ -357,7 +591,8 @@ export async function verifyProductionClosureProposal(
         now: new Date(observedAt),
       }),
       ...validateProductionClosureMatrix(manifest, matrix, {
-        trustedProductionEvidenceAuthorities: policy.productionEvidenceAuthorities,
+        trustedProductionEvidenceAuthorities:
+          policy.productionEvidenceAuthorities as ProductionEvidenceTrustRoot[],
         requireCurrentPullRequestBootstrap: true,
       }),
     );
@@ -455,13 +690,29 @@ function requiredEnvironment(name: string): string {
 async function main(): Promise<void> {
   const policyPath = process.env.MENDPOINT_CLOSURE_AUTHORITY_POLICY_PATH?.trim() ||
     resolve(process.cwd(), "config", "production-closure-authority.json");
-  const policy = JSON.parse(readFileSync(policyPath, "utf8")) as AuthorityPolicy;
+  const policyBytes = readFileSync(policyPath);
+  const policy = JSON.parse(policyBytes.toString("utf8")) as ClosureAuthorityPolicy;
+  const rotationLedgerBytes = readFileSync(
+    resolve(process.cwd(), policy.authorityRotationManifestPath),
+  );
+  const baseRevision = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  }).trim();
+  const configuredBaseRevision = requiredEnvironment("MENDPOINT_AUTHORITY_BASE_SHA");
+  if (baseRevision !== configuredBaseRevision) throw new Error("checked-out base authority revision is not exact");
   const repository = requiredEnvironment("GITHUB_REPOSITORY");
   const observation = await verifyProductionClosureProposal(
     policy,
     repository,
     requiredEnvironment("MENDPOINT_PROPOSAL_HEAD_SHA"),
     new GitHubProposalAuthorityClient(repository, requiredEnvironment("GITHUB_TOKEN")),
+    new Date().toISOString(),
+    {
+      revision: baseRevision,
+      policyBytes,
+      rotationLedgerBytes,
+    },
   );
   const outputPath = requiredEnvironment("MENDPOINT_PROPOSAL_OBSERVATION_PATH");
   writeFileSync(outputPath, `${JSON.stringify(observation, null, 2)}\n`, { mode: 0o600 });

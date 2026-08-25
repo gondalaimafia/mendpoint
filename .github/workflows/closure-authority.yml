@@ -6,6 +6,8 @@ on:
   pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, edited, labeled, unlabeled, closed]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -21,6 +23,7 @@ permissions:
   contents: read
   issues: read
   pull-requests: read
+  statuses: write
 
 jobs:
   discover:
@@ -42,8 +45,36 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  closure-authority:
+  invalidate-authority:
     needs: discover
+    if: needs.discover.outputs.pull_requests != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        pull_request: ${{ fromJSON(needs.discover.outputs.pull_requests) }}
+    concurrency:
+      group: production-closure-authority-invalidation-${{ matrix.pull_request }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Invalidate controller authority before protected credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${head_sha}" \
+            -f state=pending \
+            -f context=mendpoint-production-closure-controller \
+            -f description="Protected closure authority is being reevaluated" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ matrix.pull_request }}
+
+  closure-authority:
+    needs: [discover, invalidate-authority]
     if: needs.discover.outputs.pull_requests != '[]'
     strategy:
       fail-fast: false
@@ -111,8 +142,53 @@ jobs:
         run: npm run closure:proposal:check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MENDPOINT_AUTHORITY_BASE_SHA: ${{ needs.discover.outputs.main_sha }}
           MENDPOINT_PROPOSAL_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
           MENDPOINT_PROPOSAL_OBSERVATION_PATH: ${{ runner.temp }}/production-closure-proposal-authority.json
+      - name: Verify dedicated authority App identity
+        id: app-identity
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_app_id="$(gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/${GITHUB_REPOSITORY}/contents/config/production-closure-authority.json?ref=${PR_HEAD_SHA}" \
+            | jq -er '.externalCheckAppId | select(type == "number" and . > 0)')"
+          observed_app_id="$(gh api "repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_ID}" --jq '.app.id')"
+          test "$observed_app_id" = "$expected_app_id"
+        env:
+          CHECK_ID: ${{ steps.external-check.outputs.check_id }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
+      - name: Verify live protected branch authority bindings
+        id: branch-protection
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/${GITHUB_REPOSITORY}/contents/config/production-closure-authority.json?ref=${PR_HEAD_SHA}" \
+            > "$RUNNER_TEMP/proposed-closure-authority-policy.json"
+          external_name="$(jq -er '.externalCheckName' "$RUNNER_TEMP/proposed-closure-authority-policy.json")"
+          external_app_id="$(jq -er '.externalCheckAppId | select(type == "number" and . > 0)' "$RUNNER_TEMP/proposed-closure-authority-policy.json")"
+          controller_name="$(jq -er '.controllerCheckName' "$RUNNER_TEMP/proposed-closure-authority-policy.json")"
+          controller_app_id="$(jq -er '.controllerCheckAppId | select(type == "number" and . > 0)' "$RUNNER_TEMP/proposed-closure-authority-policy.json")"
+          test "$(jq -er '.protectionMode' "$RUNNER_TEMP/proposed-closure-authority-policy.json")" = classic_branch
+          branch="$(jq -er '.protectionBranch' "$RUNNER_TEMP/proposed-closure-authority-policy.json")"
+          gh api "repos/${GITHUB_REPOSITORY}/branches/${branch}/protection/required_status_checks" \
+            > "$RUNNER_TEMP/required-status-checks.json"
+          jq -e '.strict == true' "$RUNNER_TEMP/required-status-checks.json"
+          jq -e --arg context "$external_name" --argjson app_id "$external_app_id" \
+            '[.checks[] | select(.context == $context and .app_id == $app_id)] | length == 1' \
+            "$RUNNER_TEMP/required-status-checks.json"
+          jq -e --arg context "$controller_name" --argjson app_id "$controller_app_id" \
+            '[.checks[] | select(.context == $context and .app_id == $app_id)] | length == 1' \
+            "$RUNNER_TEMP/required-status-checks.json"
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
       - name: Read proposed matrix as exact immutable data
         id: matrix
         continue-on-error: true
@@ -132,6 +208,7 @@ jobs:
         run: npm run closure:github:check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MENDPOINT_CLOSURE_AUTHORITY_SHA: ${{ needs.discover.outputs.main_sha }}
           MENDPOINT_CLOSURE_EVENT_NAME: pull_request
           MENDPOINT_CLOSURE_MATRIX_PATH: ${{ runner.temp }}/proposed-production-closure-matrix.json
           MENDPOINT_CLOSURE_OBSERVATION_PATH: ${{ runner.temp }}/production-closure-github-authority.json
@@ -156,7 +233,7 @@ jobs:
         run: |
           set -euo pipefail
           conclusion=failure
-          if [ "$PROPOSAL_OUTCOME" = success ] && [ "$MATRIX_OUTCOME" = success ] && [ "$GITHUB_OUTCOME" = success ]; then
+          if [ "$APP_IDENTITY_OUTCOME" = success ] && [ "$BRANCH_PROTECTION_OUTCOME" = success ] && [ "$PROPOSAL_OUTCOME" = success ] && [ "$MATRIX_OUTCOME" = success ] && [ "$GITHUB_OUTCOME" = success ]; then
             conclusion=success
           fi
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_ID}" \
@@ -166,18 +243,46 @@ jobs:
         env:
           CHECK_ID: ${{ steps.external-check.outputs.check_id }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_IDENTITY_OUTCOME: ${{ steps.app-identity.outcome }}
+          BRANCH_PROTECTION_OUTCOME: ${{ steps.branch-protection.outcome }}
           GITHUB_OUTCOME: ${{ steps.github.outcome }}
           MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
           PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
+      - name: Publish controller authority verdict
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          state=failure
+          if [ "$APP_IDENTITY_OUTCOME" = success ] && [ "$BRANCH_PROTECTION_OUTCOME" = success ] && [ "$PROPOSAL_OUTCOME" = success ] && [ "$MATRIX_OUTCOME" = success ] && [ "$GITHUB_OUTCOME" = success ]; then
+            state=success
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${PR_HEAD_SHA}" \
+            -f state="$state" \
+            -f context=mendpoint-production-closure-controller \
+            -f description="Protected closure authority verdict" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        env:
+          APP_IDENTITY_OUTCOME: ${{ steps.app-identity.outcome }}
+          BRANCH_PROTECTION_OUTCOME: ${{ steps.branch-protection.outcome }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_OUTCOME: ${{ steps.github.outcome }}
+          MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
+          PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
+          PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
       - name: Enforce protected authority verdict
         if: always()
         shell: bash
         run: |
           set -euo pipefail
+          test "$APP_IDENTITY_OUTCOME" = success
+          test "$BRANCH_PROTECTION_OUTCOME" = success
           test "$PROPOSAL_OUTCOME" = success
           test "$MATRIX_OUTCOME" = success
           test "$GITHUB_OUTCOME" = success
         env:
+          APP_IDENTITY_OUTCOME: ${{ steps.app-identity.outcome }}
+          BRANCH_PROTECTION_OUTCOME: ${{ steps.branch-protection.outcome }}
           GITHUB_OUTCOME: ${{ steps.github.outcome }}
           MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
           PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}

@@ -248,7 +248,7 @@ describe("GitHub production closure authority", () => {
     expect(workflow.on).toHaveProperty("workflow_run");
     expect(workflow.on).toHaveProperty("issues");
     expect(workflow.on).toHaveProperty("schedule");
-    expect(workflow.on).not.toHaveProperty("pull_request_review");
+    expect(workflow.on).toHaveProperty("pull_request_review");
     expect(workflow.concurrency).toBeUndefined();
     expect(workflow.permissions).toEqual({
       actions: "read",
@@ -256,6 +256,7 @@ describe("GitHub production closure authority", () => {
       checks: "read",
       issues: "read",
       "pull-requests": "read",
+      statuses: "write",
     });
     expect(job.strategy).toMatchObject({
       "fail-fast": false,
@@ -277,6 +278,9 @@ describe("GitHub production closure authority", () => {
       expect.objectContaining({
         name: "Validate exact proposal bytes with immutable authority",
         run: "npm run closure:proposal:check",
+        env: expect.objectContaining({
+          MENDPOINT_AUTHORITY_BASE_SHA: "${{ needs.discover.outputs.main_sha }}",
+        }),
       }),
     );
     expect(job.steps).toContainEqual(
@@ -294,6 +298,12 @@ describe("GitHub production closure authority", () => {
     expect(job.steps).toContainEqual(
       expect.objectContaining({ name: "Invalidate prior external authority result" }),
     );
+    expect(workflow.jobs["invalidate-authority"].steps).toContainEqual(
+      expect.objectContaining({
+        name: "Invalidate controller authority before protected credentials",
+        run: expect.stringContaining("state=pending"),
+      }),
+    );
     expect(
       job.steps!.findIndex((step) => step.name === "Invalidate prior external authority result"),
     ).toBeLessThan(
@@ -301,6 +311,18 @@ describe("GitHub production closure authority", () => {
     );
     expect(job.steps).toContainEqual(
       expect.objectContaining({ name: "Publish dedicated authority App verdict" }),
+    );
+    expect(job.steps).toContainEqual(
+      expect.objectContaining({ name: "Verify dedicated authority App identity" }),
+    );
+    expect(job.steps).toContainEqual(
+      expect.objectContaining({
+        name: "Verify live protected branch authority bindings",
+        run: expect.stringContaining("required_status_checks"),
+      }),
+    );
+    expect(job.steps).toContainEqual(
+      expect.objectContaining({ name: "Publish controller authority verdict" }),
     );
     expect(job.steps).toContainEqual(
       expect.objectContaining({
@@ -329,6 +351,61 @@ describe("GitHub production closure authority", () => {
     expect(result.mainRevisionEnd).toBe(MAIN);
     expect(result.verifiedPullRequests).toEqual([440]);
     expect(result.verifiedIssues).toEqual([430]);
+  });
+
+  it("requires a base-trusted exact-head attestation for an authority rotation", async () => {
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap.authorityRotation = {
+      rotationId: "rotation-20260825-001",
+      issuedAt: "2026-08-25T11:00:00.000Z",
+      expiresAt: "2026-08-26T11:00:00.000Z",
+      basePolicySha256: `sha256:${"1".repeat(64)}`,
+      proposedPolicySha256: `sha256:${"2".repeat(64)}`,
+    };
+    const client = new FixtureClient();
+    client.trackedReviews = [...reviews({
+      body: [
+        "## Authority rotation attestation",
+        "",
+        "- Rotation ID: rotation-20260825-001",
+        `- Base policy: sha256:${"1".repeat(64)}`,
+        `- Proposed policy: sha256:${"2".repeat(64)}`,
+      ].join("\n"),
+    }), ...reviews({
+      id: 72,
+      user: { login: "cursor-reviewer[bot]", id: 72 },
+      body: null,
+    })];
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(codes(result)).not.toContain("AUTHORITY_ROTATION_REVIEW_ATTESTATION_REQUIRED");
+  });
+
+  it("rejects a wrong or out-of-window authority rotation attestation", async () => {
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap.authorityRotation = {
+      rotationId: "rotation-20260825-001",
+      issuedAt: "2026-08-25T11:00:00.000Z",
+      expiresAt: "2026-08-25T11:30:00.000Z",
+      basePolicySha256: `sha256:${"1".repeat(64)}`,
+      proposedPolicySha256: `sha256:${"2".repeat(64)}`,
+    };
+    const client = new FixtureClient();
+    client.trackedReviews = reviews({
+      body: [
+        "## Authority rotation attestation",
+        "",
+        "- Rotation ID: rotation-20260825-001",
+        `- Base policy: sha256:${"1".repeat(64)}`,
+        `- Proposed policy: sha256:${"3".repeat(64)}`,
+      ].join("\n"),
+      submitted_at: "2026-08-25T12:00:00.000Z",
+    });
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(codes(result)).toContain("AUTHORITY_ROTATION_REVIEW_ATTESTATION_REQUIRED");
   });
 
   it("fails closed when the live open PR set is incomplete", async () => {
@@ -721,6 +798,31 @@ describe("GitHub production closure authority", () => {
       { login: "claude-reviewer[bot]", userId: 71 },
     ]);
     expect(JSON.stringify(built)).not.toContain("must-not-be-retained");
+  });
+
+  it("uses the explicitly checked-out base authority SHA for review-triggered reevaluation", () => {
+    const built = githubAuthorityContextFromEvent(
+      {
+        GITHUB_EVENT_NAME: "pull_request_review",
+        MENDPOINT_CLOSURE_EVENT_NAME: "pull_request",
+        MENDPOINT_CLOSURE_AUTHORITY_SHA: MAIN,
+        GITHUB_REPOSITORY: "gondalaimafia/mendpoint",
+        GITHUB_SHA: "f".repeat(40),
+        GITHUB_RUN_ID: "1234",
+        MENDPOINT_CLOSURE_TRUSTED_REVIEWERS_JSON: JSON.stringify({
+          Claude: [{ login: "claude-reviewer[bot]", userId: 71 }],
+        }),
+        MENDPOINT_CLOSURE_PR_NUMBER: "440",
+        MENDPOINT_CLOSURE_PR_BASE_REF: "main",
+        MENDPOINT_CLOSURE_PR_BASE_SHA: MAIN,
+        MENDPOINT_CLOSURE_PR_HEAD_REF: "codex/production-closure-authority-hardening",
+        MENDPOINT_CLOSURE_PR_HEAD_SHA: HEAD,
+      },
+      {},
+      { headRevision: MAIN, parentRevisions: [] },
+    );
+
+    expect(built.githubSha).toBe(MAIN);
   });
 
   it("rejects a reviewer login bound to multiple agent identities", () => {

@@ -145,6 +145,13 @@ export interface CurrentPullRequestBootstrap {
   requirementIds: string[];
   blockers: ReleaseTrainBlocker[];
   remediatesPullRequests: number[];
+  authorityRotation?: {
+    rotationId: string;
+    issuedAt: string;
+    expiresAt: string;
+    basePolicySha256: string;
+    proposedPolicySha256: string;
+  };
 }
 
 export interface IssueAuthorityRecord {
@@ -977,6 +984,24 @@ export function validateProductionClosureMatrix(
       "CURRENT_PR_BOOTSTRAP_INVALID",
       "releaseTrain",
       "the current pull request needs a provider-resolved GitHub bootstrap with exact static ownership and mapping fields",
+    );
+  }
+  const authorityRotation = currentBootstrap?.authorityRotation;
+  if (
+    authorityRotation !== undefined &&
+    (
+      !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(authorityRotation.rotationId) ||
+      !canonicalTime(authorityRotation.issuedAt) ||
+      !canonicalTime(authorityRotation.expiresAt) ||
+      !SHA256.test(authorityRotation.basePolicySha256) ||
+      !SHA256.test(authorityRotation.proposedPolicySha256)
+    )
+  ) {
+    add(
+      issues,
+      "CURRENT_PR_AUTHORITY_ROTATION_INVALID",
+      String(currentBootstrap?.number ?? "releaseTrain"),
+      "authority rotation metadata must bind an exact rotation and base and proposed policy digests",
     );
   }
   for (const requirementId of currentBootstrap?.requirementIds ?? []) {

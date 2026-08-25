@@ -16,6 +16,7 @@ import {
 
 const root = resolve(import.meta.dirname, "..");
 const HEAD = "a".repeat(40);
+const BASE = "c".repeat(40);
 const OBSERVED_AT = "2026-08-25T12:00:00.000Z";
 
 function sha(value: Buffer): string {
@@ -25,15 +26,30 @@ function sha(value: Buffer): string {
     .digest("hex");
 }
 
+function sha256(value: Buffer): string {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
 function policy() {
   return JSON.parse(
     readFileSync(resolve(root, "config", "production-closure-authority.json"), "utf8"),
   );
 }
 
+function baseAuthority() {
+  return {
+    revision: BASE,
+    policyBytes: readFileSync(resolve(root, "config", "production-closure-authority.json")),
+    rotationLedgerBytes: readFileSync(
+      resolve(root, "config", "production-closure-authority-rotation.json"),
+    ),
+  };
+}
+
 class FixtureClient implements ProposalAuthorityClient {
   truncated = false;
   readonly pathToSha = new Map<string, string>();
+  readonly basePathToSha = new Map<string, string>();
   readonly blobs = new Map<string, Buffer>();
   readonly modes = new Map<string, string>();
 
@@ -42,6 +58,9 @@ class FixtureClient implements ProposalAuthorityClient {
       .split(/\r?\n/)
       .filter(Boolean));
     paths.add("config/production-closure-authority.json");
+    paths.add("config/production-closure-authority-rotation.json");
+    paths.add("scripts/production-closure-authority-rotation.ts");
+    paths.add("scripts/production-closure-authority-rotation.test.ts");
     for (const path of Object.keys(policy().protectedFiles)) paths.add(path);
     for (const path of paths) {
       const bytes = readFileSync(resolve(root, path));
@@ -75,24 +94,27 @@ class FixtureClient implements ProposalAuthorityClient {
       matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
       this.replace("docs/PRODUCTION_CLOSURE_MATRIX.json", matrix);
     }
+    for (const [path, blobSha] of this.pathToSha) this.basePathToSha.set(path, blobSha);
   }
 
   replace(path: string, value: unknown): void {
     const priorSha = this.pathToSha.get(path);
     if (!priorSha) throw new Error(`fixture path missing: ${path}`);
-    const bytes = Buffer.from(JSON.stringify(value));
+    const bytes = Buffer.isBuffer(value)
+      ? value
+      : Buffer.from(typeof value === "string" ? value : JSON.stringify(value));
     const blobSha = sha(bytes);
-    this.blobs.delete(priorSha);
     this.blobs.set(blobSha, bytes);
     this.pathToSha.set(path, blobSha);
   }
   async getRepositoryId(): Promise<number> {
     return 1309389373;
   }
-  async getRecursiveTree() {
+  async getRecursiveTree(revision: string) {
+    const source = revision === BASE ? this.basePathToSha : this.pathToSha;
     return {
       truncated: this.truncated,
-      tree: [...this.pathToSha.entries()].map(([path, blobSha]) => ({
+      tree: [...source.entries()].map(([path, blobSha]) => ({
         path,
         mode: this.modes.get(path) ?? "100644",
         type: "blob" as const,
@@ -122,9 +144,10 @@ describe("production closure proposal authority", () => {
       HEAD,
       new FixtureClient(),
       OBSERVED_AT,
+      baseAuthority(),
     );
 
-    expect(result.verdict).toBe("pass");
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
     expect(result.issues).toEqual([]);
     expect(result.fetchedBlobs).toEqual(
       expect.arrayContaining([
@@ -145,6 +168,7 @@ describe("production closure proposal authority", () => {
       HEAD,
       client,
       OBSERVED_AT,
+      baseAuthority(),
     );
 
     expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_TREE_TRUNCATED");
@@ -160,6 +184,7 @@ describe("production closure proposal authority", () => {
       HEAD,
       client,
       OBSERVED_AT,
+      baseAuthority(),
     );
 
     expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_BLOB_INVALID");
@@ -179,6 +204,7 @@ describe("production closure proposal authority", () => {
       HEAD,
       client,
       OBSERVED_AT,
+      baseAuthority(),
     );
 
     expect(result.issues.map((issue) => issue.code)).toContain("STATUS_DRIFT");
@@ -196,9 +222,133 @@ describe("production closure proposal authority", () => {
       HEAD,
       client,
       OBSERVED_AT,
+      baseAuthority(),
     );
 
     expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_POLICY_DRIFT");
+  });
+
+  it("accepts an exhaustive authority-only rotation interpreted by the base revision", async () => {
+    const client = new FixtureClient();
+    const authority = baseAuthority();
+    const basePolicy = policy();
+    basePolicy.trustedReviewers = {
+      Claude: [{ login: "claude-reviewer[bot]", userId: 71 }],
+    };
+    authority.policyBytes = Buffer.from(JSON.stringify(basePolicy));
+    const basePolicyBlob = sha(authority.policyBytes);
+    client.blobs.set(basePolicyBlob, authority.policyBytes);
+    client.basePathToSha.set("config/production-closure-authority.json", basePolicyBlob);
+    const runtimePath = "scripts/production-closure-authority-rotation.ts";
+    const proposedRuntime = Buffer.from("export const rotatedAuthority = true;\n");
+    const proposedPolicy = structuredClone(basePolicy);
+    proposedPolicy.protectedFiles[runtimePath] = sha256(proposedRuntime);
+    const proposedPolicyBytes = Buffer.from(JSON.stringify(proposedPolicy));
+    client.replace(runtimePath, proposedRuntime);
+    client.replace("config/production-closure-authority.json", proposedPolicyBytes);
+
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrixBytes = client.blobs.get(client.pathToSha.get(matrixPath)!)!;
+    const proposedMatrix = JSON.parse(matrixBytes.toString("utf8")) as ProductionClosureMatrix;
+    const rotation = {
+      rotationId: "rotation-20260825-001",
+      issuedAt: "2026-08-25T11:00:00.000Z",
+      expiresAt: "2026-08-26T11:00:00.000Z",
+      basePolicySha256: sha256(authority.policyBytes),
+      proposedPolicySha256: sha256(proposedPolicyBytes),
+    };
+    proposedMatrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = rotation;
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    const proposedMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
+    client.replace(matrixPath, proposedMatrixBytes);
+
+    const baseMatrixBytes = client.blobs.get(client.basePathToSha.get(matrixPath)!)!;
+    const changes = [
+      {
+        path: "config/production-closure-authority.json",
+        fromSha256: sha256(authority.policyBytes),
+        toSha256: sha256(proposedPolicyBytes),
+        fromMode: "100644" as const,
+        toMode: "100644" as const,
+      },
+      {
+        path: matrixPath,
+        fromSha256: sha256(baseMatrixBytes),
+        toSha256: sha256(proposedMatrixBytes),
+        fromMode: "100644" as const,
+        toMode: "100644" as const,
+      },
+      {
+        path: runtimePath,
+        fromSha256: sha256(readFileSync(resolve(root, runtimePath))),
+        toSha256: sha256(proposedRuntime),
+        fromMode: "100644" as const,
+        toMode: "100644" as const,
+      },
+    ];
+    const proposedLedger = {
+      schemaVersion: 1,
+      rotations: [{
+        ...rotation,
+        previousRotationId: null,
+        baseRevision: BASE,
+        baseLedgerSha256: sha256(authority.rotationLedgerBytes),
+        changes,
+      }],
+    };
+    client.replace("config/production-closure-authority-rotation.json", proposedLedger);
+
+    const result = await verifyProductionClosureProposal(
+      basePolicy,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      authority,
+    );
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(result.authorityRotation?.rotationId).toBe(rotation.rotationId);
+
+    proposedMatrix.issueAuthority.issues[0].title = "Rewritten authority evidence";
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    const rewrittenMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
+    client.replace(matrixPath, rewrittenMatrixBytes);
+    changes.find((change) => change.path === matrixPath)!.toSha256 = sha256(rewrittenMatrixBytes);
+    client.replace("config/production-closure-authority-rotation.json", proposedLedger);
+
+    const rewritten = await verifyProductionClosureProposal(
+      basePolicy,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      authority,
+    );
+    expect(rewritten.issues.map((issue) => issue.code)).toContain(
+      "AUTHORITY_ROTATION_MATRIX_SCOPE_INVALID",
+    );
+  });
+
+  it("rejects another workflow that can spoof the controller authority surface", async () => {
+    const client = new FixtureClient();
+    client.replace(
+      ".github/workflows/ci.yml",
+      "name: Spoof\npermissions:\n  statuses: write\njobs: {}\n",
+    );
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.issues.map((issue) => issue.code)).toContain(
+      "PROPOSAL_CONTROLLER_SURFACE_COLLISION",
+    );
   });
 
   it("prevents a proposal from changing a pinned authority runtime file", async () => {
@@ -211,6 +361,7 @@ describe("production closure proposal authority", () => {
       HEAD,
       client,
       OBSERVED_AT,
+      baseAuthority(),
     );
 
     expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");

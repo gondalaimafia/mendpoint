@@ -87,6 +87,13 @@ export interface ProviderResolvedPullRequest {
   requirementIds: string[];
   blockers: Array<{ priority: string; summary: string }>;
   remediatesPullRequests: number[];
+  authorityRotation?: {
+    rotationId: string;
+    issuedAt: string;
+    expiresAt: string;
+    basePolicySha256: string;
+    proposedPolicySha256: string;
+  };
 }
 
 export interface StaticPullRequestRecord {
@@ -255,6 +262,34 @@ function remediationReviewScope(body: string | null): Map<number, string> | null
   return scope.size > 0 ? scope : null;
 }
 
+function authorityRotationAttestation(body: string | null): {
+  rotationId: string;
+  basePolicySha256: string;
+  proposedPolicySha256: string;
+} | null {
+  if (!body) return null;
+  const lines = body.replace(/\r\n/g, "\n").split("\n");
+  const heading = lines.findIndex(
+    (line) => line.trim() === "## Authority rotation attestation",
+  );
+  if (heading < 0) return null;
+  const section: string[] = [];
+  for (const line of lines.slice(heading + 1)) {
+    if (/^##\s+/.test(line.trim())) break;
+    if (line.trim()) section.push(line.trim());
+  }
+  if (section.length !== 3) return null;
+  const rotation = /^- Rotation ID: ([a-z0-9][a-z0-9._-]{7,127})$/.exec(section[0]);
+  const base = /^- Base policy: (sha256:[a-f0-9]{64})$/.exec(section[1]);
+  const proposed = /^- Proposed policy: (sha256:[a-f0-9]{64})$/.exec(section[2]);
+  if (!rotation || !base || !proposed) return null;
+  return {
+    rotationId: rotation[1],
+    basePolicySha256: base[1],
+    proposedPolicySha256: proposed[1],
+  };
+}
+
 function canonicalGitHubTime(value: string): string | null {
   const milliseconds = Date.parse(value);
   return Number.isNaN(milliseconds) ? null : new Date(milliseconds).toISOString();
@@ -290,29 +325,36 @@ function trustedReviewerIdentities(
   return trusted;
 }
 
-function qualifyingReview(
+function qualifyingReviews(
   reviews: GitHubReview[],
   headRevision: string,
   pullRequestAuthor: string,
   trustedIdentities: Map<string, number>,
-): GitHubReview | null {
+): GitHubReview[] {
   const latestByReviewer = new Map<string, GitHubReview>();
   for (const review of reviews) {
     const login = review.user.login.toLowerCase();
     const existing = latestByReviewer.get(login);
     if (!existing || review.id > existing.id) latestByReviewer.set(login, review);
   }
-  return (
-    [...latestByReviewer.values()]
-      .filter(
-        (review) =>
-          review.state === "APPROVED" &&
-          review.commit_id === headRevision &&
-          review.user.login.toLowerCase() !== pullRequestAuthor.toLowerCase() &&
-          trustedIdentities.get(review.user.login.toLowerCase()) === review.user.id,
-      )
-      .sort((left, right) => right.id - left.id)[0] ?? null
-  );
+  return [...latestByReviewer.values()]
+    .filter(
+      (review) =>
+        review.state === "APPROVED" &&
+        review.commit_id === headRevision &&
+        review.user.login.toLowerCase() !== pullRequestAuthor.toLowerCase() &&
+        trustedIdentities.get(review.user.login.toLowerCase()) === review.user.id,
+    )
+    .sort((left, right) => right.id - left.id);
+}
+
+function qualifyingReview(
+  reviews: GitHubReview[],
+  headRevision: string,
+  pullRequestAuthor: string,
+  trustedIdentities: Map<string, number>,
+): GitHubReview | null {
+  return qualifyingReviews(reviews, headRevision, pullRequestAuthor, trustedIdentities)[0] ?? null;
 }
 
 async function requiredChecksGreen(
@@ -591,12 +633,29 @@ export async function verifyGitHubClosureAuthority(
         "required checks are not successful on the exact pull request head",
       );
     }
-    const bootstrapReview = qualifyingReview(
-      await client.listReviews(bootstrap.number),
+    const bootstrapReviews = await client.listReviews(bootstrap.number);
+    const bootstrapReviewCandidates = qualifyingReviews(
+      bootstrapReviews,
       liveBootstrap.head.sha,
       liveBootstrap.user.login,
       trustedReviewerIdentities(context, bootstrap.owner.actor),
     );
+    const expectedRotation = bootstrap.authorityRotation;
+    const bootstrapReview = expectedRotation
+      ? bootstrapReviewCandidates.find((review) => {
+          const attestation = authorityRotationAttestation(review.body);
+          const submittedAt = Date.parse(review.submitted_at ?? "");
+          return Boolean(
+            attestation &&
+            attestation.rotationId === expectedRotation.rotationId &&
+            attestation.basePolicySha256 === expectedRotation.basePolicySha256 &&
+            attestation.proposedPolicySha256 === expectedRotation.proposedPolicySha256 &&
+            Number.isFinite(submittedAt) &&
+            submittedAt >= Date.parse(expectedRotation.issuedAt) &&
+            submittedAt <= Date.parse(expectedRotation.expiresAt)
+          );
+        }) ?? null
+      : bootstrapReviewCandidates[0] ?? null;
     if (!bootstrapReview) {
       add(
         issues,
@@ -606,6 +665,33 @@ export async function verifyGitHubClosureAuthority(
       );
     } else {
       observation.reviewIds.push(bootstrapReview.id);
+    }
+    const attestedRotation = authorityRotationAttestation(bootstrapReview?.body ?? null);
+    if (
+      expectedRotation &&
+      (!attestedRotation ||
+        attestedRotation.rotationId !== expectedRotation.rotationId ||
+        attestedRotation.basePolicySha256 !== expectedRotation.basePolicySha256 ||
+        attestedRotation.proposedPolicySha256 !== expectedRotation.proposedPolicySha256 ||
+        !bootstrapReview?.submitted_at ||
+        !Number.isFinite(Date.parse(bootstrapReview.submitted_at)) ||
+        Date.parse(bootstrapReview.submitted_at) < Date.parse(expectedRotation.issuedAt) ||
+        Date.parse(bootstrapReview.submitted_at) > Date.parse(expectedRotation.expiresAt))
+    ) {
+      add(
+        issues,
+        "AUTHORITY_ROTATION_REVIEW_ATTESTATION_REQUIRED",
+        String(bootstrap.number),
+        "authority rotation requires an exact-head base-trusted review attesting the exact rotation and policy digests",
+      );
+    }
+    if (!expectedRotation && attestedRotation) {
+      add(
+        issues,
+        "AUTHORITY_ROTATION_REVIEW_UNEXPECTED",
+        String(bootstrap.number),
+        "a non-rotation pull request cannot carry authority rotation attestation",
+      );
     }
     const attestedRemediationScope = remediationReviewScope(
       bootstrapReview?.body ?? null,
@@ -950,7 +1036,8 @@ export function githubAuthorityContextFromEvent(
   const context: GitHubAuthorityContext = {
     eventName,
     repository: requiredEnvironment(environment, "GITHUB_REPOSITORY"),
-    githubSha: requiredEnvironment(environment, "GITHUB_SHA"),
+    githubSha: environment.MENDPOINT_CLOSURE_AUTHORITY_SHA?.trim() ||
+      requiredEnvironment(environment, "GITHUB_SHA"),
     workflowRunId: requiredEnvironment(environment, "GITHUB_RUN_ID"),
     observedAt,
     checkout,
