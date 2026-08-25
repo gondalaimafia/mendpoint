@@ -971,7 +971,7 @@ describe("Transformer pilot execution coordinator", () => {
       nextCheckpointHead: terminal,
       candidateSeal,
       completionIntent,
-      advisoryDispatchRequested: true,
+      advisoryDispatchRequested: false,
       gateConfig: authorization,
     };
 
@@ -981,7 +981,10 @@ describe("Transformer pilot execution coordinator", () => {
       verificationPassed: true,
       attemptCheckpointHead: terminal,
     });
-    expect(store.completeAttemptWithCheckpointHead(input)).toEqual(completed);
+    expect(store.completeAttemptWithCheckpointHead({
+      ...input,
+      advisoryDispatchRequested: true,
+    })).toEqual(completed);
     expect(completed.receipt).toEqual({
       schemaVersion: 1,
       tenantId: "tenant-a",
@@ -993,6 +996,15 @@ describe("Transformer pilot execution coordinator", () => {
       observedAt: time(3),
       checkpointHead: terminal,
     });
+    expect(store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(0);
+    expect(store.backfillVerifierAdvisoryDispatches({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+    })).toEqual({ inserted: 1, existing: 0 });
+    expect(store.backfillVerifierAdvisoryDispatches({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+    })).toEqual({ inserted: 0, existing: 1 });
     const advisoryOutbox = store.listPendingVerifierAdvisoryDispatches("tenant-a", 10);
     expect(advisoryOutbox).toEqual([expect.objectContaining({
       schemaVersion: 1,
@@ -1008,31 +1020,74 @@ describe("Transformer pilot execution coordinator", () => {
     })]);
     expect(JSON.stringify(advisoryOutbox)).not.toContain("package.json");
     const dispatch = advisoryOutbox[0]!;
-    expect(() => store.recordVerifierAdvisoryDispatchResult({
-      ...dispatch,
+    const firstClaim = store.claimNextVerifierAdvisoryDispatch({
+      tenantId: "tenant-a",
+      claimantId: "drainer-a",
+      claimId: "claim-a",
+      leaseToken: "advisory-lease-a",
+      leaseDurationMs: 60_000,
+      observedAt: time(4),
+    })!;
+    expect(firstClaim.dispatch).toEqual(dispatch);
+    expect(store.claimNextVerifierAdvisoryDispatch({
+      tenantId: "tenant-a",
+      claimantId: "drainer-b",
+      claimId: "claim-b-blocked",
+      leaseToken: "advisory-lease-b-blocked",
+      leaseDurationMs: 60_000,
+      observedAt: time(4),
+    })).toBeNull();
+    expect(() => store.recordVerifierAdvisoryDispatchClaimResult({
+      ...firstClaim,
       tenantId: "tenant-b",
+      leaseToken: "advisory-lease-a",
       status: "failed",
       errorCode: "queue_unavailable",
       observedAt: time(4),
     })).toThrow("transformer_verifier_advisory_dispatch_scope_invalid");
-    expect(() => store.recordVerifierAdvisoryDispatchResult({
-      ...dispatch,
-      completionDigest: digest("9"),
+    expect(() => store.recordVerifierAdvisoryDispatchClaimResult({
+      ...firstClaim,
+      leaseToken: "wrong-advisory-lease",
       status: "failed",
       errorCode: "queue_unavailable",
       observedAt: time(4),
-    })).toThrow("transformer_verifier_advisory_dispatch_binding_invalid");
-    store.recordVerifierAdvisoryDispatchResult({
-      ...dispatch,
+    })).toThrow("transformer_verifier_advisory_dispatch_fence_invalid");
+    store.recordVerifierAdvisoryDispatchClaimResult({
+      ...firstClaim,
+      leaseToken: "advisory-lease-a",
       status: "failed",
       errorCode: "queue_unavailable",
       observedAt: time(4),
     });
-    expect(store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(1);
+    expect(() => store.recordVerifierAdvisoryDispatchClaimResult({
+      ...firstClaim,
+      leaseToken: "advisory-lease-a",
+      status: "failed",
+      errorCode: "queue_unavailable",
+      observedAt: time(4),
+    })).toThrow("transformer_verifier_advisory_dispatch_result_exists");
+    expect(store.claimNextVerifierAdvisoryDispatch({
+      tenantId: "tenant-a",
+      claimantId: "drainer-b",
+      claimId: "claim-b-backoff",
+      leaseToken: "advisory-lease-b-backoff",
+      leaseDurationMs: 60_000,
+      observedAt: time(4),
+    })).toBeNull();
     expect(store.listVerifierAdvisoryDispatchResults("tenant-a", dispatch.dispatchId))
       .toEqual([expect.objectContaining({ status: "failed", errorCode: "queue_unavailable" })]);
-    store.recordVerifierAdvisoryDispatchResult({
-      ...dispatch,
+    const secondClaim = store.claimNextVerifierAdvisoryDispatch({
+      tenantId: "tenant-a",
+      claimantId: "drainer-b",
+      claimId: "claim-b",
+      leaseToken: "advisory-lease-b",
+      leaseDurationMs: 60_000,
+      observedAt: time(5),
+    })!;
+    expect(secondClaim.leaseGeneration).toBe(2);
+    store.recordVerifierAdvisoryDispatchClaimResult({
+      ...secondClaim,
+      leaseToken: "advisory-lease-b",
       status: "enqueued",
       jobId: "verifier-job-a",
       observedAt: time(5),
@@ -1152,6 +1207,22 @@ describe("Transformer pilot execution coordinator", () => {
     )).toHaveLength(1);
     expect(store.listVerifierAdvisoryDispatchResults("tenant-a", dispatch.dispatchId))
       .toHaveLength(2);
+    const raw = (store as unknown as { db: DatabaseSync }).db;
+    raw.exec(`
+      DROP TRIGGER tf_pilot_verifier_advisory_outbox_no_delete;
+      DROP TRIGGER tf_pilot_events_no_update;
+      DELETE FROM tf_pilot_verifier_advisory_dispatch_claim_results;
+      DELETE FROM tf_pilot_verifier_advisory_dispatch_claims;
+      DELETE FROM tf_pilot_verifier_advisory_outbox;
+      UPDATE tf_pilot_events
+      SET payload_json = json_set(payload_json, '$.completionDigest', '${digest("9")}')
+      WHERE type = 'attempt.completed_with_checkpoint';
+    `);
+    expect(() => store.backfillVerifierAdvisoryDispatches({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+    })).toThrow("transformer_verifier_advisory_backfill_invalid");
+    expect(store.listPendingVerifierAdvisoryDispatches("tenant-a", 10)).toHaveLength(0);
     store.close();
   });
 

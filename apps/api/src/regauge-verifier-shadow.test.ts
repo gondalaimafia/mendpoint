@@ -120,7 +120,7 @@ describe("dedicated ReGauge advisory dispatch", () => {
       .toHaveLength(0);
   });
 
-  it("records a failed outbox drain, retries it, and replays one verifier job idempotently", async () => {
+  it("claims a failed outbox drain once, retries after takeover, and replays one verifier job idempotently", async () => {
     const store = db();
     const completion = completed();
     const dispatch: TransformerVerifierAdvisoryDispatch = Object.freeze({
@@ -136,11 +136,20 @@ describe("dedicated ReGauge advisory dispatch", () => {
       checkpointStateDigest: completion.receipt.checkpointHead.stateDigest,
       observedAt: completion.receipt.observedAt,
     });
+    const claims = [
+      { dispatch, claimId: "claim-a", claimantId: "drainer-a", leaseGeneration: 1,
+        leaseTokenDigest: digest("lease-a"), claimedAt: "2026-08-24T12:02:00.000Z",
+        expiresAt: "2026-08-24T12:03:00.000Z" },
+      { dispatch, claimId: "claim-b", claimantId: "drainer-b", leaseGeneration: 2,
+        leaseTokenDigest: digest("lease-b"), claimedAt: "2026-08-24T12:04:00.000Z",
+        expiresAt: "2026-08-24T12:05:00.000Z" },
+    ];
     const recorded: Array<Record<string, unknown>> = [];
     const pilotStore = {
-      listPendingVerifierAdvisoryDispatches: () => [dispatch],
+      backfillVerifierAdvisoryDispatches: vi.fn(() => ({ inserted: 0, existing: 1 })),
+      claimNextVerifierAdvisoryDispatch: vi.fn(() => claims.shift() ?? null),
       readVerifierAdvisoryCompletion: () => completion,
-      recordVerifierAdvisoryDispatchResult: vi.fn((result: Record<string, unknown>) => {
+      recordVerifierAdvisoryDispatchClaimResult: vi.fn((result: Record<string, unknown>) => {
         recorded.push(result);
         return {};
       }),
@@ -168,8 +177,9 @@ describe("dedicated ReGauge advisory dispatch", () => {
       status: "enqueued",
       jobId: expect.any(String),
     })]);
-    expect(replay).toEqual(first);
-    expect(recorded.map((result) => result.status)).toEqual(["failed", "enqueued", "enqueued"]);
+    expect(replay).toEqual([]);
+    expect(recorded.map((result) => result.status)).toEqual(["failed", "enqueued"]);
+    expect(pilotStore.backfillVerifierAdvisoryDispatches).toHaveBeenCalledTimes(3);
     expect(getJob(store, String(first[0]!.jobId), "tenant_regauge_canary")).not.toBeNull();
     expect((store.raw.prepare("SELECT COUNT(*) count FROM jobs WHERE type = ?").get("verifier.advisory.verify") as { count: number }).count)
       .toBe(1);

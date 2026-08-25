@@ -3058,3 +3058,15 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - GREEN: the exact configured coordinator lane now adds one tenant-bound identifier-and-digest-only outbox row in the same SQLite transaction as `attempt.completed_with_checkpoint`. Non-authorized tenant and campaign completions do not request an outbox row. Queue and evidence work runs asynchronously, records append-only failure or enqueued outcomes, and replays the existing identifier-only verifier job without changing execution or delivery.
 - Consent: an existing revoked or inactive consent keeps ReGauge bootstrap available and emits a visible verifier-disabled event. Changing protected authority returns the exact next version and supersession requirement but never creates a grant; an explicitly recorded next-version grant re-enables the existing active-consent gate.
 - Verification: 163 focused Transformer, Mission, Policy, consent, coordinator, advisory, worker, workflow, and production-proof tests pass across 11 files. Database, Transformer, and API typechecks pass, and diff integrity is clean.
+
+### 2026-08-24 Exact-head closure: legacy backfill and fenced advisory claims
+
+- [x] RED: preserve the pre-feature immutable completion request digest when the server requests an advisory outbox row.
+- [x] RED: backfill one authenticated identifier-and-digest-only outbox row for an exact legacy terminal event without replaying completion, and reject a tampered event atomically.
+- [x] RED: prove two concurrent drainers cannot claim the same dispatch, an expired claim can be fenced and taken over, and each claim has one terminal result.
+- [x] RED: prove retryable failures honor bounded exponential backoff so repeated readiness polls do not append failure rows.
+- [ ] Remove advisory dispatch configuration from the historical completion request payload while retaining atomic event and outbox insertion for new completions.
+- [ ] Implement exact-scope authenticated outbox backfill and tenant-scoped fenced claims under append-only store invariants.
+- [ ] Drain claims asynchronously into the deterministic verifier job lane and preserve completion, execution, selection, and delivery independence.
+- [ ] Run the focused advisory matrix, affected typechecks, and diff integrity checks.
+- [ ] Review and commit without rebasing, pushing, or merging.
