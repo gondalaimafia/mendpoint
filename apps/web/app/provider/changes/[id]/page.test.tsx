@@ -47,6 +47,48 @@ async function renderWithFindings(findings: unknown[]): Promise<string> {
   );
 }
 
+describe("change detail — FET-017 empty findings", () => {
+  beforeEach(() => apiGet.mockReset());
+
+  it("treats analyzed empty findings as verified no-impact", async () => {
+    apiGet.mockResolvedValue({
+      ...BASE,
+      findings: [],
+      impactCoverage: {
+        impact: "no_impact",
+        coverageBasis: "analyzed",
+        reason: null,
+        findingCount: 0,
+        prCount: 1,
+      },
+    });
+    const html = renderToStaticMarkup(
+      await ChangeDetailPage({ params: Promise.resolve({ id: "chg1" }) }),
+    );
+    expect(html).toContain("No impact — verified");
+    expect(html).not.toContain("Confirm pipeline completion");
+  });
+
+  it("does not treat partial coverage as verified no-impact", async () => {
+    apiGet.mockResolvedValue({
+      ...BASE,
+      findings: [],
+      impactCoverage: {
+        impact: "unknown_impact",
+        coverageBasis: "partial",
+        reason: "partial_or_unknown_coverage",
+        findingCount: 0,
+        prCount: 1,
+      },
+    });
+    const html = renderToStaticMarkup(
+      await ChangeDetailPage({ params: Promise.resolve({ id: "chg1" }) }),
+    );
+    expect(html).toContain("No known impact under partial coverage");
+    expect(html).not.toContain("No impact — verified");
+  });
+});
+
 describe("change detail — FET-016 provider path column", () => {
   beforeEach(() => apiGet.mockReset());
 

@@ -49,6 +49,7 @@ import {
   consumerToApi,
   prToApi,
   findingToApi,
+  summarizeChangeImpactCoverage,
   auditToApi,
   versionToApi,
   createApiKey,
@@ -1954,6 +1955,10 @@ app.get("/changes/:id", (c) => {
     diff: JSON.parse(change.diff_json),
     findings,
     prs,
+    impactCoverage: summarizeChangeImpactCoverage({
+      findingCount: findings.length,
+      prs,
+    }),
   });
 });
 
