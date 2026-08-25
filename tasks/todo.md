@@ -3126,3 +3126,21 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Recovery: a simulated crash after handoff but before commit leaves the job running and the task agent-owned; replay performs no repeated provider work and commits both terminal records together.
 - Fencing: the short-lease regression now refreshes the existing generation immediately before the long attempt boundary. Lease ownership and generation checks remain unchanged.
 - Verification: the complete affected worker matrix passes 77 tests across 3 files, including the scheduler-resilient short-lease regression.
+
+### 2026-08-25 PR 387 exact-head release qualification
+
+- [x] Complete the 15-file ReGauge and DeepSeek matrix: 218 of 218 tests pass.
+- [x] Complete full workspace typecheck on the reviewed head.
+- [x] RED: reproduce the full-suite pipeline security-gate timeout at 5.359 seconds under repository-wide contention.
+- [x] Trace the test and production path, confirm PR 387 does not alter it, and reproduce the same test at 617 ms alone and 831 ms under pipeline-workspace load.
+- [x] Give only the two-run integration test a bounded 15-second deadline; do not change production behavior or the global test timeout.
+- [x] Re-run the focused regression, all 200 pipeline tests, and the complete repository test suite successfully.
+- [x] Complete optimized build, GA policy checks, production dependency audit, API startup, and diff-integrity gates.
+- [ ] Complete protected CI container builds and deployment E2E; local Docker is unavailable.
+- [ ] Refresh against current `origin/main`, obtain exact-head reciprocal review and Claude review, then merge only with current CI.
+
+#### Review
+
+- Root cause: the security-attestation integration test runs the full pipeline twice and inherited Vitest's 5-second unit-test default. Full-suite CPU and disk contention pushed one run to 5.359 seconds; isolated and workspace runs remained below one second.
+- Repair: a test-local 15-second deadline matches other heavy integration tests and preserves both the fail-closed negative case and the attested positive control.
+- Evidence: focused regression passed, pipeline workspace passed 200 of 200 tests, and the complete repository test command exited 0 after the repair.
