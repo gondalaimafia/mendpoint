@@ -77,6 +77,15 @@ describe("Regauge production workflow", () => {
     const volumeName = flyProfile.match(/^\s*source = "([a-z0-9_]+)"$/m)?.[1];
     expect(volumeName).toBe("mendpoint_regauge_prod_data");
     expect(volumeName?.length).toBeLessThanOrEqual(30);
+    expect(flyProfile).toContain('MENDPOINT_BACKUP_FENCE_ROOT = "/data/db/.backup-fence"');
+    expect(flyProfile).toContain('MENDPOINT_BACKUP_TRANSPORT = "rclone_s3"');
+    expect(flyProfile).toContain('MENDPOINT_BACKUP_STAGING_ROOT = "/tmp/mendpoint-regauge-transfer"');
+    expect(flyProfile).toContain('MENDPOINT_BACKUP_OBJECT_PREFIX = "regauge-state-transfer"');
+    const sourceProfile = readFileSync("fly.transformer.toml", "utf8");
+    expect(sourceProfile).toContain('MENDPOINT_BACKUP_FENCE_ROOT = "/data/db/.backup-fence"');
+    expect(sourceProfile).toContain('MENDPOINT_BACKUP_TRANSPORT = "rclone_s3"');
+    expect(sourceProfile).toContain('MENDPOINT_BACKUP_STAGING_ROOT = "/tmp/mendpoint-regauge-transfer"');
+    expect(sourceProfile).toContain('MENDPOINT_BACKUP_OBJECT_PREFIX = "regauge-state-transfer"');
     const storage = deploy.steps.find(
       (step: Record<string, unknown>) => step.name === "Verify private checkpoint storage",
     );
@@ -289,6 +298,32 @@ describe("Regauge production workflow", () => {
     expect(
       steps.some((step) => step.name === "Deploy one coordinator and one worker"),
     ).toBe(false);
+  });
+
+  it("requires an authenticated restore receipt before target credentials or processes can start", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const steps = workflow.jobs.deploy.steps as Record<string, any>[];
+    const index = (name: string) => steps.findIndex((step) => step.name === name);
+
+    expect(index("Verify authenticated restored state")).toBeGreaterThan(-1);
+    expect(index("Stage production secrets")).toBeGreaterThan(
+      index("Verify authenticated restored state"),
+    );
+    expect(index("Deploy coordinator")).toBeGreaterThan(index("Stage production secrets"));
+    expect(index("Deploy worker")).toBeGreaterThan(index("Deploy coordinator"));
+    const receipt = steps[index("Verify authenticated restored state")].run as string;
+    expect(receipt).toContain("flyctl ssh console --app mendpoint-transformer-pilot");
+    expect(receipt).toContain("scripts/regauge-state-transfer.ts verify-receipt");
+    expect(receipt).toContain("restored-state-receipt.json");
+    const failure = steps.find((step) => step.name === "Contain target after activation failure")!;
+    expect(failure.if).toBe("${{ failure() }}");
+    expect(failure.run).toContain("worker=0");
+    expect(failure.run).not.toContain("volumes delete");
+    expect(steps.some((step) => (step.run as string | undefined)?.includes(
+      "flyctl scale count coordinator=0 worker=0 --app mendpoint-transformer-pilot",
+    ))).toBe(false);
   });
 
   it("bounds every public deployment health request", () => {

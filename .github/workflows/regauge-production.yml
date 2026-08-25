@@ -285,6 +285,13 @@ jobs:
               <<<"$storage_secrets" >/dev/null \
               || { echo "regauge_storage_bootstrap_required:$name"; exit 1; }
           done
+      - name: Verify authenticated restored state
+        shell: bash
+        run: |
+          set -euo pipefail
+          flyctl ssh console --app mendpoint-transformer-pilot \
+            --command "node --import tsx scripts/regauge-state-transfer.ts verify-receipt" \
+            | tee test-results/regauge-production/restored-state-receipt.json
       - name: Stage production secrets
         shell: bash
         run: |
@@ -434,6 +441,12 @@ jobs:
           npm run regauge:production:proof -- --mode=readiness-soak
           --duration-seconds=${{ inputs.readiness_soak_seconds }} --interval-seconds=10
           --output=test-results/regauge-production/readiness-soak.json
+      - name: Contain target after activation failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          flyctl scale count worker=0 --app mendpoint-regauge-production --yes
       - name: Preserve continuous production after activation
         if: ${{ success() }}
         shell: bash
