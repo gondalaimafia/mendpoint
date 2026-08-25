@@ -21,7 +21,14 @@
     "scripts/production-closure-proposal-authority.test.ts"
   ],
   "successor": null,
-  "trustedReviewers": {},
+  "trustedReviewers": {
+    "owner": [
+      {
+        "login": "gondalaimafia",
+        "userId": 273115720
+      }
+    ]
+  },
   "productionEvidenceAuthorities": [],
   "protectedFiles": {
     ".github/workflows/closure-authority.yml": "sha256:1870b3ac36cbc07c418ca686264bee3ce6860cb6ed6c54bc8123d0053d0c90c5",
