@@ -5,6 +5,7 @@ import {
   findVerifierTelemetry,
   persistVerifierAdvisoryProviderNoResponse,
   persistVerifierAdvisoryProviderResponse,
+  persistVerifierAdvisoryProviderRetryableResponse,
   persistVerifierTelemetry,
   REGAUGE_DEEPSEEK_APPROVED_SCOPE,
   REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
@@ -20,6 +21,7 @@ import {
   type VerifierHttpRequest,
   type VerifierPricing,
   type VerifierProduct,
+  type VerifierSourceInput,
 } from "@mendpoint/verifier";
 import { createVerifierAdvisoryRuntime } from "./verifier-shadow.js";
 
@@ -42,6 +44,7 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
   db: AppDb;
   env?: Readonly<Record<string, string | undefined>>;
   completion: ProductCompletionAdvisoryInput;
+  substantiveSources?: readonly Readonly<VerifierSourceInput>[];
   transport?: VerifierHttpTransport;
   authorityAt?: string;
   now?: () => string;
@@ -97,6 +100,7 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
     governanceEvidenceRef: governance.evidenceRef,
     assembledAt: input.completion.observedAt,
     assemblerVersion: "mendpoint-worker-completion-verifier/1",
+    ...(input.substantiveSources ? { substantiveSources: input.substantiveSources } : {}),
   });
   const verificationAttemptId = `completion_${input.completion.taskId}`;
   // A dispatch intent proves only that work was requested. It is never a replay
@@ -110,6 +114,7 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
   })) return null;
   const now = input.now ?? (() => new Date().toISOString());
   const providerTransport = input.transport ?? createFetchVerifierTransport();
+  const completedProviderOperationIds: string[] = [];
   const transport = input.completion.product === "regauge"
     ? durableRegaugeTransport({
       db: input.db,
@@ -122,6 +127,7 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
       now,
       beforeProviderRequest: input.beforeProviderRequest,
       hooks: input.operationHooks,
+      completedOperationIds: completedProviderOperationIds,
     })
     : input.transport;
   const runtime = createVerifierAdvisoryRuntime({
@@ -155,12 +161,27 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
     },
   });
   if (!runtime) return null;
-  return await runtime.observe({
+  const result = await runtime.observe({
     pack,
     incumbentCandidateId: input.completion.candidateId,
     verificationAttemptId,
     observedAt: authorityAt,
   });
+  if (result.failureCode && RETRYABLE_VERIFIER_FAILURE_CODES.has(
+    result.failureCode as "api_failure" | "logprob_failure",
+  )) {
+    const operationId = completedProviderOperationIds.at(-1);
+    if (operationId) {
+      persistVerifierAdvisoryProviderRetryableResponse(input.db, {
+        tenantId: input.completion.tenantId,
+        operationId,
+        errorCode: result.failureCode as "api_failure" | "logprob_failure",
+        classifiedAt: now(),
+        producerPrincipalId: principalId,
+      });
+    }
+  }
+  return result;
 }
 
 function durableRegaugeTransport(input: Readonly<{
@@ -174,6 +195,7 @@ function durableRegaugeTransport(input: Readonly<{
   now: () => string;
   beforeProviderRequest?: (requestedAt: string) => void;
   hooks?: Readonly<{ afterProviderReturn?: () => void; afterProviderReceipt?: () => void }>;
+  completedOperationIds: string[];
 }>): VerifierHttpTransport {
   return Object.freeze({
     request: async (request: VerifierHttpRequest) => {
@@ -193,7 +215,10 @@ function durableRegaugeTransport(input: Readonly<{
         requestedAt,
         producerPrincipalId: input.producerPrincipalId,
       });
-      if (operation.status === "recover") return operation.response!;
+      if (operation.status === "recover") {
+        input.completedOperationIds.push(operation.operationId);
+        return operation.response!;
+      }
       try {
         const response = await input.providerTransport.request(request);
         input.hooks?.afterProviderReturn?.();
@@ -205,6 +230,7 @@ function durableRegaugeTransport(input: Readonly<{
           producerPrincipalId: input.producerPrincipalId,
         });
         input.hooks?.afterProviderReceipt?.();
+        input.completedOperationIds.push(operation.operationId);
         return response;
       } catch (error) {
         const noResponseCode = provableNoResponseCode(error);

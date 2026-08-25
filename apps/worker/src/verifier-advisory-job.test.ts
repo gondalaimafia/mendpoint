@@ -47,6 +47,29 @@ function completion() {
   return { tenantId: "tenant_regauge_canary", missionId: "mission_a", taskId: "campaign_regauge_canary_20260814:unit_a", product: "regauge" as const, repositoryId: "repo_a", snapshotId: "snapshot_a", snapshotDigest: digest("snapshot"), objective: "Verify the completed migration.", risk: "high" as const, allowedChangedPaths: ["package.json"], candidateId: "candidate_a", candidateDigest: digest("candidate"), changedPaths: ["package.json"], observableSummary: "The exact migration passed deterministic verification.", deterministicEvidenceDigest: digest("evidence"), deterministicEvidenceRefs: ["evidence:test"], observedAt: "2026-08-24T12:01:00.000Z" };
 }
 
+function substantiveEvidence() {
+  const content = JSON.stringify({
+    path: "package.json",
+    before: '{"engines":{"node":">=18"}}',
+    after: '{"engines":{"node":">=20"}}',
+  });
+  return {
+    schemaVersion: 1 as const,
+    tenantId: "tenant_regauge_canary", repositoryId: "repo_a", snapshotId: "snapshot_a",
+    snapshotDigest: digest("snapshot"), candidateId: "candidate_a", candidateDigest: digest("candidate"),
+    changedPaths: ["package.json"],
+    sources: [{ id: "candidate_diff_package_json", kind: "repository_excerpt" as const,
+      digest: digest(content), locator: "snapshot_a:package.json", content }],
+  };
+}
+
+function enqueue(db: AppDb) {
+  return enqueueVerifierAdvisoryJob(db, {
+    completion: completion(), substantiveEvidence: substantiveEvidence(),
+    producerPrincipalId: "service_a", createdAt: "2026-08-24T12:01:00.000Z",
+  });
+}
+
 function env(): Record<string, string> {
   return {
     DEEPSEEK_VERIFIER_ENABLED: "true", DEEPSEEK_API_KEY: "secret",
@@ -64,7 +87,7 @@ function env(): Record<string, string> {
 describe("verifier advisory job runner", () => {
   it("retries a lost provider call and closes only after telemetry is durable", async () => {
     const db = setup();
-    const queued = enqueueVerifierAdvisoryJob(db, { completion: completion(), producerPrincipalId: "service_a", createdAt: "2026-08-24T12:01:00.000Z" });
+    const queued = enqueue(db);
     const first = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
     let providerAvailable = false;
     const transport = vi.fn(async () => {
@@ -102,7 +125,7 @@ describe("verifier advisory job runner", () => {
 
   it("fails closed without reissuing when a process dies after the provider returns but before a receipt is durable", async () => {
     const db = setup();
-    enqueueVerifierAdvisoryJob(db, { completion: completion(), producerPrincipalId: "service_a", createdAt: "2026-08-24T12:01:00.000Z" });
+    enqueue(db);
     const first = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
     const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
 
@@ -122,7 +145,7 @@ describe("verifier advisory job runner", () => {
 
   it("recovers a durable provider response after a crash without repeating provider work", async () => {
     const db = setup();
-    enqueueVerifierAdvisoryJob(db, { completion: completion(), producerPrincipalId: "service_a", createdAt: "2026-08-24T12:01:00.000Z" });
+    enqueue(db);
     const first = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
     const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
 
@@ -158,7 +181,7 @@ describe("verifier advisory job runner", () => {
   it("does not let historical consent evidence authorize new processing after revocation", async () => {
     const db = setup();
     revokeLearningConsent(db, { id: "consent_revoked", tenantId: "tenant_regauge_canary", consentId: "consent_a", consentVersion: 2, authorizedByPrincipalId: "human_a", reason: "revoked", idempotencyKey: "consent-revoked", createdAt: "2026-08-24T12:00:30.000Z" });
-    enqueueVerifierAdvisoryJob(db, { completion: completion(), producerPrincipalId: "service_a", createdAt: "2026-08-24T12:01:00.000Z" });
+    enqueue(db);
     const job = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
     const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
     await expect(runVerifierAdvisoryJob({ db, job, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:02.000Z" }))
@@ -166,10 +189,49 @@ describe("verifier advisory job runner", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
+  it("rehydrates exact substantive source and diff evidence before provider egress", async () => {
+    const db = setup();
+    enqueue(db);
+    const job = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
+    await expect(runVerifierAdvisoryJob({ db, job, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:02.000Z" }))
+      .resolves.toMatchObject({ status: "verified" });
+    const providerBody = JSON.stringify(transport.mock.calls[0]![0].body);
+    expect(providerBody).toContain("candidate_diff_package_json");
+    expect(providerBody).toContain(">=18");
+    expect(providerBody).toContain(">=20");
+  });
+
+  it.each([
+    { status: 429, body: { error: { message: "rate limited" } } },
+    { status: 503, body: { error: { message: "unavailable" } } },
+    { status: 200, body: { malformed: true } },
+  ])("advances to a new durable provider operation after definitive retryable response $status", async (firstResponse) => {
+    const db = setup();
+    enqueue(db);
+    const first = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
+    let transient = true;
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => transient
+      ? { status: firstResponse.status, headers: {}, body: firstResponse.body }
+      : successfulProviderResponse());
+    await expect(runVerifierAdvisoryJob({ db, job: first, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:02.000Z" }))
+      .rejects.toThrow(/verifier_advisory_provider_retryable/);
+    const firstCallCount = transport.mock.calls.length;
+    expect(firstCallCount).toBeGreaterThan(0);
+    failJob(db, first.id, "provider_retryable", "2026-08-24T12:01:03.000Z", { workerId: "worker-a", leaseGeneration: first.lease_generation, errorCode: "transient_dependency", retryable: true, baseDelayMs: 1_000, maxDelayMs: 1_000 });
+    transient = false;
+    const second = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-b", leaseMs: 60_000, now: "2026-08-24T12:01:04.000Z" })!;
+    await expect(runVerifierAdvisoryJob({ db, job: second, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:05.000Z" }))
+      .resolves.toMatchObject({ status: "verified" });
+    expect(transport.mock.calls.length).toBeGreaterThan(firstCallCount);
+    const operations = listArtifactManifests(db, "tenant_regauge_canary", "agent_verifier_provider_request_intent");
+    expect(new Set(operations.map((artifact) => artifact.id)).size).toBe(operations.length);
+  });
+
   it("fails closed before provider egress when the campaign scope drifts", async () => {
     const db = setup();
     const foreign = { ...completion(), taskId: "campaign_other:unit_a" };
-    enqueueVerifierAdvisoryJob(db, { completion: foreign, producerPrincipalId: "service_a", createdAt: foreign.observedAt });
+    enqueueVerifierAdvisoryJob(db, { completion: foreign, substantiveEvidence: { ...substantiveEvidence(), changedPaths: foreign.changedPaths }, producerPrincipalId: "service_a", createdAt: foreign.observedAt });
     const job = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
     const transport = vi.fn(async () => ({ status: 200, headers: {}, body: {} }));
     await expect(runVerifierAdvisoryJob({ db, job, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:02.000Z" }))

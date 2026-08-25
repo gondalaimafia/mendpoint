@@ -9,6 +9,7 @@ import {
 import {
   assertRegaugeDeepSeekApprovedScope,
   readVerifierAdvisoryJobInput,
+  readVerifierAdvisoryJobSubstantiveEvidence,
   reconcileVerifierAdvisoryPolicyAuthority,
   VERIFIER_ADVISORY_JOB_TYPE,
 } from "@mendpoint/pipeline";
@@ -90,10 +91,16 @@ export async function runVerifierAdvisoryJob(input: Readonly<{
     processingRegion: governance.processingRegion,
     createdAt: authorityAt,
   });
+  // Repository content is rehydrated only after the exact job, tenant,
+  // repository, campaign, principal, and inherited Policy Envelope have all
+  // been revalidated. The following observation path performs the separate
+  // durable consent check before any provider request.
+  const substantiveEvidence = readVerifierAdvisoryJobSubstantiveEvidence(input.db, input.job, completion);
   const result = await observeProductCompletionInAdvisory({
     db: input.db,
     env: Object.freeze({ ...env, MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID: principal.id }),
     completion,
+    substantiveSources: substantiveEvidence.sources,
     authorityAt,
     now,
     beforeProviderRequest: (requestedAt) => {

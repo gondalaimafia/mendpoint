@@ -20,6 +20,7 @@ import {
   type VerifierProduct,
   type VerifierHttpResponse,
   type VerifierRisk,
+  type VerifierSourceInput,
   type VerifierTelemetry,
 } from "@mendpoint/verifier";
 import {
@@ -43,11 +44,14 @@ export const REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE =
   `verifier-external-model-egress:regauge:${REGAUGE_DEEPSEEK_APPROVED_SCOPE.campaignId}:${REGAUGE_DEEPSEEK_APPROVED_SCOPE.repositoryFullName}`;
 const INPUT_KIND = "agent_verifier_advisory_input";
 const INPUT_MEDIA_TYPE = "application/vnd.mendpoint.agent-verifier-advisory-input.v1+json";
+const SUBSTANTIVE_EVIDENCE_KIND = "agent_verifier_advisory_substantive_evidence";
+const SUBSTANTIVE_EVIDENCE_MEDIA_TYPE = "application/vnd.mendpoint.agent-verifier-advisory-substantive-evidence.v1+json";
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
 const PROVIDER_REQUEST_KIND = "agent_verifier_provider_request_intent";
 const PROVIDER_RESPONSE_KIND = "agent_verifier_provider_response_receipt";
 const PROVIDER_NO_RESPONSE_KIND = "agent_verifier_provider_no_response";
+const PROVIDER_RETRYABLE_RESPONSE_KIND = "agent_verifier_provider_retryable_response";
 
 export type ProductCompletionAdvisoryInput = Readonly<{
   tenantId: string;
@@ -76,6 +80,20 @@ type AdvisoryPayload = Readonly<{
   missionId: string;
   taskId: string;
   product: VerifierProduct;
+  substantiveEvidenceArtifactId: string;
+  substantiveEvidenceSha256: string;
+}>;
+
+export type VerifierAdvisorySubstantiveEvidence = Readonly<{
+  schemaVersion: 1;
+  tenantId: string;
+  repositoryId: string;
+  snapshotId: string;
+  snapshotDigest: string;
+  candidateId: string;
+  candidateDigest: string;
+  changedPaths: readonly string[];
+  sources: readonly Readonly<VerifierSourceInput>[];
 }>;
 
 export type EnqueueVerifierAdvisoryResult = Readonly<{
@@ -300,7 +318,13 @@ export function reconcileVerifierAdvisoryPolicyAuthority(db: AppDb, input: Reado
   });
 }
 
-function payloadFor(input: ProductCompletionAdvisoryInput, artifactId: string, inputSha256: string): AdvisoryPayload {
+function payloadFor(
+  input: ProductCompletionAdvisoryInput,
+  artifactId: string,
+  inputSha256: string,
+  evidenceArtifactId: string,
+  evidenceSha256: string,
+): AdvisoryPayload {
   return Object.freeze({
     schemaVersion: 1,
     inputArtifactId: artifactId,
@@ -308,6 +332,8 @@ function payloadFor(input: ProductCompletionAdvisoryInput, artifactId: string, i
     missionId: input.missionId,
     taskId: input.taskId,
     product: input.product,
+    substantiveEvidenceArtifactId: evidenceArtifactId,
+    substantiveEvidenceSha256: evidenceSha256,
   });
 }
 
@@ -319,6 +345,7 @@ function jobId(input: ProductCompletionAdvisoryInput, inputSha256: string): stri
 
 export function enqueueVerifierAdvisoryJob(db: AppDb, input: Readonly<{
   completion: ProductCompletionAdvisoryInput;
+  substantiveEvidence?: VerifierAdvisorySubstantiveEvidence;
   producerPrincipalId?: string | null;
   createdAt: string;
 }>): EnqueueVerifierAdvisoryResult {
@@ -326,16 +353,34 @@ export function enqueueVerifierAdvisoryJob(db: AppDb, input: Readonly<{
   if (!exactIso(input.createdAt) || input.createdAt !== completion.observedAt) {
     throw new Error("verifier_advisory_created_at_invalid");
   }
+  if (!input.substantiveEvidence) throw new Error("verifier_advisory_substantive_evidence_required");
+  const substantiveEvidence = verifySubstantiveEvidence(input.substantiveEvidence, completion);
+  const evidenceContent = canonical(substantiveEvidence);
+  const evidenceSha256 = sha256(evidenceContent);
+  const evidenceArtifactId = `verifier-advisory-evidence-${evidenceSha256.slice(0, 40)}`;
   const content = canonical(completion);
   const inputSha256 = sha256(content);
   const inputArtifactId = `verifier-advisory-input-${inputSha256.slice(0, 40)}`;
   const id = jobId(completion, inputSha256);
-  const payload = payloadFor(completion, inputArtifactId, inputSha256);
+  const payload = payloadFor(completion, inputArtifactId, inputSha256, evidenceArtifactId, evidenceSha256);
   const expectedPayload = canonical(payload);
   const owns = !db.raw.isTransaction;
   const savepoint = `verifier_advisory_${inputSha256.slice(0, 12)}`;
   if (owns) db.raw.exec("BEGIN IMMEDIATE"); else db.raw.exec(`SAVEPOINT ${savepoint}`);
   try {
+    insertArtifactManifest(db, {
+      id: evidenceArtifactId,
+      tenantId: completion.tenantId,
+      kind: SUBSTANTIVE_EVIDENCE_KIND,
+      schemaVersion: 1,
+      sha256: evidenceSha256,
+      mediaType: SUBSTANTIVE_EVIDENCE_MEDIA_TYPE,
+      sizeBytes: Buffer.byteLength(evidenceContent, "utf8"),
+      storageRef: `sqlite://artifact_manifests/${evidenceArtifactId}`,
+      content: evidenceContent,
+      producerPrincipalId: input.producerPrincipalId ?? null,
+      createdAt: input.createdAt,
+    });
     insertArtifactManifest(db, {
       id: inputArtifactId,
       tenantId: completion.tenantId,
@@ -385,9 +430,11 @@ function parsePayload(job: JobRow): AdvisoryPayload {
     throw new Error("verifier_advisory_job_payload_invalid");
   }
   const raw = value as Record<string, unknown>;
-  if (canonical(Object.keys(raw).sort()) !== canonical(["inputArtifactId", "inputSha256", "missionId", "product", "schemaVersion", "taskId"]) ||
+  if (canonical(Object.keys(raw).sort()) !== canonical(["inputArtifactId", "inputSha256", "missionId", "product", "schemaVersion", "substantiveEvidenceArtifactId", "substantiveEvidenceSha256", "taskId"]) ||
       raw.schemaVersion !== 1 || !ID.test(String(raw.inputArtifactId)) ||
       !/^[a-f0-9]{64}$/.test(String(raw.inputSha256)) || !ID.test(String(raw.missionId)) ||
+      !ID.test(String(raw.substantiveEvidenceArtifactId)) ||
+      !/^[a-f0-9]{64}$/.test(String(raw.substantiveEvidenceSha256)) ||
       !ID.test(String(raw.taskId)) || raw.product !== "fettler" && raw.product !== "regauge") {
     throw new Error("verifier_advisory_job_payload_invalid");
   }
@@ -417,6 +464,85 @@ export function readVerifierAdvisoryJobInput(db: AppDb, job: JobRow): ProductCom
     throw new Error("verifier_advisory_job_binding_invalid");
   }
   return completion;
+}
+
+function verifySubstantiveEvidence(
+  value: unknown,
+  completion: ProductCompletionAdvisoryInput,
+): VerifierAdvisorySubstantiveEvidence {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("verifier_advisory_substantive_evidence_invalid");
+  }
+  const raw = value as Record<string, unknown>;
+  const keys = ["candidateDigest", "candidateId", "changedPaths", "repositoryId", "schemaVersion", "snapshotDigest", "snapshotId", "sources", "tenantId"];
+  const sources = raw.sources;
+  if (canonical(Object.keys(raw).sort()) !== canonical(keys) || raw.schemaVersion !== 1 ||
+      raw.tenantId !== completion.tenantId || raw.repositoryId !== completion.repositoryId ||
+      raw.snapshotId !== completion.snapshotId || raw.snapshotDigest !== completion.snapshotDigest ||
+      raw.candidateId !== completion.candidateId || raw.candidateDigest !== completion.candidateDigest ||
+      !Array.isArray(raw.changedPaths) || canonical(raw.changedPaths) !== canonical(completion.changedPaths) ||
+      !Array.isArray(sources) || sources.length === 0 || sources.length > 32) {
+    throw new Error("verifier_advisory_substantive_evidence_invalid");
+  }
+  let totalBytes = 0;
+  const verified = sources.map((source) => {
+    if (!source || typeof source !== "object" || Array.isArray(source)) {
+      throw new Error("verifier_advisory_substantive_evidence_invalid");
+    }
+    const candidate = source as Record<string, unknown>;
+    if (canonical(Object.keys(candidate).sort()) !== canonical(["content", "digest", "id", "kind", "locator"]) ||
+        !ID.test(String(candidate.id)) ||
+        !["repository_excerpt", "graph", "retrieval"].includes(String(candidate.kind)) ||
+        !DIGEST.test(String(candidate.digest)) || !text(candidate.locator, 2_048) ||
+        !text(candidate.content, 32_000) ||
+        candidate.digest !== `sha256:${sha256(candidate.content as string)}`) {
+      throw new Error("verifier_advisory_substantive_evidence_invalid");
+    }
+    totalBytes += Buffer.byteLength(candidate.content as string, "utf8");
+    return Object.freeze({
+      id: candidate.id as string,
+      kind: candidate.kind as VerifierSourceInput["kind"],
+      digest: candidate.digest as string,
+      locator: candidate.locator as string,
+      content: candidate.content as string,
+    });
+  });
+  if (totalBytes > 256 * 1024 || new Set(verified.map((source) => source.id)).size !== verified.length) {
+    throw new Error("verifier_advisory_substantive_evidence_invalid");
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    tenantId: completion.tenantId,
+    repositoryId: completion.repositoryId,
+    snapshotId: completion.snapshotId,
+    snapshotDigest: completion.snapshotDigest,
+    candidateId: completion.candidateId,
+    candidateDigest: completion.candidateDigest,
+    changedPaths: Object.freeze([...completion.changedPaths]),
+    sources: Object.freeze(verified),
+  });
+}
+
+export function readVerifierAdvisoryJobSubstantiveEvidence(
+  db: AppDb,
+  job: JobRow,
+  completion: ProductCompletionAdvisoryInput,
+): VerifierAdvisorySubstantiveEvidence {
+  const payload = parsePayload(job);
+  const matches = listArtifactManifests(db, job.tenant_id, SUBSTANTIVE_EVIDENCE_KIND)
+    .filter((artifact) => artifact.id === payload.substantiveEvidenceArtifactId);
+  if (matches.length !== 1) throw new Error("verifier_advisory_substantive_evidence_missing");
+  const artifact = matches[0]!;
+  const content = artifact.content_text;
+  if (artifact.schema_version !== 1 || artifact.media_type !== SUBSTANTIVE_EVIDENCE_MEDIA_TYPE ||
+      content === null || artifact.sha256 !== payload.substantiveEvidenceSha256 ||
+      sha256(content) !== artifact.sha256 || Buffer.byteLength(content, "utf8") !== artifact.size_bytes) {
+    throw new Error("verifier_advisory_substantive_evidence_integrity_invalid");
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(content); }
+  catch { throw new Error("verifier_advisory_substantive_evidence_invalid"); }
+  return verifySubstantiveEvidence(parsed, completion);
 }
 
 export function findVerifierTelemetry(db: AppDb, input: Readonly<{
@@ -475,6 +601,14 @@ type ProviderResponseReceipt = Readonly<{
   providerProcessedAt: string;
   responseDigest: string;
   response: VerifierHttpResponse;
+}>;
+
+type ProviderRetryableResponse = Readonly<{
+  schemaVersion: "2026-08-24.verifier-provider-retryable-response.v1";
+  operationId: string;
+  responseDigest: string;
+  errorCode: "api_failure" | "logprob_failure";
+  classifiedAt: string;
 }>;
 
 function consentSnapshot(row: LearningConsentRow): ConsentSnapshot {
@@ -570,6 +704,26 @@ function hasNoResponseFailure(db: AppDb, tenantId: string, operationId: string):
   return matches.length === 1;
 }
 
+function retryableResponseFor(
+  db: AppDb,
+  tenantId: string,
+  operationId: string,
+): ProviderRetryableResponse | null {
+  const matches = parseOperationArtifacts<ProviderRetryableResponse>(db, tenantId, PROVIDER_RETRYABLE_RESPONSE_KIND)
+    .filter((outcome) => outcome.operationId === operationId);
+  if (matches.length > 1) throw new Error("verifier_advisory_provider_retryable_response_ambiguous");
+  const outcome = matches[0];
+  if (!outcome) return null;
+  const receipt = responseFor(db, tenantId, operationId);
+  if (!receipt || outcome.schemaVersion !== "2026-08-24.verifier-provider-retryable-response.v1" ||
+      outcome.responseDigest !== receipt.responseDigest || !exactIso(outcome.classifiedAt) ||
+      outcome.classifiedAt < receipt.providerProcessedAt ||
+      outcome.errorCode !== "api_failure" && outcome.errorCode !== "logprob_failure") {
+    throw new Error("verifier_advisory_provider_retryable_response_invalid");
+  }
+  return outcome;
+}
+
 export function beginVerifierAdvisoryProviderOperation(db: AppDb, input: Readonly<{
   tenantId: string;
   verificationAttemptId: string;
@@ -610,7 +764,7 @@ export function beginVerifierAdvisoryProviderOperation(db: AppDb, input: Readonl
   const latest = intents.at(-1);
   if (latest) {
     const receipt = responseFor(db, input.tenantId, latest.operationId);
-    if (receipt) {
+    if (receipt && !retryableResponseFor(db, input.tenantId, latest.operationId)) {
       return Object.freeze({
         status: "recover",
         operationId: latest.operationId,
@@ -618,7 +772,7 @@ export function beginVerifierAdvisoryProviderOperation(db: AppDb, input: Readonl
         response: receipt.response,
       });
     }
-    if (!hasNoResponseFailure(db, input.tenantId, latest.operationId)) {
+    if (!receipt && !hasNoResponseFailure(db, input.tenantId, latest.operationId)) {
       throw new Error("verifier_advisory_provider_outcome_unknown");
     }
   }
@@ -665,6 +819,38 @@ export function beginVerifierAdvisoryProviderOperation(db: AppDb, input: Readonl
     operationId,
     consent: binding(snapshot, consentRecordDigest),
     response: null,
+  });
+}
+
+export function persistVerifierAdvisoryProviderRetryableResponse(db: AppDb, input: Readonly<{
+  tenantId: string;
+  operationId: string;
+  errorCode: "api_failure" | "logprob_failure";
+  classifiedAt: string;
+  producerPrincipalId?: string | null;
+}>): void {
+  const intent = exactIntent(db, input.tenantId, input.operationId);
+  const receipt = responseFor(db, input.tenantId, input.operationId);
+  if (!receipt || !exactIso(input.classifiedAt) || input.classifiedAt < receipt.providerProcessedAt ||
+      input.classifiedAt >= intent.consent.expiresAt ||
+      input.errorCode !== "api_failure" && input.errorCode !== "logprob_failure") {
+    throw new Error("verifier_advisory_provider_retryable_response_invalid");
+  }
+  const outcome: ProviderRetryableResponse = Object.freeze({
+    schemaVersion: "2026-08-24.verifier-provider-retryable-response.v1",
+    operationId: input.operationId,
+    responseDigest: receipt.responseDigest,
+    errorCode: input.errorCode,
+    classifiedAt: input.classifiedAt,
+  });
+  storeArtifact(db, {
+    id: `${input.operationId}-retryable-response`,
+    tenantId: input.tenantId,
+    kind: PROVIDER_RETRYABLE_RESPONSE_KIND,
+    mediaType: "application/vnd.mendpoint.agent-verifier-provider-retryable-response.v1+json",
+    content: canonical(outcome),
+    producerPrincipalId: input.producerPrincipalId,
+    createdAt: input.classifiedAt,
   });
 }
 

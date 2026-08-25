@@ -5,7 +5,11 @@ import {
   resolveMissionForRegaugeCampaign,
   type AppDb,
 } from "@mendpoint/db";
-import type { TransformerAttemptCheckpointCompletionResult } from "@mendpoint/transformer";
+import {
+  applyRecipe,
+  type ExactSourceSnapshot,
+  type TransformerAttemptCheckpointCompletionResult,
+} from "@mendpoint/transformer";
 import {
   assertRegaugeDeepSeekApprovedScope,
   enqueueVerifierAdvisoryJob,
@@ -13,6 +17,7 @@ import {
   reconcileVerifierAdvisoryPolicyAuthority,
   type EnqueueVerifierAdvisoryResult,
   type ProductCompletionAdvisoryInput,
+  type VerifierAdvisorySubstantiveEvidence,
 } from "@mendpoint/pipeline";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -66,6 +71,7 @@ export function enqueueDedicatedRegaugeCompletionForAdvisory(input: Readonly<{
   db: AppDb;
   env?: Readonly<Record<string, string | undefined>>;
   completion: TransformerAttemptCheckpointCompletionResult;
+  exactSource: ExactSourceSnapshot;
 }>): EnqueueVerifierAdvisoryResult {
   const env = input.env ?? process.env;
   const campaign = input.completion.campaign;
@@ -110,11 +116,60 @@ export function enqueueDedicatedRegaugeCompletionForAdvisory(input: Readonly<{
     processingRegion,
     createdAt: completion.observedAt,
   });
+  const substantiveEvidence = createSubstantiveEvidence(input.completion, completion, input.exactSource);
   return enqueueVerifierAdvisoryJob(input.db, {
     completion,
+    substantiveEvidence,
     producerPrincipalId: principal.id,
     createdAt: completion.observedAt,
   });
+}
+
+function createSubstantiveEvidence(
+  result: TransformerAttemptCheckpointCompletionResult,
+  completion: ProductCompletionAdvisoryInput,
+  source: ExactSourceSnapshot,
+): VerifierAdvisorySubstantiveEvidence {
+  const unit = result.campaign.units.find((candidate) => candidate.id === result.receipt.unitId);
+  if (!unit || source.repositoryId !== completion.repositoryId ||
+      source.revision !== unit.snapshot.revision || source.digest !== completion.snapshotDigest) {
+    throw new Error("regauge_verifier_advisory_source_binding_invalid");
+  }
+  const application = applyRecipe(unit.recipe, source.files);
+  const paths = application.operations.map((operation) => operation.path);
+  if (application.inputDigest !== completion.snapshotDigest ||
+      application.outputDigest !== completion.candidateDigest ||
+      JSON.stringify(paths) !== JSON.stringify(completion.changedPaths)) {
+    throw new Error("regauge_verifier_advisory_candidate_binding_invalid");
+  }
+  const sources = application.operations.map((operation, index) => {
+    const content = canonical({ path: operation.path, before: operation.before, after: operation.after });
+    return Object.freeze({
+      id: `candidate_diff_${index + 1}`,
+      kind: "repository_excerpt" as const,
+      digest: `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`,
+      locator: `${completion.snapshotId}:${operation.path}`,
+      content,
+    });
+  });
+  return Object.freeze({
+    schemaVersion: 1,
+    tenantId: completion.tenantId,
+    repositoryId: completion.repositoryId,
+    snapshotId: completion.snapshotId,
+    snapshotDigest: completion.snapshotDigest,
+    candidateId: completion.candidateId,
+    candidateDigest: completion.candidateDigest,
+    changedPaths: Object.freeze([...completion.changedPaths]),
+    sources: Object.freeze(sources),
+  });
+}
+
+function canonical(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
 }
 
 function resolveProcessingRegion(

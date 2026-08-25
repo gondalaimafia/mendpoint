@@ -866,7 +866,14 @@ const transformerAttemptCoordinatorRoutes = createTransformerAttemptCoordinatorR
   gateConfig: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
   ...(transformerDraftAuthorization ? { draftAuthorization: transformerDraftAuthorization } : {}),
   observeCompletedAttempt: async (completion) => {
-    enqueueDedicatedRegaugeCompletionForAdvisory({ db, env: process.env, completion });
+    const unit = completion.campaign.units.find((candidate) => candidate.id === completion.receipt.unitId);
+    if (!unit) throw new Error("regauge_verifier_advisory_completion_invalid");
+    const exactSource = loadTransformerRecipeSnapshot(db, {
+      tenantId: completion.campaign.tenantId,
+      snapshot: unit.snapshot,
+      recipe: unit.recipe,
+    }, completion.receipt.observedAt);
+    enqueueDedicatedRegaugeCompletionForAdvisory({ db, env: process.env, completion, exactSource });
   },
   readVerifierObservations: ({ tenantId, campaignId }) =>
     readRegaugeVerifierObservations(db, { tenantId, campaignId }),

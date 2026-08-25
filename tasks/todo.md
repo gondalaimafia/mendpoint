@@ -3010,6 +3010,22 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - [x] Complete strict local review with no remaining P0 or P1 findings.
 - [ ] Publish one PR closing #361 under #350, then obtain passing CI plus reciprocal Claude review before merge-ready.
 
+### 2026-08-24 Spec review closure: substantive evidence and retryable receipts
+
+- [x] RED: prove the advisory provider receives bounded substantive evidence rehydrated from the exact tenant-bound durable snapshot and candidate artifacts.
+- [x] RED: prove tenant, repository, snapshot, candidate, digest, and content mismatches fail closed before provider egress while the queue payload remains identifier and digest only.
+- [x] RED: prove definitive retryable provider responses advance to a new durable provider operation, while ambiguous operations fail closed and completed success never repeats.
+- [x] Implement the smallest exact-bound evidence rehydration and definitive retryable outcome protocol under the existing stores.
+- [x] Run the focused advisory matrices, affected typechecks, YAML and diff integrity checks.
+- [x] Review and commit the closure without rebasing, pushing, or merging.
+
+#### Review
+
+- RED: 8 of 14 focused tests passed. The provider prompt omitted the exact before and after content, the queue had no substantive artifact binding, and durable 429, 503, and malformed 200 receipts were replayed indefinitely.
+- GREEN: 17 of 17 direct regressions pass. The coordinator reconstructs the exact deterministic candidate from the tenant-bound immutable snapshot, verifies source and candidate digests, and persists a separately bounded content-addressed evidence artifact only after Policy Envelope authorization. The queue retains identifiers and digests only; the worker revalidates scope and policy before rehydrating content and verifies every artifact and source digest before consent-gated egress.
+- Replay: a definitive retryable response gets an append-only classification bound to its exact receipt digest. The next queue attempt revalidates current consent and creates a new uniquely numbered operation. An intent without a response remains outcome-unknown and fail closed; an unclassified completed response is recovered; durable success remains telemetry-terminal and is never reissued.
+- Verification: the 10-file advisory, consent, workflow, and production-proof matrix passes 54 of 54 tests. The 19-file Mission, Policy, campaign, and advisory integration matrix passes 126 of 126 tests. Verifier, pipeline, worker, and API typechecks pass, and `git diff --check` is clean.
+
 ### Review
 
 - RED: the original completion hook called the provider in process, treated dispatch intent as a replay terminal, accepted production `shadow`, had no inherited Policy Envelope, and left a coordinator-owned durable queue invisible to the volume-free execution worker.

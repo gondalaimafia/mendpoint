@@ -16,6 +16,7 @@ import {
   enqueueVerifierAdvisoryJob,
   findVerifierTelemetry,
   readVerifierAdvisoryJobInput,
+  readVerifierAdvisoryJobSubstantiveEvidence,
 } from "./verifier-advisory-job.js";
 import { persistVerifierTelemetry } from "./verifier-telemetry.js";
 
@@ -60,16 +61,38 @@ function completion() {
   };
 }
 
+function substantiveEvidence() {
+  return {
+    schemaVersion: 1 as const,
+    tenantId: "tenant_a",
+    repositoryId: "repo_a",
+    snapshotId: "snapshot_a",
+    snapshotDigest: digest("snapshot"),
+    candidateId: "candidate_a",
+    candidateDigest: digest("candidate"),
+    changedPaths: ["package.json"],
+    sources: [{
+      id: "candidate_diff_package_json",
+      kind: "repository_excerpt" as const,
+      digest: digest('{"after":"{\\"engines\\":{\\"node\\":\\">=20\\"}}","before":"{\\"engines\\":{\\"node\\":\\">=18\\"}}","path":"package.json"}'),
+      locator: "snapshot_a:package.json",
+      content: '{"after":"{\\"engines\\":{\\"node\\":\\">=20\\"}}","before":"{\\"engines\\":{\\"node\\":\\">=18\\"}}","path":"package.json"}',
+    }],
+  };
+}
+
 describe("durable verifier advisory jobs", () => {
   it("stores content in a content addressed artifact and keeps the queue payload identifier only", () => {
     const db = setup();
     const first = enqueueVerifierAdvisoryJob(db, {
       completion: completion(),
+      substantiveEvidence: substantiveEvidence(),
       producerPrincipalId: "worker_a",
       createdAt: "2026-08-24T12:01:00.000Z",
     });
     const second = enqueueVerifierAdvisoryJob(db, {
       completion: completion(),
+      substantiveEvidence: substantiveEvidence(),
       producerPrincipalId: "worker_a",
       createdAt: "2026-08-24T12:01:00.000Z",
     });
@@ -83,22 +106,50 @@ describe("durable verifier advisory jobs", () => {
       missionId: "mission_a",
       taskId: "campaign_a:unit_a",
       product: "regauge",
+      substantiveEvidenceArtifactId: expect.stringMatching(/^verifier-advisory-evidence-/),
+      substantiveEvidenceSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(job.payload_json).not.toContain("package.json");
     expect(job.payload_json).not.toContain("Verify the completed migration");
+    expect(job.payload_json).not.toContain("engines");
     expect(listArtifactManifests(db, "tenant_a", "agent_verifier_advisory_input")).toHaveLength(1);
+    expect(listArtifactManifests(db, "tenant_a", "agent_verifier_advisory_substantive_evidence")).toHaveLength(1);
     expect(readVerifierAdvisoryJobInput(db, job)).toEqual(completion());
+  });
+
+  it("fails closed when substantive evidence tenant, digest, or content binding is changed", () => {
+    const db = setup();
+    expect(() => enqueueVerifierAdvisoryJob(db, {
+      completion: completion(), substantiveEvidence: { ...substantiveEvidence(), tenantId: "tenant_foreign" },
+      producerPrincipalId: "worker_a", createdAt: "2026-08-24T12:01:00.000Z",
+    })).toThrow("verifier_advisory_substantive_evidence_invalid");
+    const badContent = substantiveEvidence();
+    expect(() => enqueueVerifierAdvisoryJob(db, {
+      completion: completion(),
+      substantiveEvidence: { ...badContent, sources: [{ ...badContent.sources[0]!, content: "changed" }] },
+      producerPrincipalId: "worker_a", createdAt: "2026-08-24T12:01:00.000Z",
+    })).toThrow("verifier_advisory_substantive_evidence_invalid");
+    const queued = enqueueVerifierAdvisoryJob(db, {
+      completion: completion(), substantiveEvidence: substantiveEvidence(),
+      producerPrincipalId: "worker_a", createdAt: "2026-08-24T12:01:00.000Z",
+    });
+    const job = getJob(db, queued.jobId, "tenant_a")!;
+    const payload = JSON.parse(job.payload_json) as Record<string, unknown>;
+    payload.substantiveEvidenceSha256 = "f".repeat(64);
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ?").run(JSON.stringify(payload), job.id);
+    expect(() => readVerifierAdvisoryJobSubstantiveEvidence(db, getJob(db, job.id, "tenant_a")!, completion()))
+      .toThrow("verifier_advisory_substantive_evidence_integrity_invalid");
   });
 
   it("rejects a deterministic job id whose existing payload was changed", () => {
     const db = setup();
     const queued = enqueueVerifierAdvisoryJob(db, {
-      completion: completion(), producerPrincipalId: "worker_a", createdAt: "2026-08-24T12:01:00.000Z",
+      completion: completion(), substantiveEvidence: substantiveEvidence(), producerPrincipalId: "worker_a", createdAt: "2026-08-24T12:01:00.000Z",
     });
     db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ?")
       .run(JSON.stringify({ inputArtifactId: "attacker" }), queued.jobId);
     expect(() => enqueueVerifierAdvisoryJob(db, {
-      completion: completion(), producerPrincipalId: "worker_a", createdAt: "2026-08-24T12:01:00.000Z",
+      completion: completion(), substantiveEvidence: substantiveEvidence(), producerPrincipalId: "worker_a", createdAt: "2026-08-24T12:01:00.000Z",
     })).toThrow("verifier_advisory_job_conflict");
   });
 

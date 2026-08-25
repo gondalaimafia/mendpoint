@@ -1,6 +1,6 @@
 import { createVerifierEvidencePack } from "./evidence.js";
 import { criteriaForProduct } from "./policy.js";
-import type { VerifierEvidencePack, VerifierGovernanceInput, VerifierProduct, VerifierRisk } from "./types.js";
+import type { VerifierEvidencePack, VerifierGovernanceInput, VerifierProduct, VerifierRisk, VerifierSourceInput } from "./types.js";
 import { boundedText, canonicalJson, codeUnitCompare, exactDigest, fail, identifier, sha256, sortedUnique } from "./utils.js";
 
 export function createCompletionVerifierEvidencePack(input: Readonly<{
@@ -21,6 +21,7 @@ export function createCompletionVerifierEvidencePack(input: Readonly<{
   observableSummary: string;
   deterministicEvidenceDigest: string;
   deterministicEvidenceRefs: readonly string[];
+  substantiveSources?: readonly Readonly<VerifierSourceInput>[];
   assembledAt: string;
   assemblerVersion: string;
 }>): VerifierEvidencePack {
@@ -53,6 +54,7 @@ export function createCompletionVerifierEvidencePack(input: Readonly<{
     sources: [
       { id: "deterministic_completion", kind: "verification", digest: exactDigest(input.deterministicEvidenceDigest, "verifier_completion_evidence_digest_invalid"), locator: evidenceRefs.join(","), content: completionEvidence },
       { id: "external_verifier_authority", kind: "owner", digest: sha256(governanceEvidenceRef), locator: governanceEvidenceRef, content: `External verifier authority: ${governanceEvidenceRef}` },
+      ...(input.substantiveSources ?? []).map((source) => ({ ...source })),
     ],
     checks: [{ id: "deterministic_completion", status: "passed", evidenceRefs: [...evidenceRefs], candidateIds: null }],
     candidates: [{
@@ -61,7 +63,8 @@ export function createCompletionVerifierEvidencePack(input: Readonly<{
       kind: "completion",
       observableOutput: completionEvidence,
       changedPaths: [...changed],
-      evidenceRefs: ["deterministic_completion", "external_verifier_authority", ...evidenceRefs].sort(codeUnitCompare),
+      evidenceRefs: ["deterministic_completion", "external_verifier_authority",
+        ...(input.substantiveSources ?? []).map((source) => source.id), ...evidenceRefs].sort(codeUnitCompare),
       deterministicCheckIds: ["deterministic_completion"],
       hardCriterionResults: [],
     }],

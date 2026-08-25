@@ -10,7 +10,8 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import {
-  NODE_RUNTIME_18_TO_20_RECIPE, recipeReference,
+  NODE_RUNTIME_18_TO_20_RECIPE, applyRecipe, recipeFilesDigest, recipeReference,
+  type ExactSourceSnapshot, type RecipeFiles,
   type TransformerAttemptCheckpointCompletionResult,
 } from "@mendpoint/transformer";
 import {
@@ -23,6 +24,17 @@ const dbs: AppDb[] = [];
 const sha = (value: string) => value.repeat(40);
 const digest = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const observedAt = "2026-08-24T12:01:00.000Z";
+const SOURCE_FILES: RecipeFiles = Object.freeze({
+  "package.json": `${JSON.stringify({ name: "regauge-canary", engines: { node: ">=18 <19" } }, null, 2)}\n`,
+});
+const RECIPE = recipeReference(NODE_RUNTIME_18_TO_20_RECIPE);
+const APPLICATION = applyRecipe(RECIPE, SOURCE_FILES);
+
+function exactSource(): ExactSourceSnapshot {
+  return Object.freeze({ repositoryId: "repo-a", revision: sha("a"),
+    digest: recipeFilesDigest(SOURCE_FILES), files: SOURCE_FILES,
+    fileModes: Object.freeze({ "package.json": "100644" }) });
+}
 
 afterEach(() => {
   while (dbs.length) dbs.pop()!.raw.close();
@@ -48,7 +60,7 @@ function completed(): TransformerAttemptCheckpointCompletionResult {
   return {
     campaign: {
       schemaVersion: "2026-08-11.v1", tenantId: "tenant_regauge_canary", organizationId: "org-canary", environment: "production", campaignId: "campaign_regauge_canary_20260814", revision: 3, state: "running", constraintVersion: 1, constraintDigest: digest("constraint"), gateEvidenceRefs: ["evidence:gate"],
-      units: [{ id: "unit-a", title: "Migrate Node", ownerId: "owner-a", reviewerIds: ["reviewer-a"], dependsOn: [], wave: 1, snapshot: { snapshotId: "snapshot-a", repositoryId: "repo-a", revision: sha("a"), manifestSha256: "a".repeat(64), digest: digest("snapshot"), evidenceRefs: ["evidence:snapshot"] }, candidateRevision: sha("c"), candidateDigest: digest("candidate"), recipe: recipeReference(NODE_RUNTIME_18_TO_20_RECIPE), changedPaths: ["package.json"], state: "executed", attemptNumber: 1, leaseGeneration: 1, retryAuthorized: false, executionEvidenceRefs: ["evidence:verification"], scmEvidenceRefs: [], executedAt: observedAt, verificationPassed: true, actualCostUsd: 0.02, adaptiveAccounting: { attempts: 1, plannerCalls: 0, modelCalls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, actualCostUsd: 0, wallTimeMs: 100 } }],
+      units: [{ id: "unit-a", title: "Migrate Node", ownerId: "owner-a", reviewerIds: ["reviewer-a"], dependsOn: [], wave: 1, snapshot: { snapshotId: "snapshot-a", repositoryId: "repo-a", revision: sha("a"), manifestSha256: "a".repeat(64), digest: APPLICATION.inputDigest, evidenceRefs: ["evidence:snapshot"] }, candidateRevision: sha("c"), candidateDigest: APPLICATION.outputDigest, recipe: RECIPE, changedPaths: ["package.json"], state: "executed", attemptNumber: 1, leaseGeneration: 1, retryAuthorized: false, executionEvidenceRefs: ["evidence:verification"], scmEvidenceRefs: [], executedAt: observedAt, verificationPassed: true, actualCostUsd: 0.02, adaptiveAccounting: { attempts: 1, plannerCalls: 0, modelCalls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, actualCostUsd: 0, wallTimeMs: 100 } }],
       exceptions: [], adaptiveBudget: { maximum: { attempts: 1, plannerCalls: 1, modelCalls: 1, inputTokens: 100, outputTokens: 100, totalTokens: 200, actualCostUsd: 1, wallTimeMs: 10_000 }, used: { attempts: 1, plannerCalls: 0, modelCalls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, actualCostUsd: 0, wallTimeMs: 100 } }, createdAt: "2026-08-24T12:00:00.000Z", updatedAt: observedAt,
     },
     receipt: { schemaVersion: 1, tenantId: "tenant_regauge_canary", campaignId: "campaign_regauge_canary_20260814", unitId: "unit-a", episodeId: "episode-a", completionDigest: digest("completion"), campaignRevision: 3, observedAt, checkpointHead: { schemaVersion: 1, tenantId: "tenant_regauge_canary", campaignId: "campaign_regauge_canary_20260814", unitId: "unit-a", episodeId: "episode-a", stateDigest: digest("state"), envelopeStorageKey: "checkpoint/a", envelopeDigest: digest("envelope"), generation: 2, attemptNumber: 1, writerLeaseGeneration: 1, writerLeaseTokenDigest: digest("lease") } },
@@ -65,40 +77,41 @@ function env(): Record<string, string> {
 describe("dedicated ReGauge advisory dispatch", () => {
   it("derives the input from exact completion evidence and the durable Mission id", () => {
     expect(buildDedicatedRegaugeCompletionInput(completed(), "mission-regauge-a")).toEqual({
-      tenantId: "tenant_regauge_canary", missionId: "mission-regauge-a", taskId: "campaign_regauge_canary_20260814:unit-a", product: "regauge", repositoryId: "repo-a", snapshotId: "snapshot-a", snapshotDigest: digest("snapshot"), objective: "Execute the bound node-runtime-18-to-20 migration for unit unit-a.", risk: "high", allowedChangedPaths: ["package.json"], candidateId: expect.stringMatching(/^regauge_[a-f0-9]{32}$/), candidateDigest: digest("candidate"), changedPaths: ["package.json"], observableSummary: "The exact checkpoint completion passed deterministic verification for 1 changed path.", deterministicEvidenceDigest: digest("completion"), deterministicEvidenceRefs: ["evidence:verification"], observedAt,
+      tenantId: "tenant_regauge_canary", missionId: "mission-regauge-a", taskId: "campaign_regauge_canary_20260814:unit-a", product: "regauge", repositoryId: "repo-a", snapshotId: "snapshot-a", snapshotDigest: APPLICATION.inputDigest, objective: "Execute the bound node-runtime-18-to-20 migration for unit unit-a.", risk: "high", allowedChangedPaths: ["package.json"], candidateId: expect.stringMatching(/^regauge_[a-f0-9]{32}$/), candidateDigest: APPLICATION.outputDigest, changedPaths: ["package.json"], observableSummary: "The exact checkpoint completion passed deterministic verification for 1 changed path.", deterministicEvidenceDigest: digest("completion"), deterministicEvidenceRefs: ["evidence:verification"], observedAt,
     });
   });
 
   it("binds policy authority and enqueues exactly one identifier only job on replay", () => {
     const store = db();
-    const first = enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: env(), completion: completed() });
-    const second = enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: env(), completion: completed() });
+    const first = enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: env(), completion: completed(), exactSource: exactSource() });
+    const second = enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: env(), completion: completed(), exactSource: exactSource() });
     expect(second).toEqual({ ...first, status: "duplicate" });
     expect(getMission(store, "tenant_regauge_canary", "mission-regauge-a")?.policyEnvelopeVersion).toBe("1");
     const job = getJob(store, first.jobId, "tenant_regauge_canary")!;
     expect(job.type).toBe("verifier.advisory.verify");
     expect(job.payload_json).not.toContain("package.json");
     expect(listArtifactManifests(store, "tenant_regauge_canary", "agent_verifier_advisory_input")).toHaveLength(1);
+    expect(listArtifactManifests(store, "tenant_regauge_canary", "agent_verifier_advisory_substantive_evidence")).toHaveLength(1);
   });
 
   it("fails closed before enqueue when Mission or policy authority does not match", () => {
     const store = db();
-    expect(() => enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: { ...env(), MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: "{}" }, completion: completed() }))
+    expect(() => enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: { ...env(), MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON: "{}" }, completion: completed(), exactSource: exactSource() }))
       .toThrow("verifier_advisory_policy_invalid");
     const wrong = completed();
     (wrong.campaign as { campaignId: string }).campaignId = "other-campaign";
-    expect(() => enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: env(), completion: wrong }))
+    expect(() => enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: env(), completion: wrong, exactSource: exactSource() }))
       .toThrow("verifier_advisory_scope_invalid");
     const dynamicTemplate = env();
     dynamicTemplate.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON = JSON.stringify({
       ...JSON.parse(dynamicTemplate.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON),
       repositoryScope: [], branchScope: [],
     });
-    expect(() => enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: dynamicTemplate, completion: completed() }))
+    expect(() => enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: dynamicTemplate, completion: completed(), exactSource: exactSource() }))
       .toThrow("verifier_advisory_policy_template_scope_invalid");
     store.raw.prepare("UPDATE connected_repositories SET name = ? WHERE id = ?")
       .run("different-repository", "repo-a");
-    expect(() => enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: env(), completion: completed() }))
+    expect(() => enqueueDedicatedRegaugeCompletionForAdvisory({ db: store, env: env(), completion: completed(), exactSource: exactSource() }))
       .toThrow("verifier_advisory_scope_invalid");
     expect(listArtifactManifests(store, "tenant_regauge_canary", "agent_verifier_advisory_input"))
       .toHaveLength(0);

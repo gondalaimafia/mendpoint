@@ -27,6 +27,7 @@ export {
   type VerifierRolloutMode,
   type VerifierScoringMode,
   type VerifierSource,
+  type VerifierSourceInput,
   type VerifierTelemetry,
   type VerifierUsage,
 } from "./types.js";
