@@ -35,7 +35,11 @@ import {
   resolveGitHubTenantAccountBinding,
   type InstallationRepository,
 } from "@mendpoint/github";
-import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
+import {
+  bindVerifierAdvisoryPolicyAuthorityAtMissionLaunch,
+  ensureDefaultPolicyEnvelopeBinding,
+  pinPublishedGraphVersionForSingleRepository,
+} from "@mendpoint/pipeline";
 import {
   CredentialBroker,
   type SecretProvider,
@@ -69,6 +73,11 @@ import { TransformerCampaignService } from "./transformer-control-plane.js";
 import { createAppDbTransformerMissionAuthority } from "./transformer-mission-authority.js";
 import { TransformerMissionService } from "./transformer-missions.js";
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
+import {
+  ensureRegaugeVerifierConsent,
+  regaugeVerifierConsentAuthorityFromEnvironment,
+  type RegaugeVerifierConsentAuthority,
+} from "./regauge-verifier-consent.js";
 
 const RECEIPT_SCHEMAS = new Set(["2026-08-14.v1", "2026-08-21.v2"]);
 const RECEIPT_EVENT = "regauge.production.bootstrap.completed";
@@ -133,6 +142,12 @@ export function bindRegaugeMissionAtLaunch(
     ownerPrincipalId: string;
     objective: string;
     repositories: readonly Readonly<{ repositoryId: string; snapshotId: string }>[];
+    verifierPolicyAuthority?: Readonly<{
+      policyEnvelopeJson: string;
+      repositoryScope: string;
+      branch: string;
+      processingRegion: string;
+    }>;
     createdAt: string;
   }>,
 ): Mission {
@@ -168,16 +183,6 @@ export function bindRegaugeMissionAtLaunch(
     correlationId: input.campaignId,
     createdAt: input.createdAt,
   });
-  // Spec §6.7: every Mission MUST reference a versioned Policy Envelope. Bind the
-  // tenant's default envelope set-once at launch (idempotent), mirroring the
-  // Fettler enrollment path, so ReGauge tasks inherit an enforceable boundary.
-  current = ensureDefaultPolicyEnvelopeBinding(db, {
-    tenantId: input.tenantId,
-    missionId,
-    actorPrincipalId: input.ownerPrincipalId,
-    correlationId: input.campaignId,
-    createdAt: input.createdAt,
-  });
   if (scope) {
     current = bindMissionScope(db, {
       tenantId: input.tenantId,
@@ -187,6 +192,55 @@ export function bindRegaugeMissionAtLaunch(
       actorPrincipalId: input.ownerPrincipalId,
       eventId: `${missionId}-scope-bound`,
       idempotencyKey: `mission-scope-${missionId}`,
+      correlationId: input.campaignId,
+      createdAt: input.createdAt,
+    });
+    // Spec §11.10: pin a unique published graph version for this single
+    // repository when a real graph file already exists. Multi-repo launches
+    // skip this branch (scope is null) and stay unbound. Best-effort: the
+    // launch has already happened by the time this runs, so mission bookkeeping
+    // must never fail the launch (convention in packages/pipeline/src/index.ts).
+    // A graph-store error (SQLITE_BUSY, read-only volume) is logged, not thrown:
+    // otherwise the operator gets an error for a launch that actually succeeded.
+    try {
+      const pinned = pinPublishedGraphVersionForSingleRepository(db, {
+        tenantId: input.tenantId,
+        missionId,
+        repositoryIds: [scope.repositoryId],
+        actorPrincipalId: input.ownerPrincipalId,
+        correlationId: input.campaignId,
+        createdAt: input.createdAt,
+      });
+      if (pinned.mission) current = pinned.mission;
+    } catch (error) {
+      console.error(
+        `regauge mission graph bind failed tenant=${input.tenantId} campaign=${input.campaignId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  // A production advisory Mission must inherit the exact restrictive verifier
+  // envelope before execution starts. Other launch callers retain the explicit
+  // default envelope behavior.
+  if (input.verifierPolicyAuthority) {
+    if (!scope) throw new Error("verifier_advisory_policy_authority_invalid");
+    bindVerifierAdvisoryPolicyAuthorityAtMissionLaunch(db, {
+      tenantId: input.tenantId,
+      missionId,
+      product: "regauge",
+      repositoryId: scope.repositoryId,
+      snapshotId: scope.snapshotId,
+      actorPrincipalId: input.ownerPrincipalId,
+      createdAt: input.createdAt,
+      ...input.verifierPolicyAuthority,
+    });
+    current = getMission(db, input.tenantId, missionId) ?? current;
+  } else {
+    current = ensureDefaultPolicyEnvelopeBinding(db, {
+      tenantId: input.tenantId,
+      missionId,
+      actorPrincipalId: input.ownerPrincipalId,
       correlationId: input.campaignId,
       createdAt: input.createdAt,
     });
@@ -328,6 +382,13 @@ type RuntimeOptions = Readonly<{
   executions: TransformerPilotExecutionService;
   missions: TransformerMissionService;
   repositoryDependencies: RepositoryConnectionDependencies;
+  verifierConsentAuthority?: RegaugeVerifierConsentAuthority;
+  verifierPolicyAuthority?: Readonly<{
+    policyEnvelopeJson: string;
+    repositoryScope: string;
+    branch: string;
+    processingRegion: string;
+  }>;
   listInstallationRepositories(): Promise<readonly InstallationRepository[]>;
   now?: () => string;
 }>;
@@ -472,6 +533,57 @@ export function createRegaugeProductionBootstrapRuntime(
   options: RuntimeOptions,
 ): RegaugeProductionBootstrapRuntime {
   const now = options.now ?? (() => new Date().toISOString());
+  const reconcileVerifierConsent = (input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    reviewerPrincipalId: string;
+    createdAt: string;
+  }>): void => {
+    if (!options.verifierConsentAuthority) return;
+    const verifierConsent = ensureRegaugeVerifierConsent(options.db, {
+      tenantId: input.tenantId,
+      reviewerPrincipalId: input.reviewerPrincipalId,
+      authority: options.verifierConsentAuthority,
+      createdAt: input.createdAt,
+    });
+    if (verifierConsent.status === "disabled") {
+      console.warn(JSON.stringify({
+        event: "regauge_verifier_disabled",
+        reason: verifierConsent.reason,
+        tenantId: input.tenantId,
+        campaignId: input.campaignId,
+        latestConsentId: verifierConsent.latestConsentId,
+        latestConsentVersion: verifierConsent.latestConsentVersion,
+        observedAt: input.createdAt,
+      }));
+    }
+  };
+  const reconcileMission = (input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    execution: RegaugeProductionExecution;
+  }>): void => {
+    const owner = getPrincipalBySubject(
+      options.db,
+      input.tenantId,
+      "service",
+      "service:regauge-production-bootstrap",
+    );
+    if (!owner) throw new Error("regauge_production_bootstrap_principal_missing");
+    const campaign = options.control.store.getCampaign(input.tenantId, input.campaignId);
+    bindRegaugeMissionAtLaunch(options.db, {
+      tenantId: input.tenantId,
+      campaignId: input.campaignId,
+      ownerPrincipalId: owner.id,
+      objective: campaign?.name ?? input.campaignId,
+      repositories: [{
+        repositoryId: input.execution.repositoryId,
+        snapshotId: input.execution.snapshotId,
+      }],
+      verifierPolicyAuthority: options.verifierPolicyAuthority,
+      createdAt: now(),
+    });
+  };
   return Object.freeze({
     async prepareRepository({ bootstrap, reviewerActorId }) {
       findRepository(await options.listInstallationRepositories(), bootstrap);
@@ -501,8 +613,9 @@ export function createRegaugeProductionBootstrapRuntime(
         createdAt: at,
       });
       const reviewerSubject = `${bootstrap.reviewer.issuer}|${bootstrap.reviewer.subject}`;
+      const reviewerPrincipalId = stableId("principal-regauge-reviewer", bootstrap.tenantId, reviewerSubject);
       insertPrincipal(options.db, {
-        id: stableId("principal-regauge-reviewer", bootstrap.tenantId, reviewerSubject),
+        id: reviewerPrincipalId,
         tenantId: bootstrap.tenantId,
         kind: "human",
         subject: reviewerSubject,
@@ -522,6 +635,12 @@ export function createRegaugeProductionBootstrapRuntime(
       if (reviewerActorId !== `human:${reviewerSubject}`) {
         throw new Error("regauge_production_bootstrap_reviewer_drift");
       }
+      reconcileVerifierConsent({
+        tenantId: bootstrap.tenantId,
+        campaignId: bootstrap.campaignId,
+        reviewerPrincipalId,
+        createdAt: at,
+      });
       upsertGitHubInstallation(options.db, {
         id: stableId("github-installation", bootstrap.repository.installationId),
         installationId: bootstrap.repository.installationId,
@@ -716,6 +835,26 @@ export function createRegaugeProductionBootstrapRuntime(
       return mapControl(options, input.tenantId, input.campaignId, input.control.snapshotId)!;
     },
     async readExecution(tenantId, campaignId) { return mapExecution(options, tenantId, campaignId); },
+    async reconcileExisting(input) {
+      const reviewerSubject = input.reviewerActorId.startsWith("human:")
+        ? input.reviewerActorId.slice("human:".length)
+        : "";
+      const reviewer = reviewerSubject
+        ? getPrincipalBySubject(options.db, input.tenantId, "human", reviewerSubject)
+        : undefined;
+      if (!reviewer) throw new Error("regauge_production_bootstrap_reviewer_drift");
+      reconcileVerifierConsent({
+        tenantId: input.tenantId,
+        campaignId: input.campaignId,
+        reviewerPrincipalId: reviewer.id,
+        createdAt: now(),
+      });
+      reconcileMission({
+        tenantId: input.tenantId,
+        campaignId: input.campaignId,
+        execution: input.execution,
+      });
+    },
     async launch(input) {
       options.missions.launch({
         tenantId: input.tenantId,
@@ -727,21 +866,10 @@ export function createRegaugeProductionBootstrapRuntime(
       const execution = mapExecution(options, input.tenantId, input.campaignId)!;
       // Mission state is part of launch authority. Do not return an execution
       // that cannot be joined to the exact durable Mission.
-      const owner = getPrincipalBySubject(
-        options.db,
-        input.tenantId,
-        "service",
-        "service:regauge-production-bootstrap",
-      );
-      if (!owner) throw new Error("regauge_production_bootstrap_principal_missing");
-      const campaign = options.control.store.getCampaign(input.tenantId, input.campaignId);
-      bindRegaugeMissionAtLaunch(options.db, {
+      reconcileMission({
         tenantId: input.tenantId,
         campaignId: input.campaignId,
-        ownerPrincipalId: owner.id,
-        objective: campaign?.name ?? input.campaignId,
-        repositories: [{ repositoryId: execution.repositoryId, snapshotId: execution.snapshotId }],
-        createdAt: now(),
+        execution,
       });
       return execution;
     },
@@ -791,6 +919,7 @@ export async function runRegaugeProductionBootstrapFromEnvironment(
     throw new Error("regauge_production_bootstrap_disabled");
   }
   const input = regaugeProductionBootstrapInputFromEnvironment(env);
+  const verifierConsentAuthority = regaugeVerifierConsentAuthorityFromEnvironment(env, input.tenantId);
   const appCredentials = loadAppCredentials(env);
   if (!appCredentials) throw new Error("regauge_production_bootstrap_github_app_credentials_required");
   const token = new InstallationTokenCache(
@@ -831,6 +960,13 @@ export async function runRegaugeProductionBootstrapFromEnvironment(
         credentialBroker: broker,
         actorId: "service:regauge-production-bootstrap",
         requestId: `bootstrap-materialize-${input.campaignId}`,
+      },
+      verifierConsentAuthority,
+      verifierPolicyAuthority: {
+        policyEnvelopeJson: required(env, "MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON"),
+        repositoryScope: `${input.repository.owner}/${input.repository.name}`,
+        branch: input.repository.selectedBranch,
+        processingRegion: verifierConsentAuthority.residencyRegion,
       },
       listInstallationRepositories: async () => defaultListInstallationRepositories(await token.get()),
     });

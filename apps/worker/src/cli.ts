@@ -15,6 +15,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   runChangePipeline,
+  VERIFIER_ADVISORY_JOB_TYPE,
   type DelegatedPrCandidateOperationDependencies,
   type DelegatedPrVerificationDependencies,
   type PipelineReport,
@@ -77,6 +78,7 @@ import {
   runFeedSchedules,
 } from "@mendpoint/catalog";
 import { assessFeedFreshness, nowIso, resolveRenamedEnv } from "@mendpoint/shared";
+import { resolveVerifierRuntimeConfig } from "@mendpoint/verifier";
 import { pageWorkerHeartbeat } from "@mendpoint/notify";
 import {
   createAppDelivery,
@@ -113,7 +115,7 @@ import {
   runPolicyRoutedWarden,
   readWardenApprovalArtifact,
   resolveAgentModelEndpoint,
-  inheritedContextEnabled,
+  inheritedContextShouldCompile,
   WARDEN_CANDIDATE_REVIEW_LIMITS,
   type AgentModelSourcePolicy,
   type AgentPlanner,
@@ -187,7 +189,6 @@ import { resolveBoundMission } from "./job-bound-mission.js";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 import { resolveResumeContext } from "./mission-resume.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
-import { observeProductCompletionInShadow } from "./verifier-product-shadow.js";
 import {
   parseLearningCorpusArgs,
   sealGovernedLearningCorpus,
@@ -196,6 +197,11 @@ import {
   bridgeClaimedJobToMissionTask,
   recordBoundMissionExecutionCost,
 } from "./mission-task-job-bridge.js";
+import {
+  observeProductCompletionInAdvisory,
+  resolveVerifierGovernance,
+} from "./verifier-product-shadow.js";
+import { runVerifierAdvisoryJob } from "./verifier-advisory-job.js";
 
 function verifierDigest(value: string): string {
   if (/^sha256:[a-f0-9]{64}$/.test(value)) return value;
@@ -265,6 +271,14 @@ export type JobDrainResult = {
   succeeded: number;
   failed: number;
   retried: number;
+  /**
+   * The job reached a terminal state without error, but the work it existed to
+   * do was neither performed nor failed — it was simulated, skipped, or
+   * budget-capped. These are not failures of the work; they are the absence of
+   * a determination. Counting them as `succeeded` reports work that never
+   * happened; counting them as `failed` reports a failure that never happened.
+   */
+  inconclusive: number;
 };
 
 export type WorkerHeartbeat = {
@@ -545,7 +559,7 @@ export function classifyJobFailure(error: unknown): {
     );
   const retryable =
     !authorizationFailure &&
-    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed/.test(
+    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable/.test(
         normalized,
       );
   const errorCode = explicitCode ?? (retryable
@@ -1767,13 +1781,28 @@ export function validateWorkerProductionEnv(
     errors.push("DEEPSEEK_VERIFIER_ENABLED must be exactly true or false");
   }
   if (verifierEnabled === "true") {
-    const rollout = env.MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE?.trim() || "shadow";
-    if (rollout !== "shadow" && rollout !== "offline") {
-      errors.push("The first verifier release permits only offline or shadow rollout");
+    const rollout = env.MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE?.trim() || "advisory";
+    if (rollout !== "advisory" && rollout !== "offline") {
+      errors.push("The production verifier permits only offline or advisory rollout");
     }
     if (!env.DEEPSEEK_API_KEY?.trim()) errors.push("DEEPSEEK_API_KEY is required when independent verification is enabled");
     if (!env.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON?.trim()) errors.push("MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON is required when independent verification is enabled");
     if (!env.MENDPOINT_AGENT_VERIFIER_PRICING_JSON?.trim()) errors.push("MENDPOINT_AGENT_VERIFIER_PRICING_JSON is required when independent verification is enabled");
+    const regaugeAdvisory = rollout === "advisory" && (
+      env.MENDPOINT_REGAUGE_ENABLED?.trim() === "1" ||
+      env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() === "transformer_pilot" ||
+      env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() === "regauge_production"
+    );
+    if (regaugeAdvisory && !env.MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON?.trim()) {
+      errors.push("MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON is required for advisory verification");
+    }
+    const verifierRuntime = resolveVerifierRuntimeConfig(env);
+    if (verifierRuntime.enabled) {
+      const requiredLeaseMs = verifierRuntime.timeoutMs + 60_000;
+      if (parseLeaseMs(env.JOB_LEASE_MS) < requiredLeaseMs) {
+        errors.push(`JOB_LEASE_MS must be at least ${requiredLeaseMs} when independent verification is enabled`);
+      }
+    }
   }
   const hasAnyAppCredential = Boolean(
     env.GITHUB_APP_ID?.trim() ||
@@ -2275,6 +2304,32 @@ function wardenCiConfigForDeliveryJob(
   return wardenCiConfigForRepository(env, delivery.repositoryId);
 }
 
+/**
+ * Which drain counter a `warden.candidate.repair` dispatch earns.
+ *
+ * `repair_enqueued` is the only outcome where the repair actually happened, so
+ * it is the only success. `budget_exhausted` means the repair did not run — the
+ * work was neither performed nor failed, so it is inconclusive, not a success.
+ * The `never` binding makes any future dispatch status a compile-time error
+ * here rather than letting it fall silently into `succeeded`; if that guard is
+ * ever removed, an unrecognized status counts as inconclusive, not success.
+ */
+export function classifyWardenCiRepairDispatch(
+  dispatch: Awaited<ReturnType<typeof runWardenCiRepairDispatch>>,
+): "succeeded" | "inconclusive" {
+  switch (dispatch.status) {
+    case "repair_enqueued":
+      return "succeeded";
+    case "budget_exhausted":
+      return "inconclusive";
+    default: {
+      const _unhandled: never = dispatch;
+      void _unhandled;
+      return "inconclusive";
+    }
+  }
+}
+
 function assertWardenCiCycleConfiguration(
   cycle: NonNullable<ReturnType<typeof getWardenCiCycle>>,
   env: NodeJS.ProcessEnv,
@@ -2509,6 +2564,8 @@ async function processJobsOnceUnfenced(
     maxRunningPerTenant?: number;
     shouldContinue?: () => boolean;
     runWardenMaintenance?: boolean;
+    jobTypes?: readonly string[];
+    logWhenIdle?: boolean;
     wardenPlanner?: AgentPlanner;
     wardenEnv?: NodeJS.ProcessEnv;
     pipelineRunner?: typeof runChangePipeline;
@@ -2536,8 +2593,11 @@ async function processJobsOnceUnfenced(
 ): Promise<JobDrainResult> {
   const workerId = opts.workerId ?? WORKER_ID;
   const workerEnv = opts.wardenEnv ?? process.env;
-  const delegatedPrVerification = opts.delegatedPrVerification ??
-    delegatedPrVerificationRuntimeFromEnv(db, workerEnv, workerId);
+  const delegatedPrVerification = opts.jobTypes &&
+      !opts.jobTypes.includes(DELEGATED_PR_VERIFICATION_JOB_TYPE)
+    ? undefined
+    : opts.delegatedPrVerification ??
+      delegatedPrVerificationRuntimeFromEnv(db, workerEnv, workerId);
   const leaseMs = parseLeaseMs(opts.leaseMs ?? process.env.JOB_LEASE_MS);
   const maxJobs = Math.max(1, Math.min(opts.maxJobs ?? 25, 100));
   const result: JobDrainResult = {
@@ -2545,6 +2605,7 @@ async function processJobsOnceUnfenced(
     succeeded: 0,
     failed: 0,
     retried: 0,
+    inconclusive: 0,
   };
   if (opts.runWardenMaintenance !== false) {
     try {
@@ -2564,19 +2625,33 @@ async function processJobsOnceUnfenced(
       );
     }
   }
+  const supportedTypes = ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver",
+    "warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update",
+    "fettler.pr.review", "transformer.adaptive.deliver", LEARNING_OUTCOME_RESOLVE_JOB_TYPE];
+  if (workerEnv.DEEPSEEK_VERIFIER_ENABLED?.trim() === "true") {
+    supportedTypes.push(VERIFIER_ADVISORY_JOB_TYPE);
+  }
+  if (delegatedPrVerification?.candidateDependencies.enabled === true &&
+      delegatedPrVerification.verificationDependencies.enabled === true) {
+    supportedTypes.push(DELEGATED_PR_VERIFICATION_JOB_TYPE);
+  }
+  // Only claim campaign-execute jobs when this worker has the production
+  // execution dependencies; otherwise leave them for a worker that does.
+  if (opts.wardenCampaignExecution) {
+    supportedTypes.push(WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE);
+  }
+  const claimedTypes = opts.jobTypes === undefined ? supportedTypes : [...opts.jobTypes];
+  if (claimedTypes.length === 0 || new Set(claimedTypes).size !== claimedTypes.length ||
+      claimedTypes.some((type) => !supportedTypes.includes(type))) {
+    throw new Error("worker_job_type_filter_invalid");
+  }
+  if (claimedTypes.includes(VERIFIER_ADVISORY_JOB_TYPE)) {
+    const verifierConfig = resolveVerifierRuntimeConfig(workerEnv);
+    if (!verifierConfig.enabled || leaseMs < verifierConfig.timeoutMs + 60_000) {
+      throw new Error("verifier_advisory_job_lease_too_short");
+    }
+  }
   for (; result.claimed < maxJobs && opts.shouldContinue?.() !== false; ) {
-    const claimedTypes = ["pipeline.fanout", "agent.run", "repair.run", "warden.candidate.deliver",
-      "warden.candidate.observe", "warden.candidate.repair", "warden.candidate.update",
-      "fettler.pr.review", "transformer.adaptive.deliver", LEARNING_OUTCOME_RESOLVE_JOB_TYPE];
-    if (delegatedPrVerification?.candidateDependencies.enabled === true &&
-        delegatedPrVerification.verificationDependencies.enabled === true) {
-      claimedTypes.push(DELEGATED_PR_VERIFICATION_JOB_TYPE);
-    }
-    // Only claim campaign-execute jobs when this worker has the production
-    // execution dependencies; otherwise leave them for a worker that does.
-    if (opts.wardenCampaignExecution) {
-      claimedTypes.push(WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE);
-    }
     const job = claimNextJob(
       db,
       claimedTypes,
@@ -2620,7 +2695,8 @@ async function processJobsOnceUnfenced(
         };
       }
     }
-    const renewal = setInterval(() => {
+    const refreshJobLease = (): boolean => {
+      if (leaseLost) return false;
       try {
         if (
           !renewJobLease(db, job.id, {
@@ -2630,6 +2706,7 @@ async function processJobsOnceUnfenced(
         ) {
           leaseLost = true;
           leaseAbort.abort("lease_lost_during_warden");
+          return false;
         }
       } catch (error) {
         leaseLost = true;
@@ -2639,13 +2716,26 @@ async function processJobsOnceUnfenced(
             error instanceof Error ? error.message : String(error)
           }`,
         );
+        return false;
       }
-    }, Math.max(100, Math.floor(leaseMs / 3)));
+      return true;
+    };
+    const renewal = setInterval(refreshJobLease, Math.max(100, Math.floor(leaseMs / 3)));
     renewal.unref();
     try {
       // D3: when the job is bound to a real mission, put a MissionTask on the
       // live claim path (unassigned → agent_working). Unbound jobs stay unbound.
       bridgeClaimedJobToMissionTask(db, job, nowIso());
+      if (job.type === VERIFIER_ADVISORY_JOB_TYPE) {
+        await runVerifierAdvisoryJob({
+          db,
+          job,
+          env: workerEnv,
+          refreshProviderLease: refreshJobLease,
+        });
+        result.succeeded++;
+        continue;
+      }
       if (job.type === DELEGATED_PR_VERIFICATION_JOB_TYPE) {
         if (!delegatedPrVerification) throw new Error("delegated_pr_verification_disabled");
         const verification = await runDelegatedPrVerificationJob(db, {
@@ -2794,7 +2884,7 @@ async function processJobsOnceUnfenced(
         if (!repositoriesRoot || !isAbsolute(repositoriesRoot)) {
           throw new Error("MENDPOINT_REPOS_DIR is required for Fettler CI repair");
         }
-        await runWardenCiRepairDispatch({ db, job,
+        const repairDispatch = await runWardenCiRepairDispatch({ db, job,
           readEvidence: ({ tenantId, artifactId, expectedDigest }) =>
             evidence.read(tenantId, artifactId, expectedDigest),
           materializeHead: async (authority) => materializeWardenCiHead({ db,
@@ -2803,7 +2893,10 @@ async function processJobsOnceUnfenced(
             remoteRepositoryId: authority.remoteRepositoryId, headSha: authority.headSha,
             repositoriesRoot, nodeEnv: workerEnv.NODE_ENV }),
         });
-        result.succeeded++;
+        // Budget exhaustion means the repair did not happen — the case an
+        // operator needs to see, not a success. classifyWardenCiRepairDispatch
+        // routes every dispatch status exhaustively (compile-time never guard).
+        result[classifyWardenCiRepairDispatch(repairDispatch)]++;
         continue;
       }
       if (job.type === "fettler.pr.review") {
@@ -2980,7 +3073,9 @@ async function processJobsOnceUnfenced(
                 simulated: true,
                 stoppedReason: warden.stoppedReason,
               }, legacyRun);
-              result.succeeded++;
+              // The run did not succeed and the verifier was simulated — never
+              // actually run — so the work was neither performed nor failed.
+              result.inconclusive++;
               continue;
             }
             const retryable = isRetryableModelStopReason(warden.stoppedReason);
@@ -3217,10 +3312,13 @@ async function processJobsOnceUnfenced(
                 : undefined;
               // Resume with the compiled envelope via resolveResumeContext so
               // ownership, unresolvable mission ids, and store-load failures
-              // stay distinct (never collapse into "no prior context"). Gated
-              // behind the default-off `MENDPOINT_INHERITED_CONTEXT` switch.
+              // stay distinct (never collapse into "no prior context"). Unbound
+              // Fettler jobs still require `MENDPOINT_INHERITED_CONTEXT`; a bound
+              // Mission compiles even with that switch unset so regenerate can
+              // inherit decisions and persist context_refs_json.
               let inheritedContext: InheritedContextInjection | undefined;
-              if (inheritedContextEnabled(process.env)) {
+              const missionBound = Boolean(payload.missionId);
+              if (inheritedContextShouldCompile(process.env, { missionBound })) {
                 try {
                   const standing = resolveResumeContext(db, {
                     tenantId: job.tenant_id,
@@ -3254,6 +3352,11 @@ async function processJobsOnceUnfenced(
                   );
                 }
               }
+              // Synchronous snapshot, policy, routing, and context preparation
+              // can consume much of a deliberately short lease before the
+              // attempt yields to the renewal timer. Refresh under the same
+              // generation immediately before the long-running boundary.
+              if (!refreshJobLease()) throw new Error("lease_lost_before_warden_attempt");
               const attempt = await runWardenAttempt({
                 mode: payload.mode ?? "repair",
                 scope: { tenantId: job.tenant_id, attemptId: job.id },
@@ -3284,7 +3387,9 @@ async function processJobsOnceUnfenced(
                     : {}),
                   allowNetwork: false,
                   sessionId,
-                  ...(inheritedContext ? { inheritedContext } : {}),
+                  ...(inheritedContext
+                    ? { inheritedContext, inheritedContextMissionBound: missionBound }
+                    : {}),
                   neverTouchPaths: [...verification.protectedPaths],
                   shouldContinue: () =>
                     !leaseLost && opts.shouldContinue?.() !== false &&
@@ -3512,7 +3617,7 @@ async function processJobsOnceUnfenced(
         }
         if (attempt.status === "succeeded") {
           try {
-            await observeProductCompletionInShadow({
+            await observeProductCompletionInAdvisory({
               db,
               env: workerEnv,
               completion: {
@@ -3521,6 +3626,7 @@ async function processJobsOnceUnfenced(
                 taskId: job.id,
                 product: "fettler",
                 repositoryId: binding.repositoryId,
+                snapshotId: binding.snapshotId,
                 snapshotDigest: verifierDigest(binding.manifestSha256),
                 objective: executionGoal,
                 risk: payload.ciFailure ? "high" : "medium",
@@ -3822,7 +3928,7 @@ async function processJobsOnceUnfenced(
       opts.onActiveJob?.(null);
     }
   }
-  if (!result.claimed) console.log("No pending jobs");
+  if (!result.claimed && opts.logWhenIdle !== false) console.log("No pending jobs");
   return result;
 }
 
@@ -3837,7 +3943,7 @@ export async function processJobsOnce(
   if (!fenceEnabled) return processJobsOnceUnfenced(runtimeDb, opts);
   const lease = tryAcquireMutationLease(resolveMutationFenceRoot(env));
   if (!lease) {
-    return { claimed: 0, succeeded: 0, failed: 0, retried: 0 };
+    return { claimed: 0, succeeded: 0, failed: 0, retried: 0, inconclusive: 0 };
   }
   try {
     return await processJobsOnceUnfenced(runtimeDb, opts);
@@ -3901,6 +4007,7 @@ async function runService(intervalMs: number) {
     succeeded: 0,
     failed: 0,
     retried: 0,
+    inconclusive: 0,
   };
   let transformer: TransformerPilotLaneHeartbeat = {
     enabled: Boolean(resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE")?.trim()),
@@ -3919,6 +4026,7 @@ async function runService(intervalMs: number) {
     succeeded: 0,
     failed: 0,
     retried: 0,
+    inconclusive: 0,
   }));
   const shutdown = new AbortController();
   const requestShutdown = () => shutdown.abort();
@@ -4079,6 +4187,7 @@ async function runService(intervalMs: number) {
         succeeded: 0,
         failed: 0,
         retried: 0,
+        inconclusive: 0,
       };
       try {
         laneJobs[lane] = await processJobsOnce(jobDbs[lane]!, {
@@ -4107,8 +4216,9 @@ async function runService(intervalMs: number) {
           succeeded: total.succeeded + laneResult.succeeded,
           failed: total.failed + laneResult.failed,
           retried: total.retried + laneResult.retried,
+          inconclusive: total.inconclusive + laneResult.inconclusive,
         }),
-        { claimed: 0, succeeded: 0, failed: 0, retried: 0 },
+        { claimed: 0, succeeded: 0, failed: 0, retried: 0, inconclusive: 0 },
       );
       failures = laneJobs[lane]!.failed === 0 ? 0 : failures + 1;
       emitHeartbeat();
@@ -4150,30 +4260,10 @@ async function runService(intervalMs: number) {
           ),
           shouldContinue: () => !shutdown.signal.aborted,
           adaptiveCandidateDataRoot: dataRoot,
-          onVerifiedCandidateCompleted: async ({ lease, execution, artifact, observedAt }) => {
-            await observeProductCompletionInShadow({
-              db: transformerDb,
-              env: process.env,
-              completion: {
-                tenantId: lease.tenantId,
-                missionId: lease.campaignId,
-                taskId: `${lease.campaignId}:${lease.unitId}`,
-                product: "regauge",
-                repositoryId: lease.snapshot.repositoryId,
-                snapshotDigest: verifierDigest(lease.snapshot.digest),
-                objective: `Execute the bound ${lease.recipe.id} migration for unit ${lease.unitId}.`,
-                risk: "high",
-                allowedChangedPaths: lease.changedPaths,
-                candidateId: `regauge_${createHash("sha256").update([lease.campaignId, lease.unitId, String(lease.attemptNumber)].join("\0"), "utf8").digest("hex").slice(0, 32)}`,
-                candidateDigest: verifierDigest(artifact.outputDigest),
-                changedPaths: lease.changedPaths,
-                observableSummary: `The bound recipe completed ${execution.operations.length} operations and ${execution.commands.length} verification commands on the exact snapshot.`,
-                deterministicEvidenceDigest: verifierDigest(execution.evidence.digest),
-                deterministicEvidenceRefs: artifact.evidenceRefs,
-                observedAt,
-              },
-            });
-          },
+          // The coordinator owns the only durable ReGauge Mission and queue.
+          // It enqueues advisory verification after accepting the exact terminal
+          // checkpoint; this volume-less worker must never create a second,
+          // ephemeral provider dispatch before completion is durable.
           ...transformerAdaptiveProductionPorts(process.env, transformerDb),
         });
         transformer = transformerPilotHeartbeatAfterResult(transformer, result, nowIso());

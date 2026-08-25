@@ -14,12 +14,14 @@ describe("Regauge production workflow", () => {
     expect(source).toContain("REGAUGE_DRAFT_ONLY");
     expect(source).toContain("REGAUGE_CANARY_OWNER");
     expect(source).toContain("REGAUGE_CANARY_REPOSITORY");
-    expect(source).toContain("fly.transformer.toml");
+    expect(source).toContain("fly.regauge.toml");
     expect(source).toContain("eval:agents:live");
     expect(source).toContain("--product=transformer");
     expect(source).toContain("regauge:production:proof");
     expect(source).toContain("live-model.json");
     expect(source).toContain("draft-canary.json");
+    expect(source).toContain("verifier-evidence.json");
+    expect(source).toContain("--mode=verifier-evidence");
     expect(source).toContain("readiness-soak.json");
     expect(source).not.toContain("pull_request_target");
   });
@@ -42,10 +44,10 @@ describe("Regauge production workflow", () => {
     expect(preflight.environment).toBeUndefined();
     expect(preflight.env.FLY_API_TOKEN).toBe("${{ secrets.FLY_API_TOKEN }}");
     expect(deploy.needs).toBe("preflight");
-    expect(deploy.if).toBe("${{ inputs.phase == 'activate' }}");
+    expect(deploy.if).toBe("${{ inputs.phase == 'activate' && github.repository == 'gondalaimafia/mendpoint' && github.ref == 'refs/heads/main' }}");
     expect(source).toContain("flyctl auth whoami");
     expect(source).toContain("flyctl orgs list --json");
-    expect(source).toContain("flyctl status --app mendpoint-transformer-pilot --json");
+    expect(source).toContain("flyctl status --app mendpoint-regauge-production --json");
     expect(source).toContain("regauge-fly-preflight-${{ github.sha }}");
     expect(preflightRun).not.toMatch(/flyctl (?:apps create|deploy|scale|secrets set|volumes create)/);
   });
@@ -60,25 +62,26 @@ describe("Regauge production workflow", () => {
     expect(infrastructure).toBeDefined();
     expect(infrastructure.run).toContain("regauge_fly_app_bootstrap_required");
     expect(infrastructure.run).not.toContain("flyctl apps create");
-    expect(infrastructure.run).toContain("vol_4y83e8lm03q5x03r");
-    expect(infrastructure.run).toContain('.name == "mendpoint_transformer_data_v2"');
-    expect(infrastructure.run).toContain('.zone == "b376"');
+    expect(infrastructure.run).toContain('.name == "mendpoint_regauge_prod_data"');
+    expect(infrastructure.run).not.toContain(".zone ==");
     expect(infrastructure.run).toContain(".encrypted == true");
+    expect(infrastructure.run).toContain(".snapshot_retention >= 14");
     expect(infrastructure.run).toContain("length == 1");
-    expect(infrastructure.run).toContain("flyctl machines list --app mendpoint-transformer-pilot --json");
+    expect(infrastructure.run).toContain("flyctl machines list --app mendpoint-regauge-production --json");
     expect(infrastructure.run).toContain('.config.metadata.fly_process_group == "coordinator"');
     expect(infrastructure.run).toContain("coordinator-volume-machine.json");
     expect(infrastructure.run).toContain("regauge_fly_volume_authority_invalid");
     expect(infrastructure.run).not.toContain("flyctl volumes create");
     expect(infrastructure.run).not.toMatch(/\.name == "mendpoint_transformer_data"/);
-    const flyProfile = readFileSync("fly.transformer.toml", "utf8");
-    expect(flyProfile).toContain('source = "mendpoint_transformer_data_v2"');
-    expect(flyProfile).not.toContain('source = "mendpoint_transformer_data"');
+    const flyProfile = readFileSync("fly.regauge.toml", "utf8");
+    const volumeName = flyProfile.match(/^\s*source = "([a-z0-9_]+)"$/m)?.[1];
+    expect(volumeName).toBe("mendpoint_regauge_prod_data");
+    expect(volumeName?.length).toBeLessThanOrEqual(30);
     const storage = deploy.steps.find(
       (step: Record<string, unknown>) => step.name === "Verify private checkpoint storage",
     );
     expect(storage).toBeDefined();
-    expect(storage.run).toContain("flyctl secrets list --app mendpoint-transformer-pilot --json");
+    expect(storage.run).toContain("flyctl secrets list --app mendpoint-regauge-production --json");
     for (const name of [
       "AWS_ENDPOINT_URL_S3",
       "AWS_REGION",
@@ -131,6 +134,17 @@ describe("Regauge production workflow", () => {
     expect(authority).toContain("MENDPOINT_REGAUGE_EVIDENCE_REFS=");
     expect(authority).toContain("date -u -d '+70 minutes'");
     expect(authority).toContain("MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT=");
+    expect(authority).toContain("MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT=2026-08-24T00:00:00.000Z");
+    expect(authority).toContain("MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT=2026-11-20T23:59:59.000Z");
+    expect(authority).toContain('repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"]');
+    expect(authority).toContain('--arg branch "$MENDPOINT_REGAUGE_CANARY_BRANCH"');
+    expect(authority).toContain("branchScope: [$branch]");
+    expect(authority).toContain("version: 2");
+    expect(authority).not.toContain("repositoryScope: []");
+    expect(authority).not.toContain("branchScope: []");
+    const generatedRepositoryScope = authority.match(/repositoryScope:\s*(\[[^\n]+\])/);
+    expect(JSON.parse(generatedRepositoryScope?.[1] ?? "null"))
+      .toEqual(["gondalaimafia/mendpoint-canary-drill-20260801"]);
     const firstEnvironmentWrite = authority.indexOf('>> "$GITHUB_ENV"');
     for (const name of [
       "MENDPOINT_REGAUGE_TENANT_ID",
@@ -154,6 +168,8 @@ describe("Regauge production workflow", () => {
     const validation = workflow.jobs.deploy.steps.find(
       (step: Record<string, unknown>) => step.name === "Validate exact authority before mutation",
     ).run as string;
+    expect(validation).toContain('test "$GITHUB_REPOSITORY" = "gondalaimafia/mendpoint"');
+    expect(validation).toContain('test "$GITHUB_REF" = "refs/heads/main"');
     expect(validation).toContain("MENDPOINT_APPLICATION_DATA_KEY");
     for (const name of [
       "MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID",
@@ -167,9 +183,20 @@ describe("Regauge production workflow", () => {
       "MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF",
       "MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT",
     ]) expect(stage).toContain(`${name}=\"$${name}\"`);
+    expect(validation).toContain('test "$MENDPOINT_REGAUGE_TENANT_ID" = "tenant_regauge_canary"');
+    expect(validation).toContain('test "$MENDPOINT_REGAUGE_CAMPAIGN_ID" = "campaign_regauge_canary_20260814"');
+    expect(validation).toContain('test "$MENDPOINT_REGAUGE_CANARY_OWNER" = "gondalaimafia"');
+    expect(validation).toContain('test "$MENDPOINT_REGAUGE_CANARY_REPOSITORY" = "mendpoint-canary-drill-20260801"');
+    expect(validation).toContain(
+      'test "$MENDPOINT_REGAUGE_CANARY_BRANCH" = "codex/regauge-canary-baseline"',
+    );
+    expect(validation).toContain('.repositoryScope == ["gondalaimafia/mendpoint-canary-drill-20260801"]');
+    expect(validation).toContain('.branchScope == [$branch]');
+    expect(stage).toContain('MENDPOINT_REGAUGE_S3_PREFIX="transformer/$MENDPOINT_REGAUGE_TENANT_ID/$MENDPOINT_REGAUGE_CAMPAIGN_ID"');
+    expect(stage).not.toContain('MENDPOINT_REGAUGE_S3_PREFIX="regauge/');
   });
 
-  it("stages only the bounded DeepSeek shadow verifier authority", () => {
+  it("stages only the bounded DeepSeek advisory verifier authority", () => {
     const source = readFileSync(".github/workflows/regauge-production.yml", "utf8");
     const workflow = parse(source) as Record<string, any>;
     const env = workflow.jobs.deploy.env;
@@ -186,43 +213,47 @@ describe("Regauge production workflow", () => {
       'MENDPOINT_APPLICATION_DATA_KEY="$MENDPOINT_APPLICATION_DATA_KEY"',
       "DEEPSEEK_VERIFIER_ENABLED=true",
       "DEEPSEEK_API_KEY=\"$DEEPSEEK_API_KEY\"",
-      "MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=shadow",
+      "MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=advisory",
       "MENDPOINT_AGENT_VERIFIER_SCORING_MODE=nonthinking_logprobs",
       "MENDPOINT_AGENT_VERIFIER_EVALUATIONS=1",
       "MENDPOINT_AGENT_VERIFIER_PIVOTS=1",
       "MENDPOINT_AGENT_VERIFIER_MAXIMUM_CANDIDATES=1",
       "MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD=0.05",
-      "MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS=8000",
+      "MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS=660000",
       "MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES=0",
       "MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON=\"$MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON\"",
       "MENDPOINT_AGENT_VERIFIER_PRICING_JSON=\"$MENDPOINT_AGENT_VERIFIER_PRICING_JSON\"",
+      "MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON=\"$MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON\"",
+      "MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT=\"$MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT\"",
+      "MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT=\"$MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT\"",
     ]) expect(stage).toContain(binding);
     expect(source).not.toContain('echo "$MENDPOINT_APPLICATION_DATA_KEY"');
     expect(source).not.toContain('printf \'%s\\n\' "$MENDPOINT_APPLICATION_DATA_KEY"');
     expect(stage).not.toContain("MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=active");
+    expect(stage).not.toContain("MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=shadow");
   });
 
-  it("contains the delivery worker after every activation outcome", () => {
+  it("keeps the verified coordinator and worker continuously active", () => {
     const workflow = parse(
       readFileSync(".github/workflows/regauge-production.yml", "utf8"),
     ) as Record<string, any>;
     const steps = workflow.jobs.deploy.steps as Record<string, any>[];
-    const containment = steps.find(
-      (step) => step.name === "Contain one-draft activation",
+    const continuous = steps.find(
+      (step) => step.name === "Preserve continuous production after activation",
     )!;
     const uploadIndex = steps.findIndex(
       (step) => step.name === "Upload Regauge production evidence",
     );
-    const containmentIndex = steps.indexOf(containment);
+    const continuousIndex = steps.indexOf(continuous);
 
-    expect(containment).toBeDefined();
-    expect(containment.if).toBe("${{ always() }}");
-    expect(containment.run).toContain("flyctl machines list --app mendpoint-transformer-pilot --json");
-    expect(containment.run).toContain('jq -e \"length == 0\"');
-    expect(containment.run).toContain("flyctl scale count coordinator=1 worker=0");
-    expect(containment.run).toContain("containment.json");
-    expect(containmentIndex).toBeGreaterThan(-1);
-    expect(uploadIndex).toBeGreaterThan(containmentIndex);
+    expect(continuous).toBeDefined();
+    expect(continuous.if).toBe("${{ success() }}");
+    expect(continuous.run).toContain("flyctl machines list --app mendpoint-regauge-production --json");
+    expect(continuous.run).toContain("flyctl scale count coordinator=1 worker=1");
+    expect(continuous.run).toContain("continuous-production.json");
+    expect(continuous.run).not.toContain("worker=0");
+    expect(continuousIndex).toBeGreaterThan(-1);
+    expect(uploadIndex).toBeGreaterThan(continuousIndex);
   });
 
   it("deploys and proves the coordinator before starting a dependent worker", () => {
@@ -250,10 +281,10 @@ describe("Regauge production workflow", () => {
     );
     expect(steps[workerIndex].run).toContain("--process-groups worker");
     expect(steps[coordinatorHealthIndex].run).toContain(
-      "https://mendpoint-transformer-pilot.fly.dev/version",
+      "https://mendpoint-regauge-production.fly.dev/version",
     );
     expect(steps[coordinatorHealthIndex].run).toContain(
-      "https://mendpoint-transformer-pilot.fly.dev/ready",
+      "https://mendpoint-regauge-production.fly.dev/ready",
     );
     expect(
       steps.some((step) => step.name === "Deploy one coordinator and one worker"),

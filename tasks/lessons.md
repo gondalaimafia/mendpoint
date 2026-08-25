@@ -133,3 +133,18 @@
 **Mistake:** The slower activation path repeatedly approached persisted state as something to rebuild or rematerialize, creating new snapshots and additional replay conflicts even though the completed, authorized attempt was already valid.
 **Correction:** The successful path reused the existing checkpoint, encrypted workspace, candidate seal, campaign, and authorization, then changed only the delivery reader needed to consume them.
 **Rule:** Treat authenticated durable state as an asset during recovery. Prefer read-only replay from the exact stored artifact over recreation. A recovery fix should be rejected if it causes already completed model work, verification, authorization, or source capture to run again without evidence that the stored result is invalid.
+
+### 2026-08-24 — Production means an active production surface
+**Mistake:** I allowed active ReGauge and verifier wiring to retain pilot and shadow deployment semantics after the product direction had moved to production.
+**Correction:** Talal required every completed product capability to run in production, with nothing left in pilot, shadow, or demo mode.
+**Rule:** For production-directed work, reject active pilot, shadow, and demo bindings during review. Compatibility names may remain only when they are inactive and explicitly bounded; the deployed app, workflow, rollout mode, and evidence must all identify the production surface.
+
+### 2026-08-24 — Suppress generated storage credentials
+**Mistake:** A first `fly storage create` invocation allowed generated credential values to appear in command output.
+**Correction:** Generated credentials must never be exposed while provisioning storage authority.
+**Rule:** Always suppress output on the first `fly storage create` invocation, verify only secret names and status, and rotate or destroy the credentials immediately if any values appear.
+
+### 2026-08-24 — Keep internal dispatch state out of immutable requests
+**Mistake:** A server-only advisory dispatch flag was added to the historical completion event payload, changing the idempotency digest for an otherwise identical completed attempt.
+**Correction:** Advisory orchestration must remain internal, and existing authenticated terminal events must be upgraded without replaying product completion.
+**Rule:** Never add server scheduling or dispatch configuration to an immutable domain request. Persist side effects atomically in a separate identifier-only outbox, backfill historical terminal records only after verifying their append-only request digest and exact durable bindings, and drain them through tenant-scoped fenced claims with bounded retries.

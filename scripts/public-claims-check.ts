@@ -5,8 +5,8 @@ import {
   validatePublicClaimRegistry,
   type PublicClaimIssue,
   type PublicClaimRegistry,
-  type ProductRequirementManifest,
-} from "@mendpoint/contract";
+} from "../packages/contract/src/public-claims.js";
+import type { ProductRequirementManifest } from "../packages/contract/src/product-requirements.js";
 
 function repositoryPath(repoRoot: string, locator: string) {
   const path = locator.split("#", 1)[0];

@@ -2989,3 +2989,219 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - RED proved the validator module was absent. GREEN is five focused tests plus the CLI check: missing rows, canonical status or evidence drift, malformed or unknown references, and verified or GA promotion without qualifying evidence all fail closed.
 - `npm run typecheck` passes across every workspace and the root scripts project. The GA chain passed contract, closure, claims, action pins, architecture, model, naming, ADR, third-state, and evidence reachability. Its revert suite twice hit different five-second wall-clock timeouts under concurrent load without assertion failures; the unchanged 19-test suite passed with `--testTimeout 20000`, and both the revert CLI and final GA preflight passed.
 - No requirement status, Claude branch, pull request, issue, or production surface was changed by this implementation.
+
+## 2026-08-24 Issue #361: durable ReGauge DeepSeek advisory verification
+
+- [x] RED: prove the workflow emits the exact protected repository and branch in the generated Policy Envelope.
+- [x] RED: prove each provider request durably binds the exact consent record and temporal authority before egress, with historical proof surviving later revocation.
+- [x] RED: prove replay after a completed provider response cannot call DeepSeek again, while a failure with no response remains retryable.
+- [x] Implement the minimal durable request intent and response receipt protocol under the existing artifact and fenced job stores.
+- [x] Rerun focused Mission, Policy, consent, advisory, workflow, proof, API, and worker tests plus affected typechecks and integrity checks.
+- [x] Review and commit the second P1 closure without pushing or merging.
+- [x] Add red regressions proving ReGauge completion currently calls DeepSeek synchronously, loses failed observations, accepts the `shadow` production mode, and dispatches without an inherited Mission Policy Envelope.
+- [x] Define one immutable ReGauge verifier Policy Envelope binding from protected nonsecret configuration, bind it at launch, and reconcile the same exact binding before advisory dispatch for already-running Missions.
+- [x] Persist a content-addressed advisory input plus an identifier-and-digest-only `verifier.advisory.verify` job in one idempotent transaction; keep repository content out of the job payload.
+- [x] Process advisory jobs through the existing fenced worker queue, rehydrate and verify the content-addressed input, revalidate Mission, repository, snapshot, Policy Envelope, consent, provider, and principal authority, then persist telemetry before completing the job.
+- [x] Drain the advisory queue from the volume-owning production coordinator, restricted to `verifier.advisory.verify`, because the execution worker intentionally has no coordinator volume.
+- [x] Make retries consult verified durable telemetry rather than the pre-call dispatch intent, so a failed provider attempt remains retryable and an already-recorded result never repeats provider work.
+- [x] Replace active production `shadow` wiring with exact `advisory` mode while preserving behavior-change denial and compatibility aliases only where required for already-built callers.
+- [x] Update the protected ReGauge workflow and profile contracts for the Policy Envelope binding and advisory mode without granting candidate selection, execution, delivery, merge, or deployment authority.
+- [x] Run red-first focused tests, affected typechecks, full tests, optimized production build, GA checks, dependency audit, and diff checks.
+- [x] Complete strict local review with no remaining P0 or P1 findings.
+- [ ] Publish one PR closing #361 under #350, then obtain passing CI plus reciprocal Claude review before merge-ready.
+
+### 2026-08-24 Spec review closure: substantive evidence and retryable receipts
+
+- [x] RED: prove the advisory provider receives bounded substantive evidence rehydrated from the exact tenant-bound durable snapshot and candidate artifacts.
+- [x] RED: prove tenant, repository, snapshot, candidate, digest, and content mismatches fail closed before provider egress while the queue payload remains identifier and digest only.
+- [x] RED: prove definitive retryable provider responses advance to a new durable provider operation, while ambiguous operations fail closed and completed success never repeats.
+- [x] Implement the smallest exact-bound evidence rehydration and definitive retryable outcome protocol under the existing stores.
+- [x] Run the focused advisory matrices, affected typechecks, YAML and diff integrity checks.
+- [x] Review and commit the closure without rebasing, pushing, or merging.
+
+#### Review
+
+- RED: 8 of 14 focused tests passed. The provider prompt omitted the exact before and after content, the queue had no substantive artifact binding, and durable 429, 503, and malformed 200 receipts were replayed indefinitely.
+- GREEN: 17 of 17 direct regressions pass. The coordinator reconstructs the exact deterministic candidate from the tenant-bound immutable snapshot, verifies source and candidate digests, and persists a separately bounded content-addressed evidence artifact only after Policy Envelope authorization. The queue retains identifiers and digests only; the worker revalidates scope and policy before rehydrating content and verifies every artifact and source digest before consent-gated egress.
+- Replay: a definitive retryable response gets an append-only classification bound to its exact receipt digest. The next queue attempt revalidates current consent and creates a new uniquely numbered operation. An intent without a response remains outcome-unknown and fail closed; an unclassified completed response is recovered; durable success remains telemetry-terminal and is never reissued.
+- Verification: the 10-file advisory, consent, workflow, and production-proof matrix passes 54 of 54 tests. The 19-file Mission, Policy, campaign, and advisory integration matrix passes 126 of 126 tests. Verifier, pipeline, worker, and API typechecks pass, and `git diff --check` is clean.
+
+### Review
+
+- RED: the original completion hook called the provider in process, treated dispatch intent as a replay terminal, accepted production `shadow`, had no inherited Policy Envelope, and left a coordinator-owned durable queue invisible to the volume-free execution worker.
+- GREEN: exact completion now persists a content-addressed input and identifier-only job. The mounted coordinator drains only `verifier.advisory.verify`; an allowlist regression proves unrelated jobs remain pending. Provider telemetry is validated and durable before job completion, while transient provider failures remain retryable.
+- Authority: the exact Mission, repository, snapshot, branch, immutable Policy Envelope, service principal, append-only tenant consent, governance entry, processing region, DeepSeek V4 Flash backend, and advisory-only no-behavior-change result are revalidated. Consent expires no later than 2026-11-20T23:59:59.000Z.
+- Review fix: final architecture review caught the P1 volume boundary before push. The coordinator-side drain keeps the execution worker volume-free and uses the existing fenced job lifecycle without allowing the coordinator to claim pipeline, repair, delivery, learning, or campaign-execution jobs.
+- Verification: the full repository suite passed before the final conflict-free main rebases, including 444 Transformer, 482 API, 460 worker, and 169 script tests. The exact current revision then passed the 174-test Mission-policy, renamed campaign-payload, and advisory integration matrix. Affected package typechecks, the 50-route optimized production build, GA checks, startup-script syntax, diff integrity, and the production audit with zero vulnerabilities also passed.
+- P1 closure: the protected workflow now stages the worker's canonical `transformer/<tenant>/<campaign>` object prefix and rejects any tenant, campaign, owner, repository, or branch outside the one approved ReGauge canary scope before mutation.
+- P1 closure: the durable consent purpose, immutable Policy Envelope, enqueue path, worker rehydration, and provider boundary all require `tenant_regauge_canary`, `campaign_regauge_canary_20260814`, `gondalaimafia/mendpoint-canary-drill-20260801`, branch `main`, and an expiry no later than 2026-11-20. An empty template cannot inherit runtime repository authority.
+- P1 closure: production observations reconstruct the append-only consent record active at provider processing time and return its identifier, effective time, grant time, expiry, and digest. The production proof rejects missing, mismatched, late, expired, or post-deadline durable consent evidence instead of trusting telemetry alone.
+- Fresh P1 verification: 181 Mission, Policy, campaign, workflow, proof, API, worker, and advisory tests pass across 19 files. Pipeline, API, worker, and scripts typechecks pass, and `git diff --check` is clean.
+- Final launch-policy closure: the production bootstrap now retains and binds the exact restrictive DeepSeek verifier Policy Envelope before the ReGauge Mission enters execution. The later advisory reconciler reuses the same immutable tenant/version/content binding, so the tenant default envelope can no longer create a deterministic version conflict that prevents enqueue.
+- Final workflow-source closure: the protected deploy job and its pre-mutation validation both require repository `gondalaimafia/mendpoint` and ref `refs/heads/main`; a manually dispatched feature-branch revision cannot reach Fly mutation even if environment branch protection drifts.
+- Final focused verification: the two red regressions fail on the predecessor and pass on the repair. The exact 14-file ReGauge matrix passes 201 of 201 tests, Pipeline and API typechecks pass, and the review fixes remain within the existing Mission, Policy Envelope, and protected workflow contracts.
+- Migrated-state closure: the restrictive production envelope is immutable version 2. A current-main Mission already pinned to the exact deterministic tenant default v1 advances through a revision-fenced `mission.policy_envelope_advanced` event; all other prior bindings fail closed. Existing bootstrap receipts invoke this reconciliation after revalidating repository, control, and execution state, without relaunching the campaign or replaying provider work.
+- Second-review RED: 4 of 15 focused tests failed because the workflow generated empty scopes, no provider-operation store existed, and the provider-return crash seams completed without durable recovery state.
+- Second-review GREEN: the generated Policy Envelope names the exact approved repository and `main`. Each DeepSeek request now inserts a content-addressed intent containing the exact canonical consent snapshot and request binding before egress; each returned HTTP response is durably receipted before verifier parsing. A receipt is replayed without another provider call, an unresolved intent fails closed, and only an explicit no-response failure may create a new attempt.
+- Historical authority: production observations read the exact bound consent snapshot and provider request/processing times from the durable operation ledger, so later revocation does not erase valid historical proof. The current provider path still resolves active consent immediately before every new request, so revocation cannot authorize new processing.
+- Second-review verification: 184 Mission, Policy, campaign, workflow, proof, API, worker, and advisory tests pass across 19 files. The narrower advisory matrix passes 68 tests across 10 files. Pipeline, API, worker, and scripts typechecks pass; the workflow parses as YAML and diff integrity is clean.
+
+### 2026-08-24 Final spec review closure: completion outbox and revoked consent
+
+- [x] RED: prove ReGauge completion acknowledges independently when advisory dispatch fails, while a tenant-bound identifier-and-digest-only outbox remains durable and retryable.
+- [x] RED: prove outbox replay is idempotent and rejects tenant or completion-digest mismatches.
+- [x] RED: prove coordinator bootstrap restarts after consent revocation without creating a replacement grant, while new verifier egress remains disabled.
+- [x] Implement the smallest transactional completion outbox and asynchronous advisory drain through the existing verifier job lane.
+- [x] Make revoked or otherwise inactive historical consent an explicit verifier-disabled bootstrap result that requires a new versioned operator grant before future egress.
+- [x] Run the focused Mission, Policy, campaign, advisory, bootstrap, and coordinator matrices plus affected typechecks and diff integrity.
+- [x] Review and commit the closure without rebasing, pushing, or merging.
+
+#### Review
+
+- RED: the transactional completion test had no outbox API, the coordinator returned an advisory queue failure after the terminal attempt was already committed, and bootstrap rejected a revoked consent replay with `regauge_verifier_consent_inactive`.
+- GREEN: the exact configured coordinator lane now adds one tenant-bound identifier-and-digest-only outbox row in the same SQLite transaction as `attempt.completed_with_checkpoint`. Non-authorized tenant and campaign completions do not request an outbox row. Queue and evidence work runs asynchronously, records append-only failure or enqueued outcomes, and replays the existing identifier-only verifier job without changing execution or delivery.
+- Consent: an existing revoked or inactive consent keeps ReGauge bootstrap available and emits a visible verifier-disabled event. Changing protected authority returns the exact next version and supersession requirement but never creates a grant; an explicitly recorded next-version grant re-enables the existing active-consent gate.
+- Verification: 163 focused Transformer, Mission, Policy, consent, coordinator, advisory, worker, workflow, and production-proof tests pass across 11 files. Database, Transformer, and API typechecks pass, and diff integrity is clean.
+
+### 2026-08-24 Exact-head closure: legacy backfill and fenced advisory claims
+
+- [x] RED: preserve the pre-feature immutable completion request digest when the server requests an advisory outbox row.
+- [x] RED: backfill one authenticated identifier-and-digest-only outbox row for an exact legacy terminal event without replaying completion, and reject a tampered event atomically.
+- [x] RED: prove two concurrent drainers cannot claim the same dispatch, an expired claim can be fenced and taken over, and each claim has one terminal result.
+- [x] RED: prove retryable failures honor bounded exponential backoff so repeated readiness polls do not append failure rows.
+- [x] Remove advisory dispatch configuration from the historical completion request payload while retaining atomic event and outbox insertion for new completions.
+- [x] Implement exact-scope authenticated outbox backfill and tenant-scoped fenced claims under append-only store invariants.
+- [x] Drain claims asynchronously into the deterministic verifier job lane and preserve completion, execution, selection, and delivery independence.
+- [x] Run the focused advisory matrix, affected typechecks, and diff integrity checks.
+- [x] Review and commit without rebasing, pushing, or merging.
+
+#### Review
+
+- RED: the same historical checkpoint completion replayed with the server-only advisory flag failed with `transformer_pilot_idempotency_conflict`, and the asynchronous drain still consumed an unfenced pending list.
+- GREEN: the immutable terminal request no longer contains advisory configuration. Existing authenticated terminal events are checked against their append-only idempotency digest, exact checkpoint, completion, authorization, tenant, campaign, unit, episode, and current durable campaign state before one deterministic identifier-and-digest-only outbox row is inserted or verified.
+- Concurrency: append-only tenant-scoped claim and claim-result ledgers enforce one live lease, monotonic fencing, one terminal result per claim, takeover only after expiry, exponential retry backoff, and a terminal eight-failure ceiling. Two SQLite coordinator connections cannot claim the same dispatch.
+- Isolation: readiness drains backfill only the configured exact ReGauge campaign, claim before loading evidence or enqueueing, and retain the deterministic verifier job identity. Completion, candidate selection, execution, delivery, merge, and deployment authority are unchanged.
+- Verification: 56 direct store and drain regressions pass. The 11-file ReGauge advisory, consent, coordinator, worker, workflow, and proof matrix passes 163 tests. Transformer and API typechecks pass, and diff integrity is clean.
+
+### 2026-08-24 Final reciprocal review closure: replay consent and canonical legacy policy
+
+- [x] RED: prove an existing bootstrap receipt created before verifier activation has no consent, then gains the exact configured durable consent on replay without relaunching the campaign.
+- [x] RED: prove a legacy v1 Policy Envelope with the deterministic default identifier but altered semantics cannot receive the privileged v2 advance.
+- [x] Reconcile verifier consent on the validated existing-receipt path through the same grant-or-disabled authority used by fresh bootstrap.
+- [x] Validate the full canonical default v1 body, digest, identifier, and exact v1-to-v2 transition before retaining any new Policy Envelope authority.
+- [x] Run the focused bootstrap, policy, advisory, and workflow regressions plus affected typechecks and diff integrity.
+
+#### Review
+
+- Consent: an authenticated existing bootstrap receipt now reconciles the protected durable consent before Mission policy reconciliation. A missing historical grant is created once; an inactive or revoked version remains disabled and is never silently replaced.
+- Policy: the privileged migrated-state path accepts only the byte-identical canonical tenant default v1 and exact restrictive v2 target. A forged but internally consistent default identifier fails before v2 is inserted.
+- Verification: 20 focused bootstrap, Policy Envelope, advisory, and protected-workflow tests pass across 4 files. Diff integrity is clean.
+
+### 2026-08-25 Exact-head production profile review closure
+
+- [x] Align protected workflow Policy Envelope v2 with coordinator and worker boot validation.
+- [x] Bind legacy default validation to default residency and the retained row creation time rather than trusting fields embedded in candidate JSON.
+- [x] Pin production verifier egress to the authorized DeepSeek HTTPS origin.
+- [x] Add workflow-to-profile, forged-residency, forged-time, and endpoint-redirection regressions.
+- [x] Run the focused production profile, policy migration, and workflow matrix.
+
+#### Review
+
+- Boot contract: the exact workflow-staged Policy Envelope version now equals the only version accepted by the dedicated production profile.
+- Historical authority: repository scope, residency, or embedded-time mutations under the deterministic default identifier all fail before restrictive v2 is retained.
+- Egress: the dedicated production profile accepts only `https://api.deepseek.com`; plaintext, alternate-host, path, and whitespace variants fail before coordinator or worker startup.
+- Verification: 39 focused tests pass across 3 files.
+
+### 2026-08-25 Final MissionTask settlement review closure
+
+- [x] RED: prove a successful advisory job cannot remain done while its bound MissionTask remains `agent_working`.
+- [x] Couple fenced job completion and the review-first MissionTask handoff in one SQLite transaction.
+- [x] Prove a crash before commit rolls back both lifecycle writes, then replay reuses durable verifier telemetry without another provider call.
+- [x] Preserve current-main MissionTask claim bridging and refresh the same lease generation after synchronous preparation before a long attempt.
+- [x] Run advisory settlement, MissionTask bridge, and worker lease regressions.
+
+#### Review
+
+- Settlement: successful and already-verified advisory jobs finish with their deterministic job MissionTask at `human_review_required`, never stranded in `agent_working`.
+- Recovery: a simulated crash after handoff but before commit leaves the job running and the task agent-owned; replay performs no repeated provider work and commits both terminal records together.
+- Fencing: the short-lease regression now refreshes the existing generation immediately before the long attempt boundary. Lease ownership and generation checks remain unchanged.
+- Verification: the complete affected worker matrix passes 77 tests across 3 files, including the scheduler-resilient short-lease regression.
+
+### 2026-08-25 PR 387 exact-head release qualification
+
+- [x] Complete the 15-file ReGauge and DeepSeek matrix: 218 of 218 tests pass.
+- [x] Complete full workspace typecheck on the reviewed head.
+- [x] RED: reproduce the full-suite pipeline security-gate timeout at 5.359 seconds under repository-wide contention.
+- [x] Trace the test and production path, confirm PR 387 does not alter it, and reproduce the same test at 617 ms alone and 831 ms under pipeline-workspace load.
+- [x] Give only the two-run integration test a bounded 15-second deadline; do not change production behavior or the global test timeout.
+- [x] Re-run the focused regression, all 200 pipeline tests, and the complete repository test suite successfully.
+- [x] Complete optimized build, GA policy checks, production dependency audit, API startup, and diff-integrity gates.
+- [ ] Complete protected CI container builds and deployment E2E; local Docker is unavailable.
+- [ ] Refresh against current `origin/main`, obtain exact-head reciprocal review and Claude review, then merge only with current CI.
+
+#### Review
+
+- Root cause: the security-attestation integration test runs the full pipeline twice and inherited Vitest's 5-second unit-test default. Full-suite CPU and disk contention pushed one run to 5.359 seconds; isolated and workspace runs remained below one second.
+- Repair: a test-local 15-second deadline matches other heavy integration tests and preserves both the fail-closed negative case and the attested positive control.
+- Evidence: focused regression passed, pipeline workspace passed 200 of 200 tests, and the complete repository test command exited 0 after the repair.
+- Current-main integration: main added an explicit `inconclusive` worker outcome. The coordinator-only advisory filter now asserts that counter remains zero; the final 15-file matrix passes 222 of 222 tests with the new main semantics retained.
+- Claude exact-head review: removed the unused `getMission` import left after advisory dispatch moved to the coordinator. This changes no runtime behavior and removes a false dependency signal.
+
+### 2026-08-25 DeepSeek transport outcome closure
+
+- [x] RED: prove an Undici connection establishment timeout can advance to a new durable operation after an exact no-dispatch receipt.
+- [x] RED: prove resets, generic timeouts, broken pipes, aborts, Undici socket, header, and body failures cannot be recorded as no-response evidence or repeat provider work.
+- [x] RED: reproduce the production wrapper deadline leaving an intent without a terminal provider observation.
+- [x] Propagate an unsettled durable request intent as `verifier_advisory_provider_outcome_unknown` on the first job attempt instead of consuming the retry budget as a generic API failure.
+- [x] Expand automatic retries only to fixed pre-connect errors and keep all post-dispatch ambiguity fail closed.
+- [x] Refuse a pre-aborted verifier request before invoking the transport.
+- [x] Align the dedicated production timeout with the provider queue boundary while keeping it below the renewing job lease.
+- [x] Bind retryable response classification to the latest attempted operation so a later no-dispatch failure cannot supersede an earlier successful receipt.
+- [x] Bind classification to the current provider invocation so a later lease or authority failure before intent cannot supersede earlier paid work.
+- [x] Refresh the same fenced lease before every provider request and reject worker lease configurations shorter than the provider deadline plus settlement margin.
+- [x] Reject backend-local retries for the durable ReGauge transport; retries remain owned by the classified, fenced job lane.
+- [x] Run the complete changed-area ReGauge and DeepSeek matrix plus affected typechecks and diff integrity.
+- [x] Rebase onto current main while retaining the pinned Mission graph version and migrated verifier Policy Envelope authority.
+- [x] Obtain exact-head reciprocal review with no P0, P1, or P2 findings.
+- [ ] Obtain attributable Claude review, then require fresh protected CI before merge.
+
+#### Review
+
+- Retry safety: only `ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN`, `EHOSTUNREACH`, `ENETUNREACH`, `EADDRNOTAVAIL`, and `UND_ERR_CONNECT_TIMEOUT` can create the signed no-response path. Every reset, generic timeout, pipe, abort, socket, header, or body failure remains outcome unknown because provider work may have occurred.
+- Lifecycle: the worker tracks request intents and durable response or no-dispatch settlements around the existing provider operation ledger. A retryable verifier result with any unsettled operation is promoted to the explicit nonretryable reconciliation error immediately; replay consults the retained intent and never reissues it.
+- Operation binding: only the most recently attempted operation may receive a retryable-response classification, and only when that same operation has a durable response receipt. A later pre-connect failure cannot mark an earlier successful call retryable.
+- Invocation binding: the durable transport clears its classification target before lease, consent, and intent gates. A later failure before creating an operation leaves an explicit no-operation outcome, so an earlier paid response remains recoverable and is never repeated.
+- Lease safety: every long provider boundary refreshes the same job owner and generation before creating an intent. The worker rejects a configured lease that cannot cover the provider deadline plus a 60 second settlement margin; production retains 240 seconds of margin.
+- Deadline: the dedicated production profile waits 660 seconds, covering DeepSeek's documented ten minute queue behavior while remaining below the default renewing 900 second job lease. The deadline still seals an ambiguous operation rather than pretending the provider did no work.
+- Verification: the new multi-criterion lease-loss regression failed against the reviewed implementation, then all 27 advisory-job tests passed after current-invocation binding. On rebased head `88a01c0b`, the complete 17-file matrix passes 266 of 266 tests, full workspace typecheck passes, the optimized 50-route production build passes, GA policy checks pass while retaining the non-GA ReGauge disclosure, and the production dependency audit reports zero vulnerabilities.
+- Reciprocal review: exact-head review against `edd22d0a` reports no P0, P1, or P2 findings and independently passes 61 focused verifier and profile tests.
+
+### 2026-08-25 ReGauge production volume contract closure
+
+- [x] Read the live dedicated-app volume metadata before changing the deployment contract.
+- [x] Reproduce Fly's rejection of the manifest's overlength volume name.
+- [x] Bind the workflow and manifest to the existing encrypted 20 GB `sjc` production volume.
+- [x] Remove the opaque hardware-zone pin and require at least 14 days of scheduled snapshot retention.
+- [x] Run the focused workflow regression, affected typechecks, YAML parsing, and diff integrity checks.
+- [x] Obtain exact-head reciprocal review and current-base CI before merge.
+
+#### Review
+
+- RED: the protected workflow and Fly manifest required `mendpoint_regauge_production_data`, which exceeds Fly's 30-character volume-name limit. A direct creation attempt was rejected before mutation. The already provisioned `mendpoint_regauge_prod_data` volume is encrypted, 20 GB, in `sjc`, healthy, unattached, has scheduled backups, and retains snapshots for 30 days.
+- The workflow also pinned opaque Fly hardware zone `b376`, while the healthy allocated volume is in zone `2618`. The production contract requires region, encryption, backups, and retention, not a hardware allocation identifier.
+- GREEN: all 9 protected-workflow regressions pass, the scripts TypeScript project checks cleanly, the workflow parses as YAML, and diff integrity passes.
+- Release: exact-head reciprocal review found no P0, P1, or P2 findings. PR #442 merged as `644488aa17114e3cfb3ada5e28e64d3afcac2dac`; current-main tests, release gates, container startup, deployment E2E, and deploy all passed. Production reports the exact revision and all four health endpoints return 200.
+
+### 2026-08-25 ReGauge canary branch authority closure
+
+- [x] Bind the approved DeepSeek scope to the exact canary branch that contains the pinned revision.
+- [x] Derive the protected Policy Envelope branch scope from the protected environment binding while retaining an exact fail-closed branch assertion.
+- [x] Update ReGauge production profile, verifier, and workflow regressions without changing repository, tenant, campaign, or advisory-only authority.
+- [x] Run the focused ReGauge and DeepSeek matrix, affected typechecks, workflow parsing, build, and diff integrity.
+- [ ] Obtain exact-head review and current-base CI before merge.
+
+#### Review
+
+- Root cause: the protected environment and pinned Git revision identify `codex/regauge-canary-baseline`, while the shared DeepSeek scope and workflow Policy Envelope required `main`; activation would fail before the dedicated coordinator could start.
+- Authority: the approved scope now names the exact canary branch. The workflow derives the envelope branch from the protected binding and separately rejects every branch except that approved value. Tenant, campaign, repository, model class, external-processing consent, advisory-only behavior, and expiry are unchanged.
+- Verification: 74 focused tests pass across the production workflow, shared advisory scope, worker profile, worker verifier job, coordinator dispatch, and bootstrap runtime. Full workspace typecheck, the optimized 50-route production build, and the complete GA policy and evidence gate pass; YAML parsing and diff integrity are clean. The register remains honest at 28 verified foundational requirements, with ReGauge still explicitly non-GA.

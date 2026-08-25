@@ -98,6 +98,9 @@ describe("mission handoff (durable records)", () => {
     const active = getActiveMissionDecisions(db, "t1", "m1");
     expect(active.map((d) => d.id)).toContain(decision.id);
     expect(active.find((d) => d.id === decision.id)?.decision).toBe("Migrate service A before service B");
+    expect(exception.category).toBe("architecture_decision_required");
+    expect(exception.taskId).toBeNull();
+    expect(decision.decisionType).toBe("exception_resolution");
   });
 
   // CONTROL: a resolved question is not asked again. Deleting the
@@ -179,6 +182,38 @@ describe("mission handoff (durable records)", () => {
     // All three cycles' directives are active — cycle 3 still sees cycle 1's.
     expect(active).toHaveLength(3);
     expect(active.some((d) => d.decision.includes("raw OAuth flow"))).toBe(true);
+  });
+
+  it("CONTROL: handoff reason is persisted as exception category without a MissionTask", () => {
+    const db = fixture();
+    const exception = openTaskHandoff(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      reason: "verification_failure",
+      question: "Which check is the source of truth?",
+      context: "Baseline and post-edit disagree on the same command.",
+      ownerPrincipalId: "human-1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    expect(exception.category).toBe("verification_failure");
+    expect(exception.taskId).toBeNull();
+  });
+
+  it("CONTROL: reviewer directive persists decisionType when the live caller supplies it", () => {
+    const db = fixture();
+    const recorded = recordReviewerDirective(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      directive: "Do not use a raw OAuth flow: it violates the internal auth policy.",
+      scope: "reviewer_directive:run-c1",
+      authorPrincipalId: "human-1",
+      correlationId: "corr",
+      createdAt: T0,
+      decisionType: "verification",
+    });
+    expect(recorded.decisionType).toBe("verification");
+    expect(getActiveMissionDecisions(db, "t1", "m1")[0]!.decisionType).toBe("verification");
   });
 
   // CONTROL: suppression is not absolute — a genuinely changed circumstance lets
@@ -307,6 +342,8 @@ describe("mission handoff mapped onto MissionTask transitions", () => {
       correlationId: "corr",
       createdAt: T0,
     });
+    expect(exception.category).toBe("architecture_decision_required");
+    expect(exception.taskId).toBe("task-1");
     expect(getMissionTask(db, "t1", "task-1")).toMatchObject({
       status: "human_review_required",
       ownerType: "human",
@@ -364,6 +401,8 @@ describe("mission handoff mapped onto MissionTask transitions", () => {
       createdAt: T0,
     });
     expect(exception.blocking).toBe(true);
+    expect(exception.category).toBe("policy_exception");
+    expect(exception.taskId).toBeNull();
     expect(getMissionTask(db, "t1", "task-1")).toBeUndefined();
   });
 });

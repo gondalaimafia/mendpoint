@@ -99,12 +99,18 @@ so it is recorded here. This describes what is *configured*, not what is planned
 
 - **Where it is configured.** The transformer/ReGauge production profile pins
   `DEEPSEEK_VERIFIER_ENABLED = "true"` and
-  `MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE = "shadow"`
-  (`apps/worker/src/transformer-production-profile.ts:240-241`). Rollout modes are
-  `off` / `offline` / `shadow`; `offline` opens no network transport and performs
-  no egress, and only `shadow` builds a live transport
-  (`apps/worker/src/verifier-shadow.ts:38-52`). So in the configured production
-  profile the verifier runs as a **shadow** observer against a live model.
+  `MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE = "advisory"`
+  (`apps/worker/src/transformer-production-profile.ts:273`). The production
+  rollout modes are `off` / `offline` / `advisory`; `offline` opens no network
+  transport and performs no egress, and only `advisory` builds a live transport
+  (`apps/worker/src/verifier-shadow.ts:38-54`). The legacy `shadow` mode is no
+  longer accepted in production: `validateWorkerProductionEnv`
+  (`apps/worker/src/cli.ts:1784-1788`), the transformer profile
+  (`apps/worker/src/transformer-production-profile.ts`), and the advisory runtime
+  all reject any mode other than `offline` or `advisory`, so a deploy with
+  `MENDPOINT_AGENT_VERIFIER_ROLLOUT_MODE=shadow` fails validation at boot. So in
+  the configured production profile the verifier runs as an **advisory** observer
+  against a live model.
 
 - **Its own credential.** The verifier authenticates with `DEEPSEEK_API_KEY` — a
   fixed env name (`packages/verifier/src/policy.ts:12,67`), distinct from the
@@ -137,4 +143,4 @@ so it is recorded here. This describes what is *configured*, not what is planned
 Two honest caveats, checkable only against operational state and not the repo:
 whether the `DEEPSEEK_API_KEY` secret is actually set on the transformer app, and
 whether that app is running the transformer profile at any given time. The
-config-level requirement and the shadow rollout are what the code enforces.
+config-level requirement and the advisory rollout are what the code enforces.

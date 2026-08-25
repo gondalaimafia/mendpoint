@@ -58,6 +58,7 @@ export { runWarden, runWelder, runApiBugAgent } from "./agent.js";
 export {
   renderInheritedContextSystemBlock,
   inheritedContextEnabled,
+  inheritedContextShouldCompile,
   INHERITED_CONTEXT_ENV_VAR,
   MAX_INHERITED_CONTEXT_BYTES,
 } from "./inherited-context.js";

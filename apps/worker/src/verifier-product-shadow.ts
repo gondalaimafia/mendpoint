@@ -1,17 +1,29 @@
 import { createHash } from "node:crypto";
 import { findActiveLearningConsent, recordAudit, type AppDb } from "@mendpoint/db";
-import { claimVerifierShadowAttempt, persistVerifierTelemetry } from "@mendpoint/pipeline";
+import {
+  beginVerifierAdvisoryProviderOperation,
+  findVerifierTelemetry,
+  persistVerifierAdvisoryProviderNoResponse,
+  persistVerifierAdvisoryProviderResponse,
+  persistVerifierAdvisoryProviderRetryableResponse,
+  persistVerifierTelemetry,
+  REGAUGE_DEEPSEEK_APPROVED_SCOPE,
+  REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
+  type ProductCompletionAdvisoryInput,
+} from "@mendpoint/pipeline";
 import {
   createCompletionVerifierEvidencePack,
+  createFetchVerifierTransport,
   resolveVerifierRuntimeConfig,
   type AgentVerifierResult,
   type VerifierDataClassification,
   type VerifierHttpTransport,
+  type VerifierHttpRequest,
   type VerifierPricing,
   type VerifierProduct,
-  type VerifierRisk,
+  type VerifierSourceInput,
 } from "@mendpoint/verifier";
-import { createVerifierShadowRuntime } from "./verifier-shadow.js";
+import { createVerifierAdvisoryRuntime } from "./verifier-shadow.js";
 
 // The verifier sends tenant repository content to an EXTERNAL third-party model
 // (DeepSeek) for independent scoring. That egress is a categorically different
@@ -21,39 +33,45 @@ import { createVerifierShadowRuntime } from "./verifier-shadow.js";
 // so a grant for one must never be read as a grant for the other. A distinct
 // consent purpose keeps the two authorizations separate.
 export const VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE = "verifier-external-model-egress";
+export { REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE };
+export const RETRYABLE_VERIFIER_FAILURE_CODES = new Set(["api_failure", "logprob_failure"] as const);
 
-export type ProductCompletionShadowInput = Readonly<{
-  tenantId: string;
-  missionId: string;
-  taskId: string;
-  product: VerifierProduct;
-  repositoryId: string;
-  snapshotDigest: string;
-  objective: string;
-  risk: VerifierRisk;
-  allowedChangedPaths: readonly string[];
-  candidateId: string;
-  candidateDigest: string;
-  changedPaths: readonly string[];
-  observableSummary: string;
-  deterministicEvidenceDigest: string;
-  deterministicEvidenceRefs: readonly string[];
-  observedAt: string;
-}>;
+type ProviderInvocationOutcome = {
+  kind: "none" | "no_operation" | "attempted" | "settled" | "completed" | "unknown";
+  operationId: string | null;
+};
 
-export async function observeProductCompletionInShadow(input: Readonly<{
+export class VerifierProviderNoResponseError extends Error {
+  readonly code = "verifier_transport_not_sent";
+}
+
+export async function observeProductCompletionInAdvisory(input: Readonly<{
   db: AppDb;
   env?: Readonly<Record<string, string | undefined>>;
-  completion: ProductCompletionShadowInput;
+  completion: ProductCompletionAdvisoryInput;
+  substantiveSources?: readonly Readonly<VerifierSourceInput>[];
   transport?: VerifierHttpTransport;
+  authorityAt?: string;
+  now?: () => string;
+  beforeProviderRequest?: (requestedAt: string) => void;
+  operationHooks?: Readonly<{
+    afterProviderReturn?: () => void;
+    afterProviderReceipt?: () => void;
+  }>;
 }>): Promise<AgentVerifierResult | null> {
   const env = input.env ?? process.env;
   const runtimeConfig = resolveVerifierRuntimeConfig(env);
   // `off` never observes; `offline` never egresses from this production path
-  // (see createVerifierShadowRuntime). Refuse both before building an evidence
+  // (see createVerifierAdvisoryRuntime). Refuse both before building an evidence
   // pack or claiming an attempt, so offline never even prepares tenant content.
   if (!runtimeConfig.enabled || runtimeConfig.rolloutMode === "off" || runtimeConfig.rolloutMode === "offline") return null;
-  const governance = resolveGovernance(env, input.completion.tenantId, input.completion.product);
+  if (input.completion.product === "regauge" && runtimeConfig.maximumRetries !== 0) {
+    // The durable transport classifies each definitive response before another
+    // operation can be minted. Backend-local retries would only recover that
+    // same receipt, so ReGauge retries belong to the fenced durable job lane.
+    throw new Error("verifier_advisory_durable_retries_must_be_zero");
+  }
+  const governance = resolveVerifierGovernance(env, input.completion.tenantId, input.completion.product);
   // Tenant consent for external-model egress is resolved from the append-only
   // `learning_consents` table, NOT from the process-wide governance env blob, so
   // a tenant that revokes consent stops egressing on the next completion without
@@ -61,7 +79,16 @@ export async function observeProductCompletionInShadow(input: Readonly<{
   // an unreadable table all deny (see resolveExternalModelConsent). The operator
   // env governance is retained as an ADDITIONAL restriction below: consent grants
   // permission but cannot override the operator's off switch.
-  const consent = resolveExternalModelConsent(input.db, input.completion.tenantId, input.completion.observedAt);
+  const authorityAt = input.authorityAt ?? input.completion.observedAt;
+  const consentPurpose = input.completion.product === "regauge"
+    ? REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE
+    : VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE;
+  const consent = resolveExternalModelConsent(input.db, input.completion.tenantId, authorityAt, consentPurpose);
+  const exactConsent = consent.active && consent.consentId === governance.consentId &&
+    (input.completion.product !== "regauge" ||
+      consent.effectiveAt < authorityAt && consent.grantedAt < authorityAt &&
+      consent.expiresAt !== null && consent.expiresAt > authorityAt &&
+      consent.expiresAt <= REGAUGE_DEEPSEEK_APPROVED_SCOPE.authorizationDeadline);
   const pricing = resolvePricing(env);
   const principalId = env.MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID?.trim() || null;
   const pack = createCompletionVerifierEvidencePack({
@@ -76,29 +103,65 @@ export async function observeProductCompletionInShadow(input: Readonly<{
       mayLeaveTenantBoundary: governance.mayLeaveTenantBoundary,
       // Reference the authoritative append-only consent record when active; the
       // env consentId is only a fallback for the denied path (never egresses).
-      consentId: consent.active ? consent.consentId : governance.consentId,
+      consentId: exactConsent ? consent.consentId : governance.consentId,
       // Both the operator's env consent switch AND an active tenant table consent
       // are required. Fail-closed: either false denies external egress.
-      consentActive: governance.consentActive && consent.active,
+      consentActive: governance.consentActive && exactConsent,
     },
     governanceEvidenceRef: governance.evidenceRef,
     assembledAt: input.completion.observedAt,
     assemblerVersion: "mendpoint-worker-completion-verifier/1",
+    ...(input.substantiveSources ? { substantiveSources: input.substantiveSources } : {}),
   });
   const verificationAttemptId = `completion_${input.completion.taskId}`;
-  if (!claimVerifierShadowAttempt(input.db, {
+  // A dispatch intent proves only that work was requested. It is never a replay
+  // terminal: only validated, durable telemetry proves the provider result was
+  // recorded. This lets a queue retry after a timeout without permanently
+  // suppressing the attempt that failed between intent and telemetry.
+  if (findVerifierTelemetry(input.db, {
     tenantId: input.completion.tenantId,
     verificationAttemptId,
     evidencePackDigest: pack.packDigest,
-    observedAt: input.completion.observedAt,
-    producerPrincipalId: principalId,
   })) return null;
-  const runtime = createVerifierShadowRuntime({
+  const now = input.now ?? (() => new Date().toISOString());
+  const providerTransport = input.transport ?? createFetchVerifierTransport();
+  const attemptedProviderOperationIds: string[] = [];
+  const settledProviderOperationIds: string[] = [];
+  const unknownProviderOperationIds: string[] = [];
+  const latestProviderInvocation: ProviderInvocationOutcome = { kind: "none", operationId: null };
+  const transport = input.completion.product === "regauge"
+    ? durableRegaugeTransport({
+      db: input.db,
+      providerTransport,
+      tenantId: input.completion.tenantId,
+      verificationAttemptId,
+      evidencePackDigest: pack.packDigest,
+      expectedConsentId: governance.consentId,
+      producerPrincipalId: principalId,
+      now,
+      beforeProviderRequest: input.beforeProviderRequest,
+      hooks: input.operationHooks,
+      attemptedOperationIds: attemptedProviderOperationIds,
+      settledOperationIds: settledProviderOperationIds,
+      unknownOperationIds: unknownProviderOperationIds,
+      latestInvocation: latestProviderInvocation,
+    })
+    : input.transport;
+  const runtime = createVerifierAdvisoryRuntime({
     env,
     pricing,
-    ...(input.transport ? { transport: input.transport } : {}),
+    ...(transport ? { transport } : {}),
     actorId: principalId ?? "mendpoint-verifier-worker",
-    persistTelemetry: async (telemetry) => { persistVerifierTelemetry(input.db, { telemetry, producerPrincipalId: principalId }); },
+    // A provider or log-probability transport failure is not a completed
+    // verification. The durable queue must retry it, so do not create the
+    // telemetry replay terminal for those two transient outcomes. Credential
+    // access remains audited; a later successful/definitive result is retained.
+    persistTelemetry: async (telemetry) => {
+      if (telemetry.failureCode && RETRYABLE_VERIFIER_FAILURE_CODES.has(
+        telemetry.failureCode as "api_failure" | "logprob_failure",
+      )) return;
+      persistVerifierTelemetry(input.db, { telemetry, producerPrincipalId: principalId });
+    },
     auditCredentialAccess: async (event) => {
       const id = `audit_verifier_${createHash("sha256").update([input.completion.tenantId, event.credentialId, event.requestId ?? "none", event.outcome, event.occurredAt].join("\0")).digest("hex").slice(0, 40)}`;
       recordAudit(input.db, {
@@ -115,15 +178,168 @@ export async function observeProductCompletionInShadow(input: Readonly<{
     },
   });
   if (!runtime) return null;
-  return await runtime.observe({
+  const result = await runtime.observe({
     pack,
     incumbentCandidateId: input.completion.candidateId,
     verificationAttemptId,
-    observedAt: input.completion.observedAt,
+    observedAt: authorityAt,
+  });
+  if (result.failureCode && RETRYABLE_VERIFIER_FAILURE_CODES.has(
+    result.failureCode as "api_failure" | "logprob_failure",
+  ) && (unknownProviderOperationIds.length > 0 ||
+    attemptedProviderOperationIds.some((operationId) =>
+      !settledProviderOperationIds.includes(operationId)))) {
+    // A request intent without either a durable response receipt or proof that
+    // the provider was never reached is not retryable. The provider may have
+    // completed paid work before the connection failed. Surface reconciliation
+    // immediately instead of consuming queue retries or repeating model work.
+    throw new Error("verifier_advisory_provider_outcome_unknown");
+  }
+  if (result.failureCode && RETRYABLE_VERIFIER_FAILURE_CODES.has(
+    result.failureCode as "api_failure" | "logprob_failure",
+  )) {
+    const operationId = latestProviderInvocation.kind === "completed"
+      ? latestProviderInvocation.operationId
+      : null;
+    if (operationId) {
+      persistVerifierAdvisoryProviderRetryableResponse(input.db, {
+        tenantId: input.completion.tenantId,
+        operationId,
+        errorCode: result.failureCode as "api_failure" | "logprob_failure",
+        classifiedAt: now(),
+        producerPrincipalId: principalId,
+      });
+    }
+  }
+  return result;
+}
+
+function durableRegaugeTransport(input: Readonly<{
+  db: AppDb;
+  providerTransport: VerifierHttpTransport;
+  tenantId: string;
+  verificationAttemptId: string;
+  evidencePackDigest: string;
+  expectedConsentId: string;
+  producerPrincipalId: string | null;
+  now: () => string;
+  beforeProviderRequest?: (requestedAt: string) => void;
+  hooks?: Readonly<{ afterProviderReturn?: () => void; afterProviderReceipt?: () => void }>;
+  attemptedOperationIds: string[];
+  settledOperationIds: string[];
+  unknownOperationIds: string[];
+  latestInvocation: ProviderInvocationOutcome;
+}>): VerifierHttpTransport {
+  return Object.freeze({
+    request: async (request: VerifierHttpRequest) => {
+      const providerRequestId = request.headers["x-mendpoint-request-id"];
+      if (!providerRequestId) throw new Error("verifier_advisory_provider_request_invalid");
+      const requestedAt = input.now();
+      // Reset before any lease, consent, or intent work. A failure at one of
+      // those gates belongs to this invocation and must never be attributed to
+      // an earlier completed provider receipt.
+      input.latestInvocation.kind = "no_operation";
+      input.latestInvocation.operationId = null;
+      input.beforeProviderRequest?.(requestedAt);
+      let operation: ReturnType<typeof beginVerifierAdvisoryProviderOperation>;
+      try {
+        operation = beginVerifierAdvisoryProviderOperation(input.db, {
+          tenantId: input.tenantId,
+          verificationAttemptId: input.verificationAttemptId,
+          evidencePackDigest: input.evidencePackDigest,
+          providerRequestId,
+          requestBodySha256: digest(canonical(request.body)),
+          expectedConsentId: input.expectedConsentId,
+          consentPurpose: REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
+          authorizationDeadline: REGAUGE_DEEPSEEK_APPROVED_SCOPE.authorizationDeadline,
+          requestedAt,
+          producerPrincipalId: input.producerPrincipalId,
+        });
+      } catch (error) {
+        if (error instanceof Error && error.message === "verifier_advisory_provider_outcome_unknown") {
+          input.unknownOperationIds.push(providerRequestId);
+          input.latestInvocation.kind = "unknown";
+        }
+        throw error;
+      }
+      input.attemptedOperationIds.push(operation.operationId);
+      input.latestInvocation.kind = "attempted";
+      input.latestInvocation.operationId = operation.operationId;
+      if (operation.status === "recover") {
+        input.settledOperationIds.push(operation.operationId);
+        input.latestInvocation.kind = "completed";
+        return operation.response!;
+      }
+      try {
+        const response = await input.providerTransport.request(request);
+        input.hooks?.afterProviderReturn?.();
+        persistVerifierAdvisoryProviderResponse(input.db, {
+          tenantId: input.tenantId,
+          operationId: operation.operationId,
+          response,
+          providerProcessedAt: input.now(),
+          producerPrincipalId: input.producerPrincipalId,
+        });
+        input.settledOperationIds.push(operation.operationId);
+        input.latestInvocation.kind = "settled";
+        input.hooks?.afterProviderReceipt?.();
+        input.latestInvocation.kind = "completed";
+        return response;
+      } catch (error) {
+        const noResponseCode = provableNoResponseCode(error);
+        if (noResponseCode) {
+          persistVerifierAdvisoryProviderNoResponse(input.db, {
+            tenantId: input.tenantId,
+            operationId: operation.operationId,
+            failedAt: input.now(),
+            errorCode: noResponseCode,
+            producerPrincipalId: input.producerPrincipalId,
+          });
+          input.settledOperationIds.push(operation.operationId);
+          input.latestInvocation.kind = "settled";
+        }
+        throw error;
+      }
+    },
   });
 }
 
-function resolveGovernance(env: Readonly<Record<string, string | undefined>>, tenantId: string, product: VerifierProduct): Readonly<{ dataClassification: VerifierDataClassification; requiredRegion: string; processingRegion: string; consentId: string; evidenceRef: string; externalModelAllowed: boolean; mayLeaveTenantBoundary: boolean; consentActive: boolean }> {
+function provableNoResponseCode(error: unknown): string | null {
+  if (error instanceof VerifierProviderNoResponseError) return error.code;
+  if (!error || typeof error !== "object") return null;
+  const direct = (error as { code?: unknown }).code;
+  const cause = (error as { cause?: { code?: unknown } }).cause?.code;
+  const code = (typeof direct === "string" ? direct : typeof cause === "string" ? cause : "")
+    .toUpperCase();
+  // Only failures that happen before a connection is established prove the
+  // request was not dispatched. Resets, generic timeouts, broken pipes, aborts,
+  // and Undici header/body/socket errors can all occur after provider work.
+  return [
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+    "EADDRNOTAVAIL",
+    "UND_ERR_CONNECT_TIMEOUT",
+  ].includes(code)
+    ? `verifier_transport_${code.toLowerCase()}`
+    : null;
+}
+
+function canonical(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).filter((key) => object[key] !== undefined).sort()
+    .map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`).join(",")}}`;
+}
+
+function digest(value: string): string {
+  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
+export function resolveVerifierGovernance(env: Readonly<Record<string, string | undefined>>, tenantId: string, product: VerifierProduct): Readonly<{ dataClassification: VerifierDataClassification; requiredRegion: string; processingRegion: string; consentId: string; evidenceRef: string; externalModelAllowed: boolean; mayLeaveTenantBoundary: boolean; consentActive: boolean }> {
   const raw = env.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON?.trim();
   if (!raw) fail("verifier_governance_configuration_required");
   let parsed: unknown;
@@ -146,7 +362,7 @@ function resolveGovernance(env: Readonly<Record<string, string | undefined>>, te
 }
 
 type ExternalModelConsent =
-  | Readonly<{ active: true; consentId: string }>
+  | Readonly<{ active: true; consentId: string; effectiveAt: string; grantedAt: string; expiresAt: string | null }>
   | Readonly<{ active: false; consentId: null }>;
 
 /**
@@ -160,14 +376,20 @@ type ExternalModelConsent =
  * granted. This resolves consent only; the operator env governance switch is an
  * additional restriction applied by the caller and by the evidence-pack gate.
  */
-function resolveExternalModelConsent(db: AppDb, tenantId: string, at: string): ExternalModelConsent {
+function resolveExternalModelConsent(db: AppDb, tenantId: string, at: string, purpose: string): ExternalModelConsent {
   try {
     const consent = findActiveLearningConsent(db, {
       tenantId,
-      purpose: VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
+      purpose,
       at,
     });
-    return consent ? Object.freeze({ active: true, consentId: consent.id }) : Object.freeze({ active: false, consentId: null });
+    return consent ? Object.freeze({
+      active: true,
+      consentId: consent.id,
+      effectiveAt: consent.effective_at,
+      grantedAt: consent.created_at,
+      expiresAt: consent.expires_at,
+    }) : Object.freeze({ active: false, consentId: null });
   } catch {
     return Object.freeze({ active: false, consentId: null });
   }
@@ -185,3 +407,8 @@ function resolvePricing(env: Readonly<Record<string, string | undefined>>): Veri
 function record(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null); }
 function text(value: unknown): value is string { return typeof value === "string" && value.trim() === value && value.length > 0 && value.length <= 1024 && !/[\u0000-\u001f\u007f]/u.test(value); }
 function fail(code: string): never { throw new Error(code); }
+
+/** @deprecated Import ProductCompletionAdvisoryInput from @mendpoint/pipeline. */
+export type ProductCompletionShadowInput = ProductCompletionAdvisoryInput;
+/** @deprecated Import observeProductCompletionInAdvisory. */
+export const observeProductCompletionInShadow = observeProductCompletionInAdvisory;

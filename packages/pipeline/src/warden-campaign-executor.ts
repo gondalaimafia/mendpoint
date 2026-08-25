@@ -29,6 +29,7 @@ import {
   runVerificationCommand,
   validateVerificationCommands,
 } from "@mendpoint/repair";
+import { tryRegisterFettlerCampaignMissionArtifacts } from "./mission-artifact-register.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 
@@ -926,6 +927,35 @@ export async function executeWardenCampaignTarget(input: {
         comparison, baselineArtifactId: baselineArtifact.id, candidateArtifactId: candidateArtifact.id,
         postEditArtifactId: postEditArtifact.id, gateArtifactId: gateArtifact.id,
       }), producerPrincipalId: input.actorPrincipalId, createdAt: input.createdAt,
+    });
+    // Best-effort: register already-persisted manifests as Mission outputs when
+    // this campaign is bound. Missing Mission skips; registration never fails
+    // the execute-to-review transition.
+    tryRegisterFettlerCampaignMissionArtifacts(input.db, {
+      tenantId: input.tenantId,
+      campaignId: input.campaignId,
+      producerPrincipalId: input.actorPrincipalId,
+      createdAt: input.createdAt,
+      sourceSnapshot: snapshot.id,
+      artifacts: [
+        {
+          role: "candidate_patch",
+          artifactId: candidateArtifact.id,
+          label: `warden candidate ${input.targetId}`,
+        },
+        {
+          role: "verification_report",
+          artifactId: postEditArtifact.id,
+          label: `warden post-edit verification ${input.targetId}`,
+          parentArtifactId: candidateArtifact.id,
+        },
+        {
+          role: "pull_request",
+          artifactId: packageArtifact.id,
+          label: `warden review package ${input.targetId}`,
+          parentArtifactId: candidateArtifact.id,
+        },
+      ],
     });
     current = transitionWardenTarget(input.db, {
       tenantId: input.tenantId, campaignId: input.campaignId, targetId: input.targetId,

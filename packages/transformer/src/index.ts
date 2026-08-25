@@ -362,6 +362,8 @@ export {
   type TransformerPilotCampaign,
   type TransformerAttemptLease,
   type TransformerAttemptCheckpointCompletionResult,
+  type TransformerVerifierAdvisoryDispatch,
+  type TransformerVerifierAdvisoryDispatchResult,
   type TransformerExpiredAttempt,
   type TransformerRunnableCampaign,
   type TransformerDraftAction,

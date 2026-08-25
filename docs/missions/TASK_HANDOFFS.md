@@ -85,11 +85,16 @@ Today's regenerate creates a new `agent.run` with a fresh session id and a goal
 string with the rationale concatenated on. The resume side now reads the
 **compiled envelope** instead:
 
-- `apps/worker/src/cli.ts` calls `resolveResumeContext` (still behind the
-  default-off `MENDPOINT_INHERITED_CONTEXT` switch) so a mission-bound resume
-  applies the ownership guard and keeps load failures distinct from "no prior
-  context". A present-but-unresolvable `missionId` is `context_not_loaded` (skip
-  injection, log it) rather than compiling as if there were no mission.
+- `apps/worker/src/cli.ts` calls `resolveResumeContext` on the live Fettler
+  `agent.run` path. Unbound jobs still require the default-off
+  `MENDPOINT_INHERITED_CONTEXT` switch. A job that names a `missionId` (carried
+  forward across a regenerate via the payload spread) compiles even with that
+  switch unset, so a mission-bound resume reads decisions, exceptions,
+  verification, and history — not only organization memory, and not a
+  concatenated string — and persists `context_refs_json` on the trajectory.
+  Injection happens only on a `loaded` standing. `context_not_loaded` and
+  `not_resumable` fail closed (skip injection, log the reason) rather than
+  compiling as if there were no mission.
 - `apps/worker/src/mission-resume.ts` (`resolveResumeContext`) is the resume-side
   orchestration: it applies the ownership guard, resolves the mission, compiles
   the envelope, and returns a standing that keeps **four absences distinct**:
@@ -125,8 +130,10 @@ an unchanged one does not.
 
 ## What is and is not live
 
-- The **resume seam** (compile the envelope with the mission when one is bound) is
-  wired into the live Fettler dispatch behind `MENDPOINT_INHERITED_CONTEXT`.
+- The **resume seam** (`resolveResumeContext` on Fettler `agent.run`) is wired
+  into the live Fettler dispatch. Unbound jobs stay behind
+  `MENDPOINT_INHERITED_CONTEXT`; bound Missions compile and inject without
+  flipping that global switch.
 - On current main a Fettler `agent.run` job is **not** bound to a `mission` row
   (its payload carries no campaign or mission id). So on the live Fettler repair
   path the resume carries **tenant organization memory only**, and the
@@ -160,5 +167,6 @@ instruction.
 | Revisiting requires new evidence (not absolute) | `mission-handoff.test.ts` "changed circumstance ... only with new evidence" | the evidence guard in `reviseDecisionOnNewEvidence` |
 | `context_not_loaded` distinct from `no_prior_context` | `mission-resume.test.ts` CONTROL (store scan) + "four ... distinct" | the `store_not_available` scan in `classifyResumeStanding` |
 | A resumed run reads the earlier decision from the envelope | `mission-resume.test.ts` "reads the earlier decision" | the mission pass-through in `resolveResumeContext` |
+| Bound Missions compile without `MENDPOINT_INHERITED_CONTEXT`, and an explicit `0` still suppresses | `inherited-context.test.ts` CONTROL (bound compile + kill switch) + `agent.test.ts` inherited-context injection seam | `inheritedContextShouldCompile` + the seam gate in `agent.ts` |
 | Instruction-like reviewer text framed as data at the seam | `mission-resume.test.ts` CONTROL (seam) | the fence/header in `renderInheritedContextSystemBlock` |
 | Reviewer directive recorded only when mission-bound | `warden-candidate-review.test.ts` "records the reviewer directive ..." / "no fabrication" | the `recordReviewerDirective` call in the regenerate branch |

@@ -1,19 +1,21 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   addWardenCampaignTarget,
+  bindMissionToPolicyEnvelope,
   createDb,
   createMission,
   createPolicyEnvelope,
-  bindMissionToPolicyEnvelope,
   createWardenCampaign,
   insertPrincipal,
   insertRepositorySnapshot,
   insertRepositorySnapshotPolicy,
   linkFettlerCampaignToMission,
+  listMissionArtifactLineage,
+  listMissionArtifacts,
   listWardenCampaignTargets,
   planWardenRollout,
   replayWardenRun,
@@ -254,6 +256,8 @@ describe("Warden campaign executor", () => {
     expect(parsed.verification).not.toHaveProperty("comparisonOk");
     expect(parsed.verification).not.toHaveProperty("introducedFailures");
     expect(parsed.uncertainty).not.toHaveProperty("notVerified");
+    const unboundCount = (value.db.raw.prepare("SELECT COUNT(*) AS n FROM mission_artifacts").get() as { n: number }).n;
+    expect(unboundCount).toBe(0);
   });
 
   it("fails closed on a new verification regression and resumes only from verified replay evidence", async () => {
@@ -383,6 +387,41 @@ describe("Warden campaign executor", () => {
     await expect(executeWardenCampaignTarget(executionInput(value)))
       .rejects.toMatchObject({ code: "warden_policy_denied", retryable: false });
     expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0]?.stage).not.toBe("review");
+  });
+
+  it("registers persisted candidate, verification, and review-package manifests on a bound Mission", async () => {
+    const value = fixture();
+    const result = await executeWardenCampaignTarget(executionInput(value));
+    const registered = listMissionArtifacts(value.db, "tenant-a", "mission-a");
+    expect(registered.map((row) => row.role).sort()).toEqual([
+      "candidate_patch", "pull_request", "verification_report",
+    ]);
+    expect(registered.find((row) => row.role === "candidate_patch")?.artifactId).toBe(result.candidateArtifactId);
+    expect(registered.find((row) => row.role === "verification_report")?.artifactId).toBe(result.postEditArtifactId);
+    expect(registered.find((row) => row.role === "pull_request")?.artifactId).toBe(result.packageArtifactId);
+    expect(registered.every((row) => row.sourceSnapshot === "snapshot-a")).toBe(true);
+    expect(registered.every((row) => row.producerPrincipalId === "worker")).toBe(true);
+    const lineage = listMissionArtifactLineage(value.db, "tenant-a", "mission-a");
+    expect(lineage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        artifactId: result.postEditArtifactId, parentArtifactId: result.candidateArtifactId,
+      }),
+      expect.objectContaining({
+        artifactId: result.packageArtifactId, parentArtifactId: result.candidateArtifactId,
+      }),
+    ]));
+  });
+
+  // CONTROL: the live campaign execute seam must call the best-effort registry
+  // helper. Deleting tryRegisterFettlerCampaignMissionArtifacts from
+  // executeWardenCampaignTarget makes this die.
+  it("CONTROL: executeWardenCampaignTarget calls tryRegisterFettlerCampaignMissionArtifacts", () => {
+    const source = readFileSync(join(import.meta.dirname, "warden-campaign-executor.ts"), "utf8");
+    expect(source).toContain('from "./mission-artifact-register.js"');
+    expect(source).toMatch(/tryRegisterFettlerCampaignMissionArtifacts\(/);
+    expect(source).toContain('role: "candidate_patch"');
+    expect(source).toContain('role: "verification_report"');
+    expect(source).toContain('role: "pull_request"');
   });
 });
 

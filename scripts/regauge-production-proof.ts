@@ -1,6 +1,7 @@
 import { constants, copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { REGAUGE_DEEPSEEK_APPROVED_SCOPE } from "@mendpoint/pipeline";
 
 const API_KEY = /^me_[A-Za-z0-9_-]{32,}$/;
 const REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -28,6 +29,34 @@ export type RegaugeDraftCanaryEvidence = Readonly<{
     commitSha: string;
     evidenceRefs: readonly string[];
   }>[];
+}>;
+
+export type RegaugeVerifierEvidence = Readonly<{
+  schemaVersion: 1;
+  tenantId: string;
+  campaignId: string;
+  observedAt: string;
+  observation: Readonly<{
+    telemetryDigest: string;
+    evidencePackDigest: string;
+    provider: "deepseek";
+    model: "deepseek-v4-flash";
+    backendRevision: string;
+    observedAt: string;
+    totalTokens: number;
+    estimatedCostUsd: number;
+    latencyMs: number;
+    scoreEvidenceDigests: readonly string[];
+    consentId: string;
+    consentEffectiveAt: string;
+    consentGrantedAt: string;
+    consentExpiresAt: string;
+    consentRecordDigest: string;
+    providerRequestedAt: string;
+    providerProcessedAt: string;
+    advisoryOnly: true;
+    behaviorChanged: false;
+  }>;
 }>;
 
 export type RegaugeReadinessSoakReport = Readonly<{
@@ -176,6 +205,94 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
   });
 }
 
+export async function observeRegaugeVerifierEvidence(input: FetchInput & Readonly<{
+  token: string;
+  tenantId: string;
+  campaignId: string;
+  expectedConsentId: string;
+}>): Promise<RegaugeVerifierEvidence> {
+  const coordinatorUrl = exactCoordinatorUrl(input.coordinatorUrl);
+  if (!API_KEY.test(input.token)) throw new Error("regauge_production_token_invalid");
+  const tenantId = requiredId(input.tenantId, "regauge_production_tenant_invalid");
+  const campaignId = requiredId(input.campaignId, "regauge_production_campaign_invalid");
+  const expectedConsentId = requiredId(input.expectedConsentId, "regauge_production_verifier_consent_invalid");
+  const payload = await boundedJson(
+    new URL("v1/regauge/attempt-coordinator/verifier-observations", coordinatorUrl).toString(),
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${input.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ tenantId, campaignId }),
+    },
+    input.fetchImpl ?? globalThis.fetch,
+  );
+  if (!Array.isArray(payload.result) || payload.result.length !== 1) {
+    throw new Error("regauge_production_verifier_evidence_missing");
+  }
+  const value = payload.result[0];
+  const observedAt = String(payload.serverTime ?? "");
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      !Number.isFinite(Date.parse(observedAt))) {
+    throw new Error("regauge_production_verifier_evidence_invalid");
+  }
+  const observation = value as Record<string, unknown>;
+  const scoreEvidenceDigests = observation.scoreEvidenceDigests;
+  const providerRequestedAt = String(observation.providerRequestedAt ?? "");
+  const providerProcessedAt = String(observation.providerProcessedAt ?? "");
+  const consentEffectiveAt = String(observation.consentEffectiveAt ?? "");
+  const consentGrantedAt = String(observation.consentGrantedAt ?? "");
+  const consentExpiresAt = String(observation.consentExpiresAt ?? "");
+  const processedMs = Date.parse(providerProcessedAt);
+  const requestedMs = Date.parse(providerRequestedAt);
+  if (!/^sha256:[a-f0-9]{64}$/.test(String(observation.telemetryDigest)) ||
+      !/^sha256:[a-f0-9]{64}$/.test(String(observation.evidencePackDigest)) ||
+      observation.provider !== "deepseek" || observation.model !== "deepseek-v4-flash" ||
+      typeof observation.backendRevision !== "string" || !observation.backendRevision ||
+      !Number.isFinite(Date.parse(String(observation.observedAt))) ||
+      typeof observation.totalTokens !== "number" || !Number.isSafeInteger(observation.totalTokens) || observation.totalTokens <= 0 ||
+      typeof observation.estimatedCostUsd !== "number" || observation.estimatedCostUsd < 0 ||
+      typeof observation.latencyMs !== "number" || observation.latencyMs < 0 ||
+      !Array.isArray(scoreEvidenceDigests) || scoreEvidenceDigests.length === 0 ||
+      scoreEvidenceDigests.some((digest) => !/^sha256:[a-f0-9]{64}$/.test(String(digest))) ||
+      observation.consentId !== expectedConsentId ||
+      !/^sha256:[a-f0-9]{64}$/.test(String(observation.consentRecordDigest)) ||
+      !Number.isFinite(requestedMs) || !Number.isFinite(processedMs) || requestedMs > processedMs ||
+      !Number.isFinite(Date.parse(consentEffectiveAt)) || !Number.isFinite(Date.parse(consentGrantedAt)) ||
+      !Number.isFinite(Date.parse(consentExpiresAt)) ||
+      Date.parse(consentEffectiveAt) >= requestedMs || Date.parse(consentGrantedAt) >= requestedMs ||
+      Date.parse(consentExpiresAt) <= processedMs ||
+      Date.parse(consentExpiresAt) > Date.parse(REGAUGE_DEEPSEEK_APPROVED_SCOPE.authorizationDeadline) ||
+      observation.advisoryOnly !== true || observation.behaviorChanged !== false) {
+    throw new Error("regauge_production_verifier_evidence_invalid");
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    tenantId,
+    campaignId,
+    observedAt,
+    observation: Object.freeze({
+      telemetryDigest: String(observation.telemetryDigest),
+      evidencePackDigest: String(observation.evidencePackDigest),
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      backendRevision: String(observation.backendRevision),
+      observedAt: String(observation.observedAt),
+      totalTokens: Number(observation.totalTokens),
+      estimatedCostUsd: observation.estimatedCostUsd,
+      latencyMs: observation.latencyMs,
+      scoreEvidenceDigests: Object.freeze(scoreEvidenceDigests.map(String)),
+      consentId: expectedConsentId,
+      consentEffectiveAt,
+      consentGrantedAt,
+      consentExpiresAt,
+      consentRecordDigest: String(observation.consentRecordDigest),
+      providerRequestedAt,
+      providerProcessedAt,
+      advisoryOnly: true,
+      behaviorChanged: false,
+    }),
+  });
+}
+
 export async function runRegaugeReadinessSoak(input: FetchInput & Readonly<{
   expectedRevision: string;
   durationSeconds: number;
@@ -270,7 +387,39 @@ async function main(): Promise<void> {
     if (!report.passed) process.exitCode = 1;
     return;
   }
+  if (mode === "verifier-evidence") {
+    const evidence = await observeRegaugeVerifierEvidence({
+      coordinatorUrl: process.env.MENDPOINT_REGAUGE_COORDINATOR_URL ?? "",
+      token: process.env.MENDPOINT_REGAUGE_COORDINATOR_TOKEN ?? "",
+      tenantId: process.env.MENDPOINT_REGAUGE_TENANT_ID ?? "",
+      campaignId: process.env.MENDPOINT_REGAUGE_CAMPAIGN_ID ?? "",
+      expectedConsentId: expectedConsentIdFromGovernance(
+        process.env.MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON,
+        process.env.MENDPOINT_REGAUGE_TENANT_ID ?? "",
+      ),
+    });
+    persistRegaugeProductionEvidence(output, evidence);
+    return;
+  }
   throw new Error("regauge_production_proof_mode_invalid");
+}
+
+function expectedConsentIdFromGovernance(value: string | undefined, tenantId: string): string {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value?.trim() ?? ""); }
+  catch { throw new Error("regauge_production_verifier_consent_invalid"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+      !Array.isArray((parsed as Record<string, unknown>).entries)) {
+    throw new Error("regauge_production_verifier_consent_invalid");
+  }
+  const matches = ((parsed as Record<string, unknown>).entries as unknown[]).filter((entry) =>
+    entry && typeof entry === "object" && !Array.isArray(entry) &&
+    (entry as Record<string, unknown>).tenantId === tenantId &&
+    Array.isArray((entry as Record<string, unknown>).products) &&
+    ((entry as Record<string, unknown>).products as unknown[]).includes("regauge"));
+  if (matches.length !== 1) throw new Error("regauge_production_verifier_consent_invalid");
+  return requiredId(String((matches[0] as Record<string, unknown>).consentId ?? ""),
+    "regauge_production_verifier_consent_invalid");
 }
 
 if (process.argv[1]?.replaceAll("\\", "/").endsWith("scripts/regauge-production-proof.ts")) {

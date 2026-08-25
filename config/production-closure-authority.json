@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "repositoryId": 1309389373,
+  "repository": "gondalaimafia/mendpoint",
+  "workflowPath": ".github/workflows/closure-authority.yml",
+  "requiredCiWorkflowPath": ".github/workflows/ci.yml",
+  "externalCheckName": "mendpoint-production-closure-authority",
+  "externalCheckAppId": null,
+  "controllerCheckName": "mendpoint-production-closure-controller",
+  "controllerCheckAppId": null,
+  "protectionMode": "classic_branch",
+  "protectionBranch": "main",
+  "legacyBootstrapMatrixDigest": "sha256:ed82174b44fbae55d37c5f6fdaed15a1b18992ad66c1beb258d11e62354dc7e9",
+  "authorityRotationManifestPath": "config/production-closure-authority-rotation.json",
+  "authorityRotationAuxiliaryFiles": [
+    "scripts/fixtures/production-closure-matrix-v2.json",
+    "scripts/github-actions-pins-check.test.ts",
+    "scripts/production-closure-authority-rotation.test.ts",
+    "scripts/production-closure-github-authority.test.ts",
+    "scripts/production-closure-matrix.test.ts",
+    "scripts/production-closure-proposal-authority.test.ts"
+  ],
+  "successor": null,
+  "trustedReviewers": {},
+  "productionEvidenceAuthorities": [],
+  "protectedFiles": {
+    ".github/workflows/closure-authority.yml": "sha256:f48ef282f53aeae03a8feab305be28e5b6b20b4ff903cdd3738b74d8cc4d55af",
+    ".github/workflows/ci.yml": "sha256:cd754f91027985a2f65de0cdda6d9bcfcb5b59169a32457367e5bd95f3df025e",
+    "package.json": "sha256:ddced0d6ff38b725551141df83b9f5515c90df311c82ad906fc0360dfeb16a7c",
+    "package-lock.json": "sha256:193181927b3e5813f43471c60c343c0300c6c71540a9b3921968a215cb57cd0d",
+    "tsconfig.base.json": "sha256:7c157e5eafd2be931e382044c0bdbf7008e111c119c3932f6fd31603a28e8ede",
+    "scripts/tsconfig.json": "sha256:8607a9e57b531b9c941819da05b1ba70c991389a5d1b3d13be06d109d49b22e5",
+    "scripts/production-closure-proposal-authority.ts": "sha256:4fc566d114056275e38cf98771a585195ffd7d5f3cc8b7e4d884c096f3eda574",
+    "scripts/production-closure-github-authority.ts": "sha256:f381afd1aecf02fe0aac42fe1f5fd9171840e62af6271eb03fee428579e51fd4",
+    "scripts/production-closure-authority-rotation.ts": "sha256:a028ddc9accff22771211afba38573cf7482856e1539b81535d711b8b1f8271f",
+    "scripts/production-closure-matrix.ts": "sha256:229bbd7eb2c8a2e58d9eb9b849be46d4776163f53ae6d63f3121ac7e11670a25",
+    "scripts/public-claims-check.ts": "sha256:31ce71d0cc998a4b534714bf8fd17f577876b235ca1255a2a76c8e38815ea248",
+    "packages/contract/src/product-requirements.ts": "sha256:a0ee9719e472bee1a73f44c44df9626f5f91d881608c628d5b2eb4c9fb7f4e98",
+    "packages/contract/src/public-claims.ts": "sha256:10b9739ff30ea52f17a8d1ca9822268f8c57e09b5a5f2d31a3b9a9189ad6aac0"
+  }
+}

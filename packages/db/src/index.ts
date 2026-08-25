@@ -2830,6 +2830,8 @@ function migrateProvidersFeedColumns(db: AppDb) {
      ON migration_prs(consumer_id, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS audit_events_tenant_created_idx
      ON audit_events(tenant_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS audit_events_tenant_action_created_idx
+     ON audit_events(tenant_id, action, created_at DESC)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS agent_runs_tenant_job_uidx
      ON agent_runs(tenant_id, job_id) WHERE job_id IS NOT NULL`,
   ]) {
@@ -3884,6 +3886,15 @@ export { buildExposureReport } from "./exposure.js";
 export type { ExposureReport } from "./exposure.js";
 export { summarizeChangeImpactCoverage } from "./change-impact-coverage.js";
 export type { ChangeImpactCoverage } from "./change-impact-coverage.js";
+export {
+  loadChangeImpactCoverage,
+  lookupChangeImpactAudit,
+} from "./change-impact-audit.js";
+export type {
+  ChangeImpactAudit,
+  ChangeImpactCoverageWithFallback,
+  ChangeImpactFallback,
+} from "./change-impact-audit.js";
 
 export {
   appendDomainEvent,
@@ -4099,6 +4110,7 @@ export {
   grantLearningConsent,
   listAdmittableLearningRecords,
   listEligibleLearningDatasetMembers,
+  listLearningConsentHistory,
   listLearningRecordLineage,
   revokeLearningConsent,
   sealLearningDatasetVersion,
@@ -4132,6 +4144,7 @@ export {
   transitionWardenTarget,
 } from "./warden-campaign.js";
 export {
+  advanceMissionPolicyEnvelopeVersion,
   bindMissionGraphVersion,
   bindMissionPolicyEnvelopeVersion,
   bindMissionScope,

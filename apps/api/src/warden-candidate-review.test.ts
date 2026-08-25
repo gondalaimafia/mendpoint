@@ -514,6 +514,7 @@ describe("Warden candidate human review", () => {
     expect(active).toHaveLength(1);
     expect(active[0]!.decision).toBe("Do not use a raw OAuth flow: it violates the internal auth policy.");
     expect(active[0]!.scope).toBe("reviewer_directive:warden-run-1");
+    expect(active[0]!.decisionType).toBe("verification");
   });
 
   it("records no mission decision when the regenerate is not mission-bound (no fabrication)", async () => {

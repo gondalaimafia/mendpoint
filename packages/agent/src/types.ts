@@ -298,10 +298,17 @@ export type AgentTask = {
   /**
    * Compiled inherited context to inject into the model system prompt. Produced
    * upstream by the Mission Context Compiler. Injection is gated behind a
-   * default-off switch (`MENDPOINT_INHERITED_CONTEXT`) and re-verified at the
-   * seam; when absent, the prompt is byte-for-byte today's constant.
+   * default-off switch (`MENDPOINT_INHERITED_CONTEXT`) for unbound jobs, and is
+   * allowed for a bound Mission even with that switch unset. The block is
+   * re-verified at the seam; when absent, the prompt is byte-for-byte today's
+   * constant.
    */
   inheritedContext?: InheritedContextInjection;
+  /**
+   * When true, the worker compiled this injection because the job named a
+   * Mission. Lets the seam inject without flipping the global env switch.
+   */
+  inheritedContextMissionBound?: boolean;
   /** Cooperative cancellation checked around every awaited or mutating phase. */
   shouldContinue?: () => boolean;
 };
