@@ -52,6 +52,7 @@ export type RegaugeVerifierEvidence = Readonly<{
     consentGrantedAt: string;
     consentExpiresAt: string;
     consentRecordDigest: string;
+    providerRequestedAt: string;
     providerProcessedAt: string;
     advisoryOnly: true;
     behaviorChanged: false;
@@ -235,11 +236,13 @@ export async function observeRegaugeVerifierEvidence(input: FetchInput & Readonl
   }
   const observation = value as Record<string, unknown>;
   const scoreEvidenceDigests = observation.scoreEvidenceDigests;
+  const providerRequestedAt = String(observation.providerRequestedAt ?? "");
   const providerProcessedAt = String(observation.providerProcessedAt ?? "");
   const consentEffectiveAt = String(observation.consentEffectiveAt ?? "");
   const consentGrantedAt = String(observation.consentGrantedAt ?? "");
   const consentExpiresAt = String(observation.consentExpiresAt ?? "");
   const processedMs = Date.parse(providerProcessedAt);
+  const requestedMs = Date.parse(providerRequestedAt);
   if (!/^sha256:[a-f0-9]{64}$/.test(String(observation.telemetryDigest)) ||
       !/^sha256:[a-f0-9]{64}$/.test(String(observation.evidencePackDigest)) ||
       observation.provider !== "deepseek" || observation.model !== "deepseek-v4-flash" ||
@@ -252,10 +255,10 @@ export async function observeRegaugeVerifierEvidence(input: FetchInput & Readonl
       scoreEvidenceDigests.some((digest) => !/^sha256:[a-f0-9]{64}$/.test(String(digest))) ||
       observation.consentId !== expectedConsentId ||
       !/^sha256:[a-f0-9]{64}$/.test(String(observation.consentRecordDigest)) ||
-      !Number.isFinite(processedMs) || observation.observedAt !== providerProcessedAt ||
+      !Number.isFinite(requestedMs) || !Number.isFinite(processedMs) || requestedMs > processedMs ||
       !Number.isFinite(Date.parse(consentEffectiveAt)) || !Number.isFinite(Date.parse(consentGrantedAt)) ||
       !Number.isFinite(Date.parse(consentExpiresAt)) ||
-      Date.parse(consentEffectiveAt) >= processedMs || Date.parse(consentGrantedAt) >= processedMs ||
+      Date.parse(consentEffectiveAt) >= requestedMs || Date.parse(consentGrantedAt) >= requestedMs ||
       Date.parse(consentExpiresAt) <= processedMs ||
       Date.parse(consentExpiresAt) > Date.parse(REGAUGE_DEEPSEEK_APPROVED_SCOPE.authorizationDeadline) ||
       observation.advisoryOnly !== true || observation.behaviorChanged !== false) {
@@ -282,6 +285,7 @@ export async function observeRegaugeVerifierEvidence(input: FetchInput & Readonl
       consentGrantedAt,
       consentExpiresAt,
       consentRecordDigest: String(observation.consentRecordDigest),
+      providerRequestedAt,
       providerProcessedAt,
       advisoryOnly: true,
       behaviorChanged: false,

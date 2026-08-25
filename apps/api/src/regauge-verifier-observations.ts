@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
 import {
-  findActiveLearningConsent,
   getPrincipal,
   listArtifactManifests,
   listEvidenceRecords,
   resolveMissionForRegaugeCampaign,
   type AppDb,
 } from "@mendpoint/db";
-import { REGAUGE_DEEPSEEK_APPROVED_SCOPE } from "@mendpoint/pipeline";
+import {
+  readVerifierAdvisoryProviderEvidence,
+  REGAUGE_DEEPSEEK_APPROVED_SCOPE,
+} from "@mendpoint/pipeline";
 import { verifyVerifierTelemetry } from "@mendpoint/verifier";
-import { REGAUGE_VERIFIER_CONSENT_PURPOSE } from "./regauge-verifier-consent.js";
 
 export type RegaugeVerifierObservation = Readonly<{
   telemetryDigest: string;
@@ -27,6 +28,7 @@ export type RegaugeVerifierObservation = Readonly<{
   consentGrantedAt: string;
   consentExpiresAt: string;
   consentRecordDigest: string;
+  providerRequestedAt: string;
   providerProcessedAt: string;
   advisoryOnly: true;
   behaviorChanged: false;
@@ -53,10 +55,10 @@ export function readRegaugeVerifierObservations(
       try {
         const telemetry = verifyVerifierTelemetry(JSON.parse(artifact.content_text));
         const producer = getPrincipal(db, input.tenantId, artifact.producer_principal_id);
-        const consent = findActiveLearningConsent(db, {
+        const providerEvidence = readVerifierAdvisoryProviderEvidence(db, {
           tenantId: input.tenantId,
-          purpose: REGAUGE_VERIFIER_CONSENT_PURPOSE,
-          at: telemetry.observedAt,
+          verificationAttemptId: telemetry.verificationAttemptId,
+          evidencePackDigest: telemetry.evidencePackDigest,
         });
         const evidence = listEvidenceRecords(
           db,
@@ -77,19 +79,11 @@ export function readRegaugeVerifierObservations(
             !producer || producer.kind !== "service" || producer.created_at > telemetry.observedAt ||
             producer.revoked_at && producer.revoked_at <= telemetry.observedAt ||
             producer.expires_at && producer.expires_at <= telemetry.observedAt || evidence.length !== 1 ||
-            !consent || consent.created_at >= telemetry.observedAt ||
-            consent.effective_at >= telemetry.observedAt || consent.expires_at === null ||
-            consent.expires_at <= telemetry.observedAt ||
-            consent.expires_at > REGAUGE_DEEPSEEK_APPROVED_SCOPE.authorizationDeadline) return [];
-        const consentRecordDigest = `sha256:${sha256(JSON.stringify({
-          consentId: consent.id,
-          tenantId: consent.tenant_id,
-          purpose: consent.purpose,
-          authorizedByPrincipalId: consent.authorized_by_principal_id,
-          effectiveAt: consent.effective_at,
-          expiresAt: consent.expires_at,
-          createdAt: consent.created_at,
-        }))}`;
+            !providerEvidence || providerEvidence.consentGrantedAt >= providerEvidence.providerRequestedAt ||
+            providerEvidence.consentEffectiveAt >= providerEvidence.providerRequestedAt ||
+            providerEvidence.providerProcessedAt < providerEvidence.providerRequestedAt ||
+            providerEvidence.consentExpiresAt <= providerEvidence.providerProcessedAt ||
+            providerEvidence.consentExpiresAt > REGAUGE_DEEPSEEK_APPROVED_SCOPE.authorizationDeadline) return [];
         return [Object.freeze({
           telemetryDigest: telemetry.telemetryDigest,
           evidencePackDigest: telemetry.evidencePackDigest,
@@ -101,12 +95,13 @@ export function readRegaugeVerifierObservations(
           estimatedCostUsd: telemetry.estimatedCostUsd,
           latencyMs: telemetry.latencyMs,
           scoreEvidenceDigests: Object.freeze([...telemetry.scoreEvidenceDigests]),
-          consentId: consent.id,
-          consentEffectiveAt: consent.effective_at,
-          consentGrantedAt: consent.created_at,
-          consentExpiresAt: consent.expires_at,
-          consentRecordDigest,
-          providerProcessedAt: telemetry.observedAt,
+          consentId: providerEvidence.consentId,
+          consentEffectiveAt: providerEvidence.consentEffectiveAt,
+          consentGrantedAt: providerEvidence.consentGrantedAt,
+          consentExpiresAt: providerEvidence.consentExpiresAt,
+          consentRecordDigest: providerEvidence.consentRecordDigest,
+          providerRequestedAt: providerEvidence.providerRequestedAt,
+          providerProcessedAt: providerEvidence.providerProcessedAt,
           advisoryOnly: true as const,
           behaviorChanged: false as const,
         })];

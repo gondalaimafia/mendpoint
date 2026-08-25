@@ -2992,6 +2992,12 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 
 ## 2026-08-24 Issue #361: durable ReGauge DeepSeek advisory verification
 
+- [x] RED: prove the workflow emits the exact protected repository and branch in the generated Policy Envelope.
+- [x] RED: prove each provider request durably binds the exact consent record and temporal authority before egress, with historical proof surviving later revocation.
+- [x] RED: prove replay after a completed provider response cannot call DeepSeek again, while a failure with no response remains retryable.
+- [x] Implement the minimal durable request intent and response receipt protocol under the existing artifact and fenced job stores.
+- [x] Rerun focused Mission, Policy, consent, advisory, workflow, proof, API, and worker tests plus affected typechecks and integrity checks.
+- [x] Review and commit the second P1 closure without pushing or merging.
 - [x] Add red regressions proving ReGauge completion currently calls DeepSeek synchronously, loses failed observations, accepts the `shadow` production mode, and dispatches without an inherited Mission Policy Envelope.
 - [x] Define one immutable ReGauge verifier Policy Envelope binding from protected nonsecret configuration, bind it at launch, and reconcile the same exact binding before advisory dispatch for already-running Missions.
 - [x] Persist a content-addressed advisory input plus an identifier-and-digest-only `verifier.advisory.verify` job in one idempotent transaction; keep repository content out of the job payload.
@@ -3015,3 +3021,7 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - P1 closure: the durable consent purpose, immutable Policy Envelope, enqueue path, worker rehydration, and provider boundary all require `tenant_regauge_canary`, `campaign_regauge_canary_20260814`, `gondalaimafia/mendpoint-canary-drill-20260801`, branch `main`, and an expiry no later than 2026-11-20. An empty template cannot inherit runtime repository authority.
 - P1 closure: production observations reconstruct the append-only consent record active at provider processing time and return its identifier, effective time, grant time, expiry, and digest. The production proof rejects missing, mismatched, late, expired, or post-deadline durable consent evidence instead of trusting telemetry alone.
 - Fresh P1 verification: 181 Mission, Policy, campaign, workflow, proof, API, worker, and advisory tests pass across 19 files. Pipeline, API, worker, and scripts typechecks pass, and `git diff --check` is clean.
+- Second-review RED: 4 of 15 focused tests failed because the workflow generated empty scopes, no provider-operation store existed, and the provider-return crash seams completed without durable recovery state.
+- Second-review GREEN: the generated Policy Envelope names the exact approved repository and `main`. Each DeepSeek request now inserts a content-addressed intent containing the exact canonical consent snapshot and request binding before egress; each returned HTTP response is durably receipted before verifier parsing. A receipt is replayed without another provider call, an unresolved intent fails closed, and only an explicit no-response failure may create a new attempt.
+- Historical authority: production observations read the exact bound consent snapshot and provider request/processing times from the durable operation ledger, so later revocation does not erase valid historical proof. The current provider path still resolves active consent immediately before every new request, so revocation cannot authorize new processing.
+- Second-review verification: 184 Mission, Policy, campaign, workflow, proof, API, worker, and advisory tests pass across 19 files. The narrower advisory matrix passes 68 tests across 10 files. Pipeline, API, worker, and scripts typechecks pass; the workflow parses as YAML and diff integrity is clean.

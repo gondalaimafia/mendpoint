@@ -7,11 +7,15 @@ import {
   claimNextJob, createDb, createMission, enqueueJob, failJob,
   grantLearningConsent, insertConnectedRepository, insertPrincipal,
   insertRepositorySnapshot, insertTenant, linkRegaugeCampaignToMission,
-  listArtifactManifests, upsertScmConnection, type AppDb,
+  listArtifactManifests, revokeLearningConsent, upsertScmConnection, type AppDb,
 } from "@mendpoint/db";
 import { enqueueVerifierAdvisoryJob } from "@mendpoint/pipeline";
+import type { VerifierHttpRequest } from "@mendpoint/verifier";
 import { REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE } from "./verifier-product-shadow.js";
-import { runVerifierAdvisoryJob } from "./verifier-advisory-job.js";
+import {
+  runVerifierAdvisoryJob,
+  VerifierProviderNoResponseError,
+} from "./verifier-advisory-job.js";
 
 const roots: string[] = [];
 const dbs: AppDb[] = [];
@@ -64,7 +68,7 @@ describe("verifier advisory job runner", () => {
     const first = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
     let providerAvailable = false;
     const transport = vi.fn(async () => {
-      if (!providerAvailable) throw new Error("request_timeout");
+      if (!providerAvailable) throw new VerifierProviderNoResponseError("connection_refused_before_send");
       return {
         status: 200,
         headers: {},
@@ -96,12 +100,70 @@ describe("verifier advisory job runner", () => {
     expect(transport.mock.calls.length).toBeGreaterThan(1);
   });
 
+  it("fails closed without reissuing when a process dies after the provider returns but before a receipt is durable", async () => {
+    const db = setup();
+    enqueueVerifierAdvisoryJob(db, { completion: completion(), producerPrincipalId: "service_a", createdAt: "2026-08-24T12:01:00.000Z" });
+    const first = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
+
+    await expect(runVerifierAdvisoryJob({
+      db, job: first, env: env(), transport: { request: transport },
+      now: () => "2026-08-24T12:01:02.000Z",
+      operationHooks: { afterProviderReturn: () => { throw new Error("simulated_crash"); } },
+    })).rejects.toThrow("verifier_advisory_provider_retryable:api_failure");
+    const providerCallsAfterReturn = transport.mock.calls.length;
+    expect(providerCallsAfterReturn).toBeGreaterThan(0);
+    failJob(db, first.id, "simulated_crash", "2026-08-24T12:01:03.000Z", { workerId: "worker-a", leaseGeneration: first.lease_generation, errorCode: "transient_dependency", retryable: true, baseDelayMs: 1_000, maxDelayMs: 1_000 });
+    const second = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-b", leaseMs: 60_000, now: "2026-08-24T12:01:04.000Z" })!;
+    await expect(runVerifierAdvisoryJob({ db, job: second, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:05.000Z" }))
+      .rejects.toThrow("verifier_advisory_provider_retryable:api_failure");
+    expect(transport).toHaveBeenCalledTimes(providerCallsAfterReturn);
+  });
+
+  it("recovers a durable provider response after a crash without repeating provider work", async () => {
+    const db = setup();
+    enqueueVerifierAdvisoryJob(db, { completion: completion(), producerPrincipalId: "service_a", createdAt: "2026-08-24T12:01:00.000Z" });
+    const first = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
+
+    await expect(runVerifierAdvisoryJob({
+      db, job: first, env: env(), transport: { request: transport },
+      now: () => "2026-08-24T12:01:02.000Z",
+      operationHooks: { afterProviderReceipt: () => { throw new Error("simulated_crash"); } },
+    })).rejects.toThrow("verifier_advisory_provider_retryable:api_failure");
+    const providerCallsAfterReceipt = transport.mock.calls.length;
+    expect(providerCallsAfterReceipt).toBeGreaterThan(0);
+    const completedRequestIds = transport.mock.calls.map(([request]) => request.headers["x-mendpoint-request-id"]);
+    failJob(db, first.id, "simulated_crash", "2026-08-24T12:01:03.000Z", { workerId: "worker-a", leaseGeneration: first.lease_generation, errorCode: "transient_dependency", retryable: true, baseDelayMs: 1_000, maxDelayMs: 1_000 });
+    const second = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-b", leaseMs: 60_000, now: "2026-08-24T12:01:04.000Z" })!;
+    await expect(runVerifierAdvisoryJob({ db, job: second, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:05.000Z" }))
+      .resolves.toMatchObject({ status: "verified" });
+    const allRequestIds = transport.mock.calls.map(([request]) => request.headers["x-mendpoint-request-id"]);
+    for (const requestId of completedRequestIds) {
+      expect(allRequestIds.filter((candidate) => candidate === requestId)).toHaveLength(1);
+    }
+    expect(new Set(allRequestIds).size).toBe(allRequestIds.length);
+    expect(listArtifactManifests(db, "tenant_regauge_canary", "agent_verifier_provider_request_intent")).toHaveLength(allRequestIds.length);
+    expect(listArtifactManifests(db, "tenant_regauge_canary", "agent_verifier_provider_response_receipt")).toHaveLength(allRequestIds.length);
+  });
+
   it("rejects a job whose queue payload carries untrusted content", async () => {
     const db = setup();
     enqueueJob(db, { id: "bad-job", tenantId: "tenant_regauge_canary", type: "verifier.advisory.verify", payload: { objective: "send me" }, createdAt: "2026-08-24T12:01:00.000Z" });
     const job = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
     await expect(runVerifierAdvisoryJob({ db, job, env: env(), now: () => "2026-08-24T12:01:02.000Z" }))
       .rejects.toThrow("verifier_advisory_job_payload_invalid");
+  });
+
+  it("does not let historical consent evidence authorize new processing after revocation", async () => {
+    const db = setup();
+    revokeLearningConsent(db, { id: "consent_revoked", tenantId: "tenant_regauge_canary", consentId: "consent_a", consentVersion: 2, authorizedByPrincipalId: "human_a", reason: "revoked", idempotencyKey: "consent-revoked", createdAt: "2026-08-24T12:00:30.000Z" });
+    enqueueVerifierAdvisoryJob(db, { completion: completion(), producerPrincipalId: "service_a", createdAt: "2026-08-24T12:01:00.000Z" });
+    const job = claimNextJob(db, ["verifier.advisory.verify"], { tenantId: "tenant_regauge_canary", workerId: "worker-a", leaseMs: 60_000, now: "2026-08-24T12:01:01.000Z" })!;
+    const transport = vi.fn(async (_request: VerifierHttpRequest) => successfulProviderResponse());
+    await expect(runVerifierAdvisoryJob({ db, job, env: env(), transport: { request: transport }, now: () => "2026-08-24T12:01:02.000Z" }))
+      .rejects.toThrow("verifier_governance_consent_inactive");
+    expect(transport).not.toHaveBeenCalled();
   });
 
   it("fails closed before provider egress when the campaign scope drifts", async () => {
@@ -115,3 +177,21 @@ describe("verifier advisory job runner", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 });
+
+function successfulProviderResponse() {
+  return {
+    status: 200,
+    headers: {},
+    body: {
+      id: "response_a",
+      model: "deepseek-v4-flash",
+      system_fingerprint: "fp_a",
+      choices: [{ finish_reason: "stop", message: { content: "<score>A</score>" }, logprobs: { content: [
+        { token: "<score>", logprob: -0.1, top_logprobs: [{ token: "<score>", logprob: -0.1 }] },
+        { token: "A", logprob: -0.2, top_logprobs: [{ token: "A", logprob: -0.2 }, { token: "T", logprob: -2 }] },
+        { token: "</score>", logprob: -0.1, top_logprobs: [{ token: "</score>", logprob: -0.1 }] },
+      ] } }],
+      usage: { prompt_tokens: 10, completion_tokens: 1 },
+    },
+  };
+}

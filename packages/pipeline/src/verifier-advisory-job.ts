@@ -3,6 +3,7 @@ import {
   bindMissionToPolicyEnvelope,
   createPolicyEnvelope,
   enqueueJob,
+  findActiveLearningConsent,
   getConnectedRepository,
   getJob,
   getMission,
@@ -12,10 +13,12 @@ import {
   listRepositorySnapshots,
   type AppDb,
   type JobRow,
+  type LearningConsentRow,
 } from "@mendpoint/db";
 import {
   verifyVerifierTelemetry,
   type VerifierProduct,
+  type VerifierHttpResponse,
   type VerifierRisk,
   type VerifierTelemetry,
 } from "@mendpoint/verifier";
@@ -42,6 +45,9 @@ const INPUT_KIND = "agent_verifier_advisory_input";
 const INPUT_MEDIA_TYPE = "application/vnd.mendpoint.agent-verifier-advisory-input.v1+json";
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
+const PROVIDER_REQUEST_KIND = "agent_verifier_provider_request_intent";
+const PROVIDER_RESPONSE_KIND = "agent_verifier_provider_response_receipt";
+const PROVIDER_NO_RESPONSE_KIND = "agent_verifier_provider_no_response";
 
 export type ProductCompletionAdvisoryInput = Readonly<{
   tenantId: string;
@@ -84,6 +90,28 @@ export type VerifierAdvisoryPolicyAuthority = Readonly<{
   policyEnvelopeVersion: number;
   policyEnvelopeSha256: string;
   reviewRequired: true;
+}>;
+
+export type VerifierAdvisoryConsentBinding = Readonly<{
+  consentId: string;
+  consentRecordDigest: string;
+  consentGrantedAt: string;
+  consentEffectiveAt: string;
+  consentExpiresAt: string;
+}>;
+
+export type VerifierAdvisoryProviderOperation = Readonly<{
+  status: "ready" | "recover";
+  operationId: string;
+  consent: VerifierAdvisoryConsentBinding;
+  response: VerifierHttpResponse | null;
+}>;
+
+export type VerifierAdvisoryProviderEvidence = VerifierAdvisoryConsentBinding & Readonly<{
+  providerRequestId: string;
+  providerRequestedAt: string;
+  providerProcessedAt: string;
+  providerResponseDigest: string;
 }>;
 
 export function assertRegaugeDeepSeekApprovedScope(input: Readonly<{
@@ -407,6 +435,349 @@ export function findVerifierTelemetry(db: AppDb, input: Readonly<{
     });
   if (matches.length > 1) throw new Error("verifier_advisory_telemetry_ambiguous");
   return matches[0] ?? null;
+}
+
+type ConsentSnapshot = Readonly<{
+  id: string;
+  tenantId: string;
+  consentVersion: number;
+  action: "granted";
+  purpose: string;
+  residencyRegion: string;
+  authorizedByPrincipalId: string;
+  supersedesConsentId: string | null;
+  effectiveAt: string;
+  expiresAt: string;
+  reason: string;
+  idempotencyKey: string;
+  requestFingerprint: string;
+  createdAt: string;
+}>;
+
+type ProviderRequestIntent = Readonly<{
+  schemaVersion: "2026-08-24.verifier-provider-request.v1";
+  operationKey: string;
+  operationId: string;
+  attempt: number;
+  tenantId: string;
+  verificationAttemptId: string;
+  evidencePackDigest: string;
+  providerRequestId: string;
+  requestBodySha256: string;
+  requestedAt: string;
+  consent: ConsentSnapshot;
+  consentRecordDigest: string;
+}>;
+
+type ProviderResponseReceipt = Readonly<{
+  schemaVersion: "2026-08-24.verifier-provider-response.v1";
+  operationId: string;
+  providerProcessedAt: string;
+  responseDigest: string;
+  response: VerifierHttpResponse;
+}>;
+
+function consentSnapshot(row: LearningConsentRow): ConsentSnapshot {
+  if (row.action !== "granted" || row.expires_at === null) {
+    throw new Error("verifier_advisory_consent_invalid");
+  }
+  return Object.freeze({
+    id: row.id,
+    tenantId: row.tenant_id,
+    consentVersion: row.consent_version,
+    action: row.action,
+    purpose: row.purpose,
+    residencyRegion: row.residency_region,
+    authorizedByPrincipalId: row.authorized_by_principal_id,
+    supersedesConsentId: row.supersedes_consent_id,
+    effectiveAt: row.effective_at,
+    expiresAt: row.expires_at,
+    reason: row.reason,
+    idempotencyKey: row.idempotency_key,
+    requestFingerprint: row.request_fingerprint,
+    createdAt: row.created_at,
+  });
+}
+
+function binding(snapshot: ConsentSnapshot, consentRecordDigest: string): VerifierAdvisoryConsentBinding {
+  return Object.freeze({
+    consentId: snapshot.id,
+    consentRecordDigest,
+    consentGrantedAt: snapshot.createdAt,
+    consentEffectiveAt: snapshot.effectiveAt,
+    consentExpiresAt: snapshot.expiresAt,
+  });
+}
+
+function storeArtifact(db: AppDb, input: Readonly<{
+  id: string;
+  tenantId: string;
+  kind: string;
+  mediaType: string;
+  content: string;
+  producerPrincipalId?: string | null;
+  createdAt: string;
+}>): boolean {
+  return insertArtifactManifest(db, {
+    id: input.id,
+    tenantId: input.tenantId,
+    kind: input.kind,
+    schemaVersion: 1,
+    sha256: sha256(input.content),
+    mediaType: input.mediaType,
+    sizeBytes: Buffer.byteLength(input.content, "utf8"),
+    storageRef: `sqlite://artifact_manifests/${input.id}`,
+    content: input.content,
+    producerPrincipalId: input.producerPrincipalId ?? null,
+    createdAt: input.createdAt,
+  }).inserted;
+}
+
+function parseOperationArtifacts<T>(db: AppDb, tenantId: string, kind: string): T[] {
+  return listArtifactManifests(db, tenantId, kind).map((artifact) => {
+    if (artifact.schema_version !== 1 || !artifact.content_text ||
+        sha256(artifact.content_text) !== artifact.sha256 ||
+        Buffer.byteLength(artifact.content_text, "utf8") !== artifact.size_bytes) {
+      throw new Error("verifier_advisory_provider_artifact_invalid");
+    }
+    try { return JSON.parse(artifact.content_text) as T; }
+    catch { throw new Error("verifier_advisory_provider_artifact_invalid"); }
+  });
+}
+
+function responseFor(db: AppDb, tenantId: string, operationId: string): ProviderResponseReceipt | null {
+  const matches = parseOperationArtifacts<ProviderResponseReceipt>(db, tenantId, PROVIDER_RESPONSE_KIND)
+    .filter((receipt) => receipt.operationId === operationId);
+  if (matches.length > 1) throw new Error("verifier_advisory_provider_response_ambiguous");
+  const receipt = matches[0];
+  if (!receipt) return null;
+  if (receipt.schemaVersion !== "2026-08-24.verifier-provider-response.v1" ||
+      !exactIso(receipt.providerProcessedAt) || !DIGEST.test(receipt.responseDigest) ||
+      receipt.responseDigest !== `sha256:${sha256(canonical(receipt.response))}`) {
+    throw new Error("verifier_advisory_provider_response_invalid");
+  }
+  return receipt;
+}
+
+function hasNoResponseFailure(db: AppDb, tenantId: string, operationId: string): boolean {
+  const matches = parseOperationArtifacts<{ schemaVersion: string; operationId: string; failedAt: string; errorCode: string }>(db, tenantId, PROVIDER_NO_RESPONSE_KIND)
+    .filter((failure) => failure.operationId === operationId);
+  if (matches.length > 1) throw new Error("verifier_advisory_provider_failure_ambiguous");
+  if (matches[0] && (matches[0].schemaVersion !== "2026-08-24.verifier-provider-no-response.v1" ||
+      !exactIso(matches[0].failedAt) || !ID.test(matches[0].errorCode))) {
+    throw new Error("verifier_advisory_provider_failure_invalid");
+  }
+  return matches.length === 1;
+}
+
+export function beginVerifierAdvisoryProviderOperation(db: AppDb, input: Readonly<{
+  tenantId: string;
+  verificationAttemptId: string;
+  evidencePackDigest: string;
+  providerRequestId: string;
+  requestBodySha256: string;
+  expectedConsentId: string;
+  consentPurpose: string;
+  authorizationDeadline: string;
+  requestedAt: string;
+  producerPrincipalId?: string | null;
+}>): VerifierAdvisoryProviderOperation {
+  if (!exactIso(input.requestedAt) || !exactIso(input.authorizationDeadline) ||
+      !DIGEST.test(input.evidencePackDigest) || !DIGEST.test(input.requestBodySha256) ||
+      !ID.test(input.verificationAttemptId) || !ID.test(input.providerRequestId) ||
+      !ID.test(input.expectedConsentId) || !text(input.consentPurpose)) {
+    throw new Error("verifier_advisory_provider_request_invalid");
+  }
+  const operationKey = `sha256:${sha256(canonical({
+    schemaVersion: 1,
+    tenantId: input.tenantId,
+    verificationAttemptId: input.verificationAttemptId,
+    evidencePackDigest: input.evidencePackDigest,
+    providerRequestId: input.providerRequestId,
+    requestBodySha256: input.requestBodySha256,
+  }))}`;
+  const intents = parseOperationArtifacts<ProviderRequestIntent>(db, input.tenantId, PROVIDER_REQUEST_KIND)
+    .filter((intent) => intent.operationKey === operationKey)
+    .sort((left, right) => left.attempt - right.attempt);
+  if (new Set(intents.map((intent) => intent.attempt)).size !== intents.length ||
+      intents.some((intent) => intent.schemaVersion !== "2026-08-24.verifier-provider-request.v1" ||
+      intent.tenantId !== input.tenantId || intent.verificationAttemptId !== input.verificationAttemptId ||
+      intent.evidencePackDigest !== input.evidencePackDigest || intent.providerRequestId !== input.providerRequestId ||
+      intent.requestBodySha256 !== input.requestBodySha256 || !Number.isSafeInteger(intent.attempt) ||
+      intent.attempt < 1 || intent.consentRecordDigest !== `sha256:${sha256(canonical(intent.consent))}`)) {
+    throw new Error("verifier_advisory_provider_request_invalid");
+  }
+  const latest = intents.at(-1);
+  if (latest) {
+    const receipt = responseFor(db, input.tenantId, latest.operationId);
+    if (receipt) {
+      return Object.freeze({
+        status: "recover",
+        operationId: latest.operationId,
+        consent: binding(latest.consent, latest.consentRecordDigest),
+        response: receipt.response,
+      });
+    }
+    if (!hasNoResponseFailure(db, input.tenantId, latest.operationId)) {
+      throw new Error("verifier_advisory_provider_outcome_unknown");
+    }
+  }
+  const consent = findActiveLearningConsent(db, {
+    tenantId: input.tenantId,
+    purpose: input.consentPurpose,
+    at: input.requestedAt,
+  });
+  if (!consent || consent.id !== input.expectedConsentId || consent.created_at >= input.requestedAt ||
+      consent.effective_at >= input.requestedAt || consent.expires_at === null ||
+      consent.expires_at <= input.requestedAt || consent.expires_at > input.authorizationDeadline) {
+    throw new Error("verifier_advisory_consent_invalid");
+  }
+  const snapshot = consentSnapshot(consent);
+  const consentRecordDigest = `sha256:${sha256(canonical(snapshot))}`;
+  const attempt = (latest?.attempt ?? 0) + 1;
+  const operationId = `verifier-provider-${operationKey.slice("sha256:".length, "sha256:".length + 32)}-${attempt}`;
+  const intent: ProviderRequestIntent = Object.freeze({
+    schemaVersion: "2026-08-24.verifier-provider-request.v1",
+    operationKey,
+    operationId,
+    attempt,
+    tenantId: input.tenantId,
+    verificationAttemptId: input.verificationAttemptId,
+    evidencePackDigest: input.evidencePackDigest,
+    providerRequestId: input.providerRequestId,
+    requestBodySha256: input.requestBodySha256,
+    requestedAt: input.requestedAt,
+    consent: snapshot,
+    consentRecordDigest,
+  });
+  const inserted = storeArtifact(db, {
+    id: operationId,
+    tenantId: input.tenantId,
+    kind: PROVIDER_REQUEST_KIND,
+    mediaType: "application/vnd.mendpoint.agent-verifier-provider-request.v1+json",
+    content: canonical(intent),
+    producerPrincipalId: input.producerPrincipalId,
+    createdAt: input.requestedAt,
+  });
+  if (!inserted) throw new Error("verifier_advisory_provider_outcome_unknown");
+  return Object.freeze({
+    status: "ready",
+    operationId,
+    consent: binding(snapshot, consentRecordDigest),
+    response: null,
+  });
+}
+
+function exactIntent(db: AppDb, tenantId: string, operationId: string): ProviderRequestIntent {
+  const matches = parseOperationArtifacts<ProviderRequestIntent>(db, tenantId, PROVIDER_REQUEST_KIND)
+    .filter((intent) => intent.operationId === operationId);
+  if (matches.length !== 1) throw new Error("verifier_advisory_provider_request_missing");
+  const intent = matches[0]!;
+  if (intent.schemaVersion !== "2026-08-24.verifier-provider-request.v1" ||
+      intent.tenantId !== tenantId || intent.operationId !== operationId ||
+      !Number.isSafeInteger(intent.attempt) || intent.attempt < 1 ||
+      intent.consentRecordDigest !== `sha256:${sha256(canonical(intent.consent))}`) {
+    throw new Error("verifier_advisory_consent_binding_invalid");
+  }
+  return intent;
+}
+
+export function persistVerifierAdvisoryProviderResponse(db: AppDb, input: Readonly<{
+  tenantId: string;
+  operationId: string;
+  response: VerifierHttpResponse;
+  providerProcessedAt: string;
+  producerPrincipalId?: string | null;
+}>): void {
+  const intent = exactIntent(db, input.tenantId, input.operationId);
+  if (!exactIso(input.providerProcessedAt) || input.providerProcessedAt < intent.requestedAt ||
+      input.providerProcessedAt >= intent.consent.expiresAt ||
+      hasNoResponseFailure(db, input.tenantId, input.operationId)) {
+    throw new Error("verifier_advisory_provider_response_invalid");
+  }
+  const responseDigest = `sha256:${sha256(canonical(input.response))}`;
+  const receipt: ProviderResponseReceipt = Object.freeze({
+    schemaVersion: "2026-08-24.verifier-provider-response.v1",
+    operationId: input.operationId,
+    providerProcessedAt: input.providerProcessedAt,
+    responseDigest,
+    response: input.response,
+  });
+  storeArtifact(db, {
+    id: `${input.operationId}-response`,
+    tenantId: input.tenantId,
+    kind: PROVIDER_RESPONSE_KIND,
+    mediaType: "application/vnd.mendpoint.agent-verifier-provider-response.v1+json",
+    content: canonical(receipt),
+    producerPrincipalId: input.producerPrincipalId,
+    createdAt: input.providerProcessedAt,
+  });
+}
+
+export function persistVerifierAdvisoryProviderNoResponse(db: AppDb, input: Readonly<{
+  tenantId: string;
+  operationId: string;
+  failedAt: string;
+  errorCode: string;
+  producerPrincipalId?: string | null;
+}>): void {
+  const intent = exactIntent(db, input.tenantId, input.operationId);
+  if (!exactIso(input.failedAt) || input.failedAt < intent.requestedAt ||
+      responseFor(db, input.tenantId, input.operationId) || !ID.test(input.errorCode)) {
+    throw new Error("verifier_advisory_provider_failure_invalid");
+  }
+  const failure = Object.freeze({
+    schemaVersion: "2026-08-24.verifier-provider-no-response.v1",
+    operationId: input.operationId,
+    failedAt: input.failedAt,
+    errorCode: input.errorCode,
+  });
+  storeArtifact(db, {
+    id: `${input.operationId}-no-response`,
+    tenantId: input.tenantId,
+    kind: PROVIDER_NO_RESPONSE_KIND,
+    mediaType: "application/vnd.mendpoint.agent-verifier-provider-no-response.v1+json",
+    content: canonical(failure),
+    producerPrincipalId: input.producerPrincipalId,
+    createdAt: input.failedAt,
+  });
+}
+
+export function readVerifierAdvisoryProviderEvidence(db: AppDb, input: Readonly<{
+  tenantId: string;
+  verificationAttemptId: string;
+  evidencePackDigest: string;
+}>): VerifierAdvisoryProviderEvidence | null {
+  const intents = parseOperationArtifacts<ProviderRequestIntent>(db, input.tenantId, PROVIDER_REQUEST_KIND)
+    .filter((intent) => intent.verificationAttemptId === input.verificationAttemptId &&
+      intent.evidencePackDigest === input.evidencePackDigest);
+  const completed = intents.flatMap((intent) => {
+    const receipt = responseFor(db, input.tenantId, intent.operationId);
+    return receipt ? [{ intent, receipt }] : [];
+  });
+  if (completed.length === 0) return null;
+  const verified = completed.map(({ intent, receipt }) => {
+    const exact = exactIntent(db, input.tenantId, intent.operationId);
+    if (exact.consent.createdAt >= exact.requestedAt || exact.consent.effectiveAt >= exact.requestedAt ||
+        receipt.providerProcessedAt < exact.requestedAt || receipt.providerProcessedAt >= exact.consent.expiresAt ||
+        receipt.responseDigest !== `sha256:${sha256(canonical(receipt.response))}`) {
+      throw new Error("verifier_advisory_provider_evidence_invalid");
+    }
+    return { intent: exact, receipt };
+  }).sort((left, right) => left.intent.requestedAt.localeCompare(right.intent.requestedAt) ||
+    left.intent.providerRequestId.localeCompare(right.intent.providerRequestId));
+  const first = verified[0]!;
+  if (verified.some(({ intent }) => intent.consentRecordDigest !== first.intent.consentRecordDigest)) {
+    throw new Error("verifier_advisory_provider_evidence_ambiguous");
+  }
+  const lastProcessedAt = verified.map(({ receipt }) => receipt.providerProcessedAt).sort().at(-1)!;
+  return Object.freeze({
+    ...binding(first.intent.consent, first.intent.consentRecordDigest),
+    providerRequestId: verified.map(({ intent }) => intent.providerRequestId).join(","),
+    providerRequestedAt: first.intent.requestedAt,
+    providerProcessedAt: lastProcessedAt,
+    providerResponseDigest: `sha256:${sha256(canonical(verified.map(({ receipt }) => receipt.responseDigest)))}`,
+  });
 }
 
 export function getVerifierAdvisoryJob(db: AppDb, id: string, tenantId: string): JobRow | undefined {

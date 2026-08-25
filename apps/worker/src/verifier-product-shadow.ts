@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { findActiveLearningConsent, recordAudit, type AppDb } from "@mendpoint/db";
 import {
+  beginVerifierAdvisoryProviderOperation,
   findVerifierTelemetry,
+  persistVerifierAdvisoryProviderNoResponse,
+  persistVerifierAdvisoryProviderResponse,
   persistVerifierTelemetry,
   REGAUGE_DEEPSEEK_APPROVED_SCOPE,
   REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
@@ -9,10 +12,12 @@ import {
 } from "@mendpoint/pipeline";
 import {
   createCompletionVerifierEvidencePack,
+  createFetchVerifierTransport,
   resolveVerifierRuntimeConfig,
   type AgentVerifierResult,
   type VerifierDataClassification,
   type VerifierHttpTransport,
+  type VerifierHttpRequest,
   type VerifierPricing,
   type VerifierProduct,
 } from "@mendpoint/verifier";
@@ -29,12 +34,22 @@ export const VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE = "verifier-external-model-
 export { REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE };
 export const RETRYABLE_VERIFIER_FAILURE_CODES = new Set(["api_failure", "logprob_failure"] as const);
 
+export class VerifierProviderNoResponseError extends Error {
+  readonly code = "verifier_transport_not_sent";
+}
+
 export async function observeProductCompletionInAdvisory(input: Readonly<{
   db: AppDb;
   env?: Readonly<Record<string, string | undefined>>;
   completion: ProductCompletionAdvisoryInput;
   transport?: VerifierHttpTransport;
   authorityAt?: string;
+  now?: () => string;
+  beforeProviderRequest?: (requestedAt: string) => void;
+  operationHooks?: Readonly<{
+    afterProviderReturn?: () => void;
+    afterProviderReceipt?: () => void;
+  }>;
 }>): Promise<AgentVerifierResult | null> {
   const env = input.env ?? process.env;
   const runtimeConfig = resolveVerifierRuntimeConfig(env);
@@ -93,10 +108,26 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
     verificationAttemptId,
     evidencePackDigest: pack.packDigest,
   })) return null;
+  const now = input.now ?? (() => new Date().toISOString());
+  const providerTransport = input.transport ?? createFetchVerifierTransport();
+  const transport = input.completion.product === "regauge"
+    ? durableRegaugeTransport({
+      db: input.db,
+      providerTransport,
+      tenantId: input.completion.tenantId,
+      verificationAttemptId,
+      evidencePackDigest: pack.packDigest,
+      expectedConsentId: governance.consentId,
+      producerPrincipalId: principalId,
+      now,
+      beforeProviderRequest: input.beforeProviderRequest,
+      hooks: input.operationHooks,
+    })
+    : input.transport;
   const runtime = createVerifierAdvisoryRuntime({
     env,
     pricing,
-    ...(input.transport ? { transport: input.transport } : {}),
+    ...(transport ? { transport } : {}),
     actorId: principalId ?? "mendpoint-verifier-worker",
     // A provider or log-probability transport failure is not a completed
     // verification. The durable queue must retry it, so do not create the
@@ -130,6 +161,89 @@ export async function observeProductCompletionInAdvisory(input: Readonly<{
     verificationAttemptId,
     observedAt: authorityAt,
   });
+}
+
+function durableRegaugeTransport(input: Readonly<{
+  db: AppDb;
+  providerTransport: VerifierHttpTransport;
+  tenantId: string;
+  verificationAttemptId: string;
+  evidencePackDigest: string;
+  expectedConsentId: string;
+  producerPrincipalId: string | null;
+  now: () => string;
+  beforeProviderRequest?: (requestedAt: string) => void;
+  hooks?: Readonly<{ afterProviderReturn?: () => void; afterProviderReceipt?: () => void }>;
+}>): VerifierHttpTransport {
+  return Object.freeze({
+    request: async (request: VerifierHttpRequest) => {
+      const providerRequestId = request.headers["x-mendpoint-request-id"];
+      if (!providerRequestId) throw new Error("verifier_advisory_provider_request_invalid");
+      const requestedAt = input.now();
+      input.beforeProviderRequest?.(requestedAt);
+      const operation = beginVerifierAdvisoryProviderOperation(input.db, {
+        tenantId: input.tenantId,
+        verificationAttemptId: input.verificationAttemptId,
+        evidencePackDigest: input.evidencePackDigest,
+        providerRequestId,
+        requestBodySha256: digest(canonical(request.body)),
+        expectedConsentId: input.expectedConsentId,
+        consentPurpose: REGAUGE_VERIFIER_EXTERNAL_MODEL_CONSENT_PURPOSE,
+        authorizationDeadline: REGAUGE_DEEPSEEK_APPROVED_SCOPE.authorizationDeadline,
+        requestedAt,
+        producerPrincipalId: input.producerPrincipalId,
+      });
+      if (operation.status === "recover") return operation.response!;
+      try {
+        const response = await input.providerTransport.request(request);
+        input.hooks?.afterProviderReturn?.();
+        persistVerifierAdvisoryProviderResponse(input.db, {
+          tenantId: input.tenantId,
+          operationId: operation.operationId,
+          response,
+          providerProcessedAt: input.now(),
+          producerPrincipalId: input.producerPrincipalId,
+        });
+        input.hooks?.afterProviderReceipt?.();
+        return response;
+      } catch (error) {
+        const noResponseCode = provableNoResponseCode(error);
+        if (noResponseCode) {
+          persistVerifierAdvisoryProviderNoResponse(input.db, {
+            tenantId: input.tenantId,
+            operationId: operation.operationId,
+            failedAt: input.now(),
+            errorCode: noResponseCode,
+            producerPrincipalId: input.producerPrincipalId,
+          });
+        }
+        throw error;
+      }
+    },
+  });
+}
+
+function provableNoResponseCode(error: unknown): string | null {
+  if (error instanceof VerifierProviderNoResponseError) return error.code;
+  if (!error || typeof error !== "object") return null;
+  const direct = (error as { code?: unknown }).code;
+  const cause = (error as { cause?: { code?: unknown } }).cause?.code;
+  const code = typeof direct === "string" ? direct : typeof cause === "string" ? cause : null;
+  return code && ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(code)
+    ? `verifier_transport_${code.toLowerCase()}`
+    : null;
+}
+
+function canonical(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).filter((key) => object[key] !== undefined).sort()
+    .map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`).join(",")}}`;
+}
+
+function digest(value: string): string {
+  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
 }
 
 export function resolveVerifierGovernance(env: Readonly<Record<string, string | undefined>>, tenantId: string, product: VerifierProduct): Readonly<{ dataClassification: VerifierDataClassification; requiredRegion: string; processingRegion: string; consentId: string; evidenceRef: string; externalModelAllowed: boolean; mayLeaveTenantBoundary: boolean; consentActive: boolean }> {

@@ -1,6 +1,7 @@
 import {
   completeJob,
   getConnectedRepository,
+  getJob,
   getPrincipalBySubject,
   type AppDb,
   type JobRow,
@@ -19,9 +20,12 @@ import {
   observeProductCompletionInAdvisory,
   RETRYABLE_VERIFIER_FAILURE_CODES,
   resolveVerifierGovernance,
+  VerifierProviderNoResponseError,
 } from "./verifier-product-shadow.js";
 
 const BOOTSTRAP_PRINCIPAL_SUBJECT = "service:regauge-production-bootstrap";
+
+export { VerifierProviderNoResponseError };
 
 export type RunVerifierAdvisoryJobResult = Readonly<{
   status: "verified" | "already_verified";
@@ -35,6 +39,10 @@ export async function runVerifierAdvisoryJob(input: Readonly<{
   env?: Readonly<Record<string, string | undefined>>;
   transport?: VerifierHttpTransport;
   now?: () => string;
+  operationHooks?: Readonly<{
+    afterProviderReturn?: () => void;
+    afterProviderReceipt?: () => void;
+  }>;
 }>): Promise<RunVerifierAdvisoryJobResult> {
   const env = input.env ?? process.env;
   const now = input.now ?? (() => new Date().toISOString());
@@ -87,6 +95,16 @@ export async function runVerifierAdvisoryJob(input: Readonly<{
     env: Object.freeze({ ...env, MENDPOINT_AGENT_VERIFIER_PRINCIPAL_ID: principal.id }),
     completion,
     authorityAt,
+    now,
+    beforeProviderRequest: (requestedAt) => {
+      const current = getJob(input.db, input.job.id, input.job.tenant_id);
+      if (!current || current.status !== "running" || current.lease_owner !== input.job.lease_owner ||
+          current.lease_generation !== input.job.lease_generation || !current.lease_expires_at ||
+          current.lease_expires_at <= requestedAt) {
+        throw new Error("verifier_advisory_lease_lost_before_provider_request");
+      }
+    },
+    operationHooks: input.operationHooks,
     ...(input.transport ? { transport: input.transport } : {}),
   });
   if (result?.failureCode && RETRYABLE_VERIFIER_FAILURE_CODES.has(

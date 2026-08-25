@@ -90,7 +90,7 @@ describe("Regauge production proof", () => {
         latencyMs: 320, scoreEvidenceDigests: [digest("c")], advisoryOnly: true, behaviorChanged: false,
         consentId: "consent_regauge_20260824", consentEffectiveAt: "2026-08-24T11:00:00.000Z",
         consentGrantedAt: "2026-08-24T11:01:00.000Z", consentExpiresAt: "2026-11-20T23:59:59.000Z",
-        providerProcessedAt: "2026-08-24T12:05:00.000Z", consentRecordDigest: digest("d"),
+        providerRequestedAt: "2026-08-24T12:04:00.000Z", providerProcessedAt: "2026-08-24T12:05:00.000Z", consentRecordDigest: digest("d"),
       }],
       serverTime: "2026-08-24T12:05:01.000Z",
     }), { status: 200, headers: { "content-type": "application/json" } }));
@@ -118,7 +118,7 @@ describe("Regauge production proof", () => {
         totalTokens: 12, estimatedCostUsd: 0.001, latencyMs: 2, scoreEvidenceDigests: [digest("c")],
         consentId: "consent_regauge_20260824", consentEffectiveAt: "2026-08-24T12:05:00.000Z",
         consentGrantedAt: "2026-08-24T12:05:01.000Z", consentExpiresAt: "2026-11-20T23:59:59.000Z",
-        providerProcessedAt: "2026-08-24T12:05:00.000Z", consentRecordDigest: digest("d"),
+        providerRequestedAt: "2026-08-24T12:04:00.000Z", providerProcessedAt: "2026-08-24T12:05:00.000Z", consentRecordDigest: digest("d"),
         advisoryOnly: true, behaviorChanged: false,
       }], serverTime: "2026-08-24T12:05:02.000Z",
     }), { status: 200, headers: { "content-type": "application/json" } }));

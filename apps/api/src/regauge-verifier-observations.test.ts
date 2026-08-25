@@ -10,9 +10,14 @@ import {
   insertPrincipal,
   insertTenant,
   linkRegaugeCampaignToMission,
+  revokeLearningConsent,
   type AppDb,
 } from "@mendpoint/db";
-import { persistVerifierTelemetry } from "@mendpoint/pipeline";
+import {
+  beginVerifierAdvisoryProviderOperation,
+  persistVerifierAdvisoryProviderResponse,
+  persistVerifierTelemetry,
+} from "@mendpoint/pipeline";
 import {
   createAgentVerifier,
   createVerifierEvidencePack,
@@ -70,9 +75,31 @@ async function telemetry() {
 describe("ReGauge verifier production observations", () => {
   it("returns only validated DeepSeek advisory provider evidence for the exact campaign Mission", async () => {
     const db = setup();
-    persistVerifierTelemetry(db, { telemetry: await telemetry(), producerPrincipalId: "service_a" });
+    const durableTelemetry = await telemetry();
+    const operation = beginVerifierAdvisoryProviderOperation(db, {
+      tenantId: "tenant_regauge_canary",
+      verificationAttemptId: durableTelemetry.verificationAttemptId,
+      evidencePackDigest: durableTelemetry.evidencePackDigest,
+      providerRequestId: "request_a",
+      requestBodySha256: digest("request"),
+      expectedConsentId: "consent_a",
+      consentPurpose: REGAUGE_VERIFIER_CONSENT_PURPOSE,
+      authorizationDeadline: "2026-11-20T23:59:59.000Z",
+      requestedAt: "2026-08-24T12:01:30.000Z",
+      producerPrincipalId: "service_a",
+    });
+    expect(operation.status).toBe("ready");
+    persistVerifierAdvisoryProviderResponse(db, {
+      tenantId: "tenant_regauge_canary",
+      operationId: operation.operationId,
+      response: { status: 200, headers: {}, body: { id: "response_a" } },
+      providerProcessedAt: "2026-08-24T12:01:45.000Z",
+      producerPrincipalId: "service_a",
+    });
+    persistVerifierTelemetry(db, { telemetry: durableTelemetry, producerPrincipalId: "service_a" });
+    revokeLearningConsent(db, { id: "consent_revoked", tenantId: "tenant_regauge_canary", consentId: "consent_a", consentVersion: 2, authorizedByPrincipalId: "reviewer_a", reason: "revoked after processing", idempotencyKey: "consent-revoked", createdAt: "2026-08-24T12:03:00.000Z" });
     expect(readRegaugeVerifierObservations(db, { tenantId: "tenant_regauge_canary", campaignId: "campaign_regauge_canary_20260814" }))
-      .toEqual([expect.objectContaining({ provider: "deepseek", model: "deepseek-v4-flash", totalTokens: 12, consentId: "consent_a", consentEffectiveAt: "2026-08-24T11:59:00.000Z", consentGrantedAt: "2026-08-24T11:59:30.000Z", providerProcessedAt: "2026-08-24T12:02:00.000Z", consentRecordDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/), advisoryOnly: true, behaviorChanged: false })]);
+      .toEqual([expect.objectContaining({ provider: "deepseek", model: "deepseek-v4-flash", totalTokens: 12, consentId: "consent_a", consentEffectiveAt: "2026-08-24T11:59:00.000Z", consentGrantedAt: "2026-08-24T11:59:30.000Z", providerRequestedAt: "2026-08-24T12:01:30.000Z", providerProcessedAt: "2026-08-24T12:01:45.000Z", consentRecordDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/), advisoryOnly: true, behaviorChanged: false })]);
     expect(() => readRegaugeVerifierObservations(db, { tenantId: "tenant_regauge_canary", campaignId: "campaign_b" }))
       .toThrow("regauge_verifier_observation_scope_invalid");
   });

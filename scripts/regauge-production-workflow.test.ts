@@ -133,6 +133,15 @@ describe("Regauge production workflow", () => {
     expect(authority).toContain("MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT=");
     expect(authority).toContain("MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT=2026-08-24T00:00:00.000Z");
     expect(authority).toContain("MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT=2026-11-20T23:59:59.000Z");
+    expect(authority).toContain('repositoryScope: ["gondalaimafia/mendpoint-canary-drill-20260801"]');
+    expect(authority).toContain('branchScope: ["main"]');
+    expect(authority).not.toContain("repositoryScope: []");
+    expect(authority).not.toContain("branchScope: []");
+    const generatedRepositoryScope = authority.match(/repositoryScope:\s*(\[[^\n]+\])/);
+    const generatedBranchScope = authority.match(/branchScope:\s*(\[[^\n]+\])/);
+    expect(JSON.parse(generatedRepositoryScope?.[1] ?? "null"))
+      .toEqual(["gondalaimafia/mendpoint-canary-drill-20260801"]);
+    expect(JSON.parse(generatedBranchScope?.[1] ?? "null")).toEqual(["main"]);
     const firstEnvironmentWrite = authority.indexOf('>> "$GITHUB_ENV"');
     for (const name of [
       "MENDPOINT_REGAUGE_TENANT_ID",
