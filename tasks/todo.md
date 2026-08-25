@@ -3349,3 +3349,14 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - GREEN: the API now derives reviewer scope from the exact 64-character candidate digest. The database primitive recognizes only candidate-bound verification decisions with agent-run evidence, deterministically retires every matching legacy head, leaves foreign policy or architecture decisions active, replays identical normalized input, and forwards correlation and causation through its append-only records.
 - Concurrency: the primitive opens `BEGIN IMMEDIATE` before reading when it owns the transaction, while joining an existing caller transaction without committing it. A boundary-injection regression proves a writer committed immediately before the lock is visible and fully reconciled; an outer rollback removes the complete replacement.
 - Verification: rebased onto current `origin/main` `4d8dfd66`. All 21 candidate-review API tests and 23 MissionDecision and handoff database tests pass. API and database typechecks pass, and diff integrity is clean.
+
+### 2026-08-25 PR 466 semantic replay follow-up
+
+- [ ] RED: prove an identical reviewer directive with a fresh timestamp replays the existing row without adding a supersession or event.
+- [ ] Remove wall-clock time from semantic replay identity while preserving candidate, source run, directive, author, and evidence discrimination.
+- [ ] Run focused database and API tests, affected typechecks, and diff integrity.
+- [ ] Record exact verification evidence, commit, and push the existing branch without merging or reviewing it.
+
+#### Review
+
+- Pending focused verification.

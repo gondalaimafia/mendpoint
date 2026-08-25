@@ -227,11 +227,14 @@ describe("mission handoff (durable records)", () => {
       correlationId: "corr-review", causationId: "candidate-ready-event", createdAt: T1,
     } as const;
     const first = replaceReviewerDirective(db, input);
-    const replay = replaceReviewerDirective(db, input);
+    const eventCount = listDomainEvents(db, "t1", "mission", "m1").length;
+    const replay = replaceReviewerDirective(db, { ...input, createdAt: T2 });
     expect(replay.id).toBe(first.id);
+    expect(replay.createdAt).toBe(T1);
     expect(replay.decision).toBe("Keep the public signature stable.");
     expect(listMissionDecisions(db, "t1", "m1").filter((decision) =>
       decision.scope === `reviewer_directive:candidate:${input.candidateDigest}`)).toHaveLength(1);
+    expect(listDomainEvents(db, "t1", "mission", "m1")).toHaveLength(eventCount);
   });
 
   it("preserves causation on the superseding reviewer directive event", () => {
