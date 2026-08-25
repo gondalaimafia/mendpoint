@@ -47,6 +47,7 @@ import {
   getWardenCiCycle,
   getWardenCiUpdateByRun,
   getJobRecoverySummary,
+  getPrincipalBySubject,
   getRepositorySnapshotPolicy,
   getScmConnection,
   insertAgentRun,
@@ -4285,6 +4286,12 @@ async function runService(intervalMs: number) {
           gateConfig: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_GATE"),
           tenantId: configuredTenantId,
           workerId: WORKER_ID,
+          regaugeServicePrincipalIdForTenant: (tenantId) => getPrincipalBySubject(
+            transformerDb,
+            tenantId,
+            "service",
+            "service:regauge-production-bootstrap",
+          )?.id,
           evidenceRoot: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_EVIDENCE_ROOT") ??
             join(dataRoot, "transformer-evidence"),
           candidateRoot: resolveRenamedEnv(process.env, "MENDPOINT_REGAUGE_CANDIDATE_ROOT") ??

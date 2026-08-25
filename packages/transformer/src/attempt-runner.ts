@@ -64,6 +64,7 @@ import type {
   TransformerAdaptiveAttemptAccounting,
   TransformerAttemptLease,
   TransformerAttemptLeaseRenewal,
+  TransformerMissionArtifactRegistrationBinding,
 } from "./pilot-execution.js";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
@@ -137,6 +138,7 @@ export type TransformerAttemptCompletionInput = Readonly<{
   verificationPassed: true;
   actualCostUsd: number;
   accounting: TransformerAdaptiveAttemptAccounting;
+  artifactRegistration: TransformerMissionArtifactRegistrationBinding;
   observedAt: string;
   evidenceRefs: readonly string[];
   idempotencyKey: string;
@@ -227,6 +229,7 @@ export type TransformerAttemptCheckpointCompletion = Readonly<{
   artifact: TransformerCandidateArtifact;
   actualCostUsd: number;
   accounting: TransformerAdaptiveAttemptAccounting;
+  artifactRegistration: TransformerMissionArtifactRegistrationBinding;
   observedAt: string;
   evidenceRefs: readonly string[];
   signal: AbortSignal;
@@ -527,6 +530,42 @@ export type TransformerVerifiedCandidateCompletion = Readonly<{
   artifact: TransformerCandidateArtifact;
   observedAt: string;
 }>;
+
+function artifactRegistrationPath(root: string, path: string): string {
+  const scopedRoot = resolve(root);
+  const scopedPath = resolve(path);
+  const local = relative(scopedRoot, scopedPath);
+  if (local.length === 0 || isAbsolute(local) || local === ".." || local.startsWith(`..${posix.sep}`) ||
+      local.startsWith("..\\")) {
+    throw new Error("transformer_attempt_artifact_registration_path_invalid");
+  }
+  return local.replaceAll("\\", "/");
+}
+
+function createMissionArtifactRegistration(
+  input: Pick<RunTransformerAttemptInput, "candidateRoot" | "evidenceRoot">,
+  lease: TransformerExecutableAttemptLease,
+  attemptId: string,
+  artifact: TransformerCandidateArtifact,
+  execution: RecipeWorkspaceExecutionResult,
+): TransformerMissionArtifactRegistrationBinding {
+  const candidateSha256 = artifact.manifestDigest.slice("sha256:".length);
+  if (!DIGEST.test(artifact.manifestDigest) || !DIGEST.test(execution.evidence.digest)) {
+    throw new Error("transformer_attempt_artifact_registration_digest_invalid");
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    attemptId,
+    sourceSnapshotId: lease.snapshot.snapshotId,
+    candidateArtifactId: `tcman_${candidateSha256}`,
+    candidateManifestDigest: artifact.manifestDigest,
+    candidateManifestPath: artifactRegistrationPath(input.candidateRoot, artifact.manifestPath),
+    executionArtifactId: execution.evidence.record.evidenceId,
+    executionEvidenceDigest: execution.evidence.digest,
+    executionEvidencePath: artifactRegistrationPath(input.evidenceRoot, execution.evidence.path),
+    executionSchemaVersion: execution.evidence.record.schemaVersion,
+  });
+}
 
 export type RunTransformerAttemptInput = Readonly<{
   scope: TransformerAttemptScope;
@@ -1823,6 +1862,13 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
       input.coordinator, lease, fence, input.observedAt("execute"), heartbeat,
     );
     artifact = persistTransformerCandidate(input.candidateRoot, input.scope, lease, attemptId, execution);
+    const artifactRegistration = createMissionArtifactRegistration(
+      input,
+      lease,
+      attemptId,
+      artifact,
+      execution,
+    );
     const completionObservedAt = input.observedAt("complete");
     await assertCurrentFence(input.coordinator, lease, fence, completionObservedAt, heartbeat);
     const executionCostUsd = accountingExecutionCost(input, execution);
@@ -1838,6 +1884,7 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
         artifact,
         actualCostUsd: executionCostUsd,
         accounting: completionAccounting,
+        artifactRegistration,
         observedAt: completionObservedAt,
         evidenceRefs: artifact.evidenceRefs,
         signal: heartbeat.signal,
@@ -1874,6 +1921,7 @@ export async function runTransformerAttempt(input: RunTransformerAttemptInput): 
         verificationPassed: true,
         actualCostUsd: executionCostUsd,
         accounting: completionAccounting,
+        artifactRegistration,
         observedAt: completionObservedAt,
         evidenceRefs: artifact.evidenceRefs,
         idempotencyKey: completionKey,

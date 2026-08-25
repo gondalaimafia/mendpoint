@@ -1,7 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import {
+  getPrincipal,
   insertArtifactManifest,
   listRepositorySnapshots,
   recordAdaptiveCandidate,
@@ -24,6 +25,7 @@ import {
   type TransformerAttemptCoordinatorPort,
   type TransformerVerifiedCandidateCompletion,
   type TransformerPilotExecutionStore,
+  type TransformerMissionArtifactRegistration,
 } from "@mendpoint/transformer";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
 import { resolveRenamedEnv } from "@mendpoint/shared";
@@ -57,6 +59,7 @@ export type TransformerPilotLaneResult = Readonly<{
   stale: number;
   idle: number;
   routingSettled?: number;
+  missionArtifactsRegistered?: number;
   handoff?: number;
   adaptiveModelEvidence?: readonly TransformerAdaptiveModelEvidenceSummary[];
   adaptiveRecovered?: number;
@@ -72,6 +75,7 @@ export type TransformerPilotLaneStore = Pick<
   TransformerPilotExecutionStore,
   | "listExpiredAttempts"
   | "listPendingRoutingSettlements"
+  | "listPendingMissionArtifactRegistrations"
   | "expireAttempt"
   | "listRunnableCampaigns"
   | "listAdaptiveCandidateHandoffs"
@@ -87,6 +91,7 @@ export type TransformerPilotLaneStore = Pick<
   | "completeAttempt"
   | "recordAttemptFailure"
   | "markRoutingOutcomeSettled"
+  | "completeMissionArtifactRegistration"
   | "control"
 >;
 
@@ -98,6 +103,8 @@ export type RunTransformerPilotLaneInput = Readonly<{
   workerId: string;
   evidenceRoot: string;
   candidateRoot: string;
+  /** Required by the live lane to register ReGauge artifacts under a tenant-scoped service identity. */
+  regaugeServicePrincipalIdForTenant?(tenantId: string): string | undefined;
   tempRoot?: string;
   leaseDurationMs?: number;
   maxCampaigns?: number;
@@ -357,84 +364,175 @@ function requireAdaptiveRetention(value: number | undefined): number {
   return retention;
 }
 
-/**
- * Bridge the attempt runner's authenticated filesystem artifacts into the
- * tenant artifact store, then register those exact objects on the bound
- * Mission. The runner invokes this after both legacy and checkpoint completion.
- */
-export function registerRegaugeVerifiedCandidateArtifacts(
-  db: AppDb,
-  input: TransformerVerifiedCandidateCompletion,
-) {
-  const { lease, artifact, execution } = input;
-  const mission = resolveMissionForRegaugeCampaign(db, lease.tenantId, lease.campaignId);
-  if (!mission) return { status: "skipped_unbound" } as const;
+type RegaugeArtifactRegistrationSource = Readonly<{
+  tenantId: string;
+  campaignId: string;
+  unitId: string;
+  sourceSnapshotId: string;
+  candidateArtifactId: string;
+  candidateManifestDigest: string;
+  candidateManifestPath: string;
+  executionArtifactId: string;
+  executionEvidenceDigest: string;
+  executionEvidencePath: string;
+  executionSchemaVersion: number;
+  observedAt: string;
+}>;
 
-  const candidateContent = readFileSync(artifact.manifestPath, "utf8");
+function resolveRegistrationPath(root: string, storedPath: string): string {
+  if (isAbsolute(storedPath) || storedPath.includes("\\") || storedPath.split("/").includes("..")) {
+    throw new Error("regauge_artifact_registration_path_invalid");
+  }
+  const trustedRoot = realpathSync(resolve(root));
+  const target = realpathSync(resolve(trustedRoot, storedPath));
+  const local = relative(trustedRoot, target);
+  if (local === "" || isAbsolute(local) || local === ".." || local.startsWith("..\\") || local.startsWith("../")) {
+    throw new Error("regauge_artifact_registration_path_invalid");
+  }
+  return target;
+}
+
+function registerRegaugeArtifacts(
+  db: AppDb,
+  source: RegaugeArtifactRegistrationSource,
+  producerPrincipalId: string | undefined,
+) {
+  const mission = resolveMissionForRegaugeCampaign(db, source.tenantId, source.campaignId);
+  if (!mission) return { status: "skipped_unbound" } as const;
+  if (!producerPrincipalId) {
+    throw new Error("regauge_service_principal_tenant_invalid");
+  }
+  const principal = getPrincipal(db, source.tenantId, producerPrincipalId);
+  if (!principal || principal.kind !== "service") {
+    throw new Error("regauge_service_principal_tenant_invalid");
+  }
+
+  const candidateContent = readFileSync(source.candidateManifestPath, "utf8");
   const candidateSha256 = sha256(candidateContent);
-  const candidateArtifactId = `tcman_${candidateSha256}`;
+  const candidateArtifactId = source.candidateArtifactId;
   if (
-    artifact.manifestDigest !== `sha256:${candidateSha256}` ||
-    !artifact.evidenceRefs.includes(candidateArtifactId)
+    source.candidateManifestDigest !== `sha256:${candidateSha256}` ||
+    candidateArtifactId !== `tcman_${candidateSha256}`
   ) {
     throw new Error("regauge_candidate_manifest_evidence_mismatch");
   }
-  const executionContent = readFileSync(execution.evidence.path, "utf8");
+  const executionContent = readFileSync(source.executionEvidencePath, "utf8");
   const executionSha256 = sha256(executionContent);
-  const executionArtifactId = execution.evidence.record.evidenceId;
+  const executionArtifactId = source.executionArtifactId;
   if (
-    execution.evidence.digest !== `sha256:${executionSha256}` ||
-    !artifact.evidenceRefs.includes(executionArtifactId)
+    source.executionEvidenceDigest !== `sha256:${executionSha256}`
   ) {
     throw new Error("regauge_execution_evidence_mismatch");
   }
 
-  insertArtifactManifest(db, {
-    id: candidateArtifactId,
-    tenantId: lease.tenantId,
-    kind: "regauge_candidate_manifest",
-    schemaVersion: 1,
-    sha256: candidateSha256,
-    mediaType: "application/vnd.mendpoint.regauge-candidate-manifest+json",
-    sizeBytes: Buffer.byteLength(candidateContent, "utf8"),
-    storageRef: `sqlite://artifact_manifests/${candidateArtifactId}#content_text`,
-    content: candidateContent,
-    producerPrincipalId: mission.ownerPrincipalId,
-    createdAt: input.observedAt,
-  });
-  insertArtifactManifest(db, {
-    id: executionArtifactId,
-    tenantId: lease.tenantId,
-    kind: "regauge_recipe_execution",
-    schemaVersion: execution.evidence.record.schemaVersion,
-    sha256: executionSha256,
-    mediaType: "application/vnd.mendpoint.regauge-recipe-execution+json",
-    sizeBytes: Buffer.byteLength(executionContent, "utf8"),
-    storageRef: `sqlite://artifact_manifests/${executionArtifactId}#content_text`,
-    content: executionContent,
-    producerPrincipalId: mission.ownerPrincipalId,
-    createdAt: input.observedAt,
-  });
-  return tryRegisterRegaugeCampaignMissionArtifacts(db, {
+  db.raw.exec("SAVEPOINT regauge_verified_artifact_registration");
+  try {
+    insertArtifactManifest(db, {
+      id: candidateArtifactId,
+      tenantId: source.tenantId,
+      kind: "regauge_candidate_manifest",
+      schemaVersion: 1,
+      sha256: candidateSha256,
+      mediaType: "application/vnd.mendpoint.regauge-candidate-manifest+json",
+      sizeBytes: Buffer.byteLength(candidateContent, "utf8"),
+      storageRef: `sqlite://artifact_manifests/${candidateArtifactId}#content_text`,
+      content: candidateContent,
+      producerPrincipalId,
+      createdAt: source.observedAt,
+    });
+    insertArtifactManifest(db, {
+      id: executionArtifactId,
+      tenantId: source.tenantId,
+      kind: "regauge_recipe_execution",
+      schemaVersion: source.executionSchemaVersion,
+      sha256: executionSha256,
+      mediaType: "application/vnd.mendpoint.regauge-recipe-execution+json",
+      sizeBytes: Buffer.byteLength(executionContent, "utf8"),
+      storageRef: `sqlite://artifact_manifests/${executionArtifactId}#content_text`,
+      content: executionContent,
+      producerPrincipalId,
+      createdAt: source.observedAt,
+    });
+    const result = tryRegisterRegaugeCampaignMissionArtifacts(db, {
+      tenantId: source.tenantId,
+      campaignId: source.campaignId,
+      producerPrincipalId,
+      createdAt: source.observedAt,
+      sourceSnapshot: source.sourceSnapshotId,
+      artifacts: [
+        {
+          role: "candidate_patch",
+          artifactId: candidateArtifactId,
+          label: `regauge candidate ${source.unitId}`,
+        },
+        {
+          role: "verification_report",
+          artifactId: executionArtifactId,
+          label: `regauge verification ${source.unitId}`,
+          parentArtifactId: candidateArtifactId,
+        },
+      ],
+    });
+    if (result.status !== "registered") {
+      throw new Error(result.status === "failed" ? result.reason : `regauge_mission_artifact_${result.status}`);
+    }
+    db.raw.exec("RELEASE SAVEPOINT regauge_verified_artifact_registration");
+    return result;
+  } catch (error) {
+    db.raw.exec("ROLLBACK TO SAVEPOINT regauge_verified_artifact_registration");
+    db.raw.exec("RELEASE SAVEPOINT regauge_verified_artifact_registration");
+    throw error;
+  }
+}
+
+/** Test-facing adapter for a just-completed candidate. Production uses the durable outbox below. */
+export function registerRegaugeVerifiedCandidateArtifacts(
+  db: AppDb,
+  input: TransformerVerifiedCandidateCompletion,
+  producerPrincipalId: string,
+) {
+  const { lease, artifact, execution } = input;
+  if (!artifact.evidenceRefs.includes(`tcman_${artifact.manifestDigest.slice("sha256:".length)}`) ||
+      !artifact.evidenceRefs.includes(execution.evidence.record.evidenceId)) {
+    throw new Error("regauge_artifact_registration_evidence_mismatch");
+  }
+  return registerRegaugeArtifacts(db, {
     tenantId: lease.tenantId,
     campaignId: lease.campaignId,
-    producerPrincipalId: mission.ownerPrincipalId,
-    createdAt: input.observedAt,
-    sourceSnapshot: lease.snapshot.snapshotId,
-    artifacts: [
-      {
-        role: "candidate_patch",
-        artifactId: candidateArtifactId,
-        label: `regauge candidate ${lease.unitId}`,
-      },
-      {
-        role: "verification_report",
-        artifactId: executionArtifactId,
-        label: `regauge verification ${lease.unitId}`,
-        parentArtifactId: candidateArtifactId,
-      },
-    ],
-  });
+    unitId: lease.unitId,
+    sourceSnapshotId: lease.snapshot.snapshotId,
+    candidateArtifactId: `tcman_${artifact.manifestDigest.slice("sha256:".length)}`,
+    candidateManifestDigest: artifact.manifestDigest,
+    candidateManifestPath: artifact.manifestPath,
+    executionArtifactId: execution.evidence.record.evidenceId,
+    executionEvidenceDigest: execution.evidence.digest,
+    executionEvidencePath: execution.evidence.path,
+    executionSchemaVersion: execution.evidence.record.schemaVersion,
+    observedAt: input.observedAt,
+  }, producerPrincipalId);
+}
+
+function registerRegaugeMissionArtifactOutbox(
+  db: AppDb,
+  registration: TransformerMissionArtifactRegistration,
+  producerPrincipalId: string | undefined,
+  candidateRoot: string,
+  evidenceRoot: string,
+) {
+  return registerRegaugeArtifacts(db, {
+    tenantId: registration.tenantId,
+    campaignId: registration.campaignId,
+    unitId: registration.unitId,
+    sourceSnapshotId: registration.sourceSnapshotId,
+    candidateArtifactId: registration.candidateArtifactId,
+    candidateManifestDigest: registration.candidateManifestDigest,
+    candidateManifestPath: resolveRegistrationPath(candidateRoot, registration.candidateManifestPath),
+    executionArtifactId: registration.executionArtifactId,
+    executionEvidenceDigest: registration.executionEvidenceDigest,
+    executionEvidencePath: resolveRegistrationPath(evidenceRoot, registration.executionEvidencePath),
+    executionSchemaVersion: registration.executionSchemaVersion,
+    observedAt: registration.observedAt,
+  }, producerPrincipalId);
 }
 
 function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): TransformerAttemptCoordinatorPort {
@@ -523,6 +621,7 @@ export async function runTransformerPilotLaneOnce(
   let idle = 0;
   let handoff = 0;
   let routingSettled = 0;
+  let missionArtifactsRegistered = 0;
   let adaptiveRecovered = 0;
   let regenerationBlocked = 0;
   let regenerationIndeterminate = 0;
@@ -530,6 +629,52 @@ export async function runTransformerPilotLaneOnce(
   let regenerationFailed = 0;
   const adaptiveModelEvidence: TransformerAdaptiveModelEvidenceSummary[] = [];
   let infrastructureError: string | undefined;
+
+  const reconcileMissionArtifacts = (): boolean => {
+    if (!input.tenantId) return true;
+    for (const registration of input.store.listPendingMissionArtifactRegistrations(
+      input.tenantId,
+      maxCampaigns,
+    )) {
+      if (input.shouldContinue?.() === false) break;
+      try {
+        const principalId = input.regaugeServicePrincipalIdForTenant?.(registration.tenantId);
+        const result = registerRegaugeMissionArtifactOutbox(
+          input.db,
+          registration,
+          principalId,
+          input.candidateRoot,
+          input.evidenceRoot,
+        );
+        input.store.completeMissionArtifactRegistration(registration);
+        if (result.status === "registered") missionArtifactsRegistered++;
+      } catch (error) {
+        const code = boundedError(error);
+        errors.push(code);
+        infrastructureError ??= code;
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Completion and this immutable outbox entry commit together. Drain it before
+  // claiming new work so a process death after completion cannot lose Mission
+  // artifacts or cause recipe/provider execution to run again.
+  if (!reconcileMissionArtifacts()) {
+    return Object.freeze({
+      enabled: true,
+      expired,
+      attempted,
+      completed,
+      failed,
+      stale,
+      idle,
+      ...(missionArtifactsRegistered ? { missionArtifactsRegistered } : {}),
+      errors: Object.freeze([...new Set(errors)].slice(0, 25)),
+      ...(infrastructureError ? { infrastructureError } : {}),
+    });
+  }
 
   if (input.shouldContinue?.() !== false) {
     const regeneration = processTransformerAdaptiveRegenerations(input.db, input.store, {
@@ -1178,23 +1323,7 @@ export async function runTransformerPilotLaneOnce(
               throw error;
             }
           },
-          onVerifiedCandidateCompleted: async (completion) => {
-            try {
-              const result = registerRegaugeVerifiedCandidateArtifacts(input.db, completion);
-              if (result.status === "failed") {
-                console.error(
-                  `  regauge mission artifact register failed campaign=${completion.lease.campaignId} unit=${completion.lease.unitId}: ${result.reason}`,
-                );
-              }
-            } catch (error) {
-              console.error(
-                `  regauge mission artifact register failed campaign=${completion.lease.campaignId} unit=${completion.lease.unitId}: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-              );
-            }
-            await input.onVerifiedCandidateCompleted?.(completion);
-          },
+          onVerifiedCandidateCompleted: input.onVerifiedCandidateCompleted,
         }),
     });
     if (routed.status === "handoff") {
@@ -1229,6 +1358,7 @@ export async function runTransformerPilotLaneOnce(
     stale,
     idle,
     ...(routingSettled ? { routingSettled } : {}),
+    ...(missionArtifactsRegistered ? { missionArtifactsRegistered } : {}),
     ...(adaptiveRecovered ? { adaptiveRecovered } : {}),
     ...(regenerationBlocked ? { regenerationBlocked } : {}),
     ...(regenerationIndeterminate ? { regenerationIndeterminate } : {}),

@@ -3332,6 +3332,25 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 #### Review
 
 - Confirmed blocker: live completions emit `tcman_*` and `tre_execution_*` filesystem evidence references, while the reviewed code only registers IDs that already exist in `artifact_manifests`; production therefore always returns `skipped_no_artifacts` without an independent bridge.
-- The post-completion observer now authenticates both persisted files against the completion digests, stores their exact bytes as tenant-scoped manifests attributed to the Mission owner, and registers candidate plus verification roles with lineage. The same observer is proven to run after checkpoint completion.
+- The original post-completion observer authenticated both persisted files, but its Mission-owner attribution and crash gap are superseded by the PR #460 closure below.
 - Registration uses an internal SQLite savepoint, so a later invalid artifact rolls back earlier Mission metadata even inside an outer transaction. Exact replay leaves two rows and one lineage edge.
 - Verification: 13 focused artifact tests, 25 live ReGauge lane tests, and 39 attempt-runner tests pass. Worker and pipeline typechecks pass, dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
+
+### 2026-08-25 PR #460 reciprocal-review closure
+
+- [x] Rebase the Codex-owned replacement branch onto current `origin/main` without touching Cursor PR #448.
+- [x] RED: prove terminal legacy and checkpoint completion atomically enqueue an attempt-bound artifact registration.
+- [x] RED: prove restart reconciliation registers the exact artifacts once without rerunning recipe or provider work.
+- [x] RED: prove execution tamper, cross-tenant producer identity, and second-manifest insertion failure fail closed without orphan rows.
+- [x] Replace the post-completion bridge with durable pre-claim reconciliation and an exact tenant-scoped ReGauge service principal.
+- [x] Make manifest insertion, Mission registration, and lineage one App DB transaction.
+- [x] Run the focused worker, pipeline, transformer, and CLI regressions plus affected typechecks and diff integrity.
+- [x] Commit and push the reviewed Codex branch; do not merge or change PR state.
+
+#### Review
+
+- Legacy and checkpoint completion now commit an immutable attempt-bound Mission artifact outbox record in the same pilot-store transaction as terminal campaign state. Replays verify the exact stored binding without changing the immutable completion request.
+- The worker drains this outbox before claims. Files are constrained to their configured roots and re-authenticated by digest; exact App DB replay plus an append-only completion result closes crashes both before and after Mission registration without repeating recipe or provider work.
+- Production resolves `service:regauge-production-bootstrap` in the completed attempt's tenant. Candidate and execution manifests, Mission artifact events, and lineage events use that service principal rather than `mission.ownerPrincipalId`.
+- Both manifest inserts, both Mission registrations, and lineage share one App DB savepoint. A forced second insert failure leaves zero manifests and zero Mission artifacts.
+- Verification: 55 pilot execution, 39 attempt runner, 13 checkpoint, 25 live lane, 10 pipeline registration, and 6 direct artifact tests pass. Transformer, worker, and eval typechecks pass, and `git diff --check` is clean.

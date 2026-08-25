@@ -10,6 +10,7 @@ import {
   linkRegaugeCampaignToMission,
   listMissionArtifactLineage,
   listMissionArtifacts,
+  listDomainEvents,
   type AppDb,
 } from "@mendpoint/db";
 import type { TransformerVerifiedCandidateCompletion } from "@mendpoint/transformer";
@@ -36,6 +37,10 @@ function fixture(): AppDb {
   insertPrincipal(db, {
     id: "p1", tenantId: "t1", kind: "human", subject: "one@example.com",
     displayName: "One", createdAt: T0,
+  });
+  insertPrincipal(db, {
+    id: "svc1", tenantId: "t1", kind: "service", subject: "service:regauge",
+    displayName: "ReGauge", createdAt: T0,
   });
   return db;
 }
@@ -79,7 +84,7 @@ describe("registerRegaugeVerifiedCandidateArtifacts", () => {
     const value = completion(db, { campaignId: "unbound" });
     rmSync(value.artifact.manifestPath);
     rmSync(value.execution.evidence.path);
-    expect(registerRegaugeVerifiedCandidateArtifacts(db, value)).toEqual({ status: "skipped_unbound" });
+    expect(registerRegaugeVerifiedCandidateArtifacts(db, value, "svc1")).toEqual({ status: "skipped_unbound" });
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM artifact_manifests").get())
       .toEqual({ count: 0 });
   });
@@ -97,7 +102,7 @@ describe("registerRegaugeVerifiedCandidateArtifacts", () => {
       correlationId: "corr-rg", createdAt: T0,
     });
     const value = completion(db);
-    const result = registerRegaugeVerifiedCandidateArtifacts(db, value);
+    const result = registerRegaugeVerifiedCandidateArtifacts(db, value, "svc1");
     expect(result).toEqual({ status: "registered", missionId: "m-rg", count: 2 });
     const artifacts = listMissionArtifacts(db, "t1", "m-rg");
     expect(artifacts.map((artifact) => artifact.role).sort())
@@ -111,11 +116,14 @@ describe("registerRegaugeVerifiedCandidateArtifacts", () => {
     expect(db.raw.prepare(
       "SELECT kind, producer_principal_id FROM artifact_manifests ORDER BY kind",
     ).all()).toEqual([
-      { kind: "regauge_candidate_manifest", producer_principal_id: "p1" },
-      { kind: "regauge_recipe_execution", producer_principal_id: "p1" },
+      { kind: "regauge_candidate_manifest", producer_principal_id: "svc1" },
+      { kind: "regauge_recipe_execution", producer_principal_id: "svc1" },
     ]);
+    expect(listDomainEvents(db, "t1", "mission", "m-rg")
+      .filter((event) => event.event_type.startsWith("mission.artifact"))
+      .map((event) => event.actor_principal_id)).toEqual(["svc1", "svc1", "svc1"]);
 
-    expect(registerRegaugeVerifiedCandidateArtifacts(db, value))
+    expect(registerRegaugeVerifiedCandidateArtifacts(db, value, "svc1"))
       .toEqual({ status: "registered", missionId: "m-rg", count: 2 });
     expect(listMissionArtifacts(db, "t1", "m-rg")).toHaveLength(2);
   });
@@ -134,8 +142,76 @@ describe("registerRegaugeVerifiedCandidateArtifacts", () => {
     });
     const value = completion(db);
     writeFileSync(value.artifact.manifestPath, "tampered");
-    expect(() => registerRegaugeVerifiedCandidateArtifacts(db, value))
+    expect(() => registerRegaugeVerifiedCandidateArtifacts(db, value, "svc1"))
       .toThrow("regauge_candidate_manifest_evidence_mismatch");
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM artifact_manifests").get())
+      .toEqual({ count: 0 });
+  });
+
+  it("rejects execution evidence whose bytes no longer match the completed digest", () => {
+    const db = fixture();
+    createMission(db, {
+      id: "m-rg", tenantId: "t1", product: "regauge", triggerKind: "migration_objective",
+      objective: "Modernize", ownerPrincipalId: "p1", eventId: "ev-rg-execution",
+      idempotencyKey: "cm-rg-execution", correlationId: "corr-rg", createdAt: T0,
+    });
+    linkRegaugeCampaignToMission(db, {
+      tenantId: "t1", missionId: "m-rg", regaugeCampaignId: "tf-1",
+      actorPrincipalId: "p1", eventId: "linked-rg-execution", idempotencyKey: "linked-rg-execution",
+      correlationId: "corr-rg", createdAt: T0,
+    });
+    const value = completion(db);
+    writeFileSync(value.execution.evidence.path, "tampered");
+    expect(() => registerRegaugeVerifiedCandidateArtifacts(db, value, "svc1"))
+      .toThrow("regauge_execution_evidence_mismatch");
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM artifact_manifests").get())
+      .toEqual({ count: 0 });
+  });
+
+  it("rolls back the candidate manifest when the execution manifest insert fails", () => {
+    const db = fixture();
+    createMission(db, {
+      id: "m-rg", tenantId: "t1", product: "regauge", triggerKind: "migration_objective",
+      objective: "Modernize", ownerPrincipalId: "p1", eventId: "ev-rg-atomic",
+      idempotencyKey: "cm-rg-atomic", correlationId: "corr-rg", createdAt: T0,
+    });
+    linkRegaugeCampaignToMission(db, {
+      tenantId: "t1", missionId: "m-rg", regaugeCampaignId: "tf-1",
+      actorPrincipalId: "p1", eventId: "linked-rg-atomic", idempotencyKey: "linked-rg-atomic",
+      correlationId: "corr-rg", createdAt: T0,
+    });
+    db.raw.exec(`CREATE TRIGGER reject_regauge_execution BEFORE INSERT ON artifact_manifests
+      WHEN NEW.kind = 'regauge_recipe_execution'
+      BEGIN SELECT RAISE(ABORT, 'execution_insert_boom'); END`);
+    expect(() => registerRegaugeVerifiedCandidateArtifacts(db, completion(db), "svc1"))
+      .toThrow("execution_insert_boom");
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM artifact_manifests").get())
+      .toEqual({ count: 0 });
+    expect(listMissionArtifacts(db, "t1", "m-rg")).toHaveLength(0);
+  });
+
+  it("rejects a producer principal from another tenant without persisting evidence", () => {
+    const db = fixture();
+    db.raw.prepare(
+      `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+       VALUES ('t2','two','Two','team','active',10,?)`,
+    ).run(T0);
+    insertPrincipal(db, {
+      id: "svc2", tenantId: "t2", kind: "service", subject: "service:regauge",
+      displayName: "ReGauge Two", createdAt: T0,
+    });
+    createMission(db, {
+      id: "m-rg", tenantId: "t1", product: "regauge", triggerKind: "migration_objective",
+      objective: "Modernize", ownerPrincipalId: "p1", eventId: "ev-rg-tenant",
+      idempotencyKey: "cm-rg-tenant", correlationId: "corr-rg", createdAt: T0,
+    });
+    linkRegaugeCampaignToMission(db, {
+      tenantId: "t1", missionId: "m-rg", regaugeCampaignId: "tf-1",
+      actorPrincipalId: "p1", eventId: "linked-rg-tenant", idempotencyKey: "linked-rg-tenant",
+      correlationId: "corr-rg", createdAt: T0,
+    });
+    expect(() => registerRegaugeVerifiedCandidateArtifacts(db, completion(db), "svc2"))
+      .toThrow(/tenant/i);
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM artifact_manifests").get())
       .toEqual({ count: 0 });
   });

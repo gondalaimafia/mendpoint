@@ -1180,6 +1180,7 @@ async function openController(context: Readonly<{
           resultBytes: accepted.bytes,
           completionIntent: intent,
           candidateSeal,
+          artifactRegistration: completion.artifactRegistration,
         }));
       assertSignal(completion.signal);
       head = finalized.envelope;
