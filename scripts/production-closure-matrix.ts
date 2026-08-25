@@ -1499,7 +1499,7 @@ function main() {
   ) as ProductRequirementManifest;
   const matrix = JSON.parse(matrixBytes.toString("utf8")) as ProductionClosureMatrix;
   if (
-    matrix.schemaVersion === 1 &&
+    (matrix as { schemaVersion: number }).schemaVersion === 1 &&
     exactLegacyBootstrapMatrixAllowed(matrixBytes, policy.legacyBootstrapMatrixDigest)
   ) {
     console.log(
