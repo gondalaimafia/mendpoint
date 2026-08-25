@@ -117,6 +117,7 @@ function runnableCampaign(campaignId: string, repositoryId = "repo-a", source = 
       `manifest:${source.repeat(64)}`,
       digest(source),
     ],
+    changedPaths: ["package.json"],
   };
 }
 
