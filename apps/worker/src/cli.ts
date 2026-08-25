@@ -113,7 +113,7 @@ import {
   runPolicyRoutedWarden,
   readWardenApprovalArtifact,
   resolveAgentModelEndpoint,
-  inheritedContextEnabled,
+  inheritedContextShouldCompile,
   WARDEN_CANDIDATE_REVIEW_LIMITS,
   type AgentModelSourcePolicy,
   type AgentPlanner,
@@ -3257,10 +3257,13 @@ async function processJobsOnceUnfenced(
                 : undefined;
               // Resume with the compiled envelope via resolveResumeContext so
               // ownership, unresolvable mission ids, and store-load failures
-              // stay distinct (never collapse into "no prior context"). Gated
-              // behind the default-off `MENDPOINT_INHERITED_CONTEXT` switch.
+              // stay distinct (never collapse into "no prior context"). Unbound
+              // Fettler jobs still require `MENDPOINT_INHERITED_CONTEXT`; a bound
+              // Mission compiles even with that switch unset so regenerate can
+              // inherit decisions and persist context_refs_json.
               let inheritedContext: InheritedContextInjection | undefined;
-              if (inheritedContextEnabled(process.env)) {
+              const missionBound = Boolean(payload.missionId);
+              if (inheritedContextShouldCompile(process.env, { missionBound })) {
                 try {
                   const standing = resolveResumeContext(db, {
                     tenantId: job.tenant_id,
@@ -3324,7 +3327,9 @@ async function processJobsOnceUnfenced(
                     : {}),
                   allowNetwork: false,
                   sessionId,
-                  ...(inheritedContext ? { inheritedContext } : {}),
+                  ...(inheritedContext
+                    ? { inheritedContext, inheritedContextMissionBound: missionBound }
+                    : {}),
                   neverTouchPaths: [...verification.protectedPaths],
                   shouldContinue: () =>
                     !leaseLost && opts.shouldContinue?.() !== false &&
