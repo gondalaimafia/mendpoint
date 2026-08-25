@@ -368,8 +368,15 @@ function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): Transformer
           repositoryId: lease.snapshot.repositoryId,
           createdAt: lease.startedAt,
         });
-      } catch {
-        // Observational: the lease is already held.
+      } catch (error) {
+        // Observational: the lease is already held, so never fail the claim.
+        // Log the code so a driven/absent/revision-conflict/principal-conflict
+        // claim is not indistinguishable from a silent no-op.
+        console.error(
+          `  regauge mission-task claim drive failed campaign=${lease.campaignId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
       }
       return lease;
     },
@@ -396,8 +403,15 @@ function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): Transformer
             createdAt: input.observedAt,
           });
         }
-      } catch {
-        // Observational: the attempt is already completed.
+      } catch (error) {
+        // Observational: the attempt is already completed, so never un-complete
+        // it. Log the code so a driven/absent/revision-conflict/principal-conflict
+        // handoff is not indistinguishable from a silent no-op.
+        console.error(
+          `  regauge mission-task review handoff failed campaign=${input.campaignId} unit=${input.unitId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
       }
       return completed;
     },

@@ -369,4 +369,24 @@ describe("trust records", () => {
       error: "audit_chain_hash:audit-b",
     });
   });
+
+  it("resolves a principal insert that loses the primary-key race instead of throwing", () => {
+    const db = setup();
+    // A raced writer already committed a row under this deterministic id. This
+    // stands in for the concurrent claim window that read-then-insert leaves open
+    // (no BEGIN IMMEDIATE): a second insert reusing the id would otherwise throw a
+    // constraint error the caller's observational catch would swallow.
+    insertPrincipal(db, {
+      id: "principal-mtask-raced", tenantId: "tenant-a", kind: "service",
+      subject: "other-service", displayName: "Other", createdAt: at,
+    });
+    let resolved: { id: string } | undefined;
+    expect(() => {
+      resolved = insertPrincipal(db, {
+        id: "principal-mtask-raced", tenantId: "tenant-a", kind: "service",
+        subject: "mission-task-agent", displayName: "Mission task agent", createdAt: at,
+      });
+    }).not.toThrow();
+    expect(resolved?.id).toBe("principal-mtask-raced");
+  });
 });
