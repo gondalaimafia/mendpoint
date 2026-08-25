@@ -382,7 +382,38 @@ describe("worker mission-context producer (real stores)", () => {
       producerPrincipalId: "p1",
       correlationId: "corr",
       createdAt: T0,
+      taskId: "task-1",
+      sourceSnapshot: "snapA",
     });
+    for (const artifact of [
+      { id: "art-other-task", taskId: "task-2", sourceSnapshot: "snapA" },
+      { id: "art-other-snapshot", taskId: "task-1", sourceSnapshot: "snapB" },
+    ]) {
+      insertArtifactManifest(db, {
+        id: artifact.id,
+        tenantId: "t1",
+        kind: "candidate-edit",
+        schemaVersion: 1,
+        sha256: createHash("sha256").update(artifact.id).digest("hex"),
+        mediaType: "text/plain",
+        sizeBytes: Buffer.byteLength(artifact.id, "utf8"),
+        storageRef: `mem://${artifact.id}`,
+        content: artifact.id,
+        createdAt: T0,
+      });
+      registerMissionArtifact(db, {
+        tenantId: "t1",
+        missionId: "m1",
+        role: "candidate_patch",
+        artifactId: artifact.id,
+        label: artifact.id,
+        producerPrincipalId: "p1",
+        correlationId: "corr",
+        createdAt: T0,
+        taskId: artifact.taskId,
+        sourceSnapshot: artifact.sourceSnapshot,
+      });
+    }
     const mission = getMission(db, "t1", "m1")!;
     const compiled = buildMissionContext(db, {
       tenantId: "t1",

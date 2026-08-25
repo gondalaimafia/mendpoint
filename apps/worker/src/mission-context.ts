@@ -201,14 +201,18 @@ export function buildMissionContext(
   const artifacts: MissionContextInput["artifacts"] = mission
     ? {
         consulted: true,
-        records: listMissionArtifacts(db, tenantId, mission.id).map((artifact) => ({
+        records: listMissionArtifacts(db, tenantId, mission.id)
+          .filter((artifact) =>
+            (artifact.taskId === null || artifact.taskId === params.task.taskId) &&
+            (artifact.sourceSnapshot === null || artifact.sourceSnapshot === (mission.snapshotId ?? params.fallback.snapshotId)))
+          .map((artifact) => ({
           tenantId,
           id: artifact.id,
           role: artifact.role,
           artifactId: artifact.artifactId,
           artifactSha256: artifact.artifactSha256,
           label: artifact.label,
-        })),
+          })),
       }
     : { consulted: false, reason: "no_mission_bound" };
 
@@ -262,7 +266,7 @@ export function hasInheritedContent(envelope: InheritedContextEnvelope): boolean
   if (envelope.unresolvedExceptions.status === "consulted" && envelope.unresolvedExceptions.entries.length > 0) {
     return true;
   }
-  if (envelope.missionArtifacts.status === "consulted" && envelope.missionArtifacts.entries.length > 0) {
+  if (envelope.missionArtifacts?.status === "consulted" && envelope.missionArtifacts.entries.length > 0) {
     return true;
   }
   if (envelope.verificationState.status === "consulted" && envelope.verificationState.entries.length > 0) return true;

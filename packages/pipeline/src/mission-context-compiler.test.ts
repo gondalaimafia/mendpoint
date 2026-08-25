@@ -398,6 +398,17 @@ describe("mission context compiler", () => {
     expect(emptyBody).toContain("(none registered for this mission)");
   });
 
+  it("renders a legacy v1 envelope that predates the mission artifact section", () => {
+    const current = compileMissionContext(baseInput());
+    const { missionArtifacts: _omitted, ...legacy } = current;
+    const rendered = renderMissionContext(legacy);
+    expect(rendered.envelope.missionArtifacts).toEqual({
+      status: "not_consulted",
+      reason: "store_not_available",
+    });
+    expect(rendered.injection.promptBody).toContain("Mission artifacts [not consulted]");
+  });
+
   it("consulted artifacts carry refs/roles/sha256/label only, never bodies", () => {
     const envelope = compileMissionContext(
       baseInput({
@@ -468,6 +479,57 @@ describe("mission context compiler", () => {
         }),
       ),
     ).toThrow("mission_context_tenant_mismatch");
+  });
+
+  it("rejects a foreign-tenant artifact even when it appears after the item cap", () => {
+    const local = Array.from({ length: MISSION_CONTEXT_BOUNDS.maxSectionItems }, (_, index) => ({
+      tenantId: "t1",
+      id: `ma-${index}`,
+      role: "candidate_patch",
+      artifactId: `art-${index}`,
+      artifactSha256: "a".repeat(64),
+      label: `local ${index}`,
+    }));
+    expect(() => compileMissionContext(baseInput({
+      artifacts: {
+        consulted: true,
+        records: [...local, {
+          tenantId: "t2",
+          id: "ma-foreign-after-cap",
+          role: "candidate_patch",
+          artifactId: "art-foreign-after-cap",
+          artifactSha256: "b".repeat(64),
+          label: "foreign",
+        }],
+      },
+    }))).toThrow("mission_context_tenant_mismatch");
+  });
+
+  it("does not claim an artifact ref was supplied when its section is dropped by the byte ceiling", () => {
+    const hardPolicies = Array.from({ length: MISSION_CONTEXT_BOUNDS.maxSectionItems }, (_, index) => ({
+      tenantId: "t1",
+      id: `policy-${index}`,
+      subjectKey: `policy:${index}`,
+      directive: `constraint ${index} ${"x".repeat(1_800)}`,
+      source: "test_policy",
+    }));
+    const rendered = renderMissionContext(compileMissionContext(baseInput({
+      hardPolicies: { consulted: true, records: hardPolicies },
+      artifacts: {
+        consulted: true,
+        records: [{
+          tenantId: "t1",
+          id: "ma-budget",
+          role: "candidate_patch",
+          artifactId: "art-budget",
+          artifactSha256: "c".repeat(64),
+          label: "must be dropped",
+        }],
+      },
+    })));
+    expect(rendered.envelope.bounds.promptTruncated).toBe(true);
+    expect(rendered.injection.promptBody).not.toContain("art-budget");
+    expect(rendered.refs.some((ref) => ref.kind === "mission_artifact")).toBe(false);
   });
 
   it("an active memory with no higher layer applies and is named", () => {

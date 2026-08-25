@@ -259,7 +259,7 @@ export type InheritedContextEnvelope = Readonly<{
    * bodies. Omitted input is `not_consulted`; a bound producer that looked and
    * found none is `consulted` with empty entries.
    */
-  missionArtifacts:
+  missionArtifacts?:
     | Consulted<{ entries: readonly ArtifactEntry[] }>
     | NotConsulted<MissionSectionNotConsultedReason>;
   evidenceRefs: readonly string[];
@@ -270,6 +270,10 @@ export type InheritedContextEnvelope = Readonly<{
     historyTruncated: boolean;
     promptTruncated: boolean;
   }>;
+}>;
+
+export type CompiledInheritedContextEnvelope = InheritedContextEnvelope & Readonly<{
+  missionArtifacts: NonNullable<InheritedContextEnvelope["missionArtifacts"]>;
 }>;
 
 // ---------------------------------------------------------------------------
@@ -712,7 +716,7 @@ function buildVerificationSection(
 // Compile
 // ---------------------------------------------------------------------------
 
-export function compileMissionContext(input: MissionContextInput): InheritedContextEnvelope {
+export function compileMissionContext(input: MissionContextInput): CompiledInheritedContextEnvelope {
   const tenantId = identifier(input.tenantId, "mission_context_tenant_invalid");
 
   const missionIdentity: MissionIdentity = Object.freeze({
@@ -847,8 +851,10 @@ export function compileMissionContext(input: MissionContextInput): InheritedCont
     ? Object.freeze({
         status: "consulted",
         entries: Object.freeze(
-          cap(artifactsSource.records).map((record) => {
+          cap(artifactsSource.records.map((record) => {
             assertTenant(tenantId, record.tenantId);
+            return record;
+          })).map((record) => {
             return Object.freeze({
               id: identifier(record.id, "mission_context_artifact_id_invalid"),
               role: identifier(record.role, "mission_context_artifact_role_invalid"),
@@ -921,7 +927,7 @@ export type ContextRef =
   | Readonly<{ kind: "evidence"; ref: string }>;
 
 export type CompiledMissionContext = Readonly<{
-  envelope: InheritedContextEnvelope;
+  envelope: CompiledInheritedContextEnvelope;
   injection: InheritedContextInjection;
   refs: readonly ContextRef[];
 }>;
@@ -1021,14 +1027,20 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
   sections.push(exceptionLines);
 
   // Mission artifacts by reference only — role, id, sha256, label; never bodies.
-  const artifactLines: string[] = [`## Mission artifacts [${sectionState(envelope.missionArtifacts)}]`];
-  if (envelope.missionArtifacts.status === "consulted") {
-    if (envelope.missionArtifacts.entries.length === 0) artifactLines.push("(none registered for this mission)");
-    for (const entry of envelope.missionArtifacts.entries) {
+  // v1 callers may omit this additive section; treat that as not consulted.
+  const missionArtifacts = envelope.missionArtifacts ?? Object.freeze({
+    status: "not_consulted" as const,
+    reason: "store_not_available" as const,
+  });
+  const artifactRefs: ContextRef[] = [];
+  const artifactLines: string[] = [`## Mission artifacts [${sectionState(missionArtifacts)}]`];
+  if (missionArtifacts.status === "consulted") {
+    if (missionArtifacts.entries.length === 0) artifactLines.push("(none registered for this mission)");
+    for (const entry of missionArtifacts.entries) {
       artifactLines.push(
         `- [${entry.role}] ${entry.artifactId} sha256=${entry.artifactSha256} (${entry.label})`,
       );
-      refs.push(
+      artifactRefs.push(
         Object.freeze({
           kind: "mission_artifact",
           id: entry.id,
@@ -1039,7 +1051,7 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
       );
     }
   } else {
-    artifactLines.push(`(reason: ${envelope.missionArtifacts.reason})`);
+    artifactLines.push(`(reason: ${missionArtifacts.reason})`);
   }
   sections.push(artifactLines);
 
@@ -1147,6 +1159,7 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
     keep.pop();
     promptTruncated = true;
   }
+  if (keep.includes(artifactLines)) refs.push(...artifactRefs);
   const promptBody = assemble();
   const byteLength = Buffer.byteLength(promptBody, "utf8");
 
@@ -1158,9 +1171,13 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
     byteLength,
   });
 
-  const finalEnvelope: InheritedContextEnvelope = promptTruncated
-    ? Object.freeze({ ...envelope, bounds: Object.freeze({ ...envelope.bounds, promptTruncated: true }) })
-    : envelope;
+  const finalEnvelope: CompiledInheritedContextEnvelope = Object.freeze({
+    ...envelope,
+    missionArtifacts,
+    bounds: promptTruncated
+      ? Object.freeze({ ...envelope.bounds, promptTruncated: true })
+      : envelope.bounds,
+  });
 
   return Object.freeze({ envelope: finalEnvelope, injection, refs: Object.freeze(refs) });
 }

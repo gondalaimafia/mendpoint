@@ -3295,7 +3295,6 @@ GREEN: a single preparation step now writes only run metadata to a retained arti
 RED: `npm run docs:check` reported exactly `model-router.html`, `model-router.md`, `billing-usage.html`, and `billing-usage.md` as stale.
 
 GREEN: the canonical generator changed only those four artifacts. It removed references to the absent billing and router-runtime test files and aligned the router upload copy with the immutable decision record in the source catalog. `docs:check`, `names:check`, `claims:check`, and the production build pass; strict diff review found no source-catalog rewrite.
-
 ### 2026-08-25 ReGauge authenticated state transfer
 
 - [x] Define a versioned, authenticated, encrypted transfer manifest for the exact four live SQLite stores and immutable authority bindings.
@@ -3319,3 +3318,21 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Review repair: the CLI emits exactly one compact JSON record, so the live target-volume attestation can be parsed without discarding valid multiline output.
 - Review repair: unsafe rollback proof and thaw commands were removed. The old source remains authenticated and fenced; a later two-volume rollback authority must prove fresh target quiescence before any source restart can be enabled.
 - Exact-head review, current-base CI, and the live cutover remain pending. No production activation occurred in this PR.
+
+### 2026-08-25 PR 457 Mission artifact context review repair
+
+- [x] Review the Cursor head against current main and reproduce its compatibility and context-honesty failures.
+- [x] Preserve v1 envelope consumers when the additive mission artifact section is absent.
+- [x] Select artifact references by exact task and source snapshot relevance before compilation.
+- [x] Validate every tenant row before applying the section item cap.
+- [x] Emit supplied-context refs only when the corresponding artifact section survives the prompt byte ceiling.
+- [x] Add regressions for legacy envelopes, task and snapshot isolation, capped foreign rows, and budget truncation.
+- [ ] Run affected pipeline and worker tests/typechecks, push a replacement PR, and obtain reciprocal review.
+
+#### Review
+
+- Compatibility: the v1 envelope field is additive and optional for callers. Rendering normalizes an absent field to `not_consulted: store_not_available`, while compiler output always carries the explicit section.
+- Relevance: the live store producer includes only Mission-wide artifacts or records whose optional `task_id` and `source_snapshot` match the exact compiled task and immutable snapshot.
+- Isolation: all artifact rows are tenant-validated before the 32-item cap, so a foreign row cannot hide beyond the retained slice.
+- Context honesty: artifact refs are staged separately and added to trajectory context only when the whole artifact section survives the prompt byte budget.
+- Verification: all 26 focused compiler and live-store tests pass. Pipeline and worker typechecks pass, dependency audit reports zero vulnerabilities, and diff integrity is clean. The change makes no ReGauge production-readiness claim; it is a shared compiler mechanism with live Fettler store coverage.
