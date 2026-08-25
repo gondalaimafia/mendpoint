@@ -148,3 +148,17 @@
 **Mistake:** A server-only advisory dispatch flag was added to the historical completion event payload, changing the idempotency digest for an otherwise identical completed attempt.
 **Correction:** Advisory orchestration must remain internal, and existing authenticated terminal events must be upgraded without replaying product completion.
 **Rule:** Never add server scheduling or dispatch configuration to an immutable domain request. Persist side effects atomically in a separate identifier-only outbox, backfill historical terminal records only after verifying their append-only request digest and exact durable bindings, and drain them through tenant-scoped fenced claims with bounded retries.
+### 2026-08-22 — Intermediate modes are not the product destination
+**Mistake:** I treated green pilot, shadow, demo, mock, default-off, and evidence-only implementations as completed inventory items even when their customer production paths were not active.
+**Correction:** Talal stated that everything should be in production and nothing should remain in pilot, shadow, or demo mode.
+**Rule:** Treat pilot, shadow, demo, mock, default-off, and evidence-only states as temporary release stages. Keep the capability open until the governed production path is enabled and proven live. Never remove a safety gate or fabricate consent to change the label; when production authority or evidence is missing, record the exact blocker and continue the work that can safely be completed.
+
+### 2026-08-22 — Park a prioritized workstream when direction changes
+**Mistake:** I continued preparing the ReGauge activation after Talal redirected the session to the rest of the outstanding inventory.
+**Correction:** Talal explicitly said to skip ReGauge activation and start the remaining inventory.
+**Rule:** When a user parks one workstream inside a larger plan, cancel any pending execution for that workstream, preserve its state, and immediately move to the next authorized inventory item without treating prior priority as current authority.
+
+### 2026-08-22 — Reconcile the full inventory before resuming
+**Mistake:** I resumed the non-ReGauge backlog without explicitly carrying the outstanding DeepSeek verifier slice into the active sequence.
+**Correction:** Talal called out that the DeepSeek and verifier work was still outstanding and asked me to complete it too.
+**Rule:** Before resuming a parked backlog, reconcile the active plan against every previously accepted inventory item and environment blocker. Preserve named slices explicitly so sequencing one item cannot silently omit another.

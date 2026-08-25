@@ -125,6 +125,14 @@ describe("Mendpoint structural extraction contract", () => {
     delete (missingEdgeConfidence.edges[0] as { confidence?: string }).confidence;
     expect(() => normalizeGraphifyExtraction(request(), missingEdgeConfidence, metadata())).toThrow("GRAPHIFY_AMBIGUITY");
 
+    const explicitUnspecified = raw();
+    explicitUnspecified.nodes[0].confidence = "UNSPECIFIED";
+    explicitUnspecified.edges[0].confidence = "UNSPECIFIED";
+    const normalized = normalizeGraphifyExtraction(request(), explicitUnspecified, metadata());
+    expect(normalized.nodes.find((node) => node.provenance.upstreamNodeId === explicitUnspecified.nodes[0].id))
+      .toMatchObject({ epistemicState: "ambiguous", provenance: { upstreamConfidence: "UNSPECIFIED" } });
+    expect(normalized.edges[0]).toMatchObject({ epistemicState: "ambiguous", provenance: { upstreamConfidence: "UNSPECIFIED" } });
+
     const missingCoverage = structuredClone(raw()) as unknown as Record<string, unknown>;
     delete missingCoverage.unsupported_languages;
     expect(() => normalizeGraphifyExtraction(request(), missingCoverage, metadata())).toThrow("GRAPHIFY_EXTRACTION_FAILURE");

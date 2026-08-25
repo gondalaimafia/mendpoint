@@ -3205,3 +3205,93 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Root cause: the protected environment and pinned Git revision identify `codex/regauge-canary-baseline`, while the shared DeepSeek scope and workflow Policy Envelope required `main`; activation would fail before the dedicated coordinator could start.
 - Authority: the approved scope now names the exact canary branch. The workflow derives the envelope branch from the protected binding and separately rejects every branch except that approved value. Tenant, campaign, repository, model class, external-processing consent, advisory-only behavior, and expiry are unchanged.
 - Verification: 74 focused tests pass across the production workflow, shared advisory scope, worker profile, worker verifier job, coordinator dispatch, and bootstrap runtime. Full workspace typecheck, the optimized 50-route production build, and the complete GA policy and evidence gate pass; YAML parsing and diff integrity are clean. The register remains honest at 28 verified foundational requirements, with ReGauge still explicitly non-GA.
+## 2026-08-22 Production-only product promotion
+
+- [ ] Inventory every runtime, workflow, environment, route, worker, public claim, and release artifact that is pilot, shadow, demo, mock, default off, inactive, or evidence only.
+- [ ] Classify each surface as promotion ready, code incomplete, evidence blocked, or authority blocked, with an exact source and production proof pointer.
+- [ ] Restore the shared production foundation before merging any change that would trigger deployment.
+- [ ] Promote eligible capabilities in dependency order without weakening tenant consent, source control authorization, sandbox egress, reviewer approval, or rollback controls.
+- [ ] Run focused regressions, full tests, all workspace typechecks, production build, GA and governance checks, dependency audit, container startup, deployment E2E, exact live probes, restart recovery, and authenticated browser verification.
+- [ ] Merge only green protected changes, verify the exact deployed revision, and remove pilot, shadow, demo, mock, and inactive claims only where production evidence exists.
+- [ ] Record any remaining external authority or evidence blockers as blockers, not as production functionality.
+
+### Review
+
+In progress. The target state is production operation with retained safety controls, not global flag deletion or terminology-only renaming. A capability remains incomplete until its real production path, rollback, observability, and exact live evidence pass.
+
+## 2026-08-22 Non-ReGauge outstanding inventory
+
+Direction: park ReGauge activation and resume the remaining seven-day inventory. Preserve the coordinator, encrypted volumes, campaign state, and merged checkpoint fix. Do not approve or dispatch another ReGauge activation until Talal resumes that workstream.
+
+- [x] Cancel waiting ReGauge production workflow `32592472552` before protected approval.
+- [ ] Restore `mendpoint-talal` health by renewing the expired sandbox egress receipt without weakening the default-deny proof.
+- [x] Reconcile live open pull requests, dirty worktrees, failed workflows, TODO markers, outstanding planning records, and external environment bindings.
+- [ ] Review and finish eligible learning-flywheel work, beginning with PR 319, without overlapping Claude's active branch.
+- [ ] Finish delegated cleanup and acceptance proof wiring that has current authority. The exact retain-only consumer is now production-wired and default off; protected signer provisioning and the three-trial producer remain.
+- [x] Give the Fettler completion verifier bounded substantive repository evidence and add a one-request, synthetic-public DeepSeek shadow smoke runner.
+- [ ] Finish Graphify implementation and comparative evidence that can run under current sandbox authority.
+- [x] Close small code-quality gaps: pilot intake authorization parity, unlinked outcomes metrics, renamed environment coverage, dead adaptive router aggregation, and collision-proof ADR numbering.
+- [ ] Run affected tests red first, full tests, workspace typechecks, production build, GA checks, dependency audit, container/deployment E2E, and live verification before merge.
+- [ ] Record separately anything requiring a new credential, tenant consent, reviewer binding, or external target; do not simulate activation evidence.
+
+### Review
+
+In progress. ReGauge workflow `32592472552` is cancelled. Main production is independently unhealthy because `MENDPOINT_SANDBOX_EGRESS_ATTESTATION` expired; the reviewed renewal workflow fails closed because `ROTATION_FLY_API_TOKEN` and a paging sink are absent from `sandbox-production`.
+
+DeepSeek review: the dedicated coordinator has the key and exact shadow configuration, while the main Fettler app does not yet have those bindings. The prior product pack carried only verification and owner references, so even a high score could not reach `ready_for_review`. Fettler now assembles a bounded excerpt from only exact changed files, rejects traversal, symlinks, binary data, oversized files, and non-file paths, and adds that substantive evidence to the shadow pack. The live provider exposed two protocol bugs hidden by mocks: the prompt's literal `[A-T]` placeholder was echoed, and V4 Flash fused the tag boundary with the score token (`>A`). RED regressions now require an explicit X substitution and contextual normalization that accepts only alternatives with the exact same token prefix and suffix. Focused verifier and worker suites plus affected typechecks pass. A synthetic-public live protocol proof returned model `deepseek-v4-flash`, nonthinking logprobs, candidate score `1`, recognized probability mass `1`, 288 total tokens, estimated cost `$0.0000060368`, latency `823 ms`, and response digest `sha256:c550da51589c3e28d91587d5af58b4655d9f6c1d17c84c6d08702d4d9604f4b3`. This is provider compatibility evidence, not ReGauge activation or a quality benchmark; no ReGauge worker was started.
+
+Delegated cleanup review: the inert `warden.candidate.cleanup` handoff now has an exact consumer. It re-resolves the current service principal, verification, candidate, snapshot, delivery, observation, installation, repository, pull request, base and head authority; materializes content-addressed task and retain-only policy artifacts; runs the GitHub App cleanup port; signs the durable cleanup evidence; and completes the fenced lease. The branch disposition is hard-coded to `retain_exact`; delete, merge, and deploy authority are explicitly false. The dispatcher leaves cleanup jobs pending when disabled and validates a current matching Ed25519 key pair before it will claim them. It rechecks the key window at authority resolution and again at the signing instant, while job completion uses a fresh timestamp so an expired lease cannot be completed after a slow remote call. Twelve focused authority and job tests, 62 worker dispatcher tests, seven pipeline authority and attestation tests, and 50 GitHub runtime and exact cleanup tests pass. The complete monorepo test command, full workspace typecheck, production build, GA gate, dependency audit, and strict diff check also pass; the audit reports 0 vulnerabilities. The main Fly app has none of the `MENDPOINT_DELEGATED_PR_ATTESTATION_*` bindings or `MENDPOINT_DELEGATED_PR_CLEANUP_ENABLED`, so live activation remains correctly off and requires a dedicated protected key and nonsecret trust bindings. No secret value was read.
+
+Small-gap reconciliation: outcomes navigation shipped in #317, the ReGauge live-eval alias retired in #308, adaptive routing now refuses activation while its sole aggregate producer remains intentionally unwired in #315, and dated ADR identifiers plus the collision check shipped in #311. The remaining Fettler pilot intake asymmetry is now closed: API keys, non-OIDC sessions, missing or mismatched membership evidence, offboarded memberships, cross-tenant trust, and revoked or expired human trust principals are refused before a job can be replayed or enqueued. The current trust and membership rows are rechecked immediately before the write. The red regression observed the old 202 and cross-tenant 404 behavior; all eight focused intake tests and API typecheck pass after the fix.
+
+## 2026-08-22 Graphify pinned process and benchmark
+
+Objective: finish only the internal evaluation lane authorized by ADR-0006. Build a pinned, killable, zero-network Graphify process over copied immutable bytes; measure it against the current extractor with sealed labels; and keep production selection impossible unless the evidence clears every adoption gate.
+
+- [x] Re-read the checked-in Graphify authority, ADR, adapter contract, benchmark contract, and exact upstream `0.9.46` source at `558df6d57d61cb6ef79c740ec7473c6d953d79a7`.
+- [x] Add red tests for process identity, private working directory, exact byte materialization, protocol bounds, output coverage, timeout termination, memory enforcement, and zero-network authority.
+- [x] Implement the private Python process bridge and Node supervisor without exporting Graphify process types or adding a production environment selector.
+- [x] Pin the evaluation dependency and retained license materials, then verify the installed artifact against the recorded digest before execution.
+- [ ] Build the 18-case A/B/C cohort, stage predictions before labels, grade with a separately supplied sealed key, and measure direct, indirect, trap, incremental, and four size tiers.
+- [x] Record the exact result and adoption blockers without converting internal evidence into a product claim.
+- [ ] Run focused suites, workspace typechecks, production build, GA checks, dependency audit, container checks, and strict diff review before publishing a separate pull request.
+
+### Review
+
+- The official PyPI JSON record independently matches the compiled `graphifyy-0.9.46-py3-none-any.whl` SHA-256 pin.
+- Red first process tests failed before the concrete supervisor existed. Seven supervisor regressions and the existing 49 contract and benchmark tests now pass.
+- The bridge syntax check, full workspace typecheck, root script typecheck, workflow pin check, YAML parse, and strict diff whitespace check pass.
+- The complete monorepo test command passes every workspace and all 164 root script tests. The production build, GA gate, and production dependency audit pass; the audit reports 0 vulnerabilities.
+- Windows cannot prove the Linux network namespace boundary and this machine has no WSL or Docker. The pull-request workflow is therefore the first eligible real process smoke; no local execution is represented as containment evidence.
+- Production selection remains impossible: the process factory is absent from the package root, there is no environment selector or caller, and the adoption decision remains internal only.
+- Linux process proof: GitHub run `32600370037` passed on exact revision `557b3e4c47726f4858ab52c0764bbc61bfc5758f`. The two-file smoke produced 4 nodes and 5 edges in 220.901 ms at 33,460,224 peak RSS bytes. The evidence record explicitly denies sealed-holdout, four-tier, quality, economics, and production-adoption claims.
+
+## 2026-08-22 Sandbox egress renewal recovery
+
+- [x] Diagnose the live crash loop and retain the exact expired-attestation evidence.
+- [x] Restrict `sandbox-production-renewal` to the exact default branch before adding authority.
+- [x] Reconcile the reviewed nonsecret image, policy, app, org, target, and freshness bindings across both renewal environments.
+- [x] Make failure evidence and paging runnable even when protected-authority validation fails before dependency installation.
+- [x] Run the focused workflow tests, workflow syntax checks, release gates, and strict diff review.
+- [ ] Provision only approved secret authority, rerun the already-confirmed one-proof rotation, and require live health before merging unrelated PRs.
+
+### Review
+
+Production Machine `896427a6e67358` repeatedly reaches the web ready state, then the worker refuses `sandbox_egress_attestation_expired`; the shared launcher exits and Fly reaches its restart cap. Renewal runs fail before probing because their protected environments are incomplete. The manual environment is missing an org-scoped rotation token and paging sink. The scheduled environment originally had neither a default-branch restriction nor any bindings; it is now restricted to exact `main` and carries only the reviewed nonsecret bindings. No credential value was read.
+
+RED: the workflow test could not find any runtime-preparation step before protected-authority validation. The retained failed runs corroborate the defect: validation exited, evidence upload found no files, and the failure page crashed because `tsx` had not been installed.
+
+GREEN: a single preparation step now writes only run metadata to a retained artifact and installs the existing reporter before validation. The probe, signing, and rotation order is unchanged. Thirteen focused renewal and image-egress tests pass, both workflow files parse as YAML, every action remains commit-pinned, GA passes, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
+
+## 2026-08-22 Public documentation drift
+
+- [x] Reproduce the exact generated-file drift without rewriting source content.
+- [x] Regenerate only the stale website-upload artifacts from the canonical catalog.
+- [x] Run documentation checks, names and claims gates, production build, and strict diff review.
+- [ ] Publish a separate protected pull request and leave deployment gated on live health.
+
+### Review
+
+RED: `npm run docs:check` reported exactly `model-router.html`, `model-router.md`, `billing-usage.html`, and `billing-usage.md` as stale.
+
+GREEN: the canonical generator changed only those four artifacts. It removed references to the absent billing and router-runtime test files and aligned the router upload copy with the immutable decision record in the source catalog. `docs:check`, `names:check`, `claims:check`, and the production build pass; strict diff review found no source-catalog rewrite.

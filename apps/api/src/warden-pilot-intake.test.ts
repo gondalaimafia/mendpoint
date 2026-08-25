@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,10 +13,13 @@ import {
   insertConsumer,
   insertConsumerRepo,
   insertMonitoredApi,
+  insertPrincipal,
   insertRepositorySnapshot,
   insertRepositorySnapshotPolicy,
+  insertTenant,
   listAudit,
   listJobs,
+  putTenantMembership,
   upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
@@ -23,7 +27,14 @@ import type { ApiEnv } from "./auth.js";
 import { createWardenPilotIntakeRoutes } from "./warden-pilot-intake.js";
 
 const NOW = "2026-08-10T18:00:00.000Z";
+const ISSUER = "https://identity.example.com";
 const opened: Array<{ db: AppDb; root: string }> = [];
+
+function membershipEvidenceId(tenantId: string, subject: string): string {
+  return `membership:${createHash("sha256")
+    .update(`${tenantId}\n${ISSUER}\n${subject}`, "utf8")
+    .digest("hex")}`;
+}
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-warden-pilot-api-"));
@@ -31,6 +42,11 @@ function fixture() {
   mkdirSync(snapshotRoot);
   const db = createDb(join(root, "api.sqlite"));
   opened.push({ db, root });
+  insertTenant(db, { id: "tenant-a", slug: "tenant-a", name: "Tenant A", createdAt: NOW });
+  insertPrincipal(db, { id: "principal:tenant-a", tenantId: "tenant-a", kind: "human",
+    subject: `${ISSUER}|owner`, displayName: "Owner", audience: ISSUER, createdAt: NOW });
+  putTenantMembership(db, { tenantId: "tenant-a", issuer: ISSUER, subject: "owner",
+    email: "owner@example.com", displayName: "Owner", role: "owner", status: "active", updatedAt: NOW });
   db.raw.prepare(`INSERT INTO providers (id, slug, name, created_at)
     VALUES ('provider-stripe', 'stripe', 'Stripe', ?)`)
     .run(NOW);
@@ -109,9 +125,13 @@ function fixture() {
   app.use("*", async (c, next) => {
     const tenantId = c.req.header("X-Test-Tenant");
     if (tenantId) {
-      c.set("principal", { id: `human:${tenantId}`, tenantId, role: "owner" });
+      c.set("principal", { id: "human:owner@example.com", tenantId, role: "owner" });
       c.set("tenantId", tenantId);
       c.set("trustPrincipalId", `principal:${tenantId}`);
+      c.set("authMethod", c.req.header("X-Test-Auth-Method") === "api_key" ? "api_key" : "oidc");
+      c.set("membershipEvidenceId", c.req.header("X-Test-Membership-Evidence") ??
+        membershipEvidenceId(tenantId, "owner"));
+      if (c.req.header("X-Test-Api-Key")) c.set("apiKeyId", "api-key-a");
       c.set("requestId", "request-a");
     }
     return next();
@@ -134,13 +154,15 @@ afterEach(() => {
   }
 });
 
-function request(app: Hono<ApiEnv>, body: Record<string, unknown>, key = "pilot-request-0001") {
+function request(app: Hono<ApiEnv>, body: Record<string, unknown>, key = "pilot-request-0001",
+  headers: Readonly<Record<string, string>> = {}) {
   return app.request("/warden/pilot", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Idempotency-Key": key,
       "X-Test-Tenant": "tenant-a",
+      ...headers,
     },
     body: JSON.stringify(body),
   });
@@ -214,7 +236,7 @@ describe("Warden pilot intake", () => {
       },
       body: JSON.stringify({ providerSlug: "stripe", consumerId: "consumer-a" }),
     });
-    expect(crossTenant.status).toBe(404);
+    expect(crossTenant.status).toBe(403);
 
     db.raw.prepare("DELETE FROM monitored_apis WHERE consumer_id = 'consumer-a'").run();
     expect((await request(app, { providerSlug: "stripe", consumerId: "consumer-a" }, "pilot-unmonitored")).status)
@@ -222,6 +244,35 @@ describe("Warden pilot intake", () => {
     db.raw.prepare("UPDATE consumer_repos SET snapshot_id = NULL WHERE consumer_id = 'consumer-a'").run();
     expect((await request(app, { providerSlug: "stripe", consumerId: "consumer-a" }, "pilot-unbound")).status)
       .toBe(409);
+    expect(listJobs(db, 20, "tenant-a")).toHaveLength(0);
+  });
+
+  it("requires OIDC, a current human trust principal, and matching active membership", async () => {
+    const { app, db } = fixture();
+    expect((await request(app, { providerSlug: "stripe", consumerId: "consumer-a" }, "pilot-api-key",
+      { "X-Test-Api-Key": "1" })).status).toBe(403);
+    expect((await request(app, { providerSlug: "stripe", consumerId: "consumer-a" }, "pilot-auth-method",
+      { "X-Test-Auth-Method": "api_key" })).status).toBe(403);
+    expect((await request(app, { providerSlug: "stripe", consumerId: "consumer-a" }, "pilot-membership",
+      { "X-Test-Membership-Evidence": "membership:wrong" })).status).toBe(403);
+    db.raw.prepare("UPDATE principals SET revoked_at = ? WHERE tenant_id = ? AND id = ?")
+      .run(NOW, "tenant-a", "principal:tenant-a");
+    expect((await request(app, { providerSlug: "stripe", consumerId: "consumer-a" }, "pilot-revoked"))
+      .status).toBe(403);
+    db.raw.prepare("UPDATE principals SET revoked_at = NULL WHERE tenant_id = ? AND id = ?")
+      .run("tenant-a", "principal:tenant-a");
+    putTenantMembership(db, { tenantId: "tenant-a", issuer: ISSUER, subject: "owner",
+      email: "owner@example.com", displayName: "Owner", role: "owner", status: "offboarded",
+      updatedAt: "2026-08-10T18:00:01.000Z" });
+    expect((await request(app, { providerSlug: "stripe", consumerId: "consumer-a" }, "pilot-offboarded"))
+      .status).toBe(403);
+    putTenantMembership(db, { tenantId: "tenant-a", issuer: ISSUER, subject: "owner",
+      email: "owner@example.com", displayName: "Owner", role: "owner", status: "active",
+      updatedAt: "2026-08-10T18:00:02.000Z" });
+    db.raw.prepare("UPDATE principals SET expires_at = ? WHERE tenant_id = ? AND id = ?")
+      .run(NOW, "tenant-a", "principal:tenant-a");
+    expect((await request(app, { providerSlug: "stripe", consumerId: "consumer-a" }, "pilot-expired"))
+      .status).toBe(403);
     expect(listJobs(db, 20, "tenant-a")).toHaveLength(0);
   });
 });

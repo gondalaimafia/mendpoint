@@ -1,0 +1,32 @@
+# Pinned for the private Python 3.11 Linux evaluator only.
+# The direct wheel digest is independently bound by GRAPHIFY_EVALUATION_PIN.
+graphifyy @ https://files.pythonhosted.org/packages/b3/a4/40f776860efcaa0cfc411c463ffa5b05ccf8093c044d518e598cc2d17cb1/graphifyy-0.9.46-py3-none-any.whl#sha256=35d854d66884c623a8e25ca059b54744ade91ae17ffc0f79fd39e108a1666b5d
+networkx==3.6.1
+numpy==2.4.6
+rapidfuzz==3.14.5
+tree-sitter==0.25.2
+tree-sitter-bash==0.25.1
+tree-sitter-c==0.24.2
+tree-sitter-c-sharp==0.23.5
+tree-sitter-cpp==0.23.4
+tree-sitter-elixir==0.3.5
+tree-sitter-fortran==0.6.0
+tree-sitter-go==0.25.0
+tree-sitter-groovy==0.1.2
+tree-sitter-java==0.23.5
+tree-sitter-javascript==0.25.0
+tree-sitter-json==0.24.8
+tree-sitter-julia==0.23.1
+tree-sitter-kotlin==1.1.0
+tree-sitter-lua==0.5.0
+tree-sitter-objc==3.0.2
+tree-sitter-php==0.24.1
+tree-sitter-powershell==0.26.4
+tree-sitter-python==0.25.0
+tree-sitter-ruby==0.23.1
+tree-sitter-rust==0.24.2
+tree-sitter-scala==0.26.2
+tree-sitter-swift==0.7.3
+tree-sitter-typescript==0.23.2
+tree-sitter-verilog==1.0.3
+tree-sitter-zig==1.1.2

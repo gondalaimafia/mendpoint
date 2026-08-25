@@ -73,6 +73,11 @@ export type ProductCompletionAdvisoryInput = Readonly<{
   observableSummary: string;
   deterministicEvidenceDigest: string;
   deterministicEvidenceRefs: readonly string[];
+  repositoryExcerpt?: Readonly<{
+    digest: string;
+    locator: string;
+    content: string;
+  }>;
   observedAt: string;
 }>;
 

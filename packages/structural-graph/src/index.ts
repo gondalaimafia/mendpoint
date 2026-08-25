@@ -104,7 +104,7 @@ export type StructuralProvenance = {
   method: "tree-sitter";
   upstreamNodeId?: string;
   upstreamRelation?: string;
-  upstreamConfidence: "EXTRACTED" | "INFERRED" | "AMBIGUOUS";
+  upstreamConfidence: "EXTRACTED" | "INFERRED" | "AMBIGUOUS" | "UNSPECIFIED";
   sourceFile: string;
   sourceLocation: string;
   repositorySnapshotId: string;
@@ -278,7 +278,7 @@ export const GRAPHIFY_EVALUATION_PIN = Object.freeze({
   implementationDigest: "sha256:35d854d66884c623a8e25ca059b54744ade91ae17ffc0f79fd39e108a1666b5d",
 } as const);
 const MAX_MATERIALIZED_INPUT_BYTES = 512 * 1024 * 1024;
-const EXACT_CONFIDENCE = new Set(["EXTRACTED", "INFERRED", "AMBIGUOUS"]);
+const EXACT_CONFIDENCE = new Set(["EXTRACTED", "INFERRED", "AMBIGUOUS", "UNSPECIFIED"]);
 const STRUCTURAL_NODE_KINDS = new Set<StructuralNodeKind>(["file", "module", "function", "method", "class", "interface", "test", "symbol", "external_symbol"]);
 const compareCodeUnits = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const sha256 = (value: string) => `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
@@ -343,11 +343,11 @@ function sourceLines(value: unknown): { lineStart: number; lineEnd: number; text
   return { lineStart, lineEnd, text: `L${lineStart}${lineEnd === lineStart ? "" : `-L${lineEnd}`}` };
 }
 
-function epistemic(value: unknown): { upstream: "EXTRACTED" | "INFERRED" | "AMBIGUOUS"; state: StructuralEpistemicState } {
+function epistemic(value: unknown): { upstream: "EXTRACTED" | "INFERRED" | "AMBIGUOUS" | "UNSPECIFIED"; state: StructuralEpistemicState } {
   if (typeof value !== "string" || !EXACT_CONFIDENCE.has(value)) {
     throw structuralFailure("GRAPHIFY_AMBIGUITY", "upstream confidence is unsupported");
   }
-  const upstream = value as "EXTRACTED" | "INFERRED" | "AMBIGUOUS";
+  const upstream = value as "EXTRACTED" | "INFERRED" | "AMBIGUOUS" | "UNSPECIFIED";
   return { upstream, state: upstream === "EXTRACTED" ? "observed" : upstream === "INFERRED" ? "inferred" : "ambiguous" };
 }
 

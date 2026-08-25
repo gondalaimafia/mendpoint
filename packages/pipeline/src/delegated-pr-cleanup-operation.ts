@@ -12,7 +12,6 @@ import {
   type FettlerDelegationEvidence,
 } from "@mendpoint/db";
 import {
-  cleanupExactDraftWithOctokit,
   type ExactDraftCleanupEvidence,
   type ExactDraftCleanupInput,
   type ExactHeadRefCompareAndDeleteAuthority,
@@ -28,7 +27,10 @@ import {
   type IssuedSoftwareAttestation,
 } from "./software-attestation-operation.js";
 
-type CleanupOctokit = Parameters<typeof cleanupExactDraftWithOctokit>[0];
+export type DelegatedPrCleanupExecutor = (
+  input: ExactDraftCleanupInput,
+  compareAndDeleteAuthority?: ExactHeadRefCompareAndDeleteAuthority,
+) => Promise<ExactDraftCleanupEvidence>;
 
 export type DelegatedPrCleanupArtifactRefs = Readonly<{
   sourceIds: readonly string[];
@@ -54,7 +56,7 @@ export type RecordDelegatedPrCleanupInput = Readonly<{
 
 export type DelegatedPrCleanupOperationDependencies = Readonly<{
   enabled?: boolean;
-  octokit: CleanupOctokit;
+  cleanupExactDraft: DelegatedPrCleanupExecutor;
   compareAndDeleteAuthority?: ExactHeadRefCompareAndDeleteAuthority;
   signer: SoftwareAttestationSigner;
   producerService?: string;
@@ -181,9 +183,13 @@ function snapshotDependencies(
   if (!signerReceiver || typeof signOperation !== "function" || typeof authorizeOperation !== "function") {
     throw new Error("delegated_pr_cleanup_dependencies_invalid");
   }
+  const cleanupReceiver = dependencies;
+  const cleanupOperation = dependencies?.cleanupExactDraft;
+  if (typeof cleanupOperation !== "function") throw new Error("delegated_pr_cleanup_dependencies_invalid");
   return Object.freeze({
     enabled: dependencies.enabled,
-    octokit: dependencies.octokit,
+    cleanupExactDraft: (input: ExactDraftCleanupInput, authority?: ExactHeadRefCompareAndDeleteAuthority) =>
+      Reflect.apply(cleanupOperation, cleanupReceiver, [input, authority]),
     compareAndDeleteAuthority: dependencies.compareAndDeleteAuthority,
     signer: Object.freeze({
       keyId: signerReceiver.keyId,
@@ -530,8 +536,7 @@ export async function recordDelegatedPrCleanup(
   const digest = requestDigest(planInput);
   const replay = readRecordedByKey(db, planInput, digest);
   if (replay) return attestAndFinalize(db, planInput, planDependencies, replay);
-  const cleanup = await cleanupExactDraftWithOctokit(
-    planDependencies.octokit,
+  const cleanup = await planDependencies.cleanupExactDraft(
     planInput.cleanup,
     planDependencies.compareAndDeleteAuthority,
   );

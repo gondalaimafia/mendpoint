@@ -167,8 +167,22 @@ describe("product verifier advisory adapter", () => {
       { token: "A", logprob: -0.2, top_logprobs: [{ token: "A", logprob: -0.2 }, { token: "T", logprob: -2 }] },
       { token: "</score>", logprob: -0.1, top_logprobs: [{ token: "</score>", logprob: -0.1 }] },
     ] } }], usage: { prompt_tokens: 10, completion_tokens: 1 } } }));
-    const result = await observeProductCompletionInAdvisory({ db, env: grantedEnv(), completion: completion(), transport: { request: transport } });
+    const excerpt = "export const endpoint = '/v1/responses';\n";
+    const result = await observeProductCompletionInAdvisory({
+      db,
+      env: grantedEnv(),
+      completion: {
+        ...completion(),
+        repositoryExcerpt: {
+          digest: digest(excerpt),
+          locator: "src/api.ts",
+          content: excerpt,
+        },
+      },
+      transport: { request: transport },
+    });
     expect(result?.status).toBe("verified");
+    expect(result?.recommendation).toBe("ready_for_review");
     expect(transport.mock.calls.length).toBeGreaterThan(0);
   });
 
