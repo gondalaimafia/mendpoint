@@ -15,6 +15,7 @@ import {
   edgesFrom,
   edgesTo,
   getNode,
+  listAllEdges,
   listNodesByKind,
   type GraphLearnDb,
 } from "./store.js";
@@ -817,19 +818,94 @@ function runGraphQueryInner(
       };
     }
     case "invariants_for_symbol": {
+      const needle = q.qualifiedName;
+      const populated = listAllEdges(db).some((edge) => edge.kind === "PRESERVES_INVARIANT");
+      if (!populated) {
+        return {
+          op: q.op,
+          nodes: [],
+          edges: [],
+          summary: `invariant coverage unavailable for ${needle}`,
+          // Every path to an invariant terminates in PRESERVES_INVARIANT. An empty
+          // relation would make `0 invariant(s)` read as "this symbol preserves
+          // nothing". Fail closed until ingestInvariantAnnotations has written.
+          coverage: {
+            basis: "target_absent",
+            reason: "PRESERVES_INVARIANT is not populated by any ingest path",
+          },
+          rows: [],
+        };
+      }
+      const symbols = listNodesByKind(db, "Symbol").filter((node) => {
+        const qualified = String(node.props?.qualified_name ?? "");
+        return (
+          node.label === needle ||
+          qualified === needle ||
+          qualified.endsWith(`::${needle}`) ||
+          node.id.endsWith(`:${needle}`)
+        );
+      });
+      if (symbols.length === 0) {
+        return {
+          op: q.op,
+          nodes: [],
+          edges: [],
+          summary: `invariant coverage unavailable for ${needle}`,
+          coverage: {
+            basis: "target_absent",
+            reason: `symbol ${needle} is not in the graph`,
+          },
+          rows: [],
+        };
+      }
+      const edges = symbols.flatMap((symbol) => edgesFrom(db, symbol.id, ["PRESERVES_INVARIANT"]));
+      if (edges.length === 0) {
+        // The symbol is in the graph but carries no PRESERVES_INVARIANT edge.
+        // Annotations are opt-in source comments most code lacks, so `0
+        // invariant(s)` for an existing symbol is absence of evidence, not a
+        // definitive "this symbol preserves nothing". Fail closed at the level
+        // people actually query rather than reporting a false `complete`.
+        return {
+          op: q.op,
+          nodes: collectNodes(db, new Set(symbols.map((symbol) => symbol.id))),
+          edges: [],
+          summary: `no source-annotated invariants recorded for ${needle}`,
+          coverage: {
+            basis: "target_absent",
+            reason: `${needle} has no PRESERVES_INVARIANT annotation; absence of an annotation is not proof it preserves nothing`,
+          },
+          rows: [],
+        };
+      }
+      const nodes = collectNodes(db, new Set([
+        ...symbols.map((symbol) => symbol.id),
+        ...edges.map((edge) => edge.target),
+      ]));
       return {
         op: q.op,
-        nodes: [],
-        edges: [],
-        summary: `invariant coverage unavailable for ${q.qualifiedName}`,
-        // Every path to an invariant terminates in PRESERVES_INVARIANT, which no
-        // ingest path populates, so `0 invariant(s)` is not a definitive "this
-        // symbol preserves nothing". Fail closed until a producer exists.
-        coverage: {
-          basis: "target_absent",
-          reason: "PRESERVES_INVARIANT is not populated by any ingest path",
-        },
-        rows: [],
+        nodes,
+        edges,
+        // These are unverified author assertions from source comments, not checked
+        // properties: report the count without implying verification. Each row
+        // carries the provenance and binding basis so a planner sees what backs it.
+        summary: `${edges.length} invariant(s) from source annotations for ${needle} (unverified)`,
+        coverage: { basis: "complete" },
+        rows: edges.map((edge) => {
+          const invariant = getNode(db, edge.target);
+          const symbol = getNode(db, edge.source);
+          return {
+            symbol: symbol?.label ?? edge.source,
+            qualifiedName: String(symbol?.props?.qualified_name ?? ""),
+            statement: String(invariant?.props?.statement ?? invariant?.label ?? ""),
+            invariantId: edge.target,
+            // What backs the edge: a human source annotation, bound to the symbol
+            // by static analysis at this basis, with no verification of the claim.
+            source: String(edge.props?.source ?? invariant?.props?.source ?? "annotation"),
+            confidenceBasis: String(edge.props?.confidence_basis ?? ""),
+            confidence: edge.confidence ?? null,
+            verified: edge.props?.verified === true,
+          };
+        }),
       };
     }
     case "time_travel_calls": {
@@ -918,11 +994,12 @@ function runGraphQueryInner(
 /**
  * Planner tool surface — string templates.
  *
- * `invariants_for_symbol` is deliberately NOT advertised while PRESERVES_INVARIANT
- * has no ingest producer. `migration_ready_units` is advertised now that
- * `ingestManifestDependencies` writes DEPENDS_ON; note that producer emits only
- * Service -> Service edges, so until a MigrationUnit -> MigrationUnit producer
- * lands the handler still fails closed (`target_absent`) for every campaign.
+ * `migration_ready_units` is advertised now that `ingestManifestDependencies`
+ * writes DEPENDS_ON; note that producer emits only Service -> Service edges, so
+ * until a MigrationUnit -> MigrationUnit producer lands the handler still fails
+ * closed (`target_absent`) for every campaign. `invariants_for_symbol` is
+ * advertised now that `ingestInvariantAnnotations` writes PRESERVES_INVARIANT;
+ * that handler still fails closed when the relation is empty for the tenant.
  */
 export const GRAPH_RAG_TOOLS = [
   "who_consumes_provider",
@@ -934,6 +1011,7 @@ export const GRAPH_RAG_TOOLS = [
   "path",
   "depends_on_path",
   "migration_ready_units",
+  "invariants_for_symbol",
   "outcomes_for_pattern",
   "pattern_success_rates",
   "consumers_of_field",
