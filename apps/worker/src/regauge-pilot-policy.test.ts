@@ -67,6 +67,7 @@ const claim = {
   campaignId: "campaign-a",
   repositoryId: "repo-a",
   externalProcessing: false,
+  changedPaths: ["package.json"],
 } as const;
 
 describe("assertRegaugePilotMissionPolicy", () => {

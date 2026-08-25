@@ -1137,6 +1137,176 @@ describe("Transformer production pilot lane", () => {
     expect(store.getCampaign("tenant-a", "campaign-a")?.units[0]?.state).toBe("pending");
   });
 
+  it("does not claim a bound Mission when the inherited envelope forbids the unit's changed paths", async () => {
+    const { root, db, store } = setup();
+    registerTenantA(db);
+    dbModule.insertPrincipal(db, {
+      id: "principal-a",
+      tenantId: "tenant-a",
+      kind: "human",
+      subject: "owner@tenant-a.example",
+      displayName: "Owner A",
+      createdAt: CREATED_AT,
+    });
+    const mission = dbModule.createMission(db, {
+      id: "mission-regauge-forbidden",
+      tenantId: "tenant-a",
+      product: "regauge",
+      triggerKind: "migration_objective",
+      objective: "Runtime upgrade for campaign-a",
+      ownerPrincipalId: "principal-a",
+      eventId: "mission-regauge-forbidden-created",
+      idempotencyKey: "mission-regauge-forbidden-create",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+    dbModule.linkRegaugeCampaignToMission(db, {
+      tenantId: "tenant-a",
+      missionId: mission.id,
+      regaugeCampaignId: "campaign-a",
+      actorPrincipalId: "principal-a",
+      eventId: "mission-regauge-forbidden-linked",
+      idempotencyKey: "mission-regauge-forbidden-link",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+    // The tenant declares the unit's exact changed paths as forbidden zones. The
+    // lane must refuse to claim the unit rather than rewrite them.
+    const envelope = {
+      ...defaultPolicyEnvelope({
+        tenantId: "tenant-a",
+        policyEnvelopeId: "pe-forbidden-a",
+        createdAt: CREATED_AT,
+        version: 1,
+      }),
+      forbiddenZones: Object.freeze([".node-version", ".nvmrc", "Dockerfile", "package.json"]),
+    };
+    dbModule.createPolicyEnvelope(db, {
+      tenantId: "tenant-a",
+      version: 1,
+      policyEnvelopeId: envelope.policyEnvelopeId,
+      envelopeJson: canonicalPolicyEnvelopeJson(envelope),
+      createdAt: CREATED_AT,
+    });
+    dbModule.bindMissionToPolicyEnvelope(db, {
+      tenantId: "tenant-a",
+      missionId: mission.id,
+      version: 1,
+      actorPrincipalId: "principal-a",
+      eventId: "mission-regauge-forbidden-bound",
+      idempotencyKey: "mission-regauge-forbidden-bind",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-policy-forbidden",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-policy-forbid",
+      commandRunner: async () => ({ exitCode: 0, stdout: "verified", stderr: "" }),
+    });
+
+    expect(result.attempted).toBe(0);
+    expect(result.completed).toBe(0);
+    expect(result.errors.some((error) => error.includes("mission_policy_denied"))).toBe(true);
+    expect(result.errors.some((error) => error.includes("forbidden_zone_edit"))).toBe(true);
+    expect(store.getCampaign("tenant-a", "campaign-a")?.units[0]?.state).toBe("pending");
+  });
+
+  it("does not claim a bound Mission when the envelope forbids training capture and the adaptive model would capture", async () => {
+    const { root, db, store } = setup();
+    registerTenantA(db);
+    dbModule.insertPrincipal(db, {
+      id: "principal-a",
+      tenantId: "tenant-a",
+      kind: "human",
+      subject: "owner@tenant-a.example",
+      displayName: "Owner A",
+      createdAt: CREATED_AT,
+    });
+    const mission = dbModule.createMission(db, {
+      id: "mission-regauge-training",
+      tenantId: "tenant-a",
+      product: "regauge",
+      triggerKind: "migration_objective",
+      objective: "Runtime upgrade for campaign-a",
+      ownerPrincipalId: "principal-a",
+      eventId: "mission-regauge-training-created",
+      idempotencyKey: "mission-regauge-training-create",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+    dbModule.linkRegaugeCampaignToMission(db, {
+      tenantId: "tenant-a",
+      missionId: mission.id,
+      regaugeCampaignId: "campaign-a",
+      actorPrincipalId: "principal-a",
+      eventId: "mission-regauge-training-linked",
+      idempotencyKey: "mission-regauge-training-link",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+    // The default envelope forbids training-data capture (trainingDataAllowed:
+    // false). Everything else is unrestricted, so training_capture is the only
+    // dimension that can deny — a clean signal it fired.
+    ensureDefaultPolicyEnvelopeBinding(db, {
+      tenantId: "tenant-a",
+      missionId: mission.id,
+      actorPrincipalId: "principal-a",
+      correlationId: "campaign-a",
+      createdAt: CREATED_AT,
+    });
+
+    // An adaptive adapter whose external call routes to the contributor training
+    // tier (muse-spark-1.2-contributor). The policy assert runs before any model
+    // call, so no request is made.
+    const contributorEnv: NodeJS.ProcessEnv = {
+      ...adaptiveModelEnv(),
+      LLM_AGENT_MODEL: "muse-spark-1.2-contributor",
+    };
+    const contributorAdapter = resolveTransformerAdaptivePlannerAdapter("tenant-a", contributorEnv, {
+      priceTable: {
+        "muse-spark-1.2-contributor": { promptUsdPerMillion: 1, completionUsdPerMillion: 2 },
+      },
+      fetchImpl: async () => new Response("{}", { status: 200 }),
+    })!;
+
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-policy-training",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-policy-train",
+      adaptivePlannerAdapterForTenant: () => contributorAdapter,
+      authorizeAdaptiveExternalProcessing: () => ({
+        allowed: true as const,
+        evidenceRef: "evidence:adaptive-training-capture",
+      }),
+      adaptiveCandidateDataRoot: root,
+      commandRunner: async () => ({ exitCode: 0, stdout: "verified", stderr: "" }),
+    });
+
+    expect(result.attempted).toBe(0);
+    expect(result.completed).toBe(0);
+    expect(result.errors.some((error) => error.includes("mission_policy_denied"))).toBe(true);
+    expect(result.errors.some((error) => error.includes("training_capture_forbidden"))).toBe(true);
+    expect(store.getCampaign("tenant-a", "campaign-a")?.units[0]?.state).toBe("pending");
+  });
+
   it("records a null-mission trajectory for a campaign with no Mission and never fabricates one", async () => {
     const fixture = setup();
     // Tenant exists but no Mission is linked — a campaign created before the

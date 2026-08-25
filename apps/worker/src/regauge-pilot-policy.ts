@@ -8,6 +8,7 @@
  * explicit deny fails closed and does not claim.
  */
 import { resolveMissionForRegaugeCampaign, type AppDb } from "@mendpoint/db";
+import { isTrainingTierModel } from "@mendpoint/agent";
 import {
   evaluateMissionTaskPolicy,
   missionPolicyDenialReasons,
@@ -18,6 +19,14 @@ export type RegaugePilotPolicyInput = Readonly<{
   campaignId: string;
   repositoryId: string;
   externalProcessing: boolean;
+  /** The exact paths this attempt would rewrite, enforced against forbidden zones. */
+  changedPaths: readonly string[];
+  /**
+   * The model id the adaptive external call would use for this attempt, or
+   * undefined for the internal deterministic lane (no external model call). Used
+   * to derive whether the attempt routes to a training-capturing tier.
+   */
+  adaptiveModelId?: string;
 }>;
 
 function regaugePilotPolicyTask(input: RegaugePilotPolicyInput) {
@@ -27,13 +36,18 @@ function regaugePilotPolicyTask(input: RegaugePilotPolicyInput) {
     // unrestricted envelopes (empty branchScope) allowed, and fail-closes a
     // tenant that has scoped branches until this seam learns the real name.
     branch: "",
-    targetPaths: Object.freeze([] as const),
+    targetPaths: Object.freeze([...input.changedPaths]),
     tool: "edit",
     modelClass: input.externalProcessing ? "llm" : "deterministic",
     externalProcessing: input.externalProcessing,
     risk: "medium" as const,
     isDeployment: false,
-    wantsTrainingCapture: false,
+    // Derived from the adaptive adapter's model actually in use for this attempt:
+    // true only when the external call would route to a training-capturing tier,
+    // so an envelope that forbids training capture can deny it. The internal
+    // deterministic lane makes no external call and never captures.
+    wantsTrainingCapture:
+      input.adaptiveModelId !== undefined && isTrainingTierModel(input.adaptiveModelId),
     residency: "default",
   });
 }

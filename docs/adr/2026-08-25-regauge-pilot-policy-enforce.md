@@ -22,9 +22,11 @@ on that path.
 - Unbound campaigns (no Mission) are a no-op so pre-launch Surface A stays legal.
 - A bound Mission with no envelope, an invalid envelope, or an explicit deny
   fails closed and does not claim.
-- Branch and target paths are not on the runnable-campaign summary. Empty values
-  keep unrestricted default envelopes allowed and fail closed if a tenant has
-  scoped branches.
+- The unit's changed paths are carried on the runnable-campaign summary and
+  enforced against the envelope's forbidden zones; training capture is derived
+  from the adaptive model actually in use. Branch is not yet on the summary, so an
+  empty branch keeps unrestricted default envelopes allowed and fails closed if a
+  tenant has scoped branches.
 
 ## Alternatives considered
 
