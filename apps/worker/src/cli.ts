@@ -185,7 +185,7 @@ import {
 import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
 import { persistWardenTrajectory } from "./warden-trajectory.js";
 import { assertAgentRunMissionPolicy } from "./agent-run-policy.js";
-import { boundMissionIdFromPayload } from "./job-bound-mission.js";
+import { resolveBoundMission } from "./job-bound-mission.js";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
 import { observeProductCompletionInShadow } from "./verifier-product-shadow.js";
@@ -3329,13 +3329,20 @@ async function processJobsOnceUnfenced(
         // Tenant is the authenticated job principal, never a request body.
         if (attempt.capture) {
           try {
-            const boundMissionId = boundMissionIdFromPayload(db, job.tenant_id, payload.missionId);
+            // "No mission claimed" is a legitimate NULL binding; a claim that does
+            // not resolve for this tenant is a fault recorded in provenance, never
+            // bound (the DB guard rejects a foreign FK, the inherited-context path
+            // fails closed on its own).
+            const boundMission = resolveBoundMission(db, job.tenant_id, payload.missionId);
             persistWardenTrajectory(db, {
               tenantId: job.tenant_id,
               capture: attempt.capture,
               jobId: job.id,
               runId: sessionId,
-              ...(boundMissionId ? { missionId: boundMissionId } : {}),
+              ...(boundMission.kind === "bound" ? { missionId: boundMission.missionId } : {}),
+              ...(boundMission.kind === "rejected"
+                ? { rejectedMissionClaim: boundMission.claimedMissionId }
+                : {}),
               ...(inheritedContextRefs ? { contextRefs: inheritedContextRefs } : {}),
               createdAt: nowIso(),
             });

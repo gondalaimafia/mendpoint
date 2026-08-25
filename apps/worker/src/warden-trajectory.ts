@@ -40,6 +40,13 @@ export type PersistWardenTrajectoryParams = Readonly<{
   runId?: string | null;
   missionId?: string | null;
   /**
+   * The payload named a Mission that does not resolve for this tenant (missing
+   * row, or another tenant's mission). It is NOT bound to `missionId`; instead it
+   * is stamped into provenance so the rejected claim stays durable and auditable
+   * rather than collapsing into the same NULL binding as "no mission claimed".
+   */
+  rejectedMissionClaim?: string;
+  /**
    * References to the inherited context that was actually supplied to this run's
    * model (from the Mission Context Compiler). Identifiers and digests only — never
    * model reasoning. Fills `trajectories.context_refs_json`, the schema slot that
@@ -73,6 +80,11 @@ export function persistWardenTrajectory(
   const { tenantId, capture, jobId, createdAt } = params;
   const trajectoryId = params.trajectoryId ?? newId();
   const runId = capture.runId ?? params.runId ?? null;
+  // A rejected mission claim is recorded in provenance (not bound to mission_id),
+  // so a foreign / missing claim is distinguishable from a legitimately unbound run.
+  const rejectedMission = params.rejectedMissionClaim
+    ? { rejectedMissionClaim: params.rejectedMissionClaim }
+    : {};
   try {
     recordTrajectory(db, {
       id: trajectoryId,
@@ -93,7 +105,7 @@ export function persistWardenTrajectory(
       costUsd: capture.costUsd,
       costMeasured: capture.costMeasured,
       latencyMs: capture.latencyMs,
-      provenance: { ...baseProvenance(capture), captureStatus: "pending" },
+      provenance: { ...baseProvenance(capture), ...rejectedMission, captureStatus: "pending" },
       createdAt,
     });
 
@@ -165,6 +177,7 @@ export function persistWardenTrajectory(
       trajectoryId,
       provenance: {
         ...baseProvenance(capture),
+        ...rejectedMission,
         captureStatus: "complete",
         stepCount: stepIndex,
       },
@@ -196,6 +209,7 @@ export function persistWardenTrajectory(
         trajectoryId,
         provenance: {
           ...baseProvenance(capture),
+          ...rejectedMission,
           captureStatus: "failed",
           captureError: message.slice(0, 500),
         },

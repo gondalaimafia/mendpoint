@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDb, createMission, insertPrincipal, type AppDb } from "@mendpoint/db";
-import { boundMissionIdFromPayload } from "./job-bound-mission.js";
+import { resolveBoundMission } from "./job-bound-mission.js";
 
 const at = "2026-08-25T00:00:00.000Z";
 const opened: Array<{ db: AppDb; dir: string }> = [];
@@ -46,17 +46,32 @@ function fixture(): AppDb {
   return db;
 }
 
-describe("boundMissionIdFromPayload", () => {
-  it("returns the Mission id when the payload claims a real row", () => {
+describe("resolveBoundMission", () => {
+  it("binds the Mission id when the payload claims a real row", () => {
     const db = fixture();
-    expect(boundMissionIdFromPayload(db, "t1", "mission-a")).toBe("mission-a");
+    expect(resolveBoundMission(db, "t1", "mission-a")).toEqual({
+      kind: "bound",
+      missionId: "mission-a",
+    });
   });
 
-  it("omits the id when the payload is unbound or the row is missing", () => {
+  it("treats an absent or empty claim as an unbound (NULL) run", () => {
     const db = fixture();
-    expect(boundMissionIdFromPayload(db, "t1", undefined)).toBeUndefined();
-    expect(boundMissionIdFromPayload(db, "t1", "")).toBeUndefined();
-    expect(boundMissionIdFromPayload(db, "t1", "mission-missing")).toBeUndefined();
-    expect(boundMissionIdFromPayload(db, "t2", "mission-a")).toBeUndefined();
+    expect(resolveBoundMission(db, "t1", undefined)).toEqual({ kind: "none" });
+    expect(resolveBoundMission(db, "t1", "")).toEqual({ kind: "none" });
+    expect(resolveBoundMission(db, "t1", "   ")).toEqual({ kind: "none" });
+  });
+
+  it("rejects a missing or cross-tenant claim instead of collapsing it to NULL", () => {
+    const db = fixture();
+    expect(resolveBoundMission(db, "t1", "mission-missing")).toEqual({
+      kind: "rejected",
+      claimedMissionId: "mission-missing",
+    });
+    // "mission-a" exists, but for tenant t1 — a t2 claim must not resolve.
+    expect(resolveBoundMission(db, "t2", "mission-a")).toEqual({
+      kind: "rejected",
+      claimedMissionId: "mission-a",
+    });
   });
 });

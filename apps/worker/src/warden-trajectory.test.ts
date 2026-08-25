@@ -267,4 +267,22 @@ describe("persistWardenTrajectory", () => {
     expect(result.ok).toBe(true);
     expect(getTrajectory(db, "t1", "traj-mission")?.missionId).toBe("mission-a");
   });
+
+  it("stamps a rejected mission claim in provenance and leaves mission_id NULL", () => {
+    const db = fixture();
+    const result = persistWardenTrajectory(db, {
+      tenantId: "t1",
+      capture: capture(),
+      jobId: "job-1",
+      rejectedMissionClaim: "mission-foreign",
+      createdAt: T0,
+      trajectoryId: "traj-rejected",
+    });
+    expect(result.ok).toBe(true);
+    const traj = getTrajectory(db, "t1", "traj-rejected");
+    // Not bound to a foreign / missing mission, but the claim is not silently lost:
+    // it is distinguishable from a legitimately unbound (no-claim) run.
+    expect(traj?.missionId).toBeNull();
+    expect(traj?.provenance.rejectedMissionClaim).toBe("mission-foreign");
+  });
 });
