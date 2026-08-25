@@ -597,6 +597,45 @@ export function compileFettlerImpactContext(result: FettlerEndpointImpactResult,
   return Object.freeze({ content, byteLength, contentDigest: sha256(content) });
 }
 
+/**
+ * Named MissionGraphProjection (spec §8.16): the bounded, versioned,
+ * evidence-bearing Change Graph view compiled for one mission or task.
+ * Wraps `compileFettlerImpactContext` so callers receive one typed object
+ * rather than an unbounded dump or an anonymous `{ content, byteLength }`.
+ */
+export type MissionGraphProjection = Readonly<{
+  schemaVersion: "mendpoint.mission-graph-projection.v1";
+  missionId: string | null;
+  tenantId: string;
+  repositoryId: string;
+  graphVersionId: string;
+  graphContentDigest: string;
+  resultDigest: string;
+  impact: FettlerEndpointImpactResult["impact"];
+  coverage: FettlerEndpointImpactResult["coverage"];
+  compiled: Readonly<{ content: string; byteLength: number; contentDigest: string }>;
+}>;
+
+export function compileMissionGraphProjection(input: {
+  impact: FettlerEndpointImpactResult;
+  missionId?: string | null;
+  maxBytes: number;
+}): MissionGraphProjection {
+  const compiled = compileFettlerImpactContext(input.impact, { maxBytes: input.maxBytes });
+  return Object.freeze({
+    schemaVersion: "mendpoint.mission-graph-projection.v1",
+    missionId: input.missionId ?? null,
+    tenantId: input.impact.tenantId,
+    repositoryId: input.impact.repositoryId,
+    graphVersionId: input.impact.graphVersionId,
+    graphContentDigest: input.impact.graphContentDigest,
+    resultDigest: input.impact.resultDigest,
+    impact: input.impact.impact,
+    coverage: Object.freeze({ ...input.impact.coverage, reasons: [...input.impact.coverage.reasons] }),
+    compiled,
+  });
+}
+
 export type ChangeGraphFailureDestination =
   | "entity_resolution"
   | "parser"
