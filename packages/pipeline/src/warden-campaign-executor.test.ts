@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   addWardenCampaignTarget,
+  bindMissionToPolicyEnvelope,
   createDb,
   createMission,
+  createPolicyEnvelope,
   createWardenCampaign,
   insertPrincipal,
   insertRepositorySnapshot,
@@ -16,12 +18,14 @@ import {
   listMissionArtifacts,
   listWardenCampaignTargets,
   planWardenRollout,
+  recordMissionDecision,
   replayWardenRun,
   transitionWardenCampaign,
   type AppDb,
 } from "@mendpoint/db";
 import { ingestRepositoryEvidence, openGraphLearnMemory, type GraphLearnDb } from "@mendpoint/graph-learn";
 import type { UnifiedSourceArtifact } from "@mendpoint/change-intel";
+import { canonicalPolicyEnvelopeJson, type PolicyEnvelope } from "@mendpoint/policy";
 import {
   compareWardenVerificationRuns,
   createWardenCampaignReviewPackage,
@@ -44,7 +48,7 @@ function digest(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-function fixture() {
+function fixture(options: { bindDefaultEnvelope?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "mendpoint-warden-executor-"));
   const snapshotRoot = join(dir, "snapshot");
   mkdirSync(snapshotRoot);
@@ -86,6 +90,34 @@ function fixture() {
     concurrencyLimit: 1, completionPolicy: "all", eventId: "campaign-created", idempotencyKey: "campaign-created",
     correlationId: "campaign-a", createdAt,
   });
+  createMission(db, {
+    id: "mission-a", tenantId: "tenant-a", product: "fettler", triggerKind: "provider_change",
+    objective: "Payments update", ownerPrincipalId: "owner", eventId: "mission-created",
+    idempotencyKey: "mission-created", correlationId: "campaign-a", createdAt,
+  });
+  linkFettlerCampaignToMission(db, {
+    tenantId: "tenant-a", campaignId: "campaign-a", missionId: "mission-a",
+    actorPrincipalId: "owner", eventId: "mission-linked", idempotencyKey: "mission-linked",
+    correlationId: "campaign-a", createdAt,
+  });
+  if (options.bindDefaultEnvelope !== false) {
+    const envelope: PolicyEnvelope = {
+      policyEnvelopeId: "pe-default", tenantId: "tenant-a", version: 1,
+      repositoryScope: [], branchScope: [], forbiddenZones: [], allowedTools: [], allowedModelClasses: [],
+      externalProcessingAllowed: true, residency: "default", riskCeiling: "critical",
+      reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: null,
+      createdAt,
+    };
+    createPolicyEnvelope(db, {
+      tenantId: "tenant-a", version: 1, policyEnvelopeId: envelope.policyEnvelopeId,
+      envelopeJson: canonicalPolicyEnvelopeJson(envelope), createdAt,
+    });
+    bindMissionToPolicyEnvelope(db, {
+      tenantId: "tenant-a", missionId: "mission-a", version: 1, actorPrincipalId: "owner",
+      eventId: "mission-policy-bound", idempotencyKey: "mission-policy-bound",
+      correlationId: "campaign-a", createdAt,
+    });
+  }
   addWardenCampaignTarget(db, {
     id: "target-a", tenantId: "tenant-a", campaignId: "campaign-a", repositoryId: "repo-a",
     snapshotId: "snapshot-a", ownerPrincipalId: "owner", maxAttempts: 2,
@@ -225,8 +257,6 @@ describe("Warden campaign executor", () => {
     expect(parsed.verification).not.toHaveProperty("comparisonOk");
     expect(parsed.verification).not.toHaveProperty("introducedFailures");
     expect(parsed.uncertainty).not.toHaveProperty("notVerified");
-    const unboundCount = (value.db.raw.prepare("SELECT COUNT(*) AS n FROM mission_artifacts").get() as { n: number }).n;
-    expect(unboundCount).toBe(0);
   });
 
   it("fails closed on a new verification regression and resumes only from verified replay evidence", async () => {
@@ -320,19 +350,59 @@ describe("Warden campaign executor", () => {
     ).toThrow("warden_verification_result_invalid");
   });
 
+  it("fails closed when the campaign is not mission-bound", async () => {
+    const value = fixture();
+    value.db.raw.prepare("UPDATE mission SET fettler_campaign_id = NULL WHERE id = ?").run("mission-a");
+    await expect(executeWardenCampaignTarget(executionInput(value)))
+      .rejects.toMatchObject({ code: "warden_mission_not_bound", retryable: false });
+    expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0]?.stage).toBe("queued");
+  });
+
+  it("fails closed when the bound Mission has no Policy Envelope", async () => {
+    const value = fixture();
+    value.db.raw.prepare("UPDATE mission SET policy_envelope_version = NULL WHERE id = ?").run("mission-a");
+    await expect(executeWardenCampaignTarget(executionInput(value)))
+      .rejects.toMatchObject({ code: "warden_policy_envelope_missing", retryable: false });
+  });
+
+  it("fails closed when planned edits violate the inherited envelope", async () => {
+    const value = fixture({ bindDefaultEnvelope: false });
+    const restricted: PolicyEnvelope = {
+      policyEnvelopeId: "pe-restricted", tenantId: "tenant-a", version: 1,
+      repositoryScope: [], branchScope: [], forbiddenZones: ["src"], allowedTools: [], allowedModelClasses: [],
+      externalProcessingAllowed: true, residency: "default", riskCeiling: "critical",
+      reviewRequired: true, deploymentAllowed: false, trainingDataAllowed: false, retentionDays: null,
+      createdAt,
+    };
+    createPolicyEnvelope(value.db, {
+      tenantId: "tenant-a", version: 1, policyEnvelopeId: restricted.policyEnvelopeId,
+      envelopeJson: canonicalPolicyEnvelopeJson(restricted), createdAt,
+    });
+    bindMissionToPolicyEnvelope(value.db, {
+      tenantId: "tenant-a", missionId: "mission-a", version: 1, actorPrincipalId: "owner",
+      eventId: "mission-policy-restricted", idempotencyKey: "mission-policy-restricted",
+      correlationId: "campaign-a", createdAt,
+    });
+    await expect(executeWardenCampaignTarget(executionInput(value)))
+      .rejects.toMatchObject({ code: "warden_policy_denied", retryable: false });
+    expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0]?.stage).not.toBe("review");
+  });
+
+  it("fails closed when every planned edit matches an active rejected Mission decision", async () => {
+    const value = fixture();
+    recordMissionDecision(value.db, {
+      tenantId: "tenant-a", missionId: "mission-a",
+      decision: "do not modify generated SDK call sites in src/payments.ts",
+      scope: "src/payments.ts",
+      authorPrincipalId: "owner", correlationId: "campaign-a", createdAt,
+    });
+    await expect(executeWardenCampaignTarget(executionInput(value)))
+      .rejects.toMatchObject({ code: "warden_edits_previously_rejected", retryable: false });
+    expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0]?.stage).not.toBe("review");
+  });
+
   it("registers persisted candidate, verification, and review-package manifests on a bound Mission", async () => {
     const value = fixture();
-    createMission(value.db, {
-      id: "mission-a", tenantId: "tenant-a", product: "fettler", triggerKind: "provider_change",
-      objective: "Fettler campaign campaign-a", ownerPrincipalId: "owner",
-      eventId: "mission-created", idempotencyKey: "mission-created",
-      correlationId: "campaign-a", createdAt,
-    });
-    linkFettlerCampaignToMission(value.db, {
-      tenantId: "tenant-a", campaignId: "campaign-a", missionId: "mission-a",
-      actorPrincipalId: "owner", eventId: "mission-linked", idempotencyKey: "mission-linked",
-      correlationId: "campaign-a", createdAt,
-    });
     const result = await executeWardenCampaignTarget(executionInput(value));
     const registered = listMissionArtifacts(value.db, "tenant-a", "mission-a");
     expect(registered.map((row) => row.role).sort()).toEqual([
