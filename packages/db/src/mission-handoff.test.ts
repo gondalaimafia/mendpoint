@@ -237,6 +237,38 @@ describe("mission handoff (durable records)", () => {
     expect(listDomainEvents(db, "t1", "mission", "m1")).toHaveLength(eventCount);
   });
 
+  it("keeps newer authority when an older legacy head replays later", () => {
+    const db = fixture();
+    const candidateDigest = "e".repeat(64);
+    const scope = `reviewer_directive:candidate:${candidateDigest}`;
+    const older = recordReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Keep the public signature stable.", scope,
+      authorPrincipalId: "human-1", evidence: ["agent_run:run-old", `candidate:${candidateDigest}`],
+      correlationId: "corr-old", createdAt: T0, decisionType: "verification",
+    });
+    const newer = recordReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Keep the signature and add bounded retries.", scope,
+      authorPrincipalId: "human-1", evidence: ["agent_run:run-new", `candidate:${candidateDigest}`],
+      correlationId: "corr-new", createdAt: T1, decisionType: "verification",
+    });
+
+    const replay = replaceReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: older.decision,
+      candidateDigest, sourceRunId: "run-old", authorPrincipalId: "human-1",
+      correlationId: "corr-replay", createdAt: T2,
+    });
+
+    expect(replay.id).toBe(newer.id);
+    expect(getActiveMissionDecisions(db, "t1", "m1").filter((decision) =>
+      decision.scope === scope && decision.decisionType === "verification")).toEqual([
+      expect.objectContaining({ id: newer.id, decision: newer.decision }),
+    ]);
+    const history = listMissionDecisions(db, "t1", "m1").filter((decision) => decision.scope === scope);
+    expect(history).toHaveLength(3);
+    expect(history.some((decision) => decision.supersedesId === newer.id)).toBe(false);
+    expect(history.find((decision) => decision.id === older.id)?.effectiveStatus).toBe("superseded");
+  });
+
   it("preserves causation on the superseding reviewer directive event", () => {
     const db = fixture();
     const candidateDigest = "b".repeat(64);

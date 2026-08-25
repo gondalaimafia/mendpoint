@@ -3362,3 +3362,14 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - RED: a semantic retry at `T2` after the initial `T1` write returned a different decision id, reproducing the reviewed timestamp-dependent successor.
 - GREEN: replay matching no longer uses wall-clock time. Candidate digest, source run evidence, normalized directive, author, decision type, scope, tenant, and mission still discriminate the operation. The regression returns the original row and original `createdAt`, with unchanged decision history and domain-event counts.
 - Verification: all 15 Mission handoff database tests and 21 candidate-review API tests pass. Database and API typechecks pass, and diff integrity is clean.
+
+### 2026-08-25 PR 466 delayed replay authority follow-up
+
+- [ ] RED: prove an older `T0` directive replayed at `T2` cannot displace a newer `T1` active directive across legacy duplicate heads.
+- [ ] Select the newest legitimate active head independently of semantic replay matching.
+- [ ] Run focused database and API tests, affected typechecks, and diff integrity.
+- [ ] Record exact evidence and push the rebased branch without approving or merging it.
+
+#### Review
+
+- Pending focused verification.
