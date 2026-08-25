@@ -3327,12 +3327,16 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - [x] Bind candidate approval to the source job's exact MissionTask and leave unrelated resume tasks untouched.
 - [x] Keep dependency waits distinct from terminal worker failures.
 - [x] Add live-path regressions and run affected worker, API, and database tests plus typechecks.
+- [x] Repair exact-task completion from the real `agent_working` candidate path and reconcile it on approval replay.
+- [x] Scan past dependency-blocked ReGauge campaigns before applying the per-cycle admission cap.
+- [x] Freeze dependency edges when a task starts and prove the admission boundary across two database connections.
 - [ ] Push a Codex-owned replacement PR and obtain exact-head reciprocal review before merge.
 
 #### Review
 
 - Root cause: readiness was checked only inside MissionTask bookkeeping. Both live product callers ignored an undefined task result, while the generic bridge threw into the terminal job-failure classifier.
 - Queue behavior: a fenced dependency wait now returns a claimed job to pending, restores its pre-claim attempt count, and schedules a bounded retry. It is not reported or stored as a failed execution.
-- ReGauge behavior: the next runnable campaign and repository are checked before the attempt runner claims a lease, so blocked work consumes neither an attempt nor recipe/model execution.
-- Approval binding: only the deterministic MissionTask for the reviewed source job may complete. Another `agent_resume` task in the same Mission remains unchanged.
-- Verification: 138 affected regressions pass across the database, both claim drivers, generic bridge, ReGauge live lane, and candidate review. Database, worker, and API typechecks pass; dependency audit reports zero vulnerabilities and diff integrity is clean.
+- ReGauge behavior: the lane scans the bounded runnable window before capping admitted work, so blocked campaigns cannot starve a later ready campaign. The executor reserves a bound MissionTask before lease acquisition; a raced dependency returns idle without consuming an attempt or recipe/model work.
+- Approval binding: only the deterministic MissionTask for the reviewed source job may complete. Both the live `agent_working` path and an `agent_resume` handoff path converge, and an identical approval replay repairs a committed result whose task transition was previously missed.
+- Concurrency: an IMMEDIATE transaction checks readiness and starts the task under one write fence. Dependency writers reject new edges after `unassigned`; a two-connection regression proves a competing writer cannot enter between admission and start.
+- Verification: 155 affected regressions pass across the database, both claim drivers, generic bridge, ReGauge live lane, and candidate review. Database, worker, and API typechecks pass; dependency audit and diff integrity are rerun on the final head before reciprocal review.

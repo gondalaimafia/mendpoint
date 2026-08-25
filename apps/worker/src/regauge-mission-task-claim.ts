@@ -87,43 +87,63 @@ export function assignRegaugeMissionTaskOnClaim(
   db: AppDb,
   input: RegaugeMissionTaskClaimInput,
 ): MissionTask | undefined {
-  const task = resolveClaimedTask(db, input);
-  if (!task) return undefined;
-  if (!missionTaskReady(db, input.tenantId, task.id)) return undefined;
-  if (task.status === "agent_working") return task;
-  if (task.status !== "unassigned" && task.status !== "agent_assigned") return undefined;
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const task = resolveClaimedTask(db, input);
+    if (!task) {
+      if (owns) db.raw.exec("COMMIT");
+      return undefined;
+    }
+    if (!missionTaskReady(db, input.tenantId, task.id)) {
+      if (owns) db.raw.exec("COMMIT");
+      return undefined;
+    }
+    if (task.status === "agent_working") {
+      if (owns) db.raw.exec("COMMIT");
+      return task;
+    }
+    if (task.status !== "unassigned" && task.status !== "agent_assigned") {
+      if (owns) db.raw.exec("COMMIT");
+      return undefined;
+    }
 
-  const agent = missionTaskAgentPrincipal(db, input.tenantId, input.createdAt);
-  let current = task;
-  if (current.status === "unassigned") {
-    current = transitionMissionTask(db, {
-      tenantId: input.tenantId,
-      taskId: current.id,
-      expectedRevision: current.revision,
-      to: "agent_assigned",
-      actorPrincipalId: agent.id,
-      assignedPrincipalId: agent.id,
-      eventId: `${current.id}-claim-assigned`,
-      idempotencyKey: `mission-task-claim-assigned-${current.id}`,
-      correlationId: input.campaignId,
-      createdAt: input.createdAt,
-    });
+    const agent = missionTaskAgentPrincipal(db, input.tenantId, input.createdAt);
+    let current = task;
+    if (current.status === "unassigned") {
+      current = transitionMissionTask(db, {
+        tenantId: input.tenantId,
+        taskId: current.id,
+        expectedRevision: current.revision,
+        to: "agent_assigned",
+        actorPrincipalId: agent.id,
+        assignedPrincipalId: agent.id,
+        eventId: `${current.id}-claim-assigned`,
+        idempotencyKey: `mission-task-claim-assigned-${current.id}`,
+        correlationId: input.campaignId,
+        createdAt: input.createdAt,
+      });
+    }
+    if (current.status === "agent_assigned") {
+      current = transitionMissionTask(db, {
+        tenantId: input.tenantId,
+        taskId: current.id,
+        expectedRevision: current.revision,
+        to: "agent_working",
+        actorPrincipalId: agent.id,
+        assignedPrincipalId: agent.id,
+        eventId: `${current.id}-claim-working`,
+        idempotencyKey: `mission-task-claim-working-${current.id}`,
+        correlationId: input.campaignId,
+        createdAt: input.createdAt,
+      });
+    }
+    if (owns) db.raw.exec("COMMIT");
+    return current;
+  } catch (error) {
+    if (owns) db.raw.exec("ROLLBACK");
+    throw error;
   }
-  if (current.status === "agent_assigned") {
-    current = transitionMissionTask(db, {
-      tenantId: input.tenantId,
-      taskId: current.id,
-      expectedRevision: current.revision,
-      to: "agent_working",
-      actorPrincipalId: agent.id,
-      assignedPrincipalId: agent.id,
-      eventId: `${current.id}-claim-working`,
-      idempotencyKey: `mission-task-claim-working-${current.id}`,
-      correlationId: input.campaignId,
-      createdAt: input.createdAt,
-    });
-  }
-  return current;
 }
 
 /**

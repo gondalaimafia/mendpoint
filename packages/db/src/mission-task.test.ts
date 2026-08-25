@@ -151,6 +151,69 @@ describe("mission task engine", () => {
     expect(missionTaskReady(db, "t1", "task-b")).toBe(true);
   });
 
+  it("freezes dependency admission atomically when a task starts across connections", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-mtask-race-"));
+    const path = join(dir, "t.sqlite");
+    const db = createDb(path);
+    db.raw.prepare(`INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+      VALUES ('t1','one','One','team','active',10,?)`).run(at);
+    insertPrincipal(db, {
+      id: "p1", tenantId: "t1", kind: "human", subject: "one@example.com",
+      displayName: "One", createdAt: at,
+    });
+    insertPrincipal(db, {
+      id: "agent1", tenantId: "t1", kind: "service", subject: "agent",
+      displayName: "Agent", createdAt: at,
+    });
+    createMission(db, {
+      id: "m1", tenantId: "t1", product: "fettler", triggerKind: "provider_change",
+      objective: "Migrate", ownerPrincipalId: "p1", eventId: "race-mission",
+      idempotencyKey: "race-mission", correlationId: "race", createdAt: at,
+    });
+    const dependent = createMissionTask(db, {
+      id: "dependent", tenantId: "t1", missionId: "m1", taskType: "agent.run",
+      acceptanceCriteria: "Run after dependencies.", risk: "medium", actorPrincipalId: "p1",
+      eventId: "race-dependent", idempotencyKey: "race-dependent", correlationId: "race", createdAt: at,
+    });
+    const prerequisite = createMissionTask(db, {
+      id: "prerequisite", tenantId: "t1", missionId: "m1", taskType: "agent.run",
+      acceptanceCriteria: "Finish first.", risk: "medium", actorPrincipalId: "p1",
+      eventId: "race-prerequisite", idempotencyKey: "race-prerequisite", correlationId: "race", createdAt: at,
+    });
+    const peer = createDb(path);
+    peer.raw.exec("PRAGMA busy_timeout = 25");
+    try {
+      db.raw.exec("BEGIN IMMEDIATE");
+      expect(missionTaskReady(db, "t1", dependent.id)).toBe(true);
+      expect(() => addMissionTaskDependency(peer, {
+        id: "race-edge", tenantId: "t1", missionId: "m1",
+        taskId: dependent.id, dependsOnTaskId: prerequisite.id, createdAt: at,
+      })).toThrow(/locked|busy/i);
+      const assigned = transitionMissionTask(db, {
+        tenantId: "t1", taskId: dependent.id, expectedRevision: dependent.revision,
+        to: "agent_assigned", actorPrincipalId: "p1", assignedPrincipalId: "agent1",
+        eventId: "race-assigned", idempotencyKey: "race-assigned", correlationId: "race", createdAt: at,
+      });
+      transitionMissionTask(db, {
+        tenantId: "t1", taskId: dependent.id, expectedRevision: assigned.revision,
+        to: "agent_working", actorPrincipalId: "p1", assignedPrincipalId: "agent1",
+        eventId: "race-working", idempotencyKey: "race-working", correlationId: "race", createdAt: at,
+      });
+      db.raw.exec("COMMIT");
+
+      expect(() => addMissionTaskDependency(peer, {
+        id: "race-edge", tenantId: "t1", missionId: "m1",
+        taskId: dependent.id, dependsOnTaskId: prerequisite.id, createdAt: at,
+      })).toThrow("mission_task_dependency_frozen");
+      expect(getMissionTask(peer, "t1", dependent.id)?.status).toBe("agent_working");
+    } finally {
+      if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+      peer.raw.close();
+      db.raw.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects self-edges, cross-mission edges, and cycles", () => {
     const db = fixture();
     task(db, "task-a");

@@ -100,6 +100,8 @@ const WARDEN_REVIEW_ERRORS = [
     "warden_ci_repair_rebind_not_authorized",
     "warden_ci_budget_exhausted",
     "warden_ci_mutation_in_flight",
+    "mission_task_review_binding_invalid",
+    "mission_task_review_transition_invalid",
   ].map((internalCode) => ({ internalCode, status: 409 as const })),
   { internalCode: "human_review_required", status: 403 },
   { internalCode: "warden_candidate_expired", status: 410 },
@@ -122,9 +124,11 @@ function regenerationIds(tenantId: string, runId: string) {
 }
 
 /**
- * Terminal approve: complete only the source job's exact MissionTask when it is
- * already in `agent_resume`. Human_review_required cannot go directly to
- * complete; a handoff resolver must move it first. Unbound or mismatched skip.
+ * Terminal approve: complete only the source job's exact MissionTask. The live
+ * candidate producer leaves that task in `agent_working`; an explicit handoff
+ * path may leave it in `agent_resume`. Already-complete is an idempotent replay.
+ * Unbound jobs remain compatible, while a claimed but broken binding fails
+ * closed so delivery cannot commit ahead of Mission state.
  */
 export function tryCompleteBoundMissionTaskOnApprove(
   db: AppDb,
@@ -137,9 +141,18 @@ export function tryCompleteBoundMissionTaskOnApprove(
     createdAt: string;
   },
 ): boolean {
-  if (!input.missionId || !input.taskId || !getMission(db, input.tenantId, input.missionId)) return false;
+  if (!input.missionId || !input.taskId) return false;
+  if (!getMission(db, input.tenantId, input.missionId)) {
+    throw new Error("mission_task_review_binding_invalid");
+  }
   const task = getMissionTask(db, input.tenantId, input.taskId);
-  if (!task || task.missionId !== input.missionId || task.status !== "agent_resume") return false;
+  if (!task || task.missionId !== input.missionId) {
+    throw new Error("mission_task_review_binding_invalid");
+  }
+  if (task.status === "complete") return true;
+  if (task.status !== "agent_working" && task.status !== "agent_resume") {
+    throw new Error("mission_task_review_transition_invalid");
+  }
   transitionMissionTask(db, {
     tenantId: input.tenantId,
     taskId: task.id,
@@ -152,6 +165,23 @@ export function tryCompleteBoundMissionTaskOnApprove(
     createdAt: input.createdAt,
   });
   return true;
+}
+
+function candidateMissionTaskBinding(
+  db: AppDb,
+  tenantId: string,
+  sourceJobId: string | null,
+): { missionId: string | null; taskId: string | null } {
+  if (!sourceJobId) return { missionId: null, taskId: null };
+  const sourceJob = getJob(db, sourceJobId, tenantId);
+  if (!sourceJob) return { missionId: null, taskId: null };
+  try {
+    const payload = JSON.parse(sourceJob.payload_json) as Record<string, unknown>;
+    const missionId = typeof payload.missionId === "string" ? payload.missionId : null;
+    return { missionId, taskId: missionId ? missionTaskIdForJob(sourceJob.id) : null };
+  } catch {
+    return { missionId: null, taskId: null };
+  }
 }
 
 function sourceBinding(db: AppDb, tenantId: string, result: Record<string, unknown>) {
@@ -341,6 +371,20 @@ export function registerWardenCandidateReviewRoutes(
       if (body.decision === "regenerate" && typeof prior.supersedingRunId === "string" && typeof prior.supersedingJobId === "string") {
         return c.json({ status: run.status, supersedingRunId: prior.supersedingRunId, supersedingJobId: prior.supersedingJobId, replayed: true }, 202);
       }
+      if (body.decision === "approve") {
+        const missionTask = candidateMissionTaskBinding(db, tenantId, run.job_id);
+        try {
+          tryCompleteBoundMissionTaskOnApprove(db, {
+            tenantId,
+            ...missionTask,
+            actorPrincipalId: trustId!,
+            correlationId: run.id,
+            createdAt: typeof prior.reviewedAt === "string" ? prior.reviewedAt : clock(),
+          });
+        } catch (error) {
+          return mappedErrorResponse(c, error, WARDEN_REVIEW_ERRORS);
+        }
+      }
       return c.json({ ...agentRunToApi(run), delivery: getWardenCandidateDeliveryByRun(db, tenantId, run.id) ?? null,
         update: getWardenCiUpdateByRun(db, tenantId, run.id) ?? null });
     }
@@ -508,23 +552,10 @@ export function registerWardenCandidateReviewRoutes(
             requesterPrincipalId: trustId!, rationale: body.rationale, now: reviewedAt });
           response = { ...response, delivery };
         }
-        const sourceJob = run.job_id ? getJob(db, run.job_id, tenantId) : undefined;
-        let approveMissionId: string | null = null;
-        let approveMissionTaskId: string | null = null;
-        if (sourceJob) {
-          try {
-            const payload = JSON.parse(sourceJob.payload_json) as Record<string, unknown>;
-            approveMissionId = typeof payload.missionId === "string" ? payload.missionId : null;
-            approveMissionTaskId = approveMissionId ? missionTaskIdForJob(sourceJob.id) : null;
-          } catch {
-            approveMissionId = null;
-            approveMissionTaskId = null;
-          }
-        }
+        const missionTask = candidateMissionTaskBinding(db, tenantId, run.job_id);
         tryCompleteBoundMissionTaskOnApprove(db, {
           tenantId,
-          missionId: approveMissionId,
-          taskId: approveMissionTaskId,
+          ...missionTask,
           actorPrincipalId: trustId!,
           correlationId: run.id,
           createdAt: reviewedAt,

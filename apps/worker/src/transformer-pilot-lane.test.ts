@@ -995,6 +995,77 @@ describe("Transformer production pilot lane", () => {
     expect(store.listRunnableCampaigns("tenant-a")).toHaveLength(1);
   });
 
+  it("scans past a blocked campaign before applying the per-cycle admission limit", async () => {
+    const { root, db, store } = setup();
+    registerTenantA(db);
+    dbModule.insertPrincipal(db, {
+      id: "principal-a", tenantId: "tenant-a", kind: "human",
+      subject: "owner@tenant-a.example", displayName: "Owner A", createdAt: CREATED_AT,
+    });
+    const blockedMission = dbModule.createMission(db, {
+      id: "mission-regauge-blocked", tenantId: "tenant-a", product: "regauge",
+      triggerKind: "migration_objective", objective: "Blocked migration",
+      ownerPrincipalId: "principal-a", eventId: "mission-regauge-blocked-created",
+      idempotencyKey: "mission-regauge-blocked-create", correlationId: "campaign-blocked",
+      createdAt: CREATED_AT,
+    });
+    dbModule.linkRegaugeCampaignToMission(db, {
+      tenantId: "tenant-a", missionId: blockedMission.id, regaugeCampaignId: "campaign-blocked",
+      actorPrincipalId: "principal-a", eventId: "mission-regauge-blocked-linked",
+      idempotencyKey: "mission-regauge-blocked-link", correlationId: "campaign-blocked",
+      createdAt: CREATED_AT,
+    });
+    const blockedTask = createMissionTask(db, {
+      id: regaugeLaunchMissionTaskId(blockedMission.id, "repository-a"),
+      tenantId: "tenant-a", missionId: blockedMission.id, taskType: "code_migration",
+      acceptanceCriteria: "Wait for the prerequisite.", risk: "medium",
+      actorPrincipalId: "principal-a", eventId: "blocked-task-created",
+      idempotencyKey: "blocked-task-create", correlationId: "campaign-blocked", createdAt: CREATED_AT,
+    });
+    const prerequisite = createMissionTask(db, {
+      id: "blocked-task-prerequisite", tenantId: "tenant-a", missionId: blockedMission.id,
+      taskType: "code_migration", acceptanceCriteria: "Finish first.", risk: "medium",
+      actorPrincipalId: "principal-a", eventId: "blocked-prerequisite-created",
+      idempotencyKey: "blocked-prerequisite-create", correlationId: "campaign-blocked", createdAt: CREATED_AT,
+    });
+    addMissionTaskDependency(db, {
+      id: "blocked-task-dependency", tenantId: "tenant-a", missionId: blockedMission.id,
+      taskId: blockedTask.id, dependsOnTaskId: prerequisite.id, createdAt: CREATED_AT,
+    });
+
+    const ready = store.listRunnableCampaigns("tenant-a", 1, gateConfig())[0]!;
+    const blocked = Object.freeze({ ...ready, campaignId: "campaign-blocked" });
+    const laneStore = new Proxy(store, {
+      get(target, property) {
+        if (property === "listRunnableCampaigns") return () => [blocked, ready];
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as TransformerPilotLaneStore;
+    const commandRunner = vi.fn(async () => ({ exitCode: 0, stdout: "verified", stderr: "" }));
+
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store: laneStore,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      maxCampaigns: 1,
+      runId: "run-ready-behind-blocked",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-ready-behind-blocked",
+      commandRunner,
+    });
+
+    expect(result).toMatchObject({ attempted: 1, completed: 1, failed: 0, idle: 1 });
+    expect(commandRunner).toHaveBeenCalled();
+    expect(getMissionTask(db, "tenant-a", blockedTask.id)?.status).toBe("unassigned");
+    expect(store.getCampaign("tenant-a", "campaign-a")?.units[0]?.state).toBe("executed");
+  });
+
   it("does not hand the launch MissionTask to review when the attempt fails", async () => {
     const { root, db, store } = setup();
     const missionId = seedRegaugeMissionForCampaignA(db);

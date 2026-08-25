@@ -2818,7 +2818,7 @@ if (job.type === "warden.candidate.cleanup") {
       if (job.type === WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE && opts.wardenCampaignExecution) {
         try {
           const claimed = parseWardenCampaignExecuteJob(job);
-          assignFettlerMissionTaskOnClaim(db, {
+          const missionTaskInput = {
             tenantId: job.tenant_id,
             campaignId: claimed.campaignId,
             targetId: claimed.targetId,
@@ -2826,16 +2826,21 @@ if (job.type === "warden.candidate.cleanup") {
             // so the MissionTask `updated_at` never predates the claim (matching
             // ReGauge's `lease.startedAt` and the review handoff below).
             createdAt: nowIso(),
-          });
+          };
+          const missionTaskClaim = assignFettlerMissionTaskOnClaim(db, missionTaskInput);
+          if (missionTaskClaim === undefined &&
+              !fettlerMissionTaskExecutionReady(db, missionTaskInput)) {
+            deferForMissionDependencies();
+            continue;
+          }
         } catch (error) {
-          // Observational: a missing/raced MissionTask must not fail a claimed
-          // execute. Surface the code so a driven/absent/revision-conflict/
-          // principal-conflict claim is not indistinguishable from a silent no-op.
           console.error(
             `  fettler mission-task claim drive failed job=${job.id}: ${
               error instanceof Error ? error.message : String(error)
             }`,
           );
+          deferForMissionDependencies();
+          continue;
         }
         // Review-first: the executor drives the target to stage `review` (never
         // delivers). Known outcomes settle here under the lease fence; an

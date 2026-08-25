@@ -280,6 +280,12 @@ export function ensureMissionTaskForJob(db: AppDb, input: {
       throw new Error("mission_task_job_mission_mismatch");
     }
     if (task.status === "unassigned") {
+      // Dependency edges freeze when work leaves unassigned. Check readiness
+      // while this IMMEDIATE transaction owns the write lock so an edge cannot
+      // race between admission and the first transition.
+      if (!missionTaskReady(db, input.tenantId, task.id)) {
+        throw new Error("mission_task_dependencies_incomplete");
+      }
       task = transitionMissionTask(db, {
         tenantId: input.tenantId,
         taskId: id,
@@ -329,15 +335,22 @@ export function addMissionTaskDependency(db: AppDb, input: {
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
+    let dependentStatus: MissionTaskStatus | null = null;
     for (const id of [input.taskId, input.dependsOnTaskId]) {
-      const row = one<{ mission_id: string }>(db, `SELECT mission_id FROM mission_task WHERE id = ? AND tenant_id = ?`, [id, input.tenantId]);
+      const row = one<{ mission_id: string; status: MissionTaskStatus }>(db,
+        `SELECT mission_id, status FROM mission_task WHERE id = ? AND tenant_id = ?`,
+        [id, input.tenantId]);
       if (!row) throw new Error("mission_task_dependency_task_not_found");
       if (row.mission_id !== input.missionId) throw new Error("mission_task_dependency_mission_mismatch");
+      if (id === input.taskId) dependentStatus = row.status;
     }
     const existing = one<{ id: string }>(db,
       `SELECT id FROM mission_task_dependencies WHERE tenant_id = ? AND task_id = ? AND depends_on_task_id = ?`,
       [input.tenantId, input.taskId, input.dependsOnTaskId]);
     if (existing) { if (owns) db.raw.exec("COMMIT"); return; }
+    if (dependentStatus !== "unassigned") {
+      throw new Error("mission_task_dependency_frozen");
+    }
     // Cycle guard: reject if `taskId` is already a (transitive) prerequisite of
     // `dependsOnTaskId`, which would close a cycle.
     if (dependsOnTransitively(db, input.tenantId, input.dependsOnTaskId, input.taskId)) {

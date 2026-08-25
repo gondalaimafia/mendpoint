@@ -28,6 +28,7 @@ import {
 import type { ApiEnv } from "./auth.js";
 import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.js";
 import { enqueueDelegatedPrVerificationJob } from "@mendpoint/worker/delegated-pr-verification-job";
+import { bridgeClaimedJobToMissionTask } from "@mendpoint/worker/mission-task-job-bridge";
 
 const NOW = "2026-08-06T12:00:00.000Z";
 const CANDIDATE_DIGEST = "c".repeat(64);
@@ -579,6 +580,65 @@ describe("Warden candidate human review", () => {
     // No mission exists and none is fabricated: the decision store stays empty.
     const count = db.raw.prepare("SELECT COUNT(*) AS n FROM mission_decisions").get() as { n: number };
     expect(count.n).toBe(0);
+  });
+
+  it("completes the exact MissionTask created by the live claimed-job bridge", async () => {
+    const { app, db } = fixture({
+      sealApproval: async () => ({ path: "C:\\sealed-live-task.json", sha256: `sha256:${"b".repeat(64)}`, created: true }),
+    });
+    createMission(db, {
+      id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
+      objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-live-m1", idempotencyKey: "cm-live-m1", correlationId: "live", createdAt: NOW,
+    });
+    const source = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(source.payload_json), missionId: "m1" }));
+    const boundJob = getJob(db, "source-job-1", "tenant-a")!;
+    const task = bridgeClaimedJobToMissionTask(db, boundJob, NOW)!;
+    expect(task.status).toBe("agent_working");
+
+    seedCiRepairCandidate(db);
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "The exact candidate passed review." }),
+    });
+    expect(response.status).toBe(202);
+    expect(getMissionTask(db, "tenant-a", task.id)?.status).toBe("complete");
+  });
+
+  it("repairs the exact live MissionTask when an identical approval replays after result commit", async () => {
+    const { app, db } = fixture();
+    createMission(db, {
+      id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
+      objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-replay-m1", idempotencyKey: "cm-replay-m1", correlationId: "replay", createdAt: NOW,
+    });
+    const source = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(source.payload_json), missionId: "m1" }));
+    const task = bridgeClaimedJobToMissionTask(db, getJob(db, "source-job-1", "tenant-a")!, NOW)!;
+    const run = getAgentRun(db, "warden-run-1", "tenant-a")!;
+    const result = JSON.parse(run.result_json ?? "{}") as Record<string, unknown>;
+    db.raw.prepare("UPDATE agent_runs SET status = 'candidate_approved', result_json = ?, finished_at = ? WHERE id = ?")
+      .run(JSON.stringify({
+        ...result,
+        review: {
+          decision: "approve",
+          rationale: "The exact candidate passed review.",
+          reviewedAt: NOW,
+          reviewerPrincipalId: "trust-human-a",
+        },
+      }), NOW, run.id);
+
+    const replay = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "The exact candidate passed review." }),
+    });
+    expect(replay.status).toBe(200);
+    expect(getMissionTask(db, "tenant-a", task.id)?.status).toBe("complete");
   });
 
   it("completes only the source job's exact agent_resume MissionTask on approve", async () => {

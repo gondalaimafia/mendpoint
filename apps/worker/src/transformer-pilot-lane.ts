@@ -357,31 +357,7 @@ function requireAdaptiveRetention(value: number | undefined): number {
 
 function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): TransformerAttemptCoordinatorPort {
   return {
-    claimNextAttempt: (input) => {
-      const lease = store.claimNextAttempt(input);
-      if (!lease) return lease;
-      try {
-        // Drive the launch-created MissionTask on the same claim that took the
-        // lease. Missing/unbound tasks are a no-op; a raced task must not fail
-        // an already-claimed attempt.
-        assignRegaugeMissionTaskOnClaim(db, {
-          tenantId: lease.tenantId,
-          campaignId: lease.campaignId,
-          repositoryId: lease.snapshot.repositoryId,
-          createdAt: lease.startedAt,
-        });
-      } catch (error) {
-        // Observational: the lease is already held, so never fail the claim.
-        // Log the code so a driven/absent/revision-conflict/principal-conflict
-        // claim is not indistinguishable from a silent no-op.
-        console.error(
-          `  regauge mission-task claim drive failed campaign=${lease.campaignId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-      return lease;
-    },
+    claimNextAttempt: (input) => store.claimNextAttempt(input),
     renewAttemptLease: (input) => store.renewAttemptLease(input),
     assertCurrentAttemptFence: (input) => store.assertCurrentAttemptFence(input),
     recordAdaptiveAttemptUsage: (input) => store.recordAdaptiveAttemptUsage(input),
@@ -710,9 +686,13 @@ export async function runTransformerPilotLaneOnce(
   // the decision + outcome to the durable routing ledger. The claim, snapshot,
   // lease, and authorization guarantees below are unchanged; the attempt runs
   // through the router's executor port instead of being invoked directly.
+  // Scan the complete bounded runnable window before applying the per-cycle
+  // admission cap. Otherwise maxCampaigns blocked rows at the front can starve
+  // a ready campaign forever because their durable ordering never changes.
+  let admittedCampaigns = 0;
   for (const campaign of input.store.listRunnableCampaigns(
     input.tenantId,
-    maxCampaigns,
+    100,
     rawGate,
   )) {
     if (input.shouldContinue?.() === false) break;
@@ -725,6 +705,8 @@ export async function runTransformerPilotLaneOnce(
       idle++;
       continue;
     }
+    if (admittedCampaigns >= maxCampaigns) break;
+    admittedCampaigns++;
     const decision = authorizeTransformerWorkerAction(
       { tenantId: campaign.tenantId, environment: campaign.environment },
       rawGate,
@@ -891,8 +873,29 @@ export async function runTransformerPilotLaneOnce(
           gateConfig: rawGate,
         });
       },
-      runAttempt: () =>
-        runTransformerAttempt({
+      runAttempt: async () => {
+        // Reserve the bound MissionTask before the attempt runner can claim a
+        // Transformer lease. The IMMEDIATE transaction checks dependencies and
+        // freezes the DAG at the first working transition. A raced dependency
+        // returns idle without consuming an attempt or model budget. An unbound
+        // campaign remains ready and keeps the compatibility path.
+        const missionTaskInput = {
+          tenantId: campaign.tenantId,
+          campaignId: campaign.campaignId,
+          repositoryId: campaign.repositoryId,
+          createdAt: now(),
+        };
+        const missionTaskClaim = assignRegaugeMissionTaskOnClaim(input.db, missionTaskInput);
+        if (missionTaskClaim === undefined &&
+            !regaugeMissionTaskExecutionReady(input.db, missionTaskInput)) {
+          return Object.freeze({
+            status: "idle" as const,
+            summary: "Mission task dependencies are incomplete",
+            nextActions: Object.freeze([]),
+            artifacts: Object.freeze([]),
+          });
+        }
+        return runTransformerAttempt({
           scope: campaign,
           gateConfig: rawGate,
           coordinator,
@@ -1109,7 +1112,8 @@ export async function runTransformerPilotLaneOnce(
           ...(input.onVerifiedCandidateCompleted
             ? { onVerifiedCandidateCompleted: input.onVerifiedCandidateCompleted }
             : {}),
-        }),
+        });
+      },
     });
     if (routed.status === "handoff") {
       handoff++;
