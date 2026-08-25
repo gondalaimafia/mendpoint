@@ -291,6 +291,19 @@ export function listWardenCampaignTargets(db: AppDb, tenantId: string, campaignI
   return all<TargetRow>(db, `SELECT * FROM fettler_campaign_targets WHERE tenant_id = ? AND campaign_id = ? ORDER BY created_at, id`, [tenantId, campaignId]).map(target);
 }
 
+/** Tenant-scoped read of one campaign target. Missing or cross-tenant is undefined. */
+export function getWardenCampaignTarget(
+  db: AppDb,
+  tenantId: string,
+  campaignId: string,
+  targetId: string,
+): WardenCampaignTarget | undefined {
+  const row = one<TargetRow>(db,
+    `SELECT * FROM fettler_campaign_targets WHERE id = ? AND tenant_id = ? AND campaign_id = ?`,
+    [targetId, tenantId, campaignId]);
+  return row ? target(row) : undefined;
+}
+
 // A repository the installation can reach, surfaced by the org crawler. `remoteId`
 // matches connected_repositories.remote_id (the provider repository id).
 export type WardenOrgRepositoryCandidate = Readonly<{
