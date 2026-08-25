@@ -12,6 +12,7 @@ import {
   recordMissionArtifactLineage,
   registerMissionArtifact,
   resolveMissionForFettlerCampaign,
+  resolveMissionForRegaugeCampaign,
   type AppDb,
   type MissionArtifactRole,
 } from "@mendpoint/db";
@@ -25,6 +26,7 @@ export type MissionArtifactRegistration = Readonly<{
 
 export type MissionArtifactRegisterResult =
   | Readonly<{ status: "skipped_unbound" }>
+  | Readonly<{ status: "skipped_no_artifacts" }>
   | Readonly<{ status: "skipped_mission_not_found"; missionId: string }>
   | Readonly<{ status: "registered"; missionId: string; count: number }>
   | Readonly<{ status: "failed"; missionId: string; reason: string }>;
@@ -105,6 +107,35 @@ export function tryRegisterFettlerCampaignMissionArtifacts(
   },
 ): MissionArtifactRegisterResult {
   const mission = resolveMissionForFettlerCampaign(db, input.tenantId, input.campaignId);
+  return tryRegisterBoundMissionArtifacts(db, {
+    tenantId: input.tenantId,
+    missionId: mission?.id ?? null,
+    producerPrincipalId: input.producerPrincipalId,
+    correlationId: input.campaignId,
+    createdAt: input.createdAt,
+    sourceSnapshot: input.sourceSnapshot,
+    artifacts: input.artifacts,
+  });
+}
+
+/**
+ * Resolve a ReGauge campaign's linked Mission (if any) and register already-
+ * persisted manifests against it. No campaign link or empty artifact list →
+ * skip, don't fail, and never invent a manifest.
+ */
+export function tryRegisterRegaugeCampaignMissionArtifacts(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    campaignId: string;
+    producerPrincipalId: string;
+    createdAt: string;
+    sourceSnapshot?: string | null;
+    artifacts: readonly MissionArtifactRegistration[];
+  },
+): MissionArtifactRegisterResult {
+  if (input.artifacts.length === 0) return { status: "skipped_no_artifacts" };
+  const mission = resolveMissionForRegaugeCampaign(db, input.tenantId, input.campaignId);
   return tryRegisterBoundMissionArtifacts(db, {
     tenantId: input.tenantId,
     missionId: mission?.id ?? null,

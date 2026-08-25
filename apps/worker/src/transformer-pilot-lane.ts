@@ -8,6 +8,7 @@ import {
   resolveMissionForRegaugeCampaign,
   type AppDb,
 } from "@mendpoint/db";
+import { tryRegisterRegaugeCampaignMissionArtifacts } from "@mendpoint/pipeline";
 import {
   classifyReviewTier,
   DEFAULT_REVIEW_TIER_POLICY,
@@ -354,6 +355,45 @@ function requireAdaptiveRetention(value: number | undefined): number {
   return retention;
 }
 
+/**
+ * Register already-persisted `artifact_manifests` rows named in the complete
+ * attempt's evidence refs. Missing manifests and unbound Missions skip — this
+ * never invents a manifest and never fails the completed attempt.
+ */
+export function registerRegaugeCompleteAttemptArtifacts(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    campaignId: string;
+    unitId: string;
+    evidenceRefs: readonly string[];
+    createdAt: string;
+    sourceSnapshot?: string | null;
+    producerPrincipalId?: string | null;
+  },
+) {
+  const artifacts = [...new Set(input.evidenceRefs.map((id) => id.trim()).filter(Boolean))]
+    .filter((artifactId) => {
+      const row = db.raw.prepare(
+        `SELECT id FROM artifact_manifests WHERE id = ? AND tenant_id = ?`,
+      ).get(artifactId, input.tenantId) as { id: string } | undefined;
+      return Boolean(row);
+    })
+    .map((artifactId) => ({
+      role: "candidate_patch" as const,
+      artifactId,
+      label: `regauge candidate ${input.unitId}`,
+    }));
+  return tryRegisterRegaugeCampaignMissionArtifacts(db, {
+    tenantId: input.tenantId,
+    campaignId: input.campaignId,
+    producerPrincipalId: input.producerPrincipalId?.trim() || "regauge-pilot-lane",
+    createdAt: input.createdAt,
+    sourceSnapshot: input.sourceSnapshot,
+    artifacts,
+  });
+}
+
 function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): TransformerAttemptCoordinatorPort {
   return {
     claimNextAttempt: (input) => {
@@ -389,18 +429,17 @@ function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): Transformer
     recordAdaptiveCandidateHandoff: (input) => store.recordAdaptiveCandidateHandoff(input),
     completeAttempt: (input) => {
       const completed = store.completeAttempt(input);
+      const unit = completed.units.find((candidate) => candidate.id === input.unitId);
       try {
         // Verification passing is still review-first, not delivery. Hand the
         // launch MissionTask to humans on the same complete that closed the
         // lease. Missing/unbound tasks are a no-op; a raced task must not
         // un-complete an already-recorded attempt.
-        const repositoryId = completed.units.find((unit) => unit.id === input.unitId)
-          ?.snapshot.repositoryId;
-        if (repositoryId) {
+        if (unit?.snapshot.repositoryId) {
           handoffRegaugeMissionTaskOnReview(db, {
             tenantId: input.tenantId,
             campaignId: input.campaignId,
-            repositoryId,
+            repositoryId: unit.snapshot.repositoryId,
             createdAt: input.observedAt,
           });
         }
@@ -410,6 +449,25 @@ function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): Transformer
         // handoff is not indistinguishable from a silent no-op.
         console.error(
           `  regauge mission-task review handoff failed campaign=${input.campaignId} unit=${input.unitId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      try {
+        registerRegaugeCompleteAttemptArtifacts(db, {
+          tenantId: input.tenantId,
+          campaignId: input.campaignId,
+          unitId: input.unitId,
+          evidenceRefs: input.evidenceRefs,
+          createdAt: input.observedAt,
+          sourceSnapshot: unit?.snapshot.snapshotId ?? null,
+          producerPrincipalId: resolveMissionForRegaugeCampaign(
+            db, input.tenantId, input.campaignId,
+          )?.ownerPrincipalId ?? null,
+        });
+      } catch (error) {
+        console.error(
+          `  regauge mission artifact register failed campaign=${input.campaignId} unit=${input.unitId}: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
