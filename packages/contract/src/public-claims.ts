@@ -179,6 +179,7 @@ export function validatePublicClaimRegistry(
   }
 
   const claimIds = new Set<string>();
+  const liveObservations: { id: string; locator: string; observedAt: string }[] = [];
   if (!Array.isArray(input.claims) || input.claims.length === 0) {
     add(issues, "CLAIMS_REQUIRED", "registry", "at least one public claim is required");
   } else {
@@ -362,9 +363,43 @@ export function validatePublicClaimRegistry(
             if (freshUntilMs !== undefined && Number.isFinite(asOfMs) && freshUntilMs <= asOfMs) {
               add(issues, "LIVE_EVIDENCE_STALE", evidenceId, "live evidence freshness window has expired");
             }
+            if (nonempty(rawEvidence.observedAt) && ISO_TIMESTAMP.test(rawEvidence.observedAt)) {
+              liveObservations.push({
+                id: evidenceId,
+                locator: nonempty(rawEvidence.locator) ? rawEvidence.locator : "",
+                observedAt: rawEvidence.observedAt,
+              });
+            }
           }
         }
       }
+    }
+  }
+
+  // Batch-stamp guard. A genuine probe run reads the clock once and records
+  // millisecond precision (…T00:01:45.565Z); a hand-entered batch collapses to
+  // whole-second precision (…T23:59:11.000Z) and is copied across endpoints. We
+  // flag only second-resolution observedAt values that repeat across different
+  // locators, so a real probe run that stamps several endpoints at one
+  // sub-second instant still passes while a copied second-resolution stamp
+  // cannot stand as several independent observations.
+  const secondResolutionByObservedAt = new Map<string, { id: string; locator: string }[]>();
+  for (const observation of liveObservations) {
+    if (!observation.observedAt.endsWith(".000Z")) continue;
+    const bucket = secondResolutionByObservedAt.get(observation.observedAt) ?? [];
+    bucket.push({ id: observation.id, locator: observation.locator });
+    secondResolutionByObservedAt.set(observation.observedAt, bucket);
+  }
+  for (const [observedAt, bucket] of secondResolutionByObservedAt) {
+    if (bucket.length < 2 || new Set(bucket.map((entry) => entry.locator)).size < 2) continue;
+    const collidingIds = bucket.map((entry) => entry.id).sort();
+    for (const entry of bucket) {
+      add(
+        issues,
+        "LIVE_EVIDENCE_BATCH_STAMP",
+        entry.id,
+        `second-resolution observedAt ${observedAt} is shared across ${collidingIds.join(", ")}; a single batch stamp cannot stand as independent live observations`,
+      );
     }
   }
 
