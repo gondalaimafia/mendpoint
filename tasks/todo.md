@@ -2952,6 +2952,19 @@ GREEN: `/readyz` now re-exports the established `/healthz` readiness handler and
 RED: `npm run docs:check` reported exactly `model-router.html`, `model-router.md`, `billing-usage.html`, and `billing-usage.md` as stale.
 
 GREEN: the canonical generator changed only those four artifacts. It removed references to the absent billing and router-runtime test files and aligned the router upload copy with the immutable decision record in the source catalog. `docs:check`, `names:check`, `claims:check`, and the production build pass; strict diff review found no source-catalog rewrite.
+
+## 2026-08-25 PR #468 review repair
+
+- [x] Confirm the live `flyctl apps list --json` schema uses `Name` for the app identifier.
+- [x] Preserve lowercase `name` as a compatibility fallback without weakening the exact one-app scope check.
+- [x] Update the workflow contract test to assert the reviewed uppercase-first expression.
+- [x] Run the focused workflow test, workflow syntax check, and strict diff review.
+- [ ] Require the clean CI runner to pass the root script suite; the local shared dependency junction resolves unrelated dirty primary-worktree sources.
+- [ ] Push a Codex-owned replacement PR and require independent exact-head review plus current-base CI before merge.
+
+### Review
+
+The Cursor head corrected the live Fly field case but left its workflow contract test pinned to the obsolete lowercase-only expression, so CI failed. The replacement retains the one-token, one-app, exact-binding guard and updates the test to the actual uppercase-first compatibility contract. All four focused workflow tests pass, the workflow parses as YAML, and `git diff --check` is clean.
 ## 2026-08-24 Issue #351: platform hardening and backup automation
 
 - [x] Add red regressions for zero, negative, fractional, nonnumeric, and excessive audit-export limits plus spreadsheet-formula cells in CSV output.
