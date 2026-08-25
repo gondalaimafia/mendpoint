@@ -8,12 +8,16 @@ import {
   insertPrincipal,
   linkRegaugeCampaignToMission,
   listDomainEvents,
+  listMissionTasks,
   regaugeMissionId,
   resolveMissionForRegaugeCampaign,
   verifyDomainEventIntegrity,
   type AppDb,
 } from "@mendpoint/db";
-import { bindRegaugeMissionAtLaunch } from "./regauge-production-bootstrap-runtime.js";
+import {
+  bindRegaugeMissionAtLaunch,
+  regaugeLaunchMissionTaskId,
+} from "./regauge-production-bootstrap-runtime.js";
 
 // Focused coverage of the FAIL-CLOSED scope guard and idempotent-replay behaviour
 // of the launch-seam mission binding. The single-repository BOUND path (a mission
@@ -114,6 +118,13 @@ describe("bindRegaugeMissionAtLaunch", () => {
     expect(mission?.repositoryId).toBeNull();
     expect(mission?.snapshotId).toBeNull();
     expect(mission?.state).toBe("executing");
+    const tasks = listMissionTasks(db, "t1", mission!.id);
+    expect(tasks).toHaveLength(2);
+    expect(tasks.map((task) => task.id).sort()).toEqual([
+      regaugeLaunchMissionTaskId(mission!.id, "repo-a"),
+      regaugeLaunchMissionTaskId(mission!.id, "repo-b"),
+    ].sort());
+    expect(tasks.every((task) => task.status === "unassigned" && task.taskType === "code_migration")).toBe(true);
   });
 
   it("binds NEITHER repository nor snapshot when no repository launched (fail closed)", () => {
@@ -130,6 +141,13 @@ describe("bindRegaugeMissionAtLaunch", () => {
     expect(mission?.repositoryId).toBeNull();
     expect(mission?.snapshotId).toBeNull();
     expect(mission?.state).toBe("executing");
+    const tasks = listMissionTasks(db, "t1", mission!.id);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      id: regaugeLaunchMissionTaskId(mission!.id),
+      status: "unassigned",
+      taskType: "code_migration",
+    });
   });
 
   it("is idempotent on replay and keeps the domain-event chain verifiable", () => {
@@ -148,6 +166,7 @@ describe("bindRegaugeMissionAtLaunch", () => {
     expect(() => bindRegaugeMissionAtLaunch(db, args)).not.toThrow();
     const mission = resolveMissionForRegaugeCampaign(db, "t1", "campaign-replay");
     expect(mission?.state).toBe("executing");
+    expect(listMissionTasks(db, "t1", mission!.id)).toHaveLength(2);
     // created(1) -> discovering -> scoped -> planning -> executing, plus the
     // set-once Policy Envelope bind. 6 and not 7 is the idempotency this test
     // exists to prove: the replayed launch does not rebind the envelope.
@@ -198,5 +217,12 @@ describe("bindRegaugeMissionAtLaunch", () => {
     expect(mission?.repositoryId).toBe("repo-exact");
     expect(mission?.snapshotId).toBe("snapshot-exact");
     expect(mission?.state).toBe("executing");
+    expect(listMissionTasks(db, "t1", mission!.id)).toEqual([
+      expect.objectContaining({
+        id: regaugeLaunchMissionTaskId(mission!.id, "repo-exact"),
+        status: "unassigned",
+        taskType: "code_migration",
+      }),
+    ]);
   });
 });

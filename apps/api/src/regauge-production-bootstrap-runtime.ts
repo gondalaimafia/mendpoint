@@ -11,6 +11,7 @@ import {
   getTenant,
   insertPrincipal,
   insertTenant,
+  createMissionTask,
   linkRegaugeCampaignToMission,
   listConnectedRepositories,
   listDomainEvents,
@@ -18,6 +19,7 @@ import {
   listRepositorySnapshots,
   listScmConnections,
   putTenantMembership,
+  regaugeLaunchMissionTaskId,
   regaugeMissionId,
   transitionMission,
   upsertGitHubInstallation,
@@ -212,7 +214,57 @@ export function bindRegaugeMissionAtLaunch(
       createdAt: input.createdAt,
     });
   }
-  return current;
+  createRegaugeLaunchMissionTasks(db, {
+    tenantId: input.tenantId,
+    missionId,
+    campaignId: input.campaignId,
+    ownerPrincipalId: input.ownerPrincipalId,
+    repositories: input.repositories,
+    createdAt: input.createdAt,
+  });
+  return getMission(db, input.tenantId, missionId) ?? current;
+}
+
+export { regaugeLaunchMissionTaskId };
+
+/**
+ * Create the unassigned MissionTask rows the launch just made real. One task per
+ * launched repository; when the campaign has no repository (fail-closed scope)
+ * create a single mission-level task so the work unit still exists. Idempotent.
+ * Does not assign or advance the task — claim/handoff is a later worker seam.
+ */
+function createRegaugeLaunchMissionTasks(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    missionId: string;
+    campaignId: string;
+    ownerPrincipalId: string;
+    repositories: readonly Readonly<{ repositoryId: string; snapshotId: string }>[];
+    createdAt: string;
+  }>,
+): void {
+  const repositoryIds = [...new Set(input.repositories.map((repository) => repository.repositoryId))];
+  const scopes = repositoryIds.length > 0 ? repositoryIds : [undefined];
+  for (const repositoryId of scopes) {
+    const taskId = regaugeLaunchMissionTaskId(input.missionId, repositoryId);
+    const acceptanceCriteria = repositoryId
+      ? `Complete the launched ReGauge unit for repository ${repositoryId}.`
+      : `Complete the launched ReGauge campaign ${input.campaignId}.`;
+    createMissionTask(db, {
+      id: taskId,
+      tenantId: input.tenantId,
+      missionId: input.missionId,
+      taskType: "code_migration",
+      acceptanceCriteria,
+      risk: "medium",
+      actorPrincipalId: input.ownerPrincipalId,
+      eventId: `${taskId}-created`,
+      idempotencyKey: `mission-task-create-${taskId}`,
+      correlationId: input.campaignId,
+      createdAt: input.createdAt,
+    });
+  }
 }
 
 function required(env: Readonly<Record<string, string | undefined>>, name: string): string {
