@@ -5644,6 +5644,9 @@ export function jobToApi(job: JobRow) {
 
 export function exportAuditJson(db: AppDb, limit = 5000, tenantId?: string) {
   assertTenantScope(tenantId);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20_000) {
+    throw new Error("audit_export_limit_invalid");
+  }
   const rows = all(
     db,
     `SELECT * FROM audit_events
@@ -5660,6 +5663,9 @@ export function exportAuditJson(db: AppDb, limit = 5000, tenantId?: string) {
 
 export function exportAuditCsv(db: AppDb, limit = 5000, tenantId?: string): string {
   assertTenantScope(tenantId);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20_000) {
+    throw new Error("audit_export_limit_invalid");
+  }
   const rows = all(
     db,
     `SELECT id, tenant_id, actor, principal_id, api_key_id, request_id,
@@ -5695,7 +5701,13 @@ export function exportAuditCsv(db: AppDb, limit = 5000, tenantId?: string): stri
       r.resource_id ?? "",
       r.created_at,
     ]
-      .map((c) => `"${String(c).replace(/"/g, '""')}"`)
+      .map((c) => {
+        const text = String(c);
+        const formulaSafe = /^(?:[=+\-@\t\r\n]| +[=+\-@])/.test(text)
+          ? `'${text}`
+          : text;
+        return `"${formulaSafe.replace(/"/g, '""')}"`;
+      })
       .join(","),
   );
   return [header, ...lines].join("\n");

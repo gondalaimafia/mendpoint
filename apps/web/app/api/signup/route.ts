@@ -7,8 +7,17 @@ import {
   isAllowedMutationOrigin,
   selfServeSignupEnabled,
 } from "../../../lib/proxy-auth";
+import {
+  BodyLimitExceededError,
+  InvalidContentLengthError,
+  cancelBody,
+  readBodyWithinLimit,
+  readRequestBodyWithinLimit,
+} from "../../../lib/bounded-body";
 
 export const dynamic = "force-dynamic";
+const MAX_SIGNUP_BODY_BYTES = 8_192;
+const MAX_SIGNUP_RESPONSE_BYTES = 64 * 1_024;
 
 type SignupSuccess = {
   tenant: { id: string; slug: string; name: string; plan: string };
@@ -27,14 +36,27 @@ export async function POST(request: NextRequest): Promise<Response> {
   if (!sessionSecret) {
     return Response.json({ error: "web_access_not_configured" }, { status: 503 });
   }
-  const declaredLength = Number(request.headers.get("content-length") ?? 0);
-  if (declaredLength > 8_192) {
-    return Response.json({ error: "payload_too_large" }, { status: 413 });
+  let raw: Uint8Array<ArrayBuffer> | null;
+  try {
+    raw = await readRequestBodyWithinLimit(request, MAX_SIGNUP_BODY_BYTES);
+  } catch (error) {
+    if (error instanceof BodyLimitExceededError) {
+      return Response.json({ error: "payload_too_large" }, { status: 413 });
+    }
+    if (error instanceof InvalidContentLengthError) {
+      return Response.json({ error: "invalid_content_length" }, { status: 400 });
+    }
+    throw error;
   }
-  const body = await request.json().catch(() => null) as {
+  let body: {
     email?: string;
     workspaceName?: string;
-  } | null;
+  } | null = null;
+  try {
+    body = JSON.parse(Buffer.from(raw ?? []).toString("utf8"));
+  } catch {
+    body = null;
+  }
   if (!body || typeof body.email !== "string") {
     return Response.json({ error: "signup_request_invalid" }, { status: 422 });
   }
@@ -61,7 +83,24 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ error: "signup_upstream_unavailable" }, { status: 502 });
   }
 
-  const payload = await upstream.json().catch(() => null) as SignupSuccess | { error?: string } | null;
+  const declaredResponse = Number(upstream.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declaredResponse) && declaredResponse > MAX_SIGNUP_RESPONSE_BYTES) {
+    cancelBody(upstream.body);
+    return Response.json({ error: "signup_upstream_unavailable" }, { status: 502 });
+  }
+  let responseBody: Uint8Array<ArrayBuffer> | null;
+  try {
+    responseBody = await readBodyWithinLimit(upstream.body, MAX_SIGNUP_RESPONSE_BYTES);
+  } catch (error) {
+    if (!(error instanceof BodyLimitExceededError)) throw error;
+    return Response.json({ error: "signup_upstream_unavailable" }, { status: 502 });
+  }
+  let payload: SignupSuccess | { error?: string } | null = null;
+  try {
+    payload = JSON.parse(Buffer.from(responseBody ?? []).toString("utf8"));
+  } catch {
+    payload = null;
+  }
   if (upstream.status !== 201 || !payload || !("apiKey" in payload) || !payload.apiKey?.token) {
     const error = payload && "error" in payload && typeof payload.error === "string"
       ? payload.error

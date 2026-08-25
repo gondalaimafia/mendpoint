@@ -112,6 +112,27 @@ async function sessionCookie(): Promise<string> {
 }
 
 describe("web credential proxy", () => {
+  it("cancels an undeclared oversized session body before parsing credentials", async () => {
+    process.env.MENDPOINT_WEB_ACCESS_TOKEN = "web-secret";
+    process.env.MENDPOINT_WEB_ALLOWED_ORIGINS = "https://console.example";
+    let cancelled = false;
+    const response = await login(new NextRequest("https://console.example/api/session", {
+      method: "POST",
+      headers: {
+        Origin: "https://console.example",
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/json",
+      },
+      body: byteStream(
+        [new Uint8Array(8_192), new Uint8Array([1])],
+        () => { cancelled = true; },
+      ),
+      duplex: "half",
+    } as ConstructorParameters<typeof NextRequest>[1] & { duplex: "half" }));
+    expect(response.status).toBe(413);
+    expect(cancelled).toBe(true);
+  });
+
   it("guards server rendered operator pages with the same session", async () => {
     process.env.MENDPOINT_WEB_ACCESS_TOKEN = "web-secret";
     const denied = await middleware(
