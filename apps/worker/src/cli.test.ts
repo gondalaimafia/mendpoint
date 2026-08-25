@@ -3621,7 +3621,7 @@ describe("Fettler live resume seam (behavioral, through the job loop)", () => {
         wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
       }),
     );
-    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
     expect(getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test"))
       .toMatchObject({ status: "candidate_ready", ok: 1 });
     const trajectory = getTrajectoryByRun(fixture.db, "tenant_test", "session-warden-snapshot");
