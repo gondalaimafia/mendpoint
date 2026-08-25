@@ -517,6 +517,51 @@ describe("Warden candidate human review", () => {
     expect(active[0]!.decisionType).toBe("verification");
   });
 
+  it("records the rejected approach as a path-scoped mission decision when reject is mission-bound", async () => {
+    const { app, db } = fixture();
+    createMission(db, {
+      id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
+      objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-m1", idempotencyKey: "cm-m1", correlationId: "corr", createdAt: NOW,
+    });
+    const src = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(src.payload_json), missionId: "m1" }));
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        decision: "reject",
+        rationale: "Do not rewrite the public SDK surface.",
+      }),
+    });
+    expect(response.status).toBe(200);
+    const active = getActiveMissionDecisions(db, "tenant-a", "m1");
+    expect(active).toHaveLength(1);
+    expect(active[0]).toMatchObject({
+      decision: "Do not rewrite the public SDK surface.",
+      scope: "src/client.ts",
+      decisionType: "other",
+    });
+    expect(active[0]!.evidence).toEqual([
+      "agent_run:warden-run-1",
+      `candidate:${CANDIDATE_DIGEST}`,
+    ]);
+  });
+
+  it("records no mission decision when the reject is not mission-bound (no fabrication)", async () => {
+    const { app, db } = fixture();
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "reject", rationale: "The candidate is not acceptable." }),
+    });
+    expect(response.status).toBe(200);
+    const count = db.raw.prepare("SELECT COUNT(*) AS n FROM mission_decisions").get() as { n: number };
+    expect(count.n).toBe(0);
+  });
+
   it("records no mission decision when the regenerate is not mission-bound (no fabrication)", async () => {
     const { app, db } = fixture();
     const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
