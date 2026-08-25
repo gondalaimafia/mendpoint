@@ -283,7 +283,7 @@ describe("Organization Memory API routes", () => {
     expect(((await contradictory.json()) as { error: string }).error).toBe("organization_memory_observation_conflict");
   });
 
-  it("mints observation evidence itself and ignores client-supplied sourceRefs", async () => {
+  it("records a candidate without minting evidence, ignoring client-supplied sourceRefs", async () => {
     const db = fixture();
     const app = appWith(db, { tenantId: "tenant-a", trustPrincipalId: "human-tenant-a" });
     const result = await app.request("/organization-memory/observations", {
@@ -291,7 +291,7 @@ describe("Organization Memory API routes", () => {
       body: JSON.stringify({
         category: "CODING_CONVENTION",
         scope: "tenant",
-        subjectKey: "missing-evidence",
+        subjectKey: "no-evidence",
         statement: "Use the internal auth client",
         source: "repeated_verified_behavior",
         sourceRefs: ["evidence-does-not-exist"],
@@ -300,13 +300,34 @@ describe("Organization Memory API routes", () => {
     expect(result.status).toBe(201);
     const memory = ((await result.json()) as { memory: { sourceRefs: string[]; status: string } }).memory;
     expect(memory.status).toBe("MEMORY_CANDIDATE");
-    expect(memory.sourceRefs[0]).not.toBe("evidence-does-not-exist");
-    const evidence = db.raw.prepare(
-      `SELECT subject_type, verdict FROM evidence_records WHERE id = ?`,
-    ).get(memory.sourceRefs[0]) as { subject_type: string; verdict: string };
-    expect(evidence).toMatchObject({
-      subject_type: "organization_memory_observation",
-      verdict: "passed",
+    // The observation asserts no verification: it carries no evidence ref, and
+    // no organization_memory_observation evidence row was minted for it.
+    expect(memory.sourceRefs).toHaveLength(0);
+    const evidenceCount = db.raw.prepare(
+      `SELECT COUNT(*) AS n FROM evidence_records
+         WHERE tenant_id = ? AND subject_type = 'organization_memory_observation'`,
+    ).get("tenant-a") as { n: number };
+    expect(evidenceCount.n).toBe(0);
+  });
+
+  it("requires a human principal — a machine api_key principal cannot observe", async () => {
+    const db = fixture();
+    const app = appWith(db, {
+      tenantId: "tenant-a",
+      trustPrincipalId: "api-key-tenant-a",
+      authMethod: "api_key",
     });
+    const result = await app.request("/organization-memory/observations", {
+      method: "POST",
+      body: JSON.stringify({
+        category: "CODING_CONVENTION",
+        scope: "tenant",
+        subjectKey: "machine-observer",
+        statement: "Use the internal auth client",
+        source: "repeated_verified_behavior",
+      }),
+    });
+    expect(result.status).toBe(401);
+    expect(((await result.json()) as { error: string }).error).toBe("authenticated_principal_required");
   });
 });

@@ -145,19 +145,35 @@ personalization.
 
 ## Operational status of the observation path
 
-`POST /observations` is operational: the API calls `observeOrganizationMemory`,
-which mints an `evidence_records` row with `subject_type =
-"organization_memory_observation"` (producer = the observing principal, verdict
-`passed`, `subject_id` = the memory id) and then records the observation.
+`POST /observations` records an observation, and records it **honestly**: it
+requires a human trust principal (like every other mutation), validates that the
+observing principal is live (present, not revoked, not expired), and writes a
+`MEMORY_CANDIDATE` attributed to that principal with the stated `source`. It does
+**not** mint an `evidence_records` row, because no verification happened — the
+row would assert a verified producer vouched for the statement when nothing did.
 
-Admitting an observation still requires every `sourceRefs` entry to resolve to
-that evidence shape (`observationAuthority` in
-`packages/db/src/organization-memory.ts`). Client-supplied `sourceRefs` are **not**
-authority — the producer always mints the evidence. Do not relax the evidence
-check to accept arbitrary ids.
+Authority on this path is the authenticated observer, not an evidence reference
+(`observerAuthority` in `packages/db/src/organization-memory.ts`). Independence is
+established structurally by **distinct authenticated principals**: the observation
+fingerprint keys on `(tenant_id, memory_id, observer_principal_id)`, enforced by
+the UNIQUE `(tenant_id, memory_id, observation_fingerprint)` index, so the same
+principal restating the same convention is idempotent and cannot inflate
+corroboration. `activateOrganizationMemory` re-validates every corroborating
+principal at activation time, so a principal revoked after observing no longer
+counts.
 
-Independent corroboration still requires two distinct principals. A single
-observation remains a `MEMORY_CANDIDATE` and cannot be activated.
+A single observation remains a `MEMORY_CANDIDATE` and cannot be activated;
+promotion still requires either explicit human confirmation or
+`CORROBORATION_THRESHOLD` distinct observers.
+
+Do not reintroduce a self-minted evidence record to make the path look verified,
+and do not relax the corroboration requirement to make activation reachable —
+both re-open the authority gap the honest path avoids. A real verification signal
+(a producer that can attest a repeated reviewer correction of a non-defect) is an
+upstream capability that does not exist yet; see
+`docs/learning/LESSON_DESTINATION_ROUTING.md`. Recording an honest candidate is
+not the same as feeding Organization Memory from the learning pipeline, which
+remains blocked.
 
 ## `trainingEligible`
 

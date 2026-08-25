@@ -25,7 +25,7 @@ import {
   getOrganizationMemoryProvenance,
   getOrganizationMemoryScope,
   listOrganizationMemory,
-  observeOrganizationMemory,
+  recordOrganizationMemoryObservation,
   rejectOrganizationMemory,
   ORGANIZATION_MEMORY_STATUSES,
   type AppDb,
@@ -49,7 +49,6 @@ const VALIDATION_ERRORS = [
   { internalCode: "organization_memory_confidence_invalid", status: 400 as const },
   { internalCode: "organization_memory_observation_source_invalid", status: 400 as const },
   { internalCode: "organization_memory_source_ref_invalid", status: 400 as const },
-  { internalCode: "organization_memory_evidence_invalid", status: 400 as const },
   { internalCode: "organization_memory_observer_authority_invalid", status: 401 as const },
   { internalCode: "organization_memory_applies_to_invalid", status: 400 as const },
 ];
@@ -68,7 +67,6 @@ const STATE_ERRORS = [
   { internalCode: "organization_memory_activation_blocked_insufficient_corroboration", status: 409 as const },
   { internalCode: "organization_memory_activation_blocked_memory_not_found", status: 404 as const },
   { internalCode: "organization_memory_observation_conflict", status: 409 as const },
-  { internalCode: "organization_memory_observation_not_independent", status: 409 as const },
 ];
 
 const ALL_ERRORS = [...NOT_FOUND_ERRORS, ...VALIDATION_ERRORS, ...STATE_ERRORS];
@@ -180,10 +178,25 @@ export function createOrganizationMemoryRoutes(
   });
 
   // POST /observations — record one observation of a convention (inferred).
+  // Human only: this subsystem captures *human* organizational convention, so
+  // it requires the same human trust principal as every other mutation. The
+  // observation records as a MEMORY_CANDIDATE attributed to that principal; it
+  // does not mint a verified evidence record, and client sourceRefs are not part
+  // of the observation contract.
   routes.post("/observations", async (c) => {
     const principal = c.get("principal");
-    const trustPrincipalId = c.get("trustPrincipalId");
-    if (!principal || !trustPrincipalId) return c.json({ error: "authenticated_principal_required" }, 401);
+    const at = clock();
+    const trustPrincipalId = principal ? humanAuthority({
+      db,
+      tenantId: principal.tenantId,
+      trustPrincipalId: c.get("trustPrincipalId"),
+      authMethod: c.get("authMethod"),
+      membershipEvidenceId: c.get("membershipEvidenceId"),
+      at,
+    }) : null;
+    if (!principal || !trustPrincipalId) {
+      return c.json({ error: "authenticated_principal_required" }, 401);
+    }
     const body = (await c.req.json<unknown>().catch(() => null)) as Record<string, unknown> | null;
     if (!body || typeof body !== "object") return c.json({ error: "invalid_body" }, 400);
     const category = reqStr(body.category);
@@ -197,16 +210,12 @@ export function createOrganizationMemoryRoutes(
         400,
       );
     }
-    const sourceRefs = optRefs(body.sourceRefs);
     const appliesTo = optRefs(body.appliesTo);
-    if ((typeof sourceRefs === "object" && sourceRefs !== undefined && "error" in sourceRefs) || (typeof appliesTo === "object" && appliesTo !== undefined && "error" in appliesTo)) {
-      return c.json({ error: "sourceRefs and appliesTo must be arrays of non-empty strings" }, 400);
+    if (typeof appliesTo === "object" && appliesTo !== undefined && "error" in appliesTo) {
+      return c.json({ error: "appliesTo must be an array of non-empty strings" }, 400);
     }
-    void sourceRefs;
     try {
-      // The producer mints organization_memory_observation evidence. Client
-      // sourceRefs are never authority — they cannot substitute for the producer.
-      const memory = observeOrganizationMemory(db, {
+      const memory = recordOrganizationMemoryObservation(db, {
         tenantId: principal.tenantId,
         category: category as never,
         scope,
@@ -218,7 +227,7 @@ export function createOrganizationMemoryRoutes(
         structuredValue: body.structuredValue,
         appliesTo: appliesTo as string[] | undefined,
         reason: typeof body.reason === "string" ? body.reason : undefined,
-        at: clock(),
+        at,
       });
       return c.json({ memory }, 201);
     } catch (error) {
