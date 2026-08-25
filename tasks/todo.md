@@ -3374,4 +3374,4 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 - RED: with two legitimate active legacy heads at `T0` and `T1`, replaying the older semantic operation at `T2` returned the older id and retracted the newer directive.
 - GREEN: the survivor is now always the newest legitimate active head in stable creation and id order. Semantic matching only distinguishes replay from a new directive, so the delayed older retry returns the newer authority, reconciles the older duplicate, and never supersedes the newer row.
-- Verification: rebased onto `origin/main` `a43bbd71`. All 16 Mission handoff database tests and 21 candidate-review API tests pass. Database and API typechecks pass, and diff integrity is clean.
+- Verification: rebased onto `origin/main` `14bea3a0`. All 16 Mission handoff database tests and 21 candidate-review API tests pass. Database and API typechecks pass, and diff integrity is clean.
