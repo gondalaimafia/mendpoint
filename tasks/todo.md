@@ -3332,7 +3332,7 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - [x] Exclude legacy null task/snapshot artifacts unless a caller explicitly requests Mission-global context.
 - [x] Couple every rendered section's context refs to that section's retention under the byte ceiling.
 - [x] Update the Mission Context Compiler contract without promoting ME-MCC-001 beyond partial/internal.
-- [x] Run affected pipeline and worker tests/typechecks, documentation and diff checks on final merge base `14bea3a0`.
+- [x] Run affected pipeline and worker tests/typechecks and diff checks on final merge base `c8d51caa`.
 - [x] Push the replacement head. Independent exact-head review remains pending; do not merge in this task.
 
 #### Review
@@ -3342,4 +3342,4 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Isolation: all artifact rows are tenant-validated before the 32-item cap, so a foreign row cannot hide beyond the retained slice.
 - Context honesty: policy, decision, exception, artifact, verification, memory, graph, and history refs now belong to their rendered section and leave when the byte ceiling drops that section.
 - Live seams: the campaign executor registers artifacts under `fettlerCampaignMissionTaskId(missionId, repositoryId)`, and the real worker job loop compiles against `missionTaskIdForJob(job.id)`. The live-loop regression proves an exact-task artifact reaches `trajectories.context_refs_json`.
-- Verification: 123 focused tests pass across the compiler, registration helper, campaign executor, worker producer, and full worker CLI suite. Pipeline and worker typechecks pass; `docs:check` reports the public bundle current; `git diff --check` is clean. The branch is rebased onto exact `14bea3a0`, preserving #453's closure trigger-economics workflow and both task-ledger sections. `ME-MCC-001` remains partial/internal and this work makes no production-readiness claim.
+- Verification: after rebasing onto exact `c8d51caa`, 123 focused tests pass across the compiler, registration helper, campaign executor, worker producer, and full worker CLI suite. Pipeline and worker typechecks pass and `git diff --check` is clean. `ME-MCC-001` remains partial/internal and this work makes no production-readiness claim. Independent exact-head review and current GitHub CI remain required.
