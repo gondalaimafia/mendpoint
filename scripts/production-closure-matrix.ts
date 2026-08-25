@@ -27,8 +27,14 @@ export interface ProductionClosureRequirement {
 }
 
 export interface ReleaseTrainBlocker {
-  priority: "P1" | "P2";
+  priority: "P0" | "P1" | "P2";
   summary: string;
+}
+
+export interface ProductionEvidenceTrustRoot {
+  authorityId: string;
+  authorityKeyId: string;
+  publicKeyPem: string;
 }
 
 export interface ReleaseTrainPullRequest {
@@ -59,6 +65,32 @@ export interface ReleaseTrainPullRequest {
     | "stale_checks"
     | "stacked_unverified";
   blockers: ReleaseTrainBlocker[];
+  reviewRemediationPullRequest?: number | null;
+}
+
+export interface CurrentPullRequestBootstrap {
+  observationSource: "github_api";
+  number: number;
+  url: string;
+  title: string;
+  baseBranch: string;
+  headBranch: string;
+  owner: {
+    actor: "Codex" | "Claude" | "Cursor";
+    source: "github_label";
+    label: string;
+  };
+  disposition:
+    | "merge_after_rebase_and_review"
+    | "extract_smaller_replacement"
+    | "blocked_explicit_dependency";
+  dependencies: {
+    pullRequests: number[];
+    branches: string[];
+  };
+  requirementIds: string[];
+  blockers: ReleaseTrainBlocker[];
+  remediatesPullRequests: number[];
 }
 
 export interface ProductionClosureMatrix {
@@ -68,11 +100,23 @@ export interface ProductionClosureMatrix {
     includeAdditionalRegisterSets: true;
   };
   requirements: ProductionClosureRequirement[];
+  productionEvidenceAuthority: {
+    authorityId: string;
+    authorityKeyId: string;
+  } | null;
+  issueAuthority: {
+    provider: "github";
+    repository: "gondalaimafia/mendpoint";
+    observedAt: string;
+    observationDigest: string;
+    issues: IssueAuthorityRecord[];
+  };
   releaseTrain: {
     observedAt: string;
     observedMainRevision: string;
     ownershipAuthority: "provisional_branch_prefix_only";
-    openPullRequests: ReleaseTrainPullRequest[];
+    currentPullRequestBootstrap: CurrentPullRequestBootstrap;
+    pullRequests: ReleaseTrainPullRequest[];
   };
 }
 
@@ -80,6 +124,43 @@ export interface ProductionClosureMatrixIssue {
   code: string;
   subject: string;
   message: string;
+}
+
+export interface ProductionClosureValidationOptions {
+  trustedProductionEvidenceAuthorities?: readonly ProductionEvidenceTrustRoot[];
+  requireCurrentPullRequestBootstrap?: boolean;
+}
+
+export function parseProductionEvidenceTrustRoots(
+  value: string | undefined,
+): ProductionEvidenceTrustRoot[] {
+  if (!value?.trim()) return [];
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed)) throw new Error("production_evidence_trust_roots_not_array");
+  const seen = new Set<string>();
+  return parsed.map((candidate) => {
+    if (!candidate || typeof candidate !== "object") {
+      throw new Error("production_evidence_trust_root_invalid");
+    }
+    const root = candidate as Record<string, unknown>;
+    if (
+      !nonEmptyString(root.authorityId) ||
+      !SHA256.test(String(root.authorityKeyId ?? "")) ||
+      !nonEmptyString(root.publicKeyPem) ||
+      sha256(root.publicKeyPem) !== root.authorityKeyId
+    ) {
+      throw new Error("production_evidence_trust_root_invalid");
+    }
+    createPublicKey(root.publicKeyPem);
+    const identity = `${root.authorityId}:${root.authorityKeyId}`;
+    if (seen.has(identity)) throw new Error("production_evidence_trust_root_duplicate");
+    seen.add(identity);
+    return {
+      authorityId: root.authorityId,
+      authorityKeyId: root.authorityKeyId,
+      publicKeyPem: root.publicKeyPem,
+    };
+  });
 }
 
 const TEST_EVIDENCE_TYPES = new Set([
@@ -102,6 +183,71 @@ function sorted(values: readonly string[]): string[] {
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return JSON.stringify(sorted(left)) === JSON.stringify(sorted(right));
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalValue(entry)]),
+    );
+  }
+  return value;
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalValue(value));
+}
+
+function sha256(value: string | Buffer): string {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function canonicalTime(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    !Number.isNaN(Date.parse(value)) &&
+    new Date(value).toISOString() === value
+  );
+}
+
+function artifactRefValid(value: EvidenceArtifactRef | undefined): boolean {
+  return Boolean(
+    value &&
+      ARTIFACT_LOCATOR.test(value.locator) &&
+      !value.locator.includes("..") &&
+      SHA256.test(value.digest),
+  );
+}
+
+export function releaseTrainIntegrityDigest(matrix: ProductionClosureMatrix): string {
+  return sha256(
+    canonicalJson({
+      provider: matrix.releaseTrain.provider,
+      repository: matrix.releaseTrain.repository,
+      observedAt: matrix.releaseTrain.observedAt,
+      observedMainRevision: matrix.releaseTrain.observedMainRevision,
+      currentPullRequestBootstrap: matrix.releaseTrain.currentPullRequestBootstrap,
+      pullRequests: matrix.releaseTrain.pullRequests,
+    }),
+  );
+}
+
+export function issueIntegrityDigest(matrix: ProductionClosureMatrix): string {
+  return sha256(
+    canonicalJson({
+      provider: matrix.issueAuthority.provider,
+      repository: matrix.issueAuthority.repository,
+      observedAt: matrix.issueAuthority.observedAt,
+      issues: matrix.issueAuthority.issues,
+    }),
+  );
 }
 
 function add(
@@ -148,9 +294,6 @@ function evidenceFor(requirement: ProductRequirement) {
  *   - a well-formed observedMainRevision must resolve to an actual commit
  *     object (malformed revisions are left to the RELEASE_REVISION format check
  *     so we do not double-report them);
- *   - observedAt must not end in ".000Z": a genuine probe reads the clock once
- *     and records sub-second precision (…T02:57:03.604Z), while a synthetic
- *     batch stamp collapses to whole-second precision;
  *   - observedAt must be within OBSERVATION_MAX_AGE_DAYS of now.
  */
 export function releaseTrainObservationIssues(
@@ -171,14 +314,6 @@ export function releaseTrainObservationIssues(
     );
   }
   const observedAt = matrix.releaseTrain?.observedAt ?? "";
-  if (observedAt.endsWith(".000Z")) {
-    add(
-      issues,
-      "RELEASE_TIMESTAMP_BATCH_STAMP",
-      "releaseTrain",
-      `observedAt ${observedAt} uses whole-second precision; a genuine live observation records sub-second precision`,
-    );
-  }
   const observedMs = Date.parse(observedAt);
   if (!Number.isNaN(observedMs)) {
     const ageMs = options.now.getTime() - observedMs;
@@ -189,6 +324,122 @@ export function releaseTrainObservationIssues(
         "releaseTrain",
         `observedAt ${observedAt} is older than ${OBSERVATION_MAX_AGE_DAYS} days; refresh the snapshot against current main`,
       );
+    }
+  }
+  for (const pullRequest of matrix.releaseTrain?.pullRequests ?? []) {
+    if (
+      pullRequest.state === "open" &&
+      SHA.test(pullRequest.headRevision) &&
+      !options.revisionExists(pullRequest.headRevision)
+    ) {
+      add(
+        issues,
+        "PR_HEAD_REVISION_UNREACHABLE",
+        String(pullRequest.number),
+        `head revision ${pullRequest.headRevision} is not reachable in this repository`,
+      );
+    }
+    if (
+      pullRequest.state === "merged" &&
+      SHA.test(pullRequest.mergeRevision ?? "") &&
+      !options.revisionExists(pullRequest.mergeRevision ?? "")
+    ) {
+      add(
+        issues,
+        "PR_MERGE_REVISION_UNREACHABLE",
+        String(pullRequest.number),
+        `merge revision ${pullRequest.mergeRevision} is not reachable in this repository`,
+      );
+    }
+    if (
+      pullRequest.checkState === "current_checks_green" &&
+      options.revisionIsAncestor
+    ) {
+      for (const dependencyNumber of pullRequest.dependencies.pullRequests) {
+        const dependency = matrix.releaseTrain.pullRequests.find(
+          (candidate) => candidate.number === dependencyNumber,
+        );
+        if (
+          dependency?.state === "merged" &&
+          !options.revisionIsAncestor(
+            dependency.mergeRevision ?? "",
+            matrix.releaseTrain.observedMainRevision,
+          )
+        ) {
+          add(
+            issues,
+            "PR_DEPENDENCY_NOT_ON_MAIN",
+            String(pullRequest.number),
+            `dependency ${dependencyNumber} is not an ancestor of observed main`,
+          );
+        }
+      }
+    }
+  }
+  for (const row of matrix.requirements ?? []) {
+    if (row.status.availability !== "ga") continue;
+    for (const binding of row.productionEvidenceBindings ?? []) {
+      const receipt = binding.receipt;
+      if (Date.parse(receipt.observedAt) > options.now.getTime()) {
+        add(
+          issues,
+          "GA_LIVE_EVIDENCE_FROM_FUTURE",
+          row.requirementId,
+          `${binding.evidenceId} was observed after the validation clock`,
+        );
+      }
+      if (Date.parse(receipt.freshUntil) <= options.now.getTime()) {
+        add(
+          issues,
+          "GA_LIVE_EVIDENCE_STALE",
+          row.requirementId,
+          `${binding.evidenceId} is past its signed freshness boundary`,
+        );
+      }
+      if (!options.revisionExists(receipt.deployedRevision)) {
+        add(
+          issues,
+          "GA_DEPLOYED_REVISION_UNREACHABLE",
+          row.requirementId,
+          `${receipt.deployedRevision} is not reachable in this repository`,
+        );
+      }
+      for (const artifact of [
+        receipt.observationEvidence,
+        receipt.versionEvidence,
+        receipt.rollbackEvidence,
+        receipt.failureEvidence,
+      ]) {
+        const bytes = options.readArtifact?.(artifact.locator) ?? null;
+        if (!bytes || sha256(bytes) !== artifact.digest) {
+          add(
+            issues,
+            "GA_EVIDENCE_ARTIFACT_UNREACHABLE",
+            row.requirementId,
+            `${artifact.locator} is missing or its bytes do not match the signed digest`,
+          );
+        }
+      }
+      const versionBytes = options.readArtifact?.(receipt.versionEvidence.locator) ?? null;
+      if (versionBytes) {
+        try {
+          const version = JSON.parse(versionBytes.toString("utf8")) as Record<string, unknown>;
+          if (
+            version.locator !== receipt.versionLocator ||
+            version.observedAt !== receipt.observedAt ||
+            version.revision !== receipt.deployedRevision
+          ) {
+            throw new Error("version binding mismatch");
+          }
+        } catch {
+          add(
+            issues,
+            "GA_VERSION_EVIDENCE_INVALID",
+            row.requirementId,
+            `${receipt.versionEvidence.locator} does not bind the signed /version observation to the deployed revision`,
+          );
+        }
+      }
     }
   }
   return issues;
@@ -209,6 +460,7 @@ function gitRevisionExists(repoRoot: string, revision: string): boolean {
 export function validateProductionClosureMatrix(
   manifest: ProductRequirementManifest,
   matrix: ProductionClosureMatrix,
+  options: ProductionClosureValidationOptions = {},
 ): ProductionClosureMatrixIssue[] {
   const issues: ProductionClosureMatrixIssue[] = [];
   const canonical = canonicalRequirements(manifest);
@@ -230,6 +482,49 @@ export function validateProductionClosureMatrix(
       "matrix",
       "matrix must source the foundational and all additional register sets",
     );
+  }
+  if (
+    matrix.issueAuthority?.provider !== "github" ||
+    matrix.issueAuthority?.repository !== "gondalaimafia/mendpoint" ||
+    !canonicalTime(matrix.issueAuthority?.observedAt) ||
+    matrix.issueAuthority?.observationDigest !== issueIntegrityDigest(matrix)
+  ) {
+    add(
+      issues,
+      "ISSUE_INTEGRITY_INVALID",
+      "issueAuthority",
+      "the issue snapshot must have a canonical edit-integrity digest; protected GitHub verification supplies authority",
+    );
+  }
+  for (const issue of matrix.issueAuthority?.issues ?? []) {
+    if (
+      !Number.isInteger(issue.number) ||
+      issue.number < 1 ||
+      authorityIssueByNumber.has(issue.number) ||
+      !["open", "closed"].includes(issue.state) ||
+      !nonEmptyString(issue.owner) ||
+      !nonEmptyString(issue.title) ||
+      issue.url !== `https://github.com/gondalaimafia/mendpoint/issues/${issue.number}` ||
+      !canonicalTime(issue.updatedAt)
+    ) {
+      add(
+        issues,
+        "ISSUE_AUTHORITY_RECORD_INVALID",
+        String(issue.number),
+        "issue authority record is malformed or duplicated",
+      );
+    }
+    authorityIssueByNumber.set(issue.number, issue);
+    for (const requirementId of issue.requirementIds ?? []) {
+      if (!canonicalById.has(requirementId)) {
+        add(
+          issues,
+          "UNKNOWN_REQUIREMENT_REFERENCE",
+          String(issue.number),
+          `issue authority references unknown requirement ${requirementId}`,
+        );
+      }
+    }
   }
 
   for (const row of matrix.requirements ?? []) {
@@ -346,6 +641,106 @@ export function validateProductionClosureMatrix(
         "GA requirements need canonical live production evidence",
       );
     }
+    if (requirement.availability === "ga") {
+      const bindings = row.productionEvidenceBindings ?? [];
+      const bindingById = new Map(
+        bindings.map((binding) => [binding.evidenceId, binding] as const),
+      );
+      if (bindingById.size !== bindings.length) {
+        add(
+          issues,
+          "GA_LIVE_EVIDENCE_BINDING_DUPLICATE",
+          row.requirementId,
+          "each canonical live evidence item must have exactly one signed binding",
+        );
+      }
+      for (const evidenceId of canonicalProduction) {
+        const binding = bindingById.get(evidenceId);
+        const canonicalEvidence = evidenceById.get(evidenceId);
+        const receipt = binding?.receipt;
+        const authority = matrix.productionEvidenceAuthority;
+        const trustedAuthority = options.trustedProductionEvidenceAuthorities?.find(
+          (candidate) =>
+            candidate.authorityId === authority?.authorityId &&
+            candidate.authorityKeyId === authority?.authorityKeyId,
+        );
+        const receiptBytes = receipt ? canonicalJson(receipt) : "";
+        let signatureValid = false;
+        try {
+          signatureValid = Boolean(
+            binding &&
+              trustedAuthority &&
+              verifySignature(
+                null,
+                Buffer.from(receiptBytes, "utf8"),
+                createPublicKey(trustedAuthority.publicKeyPem),
+                Buffer.from(binding.signature, "base64"),
+              ),
+          );
+        } catch {
+          signatureValid = false;
+        }
+        const observedAtMs = Date.parse(receipt?.observedAt ?? "");
+        const freshUntilMs = Date.parse(receipt?.freshUntil ?? "");
+        if (
+          !binding ||
+          !receipt ||
+          !authority ||
+          binding.evidenceId !== evidenceId ||
+          receipt.schemaVersion !== 1 ||
+          receipt.evidenceId !== evidenceId ||
+          receipt.locator !== canonicalEvidence?.locator ||
+          !canonicalTime(receipt.observedAt) ||
+          !canonicalTime(receipt.freshUntil) ||
+          freshUntilMs <= observedAtMs ||
+          !SHA.test(receipt.deployedRevision) ||
+          receipt.versionObservedRevision !== receipt.deployedRevision ||
+          !/^https:\/\//.test(receipt.versionLocator) ||
+          !receipt.versionLocator.endsWith("/version") ||
+          !nonEmptyString(receipt.authorityId) ||
+          receipt.authorityId !== authority?.authorityId ||
+          receipt.authorityKeyId !== authority?.authorityKeyId ||
+          trustedAuthority?.authorityKeyId !== sha256(trustedAuthority?.publicKeyPem ?? "") ||
+          !artifactRefValid(receipt.observationEvidence) ||
+          !artifactRefValid(receipt.versionEvidence) ||
+          !artifactRefValid(receipt.rollbackEvidence) ||
+          !artifactRefValid(receipt.failureEvidence) ||
+          binding.receiptDigest !== sha256(receiptBytes) ||
+          !nonEmptyString(binding.signature) ||
+          !signatureValid
+        ) {
+          add(
+            issues,
+            binding ? "GA_LIVE_EVIDENCE_BINDING_INVALID" : "GA_LIVE_EVIDENCE_BINDING_REQUIRED",
+            row.requirementId,
+            `live evidence ${evidenceId} must have a valid signed receipt binding exact observation, version response, deployed revision, authority, rollback, and failure artifacts`,
+          );
+        }
+      }
+      for (const binding of bindings) {
+        if (!canonicalProduction.includes(binding.evidenceId)) {
+          add(
+            issues,
+            "GA_LIVE_EVIDENCE_BINDING_UNKNOWN",
+            row.requirementId,
+            `binding ${binding.evidenceId} is not canonical live evidence`,
+          );
+        }
+      }
+    }
+
+    if (
+      !["verified", "retired"].includes(requirement.implementationStatus) &&
+      (row.issues?.length ?? 0) === 0 &&
+      (row.pullRequests?.length ?? 0) === 0
+    ) {
+      add(
+        issues,
+        "REQUIREMENT_CLOSURE_PATH_REQUIRED",
+        row.requirementId,
+        "unfinished requirements need at least one owned issue or pull request",
+      );
+    }
   }
 
   for (const requirementId of canonicalById.keys()) {
@@ -367,6 +762,18 @@ export function validateProductionClosureMatrix(
       "observedMainRevision must be a full Git commit",
     );
   }
+  if (
+    matrix.releaseTrain?.provider !== "github" ||
+    matrix.releaseTrain?.repository !== "gondalaimafia/mendpoint" ||
+    matrix.releaseTrain?.observationDigest !== releaseTrainIntegrityDigest(matrix)
+  ) {
+    add(
+      issues,
+      "RELEASE_INTEGRITY_INVALID",
+      "releaseTrain",
+      "the release snapshot must have a canonical edit-integrity digest; protected GitHub verification supplies authority",
+    );
+  }
   if (Number.isNaN(Date.parse(matrix.releaseTrain?.observedAt ?? ""))) {
     add(
       issues,
@@ -381,6 +788,73 @@ export function validateProductionClosureMatrix(
       "OWNER_AUTHORITY",
       "releaseTrain",
       "branch-prefix ownership must remain explicitly provisional",
+    );
+  }
+
+  const currentBootstrap = matrix.releaseTrain?.currentPullRequestBootstrap;
+  if (
+    (options.requireCurrentPullRequestBootstrap === true && !currentBootstrap) ||
+    (currentBootstrap !== undefined && (
+      currentBootstrap.observationSource !== "github_api" ||
+      !Number.isInteger(currentBootstrap.number) ||
+      currentBootstrap.number < 1 ||
+      currentBootstrap.url !==
+        `https://github.com/gondalaimafia/mendpoint/pull/${currentBootstrap.number}` ||
+      !nonEmptyString(currentBootstrap.title) ||
+      currentBootstrap.baseBranch !== "main" ||
+      !nonEmptyString(currentBootstrap.headBranch) ||
+      currentBootstrap.owner?.source !== "github_label" ||
+      currentBootstrap.owner?.label !==
+        `release-owner:${currentBootstrap.owner?.actor?.toLowerCase()}` ||
+      !["merge_after_rebase_and_review", "extract_smaller_replacement", "blocked_explicit_dependency"].includes(
+        currentBootstrap.disposition,
+      )
+    ))
+  ) {
+    add(
+      issues,
+      "CURRENT_PR_BOOTSTRAP_INVALID",
+      "releaseTrain",
+      "the current pull request needs a provider-resolved GitHub bootstrap with exact static ownership and mapping fields",
+    );
+  }
+  for (const requirementId of currentBootstrap?.requirementIds ?? []) {
+    if (!canonicalById.has(requirementId)) {
+      add(
+        issues,
+        "UNKNOWN_REQUIREMENT_REFERENCE",
+        String(currentBootstrap?.number),
+        `current pull request references unknown requirement ${requirementId}`,
+      );
+    }
+  }
+  for (const blocker of currentBootstrap?.blockers ?? []) {
+    if (!(["P0", "P1", "P2"] as const).includes(blocker.priority) || !blocker.summary.trim()) {
+      add(
+        issues,
+        "BLOCKER_FORMAT",
+        String(currentBootstrap?.number),
+        "release blockers must be nonempty P0, P1, or P2 records",
+      );
+    }
+  }
+  if ((currentBootstrap?.blockers.length ?? 0) > 0) {
+    add(
+      issues,
+      "CURRENT_PR_BLOCKED",
+      String(currentBootstrap?.number ?? "releaseTrain"),
+      "the current pull request cannot qualify while any P0, P1, or P2 blocker remains",
+    );
+  }
+  if (
+    currentBootstrap &&
+    currentBootstrap.disposition !== "merge_after_rebase_and_review"
+  ) {
+    add(
+      issues,
+      "CURRENT_PR_NOT_MERGE_ELIGIBLE",
+      String(currentBootstrap.number),
+      "the current pull request must have the merge-after-rebase-and-review disposition to qualify",
     );
   }
 
@@ -404,6 +878,195 @@ export function validateProductionClosureMatrix(
       );
     }
     releasePrs.set(pullRequest.number, pullRequest);
+    if (pullRequest.number === currentBootstrap?.number) {
+      add(
+        issues,
+        "CURRENT_PR_BOOTSTRAP_DUPLICATE",
+        String(pullRequest.number),
+        "the provider-resolved current pull request must not duplicate a static snapshot record",
+      );
+    }
+    if (!PR_STATES.has(pullRequest.state)) {
+      add(
+        issues,
+        "PR_STATE",
+        String(pullRequest.number),
+        "pull request state must be open, merged, or closed",
+      );
+    }
+    if (!PR_DISPOSITIONS.has(pullRequest.disposition)) {
+      add(
+        issues,
+        "PR_DISPOSITION",
+        String(pullRequest.number),
+        "pull request disposition is not recognized",
+      );
+    }
+    if (!PR_CHECK_STATES.has(pullRequest.checkState)) {
+      add(
+        issues,
+        "PR_CHECK_STATE",
+        String(pullRequest.number),
+        "pull request check state is not recognized",
+      );
+    }
+    if (!SHA.test(pullRequest.headRevision ?? "")) {
+      add(
+        issues,
+        "PR_HEAD_REVISION_REQUIRED",
+        String(pullRequest.number),
+        "every tracked pull request must bind its exact head revision",
+      );
+    }
+    if (
+      (pullRequest.state === "merged" &&
+        !SHA.test(pullRequest.mergeRevision ?? "")) ||
+      (pullRequest.state !== "merged" && pullRequest.mergeRevision !== null)
+    ) {
+      add(
+        issues,
+        "PR_MERGE_REVISION_REQUIRED",
+        String(pullRequest.number),
+        "merged pull requests need an exact merge revision and non-merged pull requests must keep it null",
+      );
+    }
+    const checks = pullRequest.checks ?? [];
+    const checkNames = new Set<string>();
+    for (const check of checks) {
+      if (
+        !nonEmptyString(check.name) ||
+        checkNames.has(check.name) ||
+        !["completed", "in_progress", "queued"].includes(check.status) ||
+        !["success", "failure", "skipped", "cancelled", null].includes(
+          check.conclusion,
+        ) ||
+        check.headRevision !== pullRequest.headRevision ||
+        !/^https:\/\/github\.com\/gondalaimafia\/mendpoint\/actions\//.test(
+          check.detailsUrl,
+        )
+      ) {
+        add(
+          issues,
+          "PR_CHECK_RECORD_INVALID",
+          String(pullRequest.number),
+          "check records must be unique, typed, GitHub sourced, and bound to the exact head",
+        );
+      }
+      checkNames.add(check.name);
+    }
+    if (
+      ["current_checks_green", "checks_green_unreviewed"].includes(
+        pullRequest.checkState,
+      ) &&
+      !REQUIRED_RELEASE_CHECKS.every((name) =>
+        checks.some(
+          (check) =>
+            check.name === name &&
+            check.status === "completed" &&
+            check.conclusion === "success" &&
+            check.headRevision === pullRequest.headRevision,
+        ),
+      )
+    ) {
+      add(
+        issues,
+        "PR_REQUIRED_CHECKS_MISSING",
+        String(pullRequest.number),
+        "green state requires successful test, release-gates, container-builds, and deployment-e2e records on the exact head",
+      );
+    }
+    const review = pullRequest.review;
+    const reviewSourceUrlValid =
+      review?.source === null ||
+      (review?.source === "claude_session" &&
+        /^https:\/\/claude\.ai\/code\/session_/.test(review.url ?? "")) ||
+      ((review?.source === "github" || review?.source === "codex_review") &&
+        /^https:\/\/github\.com\/gondalaimafia\/mendpoint\//.test(
+          review.url ?? "",
+        ));
+    if (
+      !review ||
+      !["approved", "changes_requested", "none"].includes(review.state) ||
+      (review.state === "none" &&
+        (review.reviewedHeadRevision !== null ||
+          review.reviewer !== null ||
+          review.reviewerAgent !== null ||
+          review.source !== null ||
+          review.reviewId !== null ||
+          review.url !== null ||
+          review.submittedAt !== null ||
+          review.attributable !== false)) ||
+      (review.state !== "none" &&
+        (!SHA.test(review.reviewedHeadRevision ?? "") ||
+          !nonEmptyString(review.reviewer) ||
+          !["Codex", "Claude", "Cursor"].includes(review.reviewerAgent ?? "") ||
+          review.reviewerAgent === pullRequest.owner.actor ||
+          !["github", "claude_session", "codex_review"].includes(
+            review.source ?? "",
+          ) ||
+          !nonEmptyString(review.reviewId) ||
+          !reviewSourceUrlValid ||
+          !canonicalTime(review.submittedAt) ||
+          review.attributable !== true))
+    ) {
+      add(
+        issues,
+        "PR_REVIEW_RECORD_REQUIRED",
+        String(pullRequest.number),
+        "every tracked pull request needs a well-formed attributable review record or an explicit none state",
+      );
+    }
+    if (
+      pullRequest.state === "open" &&
+      ["merged", "superseded"].includes(pullRequest.disposition)
+    ) {
+      add(
+        issues,
+        "PR_DISPOSITION_STATE",
+        String(pullRequest.number),
+        "an open pull request needs an active release disposition",
+      );
+    }
+    if (pullRequest.state === "merged" && pullRequest.disposition !== "merged") {
+      add(
+        issues,
+        "PR_DISPOSITION_STATE",
+        String(pullRequest.number),
+        "a merged pull request must use the merged disposition",
+      );
+    }
+    if (pullRequest.state === "closed" && pullRequest.disposition !== "superseded") {
+      add(
+        issues,
+        "PR_DISPOSITION_STATE",
+        String(pullRequest.number),
+        "a closed pull request must use the superseded disposition",
+      );
+    }
+    if (pullRequest.checkState === "current_checks_green") {
+      if (
+        !SHA.test(pullRequest.headRevision ?? "") ||
+        review?.state !== "approved" ||
+        review.reviewedHeadRevision !== pullRequest.headRevision ||
+        !review.reviewer?.trim() ||
+        review.attributable !== true
+      ) {
+        add(
+          issues,
+          "PR_EXACT_REVIEW_REQUIRED",
+          String(pullRequest.number),
+          "current green checks require an attributable approval bound to the exact head revision",
+        );
+      }
+      if (pullRequest.blockers.length > 0) {
+        add(
+          issues,
+          "PR_GREEN_WITH_BLOCKERS",
+          String(pullRequest.number),
+          "current green checks cannot retain unresolved P0, P1, or P2 blockers",
+        );
+      }
+    }
     if (
       pullRequest.owner?.source !== "branch_prefix" ||
       pullRequest.owner?.provisional !== true
@@ -436,12 +1099,115 @@ export function validateProductionClosureMatrix(
       }
     }
     for (const blocker of pullRequest.blockers ?? []) {
-      if (!(["P1", "P2"] as const).includes(blocker.priority) || !blocker.summary.trim()) {
+      if (!(["P0", "P1", "P2"] as const).includes(blocker.priority) || !blocker.summary.trim()) {
         add(
           issues,
           "BLOCKER_FORMAT",
           String(pullRequest.number),
-          "release blockers must be nonempty P1 or P2 records",
+          "release blockers must be nonempty P0, P1, or P2 records",
+        );
+      }
+    }
+  }
+
+  for (const pullRequest of releasePrs.values()) {
+    if (pullRequest.state === "merged" && pullRequest.blockers.length > 0) {
+      add(
+        issues,
+        "PR_MERGED_WITH_BLOCKERS",
+        String(pullRequest.number),
+        "merged pull requests cannot retain unresolved P0, P1, or P2 blockers",
+      );
+    }
+    if (
+      pullRequest.state === "merged" &&
+      pullRequest.checkState === "checks_green_unreviewed" &&
+      !(
+        pullRequest.review.state === "approved" &&
+        pullRequest.review.reviewedHeadRevision === pullRequest.headRevision &&
+        pullRequest.review.attributable === true
+      )
+    ) {
+      const remediationNumber = pullRequest.reviewRemediationPullRequest;
+      if (
+        remediationNumber !== currentBootstrap?.number ||
+        !currentBootstrap?.remediatesPullRequests.includes(pullRequest.number)
+      ) {
+        add(
+          issues,
+          "PR_MERGED_REVIEW_REQUIRED",
+          String(pullRequest.number),
+          "a materially unreviewed merged pull request needs an exact-head review or an explicitly linked provider-verified remediation pull request",
+        );
+      }
+    }
+    for (const dependencyNumber of pullRequest.dependencies.pullRequests) {
+      const dependency = releasePrs.get(dependencyNumber);
+      if (!dependency) {
+        add(
+          issues,
+          "PR_DEPENDENCY_UNTRACKED",
+          String(pullRequest.number),
+          `dependency ${dependencyNumber} is absent from the release-train integrity manifest`,
+        );
+      } else if (
+        (pullRequest.state === "merged" ||
+          pullRequest.checkState === "current_checks_green") &&
+        dependency.state !== "merged"
+      ) {
+        add(
+          issues,
+          "PR_DEPENDENCY_UNSATISFIED",
+          String(pullRequest.number),
+          `dependency ${dependencyNumber} must be merged before this pull request can be release eligible`,
+        );
+      }
+    }
+  }
+  const visiting = new Set<number>();
+  const visited = new Set<number>();
+  const visitDependency = (number: number) => {
+    if (visiting.has(number)) {
+      add(
+        issues,
+        "PR_DEPENDENCY_CYCLE",
+        String(number),
+        "pull request dependencies contain a cycle",
+      );
+      return;
+    }
+    if (visited.has(number)) return;
+    visiting.add(number);
+    for (const dependency of releasePrs.get(number)?.dependencies.pullRequests ?? []) {
+      if (releasePrs.has(dependency)) visitDependency(dependency);
+    }
+    visiting.delete(number);
+    visited.add(number);
+  };
+  for (const number of releasePrs.keys()) visitDependency(number);
+
+  for (const row of matrix.requirements ?? []) {
+    const canonicalEntry = canonicalById.get(row.requirementId);
+    if (
+      canonicalEntry &&
+      !["verified", "retired"].includes(
+        canonicalEntry.requirement.implementationStatus,
+      )
+    ) {
+      const hasOpenIssue = row.issues.some(
+        (number) => authorityIssueByNumber.get(number)?.state === "open",
+      );
+      const hasOpenPullRequest = row.pullRequests.some(
+        (number) =>
+          releasePrs.get(number)?.state === "open" ||
+          number === currentBootstrap?.number,
+      );
+      if (!hasOpenIssue && !hasOpenPullRequest) {
+        add(
+          issues,
+          "REQUIREMENT_ACTIVE_CLOSURE_PATH_REQUIRED",
+          row.requirementId,
+          "unfinished requirements need an open authoritative issue or pull request",
         );
       }
     }
@@ -451,12 +1217,17 @@ export function validateProductionClosureMatrix(
     for (const number of row.pullRequests ?? []) {
       const pullRequest = releasePrs.get(number);
       if (number > 0 && !pullRequest) {
-        add(
-          issues,
-          "PR_NOT_IN_RELEASE_TRAIN",
-          row.requirementId,
-          `pull request ${number} is absent from the open snapshot`,
-        );
+        if (
+          number !== currentBootstrap?.number ||
+          !currentBootstrap.requirementIds.includes(row.requirementId)
+        ) {
+          add(
+            issues,
+            "PR_NOT_IN_RELEASE_TRAIN",
+            row.requirementId,
+            `pull request ${number} is absent from the release-train integrity manifest`,
+          );
+        }
       } else if (pullRequest && !pullRequest.requirementIds.includes(row.requirementId)) {
         add(
           issues,
@@ -479,6 +1250,47 @@ export function validateProductionClosureMatrix(
         );
       }
     }
+  }
+  for (const requirementId of currentBootstrap?.requirementIds ?? []) {
+    const row = rowsById.get(requirementId);
+    if (row && !row.pullRequests.includes(currentBootstrap.number)) {
+      add(
+        issues,
+        "PR_REQUIREMENT_MISMATCH",
+        String(currentBootstrap.number),
+        `requirement ${requirementId} does not map back to the current pull request`,
+      );
+    }
+  }
+  for (const remediatedNumber of currentBootstrap?.remediatesPullRequests ?? []) {
+    const remediated = releasePrs.get(remediatedNumber);
+    if (!remediated || remediated.state !== "merged") {
+      add(
+        issues,
+        "CURRENT_PR_REMEDIATION_INVALID",
+        String(currentBootstrap.number),
+        `remediated pull request ${remediatedNumber} must be a tracked merged pull request`,
+      );
+    }
+  }
+  for (const dependencyNumber of currentBootstrap?.dependencies.pullRequests ?? []) {
+    const dependency = releasePrs.get(dependencyNumber);
+    if (!dependency || dependency.state !== "merged" || !dependency.mergeRevision) {
+      add(
+        issues,
+        "CURRENT_PR_DEPENDENCY_UNSATISFIED",
+        String(currentBootstrap?.number),
+        `current pull request dependency ${dependencyNumber} is not a tracked merged revision`,
+      );
+    }
+  }
+  if ((currentBootstrap?.dependencies.branches.length ?? 0) > 0) {
+    add(
+      issues,
+      "CURRENT_PR_BRANCH_DEPENDENCY_UNVERIFIED",
+      String(currentBootstrap?.number),
+      "current pull request branch dependencies require provider verification and cannot qualify structurally",
+    );
   }
 
   return issues.sort(
@@ -508,7 +1320,11 @@ function main() {
       revisionExists: (revision) => gitRevisionExists(root, revision),
       now: new Date(),
     }),
-    ...validateProductionClosureMatrix(manifest, matrix),
+    ...validateProductionClosureMatrix(manifest, matrix, {
+      trustedProductionEvidenceAuthorities: parseProductionEvidenceTrustRoots(
+        process.env.MENDPOINT_PRODUCTION_EVIDENCE_TRUST_ROOTS_JSON,
+      ),
+    }),
   ];
   if (issues.length > 0) {
     for (const issue of issues) {
@@ -520,7 +1336,7 @@ function main() {
     process.exit(1);
   }
   console.log(
-    `PRODUCTION CLOSURE MATRIX PASS: ${matrix.requirements.length} requirements, ${matrix.releaseTrain.openPullRequests.length} open pull requests`,
+    `PRODUCTION CLOSURE STRUCTURE PASS: ${matrix.requirements.length} requirements, ${matrix.releaseTrain.pullRequests.length} static pull requests${matrix.releaseTrain.currentPullRequestBootstrap ? `, current PR ${matrix.releaseTrain.currentPullRequestBootstrap.number}` : ""}; protected GitHub authority verification is still required`,
   );
 }
 

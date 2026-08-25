@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "repositoryId": 1309389373,
+  "repository": "gondalaimafia/mendpoint",
+  "workflowPath": ".github/workflows/closure-authority.yml",
+  "requiredCiWorkflowPath": ".github/workflows/ci.yml",
+  "externalCheckName": "mendpoint-production-closure-authority",
+  "trustedReviewers": {},
+  "productionEvidenceAuthorities": []
+}

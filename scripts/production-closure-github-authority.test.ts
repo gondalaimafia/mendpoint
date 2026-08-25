@@ -1,0 +1,732 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
+import {
+  GitHubRestClient,
+  githubAuthorityContextFromEvent,
+  verifyGitHubClosureAuthority,
+  writeGitHubAuthorityFailureObservation,
+  writeGitHubAuthorityObservation,
+  type GitHubAuthorityClient,
+  type GitHubAuthorityContext,
+  type GitHubAuthorityMatrix,
+  type GitHubCheckRun,
+  type GitHubIssue,
+  type GitHubPullRequest,
+  type GitHubReview,
+  type GitHubWorkflowJob,
+  type GitHubWorkflowRun,
+} from "./production-closure-github-authority.js";
+
+const MAIN = "a".repeat(40);
+const HEAD = "b".repeat(40);
+const MERGE = "c".repeat(40);
+const MERGED = "d".repeat(40);
+
+function matrix(): GitHubAuthorityMatrix {
+  return {
+    issueAuthority: {
+      repository: "gondalaimafia/mendpoint",
+      issues: [
+        {
+          number: 430,
+          state: "open",
+          owner: "gondalaimafia",
+          title: "Production closure FC 00",
+          url: "https://github.com/gondalaimafia/mendpoint/issues/430",
+          updatedAt: "2026-08-25T10:05:19.000Z",
+          requirementIds: ["ME-FND-001"],
+        },
+      ],
+    },
+    releaseTrain: {
+      repository: "gondalaimafia/mendpoint",
+      observedMainRevision: MAIN,
+      pullRequests: [],
+      currentPullRequestBootstrap: {
+        observationSource: "github_api",
+        number: 440,
+        url: "https://github.com/gondalaimafia/mendpoint/pull/440",
+        title: "Harden production closure authority",
+        baseBranch: "main",
+        headBranch: "codex/production-closure-authority-hardening",
+        owner: {
+          actor: "Codex",
+          source: "github_label",
+          label: "release-owner:codex",
+        },
+        disposition: "merge_after_rebase_and_review",
+        dependencies: { pullRequests: [], branches: [] },
+        requirementIds: ["ME-FND-001"],
+        blockers: [],
+        remediatesPullRequests: [],
+      },
+    },
+  };
+}
+
+function pullRequest(overrides: Partial<GitHubPullRequest> = {}): GitHubPullRequest {
+  return {
+    number: 440,
+    state: "open",
+    merged: false,
+    merge_commit_sha: null,
+    title: "Harden production closure authority",
+    html_url: "https://github.com/gondalaimafia/mendpoint/pull/440",
+    body: "## Requirement mapping\n\n- ME-FND-001\n",
+    user: { login: "gondalaimafia" },
+    labels: [{ name: "release-owner:codex" }],
+    head: {
+      ref: "codex/production-closure-authority-hardening",
+      sha: HEAD,
+    },
+    base: { ref: "main", sha: MAIN },
+    ...overrides,
+  };
+}
+
+function issue(overrides: Partial<GitHubIssue> = {}): GitHubIssue {
+  return {
+    number: 430,
+    state: "open",
+    title: "Production closure FC 00",
+    html_url: "https://github.com/gondalaimafia/mendpoint/issues/430",
+    body: "## Requirement mapping\n\n- ME-FND-001\n",
+    updated_at: "2026-08-25T10:05:19Z",
+    assignees: [{ login: "gondalaimafia" }],
+    ...overrides,
+  };
+}
+
+function checks(overrides: Partial<GitHubCheckRun> = {}): GitHubCheckRun[] {
+  return ["test", "release-gates", "container-builds", "deployment-e2e"].map(
+    (name, index) => ({
+      id: index + 1,
+      name,
+      status: "completed",
+      conclusion: "success",
+      head_sha: HEAD,
+      html_url: `https://github.com/gondalaimafia/mendpoint/actions/runs/1/job/${index + 1}`,
+      ...overrides,
+    }),
+  );
+}
+
+function reviews(overrides: Partial<GitHubReview> = {}): GitHubReview[] {
+  return [
+    {
+      id: 71,
+      state: "APPROVED",
+      commit_id: HEAD,
+      user: { login: "claude-reviewer[bot]", id: 71 },
+      body: null,
+      submitted_at: "2026-08-25T12:00:00Z",
+      html_url: "https://github.com/gondalaimafia/mendpoint/pull/440#pullrequestreview-71",
+      ...overrides,
+    },
+  ];
+}
+
+function context(
+  overrides: Partial<GitHubAuthorityContext> = {},
+): GitHubAuthorityContext {
+  return {
+    eventName: "pull_request",
+    repository: "gondalaimafia/mendpoint",
+    githubSha: MAIN,
+    workflowRunId: "1234",
+    observedAt: "2026-08-25T12:05:00.000Z",
+    checkout: { headRevision: MAIN, parentRevisions: [] },
+    pullRequest: {
+      number: 440,
+      baseRef: "main",
+      baseRevision: MAIN,
+      headRef: "codex/production-closure-authority-hardening",
+      headRevision: HEAD,
+    },
+    trustedReviewerIdentities: {
+      Claude: [{ login: "claude-reviewer[bot]", userId: 71 }],
+      Cursor: [{ login: "cursor-reviewer[bot]", userId: 72 }],
+    },
+    ...overrides,
+  };
+}
+
+class FixtureClient implements GitHubAuthorityClient {
+  mainReads = 0;
+  mainRevisions = [MAIN, MAIN];
+  openPullRequests = [pullRequest()];
+  trackedPullRequest = pullRequest();
+  trackedChecks = checks();
+  trackedWorkflowRuns: GitHubWorkflowRun[] = [{
+    id: 101,
+    path: ".github/workflows/ci.yml@refs/pull/440/merge",
+    event: "pull_request",
+    status: "completed",
+    conclusion: "success",
+    head_sha: HEAD,
+    html_url: "https://github.com/gondalaimafia/mendpoint/actions/runs/101",
+  }];
+  trackedWorkflowJobs: GitHubWorkflowJob[] = checks().map((check) => ({
+    id: check.id,
+    name: check.name,
+    status: check.status,
+    conclusion: check.conclusion,
+  }));
+  trackedReviews = reviews();
+  trackedIssue = issue();
+  failure: Error | null = null;
+
+  async getMainRevision(): Promise<string> {
+    if (this.failure) throw this.failure;
+    return this.mainRevisions[Math.min(this.mainReads++, this.mainRevisions.length - 1)];
+  }
+  async listOpenPullRequests(): Promise<GitHubPullRequest[]> {
+    if (this.failure) throw this.failure;
+    return this.openPullRequests;
+  }
+  async getPullRequest(): Promise<GitHubPullRequest> {
+    if (this.failure) throw this.failure;
+    return this.trackedPullRequest;
+  }
+  async listCheckRuns(): Promise<GitHubCheckRun[]> {
+    if (this.failure) throw this.failure;
+    return this.trackedChecks;
+  }
+  async listWorkflowRuns(): Promise<GitHubWorkflowRun[]> {
+    if (this.failure) throw this.failure;
+    return this.trackedWorkflowRuns;
+  }
+  async listWorkflowJobs(): Promise<GitHubWorkflowJob[]> {
+    if (this.failure) throw this.failure;
+    return this.trackedWorkflowJobs;
+  }
+  async listReviews(): Promise<GitHubReview[]> {
+    if (this.failure) throw this.failure;
+    return this.trackedReviews;
+  }
+  async getIssue(): Promise<GitHubIssue> {
+    if (this.failure) throw this.failure;
+    return this.trackedIssue;
+  }
+}
+
+function codes(result: Awaited<ReturnType<typeof verifyGitHubClosureAuthority>>) {
+  return result.issues.map((entry) => entry.code);
+}
+
+describe("GitHub production closure authority", () => {
+  it("runs PR authority from default-branch code and blocks deploy on main authority", () => {
+    const ci = parse(
+      readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+    ) as {
+      jobs: Record<string, {
+        needs?: string[];
+        permissions?: Record<string, string>;
+        steps?: Array<{ name?: string; run?: string; env?: Record<string, string> }>;
+      }>;
+    };
+    const mainJob = ci.jobs["main-closure-authority"];
+    const deploy = ci.jobs.deploy;
+
+    expect(mainJob.needs).toEqual([
+      "test",
+      "release-gates",
+      "container-builds",
+      "deployment-e2e",
+    ]);
+    expect(deploy.needs).toContain("main-closure-authority");
+
+    const workflow = parse(
+      readFileSync(
+        new URL("../.github/workflows/closure-authority.yml", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      on: Record<string, unknown>;
+      permissions: Record<string, string>;
+      jobs: Record<string, {
+        permissions?: Record<string, string>;
+        steps?: Array<{
+          name?: string;
+          run?: string;
+          env?: Record<string, string>;
+          with?: Record<string, string | number>;
+        }>;
+      }>;
+    };
+    const job = workflow.jobs["closure-authority"];
+
+    expect(workflow.on).toHaveProperty("pull_request_target");
+    expect(workflow.on).toHaveProperty("workflow_run");
+    expect(workflow.on).toHaveProperty("issues");
+    expect(workflow.on).toHaveProperty("schedule");
+    expect(workflow.on).not.toHaveProperty("pull_request_review");
+    expect(workflow.permissions).toEqual({
+      actions: "read",
+      contents: "read",
+      checks: "read",
+      issues: "read",
+      "pull-requests": "read",
+    });
+    expect(job.steps).toContainEqual(
+      expect.objectContaining({
+        name: "Checkout exact immutable main authority",
+        with: expect.objectContaining({
+          ref: "${{ needs.discover.outputs.main_sha }}",
+        }),
+      }),
+    );
+    expect(job.steps).toContainEqual(
+      expect.objectContaining({
+        name: "Validate exact proposal bytes with immutable authority",
+        run: "npm run closure:proposal:check",
+      }),
+    );
+    expect(job.steps).toContainEqual(
+      expect.objectContaining({
+        name: "Verify live GitHub release authority",
+        run: "npm run closure:github:check",
+      }),
+    );
+    expect(job.steps).toContainEqual(
+      expect.objectContaining({
+        name: "Create dedicated authority App token",
+        uses: "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+      }),
+    );
+    expect(job.steps).toContainEqual(
+      expect.objectContaining({ name: "Invalidate prior external authority result" }),
+    );
+    expect(job.steps).toContainEqual(
+      expect.objectContaining({ name: "Publish dedicated authority App verdict" }),
+    );
+  });
+
+  it("accepts an exact PR event and double-reads current main", async () => {
+    const client = new FixtureClient();
+
+    const result = await verifyGitHubClosureAuthority(matrix(), context(), client);
+
+    expect(result.verdict).toBe("pass");
+    expect(result.issues).toEqual([]);
+    expect(client.mainReads).toBe(2);
+    expect(result.mainRevisionStart).toBe(MAIN);
+    expect(result.mainRevisionEnd).toBe(MAIN);
+    expect(result.verifiedPullRequests).toEqual([440]);
+    expect(result.verifiedIssues).toEqual([430]);
+  });
+
+  it("fails closed when the live open PR set is incomplete", async () => {
+    const client = new FixtureClient();
+    client.openPullRequests = [pullRequest(), pullRequest({ number: 441 })];
+
+    const result = await verifyGitHubClosureAuthority(matrix(), context(), client);
+
+    expect(codes(result)).toContain("OPEN_PR_COMPLETENESS_MISMATCH");
+  });
+
+  it("binds event base and head while executing immutable base authority", async () => {
+    const client = new FixtureClient();
+    const result = await verifyGitHubClosureAuthority(
+      matrix(),
+      context({
+        pullRequest: {
+          number: 440,
+          baseRef: "main",
+          baseRevision: "e".repeat(40),
+          headRef: "codex/production-closure-authority-hardening",
+          headRevision: "f".repeat(40),
+        },
+        checkout: {
+          headRevision: "0".repeat(40),
+          parentRevisions: [],
+        },
+      }),
+      client,
+    );
+
+    expect(codes(result)).toEqual(
+      expect.arrayContaining([
+        "PR_EVENT_BASE_MISMATCH",
+        "PR_EVENT_HEAD_MISMATCH",
+        "CHECKOUT_REVISION_MISMATCH",
+      ]),
+    );
+  });
+
+  it("rejects a matrix main revision that differs from live GitHub main", async () => {
+    const client = new FixtureClient();
+    const configured = matrix();
+    configured.releaseTrain.observedMainRevision = "f".repeat(40);
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(codes(result)).toContain("MATRIX_MAIN_REVISION_MISMATCH");
+  });
+
+  it("rejects required checks and approvals that are not exact-head and trusted", async () => {
+    const client = new FixtureClient();
+    client.trackedChecks = checks({ head_sha: "e".repeat(40) });
+    client.trackedReviews = reviews({
+      commit_id: "f".repeat(40),
+      user: { login: "gondalaimafia", id: 1 },
+    });
+
+    const result = await verifyGitHubClosureAuthority(matrix(), context(), client);
+
+    expect(codes(result)).toEqual(
+      expect.arrayContaining([
+        "PR_REQUIRED_CHECKS_NOT_GREEN",
+        "PR_EXACT_TRUSTED_REVIEW_REQUIRED",
+      ]),
+    );
+  });
+
+  it("rejects successful names emitted outside the trusted CI workflow run", async () => {
+    const client = new FixtureClient();
+    client.trackedWorkflowRuns[0] = {
+      ...client.trackedWorkflowRuns[0],
+      path: ".github/workflows/spoof.yml@refs/pull/440/merge",
+    };
+
+    const result = await verifyGitHubClosureAuthority(matrix(), context(), client);
+
+    expect(codes(result)).toContain("PR_REQUIRED_CHECKS_NOT_GREEN");
+  });
+
+  it("rejects trusted workflow jobs whose check run identities do not match", async () => {
+    const client = new FixtureClient();
+    client.trackedWorkflowJobs[0] = {
+      ...client.trackedWorkflowJobs[0],
+      id: 999,
+    };
+
+    const result = await verifyGitHubClosureAuthority(matrix(), context(), client);
+
+    expect(codes(result)).toContain("PR_REQUIRED_CHECKS_NOT_GREEN");
+  });
+
+  it("verifies a tracked green PR review against the exact GitHub review", async () => {
+    const configured = matrix();
+    configured.releaseTrain.pullRequests.push({
+      number: 439,
+      state: "closed",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+      title: "Prior release work",
+      headBranch: "codex/prior-release-work",
+      baseBranch: "main",
+      headRevision: HEAD,
+      mergeRevision: null,
+      requirementIds: ["ME-FND-001"],
+      checkState: "current_checks_green",
+      owner: { actor: "Codex" },
+      review: {
+        state: "approved",
+        reviewedHeadRevision: HEAD,
+        reviewer: "claude-reviewer[bot]",
+        reviewId: "999",
+        url: "https://github.com/gondalaimafia/mendpoint/pull/439#pullrequestreview-999",
+      },
+    });
+    const client = new FixtureClient();
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(codes(result)).toContain("PR_EXACT_TRUSTED_REVIEW_REQUIRED");
+  });
+
+  it("accepts a trusted exact-head review on the declared remediation PR", async () => {
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap.remediatesPullRequests = [416];
+    configured.releaseTrain.pullRequests.push({
+      number: 416,
+      state: "merged",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/416",
+      title: "Persist Mission graph identity",
+      headBranch: "codex/mission-graph-identity",
+      baseBranch: "main",
+      headRevision: HEAD,
+      mergeRevision: MERGED,
+      requirementIds: ["ME-FND-001"],
+      checkState: "checks_green_unreviewed",
+      owner: { actor: "Codex" },
+      reviewRemediationPullRequest: 440,
+      review: {
+        state: "none",
+        reviewedHeadRevision: null,
+        reviewer: null,
+        reviewId: null,
+        url: null,
+      },
+    });
+    const client = new FixtureClient();
+    client.trackedReviews = reviews({
+      body: `## Remediation review scope\n\n- #416 @ ${HEAD}\n`,
+    });
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.issues).not.toContainEqual(
+      expect.objectContaining({
+        code: "PR_EXACT_TRUSTED_REVIEW_REQUIRED",
+        subject: "416",
+      }),
+    );
+  });
+
+  it("rejects a remediation approval that does not attest the exact historical head", async () => {
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap.remediatesPullRequests = [416];
+    configured.releaseTrain.pullRequests.push({
+      number: 416,
+      state: "merged",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/416",
+      title: "Persist Mission graph identity",
+      headBranch: "codex/mission-graph-identity",
+      baseBranch: "main",
+      headRevision: HEAD,
+      mergeRevision: MERGED,
+      requirementIds: ["ME-FND-001"],
+      checkState: "checks_green_unreviewed",
+      owner: { actor: "Codex" },
+      reviewRemediationPullRequest: 440,
+      review: { state: "none", reviewedHeadRevision: null, reviewer: null, reviewId: null, url: null },
+    });
+    const client = new FixtureClient();
+    client.trackedReviews = reviews({
+      body: `## Remediation review scope\n\n- #416 @ ${"f".repeat(40)}\n`,
+    });
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ code: "PR_EXACT_TRUSTED_REVIEW_REQUIRED", subject: "416" }),
+    );
+  });
+
+  it("rejects drift in tracked issue metadata and requirement mapping", async () => {
+    const client = new FixtureClient();
+    client.trackedIssue = issue({
+      state: "closed",
+      assignees: [],
+      body: "## Requirement mapping\n\n- ME-FND-999\n",
+    });
+
+    const result = await verifyGitHubClosureAuthority(matrix(), context(), client);
+
+    expect(codes(result)).toEqual(
+      expect.arrayContaining([
+        "ISSUE_METADATA_MISMATCH",
+        "ISSUE_REQUIREMENT_MAPPING_MISMATCH",
+      ]),
+    );
+  });
+
+  it("fails closed and still returns an observation when GitHub is unavailable", async () => {
+    const client = new FixtureClient();
+    client.failure = new Error("token-shaped-secret-value");
+
+    const result = await verifyGitHubClosureAuthority(matrix(), context(), client);
+
+    expect(result.verdict).toBe("fail");
+    expect(codes(result)).toContain("GITHUB_AUTHORITY_UNAVAILABLE");
+    expect(JSON.stringify(result)).not.toContain("token-shaped-secret-value");
+  });
+
+  it("binds a main push to live main and the checked-out HEAD", async () => {
+    const client = new FixtureClient();
+    client.trackedPullRequest = pullRequest({
+      state: "closed",
+      merged: true,
+      merge_commit_sha: MERGED,
+    });
+    client.openPullRequests = [];
+    client.mainRevisions = [MERGED, MERGED];
+    client.trackedChecks = checks();
+    client.trackedReviews = reviews();
+
+    const result = await verifyGitHubClosureAuthority(
+      matrix(),
+      context({
+        eventName: "push",
+        githubSha: MERGED,
+        checkout: { headRevision: MERGED, parentRevisions: [MAIN] },
+        pullRequest: undefined,
+      }),
+      client,
+    );
+
+    expect(result.verdict).toBe("pass");
+  });
+
+  it("rejects a main push whose live main or checkout differs", async () => {
+    const client = new FixtureClient();
+    client.trackedPullRequest = pullRequest({
+      state: "closed",
+      merged: true,
+      merge_commit_sha: MERGED,
+    });
+    client.openPullRequests = [];
+    client.mainRevisions = [MAIN, MAIN];
+
+    const result = await verifyGitHubClosureAuthority(
+      matrix(),
+      context({
+        eventName: "push",
+        githubSha: MERGED,
+        checkout: { headRevision: "f".repeat(40), parentRevisions: [] },
+        pullRequest: undefined,
+      }),
+      client,
+    );
+
+    expect(codes(result)).toEqual(
+      expect.arrayContaining([
+        "PUSH_MAIN_REVISION_MISMATCH",
+        "CHECKOUT_REVISION_MISMATCH",
+      ]),
+    );
+  });
+
+  it("rejects a merged bootstrap without the exact pushed merge revision", async () => {
+    const client = new FixtureClient();
+    client.trackedPullRequest = pullRequest({
+      state: "closed",
+      merged: true,
+      merge_commit_sha: null,
+    });
+    client.openPullRequests = [];
+    client.mainRevisions = [MERGED, MERGED];
+
+    const result = await verifyGitHubClosureAuthority(
+      matrix(),
+      context({
+        eventName: "push",
+        githubSha: MERGED,
+        checkout: { headRevision: MERGED, parentRevisions: [MAIN] },
+        pullRequest: undefined,
+      }),
+      client,
+    );
+
+    expect(codes(result)).toContain("PUSH_MAIN_REVISION_MISMATCH");
+  });
+
+  it("paginates GitHub list endpoints without exposing the token", async () => {
+    const calls: Array<{ url: string; authorization: string | null }> = [];
+    const firstPage = Array.from({ length: 100 }, (_, index) =>
+      pullRequest({ number: index + 1 }),
+    );
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      const headers = new Headers(init?.headers);
+      calls.push({ url, authorization: headers.get("authorization") });
+      const body = url.includes("page=2") ? [pullRequest({ number: 101 })] : firstPage;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const client = new GitHubRestClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      fetchImpl,
+    );
+
+    const result = await client.listOpenPullRequests("main");
+
+    expect(result).toHaveLength(101);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].url).toContain("page=2");
+    expect(JSON.stringify(result)).not.toContain("sensitive-token");
+  });
+
+  it("writes a secret-free observation artifact", async () => {
+    const client = new FixtureClient();
+    client.trackedPullRequest.body += "\n## Private context\n\nprivate-repository-content";
+    const result = await verifyGitHubClosureAuthority(matrix(), context(), client);
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-github-authority-"));
+    const path = join(directory, "observation.json");
+    try {
+      writeGitHubAuthorityObservation(path, result);
+      const artifact = readFileSync(path, "utf8");
+      expect(JSON.parse(artifact).verdict).toBe("pass");
+      expect(artifact).not.toContain("private-repository-content");
+      expect(artifact).not.toContain("Requirement mapping");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("writes a secret-free failure artifact when protected configuration fails early", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-github-authority-failure-"));
+    const path = join(directory, "observation.json");
+    try {
+      writeGitHubAuthorityFailureObservation(path, "2026-08-25T12:05:00.000Z");
+      const artifact = readFileSync(path, "utf8");
+      expect(JSON.parse(artifact)).toMatchObject({
+        eventName: "configuration_failure",
+        verdict: "fail",
+        issues: [{ code: "GITHUB_AUTHORITY_CONFIGURATION_INVALID" }],
+      });
+      expect(artifact).not.toContain("token");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("builds an exact PR context from the GitHub event without retaining secrets", () => {
+    const built = githubAuthorityContextFromEvent(
+      {
+        GITHUB_EVENT_NAME: "pull_request",
+        GITHUB_REPOSITORY: "gondalaimafia/mendpoint",
+        GITHUB_SHA: MAIN,
+        GITHUB_RUN_ID: "1234",
+        MENDPOINT_CLOSURE_TRUSTED_REVIEWERS_JSON: JSON.stringify({
+          Claude: [{ login: "claude-reviewer[bot]", userId: 71 }],
+        }),
+        GITHUB_TOKEN: "must-not-be-retained",
+      },
+      {
+        pull_request: {
+          number: 440,
+          base: { ref: "main", sha: MAIN },
+          head: {
+            ref: "codex/production-closure-authority-hardening",
+            sha: HEAD,
+          },
+        },
+      },
+      { headRevision: MAIN, parentRevisions: [] },
+      "2026-08-25T12:05:00.000Z",
+    );
+
+    expect(built.pullRequest?.headRevision).toBe(HEAD);
+    expect(built.trustedReviewerIdentities.Claude).toEqual([
+      { login: "claude-reviewer[bot]", userId: 71 },
+    ]);
+    expect(JSON.stringify(built)).not.toContain("must-not-be-retained");
+  });
+
+  it("rejects a reviewer login bound to multiple agent identities", () => {
+    expect(() =>
+      githubAuthorityContextFromEvent(
+        {
+          GITHUB_EVENT_NAME: "push",
+          GITHUB_REPOSITORY: "gondalaimafia/mendpoint",
+          GITHUB_SHA: MERGED,
+          GITHUB_RUN_ID: "1234",
+          MENDPOINT_CLOSURE_TRUSTED_REVIEWERS_JSON: JSON.stringify({
+            Codex: [{ login: "shared-reviewer", userId: 1 }],
+            Claude: [{ login: "shared-reviewer", userId: 1 }],
+          }),
+        },
+        {},
+        { headRevision: MERGED, parentRevisions: [MAIN] },
+      ),
+    ).toThrow(/multiple agent identities/);
+  });
+});
