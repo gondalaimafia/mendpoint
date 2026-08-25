@@ -3144,3 +3144,4 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Root cause: the security-attestation integration test runs the full pipeline twice and inherited Vitest's 5-second unit-test default. Full-suite CPU and disk contention pushed one run to 5.359 seconds; isolated and workspace runs remained below one second.
 - Repair: a test-local 15-second deadline matches other heavy integration tests and preserves both the fail-closed negative case and the attested positive control.
 - Evidence: focused regression passed, pipeline workspace passed 200 of 200 tests, and the complete repository test command exited 0 after the repair.
+- Current-main integration: main added an explicit `inconclusive` worker outcome. The coordinator-only advisory filter now asserts that counter remains zero; the final 15-file matrix passes 222 of 222 tests with the new main semantics retained.

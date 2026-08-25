@@ -751,7 +751,13 @@ describe("worker runtime", () => {
       logWhenIdle: false,
       jobTypes: ["verifier.advisory.verify"],
       wardenEnv: { DEEPSEEK_VERIFIER_ENABLED: "true" },
-    })).resolves.toEqual({ claimed: 0, succeeded: 0, failed: 0, retried: 0 });
+    })).resolves.toEqual({
+      claimed: 0,
+      succeeded: 0,
+      failed: 0,
+      retried: 0,
+      inconclusive: 0,
+    });
     expect(listJobs(db, 10, "tenant-a")[0]).toMatchObject({
       id: "unrelated-pipeline-job",
       status: "pending",
