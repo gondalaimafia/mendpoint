@@ -179,4 +179,21 @@ describe("ReGauge state transfer CLI", () => {
     expect(encoded).toBe('{"transferId":"cutover-1","attested":true}\n');
     expect(encoded.trim().split(/\r?\n/)).toHaveLength(1);
   });
+
+  it("refuses a published manifest bound to a different tenant", async () => {
+    const fx = fixture();
+    const transport = new MemoryTransport();
+    const runtime = loadRegaugeStateTransferRuntime(fx.env, new Date("2026-08-25T12:00:00.000Z"));
+    await freezeAndExportRegaugeState(runtime, transport);
+    // The bundle is authentic and resolves at the same transfer id, but a consumer whose runtime
+    // expects a different tenant must reject it. assertExpectedBindings is the sole tenant-isolation
+    // enforcement point; this pins it so a refactor cannot silently drop it.
+    const foreign = loadRegaugeStateTransferRuntime(
+      { ...fx.env, MENDPOINT_REGAUGE_TENANT_ID: "tenant_someone_else" },
+      new Date("2026-08-25T12:00:00.000Z"),
+    );
+    await expect(verifyPublishedRegaugeState(foreign, transport)).rejects.toThrow(
+      "regauge_state_transfer_binding_mismatch:tenantId",
+    );
+  });
 });

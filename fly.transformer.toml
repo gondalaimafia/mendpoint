@@ -42,6 +42,7 @@ kill_timeout = 45
   MENDPOINT_BACKUP_TRANSPORT = "rclone_s3"
   MENDPOINT_BACKUP_STAGING_ROOT = "/tmp/mendpoint-regauge-transfer"
   MENDPOINT_BACKUP_OBJECT_PREFIX = "regauge-state-transfer"
+  MENDPOINT_REGAUGE_TRANSFER_TARGET_ROOT = "/data/db"
   MENDPOINT_REPOS_DIR = "/data/repos"
   MENDPOINT_PILOT_SEED = "0"
   MENDPOINT_FEED_POLLING_ENABLED = "0"
