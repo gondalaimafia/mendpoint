@@ -2972,3 +2972,20 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Verification before rebasing: all affected typechecks pass; the complete monorepo test command exits 0, including 205 Web, 469 API, 379 database, 438 worker, and 169 script tests. The optimized production build and GA gate pass. The production dependency audit reports 0 vulnerabilities, and `git diff --check` is clean.
 - Post-rebase verification against tenant-isolated main: 76 focused regressions, all three affected typechecks, and the optimized production build pass. The rebase was conflict-free outside this append-only task ledger.
 - Activation boundary: merging code does not enable backups. Production activation still requires the protected `customer-production-backup` environment, `MENDPOINT_CUSTOMER_FLY_APP` environment variable, and app-scoped `MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN` secret. Production recovery is complete; this PR does not mutate those bindings.
+
+## 2026-08-24 Production closure control matrix
+
+- [x] Add a machine-readable 101-requirement closure matrix sourced from every canonical register set.
+- [x] Record the live release-train owner, dependency, disposition, check-state, and P1/P2 blocker snapshot without treating branch-prefix ownership as authoritative.
+- [x] Add red tests for missing requirements, canonical status drift, invalid requirement or PR references, and evidence-free verified or GA promotion.
+- [x] Implement the smallest validator and wire it into the specification and GA gates.
+- [x] Run focused tests, scripts typecheck, full typecheck, GA checks, and strict diff review.
+- [x] Commit the isolated branch without pushing, merging, closing PRs, or changing requirement status.
+
+### Review
+
+- The matrix covers all 101 canonical requirements across the foundational, v3-platform, and v4-platform register sets without copying acceptance prose. Each row retains the exact canonical status plus canonical test and live-evidence identifiers, while open issue and pull-request mappings remain independent release-control metadata.
+- The live snapshot was refreshed after rebasing to `cc21717080a7c6a940ff7837d034ec45c0797a9b`: 35 open pull requests, provisional branch-prefix ownership, explicit dependencies and dispositions, and 25 retained P1/P2 findings. Newly merged pull requests are absent; pull requests #415 through #421 are included.
+- RED proved the validator module was absent. GREEN is five focused tests plus the CLI check: missing rows, canonical status or evidence drift, malformed or unknown references, and verified or GA promotion without qualifying evidence all fail closed.
+- `npm run typecheck` passes across every workspace and the root scripts project. The GA chain passed contract, closure, claims, action pins, architecture, model, naming, ADR, third-state, and evidence reachability. Its revert suite twice hit different five-second wall-clock timeouts under concurrent load without assertion failures; the unchanged 19-test suite passed with `--testTimeout 20000`, and both the revert CLI and final GA preflight passed.
+- No requirement status, Claude branch, pull request, issue, or production surface was changed by this implementation.
