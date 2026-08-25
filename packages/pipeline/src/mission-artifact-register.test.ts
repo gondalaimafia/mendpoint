@@ -139,6 +139,26 @@ describe("tryRegisterBoundMissionArtifacts", () => {
     expect(result.reason).toMatch(/mission_artifact/);
     expect(listMissionArtifacts(db, "t1", "m1")).toHaveLength(0);
   });
+
+  it("rolls back every registration when a later artifact is invalid", () => {
+    const db = fixture();
+    manifest(db, "art-patch", "candidate-edit", "patch");
+    db.raw.exec("BEGIN IMMEDIATE");
+    const result = tryRegisterBoundMissionArtifacts(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      producerPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+      artifacts: [
+        { role: "candidate_patch", artifactId: "art-patch", label: "patch" },
+        { role: "verification_report", artifactId: "missing-report", label: "report" },
+      ],
+    });
+    expect(result.status).toBe("failed");
+    expect(listMissionArtifacts(db, "t1", "m1")).toHaveLength(0);
+    db.raw.exec("COMMIT");
+  });
 });
 
 describe("tryRegisterFettlerCampaignMissionArtifacts", () => {

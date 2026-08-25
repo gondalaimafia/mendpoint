@@ -57,6 +57,7 @@ export function tryRegisterBoundMissionArtifacts(
     logSkip(`skip: mission_not_found tenant=${input.tenantId} mission=${missionId}`);
     return { status: "skipped_mission_not_found", missionId };
   }
+  db.raw.exec("SAVEPOINT mission_artifact_registration");
   try {
     for (const artifact of input.artifacts) {
       registerMissionArtifact(db, {
@@ -83,8 +84,11 @@ export function tryRegisterBoundMissionArtifacts(
         createdAt: input.createdAt,
       });
     }
+    db.raw.exec("RELEASE SAVEPOINT mission_artifact_registration");
     return { status: "registered", missionId, count: input.artifacts.length };
   } catch (error) {
+    db.raw.exec("ROLLBACK TO SAVEPOINT mission_artifact_registration");
+    db.raw.exec("RELEASE SAVEPOINT mission_artifact_registration");
     const reason = error instanceof Error ? error.message : String(error);
     logSkip(`registration failed tenant=${input.tenantId} mission=${missionId}: ${reason}`);
     return { status: "failed", missionId, reason };

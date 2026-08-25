@@ -18,6 +18,8 @@ import {
   getMissionTask,
   getRoutingLedgerForJob,
   listAdaptiveCandidates,
+  listMissionArtifactLineage,
+  listMissionArtifacts,
   insertConnectedRepository,
   insertRepositorySnapshot,
   insertRepositorySnapshotFiles,
@@ -932,6 +934,18 @@ describe("Transformer production pilot lane", () => {
       ownerType: "human",
       handoffReason: "pilot_lane_review",
     });
+    const missionArtifacts = listMissionArtifacts(db, "tenant-a", missionId);
+    expect(missionArtifacts.map((artifact) => artifact.role).sort())
+      .toEqual(["candidate_patch", "verification_report"]);
+    const candidate = missionArtifacts.find((artifact) => artifact.role === "candidate_patch")!;
+    const verification = missionArtifacts.find((artifact) => artifact.role === "verification_report")!;
+    expect(missionArtifacts.every((artifact) => artifact.sourceSnapshot === "snapshot-a")).toBe(true);
+    expect(listMissionArtifactLineage(db, "tenant-a", missionId)).toEqual([
+      expect.objectContaining({
+        artifactId: verification.artifactId,
+        parentArtifactId: candidate.artifactId,
+      }),
+    ]);
   });
 
   it("does not hand the launch MissionTask to review when the attempt fails", async () => {
