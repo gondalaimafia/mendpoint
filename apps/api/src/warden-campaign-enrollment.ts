@@ -24,7 +24,10 @@ import {
   type InstallationRepository,
   type MockInstallationRepositoryInput,
 } from "@mendpoint/github";
-import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
+import {
+  ensureDefaultPolicyEnvelopeBinding,
+  pinPublishedGraphVersionForSingleRepository,
+} from "@mendpoint/pipeline";
 import { enqueueReadyWardenCampaignTargets, extractFieldRenames } from "@mendpoint/worker/warden-campaign-execute-activation";
 import { Hono, type Context } from "hono";
 import type { ApiEnv } from "./auth.js";
@@ -534,6 +537,21 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           ownerPrincipalId: trustPrincipalId,
           repositories: listWardenCampaignTargets(options.db, tenantId, campaignId),
           createdAt: at,
+        });
+        // Spec §11.10: pin a published Change Graph version when this campaign
+        // has exactly one enrolled repository and a unique head already exists.
+        // Never create a graph file. Multi-repo campaigns stay unbound.
+        const enrolledRepos = listWardenCampaignTargets(options.db, tenantId, campaignId)
+          .map((target) => target.repositoryId);
+        const provider = getProviderBySlug(options.db, result.providerSlug);
+        pinPublishedGraphVersionForSingleRepository(options.db, {
+          tenantId,
+          missionId,
+          repositoryIds: enrolledRepos,
+          actorPrincipalId: trustPrincipalId,
+          correlationId: campaignId,
+          createdAt: at,
+          ...(provider ? { providerId: provider.id } : {}),
         });
       } catch (error) {
         console.error(
