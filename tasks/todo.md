@@ -2952,3 +2952,23 @@ GREEN: `/readyz` now re-exports the established `/healthz` readiness handler and
 RED: `npm run docs:check` reported exactly `model-router.html`, `model-router.md`, `billing-usage.html`, and `billing-usage.md` as stale.
 
 GREEN: the canonical generator changed only those four artifacts. It removed references to the absent billing and router-runtime test files and aligned the router upload copy with the immutable decision record in the source catalog. `docs:check`, `names:check`, `claims:check`, and the production build pass; strict diff review found no source-catalog rewrite.
+## 2026-08-24 Issue #351: platform hardening and backup automation
+
+- [x] Add red regressions for zero, negative, fractional, nonnumeric, and excessive audit-export limits plus spreadsheet-formula cells in CSV output.
+- [x] Parse audit-export limits as positive bounded integers and encode every formula-capable CSV cell safely without changing tenant scope.
+- [x] Extract one streaming byte-limit reader for public Next.js routes and add red regressions for undeclared oversized webhook, design-partner, signup, session, and SAML bodies.
+- [x] Apply bounded streaming reads to those five public routes and bound every upstream response they buffer.
+- [x] Add a default-branch-only customer backup workflow running every 30 minutes under a protected environment, using an app-scoped Fly token, an explicit app binding, concurrency fencing, a bounded remote command, retained evidence, and a deduplicated GitHub issue on failure.
+- [x] Add workflow contract tests proving schedule, permissions, exact environment and secret bindings, command timeout, evidence upload, and failure alerting cannot silently drift.
+- [x] Run focused tests red first, affected typechecks, full tests, production build, GA checks, dependency audit, and diff checks.
+- [ ] Complete independent review, publish one PR for #351, and obtain passing CI plus reciprocal Claude review before merge-ready.
+
+### Review
+
+- RED: the audit parser module and backup workflow did not exist. Five public-route regressions proved undeclared oversized streams were either buffered, returned a later validation status, or were not cancelled.
+- GREEN: audit limits are exact positive integers capped at 20,000 at both HTTP and database boundaries. CSV cells that can be interpreted as spreadsheet formulas are neutralized. One shared reader caps and cancels request and upstream streams for the webhook, design-partner, signup, session, SAML, and authenticated proxy paths.
+- Backup automation: the default-branch schedule runs every 30 minutes under `customer-production-backup`, refuses any Fly token that can see more or less than the one bound app, keeps runs serialized, invokes the existing authenticated backup operation remotely, retains evidence for 90 days, and owns one deduplicated GitHub failure issue.
+- Strict review found and fixed two pre-publication defects: the design-partner timeout originally stopped after upstream headers instead of covering its body, and the Fly inventory parser used `Name` instead of flyctl's lowercase `name`. Both have exact regressions.
+- Verification before rebasing: all affected typechecks pass; the complete monorepo test command exits 0, including 205 Web, 469 API, 379 database, 438 worker, and 169 script tests. The optimized production build and GA gate pass. The production dependency audit reports 0 vulnerabilities, and `git diff --check` is clean.
+- Post-rebase verification against tenant-isolated main: 76 focused regressions, all three affected typechecks, and the optimized production build pass. The rebase was conflict-free outside this append-only task ledger.
+- Activation boundary: merging code does not enable backups. Production activation still requires the protected `customer-production-backup` environment, `MENDPOINT_CUSTOMER_FLY_APP` environment variable, and app-scoped `MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN` secret. Production recovery is complete; this PR does not mutate those bindings.

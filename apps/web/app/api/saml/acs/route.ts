@@ -12,8 +12,14 @@ import {
   samlSpConfig,
   validateSamlResponse,
 } from "../../../../lib/saml-auth";
+import {
+  BodyLimitExceededError,
+  InvalidContentLengthError,
+  readRequestBodyWithinLimit,
+} from "../../../../lib/bounded-body";
 
 export const dynamic = "force-dynamic";
+const MAX_SAML_BODY_BYTES = 1024 * 1024;
 
 function clearFlow(response: NextResponse): void {
   const production = process.env.NODE_ENV === "production";
@@ -39,9 +45,25 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
   if (!config) return Response.json({ error: "saml_not_configured" }, { status: 503 });
 
-  const form = await request.formData().catch(() => null);
-  const samlResponse = form?.get("SAMLResponse");
-  const relayState = form?.get("RelayState");
+  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.startsWith("application/x-www-form-urlencoded")) {
+    return Response.json({ error: "saml_callback_invalid" }, { status: 400 });
+  }
+  let raw: Uint8Array<ArrayBuffer> | null;
+  try {
+    raw = await readRequestBodyWithinLimit(request, MAX_SAML_BODY_BYTES);
+  } catch (error) {
+    if (error instanceof BodyLimitExceededError) {
+      return Response.json({ error: "payload_too_large" }, { status: 413 });
+    }
+    if (error instanceof InvalidContentLengthError) {
+      return Response.json({ error: "invalid_content_length" }, { status: 400 });
+    }
+    throw error;
+  }
+  const form = new URLSearchParams(Buffer.from(raw ?? []).toString("utf8"));
+  const samlResponse = form.get("SAMLResponse");
+  const relayState = form.get("RelayState");
   const flowCookie = request.cookies.get(SAML_FLOW_COOKIE)?.value ?? "";
   if (
     typeof samlResponse !== "string" ||

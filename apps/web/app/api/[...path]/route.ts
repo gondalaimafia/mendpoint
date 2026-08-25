@@ -5,6 +5,11 @@ import {
   authenticatedWebCredential,
   isAllowedMutationOrigin,
 } from "../../../lib/proxy-auth";
+import {
+  BodyLimitExceededError,
+  cancelBody,
+  readBodyWithinLimit,
+} from "../../../lib/bounded-body";
 
 export const dynamic = "force-dynamic";
 
@@ -30,61 +35,6 @@ const RESPONSE_HEADERS = [
 const MAX_REQUEST_BYTES = 256 * 1024;
 const UPSTREAM_TIMEOUT_MS = 12_000;
 const CANDIDATE_UPSTREAM_TIMEOUT_MS = 60_000;
-
-class BodyLimitExceededError extends Error {
-  constructor() {
-    super("body_limit_exceeded");
-    this.name = "BodyLimitExceededError";
-  }
-}
-
-function cancelBody(
-  body: ReadableStream<Uint8Array> | null,
-  abort?: () => void,
-): void {
-  abort?.();
-  if (body) void body.cancel("body_limit_exceeded").catch(() => undefined);
-}
-
-async function readBodyWithinLimit(
-  body: ReadableStream<Uint8Array> | null,
-  maximumBytes: number,
-  abort?: () => void,
-): Promise<Uint8Array<ArrayBuffer> | null> {
-  if (!body) return null;
-  const reader = body.getReader();
-  const chunks: Uint8Array<ArrayBuffer>[] = [];
-  let totalBytes = 0;
-  try {
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
-      const remaining = maximumBytes + 1 - totalBytes;
-      const retainedBytes = Math.min(next.value.byteLength, Math.max(remaining, 0));
-      if (retainedBytes > 0) {
-        const retained = new Uint8Array(retainedBytes);
-        retained.set(next.value.subarray(0, retainedBytes));
-        chunks.push(retained);
-        totalBytes += retainedBytes;
-      }
-      if (next.value.byteLength > retainedBytes || totalBytes > maximumBytes) {
-        abort?.();
-        void reader.cancel("body_limit_exceeded").catch(() => undefined);
-        throw new BodyLimitExceededError();
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  if (chunks.length === 1) return chunks[0]!;
-  const result = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return result;
-}
 
 function matchesAllowedRoute(method: string, path: string): boolean {
   if (
