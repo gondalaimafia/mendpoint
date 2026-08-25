@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  bindMissionGraphVersion,
   bindMissionToPolicyEnvelope,
   createDb,
   createExplicitMemory,
@@ -158,6 +159,11 @@ describe("worker mission-context producer (real stores)", () => {
     // The passing verification against the current snapshot is current evidence.
     if (compiled.envelope.verificationState.status !== "consulted") throw new Error("unreachable");
     expect(compiled.envelope.verificationState.entries.some((entry) => entry.state === "current_evidence")).toBe(true);
+    expect(compiled.envelope.missionIdentity.graphVersionId).toBeNull();
+    expect(compiled.envelope.graphProjection).toEqual({
+      status: "not_consulted",
+      reason: "graph_version_absent",
+    });
     // The mission decision overrode the conflicting organization memory.
     if (compiled.envelope.relevantOrgMemory.status !== "consulted") throw new Error("unreachable");
     expect(compiled.envelope.relevantOrgMemory.applied).toHaveLength(0);
@@ -267,5 +273,33 @@ describe("worker mission-context producer (real stores)", () => {
     if (compiled.envelope.activeDecisions.status !== "not_consulted") throw new Error("unreachable");
     expect(compiled.envelope.activeDecisions.reason).toBe("no_mission_bound");
     expect(compiled.injection.promptBody).toContain("use the internal auth client");
+  });
+
+  it("carries a pinned graph version on mission identity without inventing an impact query", () => {
+    const db = fixture();
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      graphVersionId: "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      actorPrincipalId: "p1",
+      eventId: "e-graph",
+      idempotencyKey: "k-graph",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    });
+    expect(compiled.envelope.missionIdentity.graphVersionId).toBe(
+      "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    expect(compiled.envelope.graphProjection).toEqual({
+      status: "not_consulted",
+      reason: "endpoint_key_absent",
+    });
   });
 });

@@ -93,6 +93,7 @@ export type SectionNotConsultedReason =
   | "store_not_available"
   | "not_applicable_to_task"
   | "graph_version_absent"
+  | "endpoint_key_absent"
   | "graph_projection_failed";
 
 /**

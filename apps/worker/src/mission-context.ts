@@ -205,9 +205,7 @@ export function buildMissionContext(
       objective: mission?.objective ?? params.fallback.objective,
       repositoryId: mission?.repositoryId ?? params.fallback.repositoryId,
       snapshotId,
-      // The Mission row carries no graph version (deferred on main), so the graph
-      // projection is not available on this path; the Fettler agent has no graph.
-      graphVersionId: null,
+      graphVersionId: mission?.graphVersionId ?? null,
     },
     task: params.task,
     // Policy constraints come from the mission's inherited Policy Envelope
@@ -218,8 +216,13 @@ export function buildMissionContext(
     missionDecisions,
     organizationMemory,
     userPreferences: { consulted: false, reason: "store_not_available" },
-    // The Fettler agent has no graph tool; no graph version is bound here.
-    graph: { consulted: false, reason: "graph_version_absent" },
+    // Impact-path projection requires an endpoint key (`queryFettlerEndpointImpact`).
+    // This producer does not invent one. A pinned graph version is still carried
+    // on mission identity; the graph section stays not-consulted until a real
+    // endpoint surface is available on the task.
+    graph: mission?.graphVersionId
+      ? { consulted: false, reason: "endpoint_key_absent" }
+      : { consulted: false, reason: "graph_version_absent" },
     history,
     verification,
     exceptions,
