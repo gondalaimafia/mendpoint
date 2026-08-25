@@ -9,6 +9,9 @@ import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
 import {
   bindMissionScope,
   createDb,
+  createMission,
+  getMission,
+  getMissionPolicyEnvelope,
   insertPrincipal,
   regaugeMissionId,
   resolveMissionForRegaugeCampaign,
@@ -724,7 +727,45 @@ describe("ReGauge campaign Mission wiring", () => {
       state: "created",
       regaugeCampaignId: "campaign-a",
       ownerPrincipalId: "principal-a",
+      policyEnvelopeVersion: "1",
     });
+    expect(getMissionPolicyEnvelope(appDb, "tenant-a", mission!.id)).not.toBeNull();
+  });
+
+  it("binds the default Policy Envelope onto an older Mission that was created without one", async () => {
+    const service = open();
+    const appDb = appDbWithTenant();
+    const app = testAppWithMission(service, appDb);
+    const missionId = regaugeMissionId("tenant-a", "campaign-a");
+    createMission(appDb, {
+      id: missionId,
+      tenantId: "tenant-a",
+      product: "regauge",
+      triggerKind: "migration_objective",
+      objective: "pre-envelope mission",
+      ownerPrincipalId: "principal-a",
+      eventId: `${missionId}-created`,
+      idempotencyKey: `mission-create-${missionId}`,
+      correlationId: "campaign-a",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(getMission(appDb, "tenant-a", missionId)).toMatchObject({
+      policyEnvelopeVersion: null,
+    });
+
+    const response = await app.request("/transformer/control-plane/campaigns", {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify(bundle()),
+    });
+    expect(response.status).toBe(201);
+
+    const mission = resolveMissionForRegaugeCampaign(appDb, "tenant-a", "campaign-a");
+    expect(mission).toMatchObject({
+      product: "regauge",
+      policyEnvelopeVersion: "1",
+    });
+    expect(getMissionPolicyEnvelope(appDb, "tenant-a", mission!.id)).not.toBeNull();
   });
 
   it("replays campaign creation with 201 after launch has bound the Mission scope", async () => {
@@ -792,7 +833,9 @@ describe("ReGauge campaign Mission wiring", () => {
       regaugeCampaignId: "campaign-a",
       repositoryId: "repo-a",
       snapshotId: "snap-a",
+      policyEnvelopeVersion: "1",
     });
+    expect(getMissionPolicyEnvelope(appDb, "tenant-a", mission!.id)).not.toBeNull();
   });
 
   it("fails closed before campaign creation when Mission authority cannot resolve the principal", async () => {
