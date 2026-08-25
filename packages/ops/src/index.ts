@@ -198,7 +198,6 @@ export {
   type RegaugeLedgerTip,
   type RegaugeDatabaseEvidence,
   type RegaugeTransferManifest,
-  type RegaugeRollbackActivity,
   type RegaugeRollbackProof,
   type RegaugeCutoverFence,
 } from "./regauge-cutover.js";

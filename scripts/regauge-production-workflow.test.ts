@@ -86,6 +86,8 @@ describe("Regauge production workflow", () => {
     expect(sourceProfile).toContain('MENDPOINT_BACKUP_TRANSPORT = "rclone_s3"');
     expect(sourceProfile).toContain('MENDPOINT_BACKUP_STAGING_ROOT = "/tmp/mendpoint-regauge-transfer"');
     expect(sourceProfile).toContain('MENDPOINT_BACKUP_OBJECT_PREFIX = "regauge-state-transfer"');
+    const dockerfile = readFileSync("Dockerfile", "utf8");
+    expect(dockerfile).toMatch(/FROM api AS transformer[\s\S]*install -y --no-install-recommends gosu rclone/);
     const storage = deploy.steps.find(
       (step: Record<string, unknown>) => step.name === "Verify private checkpoint storage",
     );
@@ -97,6 +99,9 @@ describe("Regauge production workflow", () => {
       "BUCKET_NAME",
       "AWS_ACCESS_KEY_ID",
       "AWS_SECRET_ACCESS_KEY",
+      "MENDPOINT_REGAUGE_TRANSFER_KEY",
+      "MENDPOINT_APPLICATION_DATA_KEY",
+      "MENDPOINT_REGAUGE_CHECKPOINT_KEY",
     ]) expect(storage.run).toContain(name);
     expect(storage.run).toContain("regauge_storage_bootstrap_required");
     expect(storage.run).not.toContain("flyctl storage status");
@@ -300,23 +305,28 @@ describe("Regauge production workflow", () => {
     ).toBe(false);
   });
 
-  it("requires an authenticated restore receipt before target credentials or processes can start", () => {
+  it("requires a fresh exact-volume restore attestation before target credentials or processes can start", () => {
     const workflow = parse(
       readFileSync(".github/workflows/regauge-production.yml", "utf8"),
     ) as Record<string, any>;
     const steps = workflow.jobs.deploy.steps as Record<string, any>[];
     const index = (name: string) => steps.findIndex((step) => step.name === name);
 
-    expect(index("Verify authenticated restored state")).toBeGreaterThan(-1);
+    expect(index("Attest exact restored state on target volume")).toBeGreaterThan(-1);
     expect(index("Stage production secrets")).toBeGreaterThan(
-      index("Verify authenticated restored state"),
+      index("Attest exact restored state on target volume"),
     );
     expect(index("Deploy coordinator")).toBeGreaterThan(index("Stage production secrets"));
     expect(index("Deploy worker")).toBeGreaterThan(index("Deploy coordinator"));
-    const receipt = steps[index("Verify authenticated restored state")].run as string;
-    expect(receipt).toContain("flyctl ssh console --app mendpoint-transformer-pilot");
-    expect(receipt).toContain("scripts/regauge-state-transfer.ts verify-receipt");
+    const receipt = steps[index("Attest exact restored state on target volume")].run as string;
+    expect(receipt).toContain("flyctl console --app mendpoint-regauge-production");
+    expect(receipt).toContain('--volume "$target_volume_id:/data"');
+    expect(receipt).toContain("scripts/regauge-state-transfer.ts attest-restored");
+    expect(receipt).toContain('.targetVolume == $target_volume');
+    expect(receipt).toContain('.sourceRevision == $revision');
+    expect(receipt).toContain('test "$((now_epoch - verified_epoch))" -le 300');
     expect(receipt).toContain("restored-state-receipt.json");
+    expect(receipt).not.toContain("MENDPOINT_REGAUGE_TRANSFER_KEY=");
     const failure = steps.find((step) => step.name === "Contain target after activation failure")!;
     expect(failure.if).toBe("${{ failure() }}");
     expect(failure.run).toContain("worker=0");

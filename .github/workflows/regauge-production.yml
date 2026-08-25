@@ -107,6 +107,9 @@ jobs:
       MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION: ${{ vars.REGAUGE_MODEL_REGION }}
       MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION: ${{ vars.REGAUGE_MAX_DATA_CLASSIFICATION }}
       MENDPOINT_REGAUGE_LIVE_EVAL_MAX_USD: ${{ vars.REGAUGE_LIVE_EVAL_MAX_USD }}
+      MENDPOINT_REGAUGE_TRANSFER_ID: ${{ vars.REGAUGE_TRANSFER_ID }}
+      MENDPOINT_REGAUGE_TRANSFER_KEY_ID: ${{ vars.REGAUGE_TRANSFER_KEY_ID }}
+      MENDPOINT_REGAUGE_TRANSFER_FENCE_ID: ${{ vars.REGAUGE_TRANSFER_FENCE_ID }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON: ${{ vars.REGAUGE_DEEPSEEK_GOVERNANCE_JSON }}
       MENDPOINT_AGENT_VERIFIER_PRICING_JSON: ${{ vars.REGAUGE_DEEPSEEK_PRICING_JSON }}
@@ -210,6 +213,8 @@ jobs:
             MENDPOINT_REGAUGE_ADAPTIVE_MODEL_PROVIDER MENDPOINT_REGAUGE_ADAPTIVE_MODEL_DEPLOYMENT
             MENDPOINT_REGAUGE_ADAPTIVE_EXECUTION_REGION MENDPOINT_REGAUGE_ADAPTIVE_MAX_DATA_CLASSIFICATION
             MENDPOINT_REGAUGE_LIVE_EVAL_MAX_USD
+            MENDPOINT_REGAUGE_TRANSFER_ID MENDPOINT_REGAUGE_TRANSFER_KEY_ID
+            MENDPOINT_REGAUGE_TRANSFER_FENCE_ID
             DEEPSEEK_API_KEY MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON
             MENDPOINT_AGENT_VERIFIER_PRICING_JSON MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON
             MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT
@@ -279,19 +284,81 @@ jobs:
         run: |
           set -euo pipefail
           storage_secrets="$(flyctl secrets list --app mendpoint-regauge-production --json)"
-          for name in AWS_ENDPOINT_URL_S3 AWS_REGION BUCKET_NAME AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+          for name in AWS_ENDPOINT_URL_S3 AWS_REGION BUCKET_NAME AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
+            MENDPOINT_REGAUGE_TRANSFER_KEY MENDPOINT_APPLICATION_DATA_KEY MENDPOINT_REGAUGE_CHECKPOINT_KEY; do
             jq -e --arg name "$name" \
               '.[] | select(.name == $name and (.status == "Staged" or .status == "Deployed"))' \
               <<<"$storage_secrets" >/dev/null \
               || { echo "regauge_storage_bootstrap_required:$name"; exit 1; }
           done
-      - name: Verify authenticated restored state
+      - name: Attest exact restored state on target volume
         shell: bash
         run: |
           set -euo pipefail
-          flyctl ssh console --app mendpoint-transformer-pilot \
-            --command "node --import tsx scripts/regauge-state-transfer.ts verify-receipt" \
-            | tee test-results/regauge-production/restored-state-receipt.json
+          volume_json="$(cat test-results/regauge-production/coordinator-volume.json)"
+          target_volume_id="$(jq -r '.id' <<<"$volume_json")"
+          test -n "$target_volume_id"
+          test "$(jq -r '.attached_machine_id // empty' <<<"$volume_json")" = ""
+
+          source_machine_json="$(flyctl machines list --app mendpoint-transformer-pilot --json \
+            | jq -ce '[.[] | select(
+                .state == "started"
+                and .region == "sjc"
+                and .config.metadata.fly_process_group == "coordinator"
+                and .config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA
+                and .image_ref.labels.GH_SHA == env.GITHUB_SHA
+                and ([.config.mounts[] | select(
+                  .path == "/data"
+                  and .encrypted == true
+                  and .size_gb == 20
+                  and .name == "mendpoint_transformer_data_v2"
+                )] | length) == 1
+              )] | if length == 1 then .[0] else error("regauge_source_coordinator_revision_invalid") end')" \
+            || { echo "regauge_source_coordinator_revision_invalid"; exit 1; }
+          source_volume_id="$(jq -r '.config.mounts[] | select(.path == "/data") | .volume' <<<"$source_machine_json")"
+          source_image="$(jq -r '.image_ref | "\(.registry)/\(.repository)@\(.digest)"' <<<"$source_machine_json")"
+          [[ "$source_volume_id" =~ ^vol_[a-z0-9]+$ ]]
+          [[ "$source_image" =~ ^registry\.fly\.io/mendpoint-transformer-pilot@sha256:[a-f0-9]{64}$ ]]
+
+          console_output="$(flyctl console --app mendpoint-regauge-production \
+            --image "$source_image" --region sjc --volume "$target_volume_id:/data" \
+            --env MENDPOINT_BACKUP_SOURCE_ROOT=/data/db \
+            --env MENDPOINT_REGAUGE_TRANSFER_TARGET_ROOT=/data/db \
+            --env MENDPOINT_BACKUP_FENCE_ROOT=/data/db/.backup-fence \
+            --env MENDPOINT_BACKUP_TRANSPORT=rclone_s3 \
+            --env MENDPOINT_BACKUP_STAGING_ROOT=/tmp/mendpoint-regauge-transfer \
+            --env MENDPOINT_BACKUP_OBJECT_PREFIX=regauge-state-transfer \
+            --env MENDPOINT_REGAUGE_TRANSFER_ID="$MENDPOINT_REGAUGE_TRANSFER_ID" \
+            --env MENDPOINT_REGAUGE_TRANSFER_KEY_ID="$MENDPOINT_REGAUGE_TRANSFER_KEY_ID" \
+            --env MENDPOINT_REGAUGE_TRANSFER_FENCE_ID="$MENDPOINT_REGAUGE_TRANSFER_FENCE_ID" \
+            --env MENDPOINT_REGAUGE_TENANT_ID="$MENDPOINT_REGAUGE_TENANT_ID" \
+            --env MENDPOINT_REGAUGE_CAMPAIGN_ID="$MENDPOINT_REGAUGE_CAMPAIGN_ID" \
+            --env MENDPOINT_REGAUGE_SOURCE_APP=mendpoint-transformer-pilot \
+            --env MENDPOINT_REGAUGE_SOURCE_VOLUME="$source_volume_id" \
+            --env MENDPOINT_REGAUGE_SOURCE_REVISION="$GITHUB_SHA" \
+            --env MENDPOINT_REGAUGE_TARGET_APP=mendpoint-regauge-production \
+            --env MENDPOINT_REGAUGE_TARGET_VOLUME="$target_volume_id" \
+            --command "node --import tsx scripts/regauge-state-transfer.ts attest-restored")"
+          attestation_json="$(grep -E '^\{.*\}$' <<<"$console_output" | tail -n 1)"
+          test -n "$attestation_json" || { echo "regauge_target_attestation_missing"; exit 1; }
+          jq -e --arg transfer "$MENDPOINT_REGAUGE_TRANSFER_ID" \
+            --arg target_volume "$target_volume_id" --arg revision "$GITHUB_SHA" '
+              .attested == true
+              and .transferId == $transfer
+              and .targetApp == "mendpoint-regauge-production"
+              and .targetVolume == $target_volume
+              and .sourceRevision == $revision
+              and (.manifestAuthentication | test("^[a-f0-9]{64}$"))
+              and (.recoveryReceiptDigest | test("^[a-f0-9]{64}$"))
+              and (.verifiedAt | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"))
+            ' <<<"$attestation_json" >/dev/null \
+            || { echo "regauge_target_attestation_invalid"; exit 1; }
+          verified_epoch="$(date -u -d "$(jq -r '.verifiedAt' <<<"$attestation_json")" +%s)"
+          now_epoch="$(date -u +%s)"
+          test "$verified_epoch" -le "$now_epoch"
+          test "$((now_epoch - verified_epoch))" -le 300
+          printf '%s\n' "$attestation_json" \
+            > test-results/regauge-production/restored-state-receipt.json
       - name: Stage production secrets
         shell: bash
         run: |
