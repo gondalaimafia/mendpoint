@@ -1,5 +1,7 @@
 # Mission and persistent-context: current state
 
+> **Superseded as the current-status document.** Re-run 2026-08-25 against `origin/main` @ `8df0580`: [`docs/missions/V4_GAP_ANALYSIS.md`](V4_GAP_ANALYSIS.md). Keep this file as the 2026-08-21 archaeology; many "built, uncalled" findings below are now live.
+
 Repository archaeology performed against `origin/main` @ `2f914cb`, 2026-08-21, ahead of any Mission Space work. Every claim below was checked against code. Where a specification document and the code disagree, the code is reported and the document is named.
 
 Scope note: `docs/intelligence/CURRENT_STATE.md` covers the routing, learning, and cost surface and was independently verified during this sweep — no overclaim was found in it. This document covers the *work unit* and *persistent context* surface and does not duplicate it.

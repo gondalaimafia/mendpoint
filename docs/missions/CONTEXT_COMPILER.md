@@ -16,7 +16,7 @@ is bounded, not complete.
 |---|---|---|
 | Compiler + renderer | `packages/pipeline/src/mission-context-compiler.ts` | Pure. Assembles the envelope from already-fetched inputs, resolves precedence, bounds, three-states, and renders the injection + context refs. |
 | Worker producer | `apps/worker/src/mission-context.ts` | Reads the live stores (org memory, decisions, exceptions, verification, history) and calls the compiler. Reads only; tenant is the authenticated job principal. |
-| Agent injection | `packages/agent/src/inherited-context.ts` + the seam in `packages/agent/src/agent.ts` | Pure renderer that wraps the compiled block in an untrusted-data frame and injects it into the system prompt, gated by a default-off switch. |
+| Agent injection | `packages/agent/src/inherited-context.ts` + the seam in `packages/agent/src/agent.ts` | Pure renderer that wraps the compiled block in an untrusted-data frame and injects it into the system prompt. Unbound Fettler jobs still require `MENDPOINT_INHERITED_CONTEXT`; a bound Mission compiles even with that switch unset (`inheritedContextShouldCompile`). Explicit `=0` wins over `missionBound`. Current compiler gaps: [`V4_GAP_ANALYSIS.md`](V4_GAP_ANALYSIS.md). |
 
 ## The envelope
 
