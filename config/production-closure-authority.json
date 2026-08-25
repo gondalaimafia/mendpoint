@@ -26,11 +26,11 @@
   "protectedFiles": {
     ".github/workflows/closure-authority.yml": "sha256:f48ef282f53aeae03a8feab305be28e5b6b20b4ff903cdd3738b74d8cc4d55af",
     ".github/workflows/ci.yml": "sha256:cd754f91027985a2f65de0cdda6d9bcfcb5b59169a32457367e5bd95f3df025e",
-    "package.json": "sha256:ddced0d6ff38b725551141df83b9f5515c90df311c82ad906fc0360dfeb16a7c",
+    "package.json": "sha256:53367f9a3ccfb0d048f16865a9fad208131fac1cb90e652e46e2ad2ebb121974",
     "package-lock.json": "sha256:193181927b3e5813f43471c60c343c0300c6c71540a9b3921968a215cb57cd0d",
     "tsconfig.base.json": "sha256:7c157e5eafd2be931e382044c0bdbf7008e111c119c3932f6fd31603a28e8ede",
     "scripts/tsconfig.json": "sha256:8607a9e57b531b9c941819da05b1ba70c991389a5d1b3d13be06d109d49b22e5",
-    "scripts/production-closure-proposal-authority.ts": "sha256:4fc566d114056275e38cf98771a585195ffd7d5f3cc8b7e4d884c096f3eda574",
+    "scripts/production-closure-proposal-authority.ts": "sha256:ef77c2242cf214c34fffb902771cdff481b3ffd4a5744d1cd21628d1d042e4b4",
     "scripts/production-closure-github-authority.ts": "sha256:f381afd1aecf02fe0aac42fe1f5fd9171840e62af6271eb03fee428579e51fd4",
     "scripts/production-closure-authority-rotation.ts": "sha256:a028ddc9accff22771211afba38573cf7482856e1539b81535d711b8b1f8271f",
     "scripts/production-closure-matrix.ts": "sha256:229bbd7eb2c8a2e58d9eb9b849be46d4776163f53ae6d63f3121ac7e11670a25",
