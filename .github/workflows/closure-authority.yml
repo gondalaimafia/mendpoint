@@ -50,7 +50,7 @@ jobs:
         pull_request: ${{ fromJSON(needs.discover.outputs.pull_requests) }}
     concurrency:
       group: production-closure-authority-${{ matrix.pull_request }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment: production-closure-authority
     timeout-minutes: 15

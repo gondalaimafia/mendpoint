@@ -51,8 +51,12 @@ class FixtureClient implements ProposalAuthorityClient {
       this.modes.set(path.replace(/\\/g, "/"), "100644");
     }
     const matrix = JSON.parse(
-      this.blobs.get(this.pathToSha.get("docs/PRODUCTION_CLOSURE_MATRIX.json")!)!.toString("utf8"),
+      readFileSync(
+        resolve(root, "scripts", "fixtures", "production-closure-matrix-v2.json"),
+        "utf8",
+      ),
     ) as ProductionClosureMatrix;
+    this.replace("docs/PRODUCTION_CLOSURE_MATRIX.json", matrix);
     if (!matrix.releaseTrain.currentPullRequestBootstrap) {
       matrix.releaseTrain.currentPullRequestBootstrap = {
         observationSource: "github_api",

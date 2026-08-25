@@ -261,7 +261,7 @@ describe("GitHub production closure authority", () => {
     });
     expect(job.concurrency).toEqual({
       group: "production-closure-authority-${{ matrix.pull_request }}",
-      "cancel-in-progress": true,
+      "cancel-in-progress": false,
     });
     expect(job.steps).toContainEqual(
       expect.objectContaining({

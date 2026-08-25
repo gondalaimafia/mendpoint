@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ProductRequirementManifest } from "@mendpoint/contract";
 import {
+  exactLegacyBootstrapMatrixAllowed,
   releaseTrainObservationIssues,
   parseProductionEvidenceTrustRoots,
   validateProductionClosureMatrix,
@@ -25,7 +26,10 @@ function loadManifest(): ProductRequirementManifest {
 
 function loadMatrix(): ProductionClosureMatrix {
   return JSON.parse(
-    readFileSync(resolve(root, "docs", "PRODUCTION_CLOSURE_MATRIX.json"), "utf8"),
+    readFileSync(
+      resolve(root, "scripts", "fixtures", "production-closure-matrix-v2.json"),
+      "utf8",
+    ),
   ) as ProductionClosureMatrix;
 }
 
@@ -141,6 +145,16 @@ function attachSignedGaReceipt(
 }
 
 describe("production closure matrix", () => {
+  it("allows only the exact pinned legacy matrix during authority bootstrap", () => {
+    const legacy = Buffer.from('{"schemaVersion":1}\n');
+    const pinned = digest(legacy.toString());
+
+    expect(exactLegacyBootstrapMatrixAllowed(legacy, pinned)).toBe(true);
+    expect(
+      exactLegacyBootstrapMatrixAllowed(Buffer.from('{"schemaVersion":1,"changed":true}\n'), pinned),
+    ).toBe(false);
+  });
+
   it("loads production evidence trust roots only when the supplied key digest matches", () => {
     const { publicKey } = generateKeyPairSync("ed25519");
     const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();

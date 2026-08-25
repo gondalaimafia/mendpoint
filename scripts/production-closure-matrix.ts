@@ -198,6 +198,17 @@ export interface ProductionClosureValidationOptions {
   requireCurrentPullRequestBootstrap?: boolean;
 }
 
+export function exactLegacyBootstrapMatrixAllowed(
+  matrixBytes: Buffer,
+  configuredDigest: string | undefined,
+): boolean {
+  return Boolean(
+    configuredDigest &&
+    SHA256.test(configuredDigest) &&
+    sha256(matrixBytes) === configuredDigest,
+  );
+}
+
 export function parseProductionEvidenceTrustRoots(
   value: string | undefined,
 ): ProductionEvidenceTrustRoot[] {
@@ -1478,12 +1489,24 @@ function main() {
     console.error("PRODUCTION CLOSURE MATRIX FAIL: required JSON file is missing");
     process.exit(1);
   }
+  const matrixBytes = readFileSync(matrixPath);
+  const policyPath = resolve(root, "config", "production-closure-authority.json");
+  const policy = existsSync(policyPath)
+    ? JSON.parse(readFileSync(policyPath, "utf8")) as { legacyBootstrapMatrixDigest?: string }
+    : {};
   const manifest = JSON.parse(
     readFileSync(manifestPath, "utf8"),
   ) as ProductRequirementManifest;
-  const matrix = JSON.parse(
-    readFileSync(matrixPath, "utf8"),
-  ) as ProductionClosureMatrix;
+  const matrix = JSON.parse(matrixBytes.toString("utf8")) as ProductionClosureMatrix;
+  if (
+    matrix.schemaVersion === 1 &&
+    exactLegacyBootstrapMatrixAllowed(matrixBytes, policy.legacyBootstrapMatrixDigest)
+  ) {
+    console.log(
+      "PRODUCTION CLOSURE BOOTSTRAP PASS: exact pinned legacy matrix retained; protected proposal authority still requires schema v2",
+    );
+    return;
+  }
   const issues = [
     ...releaseTrainObservationIssues(matrix, {
       revisionExists: (revision) => gitRevisionExists(root, revision),

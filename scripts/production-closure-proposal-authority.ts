@@ -41,6 +41,7 @@ interface AuthorityPolicy {
   workflowPath: string;
   requiredCiWorkflowPath: string;
   externalCheckName: string;
+  legacyBootstrapMatrixDigest: string;
   trustedReviewers: Record<string, Array<{ login: string; userId: number }>>;
   productionEvidenceAuthorities: ProductionEvidenceTrustRoot[];
   protectedFiles: Record<string, string>;
@@ -233,6 +234,7 @@ export async function verifyProductionClosureProposal(
       (await client.getRepositoryId()) !== policy.repositoryId ||
       !policy.protectedFiles ||
       Object.keys(policy.protectedFiles).length === 0 ||
+      !/^sha256:[a-f0-9]{64}$/.test(policy.legacyBootstrapMatrixDigest) ||
       !SHA.test(proposalRevision)
     ) {
       add(issues, "PROPOSAL_AUTHORITY_IDENTITY_INVALID", "policy", "repository policy and proposal identity must match");
