@@ -185,6 +185,7 @@ import {
 import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
 import { persistWardenTrajectory } from "./warden-trajectory.js";
 import { assertAgentRunMissionPolicy } from "./agent-run-policy.js";
+import { boundMissionIdFromPayload } from "./job-bound-mission.js";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
 import { observeProductCompletionInShadow } from "./verifier-product-shadow.js";
@@ -3328,11 +3329,13 @@ async function processJobsOnceUnfenced(
         // Tenant is the authenticated job principal, never a request body.
         if (attempt.capture) {
           try {
+            const boundMissionId = boundMissionIdFromPayload(db, job.tenant_id, payload.missionId);
             persistWardenTrajectory(db, {
               tenantId: job.tenant_id,
               capture: attempt.capture,
               jobId: job.id,
               runId: sessionId,
+              ...(boundMissionId ? { missionId: boundMissionId } : {}),
               ...(inheritedContextRefs ? { contextRefs: inheritedContextRefs } : {}),
               createdAt: nowIso(),
             });

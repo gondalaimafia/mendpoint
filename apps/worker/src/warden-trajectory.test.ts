@@ -14,8 +14,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
+  createMission,
   getTrajectory,
   getTrajectoryStepPair,
+  insertPrincipal,
   listTrajectorySteps,
   type AppDb,
 } from "@mendpoint/db";
@@ -230,5 +232,39 @@ describe("persistWardenTrajectory", () => {
     expect(getTrajectory(db, "t1", "traj-scope")).toBeDefined();
     expect(getTrajectory(db, "t2", "traj-scope")).toBeUndefined();
     expect(listTrajectorySteps(db, "t2", "traj-scope")).toHaveLength(0);
+  });
+
+  it("pins a bound Mission on the trajectory when the job claims a real row", () => {
+    const db = fixture();
+    insertPrincipal(db, {
+      id: "p1",
+      tenantId: "t1",
+      kind: "human",
+      subject: "owner@example.com",
+      displayName: "Owner",
+      createdAt: T0,
+    });
+    createMission(db, {
+      id: "mission-a",
+      tenantId: "t1",
+      product: "fettler",
+      triggerKind: "provider_change",
+      objective: "Remediate the payments field rename",
+      ownerPrincipalId: "p1",
+      eventId: "e-mission-a",
+      idempotencyKey: "c-mission-a",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const result = persistWardenTrajectory(db, {
+      tenantId: "t1",
+      capture: capture(),
+      jobId: "job-1",
+      missionId: "mission-a",
+      createdAt: T0,
+      trajectoryId: "traj-mission",
+    });
+    expect(result.ok).toBe(true);
+    expect(getTrajectory(db, "t1", "traj-mission")?.missionId).toBe("mission-a");
   });
 });
