@@ -37,14 +37,23 @@ function missionTaskAgentPrincipal(db: AppDb, tenantId: string, createdAt: strin
   });
 }
 
+/**
+ * Resolve the enrollment task for a claimed repo-scoped target, scoped to the
+ * target's repository only. Both the claim and the review handoff resolve through
+ * here, so a repo-scoped claim must never fall back to the mission-level catch-all:
+ * enrollment writes that catch-all only when the campaign had no targets, so
+ * falling back would funnel every repository onto the same single row — the first
+ * complete would hand the whole Mission to review while its siblings are still
+ * `agent_working`, and later handoffs would find `human_review_required` and return
+ * as though they had succeeded. A missing repo task stays a visible enrollment gap.
+ */
 function resolveEnrollmentTask(
   db: AppDb,
   tenantId: string,
   missionId: string,
   repositoryId: string,
 ): MissionTask | undefined {
-  return getMissionTask(db, tenantId, fettlerCampaignMissionTaskId(missionId, repositoryId))
-    ?? getMissionTask(db, tenantId, fettlerCampaignMissionTaskId(missionId));
+  return getMissionTask(db, tenantId, fettlerCampaignMissionTaskId(missionId, repositoryId));
 }
 
 /**
