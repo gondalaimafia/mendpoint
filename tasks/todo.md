@@ -2989,3 +2989,19 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - RED proved the validator module was absent. GREEN is five focused tests plus the CLI check: missing rows, canonical status or evidence drift, malformed or unknown references, and verified or GA promotion without qualifying evidence all fail closed.
 - `npm run typecheck` passes across every workspace and the root scripts project. The GA chain passed contract, closure, claims, action pins, architecture, model, naming, ADR, third-state, and evidence reachability. Its revert suite twice hit different five-second wall-clock timeouts under concurrent load without assertion failures; the unchanged 19-test suite passed with `--testTimeout 20000`, and both the revert CLI and final GA preflight passed.
 - No requirement status, Claude branch, pull request, issue, or production surface was changed by this implementation.
+
+## 2026-08-24 Issue #361: durable ReGauge DeepSeek advisory verification
+
+- [ ] Add red regressions proving ReGauge completion currently calls DeepSeek synchronously, loses failed observations, accepts the `shadow` production mode, and dispatches without an inherited Mission Policy Envelope.
+- [ ] Define one immutable ReGauge verifier Policy Envelope binding from protected nonsecret configuration, bind it at launch, and reconcile the same exact binding before advisory dispatch for already-running Missions.
+- [ ] Persist a content-addressed advisory input plus an identifier-and-digest-only `verifier.advisory.verify` job in one idempotent transaction; keep repository content out of the job payload.
+- [ ] Process advisory jobs through the existing fenced worker queue, rehydrate and verify the content-addressed input, revalidate Mission, repository, snapshot, Policy Envelope, consent, provider, and principal authority, then persist telemetry before completing the job.
+- [ ] Make retries consult verified durable telemetry rather than the pre-call dispatch intent, so a failed provider attempt remains retryable and an already-recorded result never repeats provider work.
+- [ ] Replace active production `shadow` wiring with exact `advisory` mode while preserving behavior-change denial and compatibility aliases only where required for already-built callers.
+- [ ] Update the protected ReGauge workflow and profile contracts for the Policy Envelope binding and advisory mode without granting candidate selection, execution, delivery, merge, or deployment authority.
+- [ ] Run red-first focused tests, affected typechecks, full tests, optimized production build, GA checks, dependency audit, and diff checks.
+- [ ] Complete strict review, publish one PR closing #361 under #350, and obtain passing CI plus reciprocal Claude review before merge-ready.
+
+### Review
+
+- Pending implementation and verification.
