@@ -5,16 +5,19 @@ on:
     branches: [main]
   pull_request_target:
     branches: [main]
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled, closed]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-  issues:
-    types: [opened, edited, closed, reopened, assigned, unassigned]
+    # Trimmed to types that change a validated input (proposal bytes / head sha). Removed
+    # edited/labeled/unlabeled/closed: none change validated inputs, and closed in particular
+    # triggered full sweeps for PRs the discover step then excludes anyway. Cron is the drift backstop.
+    types: [opened, synchronize, reopened]
+  # Removed workflow_run on CI: CI completion changes none of this workflow's validated inputs
+  # (proposal bytes, config, branch protection) and it fired on every branch, not just main.
+  # Removed pull_request_review: review submit/edit/dismiss changes no validated input; merges are
+  # gated by the status/check this workflow writes, not by review events.
+  # Removed issues: issue-state drift is covered by the cron backstop within 30 minutes; issue
+  # events do not gate merges.
   schedule:
-    - cron: "*/5 * * * *"
+    # */5 -> */30: event triggers cover the reactive cases; the cron is only drift repair.
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -24,6 +27,12 @@ permissions:
   issues: read
   pull-requests: read
   statuses: write
+
+# Collapse bursts: during a merge storm five queued full sweeps all validate the same state,
+# so only the newest matters. PR-triggered runs collapse per PR instead of against the sweep.
+concurrency:
+  group: closure-authority-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || 'sweep' }}
+  cancel-in-progress: true
 
 jobs:
   discover:
@@ -38,12 +47,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Cheap early guard (1 call): if the installation budget is nearly gone, fail with a
+          # named cause instead of a cryptic mid-call rate-limit error. This must still FAIL (red):
+          # an unevaluated authority must never read as evaluated.
+          remaining="$(gh api rate_limit --jq '.resources.core.remaining')"
+          if [ "${remaining:-0}" -lt 200 ]; then
+            echo "::error::closure-authority skipped: installation API budget exhausted (${remaining} remaining)"
+            exit 1
+          fi
           main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
-          pull_requests="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" --jq '.[].number' | jq --compact-output --slurp '.')"
+          if [ "$GITHUB_EVENT_NAME" = pull_request_target ]; then
+            # Scope PR-triggered runs to just the triggering PR: the number comes from the event
+            # payload, so building this list costs zero API calls. Full sweeps (push / schedule /
+            # workflow_dispatch) still paginate every open PR below, where a sweep is the point.
+            pull_requests="$(jq --compact-output --null-input --argjson number "$EVENT_PR_NUMBER" '[$number]')"
+          else
+            pull_requests="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" --jq '.[].number' | jq --compact-output --slurp '.')"
+          fi
           echo "main_sha=${main_sha}" >> "$GITHUB_OUTPUT"
           echo "pull_requests=${pull_requests}" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
 
   invalidate-authority:
     needs: discover
