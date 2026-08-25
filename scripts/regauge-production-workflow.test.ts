@@ -77,6 +77,17 @@ describe("Regauge production workflow", () => {
     const volumeName = flyProfile.match(/^\s*source = "([a-z0-9_]+)"$/m)?.[1];
     expect(volumeName).toBe("mendpoint_regauge_prod_data");
     expect(volumeName?.length).toBeLessThanOrEqual(30);
+    expect(flyProfile).toContain('MENDPOINT_BACKUP_FENCE_ROOT = "/data/db/.backup-fence"');
+    expect(flyProfile).toContain('MENDPOINT_BACKUP_TRANSPORT = "rclone_s3"');
+    expect(flyProfile).toContain('MENDPOINT_BACKUP_STAGING_ROOT = "/tmp/mendpoint-regauge-transfer"');
+    expect(flyProfile).toContain('MENDPOINT_BACKUP_OBJECT_PREFIX = "regauge-state-transfer"');
+    const sourceProfile = readFileSync("fly.transformer.toml", "utf8");
+    expect(sourceProfile).toContain('MENDPOINT_BACKUP_FENCE_ROOT = "/data/db/.backup-fence"');
+    expect(sourceProfile).toContain('MENDPOINT_BACKUP_TRANSPORT = "rclone_s3"');
+    expect(sourceProfile).toContain('MENDPOINT_BACKUP_STAGING_ROOT = "/tmp/mendpoint-regauge-transfer"');
+    expect(sourceProfile).toContain('MENDPOINT_BACKUP_OBJECT_PREFIX = "regauge-state-transfer"');
+    const dockerfile = readFileSync("Dockerfile", "utf8");
+    expect(dockerfile).toMatch(/FROM api AS transformer[\s\S]*install -y --no-install-recommends gosu rclone/);
     const storage = deploy.steps.find(
       (step: Record<string, unknown>) => step.name === "Verify private checkpoint storage",
     );
@@ -88,10 +99,30 @@ describe("Regauge production workflow", () => {
       "BUCKET_NAME",
       "AWS_ACCESS_KEY_ID",
       "AWS_SECRET_ACCESS_KEY",
+      "MENDPOINT_REGAUGE_TRANSFER_KEY",
+      "MENDPOINT_APPLICATION_DATA_KEY",
+      "MENDPOINT_REGAUGE_CHECKPOINT_KEY",
     ]) expect(storage.run).toContain(name);
     expect(storage.run).toContain("regauge_storage_bootstrap_required");
     expect(storage.run).not.toContain("flyctl storage status");
     expect(storage.run).not.toContain("flyctl storage create");
+    // The five base storage credentials stay unconditional; the three transfer
+    // keys are required only when a transfer is configured, and a configured
+    // transfer missing any of them still hard-fails with the same message shape.
+    const unconditionalLoop = storage.run.match(/for name in ([^\n]*?); do/)?.[1] ?? "";
+    for (const name of [
+      "AWS_ENDPOINT_URL_S3",
+      "AWS_REGION",
+      "BUCKET_NAME",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+    ]) expect(unconditionalLoop).toContain(name);
+    for (const name of [
+      "MENDPOINT_REGAUGE_TRANSFER_KEY",
+      "MENDPOINT_APPLICATION_DATA_KEY",
+      "MENDPOINT_REGAUGE_CHECKPOINT_KEY",
+    ]) expect(unconditionalLoop).not.toContain(name);
+    expect(storage.run).toContain('if [[ -n "${MENDPOINT_REGAUGE_TRANSFER_ID:-}" ]]; then');
     expect(source).not.toContain("secrets.MENDPOINT_REGAUGE_S3_ACCESS_KEY_ID");
     expect(source).not.toContain("secrets.MENDPOINT_REGAUGE_S3_SECRET_ACCESS_KEY");
   });
@@ -289,6 +320,49 @@ describe("Regauge production workflow", () => {
     expect(
       steps.some((step) => step.name === "Deploy one coordinator and one worker"),
     ).toBe(false);
+  });
+
+  it("requires a fresh exact-volume restore attestation before target credentials or processes can start", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const steps = workflow.jobs.deploy.steps as Record<string, any>[];
+    const index = (name: string) => steps.findIndex((step) => step.name === name);
+
+    expect(index("Attest exact restored state on target volume")).toBeGreaterThan(-1);
+    expect(steps[index("Attest exact restored state on target volume")].if).toBe(
+      "${{ vars.REGAUGE_TRANSFER_ID != '' }}",
+    );
+    expect(index("Stage production secrets")).toBeGreaterThan(
+      index("Attest exact restored state on target volume"),
+    );
+    expect(index("Deploy coordinator")).toBeGreaterThan(index("Stage production secrets"));
+    expect(index("Deploy worker")).toBeGreaterThan(index("Deploy coordinator"));
+    const receipt = steps[index("Attest exact restored state on target volume")].run as string;
+    expect(receipt).toContain("flyctl console --app mendpoint-regauge-production");
+    expect(receipt).toContain('--volume "$target_volume_id:/data"');
+    expect(receipt).toContain("scripts/regauge-state-transfer.ts attest-restored");
+    expect(receipt).toContain('.targetVolume == $target_volume');
+    expect(receipt).toContain('.sourceRevision == $revision');
+    expect(receipt).toContain('test "$((now_epoch - verified_epoch))" -le 300');
+    expect(receipt).toContain("restored-state-receipt.json");
+    expect(receipt).not.toContain("MENDPOINT_REGAUGE_TRANSFER_KEY=");
+    const failure = steps.find((step) => step.name === "Contain target after activation failure")!;
+    expect(failure.if).toBe("${{ failure() }}");
+    expect(failure.run).toContain("worker=0");
+    expect(failure.run).not.toContain("volumes delete");
+    // Transfer authority is enforced only when a transfer is configured, but a
+    // partial transfer config (id set, key or fence missing) still hard-fails.
+    const validation = steps.find(
+      (step) => step.name === "Validate exact authority before mutation",
+    )!.run as string;
+    expect(validation).not.toMatch(/required=\([^)]*MENDPOINT_REGAUGE_TRANSFER_ID/);
+    expect(validation).toContain('if [[ -n "${MENDPOINT_REGAUGE_TRANSFER_ID:-}" ]]; then');
+    expect(validation).toContain("MENDPOINT_REGAUGE_TRANSFER_KEY_ID");
+    expect(validation).toContain("MENDPOINT_REGAUGE_TRANSFER_FENCE_ID");
+    expect(steps.some((step) => (step.run as string | undefined)?.includes(
+      "flyctl scale count coordinator=0 worker=0 --app mendpoint-transformer-pilot",
+    ))).toBe(false);
   });
 
   it("bounds every public deployment health request", () => {

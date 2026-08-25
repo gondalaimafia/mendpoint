@@ -36,6 +36,7 @@ export const RECOVERY_DRILL_REPORT_SCHEMA_VERSION = 1 as const;
 export const LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION = 2 as const;
 export const OBJECT_BACKUP_COMMIT_SCHEMA_VERSION = 1 as const;
 export const OBJECT_BACKUP_RECOVERY_RECEIPT_SCHEMA_VERSION = 1 as const;
+export const REGAUGE_CUTOVER_FENCE_NAME = "regauge-cutover-fence.v1.json" as const;
 
 export type SqliteRecoveryResourceKind =
   | "database"
@@ -1190,7 +1191,8 @@ function ensureFenceDirectories(fenceRoot: string): ReturnType<typeof fencePaths
 }
 
 export function isBackupFenceActive(fenceRoot: string): boolean {
-  return existsSync(fencePaths(fenceRoot).exclusive);
+  const paths = fencePaths(fenceRoot);
+  return existsSync(paths.exclusive) || existsSync(resolve(paths.root, REGAUGE_CUTOVER_FENCE_NAME));
 }
 
 /**
@@ -1207,7 +1209,8 @@ export function tryAcquireMutationLease(fenceRoot: string): MutationLease | null
     `${JSON.stringify(marker)}\n`,
     { flag: "wx", mode: 0o600 },
   );
-  if (existsSync(paths.exclusive) || existsSync(paths.recovery)) {
+  if (existsSync(paths.exclusive) || existsSync(paths.recovery) ||
+      existsSync(resolve(paths.root, REGAUGE_CUTOVER_FENCE_NAME))) {
     rmSync(leasePath, { force: true });
     return null;
   }
@@ -1311,6 +1314,9 @@ export function recoverStaleMutationMarker(input: {
     throw error;
   }
   try {
+    if (input.kind === "exclusive" && existsSync(resolve(paths.root, REGAUGE_CUTOVER_FENCE_NAME))) {
+      throw new Error("backup_fence_recovery_persistent_hold_active");
+    }
     const target = input.kind === "exclusive"
       ? paths.exclusive
       : resolve(paths.writers, `${markerId}.json`);

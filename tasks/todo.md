@@ -3295,3 +3295,27 @@ GREEN: a single preparation step now writes only run metadata to a retained arti
 RED: `npm run docs:check` reported exactly `model-router.html`, `model-router.md`, `billing-usage.html`, and `billing-usage.md` as stale.
 
 GREEN: the canonical generator changed only those four artifacts. It removed references to the absent billing and router-runtime test files and aligned the router upload copy with the immutable decision record in the source catalog. `docs:check`, `names:check`, `claims:check`, and the production build pass; strict diff review found no source-catalog rewrite.
+
+### 2026-08-25 ReGauge authenticated state transfer
+
+- [x] Define a versioned, authenticated, encrypted transfer manifest for the exact four live SQLite stores and immutable authority bindings.
+- [x] Snapshot live WAL databases consistently under a persistent mutation fence and retain integrity, schema, row-count, foreign-key, and ledger-tip evidence.
+- [x] Restore create-only into an empty target and verify exact evidence while rollback remains fail closed.
+- [x] Add a bounded state-transfer CLI and reuse the immutable object-store publication contract without exposing secrets.
+- [x] Configure both ReGauge manifests for cooperative fencing and require an authenticated restore receipt before target coordinator startup and credential staging.
+- [x] Prove historical checkpoint delivery remains readable while execution and completed provider work cannot replay.
+- [x] Run focused cutover, workflow, checkpoint, typecheck, build, GA, dependency-audit, and diff-integrity gates.
+- [ ] Obtain exact-head review and current-base CI before merge. Do not activate production in this PR.
+
+#### Review
+
+- The transfer engine now uses the production mutation-admission `exclusive.json` marker plus an authenticated persistent cutover marker. New API and worker mutations are refused while either marker exists, and generic stale-marker recovery cannot remove the exclusive marker while the persistent cutover hold is active.
+- The exact four live WAL databases are snapshot with `VACUUM INTO`, encrypted independently with AES-256-GCM, and bound by a canonical HMAC manifest to tenant, campaign, source app, source volume, source revision, target app, target volume, object prefix, and fingerprints of the application and checkpoint keys.
+- The bounded state-transfer script publishes an immutable commit-last object bundle, verifies it after download, restores create-only, publishes a signed recovery receipt only after target verification, and refuses key reuse or binding drift. The production workflow now checks that durable receipt before it stages delivery or model credentials or starts either target process.
+- Replay verification: 97 tests pass across checkpoint storage and readability, checkpoint lifecycle, crash resume without replay, pilot execution, adaptive draft delivery, and advisory-provider idempotency.
+- Repository verification: the full test command passes every workspace and all 29 script suites, including 266 script tests. Full workspace typecheck, the optimized 50-route production build, workflow YAML parsing, GA policy checks, diff integrity, and the production dependency audit all pass; the audit reports zero vulnerabilities.
+- The create-only restore now rejects a missing or filesystem-aliased target parent before writing decrypted state outside the intended mounted-volume path.
+- Review repair: activation now creates an ephemeral console Machine on the exact unattached target volume and re-attests all four restored databases immediately before authority staging. The gate binds the live source image and revision, source and target volume IDs, transfer ID, target app, and a receipt no older than five minutes.
+- Review repair: the CLI emits exactly one compact JSON record, so the live target-volume attestation can be parsed without discarding valid multiline output.
+- Review repair: unsafe rollback proof and thaw commands were removed. The old source remains authenticated and fenced; a later two-volume rollback authority must prove fresh target quiescence before any source restart can be enabled.
+- Exact-head review, current-base CI, and the live cutover remain pending. No production activation occurred in this PR.
