@@ -17,6 +17,7 @@ import {
 const root = resolve(import.meta.dirname, "..");
 const HEAD = "a".repeat(40);
 const BASE = "c".repeat(40);
+const MERGE_BASE = "d".repeat(40);
 const OBSERVED_AT = "2026-08-25T12:00:00.000Z";
 
 function sha(value: Buffer): string {
@@ -48,8 +49,11 @@ function baseAuthority() {
 
 class FixtureClient implements ProposalAuthorityClient {
   truncated = false;
+  mergeBaseRevision: string = BASE;
+  mergeBaseUnresolved = false;
   readonly pathToSha = new Map<string, string>();
   readonly basePathToSha = new Map<string, string>();
+  readonly mergeBasePathToSha = new Map<string, string>();
   readonly blobs = new Map<string, Buffer>();
   readonly modes = new Map<string, string>();
 
@@ -122,8 +126,30 @@ class FixtureClient implements ProposalAuthorityClient {
   async getRepositoryId(): Promise<number> {
     return 1309389373;
   }
+  /**
+   * Move the base tip ahead of the branch point, leaving the proposal alone.
+   *
+   * This is the shape every unrebased pull request has: the base changed a
+   * file after the branch point, the proposal still carries the older bytes it
+   * never touched, and the merge base holds what both agreed on.
+   */
+  advanceBase(path: string, bytes: Buffer): void {
+    for (const [key, value] of this.basePathToSha) this.mergeBasePathToSha.set(key, value);
+    const blobSha = sha(bytes);
+    this.blobs.set(blobSha, bytes);
+    this.basePathToSha.set(path, blobSha);
+    this.mergeBaseRevision = MERGE_BASE;
+  }
+  async getMergeBase(): Promise<string | null> {
+    return this.mergeBaseUnresolved ? null : this.mergeBaseRevision;
+  }
   async getRecursiveTree(revision: string) {
-    const source = revision === BASE ? this.basePathToSha : this.pathToSha;
+    const source =
+      revision === MERGE_BASE
+        ? this.mergeBasePathToSha
+        : revision === BASE
+          ? this.basePathToSha
+          : this.pathToSha;
     return {
       truncated: this.truncated,
       tree: [...source.entries()].map(([path, blobSha]) => ({
@@ -238,6 +264,115 @@ describe("production closure proposal authority", () => {
     );
 
     expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_POLICY_DRIFT");
+  });
+
+  it("does not charge a proposal for policy the base changed after it branched", async () => {
+    // The real incident: a package.json re-pin landed on main, and five
+    // unrelated pull requests that had touched neither the policy nor the
+    // pinned file were told they had drifted the authority and owed a rotation
+    // receipt. Each was clean against its own merge base.
+    const client = new FixtureClient();
+    const advanced = policy();
+    advanced.protectedFiles["package.json"] = `sha256:${"0".repeat(64)}`;
+    const advancedBytes = Buffer.from(JSON.stringify(advanced));
+    client.advanceBase("config/production-closure-authority.json", advancedBytes);
+
+    const result = await verifyProductionClosureProposal(
+      advanced,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      { ...baseAuthority(), policyBytes: advancedBytes },
+    );
+
+    const codes = result.issues.map((issue) => issue.code);
+    expect(codes).not.toContain("PROPOSAL_AUTHORITY_POLICY_DRIFT");
+    expect(codes).not.toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
+    expect(codes.filter((code) => code.startsWith("AUTHORITY_ROTATION_"))).toEqual([]);
+  });
+
+  it("still demands a rotation when the proposal itself edits the policy on a stale base", async () => {
+    // The reprieve above is for untouched bytes only. A proposal that edits the
+    // policy owes the full rotation whether or not the base has moved.
+    const client = new FixtureClient();
+    const advanced = policy();
+    advanced.externalCheckName = "advanced-authority";
+    const advancedBytes = Buffer.from(JSON.stringify(advanced));
+    client.advanceBase("config/production-closure-authority.json", advancedBytes);
+    const proposed = policy();
+    proposed.externalCheckName = "spoofable-authority";
+    client.replace("config/production-closure-authority.json", proposed);
+
+    const result = await verifyProductionClosureProposal(
+      advanced,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      { ...baseAuthority(), policyBytes: advancedBytes },
+    );
+
+    expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_POLICY_DRIFT");
+  });
+
+  it("still demands a rotation when the proposal reverts the policy to older bytes", async () => {
+    // A revert is an edit. The proposal's bytes differ from the merge base's,
+    // so it changed the policy even though every byte it carries once existed.
+    const client = new FixtureClient();
+    const branchPoint = policy();
+    branchPoint.externalCheckName = "branch-point-authority";
+    client.advanceBase("config/production-closure-authority.json", Buffer.from(JSON.stringify(branchPoint)));
+    client.mergeBasePathToSha.set(
+      "config/production-closure-authority.json",
+      client.basePathToSha.get("config/production-closure-authority.json")!,
+    );
+
+    const result = await verifyProductionClosureProposal(
+      branchPoint,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      { ...baseAuthority(), policyBytes: Buffer.from(JSON.stringify(branchPoint)) },
+    );
+
+    expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_POLICY_DRIFT");
+  });
+
+  it("still fails a proposal that edits a pinned surface without moving the pin", async () => {
+    const client = new FixtureClient();
+    client.replace("package.json", Buffer.from('{"name":"tampered"}'));
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
+  });
+
+  it("fails closed when the merge base cannot be resolved", async () => {
+    // "Could not determine what this proposal changed" must never read as
+    // "this proposal changed nothing".
+    const client = new FixtureClient();
+    client.mergeBaseUnresolved = true;
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.verdict).toBe("fail");
+    expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_MERGE_BASE_UNRESOLVED");
   });
 
   it("accepts an exhaustive authority-only rotation interpreted by the base revision", async () => {
