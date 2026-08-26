@@ -3403,3 +3403,15 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - P2 closure: an authenticated schema-2 checkpoint replay reasserts the coordinator request plus candidate and execution reference markers. The coordinator also reasserts both evidence markers for every bound pending outbox item, including the first restart after legacy adoption committed but marker publication failed.
 - Regression evidence: missing shared evidence and deleted legacy evidence are never read for an unbound campaign; a tampered unbound registration leaves coordinator readiness at HTTP 200; checkpoint marker failure resumes without another command; legacy post-adoption marker failure registers on the next drain.
 - Focused verification: 193 tests pass across 10 checkpoint, pilot, runner, worker, pipeline, coordinator, production-profile, and outbox suites. Transformer, API, worker, and pipeline typechecks pass, strict diff integrity is clean, and the verified rebased branch is ready for its required force-with-lease push.
+
+### 2026-08-25 PR #460 worker-local recovery ordering repair
+
+- [ ] RED: prove unbound local registrations with deleted or tampered evidence are acknowledged without any filesystem read or Mission marker write.
+- [ ] Preflight the exact tenant and campaign Mission binding before local outbox rehydration.
+- [ ] Durably complete unbound local registrations so one historical item cannot poison worker readiness.
+- [ ] Preserve and assess the coordinator E2E timeout budget change; document why the budget exists and whether 30 seconds is sufficient.
+- [ ] Run focused recovery suites, affected typechecks, strict diff integrity, rebase if needed, commit, and force-with-lease push without approving or merging.
+
+#### Review
+
+- In progress. The current local recovery drain eagerly evaluates `readLocalRegaugeMissionArtifactOutbox(...)` before the registration adapter can reject an unbound campaign. The isolated cross-deployment coordinator test also exceeded the proposed 30 second budget, so the timeout change requires root-cause review rather than an unqualified increase.

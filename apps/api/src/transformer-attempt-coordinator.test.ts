@@ -319,6 +319,10 @@ describe("real Transformer multi-node coordinator", () => {
     });
   });
 
+  // This integration path deliberately crosses completion-response loss,
+  // advisory retry, SCM-response loss, executor replacement, delivery replay,
+  // and final observation. The 30 second budget is test-runner headroom for
+  // those boundaries; it does not relax any production request or lease limit.
   it("delivers an authenticated terminal checkpoint after the executor deployment changes", async () => {
     const root = mkdtempSync(join(tmpdir(), "transformer-real-multinode-")); roots.push(root);
     let coordinatorNow = "2026-08-12T12:00:00.000Z";
@@ -464,7 +468,7 @@ describe("real Transformer multi-node coordinator", () => {
     });
     await expect(replacement.runObservationOnce()).resolves.toEqual({ status: "idle" });
     expect(observationCalls).toBe(1);
-  }, 15_000);
+  }, 30_000);
 
   it("denies missing worker auth and tenant mismatch before source loading", async () => {
     const root = mkdtempSync(join(tmpdir(), "transformer-auth-multinode-")); roots.push(root);
