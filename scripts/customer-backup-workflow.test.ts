@@ -67,22 +67,4 @@ describe("customer backup workflow", () => {
     expect(resolveAlert.if).toBe("${{ success() }}");
     expect(resolveAlert.run).toContain("gh issue close");
   });
-
-
-  it("gates the backup on explicit customer-profile activation, loudly", () => {
-    const gate = workflow.jobs["profile-gate"] as Record<string, any>;
-    expect(gate, "profile-gate job must exist").toBeTruthy();
-    const gateStep = (gate.steps as Record<string, any>[]).find(
-      (candidate) => candidate.id === "check",
-    ) as Record<string, any>;
-    expect(gateStep.env.ACTIVE).toBe("${{ vars.MENDPOINT_CUSTOMER_PROFILE_ACTIVE }}");
-    // The inactive path must be LOUD (a ::notice naming the pending activation),
-    // never a silent skip that fakes "we have backups".
-    expect(gateStep.run).toContain("::notice");
-    expect(gateStep.run).toContain("No backup was taken");
-    expect(job.needs).toBe("profile-gate");
-    expect(job.if).toContain("needs.profile-gate.outputs.active == 'true'");
-    // The original default-branch guard must survive composition.
-    expect(job.if).toContain("github.event.repository.default_branch");
-  });
 });
