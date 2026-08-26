@@ -492,6 +492,9 @@ export function registerRegaugeVerifiedCandidateArtifacts(
   producerPrincipalId: string,
 ) {
   const { lease, artifact, execution } = input;
+  if (!resolveMissionForRegaugeCampaign(db, lease.tenantId, lease.campaignId)) {
+    return { status: "skipped_unbound" } as const;
+  }
   if (!artifact.evidenceRefs.includes(`tcman_${artifact.manifestDigest.slice("sha256:".length)}`) ||
       !artifact.evidenceRefs.includes(execution.evidence.record.evidenceId)) {
     throw new Error("regauge_artifact_registration_evidence_mismatch");
