@@ -211,8 +211,8 @@ export function handoffRegaugeMissionTaskOnReview(
     to: "human_review_required",
     actorPrincipalId: actorId,
     handoffReason: "pilot_lane_review",
-    eventId: `${task.id}-claim-review`,
-    idempotencyKey: `mission-task-claim-review-${task.id}`,
+    eventId: `${task.id}-claim-review-${task.revision}`,
+    idempotencyKey: `mission-task-claim-review-${task.id}-${task.revision}`,
     correlationId: input.campaignId,
     createdAt: input.createdAt,
   });

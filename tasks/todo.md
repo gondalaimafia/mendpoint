@@ -3349,7 +3349,11 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - [x] Fail closed on a broken non-null candidate source binding while preserving proven legacy-unbound runs and campaign-derived Mission resolution.
 - [x] Defer Fettler only for dependency readiness; route every other claim failure through normal fenced failure handling.
 - [x] Run focused tests, database/worker/API typechecks, strict diff review, commit, and push. Fresh reciprocal review remains the merge gate.
+- [x] Make repeated ReGauge completion handoffs revision-scoped so every approved stage returns to human review.
+- [x] Add a two-cycle claim, handoff, approval, resume regression and rerun the affected gates on current main.
 
 #### Review
 
 GREEN: 198 focused Mission, Transformer store/lane, Fettler/ReGauge claim, and API review regressions pass. Database, Transformer, worker, and API typechecks pass, including the exact two-connection dependency interleaving, explicit routing-abandonment recovery, real cursor paging plus a 100-row blocked scan, campaign-derived review binding, missing-source fail closed behavior, reviewed repository resume, and typed Fettler readiness/failure classification. Strict diff integrity passes. The rebased repaired head is ready to push for fresh exact-head reciprocal review; it is not self-approved or merged.
+
+Current-base review repair: review found that the second completed stage reused the first handoff's event and idempotency identities, causing the transaction to roll back and leave the task `agent_working`. Handoff identity now includes the fenced task revision. A two-cycle claim, handoff, approval, resume, claim, handoff regression passes; the affected worker file reports 19 passing tests, worker typecheck passes, and strict diff integrity is clean.

@@ -19,6 +19,7 @@ import {
   assignRegaugeMissionTaskOnClaim,
   handoffRegaugeMissionTaskOnReview,
   regaugeMissionTaskExecutionReady,
+  resumeRegaugeMissionTaskAfterReview,
 } from "./regauge-mission-task-claim.js";
 
 const at = "2026-08-25T00:00:00.000Z";
@@ -247,6 +248,30 @@ describe("handoffRegaugeMissionTaskOnReview", () => {
     expect(handoffRegaugeMissionTaskOnReview(db, {
       tenantId: "t1", campaignId: "unbound", repositoryId: "repo-a", createdAt: at,
     })).toBeUndefined();
+  });
+
+  it("returns every approved and resumed stage to human review", () => {
+    const { db, missionId } = fixture();
+    const created = launchTask(db, missionId, "repo-a");
+    const input = {
+      tenantId: "t1",
+      campaignId: "campaign-a",
+      repositoryId: "repo-a",
+      createdAt: at,
+    } as const;
+
+    assignRegaugeMissionTaskOnClaim(db, input);
+    expect(handoffRegaugeMissionTaskOnReview(db, input)).toMatchObject({
+      id: created.id,
+      status: "human_review_required",
+    });
+    resumeRegaugeMissionTaskAfterReview(db, { ...input, actorPrincipalId: "p1" });
+    assignRegaugeMissionTaskOnClaim(db, input);
+    expect(handoffRegaugeMissionTaskOnReview(db, input)).toMatchObject({
+      id: created.id,
+      status: "human_review_required",
+      revision: 7,
+    });
   });
 
   it("is a no-op when the launch task does not exist", () => {
