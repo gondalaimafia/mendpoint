@@ -18,6 +18,7 @@ import {
   listActualExecutionCosts,
   missionTaskIdForJob,
   openTaskHandoff,
+  raiseMissionException,
   recordRoutingDecision,
   recordRoutingOutcome,
   resolveTaskHandoff,
@@ -26,6 +27,7 @@ import {
 } from "@mendpoint/db";
 import {
   bridgeClaimedJobToMissionTask,
+  completeAuthorityBoundMissionTask,
   handoffCompletedJobToMissionReview,
   recordBoundMissionExecutionCost,
   resolveBoundMissionForJob,
@@ -116,6 +118,50 @@ describe("mission-task job bridge", () => {
     const db = fixture();
     expect(() => resolveBoundMissionForJob(db, job({ missionId: "does-not-exist" })))
       .toThrow("mission_task_job_mission_not_found");
+  });
+
+  it.each(["warden.candidate.deliver", "warden.candidate.update"])(
+    "quarantines legacy mission-bound %s jobs instead of fabricating task authority",
+    (type) => {
+      const db = fixture();
+      const legacy = job({ missionId: "m1", deliveryId: "delivery-1", updateId: "update-1", cycleId: "cycle-1", runId: "run-1" },
+        { id: `legacy-${type}`, type });
+      expect(bridgeClaimedJobToMissionTask(db, legacy, at)).toBeUndefined();
+      expect(getMissionTask(db, "t1", missionTaskIdForJob(legacy.id))).toBeUndefined();
+    },
+  );
+
+  it("requires an unblocked Mission inside the completion transaction", () => {
+    const db = fixture();
+    db.raw.prepare(`INSERT INTO scm_connections
+      (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+      VALUES ('scm-complete', 't1', 'github', 'app://1', '1', 'GitHub', ?, ?)`).run(at, at);
+    db.raw.prepare(`INSERT INTO connected_repositories
+      (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
+       environment, retention_days, status, created_at, updated_at)
+      VALUES ('repo-complete', 't1', 'scm-complete', '1', 'acme', 'sdk', 'main', 'main',
+       'production', 30, 'ready', ?, ?)`).run(at, at);
+    db.raw.prepare(`INSERT INTO repository_snapshots
+      (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+       submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+      VALUES ('snapshot-complete', 't1', 'repo-complete', 'main', ?, ?, 'C:\\snapshot',
+       'reject', 'reject', '[]', 1, ?, '2099-01-01T00:00:00.000Z')`)
+      .run("a".repeat(40), `sha256:${"b".repeat(64)}`, at);
+    bindMissionScope(db, { tenantId: "t1", missionId: "m1", repositoryId: "repo-complete",
+      snapshotId: "snapshot-complete", actorPrincipalId: "p1", eventId: "scope-complete",
+      idempotencyKey: "scope-complete", correlationId: "corr", createdAt: at });
+    const task = bridgeClaimedJobToMissionTask(db, job({ missionId: "m1" }), at)!;
+    const authority = createMissionMutationAuthority({ mission: getMission(db, "t1", "m1")!, task,
+      repositoryId: "repo-complete", snapshotId: "snapshot-complete", resolvedSha: "a".repeat(40) });
+    const bound = job({ missionId: "m1", missionAuthority: authority }, { id: "job-bound" });
+    raiseMissionException(db, { tenantId: "t1", missionId: "m1", taskId: task.id,
+      reason: "policy_conflict", impact: "Completion is not authorized.",
+      ownerPrincipalId: "p1", resolutionPath: "Resolve the policy conflict.", blocking: true,
+      correlationId: "corr", createdAt: at });
+    db.raw.exec("BEGIN IMMEDIATE");
+    expect(() => completeAuthorityBoundMissionTask(db, bound, at)).toThrow("mission_mutation_authority_blocked");
+    db.raw.exec("ROLLBACK");
+    expect(getMissionTask(db, "t1", task.id)?.status).toBe("agent_working");
   });
 
   it("creates an agent_working MissionTask for a bound agent.run and records MCU against the mission", () => {
