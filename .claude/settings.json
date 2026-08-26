@@ -37,5 +37,24 @@
       "Bash(printenv*)",
       "Bash(Get-ChildItem Env:*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/guard-branch-deletion.mjs",
+            "timeout": 45
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/guard-msys-grep.mjs",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
