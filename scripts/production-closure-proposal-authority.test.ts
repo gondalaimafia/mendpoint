@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   releaseTrainIntegrityDigest,
@@ -20,6 +21,7 @@ const HEAD = "a".repeat(40);
 const BASE = "c".repeat(40);
 const MERGE_BASE = "d".repeat(40);
 const OBSERVED_AT = "2026-08-25T12:00:00.000Z";
+const IMMUTABLE_BASE_REVISION = "7f74e609ca0c9f05fa1deaaded76c9d7b2d2fbd6";
 
 function sha(value: Buffer): string {
   return createHash("sha1")
@@ -46,6 +48,43 @@ function baseAuthority() {
       resolve(root, "config", "production-closure-authority-rotation.json"),
     ),
   };
+}
+
+async function loadImmutableBaseVerifier(): Promise<{
+  verify: typeof verifyProductionClosureProposal;
+  cleanup: () => void;
+}> {
+  const temporaryRoot = mkdtempSync(join(root, ".proposal-authority-base-"));
+  const checkoutRoot = join(temporaryRoot, "checkout");
+  try {
+    execFileSync(
+      "git",
+      ["clone", "--quiet", "--shared", "--no-checkout", root, checkoutRoot],
+      { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    execFileSync(
+      "git",
+      ["checkout", "--quiet", "--detach", IMMUTABLE_BASE_REVISION],
+      { cwd: checkoutRoot, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const moduleUrl = pathToFileURL(
+      join(checkoutRoot, "scripts", "production-closure-proposal-authority.ts"),
+    );
+    moduleUrl.searchParams.set("revision", IMMUTABLE_BASE_REVISION);
+    const immutableModule = await import(/* @vite-ignore */ moduleUrl.href) as {
+      verifyProductionClosureProposal?: unknown;
+    };
+    if (typeof immutableModule.verifyProductionClosureProposal !== "function") {
+      throw new Error("immutable base proposal verifier export is unavailable");
+    }
+    return {
+      verify: immutableModule.verifyProductionClosureProposal as typeof verifyProductionClosureProposal,
+      cleanup: () => rmSync(temporaryRoot, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 class FixtureClient implements ProposalAuthorityClient {
@@ -454,7 +493,7 @@ describe("production closure proposal authority", () => {
     }));
   });
 
-  it("accepts an exhaustive authority-only rotation interpreted by the base revision", async () => {
+  it("records the immutable-base bootstrap rejection before the proposed verifier accepts exact evidence", async () => {
     const client = new FixtureClient();
     const authority = baseAuthority();
     const baseLedger = JSON.parse(authority.rotationLedgerBytes.toString("utf8"));
@@ -543,19 +582,37 @@ describe("production closure proposal authority", () => {
     };
     client.replace("config/production-closure-authority-rotation.json", proposedLedger);
 
-    const result = await verifyProductionClosureProposal(
-      basePolicy,
-      "gondalaimafia/mendpoint",
-      HEAD,
-      client,
-      rotationObservedAt,
-      authority,
-    );
+    const immutableBase = await loadImmutableBaseVerifier();
+    try {
+      const baseResult = await immutableBase.verify(
+        basePolicy,
+        "gondalaimafia/mendpoint",
+        HEAD,
+        client,
+        rotationObservedAt,
+        authority,
+      );
+      expect(baseResult.verdict).toBe("fail");
+      expect(baseResult.issues.map((issue) => issue.code)).toContain(
+        "AUTHORITY_ROTATION_MATRIX_SCOPE_INVALID",
+      );
 
-    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
-    expect(result.authorityRotation?.rotationId).toBe(rotation.rotationId);
-    expect(result.providerValidationPullRequests).toEqual([]);
-    expect(result.providerValidationIssues).toEqual([]);
+      const result = await verifyProductionClosureProposal(
+        basePolicy,
+        "gondalaimafia/mendpoint",
+        HEAD,
+        client,
+        rotationObservedAt,
+        authority,
+      );
+
+      expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+      expect(result.authorityRotation?.rotationId).toBe(rotation.rotationId);
+      expect(result.providerValidationPullRequests).toEqual([]);
+      expect(result.providerValidationIssues).toEqual([]);
+    } finally {
+      immutableBase.cleanup();
+    }
 
     proposedMatrix.releaseTrain.observedAt = new Date(
       Date.parse(rotationObservedAt) + 1_000,
@@ -600,7 +657,7 @@ describe("production closure proposal authority", () => {
     expect(rewritten.providerValidationIssues).toEqual([
       proposedMatrix.issueAuthority.issues[0].number,
     ]);
-  });
+  }, 15_000);
 
   it("rejects another workflow that can spoof the controller authority surface", async () => {
     const client = new FixtureClient();
