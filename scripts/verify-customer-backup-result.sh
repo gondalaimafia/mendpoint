@@ -22,21 +22,23 @@ fi
 record="$(grep "^${prefix}" "$evidence")"
 payload="${record#"$prefix"}"
 if ! verified="$(jq -ce '
-  type == "object" and
-  .schemaVersion == 1 and
-  .kind == "customer_backup_result" and
-  .result == "success" and
-  (.releaseRevision | type == "string" and test("^[a-f0-9]{40}$")) and
-  (.backupId | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
-  (.manifestAuthentication | type == "string" and test("^[a-f0-9]{64}$")) and
-  (.publication | type == "object") and
-  .publication.kind == "s3" and
-  .publication.backupId == .backupId and
-  (.publication.bucket | type == "string" and length > 0) and
-  (.publication.prefix | type == "string" and length > 0) and
-  (.publication.endpointOrigin | type == "string" and startswith("https://")) and
-  (.publication.commitDigest | type == "string" and test("^[a-f0-9]{64}$")) and
-  (.publication.manifestSha256 | type == "string" and test("^[a-f0-9]{64}$"))
+  if (
+    type == "object" and
+    .schemaVersion == 1 and
+    .kind == "customer_backup_result" and
+    .result == "success" and
+    (.releaseRevision | type == "string" and test("^[a-f0-9]{40}$")) and
+    (.backupId | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
+    (.manifestAuthentication | type == "string" and test("^[a-f0-9]{64}$")) and
+    (.publication | type == "object") and
+    .publication.kind == "s3" and
+    .publication.backupId == .backupId and
+    (.publication.bucket | type == "string" and length > 0) and
+    (.publication.prefix | type == "string" and length > 0) and
+    (.publication.endpointOrigin | type == "string" and startswith("https://")) and
+    (.publication.commitDigest | type == "string" and test("^[a-f0-9]{64}$")) and
+    (.publication.manifestSha256 | type == "string" and test("^[a-f0-9]{64}$"))
+  ) then . else error("customer_backup_result_invalid") end
 ' <<< "$payload" 2>/dev/null)"; then
   echo customer_backup_result_invalid >&2
   exit 1

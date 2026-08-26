@@ -172,3 +172,8 @@
 **Mistake:** I started a manual Cursor PR review after finding that the installed review skill pointed to a missing workflow.
 **Correction:** Talal required the necessary skills to be fetched and used, and required findings to be fixed before merge.
 **Rule:** When an applicable review skill is incomplete, fetch its current authoritative runtime before continuing. For agent-authored PRs, use the fetched adversarial review and fixer workflow, then re-review the exact fixed head and require current-base CI before merge.
+
+### 2026-08-26 — Test verifier output shape without platform skips
+**Mistake:** A jq schema predicate was captured as though it were the validated JSON object, while the only happy-path test was skipped on the local host because jq was unavailable.
+**Correction:** Independent review traced the production verifier through its next `.releaseRevision` read and showed that valid input yielded the literal boolean `true`.
+**Rule:** For security and backup verifiers, test the exact value passed between every process boundary, not only the predicate verdict. When a required platform tool is unavailable locally, add a non-skipped shape-preserving harness and retain the real-tool case for CI; never let a platform skip remove all coverage of the success path.

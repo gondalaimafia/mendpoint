@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -40,6 +40,40 @@ function verifyLog(lines: readonly string[], expectedReleaseRevision = "d".repea
   return spawnSync("bash", [verifier, log, expectedReleaseRevision], { encoding: "utf8" });
 }
 
+/**
+ * Exercise the shell data flow on hosts without jq. The shim models jq's
+ * relevant output shape: a bare predicate emits `true`, while a validating
+ * filter that explicitly returns its input emits the original JSON object.
+ * Real jq still runs in the jqIt cases on Ubuntu.
+ */
+function verifyObjectRetention(lines: readonly string[], expectedReleaseRevision = "d".repeat(40)) {
+  const temporary = mkdtempSync(join(tmpdir(), "mendpoint-backup-result-shape-"));
+  roots.push(temporary);
+  const log = join(temporary, "backup.log");
+  const jq = join(temporary, "jq");
+  writeFileSync(log, `${lines.join("\n")}\n`, "utf8");
+  writeFileSync(jq, `#!/usr/bin/env node
+const fs = require("node:fs");
+const filter = process.argv.at(-1) ?? "";
+const input = fs.readFileSync(0, "utf8").trim();
+let value;
+try { value = JSON.parse(input); } catch { process.exit(4); }
+if (filter.trim() === ".releaseRevision") {
+  if (!value || typeof value !== "object" || typeof value.releaseRevision !== "string") process.exit(5);
+  process.stdout.write(value.releaseRevision + "\\n");
+} else if (/then\\s+\\.\\s+else/s.test(filter)) {
+  process.stdout.write(JSON.stringify(value) + "\\n");
+} else {
+  process.stdout.write("true\\n");
+}
+`, "utf8");
+  chmodSync(jq, 0o755);
+  return spawnSync("bash", [verifier, log, expectedReleaseRevision], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${temporary}${delimiter}${process.env.PATH ?? ""}` },
+  });
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -72,6 +106,21 @@ describe("customer backup terminal result", () => {
     const result = verifyLog([resultRecord({ releaseRevision: "e".repeat(40) })]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("customer_backup_result_release_revision_mismatch");
+  });
+
+  it("retains the validated JSON object for exact release binding", () => {
+    const record = resultRecord();
+    const accepted = verifyObjectRetention([record]);
+    expect(accepted.status, accepted.stderr).toBe(0);
+    expect(JSON.parse(accepted.stdout)).toMatchObject({
+      releaseRevision: "d".repeat(40),
+      backupId: "backup-1",
+      publication: { kind: "s3", backupId: "backup-1" },
+    });
+
+    const stale = verifyObjectRetention([record], "e".repeat(40));
+    expect(stale.status).toBe(1);
+    expect(stale.stderr).toContain("customer_backup_result_release_revision_mismatch");
   });
 
   jqIt("accepts exactly one complete successful publication record", () => {
