@@ -3,6 +3,11 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  defaultGitHubSleep,
+  fetchGitHubReadWithRetry,
+  type GitHubSleep,
+} from "./github-api-read-retry.js";
 import { parse } from "yaml";
 import {
   verifyAuthorityRotation,
@@ -856,17 +861,18 @@ export class GitHubProposalAuthorityClient implements ProposalAuthorityClient {
     private readonly repository: string,
     private readonly token: string,
     private readonly fetchImpl: typeof fetch = fetch,
+    private readonly sleepImpl: GitHubSleep = defaultGitHubSleep,
   ) {}
 
   private async request<T>(path: string, allowMissing = false): Promise<T | null> {
-    const response = await this.fetchImpl(`${this.apiBase}${path}`, {
+    const response = await fetchGitHubReadWithRetry(`${this.apiBase}${path}`, {
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${this.token}`,
         "user-agent": "mendpoint-production-closure-proposal-authority",
         "x-github-api-version": "2022-11-28",
       },
-    });
+    }, this.fetchImpl, this.sleepImpl);
     if (allowMissing && response.status === 404) return null;
     if (!response.ok) throw new Error(`GitHub API request failed with HTTP ${response.status}`);
     return (await response.json()) as T;

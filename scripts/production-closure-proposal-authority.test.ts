@@ -9,6 +9,7 @@ import {
   type ProductionClosureMatrix,
 } from "./production-closure-matrix.js";
 import {
+  GitHubProposalAuthorityClient,
   verifyProductionClosureProposal,
   writeProposalAuthorityFailureObservation,
   type ProposalAuthorityClient,
@@ -653,5 +654,53 @@ describe("production closure proposal authority", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("retries a throttled proposal read without exposing the token", async () => {
+    let attempts = 0;
+    const waits: number[] = [];
+    const client = new GitHubProposalAuthorityClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return new Response(null, {
+            status: 429,
+            headers: { "retry-after": "1" },
+          });
+        }
+        return new Response(JSON.stringify({ id: 1309389373 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+    );
+
+    await expect(client.getRepositoryId()).resolves.toBe(1309389373);
+    expect(attempts).toBe(2);
+    expect(waits).toEqual([1_000]);
+    expect(JSON.stringify({ attempts, waits })).not.toContain("sensitive-token");
+  });
+
+  it("keeps an allowed missing revision as a single non-retried read", async () => {
+    let attempts = 0;
+    const client = new GitHubProposalAuthorityClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => {
+        attempts += 1;
+        return new Response(null, { status: 404 });
+      },
+      async () => {
+        throw new Error("unexpected retry");
+      },
+    );
+
+    await expect(client.revisionExists(HEAD)).resolves.toBe(false);
+    expect(attempts).toBe(1);
   });
 });
