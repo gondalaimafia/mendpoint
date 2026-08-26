@@ -1181,13 +1181,18 @@ export function githubAuthorityContextFromEvent(
   observedAt = new Date().toISOString(),
   configuredReviewerBindings?: unknown,
 ): GitHubAuthorityContext {
+  const workflowEventName = requiredEnvironment(environment, "GITHUB_EVENT_NAME");
   const eventName =
     environment.MENDPOINT_CLOSURE_EVENT_NAME?.trim() ||
-    requiredEnvironment(environment, "GITHUB_EVENT_NAME");
+    (workflowEventName === "pull_request_target" ? "pull_request" : workflowEventName);
   if (eventName !== "pull_request" && eventName !== "push") {
     throw new Error("GITHUB_EVENT_NAME must be pull_request or push");
   }
-  const observationScope = eventName === "pull_request"
+  // Only a pull_request_target run is discovered as a single-PR observation.
+  // Scheduled and manually dispatched runs fan out across every open PR and
+  // must retain their full historical provider-drift backstop even though each
+  // matrix job uses the normalized pull_request execution contract.
+  const observationScope = workflowEventName === "pull_request_target"
     ? "current_pull_request"
     : "full_release_train";
   const reviewerBindings = configuredReviewerBindings ?? JSON.parse(

@@ -1144,7 +1144,7 @@ describe("GitHub production closure authority", () => {
   it("builds an exact PR context from the GitHub event without retaining secrets", () => {
     const built = githubAuthorityContextFromEvent(
       {
-        GITHUB_EVENT_NAME: "pull_request",
+        GITHUB_EVENT_NAME: "pull_request_target",
         GITHUB_REPOSITORY: "gondalaimafia/mendpoint",
         GITHUB_SHA: MAIN,
         GITHUB_RUN_ID: "1234",
@@ -1174,6 +1174,36 @@ describe("GitHub production closure authority", () => {
     ]);
     expect(JSON.stringify(built)).not.toContain("must-not-be-retained");
   });
+
+  it.each(["schedule", "workflow_dispatch"])(
+    "keeps %s fanout runs on full release-train provider validation",
+    (workflowEventName) => {
+      const built = githubAuthorityContextFromEvent(
+        {
+          GITHUB_EVENT_NAME: workflowEventName,
+          MENDPOINT_CLOSURE_EVENT_NAME: "pull_request",
+          MENDPOINT_CLOSURE_AUTHORITY_SHA: MAIN,
+          GITHUB_REPOSITORY: "gondalaimafia/mendpoint",
+          GITHUB_SHA: MAIN,
+          GITHUB_RUN_ID: "1234",
+          MENDPOINT_CLOSURE_TRUSTED_REVIEWERS_JSON: JSON.stringify({
+            Claude: [{ login: "claude-reviewer[bot]", userId: 71 }],
+          }),
+          MENDPOINT_CLOSURE_PR_NUMBER: "440",
+          MENDPOINT_CLOSURE_PR_BASE_REF: "main",
+          MENDPOINT_CLOSURE_PR_BASE_SHA: MAIN,
+          MENDPOINT_CLOSURE_PR_HEAD_REF: "codex/production-closure-authority-hardening",
+          MENDPOINT_CLOSURE_PR_HEAD_SHA: HEAD,
+        },
+        {},
+        { headRevision: MAIN, parentRevisions: [] },
+      );
+
+      expect(built.eventName).toBe("pull_request");
+      expect(built.observationScope).toBe("full_release_train");
+      expect(built.pullRequest?.number).toBe(440);
+    },
+  );
 
   it("keeps the checked-in protected authority policy runnable and App-bound", () => {
     const policy = JSON.parse(
@@ -1235,6 +1265,7 @@ describe("GitHub production closure authority", () => {
     );
 
     expect(built.githubSha).toBe(MAIN);
+    expect(built.observationScope).toBe("full_release_train");
   });
 
   it("rejects a reviewer login bound to multiple agent identities", () => {
