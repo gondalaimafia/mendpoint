@@ -9,6 +9,7 @@ import {
   type ProductionClosureMatrix,
 } from "./production-closure-matrix.js";
 import {
+  GitHubProposalAuthorityClient,
   verifyProductionClosureProposal,
   writeProposalAuthorityFailureObservation,
   type ProposalAuthorityClient,
@@ -17,6 +18,7 @@ import {
 const root = resolve(import.meta.dirname, "..");
 const HEAD = "a".repeat(40);
 const BASE = "c".repeat(40);
+const MERGE_BASE = "d".repeat(40);
 const OBSERVED_AT = "2026-08-25T12:00:00.000Z";
 
 function sha(value: Buffer): string {
@@ -48,8 +50,11 @@ function baseAuthority() {
 
 class FixtureClient implements ProposalAuthorityClient {
   truncated = false;
+  mergeBaseRevision: string = BASE;
+  mergeBaseUnresolved = false;
   readonly pathToSha = new Map<string, string>();
   readonly basePathToSha = new Map<string, string>();
+  readonly mergeBasePathToSha = new Map<string, string>();
   readonly blobs = new Map<string, Buffer>();
   readonly modes = new Map<string, string>();
 
@@ -122,8 +127,33 @@ class FixtureClient implements ProposalAuthorityClient {
   async getRepositoryId(): Promise<number> {
     return 1309389373;
   }
+  /**
+   * Move the base tip ahead of the branch point, leaving the proposal alone.
+   *
+   * This is the shape every unrebased pull request has: the base changed a
+   * file after the branch point, the proposal still carries the older bytes it
+   * never touched, and the merge base holds what both agreed on.
+   */
+  advanceBase(path: string, bytes: Buffer): void {
+    if (this.mergeBaseRevision === BASE) {
+      for (const [key, value] of this.basePathToSha) this.mergeBasePathToSha.set(key, value);
+    }
+    const blobSha = sha(bytes);
+    this.blobs.set(blobSha, bytes);
+    this.basePathToSha.set(path, blobSha);
+    this.modes.set(path, "100644");
+    this.mergeBaseRevision = MERGE_BASE;
+  }
+  async getMergeBase(): Promise<string | null> {
+    return this.mergeBaseUnresolved ? null : this.mergeBaseRevision;
+  }
   async getRecursiveTree(revision: string) {
-    const source = revision === BASE ? this.basePathToSha : this.pathToSha;
+    const source =
+      revision === MERGE_BASE
+        ? this.mergeBasePathToSha
+        : revision === BASE
+          ? this.basePathToSha
+          : this.pathToSha;
     return {
       truncated: this.truncated,
       tree: [...source.entries()].map(([path, blobSha]) => ({
@@ -240,9 +270,198 @@ describe("production closure proposal authority", () => {
     expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_POLICY_DRIFT");
   });
 
+  it("does not charge a proposal for policy the base changed after it branched", async () => {
+    // The real incident: a package.json re-pin landed on main, and five
+    // unrelated pull requests that had touched neither the policy nor the
+    // pinned file were told they had drifted the authority and owed a rotation
+    // receipt. Each was clean against its own merge base.
+    const client = new FixtureClient();
+    const advanced = policy();
+    advanced.protectedFiles["package.json"] = `sha256:${"0".repeat(64)}`;
+    const advancedBytes = Buffer.from(JSON.stringify(advanced));
+    client.advanceBase("config/production-closure-authority.json", advancedBytes);
+
+    const result = await verifyProductionClosureProposal(
+      advanced,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      { ...baseAuthority(), policyBytes: advancedBytes },
+    );
+
+    const codes = result.issues.map((issue) => issue.code);
+    expect(codes).not.toContain("PROPOSAL_AUTHORITY_POLICY_DRIFT");
+    expect(codes).not.toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
+    expect(codes.filter((code) => code.startsWith("AUTHORITY_ROTATION_"))).toEqual([]);
+  });
+
+  it("does not charge a proposal for a protected surface the base added after it branched", async () => {
+    const client = new FixtureClient();
+    const addedPath = "scripts/production-closure-new-root.ts";
+    const addedBytes = Buffer.from("export const protectedRoot = true;\n");
+    const advanced = policy();
+    advanced.protectedFiles[addedPath] = sha256(addedBytes);
+    const advancedBytes = Buffer.from(JSON.stringify(advanced));
+    client.advanceBase(addedPath, addedBytes);
+    client.advanceBase("config/production-closure-authority.json", advancedBytes);
+
+    const result = await verifyProductionClosureProposal(
+      advanced,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      { ...baseAuthority(), policyBytes: advancedBytes },
+    );
+
+    const codes = result.issues.map((issue) => issue.code);
+    expect(codes).not.toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
+    expect(codes.filter((code) => code.startsWith("AUTHORITY_ROTATION_"))).toEqual([]);
+  });
+
+  it("still demands a rotation when the proposal itself edits the policy on a stale base", async () => {
+    // The reprieve above is for untouched bytes only. A proposal that edits the
+    // policy owes the full rotation whether or not the base has moved.
+    const client = new FixtureClient();
+    const advanced = policy();
+    advanced.externalCheckName = "advanced-authority";
+    const advancedBytes = Buffer.from(JSON.stringify(advanced));
+    client.advanceBase("config/production-closure-authority.json", advancedBytes);
+    const proposed = policy();
+    proposed.externalCheckName = "spoofable-authority";
+    client.replace("config/production-closure-authority.json", proposed);
+
+    const result = await verifyProductionClosureProposal(
+      advanced,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      { ...baseAuthority(), policyBytes: advancedBytes },
+    );
+
+    expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_POLICY_DRIFT");
+  });
+
+  it("still demands a rotation when the proposal reverts the policy to older bytes", async () => {
+    // A revert is an edit. The proposal's bytes differ from the merge base's,
+    // so it changed the policy even though every byte it carries once existed.
+    const client = new FixtureClient();
+    const branchPoint = policy();
+    branchPoint.externalCheckName = "branch-point-authority";
+    client.advanceBase("config/production-closure-authority.json", Buffer.from(JSON.stringify(branchPoint)));
+    client.mergeBasePathToSha.set(
+      "config/production-closure-authority.json",
+      client.basePathToSha.get("config/production-closure-authority.json")!,
+    );
+
+    const result = await verifyProductionClosureProposal(
+      branchPoint,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      { ...baseAuthority(), policyBytes: Buffer.from(JSON.stringify(branchPoint)) },
+    );
+
+    expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_POLICY_DRIFT");
+  });
+
+  it("still fails a proposal that edits a pinned surface without moving the pin", async () => {
+    const client = new FixtureClient();
+    client.replace("package.json", Buffer.from('{"name":"tampered"}'));
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
+  });
+
+  it("fails closed when the merge base cannot be resolved", async () => {
+    // "Could not determine what this proposal changed" must never read as
+    // "this proposal changed nothing".
+    const client = new FixtureClient();
+    client.mergeBaseUnresolved = true;
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.verdict).toBe("fail");
+    expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_MERGE_BASE_UNRESOLVED");
+  });
+
+  it("queues changed historical declarations for exact provider validation", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    const changedPullRequest = matrix.releaseTrain.pullRequests[0];
+    const changedIssue = matrix.issueAuthority.issues[0];
+    changedPullRequest.title = `${changedPullRequest.title} corrected`;
+    changedIssue.title = `${changedIssue.title} corrected`;
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    client.replace(matrixPath, matrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.providerValidationPullRequests).toEqual([changedPullRequest.number]);
+    expect(result.providerValidationIssues).toEqual([changedIssue.number]);
+  });
+
+  it("rejects removal of a provider declaration without a full observation", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    const removed = matrix.releaseTrain.pullRequests.shift()!;
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    client.replace(matrixPath, matrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED",
+      subject: String(removed.number),
+    }));
+  });
+
   it("accepts an exhaustive authority-only rotation interpreted by the base revision", async () => {
     const client = new FixtureClient();
     const authority = baseAuthority();
+    const baseLedger = JSON.parse(authority.rotationLedgerBytes.toString("utf8"));
+    const baseReceipt = baseLedger.rotations.at(-1) ?? null;
+    const rotationObservedAt = new Date(
+      Math.max(Date.parse(OBSERVED_AT), Date.parse(baseReceipt?.issuedAt ?? OBSERVED_AT) + 60_000),
+    ).toISOString();
     const basePolicy = policy();
     basePolicy.trustedReviewers = {
       Claude: [{ login: "claude-reviewer[bot]", userId: 71 }],
@@ -262,11 +481,22 @@ describe("production closure proposal authority", () => {
     const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
     const matrixBytes = client.blobs.get(client.pathToSha.get(matrixPath)!)!;
     const proposedMatrix = JSON.parse(matrixBytes.toString("utf8")) as ProductionClosureMatrix;
+    const bootstrapNumber = proposedMatrix.releaseTrain.currentPullRequestBootstrap!.number;
+    const mappedRequirement = proposedMatrix.requirements[0];
+    proposedMatrix.releaseTrain.currentPullRequestBootstrap!.requirementIds = [
+      ...new Set([
+        ...proposedMatrix.releaseTrain.currentPullRequestBootstrap!.requirementIds,
+        mappedRequirement.requirementId,
+      ]),
+    ].sort();
+    mappedRequirement.pullRequests = [...new Set([...mappedRequirement.pullRequests, bootstrapNumber])].sort(
+      (left, right) => left - right,
+    );
     const rotation = {
       rotationId: "rotation-20260825-001",
       kind: "runtime" as const,
-      issuedAt: "2026-08-25T11:00:00.000Z",
-      expiresAt: "2026-08-26T11:00:00.000Z",
+      issuedAt: rotationObservedAt,
+      expiresAt: new Date(Date.parse(rotationObservedAt) + 24 * 60 * 60 * 1000).toISOString(),
       basePolicySha256: sha256(authority.policyBytes),
       proposedPolicySha256: sha256(proposedPolicyBytes),
     };
@@ -301,9 +531,9 @@ describe("production closure proposal authority", () => {
     ];
     const proposedLedger = {
       schemaVersion: 1,
-      rotations: [{
+      rotations: [...baseLedger.rotations, {
         ...rotation,
-        previousRotationId: null,
+        previousRotationId: baseReceipt?.rotationId ?? null,
         baseRevision: BASE,
         baseLedgerSha256: sha256(authority.rotationLedgerBytes),
         successor: null,
@@ -317,12 +547,14 @@ describe("production closure proposal authority", () => {
       "gondalaimafia/mendpoint",
       HEAD,
       client,
-      OBSERVED_AT,
+      rotationObservedAt,
       authority,
     );
 
     expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
     expect(result.authorityRotation?.rotationId).toBe(rotation.rotationId);
+    expect(result.providerValidationPullRequests).toEqual([]);
+    expect(result.providerValidationIssues).toEqual([]);
 
     proposedMatrix.issueAuthority.issues[0].title = "Rewritten authority evidence";
     proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
@@ -336,12 +568,15 @@ describe("production closure proposal authority", () => {
       "gondalaimafia/mendpoint",
       HEAD,
       client,
-      OBSERVED_AT,
+      rotationObservedAt,
       authority,
     );
     expect(rewritten.issues.map((issue) => issue.code)).toContain(
       "AUTHORITY_ROTATION_MATRIX_SCOPE_INVALID",
     );
+    expect(rewritten.providerValidationIssues).toEqual([
+      proposedMatrix.issueAuthority.issues[0].number,
+    ]);
   });
 
   it("rejects another workflow that can spoof the controller authority surface", async () => {
@@ -475,5 +710,53 @@ describe("production closure proposal authority", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("retries a throttled proposal read without exposing the token", async () => {
+    let attempts = 0;
+    const waits: number[] = [];
+    const client = new GitHubProposalAuthorityClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return new Response(null, {
+            status: 429,
+            headers: { "retry-after": "1" },
+          });
+        }
+        return new Response(JSON.stringify({ id: 1309389373 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+    );
+
+    await expect(client.getRepositoryId()).resolves.toBe(1309389373);
+    expect(attempts).toBe(2);
+    expect(waits).toEqual([1_000]);
+    expect(JSON.stringify({ attempts, waits })).not.toContain("sensitive-token");
+  });
+
+  it("keeps an allowed missing revision as a single non-retried read", async () => {
+    let attempts = 0;
+    const client = new GitHubProposalAuthorityClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => {
+        attempts += 1;
+        return new Response(null, { status: 404 });
+      },
+      async () => {
+        throw new Error("unexpected retry");
+      },
+    );
+
+    await expect(client.revisionExists(HEAD)).resolves.toBe(false);
+    expect(attempts).toBe(1);
   });
 });

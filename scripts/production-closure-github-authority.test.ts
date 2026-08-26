@@ -135,6 +135,9 @@ function context(
 ): GitHubAuthorityContext {
   return {
     eventName: "pull_request",
+    observationScope: "full_release_train",
+    providerValidationPullRequests: [],
+    providerValidationIssues: [],
     repository: "gondalaimafia/mendpoint",
     githubSha: MAIN,
     workflowRunId: "1234",
@@ -157,6 +160,8 @@ function context(
 
 class FixtureClient implements GitHubAuthorityClient {
   mainReads = 0;
+  pullRequestReads: number[] = [];
+  issueReads: number[] = [];
   mainRevisions = [MAIN, MAIN];
   openPullRequests = [pullRequest()];
   trackedPullRequest = pullRequest();
@@ -189,8 +194,9 @@ class FixtureClient implements GitHubAuthorityClient {
     if (this.failure) throw this.failure;
     return this.openPullRequests;
   }
-  async getPullRequest(): Promise<GitHubPullRequest> {
+  async getPullRequest(number: number): Promise<GitHubPullRequest> {
     if (this.failure) throw this.failure;
+    this.pullRequestReads.push(number);
     return this.trackedPullRequest;
   }
   async listCheckRuns(): Promise<GitHubCheckRun[]> {
@@ -217,8 +223,9 @@ class FixtureClient implements GitHubAuthorityClient {
     if (!run) throw new Error("workflow run missing");
     return run;
   }
-  async getIssue(): Promise<GitHubIssue> {
+  async getIssue(number: number): Promise<GitHubIssue> {
     if (this.failure) throw this.failure;
+    this.issueReads.push(number);
     return this.trackedIssue;
   }
 }
@@ -239,6 +246,7 @@ describe("GitHub production closure authority", () => {
       permissions: Record<string, string>;
       concurrency?: unknown;
       jobs: Record<string, {
+        if?: string;
         concurrency?: { group?: string; "cancel-in-progress"?: boolean };
         permissions?: Record<string, string>;
         strategy?: { "fail-fast"?: boolean; "max-parallel"?: number };
@@ -279,6 +287,10 @@ describe("GitHub production closure authority", () => {
       statuses: "write",
     });
     expect(job.strategy).toMatchObject({
+      "fail-fast": false,
+      "max-parallel": 4,
+    });
+    expect(workflow.jobs["invalidate-authority"].strategy).toMatchObject({
       "fail-fast": false,
       "max-parallel": 4,
     });
@@ -354,9 +366,75 @@ describe("GitHub production closure authority", () => {
       expect.objectContaining({
         name: "Verify merged main authority",
         run: "npm run closure:github:check",
-        env: expect.objectContaining({ MENDPOINT_CLOSURE_EVENT_NAME: "push" }),
+        env: expect.objectContaining({
+          MENDPOINT_CLOSURE_EVENT_NAME: "push",
+        }),
       }),
     );
+    expect(mainObservationJob.if).toBe(
+      "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+    );
+  });
+
+  it("limits pull request observations to current-head authority and global invariants", async () => {
+    const configured = matrix();
+    configured.releaseTrain.pullRequests.push({
+      number: 439,
+      state: "open",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+      title: "Prior release work",
+      headBranch: "codex/prior-release-work",
+      baseBranch: "main",
+      headRevision: MERGE,
+      mergeRevision: null,
+      requirementIds: ["ME-FND-001"],
+      checkState: "stale_checks",
+    });
+    const client = new FixtureClient();
+    client.openPullRequests = [pullRequest({ number: 439 }), pullRequest()];
+
+    const result = await verifyGitHubClosureAuthority(
+      configured,
+      context({ observationScope: "current_pull_request" }),
+      client,
+    );
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(client.pullRequestReads).toEqual([440]);
+    expect(client.issueReads).toEqual([]);
+    expect(result.verifiedPullRequests).toEqual([440]);
+    expect(result.verifiedIssues).toEqual([]);
+  });
+
+  it("provider-validates historical declarations changed by the proposal", async () => {
+    const configured = matrix();
+    configured.releaseTrain.pullRequests.push({
+      number: 439,
+      state: "closed",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+      title: "Changed historical work",
+      headBranch: "codex/prior-release-work",
+      baseBranch: "main",
+      headRevision: MERGE,
+      mergeRevision: null,
+      requirementIds: ["ME-FND-001"],
+      checkState: "closed",
+    });
+    const client = new FixtureClient();
+
+    const result = await verifyGitHubClosureAuthority(
+      configured,
+      context({
+        observationScope: "current_pull_request",
+        providerValidationPullRequests: [439],
+        providerValidationIssues: [430],
+      }),
+      client,
+    );
+
+    expect(client.pullRequestReads).toEqual([440, 439]);
+    expect(client.issueReads).toEqual([430]);
+    expect(codes(result)).toContain("PR_METADATA_MISMATCH");
   });
 
   it("routes reads onto the closure App token pool and keeps controller writes on GITHUB_TOKEN", () => {
@@ -884,6 +962,151 @@ describe("GitHub production closure authority", () => {
     expect(JSON.stringify(result)).not.toContain("sensitive-token");
   });
 
+  it("retries a secondary-limited read after the provider retry interval", async () => {
+    let attempts = 0;
+    const waits: number[] = [];
+    const fetchImpl: typeof fetch = async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Response(null, {
+          status: 403,
+          headers: {
+            "retry-after": "1",
+            "x-ratelimit-remaining": "4921",
+          },
+        });
+      }
+      return new Response(JSON.stringify({ object: { sha: MAIN } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const client = new GitHubRestClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      fetchImpl,
+      async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+    );
+
+    await expect(client.getMainRevision()).resolves.toBe(MAIN);
+    expect(attempts).toBe(2);
+    expect(waits).toEqual([1_000]);
+  });
+
+  it("does not retry an unauthorized GitHub read", async () => {
+    let attempts = 0;
+    const client = new GitHubRestClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => {
+        attempts += 1;
+        return new Response(null, { status: 401 });
+      },
+      async () => {
+        throw new Error("unexpected retry");
+      },
+    );
+
+    await expect(client.getMainRevision()).rejects.toThrow("HTTP 401");
+    expect(attempts).toBe(1);
+  });
+
+  it("uses bounded fallback delays for secondary throttling without retry headers", async () => {
+    let attempts = 0;
+    const waits: number[] = [];
+    const client = new GitHubRestClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return new Response(null, {
+            status: 403,
+            headers: { "x-ratelimit-remaining": "4921" },
+          });
+        }
+        return new Response(JSON.stringify({ object: { sha: MAIN } }), { status: 200 });
+      },
+      async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+    );
+
+    await expect(client.getMainRevision()).resolves.toBe(MAIN);
+    expect(attempts).toBe(2);
+    expect(waits).toEqual([60_000]);
+  });
+
+  it("fails without retrying when primary reset exceeds the total wait budget", async () => {
+    let attempts = 0;
+    const waits: number[] = [];
+    const client = new GitHubRestClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => {
+        attempts += 1;
+        return new Response(null, {
+          status: 403,
+          headers: {
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": String(Math.ceil(Date.now() / 1_000) + 600),
+          },
+        });
+      },
+      async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+    );
+
+    await expect(client.getMainRevision()).rejects.toThrow("HTTP 403");
+    expect(attempts).toBe(1);
+    expect(waits).toEqual([]);
+  });
+
+  it("retries transient provider and network failures within the fixed budget", async () => {
+    let attempts = 0;
+    const waits: number[] = [];
+    const client = new GitHubRestClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("transient network failure");
+        if (attempts === 2) return new Response(null, { status: 503 });
+        return new Response(JSON.stringify({ object: { sha: MAIN } }), { status: 200 });
+      },
+      async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+    );
+
+    await expect(client.getMainRevision()).resolves.toBe(MAIN);
+    expect(attempts).toBe(3);
+    expect(waits).toEqual([1_000, 2_000]);
+  });
+
+  it("fails closed after exhausting secondary throttle retries", async () => {
+    let attempts = 0;
+    const waits: number[] = [];
+    const client = new GitHubRestClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => {
+        attempts += 1;
+        return new Response(null, { status: 429 });
+      },
+      async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+    );
+
+    await expect(client.getMainRevision()).rejects.toThrow("HTTP 429");
+    expect(attempts).toBe(3);
+    expect(waits).toEqual([60_000, 120_000]);
+  });
+
   it("writes a secret-free observation artifact", async () => {
     const client = new FixtureClient();
     client.trackedPullRequest.body += "\n## Private context\n\nprivate-repository-content";
@@ -921,7 +1144,7 @@ describe("GitHub production closure authority", () => {
   it("builds an exact PR context from the GitHub event without retaining secrets", () => {
     const built = githubAuthorityContextFromEvent(
       {
-        GITHUB_EVENT_NAME: "pull_request",
+        GITHUB_EVENT_NAME: "pull_request_target",
         GITHUB_REPOSITORY: "gondalaimafia/mendpoint",
         GITHUB_SHA: MAIN,
         GITHUB_RUN_ID: "1234",
@@ -945,11 +1168,42 @@ describe("GitHub production closure authority", () => {
     );
 
     expect(built.pullRequest?.headRevision).toBe(HEAD);
+    expect(built.observationScope).toBe("current_pull_request");
     expect(built.trustedReviewerIdentities.Claude).toEqual([
       { login: "claude-reviewer[bot]", userId: 71 },
     ]);
     expect(JSON.stringify(built)).not.toContain("must-not-be-retained");
   });
+
+  it.each(["schedule", "workflow_dispatch"])(
+    "keeps %s fanout runs on full release-train provider validation",
+    (workflowEventName) => {
+      const built = githubAuthorityContextFromEvent(
+        {
+          GITHUB_EVENT_NAME: workflowEventName,
+          MENDPOINT_CLOSURE_EVENT_NAME: "pull_request",
+          MENDPOINT_CLOSURE_AUTHORITY_SHA: MAIN,
+          GITHUB_REPOSITORY: "gondalaimafia/mendpoint",
+          GITHUB_SHA: MAIN,
+          GITHUB_RUN_ID: "1234",
+          MENDPOINT_CLOSURE_TRUSTED_REVIEWERS_JSON: JSON.stringify({
+            Claude: [{ login: "claude-reviewer[bot]", userId: 71 }],
+          }),
+          MENDPOINT_CLOSURE_PR_NUMBER: "440",
+          MENDPOINT_CLOSURE_PR_BASE_REF: "main",
+          MENDPOINT_CLOSURE_PR_BASE_SHA: MAIN,
+          MENDPOINT_CLOSURE_PR_HEAD_REF: "codex/production-closure-authority-hardening",
+          MENDPOINT_CLOSURE_PR_HEAD_SHA: HEAD,
+        },
+        {},
+        { headRevision: MAIN, parentRevisions: [] },
+      );
+
+      expect(built.eventName).toBe("pull_request");
+      expect(built.observationScope).toBe("full_release_train");
+      expect(built.pullRequest?.number).toBe(440);
+    },
+  );
 
   it("keeps the checked-in protected authority policy runnable and App-bound", () => {
     const policy = JSON.parse(
@@ -978,6 +1232,7 @@ describe("GitHub production closure authority", () => {
 
     expect(policy.externalCheckAppId).toBe(4718395);
     expect(policy.controllerCheckAppId).toBe(15368);
+    expect(built.observationScope).toBe("full_release_train");
     expect(built.trustedReviewerIdentities.Claude).toEqual([
       { login: "mendpoint-closure-authority[bot]", userId: 321156448 },
       // Owner decision (keep both): the human owner stays in the trust root
@@ -1010,6 +1265,7 @@ describe("GitHub production closure authority", () => {
     );
 
     expect(built.githubSha).toBe(MAIN);
+    expect(built.observationScope).toBe("full_release_train");
   });
 
   it("rejects a reviewer login bound to multiple agent identities", () => {

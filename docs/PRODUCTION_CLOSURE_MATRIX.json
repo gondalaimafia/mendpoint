@@ -2057,16 +2057,16 @@
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
-    "observedMainRevision": "d5c49b9c577236474ed83364917e3a66c055f80f",
-    "observationDigest": "sha256:0020fa32bddc247155235cb2f0b2e7ab16e3c17b1ded701534d1c047c3a3c400",
+    "observedMainRevision": "e67a040b65a48f48e425000e0fd038b2ea544b5b",
+    "observationDigest": "sha256:b4abb5c88e786934eed4616bd48c09c54e837d3b07c6b195c5fa3476eb78cead",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 481,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/481",
-      "title": "Promote production closure matrix to v2",
+      "number": 485,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/485",
+      "title": "Fix production authority drift and read starvation",
       "baseBranch": "main",
-      "headBranch": "codex/production-matrix-v2-app",
+      "headBranch": "codex/pr484-review-fixes",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2077,11 +2077,17 @@
         "pullRequests": [],
         "branches": []
       },
-      "requirementIds": [
-        "ME-FND-001"
-      ],
+      "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": []
+      "remediatesPullRequests": [],
+      "authorityRotation": {
+        "rotationId": "runtime-authority-read-budget-20260826",
+        "kind": "runtime",
+        "issuedAt": "2026-08-26T07:03:40.449Z",
+        "expiresAt": "2026-09-01T07:03:40.449Z",
+        "basePolicySha256": "sha256:c608eb85fd35ef35acf034f998917b479135116626e17c2a14054c6f68e50d30",
+        "proposedPolicySha256": "sha256:572d299979e55ed409ae21c8f0a720b1c4e8b7f7a6fcb7f217ea12bf4aed03cb"
+      }
     },
     "pullRequests": [
       {
@@ -3558,7 +3564,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "blocked_explicit_dependency",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -3579,7 +3585,20 @@
           "submittedAt": null,
           "attributable": false
         },
-        "blockers": []
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "graph lookup failure continues execution instead of failing closed"
+          },
+          {
+            "priority": "P1",
+            "summary": "no live producer supplies the endpoint key required by this path"
+          },
+          {
+            "priority": "P1",
+            "summary": "Mission graph scope is not bound to the exact repository snapshot"
+          }
+        ]
       },
       {
         "number": 451,
@@ -3593,7 +3612,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "blocked_explicit_dependency",
         "dependencies": {
           "pullRequests": [
             463
@@ -3616,7 +3635,20 @@
           "submittedAt": null,
           "attributable": false
         },
-        "blockers": []
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "post-edit verification evidence is incorrectly reusable for the immutable source snapshot"
+          },
+          {
+            "priority": "P1",
+            "summary": "comparison success can be recorded while constituent checks fail"
+          },
+          {
+            "priority": "P2",
+            "summary": "Mission and compiler visibility is not bound to the exact snapshot"
+          }
+        ]
       },
       {
         "number": 454,
@@ -3801,11 +3833,15 @@
         "blockers": [
           {
             "priority": "P1",
-            "summary": "the provisional Claude owner is not supported by an agent-prefixed branch or a provider-bound owner label"
+            "summary": "historical claimed surfaces can be removed or retargeted before stale-claim comparison, bypassing the required re-audit"
           },
           {
             "priority": "P1",
             "summary": "the branch changes two pinned public-claims authority surfaces without a sanctioned runtime rotation"
+          },
+          {
+            "priority": "P1",
+            "summary": "the provisional Claude owner is not supported by an agent-prefixed branch or a provider-bound owner label"
           }
         ]
       },
@@ -3821,7 +3857,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "blocked_explicit_dependency",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -3842,7 +3878,20 @@
           "submittedAt": null,
           "attributable": false
         },
-        "blockers": []
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "set-once graph authority becomes stale after later repository enrollment"
+          },
+          {
+            "priority": "P1",
+            "summary": "campaign start can race repository enrollment"
+          },
+          {
+            "priority": "P1",
+            "summary": "campaign start and replay do not fail closed when Mission wiring is absent or partial"
+          }
+        ]
       },
       {
         "number": 465,
@@ -3858,7 +3907,9 @@
         },
         "disposition": "blocked_explicit_dependency",
         "dependencies": {
-          "pullRequests": [],
+          "pullRequests": [
+            466
+          ],
           "branches": []
         },
         "requirementIds": [],
@@ -4100,6 +4151,78 @@
         "checkState": "stale_checks",
         "headRevision": "97ddcd98480783a55bd0d2f3dfab2125ed2c7881",
         "mergeRevision": "66dc7d39f550e0e0cb9fc35e0bca60297afdb972",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 481,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/481",
+        "title": "Promote production closure matrix to v2",
+        "headBranch": "codex/production-matrix-v2-app",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-FND-001"
+        ],
+        "checkState": "stale_checks",
+        "headRevision": "ef66f709c8c98231ff4aa1da933f35af15410e42",
+        "mergeRevision": "e67a040b65a48f48e425000e0fd038b2ea544b5b",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 484,
+        "state": "closed",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/484",
+        "title": "authority: judge proposal drift against the merge base, not the base tip",
+        "headBranch": "proposal-mergebase",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Claude",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "superseded",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "dd16d12a73cd26e6282e0303093f81018c0d550a",
+        "mergeRevision": null,
         "checks": [],
         "review": {
           "state": "none",
