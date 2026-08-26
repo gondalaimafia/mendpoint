@@ -3346,14 +3346,17 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 
 ### 2026-08-25 PR 467 exact-head review repair
 
-- [ ] Make a mission-bound repository or snapshot mismatch stop the live job before `runWardenAttempt`.
-- [ ] Version and authenticate Mission artifact task and snapshot scope, including explicit legacy null-scope reconciliation.
-- [ ] Bridge campaign artifact lineage into the canonical job MissionTask consumed by the live compiler.
-- [ ] Add red live-loop, released replay, ambiguous mismatch, and real producer-to-consumer regressions.
-- [ ] Update the Mission Context Compiler contract without promoting `ME-MCC-001`.
-- [ ] Run focused tests, DB, pipeline, and worker typechecks, and strict diff checks.
-- [ ] Commit and push the repaired exact head for independent review; do not merge or self-approve.
+- [x] Make a mission-bound repository or snapshot mismatch stop the live job before `runWardenAttempt`.
+- [x] Version and authenticate Mission artifact task and snapshot scope, including explicit legacy null-scope reconciliation.
+- [x] Bridge campaign artifact lineage into the canonical job MissionTask consumed by the live compiler.
+- [x] Add red live-loop, released replay, ambiguous mismatch, and real producer-to-consumer regressions.
+- [x] Update the Mission Context Compiler contract without promoting `ME-MCC-001`.
+- [x] Run focused tests, DB, pipeline, and worker typechecks, and strict diff checks.
+- [x] Commit and push the repaired exact head for independent review; do not merge or self-approve.
 
 #### Review
 
-In progress.
+- Live execution: repository or snapshot binding failures on a Mission-bound job now propagate out of context resolution before `runWardenAttempt`; the live regression proves the job fails with no planner call and no trajectory. Unbound legacy jobs retain the existing best-effort compatibility path.
+- Scope authority: exact task and snapshot authority lives in an append-only schema-v1 companion digest structurally bound to tenant, Mission, and registration. Released null/null and matching exact legacy registrations reconcile without rewriting the historical registration; partial, conflicting, unsupported, or corrupt scope fails closed. The compiler accepts exact task context only from the authenticated companion.
+- Writer-to-reader lineage: a production job naming its linked campaign now depends on that campaign's deterministic repository MissionTask. The compiler admits exact-snapshot artifacts from the canonical job task and its validated transitive prerequisites; the real campaign writer to live worker regression records the artifact ref on the trajectory.
+- Verification on merge base `8b41d77772d36aab5be41bd5822be9bd4de1eae3`: 170 focused tests pass across database, compiler, campaign executor, resume, bridge, and full worker CLI suites. DB, pipeline, and worker typechecks pass; strict diff checking is clean. `ME-MCC-001` remains partial/internal. Independent exact-head review and GitHub CI remain required.
