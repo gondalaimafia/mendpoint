@@ -205,7 +205,7 @@ jobs:
       issues: write
     steps:
       - name: Check out verifier
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v4.2.2
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
@@ -254,7 +254,7 @@ jobs:
           set -euo pipefail
           evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
           flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
-            --command "node --import tsx scripts/customer-backup.ts" 2>&1 | tee -a "$evidence"
+            --command "MENDPOINT_EXPECTED_BACKUP_RELEASE_REVISION=$GITHUB_SHA node --import tsx scripts/customer-backup.ts" 2>&1 | tee -a "$evidence"
           bash scripts/verify-customer-backup-result.sh "$evidence" "$GITHUB_SHA" >/dev/null
           printf 'result=success backupTaken=true\n' >> "$evidence"
 

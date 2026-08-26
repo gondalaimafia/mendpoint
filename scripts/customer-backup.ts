@@ -14,8 +14,10 @@ import {
   publishCustomerBackup,
   publishCustomerBackupRecoveryReceipt,
 } from "./customer-object-store.js";
+import { resolveCustomerBackupReleaseAuthority } from "./customer-backup-release-authority.js";
 
 async function main(): Promise<void> {
+  const releaseRevision = resolveCustomerBackupReleaseAuthority(process.env);
   const input = customerBackupInputFromEnv();
   const objectStore = loadCustomerObjectStoreConfig(process.env);
   const transport = createRcloneCustomerObjectStoreTransport(objectStore, process.env);
@@ -78,7 +80,7 @@ async function main(): Promise<void> {
       schemaVersion: 1,
       kind: "customer_backup_result",
       result: "success",
-      releaseRevision: process.env.MENDPOINT_RELEASE_REVISION?.trim() ?? "",
+      releaseRevision,
       backupId: manifest.backupId,
       publication,
       createdAt: manifest.createdAt,

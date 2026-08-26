@@ -56,6 +56,9 @@ describe("customer backup workflow", () => {
       "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
     );
     expect(steps[checkoutIndex]?.with).toEqual({ "persist-credentials": false });
+    expect(source).toContain(
+      "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0",
+    );
 
     const initialize = step("Initialize backup evidence");
     expect(initialize.run).toContain("GITHUB_RUN_ATTEMPT");
@@ -63,6 +66,7 @@ describe("customer backup workflow", () => {
     const run = step("Run authenticated customer backup");
     expect(run.env.FLY_API_TOKEN).toBe("${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}");
     expect(run.run).toContain('flyctl ssh console --app "$CUSTOMER_APP"');
+    expect(run.run).toContain("MENDPOINT_EXPECTED_BACKUP_RELEASE_REVISION=$GITHUB_SHA");
     expect(run.run).toContain("scripts/customer-backup.ts");
     expect(run.run).toContain('tee -a "$evidence"');
     expect(run.run).toContain('bash scripts/verify-customer-backup-result.sh "$evidence" "$GITHUB_SHA"');
