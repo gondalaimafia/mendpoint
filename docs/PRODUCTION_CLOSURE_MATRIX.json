@@ -1700,8 +1700,7 @@
         417,
         418,
         420,
-        421,
-        428
+        421
       ],
       "testEvidenceIds": [
         "ME-MSN-003-AC01-EV02"
@@ -1728,8 +1727,7 @@
         409,
         410,
         417,
-        419,
-        428
+        419
       ],
       "testEvidenceIds": [
         "ME-MTE-001-AC01-EV04"
@@ -1819,8 +1817,8 @@
   "issueAuthority": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-26T03:07:01.195Z",
-    "observationDigest": "sha256:5d285cec23b3a6a8779f50b0ac2f1823267c876b8a257fc90c0561900ed9fbb6",
+    "observedAt": "2026-08-26T03:38:47.540Z",
+    "observationDigest": "sha256:501a77d1425b95776c2bb59c41a684c047073eba63b7515e5f42a85a88ecc659",
     "issues": [
       {
         "number": 350,
@@ -2039,9 +2037,9 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-26T03:07:01.195Z",
+    "observedAt": "2026-08-26T03:38:47.540Z",
     "observedMainRevision": "900c7327cc4fb43d3cf72f7acb3303f269749427",
-    "observationDigest": "sha256:ad21bbd9985f6e4e2ea2dfc8b7b2131f082c4ac9208d7bba0adb2ff5fbc3fd87",
+    "observationDigest": "sha256:484f9d7f1eeaa255071ef9adaddb6abcb1f9c68f12a5f4ee7ee6ec82f90ea735",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -3451,44 +3449,6 @@
         "blockers": []
       },
       {
-        "number": 428,
-        "state": "merged",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/428",
-        "title": "test: loop-level coverage for the Fettler resume seam",
-        "headBranch": "test/fettler-resume-loop-coverage",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Claude",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merged",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [
-          "ME-MSN-003",
-          "ME-MTE-001"
-        ],
-        "checkState": "stale_checks",
-        "headRevision": "e50f6b2b200ae4cbc2bb3002a2472153db7a4f6f",
-        "mergeRevision": "c64274e7226aa5ec0b4261f988d3e0874817ae83",
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
         "number": 440,
         "state": "merged",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/440",
@@ -3750,7 +3710,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "blocked_explicit_dependency",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -3790,7 +3750,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "blocked_explicit_dependency",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -3811,7 +3771,12 @@
           "submittedAt": null,
           "attributable": false
         },
-        "blockers": []
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "the provisional Claude owner is not supported by an agent-prefixed branch or a provider-bound owner label"
+          }
+        ]
       },
       {
         "number": 463,
@@ -3860,7 +3825,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "blocked_explicit_dependency",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -3939,9 +3904,11 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "blocked_explicit_dependency",
         "dependencies": {
-          "pullRequests": [],
+          "pullRequests": [
+            460
+          ],
           "branches": []
         },
         "requirementIds": [],
@@ -3960,7 +3927,12 @@
           "submittedAt": null,
           "attributable": false
         },
-        "blockers": []
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "release remains held behind PR 460 and the absent artifact backend production binding"
+          }
+        ]
       },
       {
         "number": 473,
@@ -4009,14 +3981,14 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "blocked_explicit_dependency",
         "dependencies": {
           "pullRequests": [],
           "branches": []
         },
         "requirementIds": [],
         "checkState": "checks_failed",
-        "headRevision": "46163538d55cea2621812b43b487423b82261325",
+        "headRevision": "239b492917866345b4cf2f388495dd43b08697e3",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -4030,7 +4002,68 @@
           "submittedAt": null,
           "attributable": false
         },
-        "blockers": []
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "the configuration gate can be disabled without an authority rotation because its implementation and manifest are not protected"
+          },
+          {
+            "priority": "P1",
+            "summary": "environment scope validation misses the sandbox FLY_ORG binding and does not enforce exact environment identity"
+          },
+          {
+            "priority": "P1",
+            "summary": "live required-configuration presence verification is not invoked by a protected production workflow"
+          },
+          {
+            "priority": "P1",
+            "summary": "required-loop discovery ignores non-MENDPOINT names used by the ReGauge production guard"
+          },
+          {
+            "priority": "P1",
+            "summary": "the provisional Claude owner is not supported by an agent-prefixed branch or a provider-bound owner label"
+          }
+        ]
+      },
+      {
+        "number": 480,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/480",
+        "title": "docs: catalogue the failure modes that actually shipped here",
+        "headBranch": "failure-modes-doc",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Claude",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "checks_failed",
+        "headRevision": "97ddcd98480783a55bd0d2f3dfab2125ed2c7881",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "the pull request has no strict requirement mapping and its provisional Claude owner lacks provider-verifiable provenance"
+          }
+        ]
       }
     ]
   }
