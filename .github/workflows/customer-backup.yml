@@ -51,7 +51,7 @@ jobs:
             echo customer_backup_app_binding_invalid >&2
             exit 1
           }
-          mapfile -t visible_apps < <(flyctl apps list --json | jq -r '.[].name' | sort -u)
+          mapfile -t visible_apps < <(flyctl apps list --json | jq -r '.[] | (.Name // .name)' | sort -u)
           if [ "${#visible_apps[@]}" -ne 1 ] || [ "${visible_apps[0]:-}" != "$CUSTOMER_APP" ]; then
             echo customer_backup_token_not_app_scoped >&2
             exit 1
