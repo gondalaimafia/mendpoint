@@ -697,6 +697,7 @@ export function registerTransformerAdaptiveReviewRoutes(
           campaignId: reviewed.campaignId,
           repositoryId: reviewed.repositoryId,
           actorPrincipalId: trustPrincipalId!,
+          approvalId: reviewed.id,
           createdAt: nowIso(),
         });
         delivery = enqueueAdaptiveDelivery(db, {

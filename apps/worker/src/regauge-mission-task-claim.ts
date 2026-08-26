@@ -166,10 +166,33 @@ export function assignRegaugeMissionTaskOnClaim(
  * keeping approval and execution as separately attributable state changes. */
 export function resumeRegaugeMissionTaskAfterReview(
   db: AppDb,
-  input: RegaugeMissionTaskClaimInput & Readonly<{ actorPrincipalId: string }>,
+  input: RegaugeMissionTaskClaimInput & Readonly<{
+    actorPrincipalId: string;
+    /** Exact adaptive candidate whose approval owns this resume transition. */
+    approvalId: string;
+  }>,
 ): MissionTask | undefined {
   const task = resolveClaimedTask(db, input);
   if (!task) return undefined;
+  if (!input.approvalId.trim() || input.approvalId.length > 200) {
+    throw new Error("mission_task_review_approval_invalid");
+  }
+  const approvalDigest = createHash("sha256")
+    .update([task.id, input.approvalId].join("\0"), "utf8")
+    .digest("hex")
+    .slice(0, 32);
+  const eventId = `e-regauge-review-resume-${approvalDigest}`;
+  const idempotencyKey = `regauge-review-resume:${approvalDigest}`;
+  const alreadyApplied = db.raw.prepare(
+    `SELECT id FROM domain_events
+     WHERE tenant_id = ? AND aggregate_type = 'mission_task' AND aggregate_id = ?
+       AND idempotency_key = ?
+     LIMIT 1`,
+  ).get(input.tenantId, task.id, idempotencyKey);
+  // A candidate approval owns at most one resume transition forever. Returning
+  // the current row (rather than replaying the transition) prevents an old
+  // approval from authorizing a later repository stage.
+  if (alreadyApplied) return task;
   if (task.status === "agent_resume" || task.status === "agent_working" || task.status === "complete") {
     return task;
   }
@@ -182,8 +205,8 @@ export function resumeRegaugeMissionTaskAfterReview(
     expectedRevision: task.revision,
     to: "agent_resume",
     actorPrincipalId: input.actorPrincipalId,
-    eventId: `${task.id}-review-resume-${task.revision}`,
-    idempotencyKey: `mission-task-review-resume-${task.id}-${task.revision}`,
+    eventId,
+    idempotencyKey,
     correlationId: input.campaignId,
     createdAt: input.createdAt,
   });

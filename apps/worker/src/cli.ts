@@ -138,6 +138,7 @@ import { runRepairSession } from "@mendpoint/repair";
 import {
   discardAdaptiveCandidate,
   TransformerPilotExecutionStore,
+  type TransformerRunnableCampaignCursor,
 } from "@mendpoint/transformer";
 import type {
   ContractCase,
@@ -4306,6 +4307,7 @@ async function runService(intervalMs: number) {
   );
   const runTransformerLane = async () => {
     let failures = 0;
+    let campaignScanCursor: TransformerRunnableCampaignCursor | undefined;
     while (!shutdown.signal.aborted) {
       transformer = transformerPilotHeartbeatStarted(transformer, nowIso());
       emitHeartbeat();
@@ -4334,6 +4336,7 @@ async function runService(intervalMs: number) {
           ),
           shouldContinue: () => !shutdown.signal.aborted,
           adaptiveCandidateDataRoot: dataRoot,
+          ...(campaignScanCursor ? { campaignScanCursor } : {}),
           // The coordinator owns the only durable ReGauge Mission and queue.
           // It enqueues advisory verification after accepting the exact terminal
           // checkpoint; this volume-less worker must never create a second,
@@ -4341,6 +4344,7 @@ async function runService(intervalMs: number) {
           ...transformerAdaptiveProductionPorts(process.env, transformerDb),
         });
         transformer = transformerPilotHeartbeatAfterResult(transformer, result, nowIso());
+        campaignScanCursor = result.nextCampaignScanCursor;
         failures = result.infrastructureError ? failures + 1 : 0;
       } catch (error) {
         failures++;

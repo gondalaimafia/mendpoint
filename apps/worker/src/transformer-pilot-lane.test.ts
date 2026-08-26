@@ -1195,7 +1195,8 @@ describe("Transformer production pilot lane", () => {
               ? Object.freeze({ campaigns: Object.freeze([ready]), nextCursor: null })
               : Object.freeze({
                   campaigns: Object.freeze(Array.from({ length: 100 }, () => blocked)),
-                  nextCursor: Object.freeze({ updatedAt: CREATED_AT, tenantId: "tenant-a", campaignId: "blocked-99" }),
+                  scannedCount: 100,
+                  nextCursor: Object.freeze({ createdAt: CREATED_AT, tenantId: "tenant-a", campaignId: "blocked-99" }),
                 });
         }
         const value = Reflect.get(target, property, target);
@@ -1211,6 +1212,55 @@ describe("Transformer production pilot lane", () => {
     });
     expect(result).toMatchObject({ attempted: 1, completed: 1 });
     expect(commandRunner).toHaveBeenCalled();
+  });
+
+  it("carries a bounded campaign scan cursor into the next worker cycle", async () => {
+    const { root, db, store } = setup();
+    const ready = store.listRunnableCampaigns("tenant-a", 1, gateConfig())[0]!;
+    const calls: Array<unknown> = [];
+    const pageStore = new Proxy(store, {
+      get(target, property) {
+        if (property === "listRunnableCampaignPage") {
+          return (_tenantId: string | undefined, _limit: number, _gate: string | undefined, cursor?: unknown) => {
+            calls.push(cursor);
+            return cursor
+              ? Object.freeze({ campaigns: Object.freeze([ready]), scannedCount: 1, nextCursor: null })
+              : Object.freeze({
+                  campaigns: Object.freeze([]),
+                  scannedCount: 100,
+                  nextCursor: Object.freeze({
+                    createdAt: CREATED_AT, tenantId: "tenant-a", campaignId: "blocked-99",
+                  }),
+                });
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as TransformerPilotLaneStore;
+    const commandRunner = vi.fn(async () => ({ exitCode: 0, stdout: "verified", stderr: "" }));
+
+    const first = await runTransformerPilotLaneOnce({
+      db, store: pageStore, gateConfig: gateConfig(), tenantId: "tenant-a", workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"), candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"), maxCampaigns: 1, maxCampaignScanRows: 100,
+      runId: "run-bounded-page-1", now: () => RUN_AT,
+      leaseToken: () => "transformer-bounded-page-token-0001", commandRunner,
+    });
+    expect(first).toMatchObject({ attempted: 0, nextCampaignScanCursor: {
+      createdAt: CREATED_AT, tenantId: "tenant-a", campaignId: "blocked-99",
+    } });
+
+    const second = await runTransformerPilotLaneOnce({
+      db, store: pageStore, gateConfig: gateConfig(), tenantId: "tenant-a", workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"), candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"), maxCampaigns: 1, maxCampaignScanRows: 100,
+      campaignScanCursor: first.nextCampaignScanCursor,
+      runId: "run-bounded-page-2", now: () => RUN_AT,
+      leaseToken: () => "transformer-bounded-page-token-0002", commandRunner,
+    });
+    expect(second).toMatchObject({ attempted: 1, completed: 1 });
+    expect(calls).toEqual([undefined, first.nextCampaignScanCursor]);
   });
 
   it("does not count a campaign until campaign-specific authorization and Mission policy pass", async () => {

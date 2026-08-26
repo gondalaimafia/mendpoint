@@ -3357,3 +3357,19 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 GREEN: 198 focused Mission, Transformer store/lane, Fettler/ReGauge claim, and API review regressions pass. Database, Transformer, worker, and API typechecks pass, including the exact two-connection dependency interleaving, explicit routing-abandonment recovery, real cursor paging plus a 100-row blocked scan, campaign-derived review binding, missing-source fail closed behavior, reviewed repository resume, and typed Fettler readiness/failure classification. Strict diff integrity passes. The rebased repaired head is ready to push for fresh exact-head reciprocal review; it is not self-approved or merged.
 
 Current-base review repair: review found that the second completed stage reused the first handoff's event and idempotency identities, causing the transaction to roll back and leave the task `agent_working`. Handoff identity now includes the fenced task revision. A two-cycle claim, handoff, approval, resume, claim, handoff regression passes; the affected worker file reports 19 passing tests, worker typecheck passes, and strict diff integrity is clean.
+
+### 2026-08-25 PR 465 second exact-head review repairs
+
+- [x] Bind an adaptive approval to the exact current ReGauge review handoff so replaying a prior-stage approval cannot resume a later stage.
+- [x] Replace mutable campaign pagination with a stable immutable keyset and bounded SQL pages.
+- [x] Bound each worker campaign scan while carrying its continuation cursor across cycles so blocked campaigns cannot starve later runnable work.
+- [x] Add red-first regressions for stale stage-one approval replay, mutation-stable paging, bounded page reads, and continuation beyond the per-cycle scan budget.
+- [x] Run focused Transformer, worker, and API tests, affected typechecks, strict diff review, commit, and push the repaired replacement branch without merging.
+
+#### Review
+
+The stale approval regression first reproduced stage one approval replay moving the later stage from `human_review_required` revision 7 to `agent_resume` revision 8. Each candidate approval now owns one durable MissionTask resume event identity; replay returns the current task without creating another transition, while a different stage candidate can resume the current handoff.
+
+Campaign paging now uses the immutable stored `created_at`, tenant, and campaign key. Upgrade converges legacy JSON-only rows, creates global and tenant-scoped indexes, and makes the cursor column immutable. Each SQL page reads at most `limit + 1` rows. The lane inspects at most 1,000 rows per cycle by default and returns a continuation that the long-running worker carries into the next cycle.
+
+Current-base verification on `4ce35061`: 254 focused regressions pass across nine database, Transformer, worker, and API files. Database, Transformer, worker, and API typechecks pass. The legacy table upgrade, query-plan index, immutable cursor, between-page mutation, 100-row scan boundary, next-cycle continuation, stale stage-one replay, and fresh stage-two approval are covered. Strict diff integrity passes. The repaired branch is pushed for fresh reciprocal review and is not self-approved or merged.

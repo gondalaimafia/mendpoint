@@ -2263,11 +2263,13 @@ describe("Transformer pilot execution coordinator", () => {
       .toEqual(["campaign-a", "campaign-b"]);
     const firstPage = store.listRunnableCampaignPage("tenant-a", 2);
     expect(firstPage.campaigns.map((item) => item.campaignId)).toEqual(["campaign-a", "campaign-b"]);
+    expect(firstPage.scannedCount).toBe(2);
     expect(firstPage.nextCursor).toEqual({
-      updatedAt: time(1), tenantId: "tenant-a", campaignId: "campaign-b",
+      createdAt: time(1), tenantId: "tenant-a", campaignId: "campaign-b",
     });
     const secondPage = store.listRunnableCampaignPage("tenant-a", 2, undefined, firstPage.nextCursor!);
     expect(secondPage.campaigns.map((item) => item.campaignId)).toEqual(["campaign-z"]);
+    expect(secondPage.scannedCount).toBe(1);
     expect(secondPage.nextCursor).toBeNull();
     expect(store.listRunnableCampaigns("tenant-b")).toEqual([]);
     expect(() => store.listRunnableCampaigns(undefined, 0))
@@ -2293,6 +2295,107 @@ describe("Transformer pilot execution coordinator", () => {
       (campaignId) => store.listEvents("tenant-a", campaignId).length,
     )).toEqual(eventsBefore.map((count, index) => count + (index === 0 ? 0 : 1)));
     store.close();
+  });
+
+  it("keeps campaign pages stable when an already-scanned campaign mutates", () => {
+    const store = new TransformerPilotExecutionStore();
+    const base = createInput([unit("unit-a", "repo-a", "a", "c")]);
+    for (const campaignId of ["campaign-a", "campaign-b", "campaign-z"] as const) {
+      store.createCampaign({
+        ...base,
+        campaignId,
+        observedAt: time(1),
+        idempotencyKey: `create-${campaignId}`,
+      });
+    }
+
+    const firstPage = store.listRunnableCampaignPage("tenant-a", 2);
+    expect(firstPage.campaigns.map((item) => item.campaignId)).toEqual(["campaign-a", "campaign-b"]);
+    store.bindRoutingAttempt({
+      ...mutation(2, "bind-campaign-a"),
+      campaignId: "campaign-a",
+      runId: "run-a",
+      envelopeId: "envelope-a",
+      outcomeIdempotencyKey: "outcome-a",
+      executorId: "executor-a",
+      providerId: "provider-a",
+      evidenceRefs: ["evidence-a"],
+      gateConfig: gateConfig(),
+    });
+
+    const secondPage = store.listRunnableCampaignPage(
+      "tenant-a",
+      2,
+      undefined,
+      firstPage.nextCursor!,
+    );
+    expect(secondPage.campaigns.map((item) => item.campaignId)).toEqual(["campaign-z"]);
+    expect(secondPage.scannedCount).toBe(1);
+    expect(secondPage.nextCursor).toBeNull();
+    store.close();
+  });
+
+  it("upgrades the legacy campaign table to the indexed immutable cursor", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-page-upgrade-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    const predecessor = new TransformerPilotExecutionStore(path);
+    predecessor.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    predecessor.close();
+
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      DROP INDEX IF EXISTS tf_pilot_campaigns_created_at_idx;
+      DROP INDEX IF EXISTS tf_pilot_campaigns_tenant_created_at_idx;
+      ALTER TABLE tf_pilot_campaigns RENAME TO tf_pilot_campaigns_with_cursor;
+      CREATE TABLE tf_pilot_campaigns (
+        tenant_id TEXT NOT NULL,
+        campaign_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        body_json TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, campaign_id)
+      );
+      INSERT INTO tf_pilot_campaigns (tenant_id, campaign_id, revision, body_json)
+        SELECT tenant_id, campaign_id, revision, body_json
+        FROM tf_pilot_campaigns_with_cursor;
+      DROP TABLE tf_pilot_campaigns_with_cursor;
+    `);
+    legacy.close();
+
+    const upgraded = new TransformerPilotExecutionStore(path);
+    expect(upgraded.listRunnableCampaignPage("tenant-a", 1)).toMatchObject({
+      campaigns: [{ campaignId: "campaign-a" }],
+      scannedCount: 1,
+      nextCursor: null,
+    });
+    const inspection = new DatabaseSync(path);
+    expect(inspection.prepare(
+      "SELECT name FROM pragma_table_info('tf_pilot_campaigns') WHERE name = 'created_at'",
+    ).get()).toEqual({ name: "created_at" });
+    expect(inspection.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'tf_pilot_campaigns_created_at_idx'",
+    ).get()).toEqual({ name: "tf_pilot_campaigns_created_at_idx" });
+    expect(inspection.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'tf_pilot_campaigns_tenant_created_at_idx'",
+    ).get()).toEqual({ name: "tf_pilot_campaigns_tenant_created_at_idx" });
+    const plan = inspection.prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT tenant_id, campaign_id, created_at, body_json
+       FROM tf_pilot_campaigns
+       WHERE tenant_id = ?
+       ORDER BY created_at, tenant_id, campaign_id
+       LIMIT ?`,
+    ).all("tenant-a", 2) as Array<{ detail: string }>;
+    expect(plan.map((row) => row.detail).join(" ")).toContain(
+      "tf_pilot_campaigns_tenant_created_at_idx",
+    );
+    expect(() => inspection.prepare(
+      "UPDATE tf_pilot_campaigns SET created_at = ? WHERE tenant_id = ? AND campaign_id = ?",
+    ).run(time(9), "tenant-a", "campaign-a")).toThrow(
+      "transformer_pilot_campaign_created_at_immutable",
+    );
+    inspection.close();
+    upgraded.close();
   });
 
   it("recovers a crash only after attributable retry authorization and exception resolution", () => {

@@ -550,13 +550,15 @@ export type TransformerRunnableCampaign = Readonly<{
 }>;
 
 export type TransformerRunnableCampaignCursor = Readonly<{
-  updatedAt: string;
+  createdAt: string;
   tenantId: string;
   campaignId: string;
 }>;
 
 export type TransformerRunnableCampaignPage = Readonly<{
   campaigns: readonly TransformerRunnableCampaign[];
+  /** Number of durable campaign rows inspected by this bounded page. */
+  scannedCount: number;
   nextCursor: TransformerRunnableCampaignCursor | null;
 }>;
 
@@ -1541,6 +1543,7 @@ export class TransformerPilotExecutionStore {
         tenant_id TEXT NOT NULL,
         campaign_id TEXT NOT NULL,
         revision INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
         body_json TEXT NOT NULL,
         PRIMARY KEY (tenant_id, campaign_id)
       );
@@ -1662,6 +1665,26 @@ export class TransformerPilotExecutionStore {
       CREATE TRIGGER IF NOT EXISTS tf_pilot_verifier_advisory_dispatch_claim_results_no_delete BEFORE DELETE ON tf_pilot_verifier_advisory_dispatch_claim_results
       BEGIN SELECT RAISE(ABORT, 'transformer_pilot_verifier_advisory_dispatch_claim_results_append_only'); END;
     `);
+    const campaignColumns = this.db.prepare("PRAGMA table_info(tf_pilot_campaigns)").all() as Array<{
+      name: string;
+    }>;
+    if (!campaignColumns.some((column) => column.name === "created_at")) {
+      this.db.exec("ALTER TABLE tf_pilot_campaigns ADD COLUMN created_at TEXT");
+    }
+    this.db.exec(`UPDATE tf_pilot_campaigns
+      SET created_at = json_extract(body_json, '$.createdAt')
+      WHERE created_at IS NULL`);
+    const invalidCreatedAt = this.db.prepare(
+      "SELECT 1 FROM tf_pilot_campaigns WHERE created_at IS NULL OR created_at = '' LIMIT 1",
+    ).get();
+    if (invalidCreatedAt) throw new Error("transformer_pilot_campaign_created_at_corrupt");
+    this.db.exec(`CREATE INDEX IF NOT EXISTS tf_pilot_campaigns_created_at_idx
+      ON tf_pilot_campaigns(created_at, tenant_id, campaign_id)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS tf_pilot_campaigns_tenant_created_at_idx
+      ON tf_pilot_campaigns(tenant_id, created_at, campaign_id)`);
+    this.db.exec(`CREATE TRIGGER IF NOT EXISTS tf_pilot_campaigns_created_at_no_update
+      BEFORE UPDATE OF created_at ON tf_pilot_campaigns
+      BEGIN SELECT RAISE(ABORT, 'transformer_pilot_campaign_created_at_immutable'); END`);
   }
 
   close(): void {
@@ -2047,7 +2070,17 @@ export class TransformerPilotExecutionStore {
     limit = 25,
     gateConfig?: string,
   ): TransformerRunnableCampaign[] {
-    return deepFreeze([...this.listRunnableCampaignPage(tenantId, limit, gateConfig).campaigns]);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error("transformer_pilot_campaign_limit_invalid");
+    }
+    const campaigns: TransformerRunnableCampaign[] = [];
+    let cursor: TransformerRunnableCampaignCursor | undefined;
+    do {
+      const page = this.listRunnableCampaignPage(tenantId, limit, gateConfig, cursor);
+      campaigns.push(...page.campaigns.slice(0, limit - campaigns.length));
+      cursor = page.nextCursor ?? undefined;
+    } while (campaigns.length < limit && cursor);
+    return deepFreeze(campaigns);
   }
 
   listRunnableCampaignPage(
@@ -2061,18 +2094,61 @@ export class TransformerPilotExecutionStore {
     }
     const after = cursor
       ? {
-          updatedAt: requireTimestamp(cursor.updatedAt),
+          createdAt: requireTimestamp(cursor.createdAt),
           tenantId: requireId(cursor.tenantId, "transformer_pilot_campaign_cursor_invalid"),
           campaignId: requireId(cursor.campaignId, "transformer_pilot_campaign_cursor_invalid"),
         }
       : undefined;
-    const rows = tenantId === undefined
-      ? this.db.prepare("SELECT body_json FROM tf_pilot_campaigns").all()
-      : this.db.prepare(
-        "SELECT body_json FROM tf_pilot_campaigns WHERE tenant_id = ?",
-      ).all(requireId(tenantId, "transformer_pilot_tenant_invalid"));
-    const runnable = (rows as Array<{ body_json: string }>)
-      .map((row) => JSON.parse(row.body_json) as TransformerPilotCampaign)
+    const safeTenant = tenantId === undefined
+      ? undefined
+      : requireId(tenantId, "transformer_pilot_tenant_invalid");
+    const clauses: string[] = [];
+    const parameters: Array<string | number> = [];
+    if (safeTenant !== undefined) {
+      clauses.push("tenant_id = ?");
+      parameters.push(safeTenant);
+    }
+    if (after) {
+      clauses.push(`(
+        created_at > ? OR
+        (created_at = ? AND tenant_id > ?) OR
+        (created_at = ? AND tenant_id = ? AND campaign_id > ?)
+      )`);
+      parameters.push(
+        after.createdAt,
+        after.createdAt,
+        after.tenantId,
+        after.createdAt,
+        after.tenantId,
+        after.campaignId,
+      );
+    }
+    const rows = this.db.prepare(
+      `SELECT tenant_id, campaign_id, created_at, body_json
+       FROM tf_pilot_campaigns
+       ${clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : ""}
+       ORDER BY created_at, tenant_id, campaign_id
+       LIMIT ?`,
+    ).all(...parameters, limit + 1) as Array<{
+      tenant_id: string;
+      campaign_id: string;
+      created_at: string;
+      body_json: string;
+    }>;
+    const selectedRows = rows.slice(0, limit);
+    const scanned = selectedRows.map((row) => {
+      const campaign = JSON.parse(row.body_json) as TransformerPilotCampaign;
+      if (
+        campaign.tenantId !== row.tenant_id ||
+        campaign.campaignId !== row.campaign_id ||
+        requireTimestamp(campaign.createdAt) !== row.created_at
+      ) {
+        throw new Error("transformer_pilot_campaign_cursor_binding_corrupt");
+      }
+      return { row, campaign };
+    });
+    const selected = scanned
+      .map(({ campaign }) => campaign)
       .filter((campaign) =>
         campaign.state === "running" &&
         !campaign.units.some((unit) => unit.state === "running") &&
@@ -2081,18 +2157,7 @@ export class TransformerPilotExecutionStore {
           tenantId: campaign.tenantId,
           environment: campaign.environment,
         }, gateConfig).allowed)
-      )
-      .sort((left, right) =>
-        compareCodeUnits(left.updatedAt, right.updatedAt) ||
-        compareCodeUnits(left.tenantId, right.tenantId) ||
-        compareCodeUnits(left.campaignId, right.campaignId)
-      )
-      .filter((campaign) => !after ||
-        compareCodeUnits(campaign.updatedAt, after.updatedAt) > 0 ||
-        (campaign.updatedAt === after.updatedAt && compareCodeUnits(campaign.tenantId, after.tenantId) > 0) ||
-        (campaign.updatedAt === after.updatedAt && campaign.tenantId === after.tenantId &&
-          compareCodeUnits(campaign.campaignId, after.campaignId) > 0));
-    const selected = runnable.slice(0, limit);
+      );
     const campaigns = selected
       .map((campaign) => {
         const unit = campaign.units
@@ -2117,11 +2182,16 @@ export class TransformerPilotExecutionStore {
           changedPaths: Object.freeze([...unit.changedPaths]),
         };
       });
-    const last = selected.at(-1);
+    const last = scanned.at(-1);
     return deepFreeze({
       campaigns,
-      nextCursor: runnable.length > selected.length && last
-        ? { updatedAt: last.updatedAt, tenantId: last.tenantId, campaignId: last.campaignId }
+      scannedCount: selectedRows.length,
+      nextCursor: rows.length > selectedRows.length && last
+        ? {
+            createdAt: last.row.created_at,
+            tenantId: last.row.tenant_id,
+            campaignId: last.row.campaign_id,
+          }
         : null,
     });
   }
@@ -2343,8 +2413,11 @@ export class TransformerPilotExecutionStore {
         return replay;
       }
       if (this.getCampaign(input.tenantId, input.campaignId)) throw new Error("transformer_pilot_campaign_exists");
-      this.db.prepare("INSERT INTO tf_pilot_campaigns VALUES (?, ?, ?, ?)")
-        .run(input.tenantId, input.campaignId, 1, JSON.stringify(state));
+      this.db.prepare(
+        `INSERT INTO tf_pilot_campaigns
+          (tenant_id, campaign_id, revision, created_at, body_json)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run(input.tenantId, input.campaignId, 1, state.createdAt, JSON.stringify(state));
       this.insertEvent(state, "campaign.created", input.observedAt, evidenceRefs, {
         constraintDigest: state.constraintDigest,
         unitCount: units.length,

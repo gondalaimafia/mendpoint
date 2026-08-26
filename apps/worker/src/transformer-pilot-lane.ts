@@ -65,6 +65,8 @@ export type TransformerPilotLaneResult = Readonly<{
   regenerationFailed?: number;
   errors: readonly string[];
   infrastructureError?: string;
+  /** Stable continuation when this cycle reaches its bounded campaign scan budget. */
+  nextCampaignScanCursor?: TransformerRunnableCampaignCursor;
 }>;
 
 export type TransformerPilotLaneStore = Pick<
@@ -102,6 +104,10 @@ export type RunTransformerPilotLaneInput = Readonly<{
   tempRoot?: string;
   leaseDurationMs?: number;
   maxCampaigns?: number;
+  /** Maximum durable campaign rows inspected during this worker cycle. */
+  maxCampaignScanRows?: number;
+  /** Stable continuation returned by the preceding bounded worker cycle. */
+  campaignScanCursor?: TransformerRunnableCampaignCursor;
   now?: () => string;
   runId?: string;
   leaseToken?: () => string;
@@ -340,6 +346,14 @@ function requireLimit(value: number | undefined): number {
   return limit;
 }
 
+function requireCampaignScanRows(value: number | undefined): number {
+  const limit = value ?? 1_000;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) {
+    throw new Error("transformer_lane_campaign_scan_limit_invalid");
+  }
+  return limit;
+}
+
 function requireLeaseDuration(value: number | undefined): number {
   const duration = value ?? 15 * 60_000;
   if (!Number.isSafeInteger(duration) || duration < 1_000 || duration > 3_600_000) {
@@ -408,6 +422,7 @@ export async function runTransformerPilotLaneOnce(
   const now = input.now ?? (() => new Date().toISOString());
   const runId = input.runId ?? randomUUID();
   const maxCampaigns = requireLimit(input.maxCampaigns);
+  const maxCampaignScanRows = requireCampaignScanRows(input.maxCampaignScanRows);
   const leaseDurationMs = requireLeaseDuration(input.leaseDurationMs);
   const adaptiveRetentionMs = requireAdaptiveRetention(input.adaptiveCandidateRetentionMs);
   const reviewTierPolicy = input.adaptiveReviewTierPolicy ?? DEFAULT_REVIEW_TIER_POLICY;
@@ -693,10 +708,23 @@ export async function runTransformerPilotLaneOnce(
   // admission cap. Otherwise maxCampaigns blocked rows at the front can starve
   // a ready campaign forever because their durable ordering never changes.
   let admittedCampaigns = 0;
-  let campaignCursor: TransformerRunnableCampaignCursor | undefined;
+  let campaignCursor = input.campaignScanCursor;
+  let scannedCampaignRows = 0;
+  let nextCampaignScanCursor: TransformerRunnableCampaignCursor | undefined;
   let stopCampaignScan = false;
   do {
-    const page = input.store.listRunnableCampaignPage(input.tenantId, 100, rawGate, campaignCursor);
+    const pageLimit = Math.min(100, maxCampaignScanRows - scannedCampaignRows);
+    const page = input.store.listRunnableCampaignPage(
+      input.tenantId,
+      pageLimit,
+      rawGate,
+      campaignCursor,
+    );
+    const pageScannedCount = page.scannedCount ?? page.campaigns.length;
+    if (!Number.isSafeInteger(pageScannedCount) || pageScannedCount < 0 || pageScannedCount > pageLimit) {
+      throw new Error("transformer_lane_campaign_page_invalid");
+    }
+    scannedCampaignRows += pageScannedCount;
     for (const campaign of page.campaigns) {
     if (input.shouldContinue?.() === false) {
       stopCampaignScan = true;
@@ -1172,6 +1200,10 @@ export async function runTransformerPilotLaneOnce(
     }
     }
     campaignCursor = page.nextCursor ?? undefined;
+    if (!stopCampaignScan && campaignCursor && scannedCampaignRows >= maxCampaignScanRows) {
+      nextCampaignScanCursor = campaignCursor;
+      stopCampaignScan = true;
+    }
   } while (!stopCampaignScan && campaignCursor);
 
   return Object.freeze({
@@ -1194,6 +1226,7 @@ export async function runTransformerPilotLaneOnce(
       : {}),
     errors: Object.freeze([...new Set(errors)].slice(0, 25)),
     ...(infrastructureError ? { infrastructureError } : {}),
+    ...(nextCampaignScanCursor ? { nextCampaignScanCursor } : {}),
   });
 }
 

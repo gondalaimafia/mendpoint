@@ -265,13 +265,28 @@ describe("handoffRegaugeMissionTaskOnReview", () => {
       id: created.id,
       status: "human_review_required",
     });
-    resumeRegaugeMissionTaskAfterReview(db, { ...input, actorPrincipalId: "p1" });
+    resumeRegaugeMissionTaskAfterReview(db, {
+      ...input,
+      actorPrincipalId: "p1",
+      approvalId: "candidate-stage-one",
+    });
     assignRegaugeMissionTaskOnClaim(db, input);
-    expect(handoffRegaugeMissionTaskOnReview(db, input)).toMatchObject({
+    const secondHandoff = handoffRegaugeMissionTaskOnReview(db, input)!;
+    expect(secondHandoff).toMatchObject({
       id: created.id,
       status: "human_review_required",
       revision: 7,
     });
+    expect(resumeRegaugeMissionTaskAfterReview(db, {
+      ...input,
+      actorPrincipalId: "p1",
+      approvalId: "candidate-stage-one",
+    })).toMatchObject({ status: "human_review_required", revision: secondHandoff.revision });
+    expect(resumeRegaugeMissionTaskAfterReview(db, {
+      ...input,
+      actorPrincipalId: "p1",
+      approvalId: "candidate-stage-two",
+    })).toMatchObject({ status: "agent_resume", revision: secondHandoff.revision + 1 });
   });
 
   it("is a no-op when the launch task does not exist", () => {

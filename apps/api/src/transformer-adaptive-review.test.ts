@@ -254,7 +254,7 @@ afterEach(() => {
 });
 
 describe("transformer adaptive candidate review routes", () => {
-  it("resumes the exact repository MissionTask when a human approves its reviewed unit", async () => {
+  it("resumes the exact reviewed stage but a stale approval replay cannot resume the next stage", async () => {
     const { app, db } = fixture();
     createMission(db, {
       id: "mission-review-resume", tenantId: "tenant-a", product: "regauge",
@@ -304,6 +304,32 @@ describe("transformer adaptive candidate review routes", () => {
     expect(getMissionTask(db, "tenant-a", task.id)).toMatchObject({
       status: "agent_resume",
       ownerType: "agent",
+    });
+
+    let nextStage = getMissionTask(db, "tenant-a", task.id)!;
+    nextStage = transitionMissionTask(db, {
+      tenantId: "tenant-a", taskId: nextStage.id, expectedRevision: nextStage.revision,
+      to: "agent_working", actorPrincipalId: "trust-human-a",
+      assignedPrincipalId: "trust-human-a", eventId: "mission-review-next-stage-working",
+      idempotencyKey: "mission-review-next-stage-work", correlationId: "campaign-1", createdAt: NOW,
+    });
+    nextStage = transitionMissionTask(db, {
+      tenantId: "tenant-a", taskId: nextStage.id, expectedRevision: nextStage.revision,
+      to: "human_review_required", actorPrincipalId: "trust-human-a",
+      handoffReason: "pilot_lane_review", eventId: "mission-review-next-stage-handoff",
+      idempotencyKey: "mission-review-next-stage-handoff", correlationId: "campaign-1", createdAt: NOW,
+    });
+
+    const replay = await app.request(`/transformer/adaptive-candidates/${seeded.id}/review`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Test-Actor": "human-a" },
+      body: reviewBody("approve"),
+    });
+
+    expect(replay.status).toBe(202);
+    expect(getMissionTask(db, "tenant-a", task.id)).toMatchObject({
+      status: "human_review_required",
+      revision: nextStage.revision,
     });
   });
 
