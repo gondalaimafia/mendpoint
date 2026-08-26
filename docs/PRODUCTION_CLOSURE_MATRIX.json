@@ -2056,17 +2056,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-26T04:06:40.824Z",
-    "observedMainRevision": "e67a040b65a48f48e425000e0fd038b2ea544b5b",
-    "observationDigest": "sha256:b4abb5c88e786934eed4616bd48c09c54e837d3b07c6b195c5fa3476eb78cead",
+    "observedAt": "2026-08-26T09:36:57.563Z",
+    "observedMainRevision": "7f74e609ca0c9f05fa1deaaded76c9d7b2d2fbd6",
+    "observationDigest": "sha256:3928a06008b2d0fdb506d9a9aa18e74f8f63d76945585b734651b55dd9a5e8d2",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 485,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/485",
-      "title": "Fix production authority drift and read starvation",
+      "number": 487,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/487",
+      "title": "Bootstrap closure authority observation time",
       "baseBranch": "main",
-      "headBranch": "codex/pr484-review-fixes",
+      "headBranch": "codex/closure-authority-bootstrap",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2079,15 +2079,7 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "runtime-authority-read-budget-20260826",
-        "kind": "runtime",
-        "issuedAt": "2026-08-26T07:03:40.449Z",
-        "expiresAt": "2026-09-01T07:03:40.449Z",
-        "basePolicySha256": "sha256:c608eb85fd35ef35acf034f998917b479135116626e17c2a14054c6f68e50d30",
-        "proposedPolicySha256": "sha256:572d299979e55ed409ae21c8f0a720b1c4e8b7f7a6fcb7f217ea12bf4aed03cb"
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
@@ -3958,7 +3950,7 @@
         },
         "requirementIds": [],
         "checkState": "conflicting",
-        "headRevision": "cf5a80825b77af627190b334f5d3050dae7d4471",
+        "headRevision": "c0b429432c2ab0f3933451823db3f1256a7ec225",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -4236,6 +4228,46 @@
           "attributable": false
         },
         "blockers": []
+      },
+      {
+        "number": 486,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/486",
+        "title": "Use local Git for closure proposal authority",
+        "headBranch": "codex/closure-authority-local-git",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "checks_failed",
+        "headRevision": "b21de09d92dbd7329569e857e8f35fa96afb4693",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "the immutable base verifier cannot authorize the fresh observation required by this runtime rotation until PR 487 bootstraps the interpreter"
+          }
+        ]
       }
     ]
   }
