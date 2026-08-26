@@ -398,6 +398,8 @@ describe("worker mission-context producer (real stores)", () => {
       artifactId: "art-patch",
       artifactSha256: sha256,
       label: "payments patch",
+      createdAt: T0,
+      taskId: null,
     }]);
     expect(compiled.injection.promptBody).toContain("[candidate_patch] art-patch");
     expect(compiled.injection.promptBody).toContain(`sha256=${sha256}`);

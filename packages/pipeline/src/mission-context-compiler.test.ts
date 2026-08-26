@@ -181,6 +181,7 @@ function baseInput(overrides: Partial<MissionContextInput> = {}): MissionContext
     history: { consulted: true, records: [] },
     verification: { consulted: true, records: [] },
     exceptions: { consulted: true, records: [] },
+    artifacts: { consulted: true, records: [] },
     evidenceRefs: [],
     ...overrides,
   };
@@ -383,8 +384,8 @@ describe("mission context compiler", () => {
     expect(body).toContain("task not part of a formal mission");
   });
 
-  it("omitted artifacts are not_consulted, distinct from a bound empty read", () => {
-    const omitted = compileMissionContext(baseInput());
+  it("explicit store_not_available is distinct from a bound empty read", () => {
+    const omitted = compileMissionContext(baseInput({ artifacts: { consulted: false, reason: "store_not_available" } }));
     expect(omitted.missionArtifacts.status).toBe("not_consulted");
     if (omitted.missionArtifacts.status !== "not_consulted") throw new Error("unreachable");
     expect(omitted.missionArtifacts.reason).toBe("store_not_available");
@@ -410,6 +411,8 @@ describe("mission context compiler", () => {
             artifactId: "art-patch",
             artifactSha256: "a".repeat(64),
             label: "payments patch",
+            createdAt: T0,
+            taskId: "task1",
           }],
         },
       }),
@@ -422,9 +425,12 @@ describe("mission context compiler", () => {
       artifactId: "art-patch",
       artifactSha256: "a".repeat(64),
       label: "payments patch",
+      createdAt: T0,
+      taskId: "task1",
     }]);
     const compiled = renderMissionContext(envelope);
     expect(compiled.injection.promptBody).toContain("[candidate_patch] art-patch");
+    expect(compiled.injection.promptBody).toContain("newest-in-role");
     expect(compiled.injection.promptBody).toContain(`sha256=${"a".repeat(64)}`);
     expect(compiled.injection.promptBody).toContain("payments patch");
     expect(compiled.injection.promptBody).not.toContain("PATCH BODY");
@@ -450,6 +456,84 @@ describe("mission context compiler", () => {
     expect(renderMissionContext(envelope).injection.promptBody).toContain("Mission artifacts [not consulted]");
   });
 
+  it("CONTROL: same-role artifacts mark the newest; older ones are superseded-in-role", () => {
+    const envelope = compileMissionContext(
+      baseInput({
+        artifacts: {
+          consulted: true,
+          records: [
+            {
+              tenantId: "t1",
+              id: "ma-new",
+              role: "candidate_patch",
+              artifactId: "art-new",
+              artifactSha256: "c".repeat(64),
+              label: "latest",
+              createdAt: "2026-01-02T00:00:00.000Z",
+              taskId: "task-new",
+            },
+            {
+              tenantId: "t1",
+              id: "ma-old",
+              role: "candidate_patch",
+              artifactId: "art-old",
+              artifactSha256: "d".repeat(64),
+              label: "previous",
+              createdAt: T0,
+              taskId: "task-old",
+            },
+          ],
+        },
+      }),
+    );
+    const body = renderMissionContext(envelope).injection.promptBody;
+    expect(body).toContain("art-new");
+    expect(body).toContain("newest-in-role");
+    expect(body).toContain("art-old");
+    expect(body).toContain("superseded-in-role");
+    expect(body.indexOf("art-new")).toBeLessThan(body.indexOf("art-old"));
+  });
+
+  it("CONTROL: artifact section drops before verification under truncation", () => {
+    const envelope = compileMissionContext(
+      baseInput({
+        artifacts: {
+          consulted: true,
+          records: [{
+            tenantId: "t1",
+            id: "ma-1",
+            role: "candidate_patch",
+            artifactId: "art-patch",
+            artifactSha256: "a".repeat(64),
+            label: "payments patch",
+            createdAt: T0,
+            taskId: null,
+          }],
+        },
+      }),
+    );
+    const body = renderMissionContext(envelope).injection.promptBody;
+    expect(body.indexOf("## Verification state")).toBeGreaterThan(-1);
+    expect(body.indexOf("## Mission artifacts")).toBeGreaterThan(-1);
+    expect(body.indexOf("## Verification state")).toBeLessThan(body.indexOf("## Mission artifacts"));
+  });
+
+  it("CONTROL: a foreign-tenant row after the 32-item cap is still rejected", () => {
+    const records = Array.from({ length: 33 }, (_, i) => ({
+      tenantId: i === 32 ? "t2" : "t1",
+      id: `ma-${i}`,
+      role: "candidate_patch",
+      artifactId: `art-${i}`,
+      artifactSha256: "a".repeat(64),
+      label: `patch ${i}`,
+      createdAt: T0,
+      taskId: null as string | null,
+    }));
+    expect(() => compileMissionContext(baseInput({ artifacts: { consulted: true, records } }))).toThrow(
+      "mission_context_tenant_mismatch",
+    );
+  });
+
   it("a foreign-tenant artifact is rejected rather than leaking into the prompt", () => {
     expect(() =>
       compileMissionContext(
@@ -463,6 +547,8 @@ describe("mission context compiler", () => {
               artifactId: "art-x",
               artifactSha256: "b".repeat(64),
               label: "foreign",
+              createdAt: T0,
+              taskId: null,
             }],
           },
         }),

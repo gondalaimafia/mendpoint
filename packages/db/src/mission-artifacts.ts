@@ -462,14 +462,32 @@ export function recordMissionArtifactLineage(db: AppDb, input: {
 
 // List a mission's registered outputs (references), optionally filtered to a
 // role, most recent first.
-export function listMissionArtifacts(db: AppDb, tenantId: string, missionId: string, role?: MissionArtifactRole): MissionArtifact[] {
+export function listMissionArtifacts(
+  db: AppDb,
+  tenantId: string,
+  missionId: string,
+  role?: MissionArtifactRole,
+  limit?: number,
+): MissionArtifact[] {
+  const bounded = limit !== undefined;
+  if (bounded && (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)) {
+    throw new Error("mission_artifact_list_limit_invalid");
+  }
   const rows = role === undefined
-    ? all<MissionArtifactRow>(db,
-        `SELECT * FROM mission_artifacts WHERE tenant_id = ? AND mission_id = ? ORDER BY created_at DESC, id DESC`,
-        [tenantId, missionId])
-    : all<MissionArtifactRow>(db,
-        `SELECT * FROM mission_artifacts WHERE tenant_id = ? AND mission_id = ? AND role = ? ORDER BY created_at DESC, id DESC`,
-        [tenantId, missionId, role]);
+    ? bounded
+      ? all<MissionArtifactRow>(db,
+          `SELECT * FROM mission_artifacts WHERE tenant_id = ? AND mission_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+          [tenantId, missionId, limit])
+      : all<MissionArtifactRow>(db,
+          `SELECT * FROM mission_artifacts WHERE tenant_id = ? AND mission_id = ? ORDER BY created_at DESC, id DESC`,
+          [tenantId, missionId])
+    : bounded
+      ? all<MissionArtifactRow>(db,
+          `SELECT * FROM mission_artifacts WHERE tenant_id = ? AND mission_id = ? AND role = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+          [tenantId, missionId, role, limit])
+      : all<MissionArtifactRow>(db,
+          `SELECT * FROM mission_artifacts WHERE tenant_id = ? AND mission_id = ? AND role = ? ORDER BY created_at DESC, id DESC`,
+          [tenantId, missionId, role]);
   return rows.map(hydrateArtifact);
 }
 

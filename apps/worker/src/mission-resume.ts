@@ -75,7 +75,8 @@ type IntendedSection =
   | InheritedContextEnvelope["unresolvedExceptions"]
   | InheritedContextEnvelope["verificationState"]
   | InheritedContextEnvelope["relevantHistory"]
-  | InheritedContextEnvelope["relevantOrgMemory"];
+  | InheritedContextEnvelope["relevantOrgMemory"]
+  | InheritedContextEnvelope["missionArtifacts"];
 
 /**
  * Classify an already-compiled envelope (pure). `store_not_available` on a
@@ -95,8 +96,10 @@ export function classifyResumeStanding(
     { name: "exceptions", section: envelope.unresolvedExceptions },
     { name: "verification", section: envelope.verificationState },
     { name: "history", section: envelope.relevantHistory },
+    { name: "artifacts", section: envelope.missionArtifacts },
   ];
   for (const { name, section } of intended) {
+    if (!section) return { kind: "context_not_loaded", reason: `section_missing:${name}` };
     if (section.status === "not_consulted" && section.reason === "store_not_available") {
       return { kind: "context_not_loaded", reason: `store_not_available:${name}` };
     }

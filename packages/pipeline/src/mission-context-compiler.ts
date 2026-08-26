@@ -226,6 +226,8 @@ export type ArtifactEntry = Readonly<{
   artifactId: string;
   artifactSha256: string;
   label: string;
+  createdAt: string;
+  taskId: string | null;
 }>;
 
 export type DecisionEntry = Readonly<{
@@ -255,9 +257,8 @@ export type InheritedContextEnvelope = Readonly<{
     | Consulted<{ entries: readonly ExceptionEntry[] }>
     | NotConsulted<MissionSectionNotConsultedReason>;
   /**
-   * Mission outputs by reference (role / artifact id / sha256 / label). Never
-   * bodies. Omitted input is `not_consulted`; a bound producer that looked and
-   * found none is `consulted` with empty entries.
+   * Mission outputs by reference (role / artifact id / sha256 / label / createdAt).
+   * Never bodies. Required on the input like every sibling section.
    */
   missionArtifacts:
     | Consulted<{ entries: readonly ArtifactEntry[] }>
@@ -397,6 +398,8 @@ export type ArtifactInput = Readonly<{
   artifactId: string;
   artifactSha256: string;
   label: string;
+  createdAt: string;
+  taskId: string | null;
 }>;
 
 export type HistoryInput = Readonly<{
@@ -442,12 +445,7 @@ export type MissionContextInput = Readonly<{
   history: SectionSource<HistoryInput>;
   verification: SectionSource<VerificationInput>;
   exceptions: SectionSource<ExceptionInput>;
-  /**
-   * Optional. Omitted means the compiler did not look (`not_consulted`,
-   * defaulting to `store_not_available`). A bound producer that listed the
-   * registry MUST pass `{ consulted: true, records }` even when empty.
-   */
-  artifacts?: SectionSource<ArtifactInput>;
+  artifacts: SectionSource<ArtifactInput>;
   evidenceRefs?: readonly string[];
 }>;
 
@@ -842,24 +840,27 @@ export function compileMissionContext(input: MissionContextInput): InheritedCont
       })
     : sectionNotConsulted(input.exceptions);
 
-  const artifactsSource = input.artifacts ?? { consulted: false as const };
-  const missionArtifacts: InheritedContextEnvelope["missionArtifacts"] = artifactsSource.consulted
+  if (input.artifacts.consulted) {
+    for (const record of input.artifacts.records) assertTenant(tenantId, record.tenantId);
+  }
+  const missionArtifacts: InheritedContextEnvelope["missionArtifacts"] = input.artifacts.consulted
     ? Object.freeze({
         status: "consulted",
         entries: Object.freeze(
-          cap(artifactsSource.records).map((record) => {
-            assertTenant(tenantId, record.tenantId);
+          cap(input.artifacts.records).map((record) => {
             return Object.freeze({
               id: identifier(record.id, "mission_context_artifact_id_invalid"),
               role: identifier(record.role, "mission_context_artifact_role_invalid"),
               artifactId: identifier(record.artifactId, "mission_context_artifact_ref_invalid"),
               artifactSha256: identifier(record.artifactSha256, "mission_context_artifact_sha256_invalid"),
-              label: clippedText(record.label, "mission_context_artifact_label_invalid"),
+              label: clippedText(record.label.replace(/\s+/g, " "), "mission_context_artifact_label_invalid"),
+              createdAt: identifier(record.createdAt, "mission_context_artifact_created_at_invalid"),
+              taskId: record.taskId === null ? null : identifier(record.taskId, "mission_context_artifact_task_id_invalid"),
             });
           }),
         ),
       })
-    : sectionNotConsulted(artifactsSource);
+    : sectionNotConsulted(input.artifacts);
 
   const graphProjection = buildGraphSection(tenantId, input.graph);
   const verificationState = buildVerificationSection(tenantId, input.verification);
@@ -970,8 +971,8 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
   lines.push(`Task ${envelope.task.taskId}; capability ${envelope.task.capability}; risk ${envelope.task.riskClass}`);
   lines.push(`Task goal: ${envelope.task.goal}`);
 
-  // Ordered by drop-priority (highest kept longest): policy, decisions,
-  // exceptions, artifacts, verification (current only), org memory, graph, history.
+  // Ordered by drop-priority (highest kept longest). Artifacts drop first:
+  // they are refs, not standing. Verification and org memory stay longer.
   const sections: string[][] = [];
 
   // Policy constraints (highest authority).
@@ -1019,29 +1020,6 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
     exceptionLines.push(`(reason: ${envelope.unresolvedExceptions.reason})`);
   }
   sections.push(exceptionLines);
-
-  // Mission artifacts by reference only — role, id, sha256, label; never bodies.
-  const artifactLines: string[] = [`## Mission artifacts [${sectionState(envelope.missionArtifacts)}]`];
-  if (envelope.missionArtifacts.status === "consulted") {
-    if (envelope.missionArtifacts.entries.length === 0) artifactLines.push("(none registered for this mission)");
-    for (const entry of envelope.missionArtifacts.entries) {
-      artifactLines.push(
-        `- [${entry.role}] ${entry.artifactId} sha256=${entry.artifactSha256} (${entry.label})`,
-      );
-      refs.push(
-        Object.freeze({
-          kind: "mission_artifact",
-          id: entry.id,
-          role: entry.role,
-          artifactId: entry.artifactId,
-          sha256: entry.artifactSha256,
-        }),
-      );
-    }
-  } else {
-    artifactLines.push(`(reason: ${envelope.missionArtifacts.reason})`);
-  }
-  sections.push(artifactLines);
 
   // Verification: current evidence and superseded evidence are separated. A stale
   // verification is listed under "superseded" and is NEVER presented as current.
@@ -1136,6 +1114,35 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
     historyLines.push(`(reason: ${envelope.relevantHistory.reason})`);
   }
   sections.push(historyLines);
+
+  // Mission artifacts by reference only. Last in drop order: refs are less
+  // actionable than verification / org memory / graph standing.
+  const artifactLines: string[] = [`## Mission artifacts [${sectionState(envelope.missionArtifacts)}]`];
+  if (envelope.missionArtifacts.status === "consulted") {
+    if (envelope.missionArtifacts.entries.length === 0) artifactLines.push("(none registered for this mission)");
+    const newestByRole = new Set<string>();
+    for (const entry of envelope.missionArtifacts.entries) {
+      const newest = !newestByRole.has(entry.role);
+      if (newest) newestByRole.add(entry.role);
+      const task = entry.taskId ? ` task=${entry.taskId}` : "";
+      const currency = newest ? " newest-in-role" : " superseded-in-role";
+      artifactLines.push(
+        `- [${entry.role}] ${entry.artifactId} sha256=${entry.artifactSha256} created=${entry.createdAt}${task}${currency} (${entry.label})`,
+      );
+      refs.push(
+        Object.freeze({
+          kind: "mission_artifact",
+          id: entry.id,
+          role: entry.role,
+          artifactId: entry.artifactId,
+          sha256: entry.artifactSha256,
+        }),
+      );
+    }
+  } else {
+    artifactLines.push(`(reason: ${envelope.missionArtifacts.reason})`);
+  }
+  sections.push(artifactLines);
 
   for (const ref of envelope.evidenceRefs) refs.push(Object.freeze({ kind: "evidence", ref }));
 
