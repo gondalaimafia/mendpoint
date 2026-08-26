@@ -15,11 +15,12 @@ A task is DONE only when:
 - the product specification remains consistent
 - an ADR is updated/created when required
 - a PR exists
-- the opposite agent completed peer review
+- an independent Claude reviewer completed peer review
 - P0/P1 findings are resolved
 - P2 findings are resolved or explicitly accepted/escalated
 - peer review is rerun after substantive changes
-- CI is green
+- required PR CI is green
 - rollback implications are understood
 - known risks are documented
-- the PR is ready for human merge
+- the PR is merged by the authoring agent after Claude review (Claude/Cursor Cloud work) or ready for human merge (Codex work unless delegated)
+- production deploy is the `main` `deploy` job, not a second pipeline

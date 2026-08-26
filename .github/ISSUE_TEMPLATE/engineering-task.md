@@ -44,7 +44,7 @@ Claude Code / OpenAI Codex / Unassigned
 
 ## Required peer reviewer
 
-Codex / Claude Code
+Independent Claude (`@claude review`)
 
 ## Validation
 

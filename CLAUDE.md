@@ -35,7 +35,7 @@ When you are AUTHOR:
 - make the smallest coherent change
 - run relevant tests
 - open/update a PR
-- request independent Codex peer review
+- request independent Claude peer review (`@claude review`)
 
 ## Reviewer mode
 
@@ -51,13 +51,15 @@ When reviewing a Codex-authored PR:
 
 ## Reciprocal review
 
-Claude-authored material PRs require Codex review.
+Claude-authored material PRs require an independent Claude review — a separate Claude instance, not the author's self-review.
 
 Preferred GitHub request:
 
-`@codex review`
+`@claude review`
 
-If that exact trigger is unavailable, use the installed Codex review mechanism.
+If that exact trigger is unavailable, use the installed Claude review mechanism.
+
+After independent Claude review PASS, P0/P1 findings resolved, and required CI green (`test`, `release-gates`, `container-builds`, `deployment-e2e`), the authoring agent merges. Production deploy is the `deploy` job on push to `main`. Do not invent a second deploy path. The `mendpoint-production-closure-authority` check is ops (GitHub App credentials), not a code merge blocker.
 
 ## Engineering behavior
 
@@ -114,5 +116,5 @@ Always:
 6. list tests executed
 7. list unresolved risks
 8. open/update the PR
-9. request Codex peer review
-10. do not merge a material PR solely on your own authority
+9. request independent Claude peer review (`@claude review`)
+10. after Claude review PASS and required CI green, merge; deploy follows the `main` `deploy` job

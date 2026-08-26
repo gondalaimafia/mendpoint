@@ -25,11 +25,11 @@ The system uses four controls:
 1. **Single writer:** one task has one authoring agent.
 2. **Isolated worktrees:** Claude and Codex never author simultaneously in the same working tree.
 3. **GitHub as coordination bus:** issues, branches, PRs, checks, and ADRs are the shared state.
-4. **Reciprocal peer review:** Claude-authored PRs are reviewed by Codex; Codex-authored PRs are reviewed by Claude.
+4. **Independent Claude peer review:** Claude-authored and Cursor Cloud-authored PRs are reviewed by an independent Claude instance (not the author's self-review). Codex-authored PRs are reviewed by Claude.
 
 The normal flow is:
 
-`Issue → claim → isolated worktree → implementation → tests → PR → opposite-agent review → author fixes → re-review → CI → human merge`
+`Issue → claim → isolated worktree → implementation → tests → PR → independent Claude review → author fixes → re-review → CI → author merge → main deploy`
 
 ## 1. Single-Writer Principle
 
@@ -282,20 +282,21 @@ The `deploy` job runs only after a push to `main`. It MUST NOT be configured as 
 
 ## 11. Reciprocal Peer Review
 
-Every Claude-authored material PR must receive an independent Codex review.
+Every Claude-authored or Cursor Cloud-authored material PR must receive an independent Claude review (a separate Claude instance, not the author).
 
 Every Codex-authored material PR must receive an independent Claude review.
 
-Preferred request:
+Preferred request for every material PR:
 
-- Claude-authored PR: `@codex review`
-- Codex-authored PR: `@claude review`
+`@claude review`
 
-If the GitHub integrations do not support those exact triggers in the installed configuration, use the available product-native review mechanism while preserving the same reviewer assignment.
+If the GitHub integration does not support that exact trigger, use an independent Claude reviewer that posts an attributable review on the pull request.
 
-Do not describe either trigger as operational until the requested reviewer posts an attributable review or acknowledgement on the pull request. A comment without an integration response is not review evidence.
+Do not describe the trigger as operational until the requested reviewer posts an attributable review or acknowledgement on the pull request. A comment without an integration response is not review evidence.
 
 The author may self-review before opening the PR, but self-review does not satisfy peer review.
+
+Do not request `@codex review` on Claude-authored or Cursor Cloud-authored PRs.
 
 ## 12. Reviewer Independence
 
@@ -342,15 +343,20 @@ For unresolved architectural disagreement, escalate to the human maintainer.
 
 ## 14. Merge Rule
 
-Neither coding agent may independently merge a material PR merely because the opposite AI reviewer found no defects.
+Neither coding agent may independently merge a material PR merely because the author self-reviewed.
+
+Operator policy (2026-08-26): Claude review, merge, and deploy of Claude-authored / Cursor Cloud-authored work is delegated to the authoring agent.
 
 Merge requires:
 
-- peer review complete
-- required CI green
+- independent Claude peer review complete (`PEER REVIEW: PASS`, or findings resolved and re-reviewed)
+- required PR CI green (`test`, `release-gates`, `container-builds`, `deployment-e2e`)
 - review conversations resolved
 - branch/current-base requirements satisfied
-- human merge decision unless explicitly delegated by repository policy
+
+The authoring agent then merges. Production ship is the `CI` workflow `deploy` job on push to `main`. Do not treat `mendpoint-production-closure-authority` as a code merge blocker; that check is ops (GitHub App credentials).
+
+Codex-authored PRs still require independent Claude review. Merge of Codex-authored material remains a human decision unless the operator delegates it the same way.
 
 ### 14.1 Check for stacked PRs before deleting a merged branch
 

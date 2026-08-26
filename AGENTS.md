@@ -141,8 +141,8 @@ Always:
 6. list tests executed
 7. list unresolved risks
 8. open/update the PR
-9. request Claude peer review
-10. do not merge a material PR solely on your own authority
+9. request independent Claude peer review (`@claude review`)
+10. do not merge a Codex-authored material PR solely on your own authority. Claude/Cursor Cloud-authored PRs merge after independent Claude review PASS and required CI green; deploy is the `main` `deploy` job.
 
 ## Cursor Cloud specific instructions
 
@@ -153,3 +153,4 @@ Durable, non-obvious notes for Cloud Agents. Standard commands live in `README.m
 - **Running the web dashboard in dev:** `npm run dev:web` (port 3000) serves public pages without auth, but operator dashboards require `MENDPOINT_WEB_ACCESS_TOKEN` (any non-empty value locally) plus `MENDPOINT_API_URL=http://127.0.0.1:3001`. Sign in at `/access` with that token.
 - **Seed/demo (offline):** `npm run db:seed` populates `data/mendpoint.sqlite`; `npm run demo` runs the full change→impact→PR pipeline with no network.
 - **Fettler campaign execute:** `run-service` / `run-jobs` only claim `warden.campaign.execute-target` when `GRAPH_LEARN_DB` points at an existing non-ephemeral Change Graph file. `POST /fettler/campaigns/:id/start` still enqueues; jobs wait until a worker with a real graph is up. Never pass `openGraphLearnMemory()` or `getGraphLearnDb()` (creates a missing file) as a production handle.
+- **Review, merge, deploy:** Request `@claude review` (independent Claude instance), not `@codex review`. After Claude `PEER REVIEW: PASS` (or resolved re-review) and required CI green (`test`, `release-gates`, `container-builds`, `deployment-e2e`), merge. Production deploy is the `CI` `deploy` job on push to `main`. Do not block merge on `mendpoint-production-closure-authority` (ops GitHub App credentials).
