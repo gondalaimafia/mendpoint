@@ -16,6 +16,7 @@ function resultRecord(overrides: Record<string, unknown> = {}): string {
     schemaVersion: 1,
     kind: "customer_backup_result",
     result: "success",
+    releaseRevision: "d".repeat(40),
     backupId: "backup-1",
     manifestAuthentication: "a".repeat(64),
     publication: {
@@ -31,12 +32,12 @@ function resultRecord(overrides: Record<string, unknown> = {}): string {
   })}`;
 }
 
-function verifyLog(lines: readonly string[]) {
+function verifyLog(lines: readonly string[], expectedReleaseRevision = "d".repeat(40)) {
   const temporary = mkdtempSync(join(tmpdir(), "mendpoint-backup-result-"));
   roots.push(temporary);
   const log = join(temporary, "backup.log");
   writeFileSync(log, `${lines.join("\n")}\n`, "utf8");
-  return spawnSync("bash", [verifier, log], { encoding: "utf8" });
+  return spawnSync("bash", [verifier, log, expectedReleaseRevision], { encoding: "utf8" });
 }
 
 afterEach(() => {
@@ -67,6 +68,12 @@ describe("customer backup terminal result", () => {
     expect(result.stderr).toContain("customer_backup_result_record_count_invalid");
   });
 
+  jqIt("rejects an otherwise valid result from a different live release", () => {
+    const result = verifyLog([resultRecord({ releaseRevision: "e".repeat(40) })]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("customer_backup_result_release_revision_mismatch");
+  });
+
   jqIt("accepts exactly one complete successful publication record", () => {
     const record = resultRecord();
     const result = verifyLog(["progress", record]);
@@ -76,6 +83,7 @@ describe("customer backup terminal result", () => {
       schemaVersion: 1,
       kind: "customer_backup_result",
       result: "success",
+      releaseRevision: "d".repeat(40),
       backupId: "backup-1",
       publication: { kind: "s3", backupId: "backup-1" },
     });

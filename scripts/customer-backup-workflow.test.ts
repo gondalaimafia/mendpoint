@@ -48,6 +48,15 @@ describe("customer backup workflow", () => {
   });
 
   it("executes the authenticated backup remotely with bounded evidence retention", () => {
+    const checkoutIndex = steps.findIndex((candidate) => candidate.name === "Check out verifier");
+    const runIndex = steps.findIndex((candidate) => candidate.name === "Run authenticated customer backup");
+    expect(checkoutIndex).toBeGreaterThanOrEqual(0);
+    expect(checkoutIndex).toBeLessThan(runIndex);
+    expect(steps[checkoutIndex]?.uses).toBe(
+      "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+    );
+    expect(steps[checkoutIndex]?.with).toEqual({ "persist-credentials": false });
+
     const initialize = step("Initialize backup evidence");
     expect(initialize.run).toContain("GITHUB_RUN_ATTEMPT");
     expect(initialize.run).toContain("GITHUB_SHA");
@@ -56,7 +65,7 @@ describe("customer backup workflow", () => {
     expect(run.run).toContain('flyctl ssh console --app "$CUSTOMER_APP"');
     expect(run.run).toContain("scripts/customer-backup.ts");
     expect(run.run).toContain('tee -a "$evidence"');
-    expect(run.run).toContain('bash scripts/verify-customer-backup-result.sh "$evidence"');
+    expect(run.run).toContain('bash scripts/verify-customer-backup-result.sh "$evidence" "$GITHUB_SHA"');
     expect(run.run).not.toContain("grep -q '\"backupId\"'");
     expect(run.run).not.toContain("grep -q '\"manifestAuthentication\"'");
     expect(run.run).not.toContain("grep -q '\"publication\"'");

@@ -78,6 +78,7 @@ async function main(): Promise<void> {
       schemaVersion: 1,
       kind: "customer_backup_result",
       result: "success",
+      releaseRevision: process.env.MENDPOINT_RELEASE_REVISION?.trim() ?? "",
       backupId: manifest.backupId,
       publication,
       createdAt: manifest.createdAt,

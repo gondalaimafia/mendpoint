@@ -204,6 +204,11 @@ jobs:
       contents: read
       issues: write
     steps:
+      - name: Check out verifier
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v4.2.2
+        with:
+          persist-credentials: false
+
       - name: Install Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
 
@@ -250,7 +255,7 @@ jobs:
           evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
           flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
             --command "node --import tsx scripts/customer-backup.ts" 2>&1 | tee -a "$evidence"
-          bash scripts/verify-customer-backup-result.sh "$evidence" >/dev/null
+          bash scripts/verify-customer-backup-result.sh "$evidence" "$GITHUB_SHA" >/dev/null
           printf 'result=success backupTaken=true\n' >> "$evidence"
 
       - name: Retain backup evidence
