@@ -1,0 +1,528 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "name": "DEEPSEEK_API_KEY",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "FLY_API_TOKEN",
+      "type": "secret",
+      "scope": {
+        "kind": "repo"
+      },
+      "status": "required"
+    },
+    {
+      "name": "MENDPOINT_APPLICATION_DATA_KEY",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "MENDPOINT_CLOSURE_GITHUB_APP_ID",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "production-closure-authority"
+      },
+      "status": "required"
+    },
+    {
+      "name": "MENDPOINT_CLOSURE_GITHUB_APP_PRIVATE_KEY",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "production-closure-authority"
+      },
+      "status": "required"
+    },
+    {
+      "name": "MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "customer-production-backup"
+      },
+      "status": "required"
+    },
+    {
+      "name": "MENDPOINT_REGAUGE_CAMPAIGN_ID",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "MENDPOINT_REGAUGE_CHECKPOINT_KEY",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "MENDPOINT_REGAUGE_COORDINATOR_TOKEN",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "MENDPOINT_REGAUGE_OPERATION_SECRET",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "MENDPOINT_REGAUGE_TENANT_ID",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "MENDPOINT_SANDBOX_EGRESS_SIGNING_KEY_PKCS8_BASE64",
+      "type": "secret",
+      "scope": {
+        "kind": "environments",
+        "environments": [
+          "sandbox-production",
+          "sandbox-production-renewal"
+        ]
+      },
+      "status": "required",
+      "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
+    },
+    {
+      "name": "REGAUGE_GITHUB_APP_ACCOUNT_TENANT_BINDINGS",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_GITHUB_APP_ID",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_GITHUB_APP_PRIVATE_KEY",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_GITHUB_WEBHOOK_SECRET",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_MODEL_API_KEY",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_MODEL_ID",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_MODEL_URL",
+      "type": "secret",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "ROTATION_FLY_API_TOKEN",
+      "type": "secret",
+      "scope": {
+        "kind": "environments",
+        "environments": [
+          "sandbox-production",
+          "sandbox-production-renewal"
+        ]
+      },
+      "status": "required",
+      "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
+    },
+    {
+      "name": "SANDBOX_FLY_API_TOKEN",
+      "type": "secret",
+      "scope": {
+        "kind": "environments",
+        "environments": [
+          "sandbox-production",
+          "sandbox-production-renewal"
+        ]
+      },
+      "status": "required",
+      "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
+    },
+    {
+      "name": "FLY_ORG",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "MENDPOINT_CORPUS_ROOT",
+      "type": "variable",
+      "scope": {
+        "kind": "repo"
+      },
+      "status": "optional_gated",
+      "gatedBy": "nightly-synthetic-eval skips the external corpus and degrades to the generated suite when unset; the readiness gate is reported, never blocking"
+    },
+    {
+      "name": "MENDPOINT_CUSTOMER_FLY_APP",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "customer-production-backup"
+      },
+      "status": "required"
+    },
+    {
+      "name": "MENDPOINT_CUSTOMER_PROFILE_ACTIVE",
+      "type": "variable",
+      "scope": {
+        "kind": "repo"
+      },
+      "status": "optional_gated",
+      "gatedBy": "profile-gate job reports NOT-CONFIGURED and skips the backup when unset"
+    },
+    {
+      "name": "REGAUGE_CANARY_BRANCH",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_CANARY_DEFAULT_BRANCH",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_CANARY_OWNER",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_CANARY_REPOSITORY",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_CANARY_REPOSITORY_ID",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_CANARY_REVISION",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_DEEPSEEK_GOVERNANCE_JSON",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_DEEPSEEK_PRICING_JSON",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_GITHUB_INSTALLATION_ID",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_LIVE_EVAL_MAX_USD",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_MAX_DATA_CLASSIFICATION",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_MODEL_DEPLOYMENT",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_MODEL_PROVIDER",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_MODEL_REGION",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_REVIEWER_DISPLAY_NAME",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_REVIEWER_ISSUER",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_REVIEWER_SUBJECT",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "required"
+    },
+    {
+      "name": "REGAUGE_TRANSFER_FENCE_ID",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "optional_gated",
+      "gatedBy": "vars.REGAUGE_TRANSFER_ID != ''"
+    },
+    {
+      "name": "REGAUGE_TRANSFER_ID",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "optional_gated",
+      "gatedBy": "vars.REGAUGE_TRANSFER_ID != '' (attest step + transfer secret checks are gated on it)"
+    },
+    {
+      "name": "REGAUGE_TRANSFER_KEY_ID",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "regauge-production"
+      },
+      "status": "optional_gated",
+      "gatedBy": "vars.REGAUGE_TRANSFER_ID != ''"
+    },
+    {
+      "name": "SANDBOX_EGRESS_ALERT_LEAD_MS",
+      "type": "variable",
+      "scope": {
+        "kind": "environments",
+        "environments": [
+          "sandbox-production",
+          "sandbox-production-renewal"
+        ]
+      },
+      "status": "required",
+      "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
+    },
+    {
+      "name": "SANDBOX_EGRESS_KEY_ID",
+      "type": "variable",
+      "scope": {
+        "kind": "environments",
+        "environments": [
+          "sandbox-production",
+          "sandbox-production-renewal"
+        ]
+      },
+      "status": "required",
+      "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
+    },
+    {
+      "name": "SANDBOX_EGRESS_POLICY_DIGEST",
+      "type": "variable",
+      "scope": {
+        "kind": "environments",
+        "environments": [
+          "sandbox-production",
+          "sandbox-production-renewal"
+        ]
+      },
+      "status": "required",
+      "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
+    },
+    {
+      "name": "SANDBOX_EGRESS_ROTATION_APP_PREFIXES",
+      "type": "variable",
+      "scope": {
+        "kind": "environments",
+        "environments": [
+          "sandbox-production",
+          "sandbox-production-renewal"
+        ]
+      },
+      "status": "required",
+      "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
+    },
+    {
+      "name": "SANDBOX_FLY_APP",
+      "type": "variable",
+      "scope": {
+        "kind": "environments",
+        "environments": [
+          "sandbox-production",
+          "sandbox-production-renewal"
+        ]
+      },
+      "status": "required",
+      "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
+    },
+    {
+      "name": "SANDBOX_IMAGE_DIGEST",
+      "type": "variable",
+      "scope": {
+        "kind": "environments",
+        "environments": [
+          "sandbox-production",
+          "sandbox-production-renewal"
+        ]
+      },
+      "status": "required",
+      "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
+    },
+    {
+      "name": "SANDBOX_IMAGE_TAG",
+      "type": "variable",
+      "scope": {
+        "kind": "environments",
+        "environments": [
+          "sandbox-production",
+          "sandbox-production-renewal"
+        ]
+      },
+      "status": "required",
+      "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
+    },
+    {
+      "name": "SANDBOX_VERIFYING_APP",
+      "type": "variable",
+      "scope": {
+        "kind": "environments",
+        "environments": [
+          "sandbox-production",
+          "sandbox-production-renewal"
+        ]
+      },
+      "status": "required",
+      "note": "reusable workflow; callers pass sandbox-production (manual) and sandbox-production-renewal (scheduled)"
+    }
+  ]
+}
