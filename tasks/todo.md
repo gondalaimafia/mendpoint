@@ -3414,3 +3414,13 @@ Every remote mutation now has a durable dispatch record bound to its exact inten
 Fresh authority is retained on deliveries, CI cycles, and CI updates and propagated through observation, repair dispatch, human review, update, and the next observation. Repair dispatch reads the current cycle authority rather than the original source job, preventing an old task revision from reappearing during repeated repair cycles. Fresh and upgrade-path databases receive the new nullable authority columns and the durable dispatch table.
 
 Verification: 46 focused candidate-review lifecycle tests pass. Complete API, database, and worker suites pass 542, 431, and 606 tests respectively, with one intentional worker skip. API, database, and worker typechecks pass. The optimized 50-route production build passes, all mutation-authority producers and consumers were enumerated, and `git diff --check` is clean. No push was performed.
+
+## 2026-08-26 Review repair: complete Mission dispatch fencing
+
+- [ ] RED: prove every task authority transition serializes with authorized, dispatching, and uncertain mutations.
+- [ ] RED: prove scope, graph, policy bind, and policy advancement writers share the same Mission fence.
+- [ ] RED: prove green CI observation cannot complete a task while a blocking exception is introduced.
+- [ ] RED: prove legacy mission-bound delivery and update jobs without retained authority are quarantined without remote mutation or fabricated task authority.
+- [ ] Implement the smallest shared-transaction fencing and deterministic upgrade quarantine.
+- [ ] Run focused and complete DB/worker suites, affected typechecks, production build, and strict diff review.
+- [ ] Record exact evidence and remaining review findings; commit locally without pushing.

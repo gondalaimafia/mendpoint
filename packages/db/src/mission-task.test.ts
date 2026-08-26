@@ -58,6 +58,16 @@ function move(db: AppDb, current: MissionTask, to: MissionTaskStatus, extra: { a
     correlationId: "corr", createdAt: at });
 }
 
+function insertDispatch(db: AppDb, state: "authorized" | "dispatching" | "uncertain", suffix: string) {
+  db.raw.prepare(`INSERT INTO mission_mutation_dispatches
+    (id, tenant_id, mission_id, job_id, mutation_kind, aggregate_id, authority_json,
+     intent_digest, state, lease_owner, lease_generation, authorized_at, dispatching_at,
+     uncertain_at, updated_at)
+    VALUES (?, 't1', 'm1', ?, 'fettler_candidate_delivery', ?, '{}', ?, ?, 'worker-1', 1, ?, ?, ?, ?)`)
+    .run(`dispatch-${suffix}`, `job-${suffix}`, `aggregate-${suffix}`, `sha256:${suffix.padEnd(64, "a")}`,
+      state, at, state === "dispatching" ? at : null, state === "uncertain" ? at : null, at);
+}
+
 describe("mission task engine", () => {
   it("derives a stable ReGauge launch task id from mission and optional repository", () => {
     expect(regaugeLaunchMissionTaskId("mission-a")).toBe(regaugeLaunchMissionTaskId("mission-a"));
@@ -134,6 +144,46 @@ describe("mission task engine", () => {
     expect(t.retryCount).toBe(0);
     t = move(db, t, "agent_working");
     expect(t.retryCount).toBe(1); // replan counted
+  });
+
+  it.each(["dispatching", "uncertain"] as const)(
+    "atomically blocks task cancellation, blocking, handoff, and completion while a mutation is %s",
+    (state) => {
+      for (const target of ["cancelled", "blocked", "human_review_required", "complete"] as const) {
+        const db = fixture();
+        let current = task(db, `task-${state}-${target}`);
+        current = move(db, current, "agent_assigned");
+        current = move(db, current, "agent_working");
+        insertDispatch(db, state, `${state}-${target}`);
+        expect(() => move(db, current, target)).toThrow("mission_mutation_dispatch_in_flight");
+        expect(getMissionTask(db, "t1", current.id)).toMatchObject({
+          status: "agent_working",
+          revision: current.revision,
+        });
+      }
+    },
+  );
+
+  it("revokes authorized mutation intent with a task transition but preserves same-status replay", () => {
+    const db = fixture();
+    let current = task(db, "task-fence-replay");
+    current = move(db, current, "agent_assigned");
+    current = move(db, current, "agent_working");
+    insertDispatch(db, "authorized", "authorized-task");
+    const cancelled = move(db, current, "cancelled");
+    expect(cancelled.status).toBe("cancelled");
+    expect((db.raw.prepare(`SELECT state FROM mission_mutation_dispatches WHERE id = ?`)
+      .get("dispatch-authorized-task") as { state: string }).state).toBe("revoked");
+
+    const replayDb = fixture();
+    let replay = task(replayDb, "task-same-replay");
+    replay = move(replayDb, replay, "agent_assigned");
+    replay = move(replayDb, replay, "agent_working");
+    insertDispatch(replayDb, "dispatching", "same-replay");
+    const unchanged = move(replayDb, replay, "agent_working");
+    expect(unchanged.revision).toBe(replay.revision);
+    expect((replayDb.raw.prepare(`SELECT state FROM mission_mutation_dispatches WHERE id = ?`)
+      .get("dispatch-same-replay") as { state: string }).state).toBe("dispatching");
   });
 
   it("orders by dependency: a task is not ready until every prerequisite completes", () => {
