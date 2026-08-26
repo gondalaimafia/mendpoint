@@ -317,6 +317,7 @@ function stableAuthorityRotationMatrixView(
     );
   }
   const releaseTrain = copy.releaseTrain as unknown as Record<string, unknown>;
+  delete releaseTrain.observedAt;
   delete releaseTrain.observedMainRevision;
   delete releaseTrain.observationDigest;
   delete releaseTrain.currentPullRequestBootstrap;
@@ -809,6 +810,14 @@ export async function verifyProductionClosureProposal(
           "AUTHORITY_ROTATION_MATRIX_SCOPE_INVALID",
           "docs/PRODUCTION_CLOSURE_MATRIX.json",
           "base and proposed closure matrices must remain structurally comparable",
+        );
+      }
+      if (matrix.releaseTrain.observedAt !== receipt?.issuedAt) {
+        add(
+          issues,
+          "AUTHORITY_ROTATION_OBSERVATION_TIME_MISMATCH",
+          "releaseTrain.observedAt",
+          "provider observation time must equal the exact authority rotation receipt issue time",
         );
       }
       if (

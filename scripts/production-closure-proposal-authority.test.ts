@@ -501,6 +501,7 @@ describe("production closure proposal authority", () => {
       proposedPolicySha256: sha256(proposedPolicyBytes),
     };
     proposedMatrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = rotation;
+    proposedMatrix.releaseTrain.observedAt = rotationObservedAt;
     proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
     const proposedMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
     client.replace(matrixPath, proposedMatrixBytes);
@@ -556,6 +557,28 @@ describe("production closure proposal authority", () => {
     expect(result.providerValidationPullRequests).toEqual([]);
     expect(result.providerValidationIssues).toEqual([]);
 
+    proposedMatrix.releaseTrain.observedAt = new Date(
+      Date.parse(rotationObservedAt) + 1_000,
+    ).toISOString();
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    const mistimedMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
+    client.replace(matrixPath, mistimedMatrixBytes);
+    changes.find((change) => change.path === matrixPath)!.toSha256 = sha256(mistimedMatrixBytes);
+    client.replace("config/production-closure-authority-rotation.json", proposedLedger);
+
+    const mistimed = await verifyProductionClosureProposal(
+      basePolicy,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      rotationObservedAt,
+      authority,
+    );
+    expect(mistimed.issues.map((issue) => issue.code)).toContain(
+      "AUTHORITY_ROTATION_OBSERVATION_TIME_MISMATCH",
+    );
+
+    proposedMatrix.releaseTrain.observedAt = rotationObservedAt;
     proposedMatrix.issueAuthority.issues[0].title = "Rewritten authority evidence";
     proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
     const rewrittenMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
