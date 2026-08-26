@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { getPrincipalBySubject, type AppDb } from "@mendpoint/db";
+import {
+  getPrincipalBySubject,
+  resolveMissionForRegaugeCampaign,
+  type AppDb,
+} from "@mendpoint/db";
 import {
   createTransformerMissionEvidenceArtifact,
   openTransformerMissionEvidenceArtifact,
@@ -83,12 +87,21 @@ export async function drainRegaugeMissionArtifactOutbox(input: Readonly<{
     throw new Error("regauge_service_principal_tenant_invalid");
   }
   let registered = 0;
-  let skipped = 0;
-  await adoptLegacyMissionArtifactRegistrations(input);
+  let skipped = await adoptLegacyMissionArtifactRegistrations(input);
   for (const registration of input.store.listPendingMissionArtifactRegistrations(
     input.tenantId,
     input.limit ?? 25,
   )) {
+    if (!resolveMissionForRegaugeCampaign(
+      input.db,
+      registration.tenantId,
+      registration.campaignId,
+    )) {
+      input.store.completeMissionArtifactRegistration(registration);
+      skipped += 1;
+      continue;
+    }
+    await markRegistrationReferenced(registration, input.runtime);
     const content = await readRegistrationContent(
       registration,
       input.runtime,
@@ -112,18 +125,39 @@ async function adoptLegacyMissionArtifactRegistrations(input: Readonly<{
   tenantId: string;
   runtime: RegaugeMissionArtifactRuntime;
   limit?: number;
-}>): Promise<void> {
+}>): Promise<number> {
+  let skipped = 0;
   for (const candidate of input.store.listMissionArtifactAdoptionCandidates(
     input.tenantId,
     input.limit ?? 25,
   )) {
+    if (!resolveMissionForRegaugeCampaign(
+      input.db,
+      candidate.tenantId,
+      candidate.campaignId,
+    )) {
+      input.store.completeMissionArtifactAdoption(candidate);
+      skipped += 1;
+      continue;
+    }
     const registration = await publishLegacyRegistration(candidate, input.runtime);
     input.store.adoptMissionArtifactRegistration({ candidate, registration });
-    await Promise.all([
-      input.runtime.backend.mark(registration.candidateManifestArtifact.storageKey, "referenced"),
-      input.runtime.backend.mark(registration.executionEvidenceArtifact.storageKey, "referenced"),
-    ]);
+    await markRegistrationReferenced(registration, input.runtime);
   }
+  return skipped;
+}
+
+async function markRegistrationReferenced(
+  registration: TransformerMissionArtifactRegistrationBinding,
+  runtime: RegaugeMissionArtifactRuntime,
+): Promise<void> {
+  if (registration.schemaVersion !== 2) {
+    throw new Error("regauge_mission_artifact_legacy_adoption_required");
+  }
+  await Promise.all([
+    runtime.backend.mark(registration.candidateManifestArtifact.storageKey, "referenced"),
+    runtime.backend.mark(registration.executionEvidenceArtifact.storageKey, "referenced"),
+  ]);
 }
 
 async function publishLegacyRegistration(

@@ -1663,6 +1663,16 @@ export class TransformerPilotExecutionStore {
         FOREIGN KEY (tenant_id, registration_id)
           REFERENCES tf_pilot_mission_artifact_outbox(tenant_id, registration_id)
       );
+      CREATE TABLE IF NOT EXISTS tf_pilot_mission_artifact_adoption_results (
+        tenant_id TEXT NOT NULL,
+        campaign_id TEXT NOT NULL,
+        unit_id TEXT NOT NULL,
+        terminal_event_sequence INTEGER NOT NULL,
+        candidate_digest TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        result TEXT NOT NULL CHECK (result = 'skipped_unbound'),
+        PRIMARY KEY (tenant_id, campaign_id, unit_id, terminal_event_sequence)
+      );
       CREATE TABLE IF NOT EXISTS tf_pilot_verifier_advisory_outbox (
         tenant_id TEXT NOT NULL,
         dispatch_id TEXT NOT NULL,
@@ -1741,6 +1751,10 @@ export class TransformerPilotExecutionStore {
       BEGIN SELECT RAISE(ABORT, 'transformer_pilot_mission_artifact_results_append_only'); END;
       CREATE TRIGGER IF NOT EXISTS tf_pilot_mission_artifact_results_no_delete BEFORE DELETE ON tf_pilot_mission_artifact_results
       BEGIN SELECT RAISE(ABORT, 'transformer_pilot_mission_artifact_results_append_only'); END;
+      CREATE TRIGGER IF NOT EXISTS tf_pilot_mission_artifact_adoption_results_no_update BEFORE UPDATE ON tf_pilot_mission_artifact_adoption_results
+      BEGIN SELECT RAISE(ABORT, 'transformer_pilot_mission_artifact_adoption_results_append_only'); END;
+      CREATE TRIGGER IF NOT EXISTS tf_pilot_mission_artifact_adoption_results_no_delete BEFORE DELETE ON tf_pilot_mission_artifact_adoption_results
+      BEGIN SELECT RAISE(ABORT, 'transformer_pilot_mission_artifact_adoption_results_append_only'); END;
       CREATE TRIGGER IF NOT EXISTS tf_pilot_verifier_advisory_outbox_no_update BEFORE UPDATE ON tf_pilot_verifier_advisory_outbox
       BEGIN SELECT RAISE(ABORT, 'transformer_pilot_verifier_advisory_outbox_append_only'); END;
       CREATE TRIGGER IF NOT EXISTS tf_pilot_verifier_advisory_outbox_no_delete BEFORE DELETE ON tf_pilot_verifier_advisory_outbox
@@ -1799,68 +1813,137 @@ export class TransformerPilotExecutionStore {
       SELECT e.* FROM tf_pilot_events e
       WHERE e.tenant_id = ?
         AND e.type IN ('attempt.completed', 'attempt.completed_with_checkpoint')
+        AND NOT EXISTS (
+          SELECT 1 FROM tf_pilot_mission_artifact_adoption_results r
+          WHERE r.tenant_id = e.tenant_id
+            AND r.campaign_id = e.campaign_id
+            AND r.terminal_event_sequence = e.sequence
+        )
       ORDER BY e.sequence
     `).all(tenantId) as Array<Record<string, unknown>>;
     const candidates: TransformerMissionArtifactAdoptionCandidate[] = [];
     for (const row of rows) {
       if (candidates.length >= limit) break;
-      const campaignId = String(row.campaign_id);
-      const payload = JSON.parse(String(row.payload_json)) as Record<string, unknown>;
-      const unitId = typeof payload.unitId === "string" ? payload.unitId : "";
-      const leaseGeneration = Number(payload.leaseGeneration);
-      const evidenceRefs = JSON.parse(String(row.evidence_refs_json)) as unknown;
-      const campaign = this.getCampaign(tenantId, campaignId);
-      const unit = campaign?.units.find((candidate) => candidate.id === unitId);
-      const attemptNumber = payload.attemptNumber === undefined
-        ? unit?.attemptNumber ?? Number.NaN
-        : Number(payload.attemptNumber);
-      if (!campaign || !unit || !Number.isSafeInteger(leaseGeneration) || leaseGeneration < 1 ||
-          !Number.isSafeInteger(attemptNumber) || attemptNumber < 1 || unit.attemptNumber !== attemptNumber ||
-          !["executed", "draft", "accepted", "merged"].includes(unit.state) || !Array.isArray(evidenceRefs)) {
-        continue;
-      }
-      const candidateIds = evidenceRefs.filter((value): value is string =>
-        typeof value === "string" && /^tcman_[a-f0-9]{64}$/.test(value));
-      const executionIds = evidenceRefs.filter((value): value is string =>
-        typeof value === "string" && /^tre_execution_[a-f0-9]{64}$/.test(value));
-      if (candidateIds.length !== 1 || executionIds.length !== 1) continue;
+      const candidate = this.missionArtifactAdoptionCandidateFromEvent(tenantId, row);
+      if (!candidate) continue;
       const existing = this.db.prepare(`
         SELECT 1 FROM tf_pilot_mission_artifact_outbox
         WHERE tenant_id = ? AND campaign_id = ? AND unit_id = ?
         LIMIT 1
-      `).get(tenantId, campaignId, unitId);
+      `).get(tenantId, candidate.campaignId, candidate.unitId);
       if (existing) continue;
-      const sequence = Number(row.sequence);
-      const campaignRevision = Number(row.campaign_revision);
-      const observedAt = String(row.observed_at);
-      const episodeId = typeof payload.episodeId === "string" && ID.test(payload.episodeId)
-        ? payload.episodeId
-        : `tfepisode_${sha256({ tenantId, campaignId, unitId, sequence }).slice(7, 39)}`;
-      if (!Number.isSafeInteger(sequence) || sequence < 1 ||
-          !Number.isSafeInteger(campaignRevision) || campaignRevision < 1) continue;
-      candidates.push(deepFreeze({
-        schemaVersion: 1,
-        tenantId,
-        campaignId,
-        campaignRevision,
-        unitId,
-        terminalEventSequence: sequence,
-        terminalEventType: row.type as "attempt.completed" | "attempt.completed_with_checkpoint",
-        observedAt,
-        episodeId,
-        attemptId: expectedAttemptId({
-          tenantId,
-          campaignId,
-          unitId,
-          attemptNumber,
-          leaseGeneration,
-        }),
-        sourceSnapshotId: unit.snapshot.snapshotId,
-        candidateArtifactId: candidateIds[0]!,
-        executionArtifactId: executionIds[0]!,
-      }));
+      candidates.push(candidate);
     }
     return candidates;
+  }
+
+  completeMissionArtifactAdoption(
+    candidate: TransformerMissionArtifactAdoptionCandidate,
+  ): void {
+    const row = this.db.prepare(`
+      SELECT * FROM tf_pilot_events
+      WHERE tenant_id = ? AND campaign_id = ? AND sequence = ?
+    `).get(
+      requireId(candidate.tenantId, "transformer_mission_artifact_registration_scope_invalid"),
+      requireId(candidate.campaignId, "transformer_pilot_campaign_invalid"),
+      candidate.terminalEventSequence,
+    ) as Record<string, unknown> | undefined;
+    const expected = row
+      ? this.missionArtifactAdoptionCandidateFromEvent(candidate.tenantId, row)
+      : undefined;
+    const candidateDigest = sha256(candidate);
+    if (!expected || sha256(expected) !== candidateDigest) {
+      throw new Error("transformer_mission_artifact_adoption_fence_invalid");
+    }
+    this.db.prepare(`
+      INSERT OR IGNORE INTO tf_pilot_mission_artifact_adoption_results
+        (tenant_id, campaign_id, unit_id, terminal_event_sequence,
+         candidate_digest, observed_at, result)
+      VALUES (?, ?, ?, ?, ?, ?, 'skipped_unbound')
+    `).run(
+      candidate.tenantId,
+      candidate.campaignId,
+      candidate.unitId,
+      candidate.terminalEventSequence,
+      candidateDigest,
+      candidate.observedAt,
+    );
+    const result = this.db.prepare(`
+      SELECT candidate_digest, observed_at, result
+      FROM tf_pilot_mission_artifact_adoption_results
+      WHERE tenant_id = ? AND campaign_id = ? AND unit_id = ?
+        AND terminal_event_sequence = ?
+    `).get(
+      candidate.tenantId,
+      candidate.campaignId,
+      candidate.unitId,
+      candidate.terminalEventSequence,
+    ) as Readonly<{
+      candidate_digest: string;
+      observed_at: string;
+      result: string;
+    }> | undefined;
+    if (!result || result.candidate_digest !== candidateDigest ||
+        result.observed_at !== candidate.observedAt || result.result !== "skipped_unbound") {
+      throw new Error("transformer_mission_artifact_adoption_result_conflict");
+    }
+  }
+
+  private missionArtifactAdoptionCandidateFromEvent(
+    tenantId: string,
+    row: Record<string, unknown>,
+  ): TransformerMissionArtifactAdoptionCandidate | undefined {
+    const campaignId = String(row.campaign_id);
+    const payload = JSON.parse(String(row.payload_json)) as Record<string, unknown>;
+    const unitId = typeof payload.unitId === "string" ? payload.unitId : "";
+    const leaseGeneration = Number(payload.leaseGeneration);
+    const evidenceRefs = JSON.parse(String(row.evidence_refs_json)) as unknown;
+    const campaign = this.getCampaign(tenantId, campaignId);
+    const unit = campaign?.units.find((candidate) => candidate.id === unitId);
+    const attemptNumber = payload.attemptNumber === undefined
+      ? unit?.attemptNumber ?? Number.NaN
+      : Number(payload.attemptNumber);
+    if (!campaign || !unit || !Number.isSafeInteger(leaseGeneration) || leaseGeneration < 1 ||
+        !Number.isSafeInteger(attemptNumber) || attemptNumber < 1 || unit.attemptNumber !== attemptNumber ||
+        !["executed", "draft", "accepted", "merged"].includes(unit.state) || !Array.isArray(evidenceRefs)) {
+      return undefined;
+    }
+    const candidateIds = evidenceRefs.filter((value): value is string =>
+      typeof value === "string" && /^tcman_[a-f0-9]{64}$/.test(value));
+    const executionIds = evidenceRefs.filter((value): value is string =>
+      typeof value === "string" && /^tre_execution_[a-f0-9]{64}$/.test(value));
+    const sequence = Number(row.sequence);
+    const campaignRevision = Number(row.campaign_revision);
+    const observedAt = String(row.observed_at);
+    if (candidateIds.length !== 1 || executionIds.length !== 1 ||
+        !Number.isSafeInteger(sequence) || sequence < 1 ||
+        !Number.isSafeInteger(campaignRevision) || campaignRevision < 1) {
+      return undefined;
+    }
+    const episodeId = typeof payload.episodeId === "string" && ID.test(payload.episodeId)
+      ? payload.episodeId
+      : `tfepisode_${sha256({ tenantId, campaignId, unitId, sequence }).slice(7, 39)}`;
+    return deepFreeze({
+      schemaVersion: 1,
+      tenantId,
+      campaignId,
+      campaignRevision,
+      unitId,
+      terminalEventSequence: sequence,
+      terminalEventType: row.type as "attempt.completed" | "attempt.completed_with_checkpoint",
+      observedAt,
+      episodeId,
+      attemptId: expectedAttemptId({
+        tenantId,
+        campaignId,
+        unitId,
+        attemptNumber,
+        leaseGeneration,
+      }),
+      sourceSnapshotId: unit.snapshot.snapshotId,
+      candidateArtifactId: candidateIds[0]!,
+      executionArtifactId: executionIds[0]!,
+    });
   }
 
   adoptMissionArtifactRegistration(input: Readonly<{
@@ -1869,52 +1952,19 @@ export class TransformerPilotExecutionStore {
   }>): TransformerMissionArtifactRegistration {
     const candidate = input.candidate;
     const binding = requireMissionArtifactRegistrationBinding(input.registration);
-    const terminalEvent = this.listEvents(candidate.tenantId, candidate.campaignId)
-      .find((event) => event.sequence === candidate.terminalEventSequence);
-    const campaign = this.getCampaign(candidate.tenantId, candidate.campaignId);
-    const unit = campaign?.units.find((value) => value.id === candidate.unitId);
-    const leaseGeneration = Number(terminalEvent?.payload.leaseGeneration);
-    const attemptNumber = terminalEvent?.payload.attemptNumber === undefined
-      ? unit?.attemptNumber ?? Number.NaN
-      : Number(terminalEvent.payload.attemptNumber);
-    const expectedCandidate = terminalEvent && unit &&
-      (terminalEvent.type === "attempt.completed" ||
-       terminalEvent.type === "attempt.completed_with_checkpoint") &&
-      Number.isSafeInteger(leaseGeneration) && leaseGeneration >= 1 &&
-      Number.isSafeInteger(attemptNumber) && attemptNumber >= 1
-      ? deepFreeze({
-          schemaVersion: 1 as const,
-          tenantId: candidate.tenantId,
-          campaignId: candidate.campaignId,
-          campaignRevision: terminalEvent.campaignRevision,
-          unitId: candidate.unitId,
-          terminalEventSequence: terminalEvent.sequence,
-          terminalEventType: terminalEvent.type,
-          observedAt: terminalEvent.observedAt,
-          episodeId: typeof terminalEvent.payload.episodeId === "string" && ID.test(terminalEvent.payload.episodeId)
-            ? terminalEvent.payload.episodeId
-            : `tfepisode_${sha256({
-                tenantId: candidate.tenantId,
-                campaignId: candidate.campaignId,
-                unitId: candidate.unitId,
-                sequence: terminalEvent.sequence,
-              }).slice(7, 39)}`,
-          attemptId: expectedAttemptId({
-            tenantId: candidate.tenantId,
-            campaignId: candidate.campaignId,
-            unitId: candidate.unitId,
-            attemptNumber,
-            leaseGeneration,
-          }),
-          sourceSnapshotId: unit.snapshot.snapshotId,
-          candidateArtifactId: candidate.candidateArtifactId,
-          executionArtifactId: candidate.executionArtifactId,
-        })
+    const terminalEvent = this.db.prepare(`
+      SELECT * FROM tf_pilot_events
+      WHERE tenant_id = ? AND campaign_id = ? AND sequence = ?
+    `).get(
+      candidate.tenantId,
+      candidate.campaignId,
+      candidate.terminalEventSequence,
+    ) as Record<string, unknown> | undefined;
+    const expectedCandidate = terminalEvent
+      ? this.missionArtifactAdoptionCandidateFromEvent(candidate.tenantId, terminalEvent)
       : undefined;
     if (binding.schemaVersion !== 2 || candidate.schemaVersion !== 1 ||
         !expectedCandidate || sha256(expectedCandidate) !== sha256(candidate) ||
-        !terminalEvent!.evidenceRefs.includes(candidate.candidateArtifactId) ||
-        !terminalEvent!.evidenceRefs.includes(candidate.executionArtifactId) ||
         binding.episodeId !== candidate.episodeId || binding.attemptId !== candidate.attemptId ||
         binding.sourceSnapshotId !== candidate.sourceSnapshotId ||
         binding.candidateArtifactId !== candidate.candidateArtifactId ||

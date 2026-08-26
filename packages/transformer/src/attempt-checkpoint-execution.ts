@@ -1117,6 +1117,13 @@ async function openController(context: Readonly<{
           completionObservedAt = intent.observedAt;
           if (existingRequest.artifactRegistration) {
             artifactRegistration = existingRequest.artifactRegistration;
+            if (artifactRegistration.schemaVersion === 2) {
+              await markReferenced([
+                existingCoordinator.requestArtifact.storageKey,
+                artifactRegistration.candidateManifestArtifact.storageKey,
+                artifactRegistration.executionEvidenceArtifact.storageKey,
+              ], completion.signal);
+            }
             identity = createTransformerAttemptEffectIdentity(
               episodeId,
               "coordinator_complete",

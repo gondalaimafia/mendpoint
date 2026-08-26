@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { Hono } from "hono";
+import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
 import {
   createDb,
   createMission,
@@ -13,8 +15,10 @@ import {
 } from "@mendpoint/db";
 import {
   createTransformerMissionEvidenceArtifact,
+  TransformerPilotExecutionStore,
+  type TransformerMissionArtifactAdoptionCandidate,
   type TransformerMissionArtifactRegistration,
-  type TransformerPilotExecutionStore,
+  type TransformerMissionArtifactRegistrationBinding,
 } from "@mendpoint/transformer";
 import type {
   TransformerCheckpointArtifactBackend,
@@ -23,17 +27,31 @@ import {
   drainRegaugeMissionArtifactOutbox,
   type RegaugeMissionArtifactRuntime,
 } from "./regauge-mission-artifact-outbox.js";
+import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
+import type { ApiEnv } from "./auth.js";
 
 const roots: string[] = [];
 const databases: AppDb[] = [];
 const observedAt = "2026-08-25T12:00:00.000Z";
+const gate = JSON.stringify({
+  schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION,
+  tenantAllowlist: ["tenant-a"],
+  environmentAllowlist: ["test"],
+  grants: [{
+    tenantId: "tenant-a",
+    environment: "test",
+    boundaries: ["api_control_plane", "worker_action", "delivery", "ui"],
+    acceptanceEvidenceRefs: ["acceptance:regauge:test"],
+    productionDeliveryApprovalRefs: ["approval:regauge:test"],
+  }],
+});
 
 afterEach(() => {
   while (databases.length) databases.pop()?.raw.close();
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-function fixture() {
+function fixture(options: Readonly<{ mission?: boolean }> = {}) {
   const root = mkdtempSync(join(tmpdir(), "regauge-mission-outbox-"));
   roots.push(root);
   const db = createDb(join(root, "app.sqlite"));
@@ -58,28 +76,30 @@ function fixture() {
     displayName: "ReGauge production service",
     createdAt: observedAt,
   });
-  createMission(db, {
-    id: "mission-a",
-    tenantId: "tenant-a",
-    product: "regauge",
-    triggerKind: "migration_objective",
-    objective: "Modernize repository A",
-    ownerPrincipalId: "owner-a",
-    eventId: "mission-a-created",
-    idempotencyKey: "mission-a-created",
-    correlationId: "campaign-a",
-    createdAt: observedAt,
-  });
-  linkRegaugeCampaignToMission(db, {
-    tenantId: "tenant-a",
-    missionId: "mission-a",
-    regaugeCampaignId: "campaign-a",
-    actorPrincipalId: "owner-a",
-    eventId: "mission-a-linked",
-    idempotencyKey: "mission-a-linked",
-    correlationId: "campaign-a",
-    createdAt: observedAt,
-  });
+  if (options.mission !== false) {
+    createMission(db, {
+      id: "mission-a",
+      tenantId: "tenant-a",
+      product: "regauge",
+      triggerKind: "migration_objective",
+      objective: "Modernize repository A",
+      ownerPrincipalId: "owner-a",
+      eventId: "mission-a-created",
+      idempotencyKey: "mission-a-created",
+      correlationId: "campaign-a",
+      createdAt: observedAt,
+    });
+    linkRegaugeCampaignToMission(db, {
+      tenantId: "tenant-a",
+      missionId: "mission-a",
+      regaugeCampaignId: "campaign-a",
+      actorPrincipalId: "owner-a",
+      eventId: "mission-a-linked",
+      idempotencyKey: "mission-a-linked",
+      correlationId: "campaign-a",
+      createdAt: observedAt,
+    });
+  }
   const candidateContent = '{"kind":"candidate"}';
   const executionContent = '{"kind":"execution"}\n';
   const candidateDigest = sha256(Buffer.from(candidateContent));
@@ -118,6 +138,7 @@ function fixture() {
     [executionArtifact.artifact.storageKey, executionArtifact.bytes],
   ]);
   const marks: string[] = [];
+  const reads: string[] = [];
   const backend: TransformerCheckpointArtifactBackend = Object.freeze({
     async createOnly(storageKey, bytes) {
       if (values.has(storageKey)) return "exists";
@@ -125,6 +146,7 @@ function fixture() {
       return "created";
     },
     async read(storageKey) {
+      reads.push(storageKey);
       const value = values.get(storageKey);
       return value ? new Uint8Array(value) : null;
     },
@@ -135,7 +157,7 @@ function fixture() {
     encryptionKey: key,
     legacyDataRoot: root,
   });
-  return { root, db, registration, values, runtime, marks };
+  return { root, db, registration, values, runtime, marks, reads };
 }
 
 function fakeStore(
@@ -144,6 +166,7 @@ function fakeStore(
 ): TransformerPilotExecutionStore {
   return {
     listMissionArtifactAdoptionCandidates: () => [],
+    completeMissionArtifactAdoption: () => { throw new Error("must_not_skip_adoption"); },
     adoptMissionArtifactRegistration: () => { throw new Error("must_not_adopt"); },
     listPendingMissionArtifactRegistrations: () => [registration],
     completeMissionArtifactRegistration: (value: TransformerMissionArtifactRegistration) => {
@@ -182,8 +205,213 @@ describe("ReGauge coordinator Mission artifact outbox", () => {
     expect(completed).toEqual([]);
     expect(listMissionArtifacts(db, "tenant-a", "mission-a")).toEqual([]);
   });
+
+  it("durably skips an unbound shared registration before reading missing artifacts", async () => {
+    const { db, registration, values, runtime, reads } = fixture({ mission: false });
+    values.clear();
+    const completed: string[] = [];
+    await expect(drainRegaugeMissionArtifactOutbox({
+      db,
+      store: fakeStore(registration, completed),
+      tenantId: "tenant-a",
+      runtime,
+    })).resolves.toEqual({ registered: 0, skipped: 1 });
+    expect(completed).toEqual([registration.registrationId]);
+    expect(reads).toEqual([]);
+  });
+
+  it("durably skips an unbound legacy candidate before reading its deleted filesystem evidence", async () => {
+    const { db, runtime, reads, marks } = fixture({ mission: false });
+    const candidate: TransformerMissionArtifactAdoptionCandidate = Object.freeze({
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      campaignRevision: 4,
+      unitId: "unit-a",
+      terminalEventSequence: 8,
+      terminalEventType: "attempt.completed_with_checkpoint",
+      observedAt,
+      episodeId: "tfepisode_legacy_unbound",
+      attemptId: "tfattempt_legacy_unbound",
+      sourceSnapshotId: "snapshot-a",
+      candidateArtifactId: `tcman_${"a".repeat(64)}`,
+      executionArtifactId: `tre_execution_${"b".repeat(64)}`,
+    });
+    const completed: TransformerMissionArtifactAdoptionCandidate[] = [];
+    const store = {
+      listMissionArtifactAdoptionCandidates: () => [candidate],
+      completeMissionArtifactAdoption: (value: TransformerMissionArtifactAdoptionCandidate) => {
+        completed.push(value);
+      },
+      adoptMissionArtifactRegistration: () => { throw new Error("must_not_adopt"); },
+      listPendingMissionArtifactRegistrations: () => [],
+      completeMissionArtifactRegistration: () => { throw new Error("must_not_complete_registration"); },
+    } as unknown as TransformerPilotExecutionStore;
+    await expect(drainRegaugeMissionArtifactOutbox({
+      db,
+      store,
+      tenantId: "tenant-a",
+      runtime,
+    })).resolves.toEqual({ registered: 0, skipped: 1 });
+    expect(completed).toEqual([candidate]);
+    expect(reads).toEqual([]);
+    expect(marks).toEqual([]);
+  });
+
+  it("repairs shared reference markers after legacy adoption commits before the marker write", async () => {
+    const { root, db, runtime, marks } = fixture();
+    const executionArtifactId = `tre_execution_${"b".repeat(64)}`;
+    const executionContent = JSON.stringify({
+      schemaVersion: 3,
+      kind: "transformer.recipe.execution",
+      evidenceId: executionArtifactId,
+      fence: {
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        unitId: "unit-a",
+        attemptId: "tfattempt_legacy_repair",
+      },
+    });
+    const executionDigest = sha256(Buffer.from(executionContent));
+    const candidateContent = JSON.stringify({
+      schemaVersion: 1,
+      kind: "transformer.candidate",
+      scope: {
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        unitId: "unit-a",
+        attemptId: "tfattempt_legacy_repair",
+      },
+      source: { snapshotId: "snapshot-a" },
+      executionEvidence: { id: executionArtifactId, digest: executionDigest },
+    });
+    const candidateArtifactId = `tcman_${sha256(Buffer.from(candidateContent)).slice(7)}`;
+    const candidate: TransformerMissionArtifactAdoptionCandidate = Object.freeze({
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      campaignRevision: 4,
+      unitId: "unit-a",
+      terminalEventSequence: 8,
+      terminalEventType: "attempt.completed_with_checkpoint",
+      observedAt,
+      episodeId: "tfepisode_legacy_repair",
+      attemptId: "tfattempt_legacy_repair",
+      sourceSnapshotId: "snapshot-a",
+      candidateArtifactId,
+      executionArtifactId,
+    });
+    const scope = [
+      segment("tenant", candidate.tenantId),
+      segment("campaign", candidate.campaignId),
+      segment("unit", candidate.unitId),
+      segment("attempt", candidate.attemptId),
+    ];
+    const candidateDirectory = join(root, "transformer-candidates", ...scope);
+    const executionDirectory = join(root, "transformer-evidence", ...scope);
+    mkdirSync(candidateDirectory, { recursive: true });
+    mkdirSync(executionDirectory, { recursive: true });
+    writeFileSync(join(candidateDirectory, "manifest.json"), candidateContent);
+    writeFileSync(join(executionDirectory, `${executionArtifactId}.json`), executionContent);
+    let adopted: TransformerMissionArtifactRegistration | undefined;
+    let acknowledged = false;
+    let failFirstReference = true;
+    const backend = {
+      ...runtime.backend,
+      async mark(storageKey: string, state: "pending" | "referenced" | "unreferenced") {
+        marks.push(`${storageKey}:${state}`);
+        if (state === "referenced" && failFirstReference) {
+          failFirstReference = false;
+          throw new Error("injected_reference_marker_failure");
+        }
+      },
+    } satisfies TransformerCheckpointArtifactBackend;
+    const store = {
+      listMissionArtifactAdoptionCandidates: () => adopted ? [] : [candidate],
+      completeMissionArtifactAdoption: () => { throw new Error("must_not_skip_adoption"); },
+      adoptMissionArtifactRegistration: (input: Readonly<{
+        registration: TransformerMissionArtifactRegistrationBinding;
+      }>) => {
+        adopted = Object.freeze({
+          ...input.registration,
+          registrationId: "legacy-repair-registration",
+          tenantId: candidate.tenantId,
+          campaignId: candidate.campaignId,
+          campaignRevision: candidate.campaignRevision,
+          unitId: candidate.unitId,
+          observedAt: candidate.observedAt,
+        });
+        return adopted;
+      },
+      listPendingMissionArtifactRegistrations: () => adopted && !acknowledged ? [adopted] : [],
+      completeMissionArtifactRegistration: () => { acknowledged = true; },
+    } as unknown as TransformerPilotExecutionStore;
+
+    await expect(drainRegaugeMissionArtifactOutbox({
+      db,
+      store,
+      tenantId: "tenant-a",
+      runtime: { ...runtime, backend },
+    })).rejects.toThrow("injected_reference_marker_failure");
+    expect(adopted).toBeDefined();
+    expect(acknowledged).toBe(false);
+
+    await expect(drainRegaugeMissionArtifactOutbox({
+      db,
+      store,
+      tenantId: "tenant-a",
+      runtime: { ...runtime, backend },
+    })).resolves.toEqual({ registered: 1, skipped: 0 });
+    expect(acknowledged).toBe(true);
+    expect(marks.filter((value) => value.endsWith(":referenced"))).toHaveLength(4);
+  });
+
+  it("keeps coordinator readiness healthy when an unbound registration is tampered", async () => {
+    const { db, registration, values, runtime, reads } = fixture({ mission: false });
+    const bytes = values.get(registration.candidateManifestArtifact.storageKey)!;
+    bytes[0] = bytes[0]! ^ 0xff;
+    const completed: string[] = [];
+    const store = new TransformerPilotExecutionStore();
+    Object.assign(store, fakeStore(registration, completed), {
+      getCampaign: () => ({ campaignId: "campaign-a", state: "running" }),
+    });
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("requestId", "request-unbound-ready");
+      c.set("principal", { id: "api-key:worker", tenantId: "tenant-a", role: "agent" });
+      c.set("authScopes", ["transformer:worker"]);
+      await next();
+    });
+    app.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+      enabled: true,
+      store,
+      gateConfig: gate,
+      drainPendingMissionArtifacts: async () => {
+        await drainRegaugeMissionArtifactOutbox({
+          db,
+          store,
+          tenantId: "tenant-a",
+          runtime,
+        });
+      },
+      loadExactSource: () => { throw new Error("must_not_load"); },
+    }));
+    const response = await app.request("/v1/regauge/attempt-coordinator/readyz", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenantId: "tenant-a", campaignId: "campaign-a" }),
+    });
+    expect(response.status).toBe(200);
+    expect(completed).toEqual([registration.registrationId]);
+    expect(reads).toEqual([]);
+    store.close();
+  });
 });
 
 function sha256(value: Uint8Array): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function segment(label: string, value: string): string {
+  return `${label}-${createHash("sha256").update(value, "utf8").digest("hex").slice(0, 32)}`;
 }

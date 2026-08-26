@@ -360,6 +360,49 @@ describe("Transformer pilot execution coordinator", () => {
     ]);
   });
 
+  it("durably fences an unbound legacy adoption skip without changing campaign history", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const leaseToken = "lease-token-adoption-skip-00001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-adoption-skip"), leaseToken, leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
+    const registration = artifactRegistration(lease);
+    store.completeAttempt({
+      ...mutation(2, "complete-adoption-skip"),
+      evidenceRefs: [registration.candidateArtifactId, registration.executionArtifactId],
+      unitId: lease.unitId,
+      leaseGeneration: lease.leaseGeneration,
+      leaseToken,
+      sourceRevision: candidate.snapshot.revision,
+      sourceDigest: candidate.snapshot.digest,
+      candidateRevision: candidate.candidateRevision,
+      candidateDigest: candidate.candidateDigest,
+      verificationPassed: true,
+      actualCostUsd: 0,
+      accounting: adaptiveAccounting(),
+      gateConfig: gateConfig(),
+    });
+    const revisionBefore = store.getCampaign("tenant-a", "campaign-a")!.revision;
+    const eventsBefore = store.listEvents("tenant-a", "campaign-a").length;
+    const adoption = store.listMissionArtifactAdoptionCandidates("tenant-a", 10);
+    expect(adoption).toHaveLength(1);
+
+    store.completeMissionArtifactAdoption(adoption[0]!);
+    store.completeMissionArtifactAdoption(adoption[0]!);
+
+    expect(store.listMissionArtifactAdoptionCandidates("tenant-a", 10)).toEqual([]);
+    expect(store.getCampaign("tenant-a", "campaign-a")!.revision).toBe(revisionBefore);
+    expect(store.listEvents("tenant-a", "campaign-a")).toHaveLength(eventsBefore);
+    expect(() => store.completeMissionArtifactAdoption({
+      ...adoption[0]!,
+      candidateArtifactId: `tcman_${"9".repeat(64)}`,
+    })).toThrow("transformer_mission_artifact_adoption_fence_invalid");
+    store.close();
+  });
+
   it("rolls back legacy completion when its artifact outbox insert fails", () => {
     const store = new TransformerPilotExecutionStore();
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));

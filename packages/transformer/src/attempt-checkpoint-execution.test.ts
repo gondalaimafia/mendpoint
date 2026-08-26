@@ -135,6 +135,7 @@ class MemoryArtifactStore implements TransformerAttemptCheckpointArtifactStore {
   resultPublications = 0;
   failResultPublicationAt: number | null = null;
   failNextNewResultReference = false;
+  failNextNewMissionReference = false;
 
   async read(storageKey: string): Promise<Uint8Array | null> {
     const value = this.values.get(storageKey);
@@ -156,6 +157,11 @@ class MemoryArtifactStore implements TransformerAttemptCheckpointArtifactStore {
   async recordPending(): Promise<void> {}
 
   async recordReferenced(storageKey: string): Promise<void> {
+    if (this.failNextNewMissionReference && storageKey.includes("/mission-evidence/") &&
+        !this.referenced.has(storageKey)) {
+      this.failNextNewMissionReference = false;
+      throw new Error("injected mission reference ledger failure");
+    }
     if (this.failNextNewResultReference && storageKey.includes("/effects/results/") &&
         !this.referenced.has(storageKey)) {
       this.failNextNewResultReference = false;
@@ -326,7 +332,18 @@ describe("Transformer attempt checkpoint execution controller", () => {
     expect(commandRunner).toHaveBeenCalledTimes(3);
     expect(store.getCampaign("tenant-a", "campaign-a")?.units[0]?.state).toBe("running");
 
-    artifactStore.failResultPublicationAt = 5;
+    artifactStore.failNextNewMissionReference = true;
+    const missionReferenceInterrupted = await runTransformerAttempt(input);
+    expect(missionReferenceInterrupted).toMatchObject({
+      status: "failed",
+      recoveryCode: "worker_crash",
+    });
+    expect(commandRunner).toHaveBeenCalledTimes(3);
+    const missionKeys = [...artifactStore.values.keys()].filter((key) => key.includes("/mission-evidence/"));
+    expect(missionKeys).toHaveLength(2);
+    expect(missionKeys.some((key) => !artifactStore.referenced.has(key))).toBe(true);
+
+    artifactStore.failResultPublicationAt = artifactStore.resultPublications + 1;
     const coordinatorInterrupted = await runTransformerAttempt(input);
     expect(coordinatorInterrupted).toMatchObject({
       status: "failed",
@@ -334,6 +351,7 @@ describe("Transformer attempt checkpoint execution controller", () => {
     });
     expect(commandRunner).toHaveBeenCalledTimes(3);
     expect(store.getCampaign("tenant-a", "campaign-a")?.units[0]?.state).toBe("running");
+    expect(missionKeys.every((key) => artifactStore.referenced.has(key))).toBe(true);
 
     const resumed = await runTransformerAttempt(input);
     expect(resumed.status).toBe("completed");
