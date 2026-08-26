@@ -3405,7 +3405,7 @@ Review blockers:
 - [x] Preserve durable replay identity across supersession history without allowing an older replay to displace the current active survivor.
 - [x] Verify the relevant tenant domain-event hash chain inside the replacement transaction before ordering eligible heads.
 - [x] Rebase onto current `origin/main` `256e4065`, run focused database and API tests, affected typechecks, and diff integrity.
-- [ ] Commit and push the repaired exact head without approving or merging it.
+- [x] Commit and push the repaired exact head without approving or merging it.
 
 #### Review
 
@@ -3413,4 +3413,4 @@ RED: the repeated-delivery regression first returned a new successor and restore
 
 GREEN: semantic replay identity is now resolved from the immutable eligible decision history, while survivor authority still comes only from current active heads in verified event order. The replacement transaction verifies the tenant domain-event sequence and hash chain before it consumes any event sequence, then retains the existing exact decision-to-event binding checks.
 
-Verification before commit: rebased onto exact `origin/main` `256e40658f5a9670ea38227654f3612068bc611c`. All 20 Mission handoff, eight MissionDecision, and 21 candidate-review API tests pass. Database and API typechecks pass, and both branch and worktree diff-integrity checks are clean.
+Verification: rebased onto exact `origin/main` `256e40658f5a9670ea38227654f3612068bc611c`. All 20 Mission handoff, eight MissionDecision, and 21 candidate-review API tests pass. Database and API typechecks pass, and both branch and worktree diff-integrity checks are clean. Repair commit `47b8f942` was pushed to the existing PR branch with lease protection; no approval or merge was performed.
