@@ -520,6 +520,18 @@ export async function verifyProductionClosureProposal(
       if (
         !/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path) ||
         path === policy.workflowPath ||
+        // The workflow that IS the proposed active controller cannot be a
+        // "second workflow spoofing the controller surface": it is the surface.
+        // proposedPolicy.workflowPath only differs from policy.workflowPath in an
+        // activate_successor rotation, and that new active path is exactly the
+        // just-activated successor whose digest was pre-authorized by a staged
+        // rotation, proven live, and attested through verifyAuthorityRotation.
+        // Without this exemption the activate PR fails the very gate it executes,
+        // because at activation proposedPolicy.successor is cleared to null while
+        // the successor workflow remains present as the new active controller.
+        // This exemption is not reachable by an ordinary proposal (workflowPath is
+        // immutable outside an activate_successor rotation).
+        path === proposedPolicy.workflowPath ||
         path === proposedPolicy.successor?.workflowPath
       ) {
         continue;
@@ -630,11 +642,24 @@ export async function verifyProductionClosureProposal(
       baseRecords: readonly T[],
       proposedRecords: readonly T[],
       kind: "pull request" | "issue",
+      exemptRemovedNumber?: number,
     ): number[] => {
       const baseByNumber = new Map(baseRecords.map((record) => [record.number, record]));
       const proposedByNumber = new Map(proposedRecords.map((record) => [record.number, record]));
       for (const number of baseByNumber.keys()) {
         if (!proposedByNumber.has(number)) {
+          // Promotion is not removal. A base-tracked pull request that the proposal
+          // moves into currentPullRequestBootstrap is not dropped from provider
+          // verification: the bootstrap slot subjects exactly that PR to the strictest
+          // live provider proof (bootstrap.number must equal the judged PR, its
+          // metadata is compared live, and an exact-head trusted review is required),
+          // so its tracking is upgraded, not lost. A proposal can only ever exempt
+          // ITSELF this way, and exactly one number; any OTHER removed record — a
+          // second tracked PR, or a PR removed without claiming the bootstrap slot —
+          // still flags.
+          if (exemptRemovedNumber !== undefined && number === exemptRemovedNumber) {
+            continue;
+          }
           add(
             issues,
             "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED",
@@ -654,6 +679,7 @@ export async function verifyProductionClosureProposal(
       mergeBaseMatrix.releaseTrain?.pullRequests ?? [],
       matrix.releaseTrain?.pullRequests ?? [],
       "pull request",
+      matrix.releaseTrain?.currentPullRequestBootstrap?.number,
     );
     observation.providerValidationIssues = changedProviderRecords(
       mergeBaseMatrix.issueAuthority?.issues ?? [],

@@ -454,6 +454,72 @@ describe("production closure proposal authority", () => {
     }));
   });
 
+  it("does not flag a base-tracked pull request that promotes itself into the bootstrap slot", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    // The proposal drops the PR from the tracked list AND claims the bootstrap slot for
+    // it: promotion, not removal. Self-bootstrap must be satisfiable.
+    const promoted = matrix.releaseTrain.pullRequests.shift()!;
+    matrix.releaseTrain.currentPullRequestBootstrap!.number = promoted.number;
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    client.replace(matrixPath, matrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(
+      result.issues.filter(
+        (issue) =>
+          issue.code === "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED" &&
+          issue.subject === String(promoted.number),
+      ),
+      JSON.stringify(result.issues, null, 2),
+    ).toEqual([]);
+  });
+
+  it("still flags a second tracked pull request removed alongside a self-bootstrap promotion", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    // Exactly one number is exempt (the self-promoted bootstrap PR); a SECOND tracked PR
+    // removed in the same proposal is still an unverified removal.
+    const promoted = matrix.releaseTrain.pullRequests.shift()!;
+    const alsoRemoved = matrix.releaseTrain.pullRequests.shift()!;
+    matrix.releaseTrain.currentPullRequestBootstrap!.number = promoted.number;
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    client.replace(matrixPath, matrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    const removalSubjects = result.issues
+      .filter((issue) => issue.code === "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED")
+      .map((issue) => issue.subject);
+    expect(removalSubjects, JSON.stringify(result.issues, null, 2)).toContain(
+      String(alsoRemoved.number),
+    );
+    expect(removalSubjects, JSON.stringify(result.issues, null, 2)).not.toContain(
+      String(promoted.number),
+    );
+  });
+
   it("accepts an exhaustive authority-only rotation interpreted by the base revision", async () => {
     const client = new FixtureClient();
     const authority = baseAuthority();
@@ -668,6 +734,24 @@ describe("production closure proposal authority", () => {
     activePolicy.successor = null;
     delete activePolicy.protectedFiles[predecessorPath];
     activePolicy.protectedFiles[successorPath] = sha256(workflowBytes);
+    // A post-activation proposal carries exactly one closure-authority controller
+    // workflow: the newly-active successor. Any other closure-authority-*.yml that
+    // happens to be tracked in the working tree (for example a successor template
+    // staged by an in-flight rotation) is not part of THIS proposal's surface. Strip
+    // it from the proposed tree, the base tree, AND the protectedFiles map so the
+    // fixture models a clean single-controller activation regardless of repo state. A
+    // naive client.remove alone is insufficient: a stray workflow the policy also pins
+    // must leave protectedFiles too, or the proposal fails on a missing protected
+    // surface instead of the collision this test is about.
+    for (const trackedPath of [...client.pathToSha.keys()]) {
+      if (
+        /^\.github\/workflows\/closure-authority-[a-z0-9-]+\.ya?ml$/.test(trackedPath) &&
+        trackedPath !== successorPath
+      ) {
+        client.remove(trackedPath);
+        delete activePolicy.protectedFiles[trackedPath];
+      }
+    }
     const activePolicyBytes = Buffer.from(JSON.stringify(activePolicy));
     client.remove(predecessorPath);
     client.add(successorPath, workflowBytes);
@@ -694,6 +778,51 @@ describe("production closure proposal authority", () => {
     );
 
     expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+  });
+
+  it("exempts the newly-active successor from the controller-surface collision while an unrelated extra controller workflow still collides", async () => {
+    const client = new FixtureClient();
+    const predecessorPath = ".github/workflows/closure-authority.yml";
+    const successorPath = ".github/workflows/closure-authority-quiet-sweep.yml";
+    const roguePath = ".github/workflows/closure-authority-rogue.yml";
+    // Controller-surface bytes: statuses: write + environment: production-closure-authority.
+    const controllerBytes = client.blobs.get(client.pathToSha.get(predecessorPath)!)!;
+    // Base policy: the predecessor is still the active controller (activation has not
+    // landed on the base yet), so proposedPolicy.workflowPath !== policy.workflowPath and
+    // ONLY the proposedPolicy.workflowPath exemption can spare the newly-active workflow.
+    const basePolicy = policy();
+    // Proposed policy: the activate_successor transition flips the active controller to
+    // the successor and clears the staged slot.
+    const proposedPolicy = policy();
+    proposedPolicy.workflowPath = successorPath;
+    proposedPolicy.externalCheckName = "mendpoint-production-closure-authority-quiet-sweep";
+    proposedPolicy.controllerCheckName = "mendpoint-production-closure-controller-quiet-sweep";
+    proposedPolicy.successor = null;
+    delete proposedPolicy.protectedFiles[predecessorPath];
+    proposedPolicy.protectedFiles[successorPath] = sha256(controllerBytes);
+    const proposedPolicyBytes = Buffer.from(JSON.stringify(proposedPolicy));
+    // Proposed tree: predecessor removed, the newly-active successor present, plus an
+    // unrelated extra controller workflow that is neither the active path nor a staged
+    // successor slot and so must still be treated as a spoof.
+    client.remove(predecessorPath);
+    client.add(successorPath, controllerBytes, false);
+    client.add(roguePath, controllerBytes, false);
+    client.replace("config/production-closure-authority.json", proposedPolicyBytes);
+
+    const result = await verifyProductionClosureProposal(
+      basePolicy,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    const collisions = result.issues
+      .filter((issue) => issue.code === "PROPOSAL_CONTROLLER_SURFACE_COLLISION")
+      .map((issue) => issue.subject);
+    expect(collisions, JSON.stringify(result.issues, null, 2)).toContain(roguePath);
+    expect(collisions, JSON.stringify(result.issues, null, 2)).not.toContain(successorPath);
   });
 
   it("writes a secret-free failure artifact when protected configuration fails early", () => {
