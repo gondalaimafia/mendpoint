@@ -10,12 +10,11 @@
  */
 import { createHash } from "node:crypto";
 import {
-  addMissionTaskDependency,
   ensureMissionTaskForJob,
   fettlerCampaignMissionTaskId,
-  getConsumerRepo,
   getMissionTask,
   getMission,
+  getWardenCampaignTarget,
   insertPrincipal,
   missionTaskIdForJob,
   recordExecutionCostFromRoutingLedger,
@@ -51,51 +50,48 @@ function textField(record: Record<string, unknown> | undefined, key: string): st
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function nestedTextField(
-  record: Record<string, unknown> | undefined,
-  parent: string,
-  key: string,
-): string | undefined {
-  const value = record?.[parent];
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  return textField(value as Record<string, unknown>, key);
-}
+type FettlerCampaignExecuteBinding = Readonly<{
+  campaignId: string;
+  targetId: string;
+  repositoryId: string;
+  snapshotId: string;
+  taskId: string;
+}>;
 
-function bindJobTaskToFettlerCampaignTask(
+/**
+ * Authenticate a campaign-execute job against its durable target row. New jobs
+ * carry repository/snapshot identity for auditability; released queued jobs may
+ * omit those additive fields and are safely rehydrated from the target. A
+ * supplied value may never override or disagree with durable authority.
+ */
+function resolveFettlerCampaignExecuteBinding(
   db: AppDb,
   job: BridgedJob,
   mission: Mission,
-  task: MissionTask,
-  createdAt: string,
-): void {
+): FettlerCampaignExecuteBinding | undefined {
+  if (job.type !== "warden.campaign.execute-target") return undefined;
   const payload = payloadRecord(job);
-  const campaignId = textField(payload, "campaignId") ?? textField(payload, "fettlerCampaignId");
-  if (!campaignId) return;
+  const campaignId = textField(payload, "campaignId");
+  const targetId = textField(payload, "targetId");
+  if (!campaignId) throw new Error("mission_task_job_campaign_required");
+  if (!targetId) throw new Error("mission_task_job_target_required");
   if (mission.fettlerCampaignId !== campaignId) throw new Error("mission_task_job_campaign_mismatch");
-  const claimedRepositoryId = textField(payload, "repositoryId")
-    ?? nestedTextField(payload, "snapshotBinding", "repositoryId");
-  const consumerId = textField(payload, "consumerId");
-  const consumerRepositoryId = consumerId
-    ? getConsumerRepo(db, consumerId, job.tenant_id)?.connected_repository_id ?? undefined
-    : undefined;
-  if (claimedRepositoryId && consumerRepositoryId && claimedRepositoryId !== consumerRepositoryId) {
+  const target = getWardenCampaignTarget(db, job.tenant_id, campaignId, targetId);
+  if (!target) throw new Error("mission_task_job_target_not_found");
+  const claimedRepositoryId = textField(payload, "repositoryId");
+  const claimedSnapshotId = textField(payload, "snapshotId");
+  if (claimedRepositoryId && claimedRepositoryId !== target.repositoryId) {
     throw new Error("mission_task_job_repository_mismatch");
   }
-  const repositoryId = claimedRepositoryId ?? consumerRepositoryId;
-  if (!repositoryId) return;
-  const campaignTaskId = fettlerCampaignMissionTaskId(mission.id, repositoryId);
-  if (!getMissionTask(db, job.tenant_id, campaignTaskId)) return;
-  const dependencyDigest = createHash("sha256")
-    .update(`mission-task-job-campaign:${task.id}:${campaignTaskId}`)
-    .digest("hex")
-    .slice(0, 32);
-  addMissionTaskDependency(db, {
-    id: `mtd-job-campaign-${dependencyDigest}`,
-    tenantId: job.tenant_id,
-    missionId: mission.id,
-    taskId: task.id,
-    dependsOnTaskId: campaignTaskId,
-    createdAt,
+  if (claimedSnapshotId && claimedSnapshotId !== target.snapshotId) {
+    throw new Error("mission_task_job_snapshot_mismatch");
+  }
+  return Object.freeze({
+    campaignId,
+    targetId,
+    repositoryId: target.repositoryId,
+    snapshotId: target.snapshotId,
+    taskId: fettlerCampaignMissionTaskId(mission.id, target.repositoryId),
   });
 }
 
@@ -159,9 +155,16 @@ export function bridgeClaimedJobToMissionTask(
 ): MissionTask | undefined {
   const mission = resolveBoundMissionForJob(db, job);
   if (!mission) return undefined;
+  const campaignExecute = resolveFettlerCampaignExecuteBinding(db, job, mission);
+  if (campaignExecute) {
+    // Enrollment made the repository task canonical. The campaign-specific
+    // claim driver owns its state transition; this generic bridge only returns
+    // that row and never creates a second active job task or dependency.
+    return getMissionTask(db, job.tenant_id, campaignExecute.taskId);
+  }
   const agent = missionTaskAgentPrincipal(db, job.tenant_id, createdAt);
   const payload = payloadRecord(job);
-  const task = ensureMissionTaskForJob(db, {
+  return ensureMissionTaskForJob(db, {
     tenantId: job.tenant_id,
     jobId: job.id,
     missionId: mission.id,
@@ -173,8 +176,6 @@ export function bridgeClaimedJobToMissionTask(
     createdAt,
     correlationId: job.id,
   });
-  bindJobTaskToFettlerCampaignTask(db, job, mission, task, createdAt);
-  return task;
 }
 
 /**
@@ -228,11 +229,12 @@ export function recordBoundMissionExecutionCost(
   const mission = resolveBoundMissionForJob(db, input.job);
   if (!mission) return undefined;
   const payload = payloadRecord(input.job);
+  const campaignExecute = resolveFettlerCampaignExecuteBinding(db, input.job, mission);
   return recordExecutionCostFromRoutingLedger(db, {
     tenantId: input.job.tenant_id,
     sourceRunId: input.sourceRunId,
     executionId: input.job.id,
-    taskId: missionTaskIdForJob(input.job.id),
+    taskId: campaignExecute?.taskId ?? missionTaskIdForJob(input.job.id),
     taskClass: input.job.type,
     route: mission.product,
     campaignId: mission.fettlerCampaignId ?? mission.regaugeCampaignId

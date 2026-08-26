@@ -7,14 +7,20 @@ import {
   addWardenCampaignTarget,
   createDb,
   createMission,
+  createMissionTask,
   createWardenCampaign,
   enqueueJob,
+  fettlerCampaignMissionTaskId,
+  getJob,
+  getMission,
+  getMissionTask,
   insertPrincipal,
   insertRepositorySnapshot,
   insertRepositorySnapshotPolicy,
   linkFettlerCampaignToMission,
   listJobs,
   listWardenCampaignTargets,
+  missionTaskIdForJob,
   planWardenRollout,
   transitionWardenCampaign,
   type AppDb,
@@ -28,6 +34,7 @@ import {
 import { WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE } from "./warden-campaign-execute-dispatch.js";
 import { fieldRenameRecipeDependencies, payloadRenameDeriver } from "./warden-campaign-recipe.js";
 import { processJobsOnce } from "./cli.js";
+import { buildMissionContext } from "./mission-context.js";
 import { enqueueReadyWardenCampaignTargets } from "./warden-campaign-execute-activation.js";
 
 // End-to-end proof of the field-rename activation: the diff's rename op rides in
@@ -95,6 +102,20 @@ function fixture() {
     actorPrincipalId: "owner", eventId: "mission-linked", idempotencyKey: "mission-linked",
     correlationId: "campaign-a", createdAt,
   });
+  const campaignTaskId = fettlerCampaignMissionTaskId("mission-a", "repo-a");
+  createMissionTask(db, {
+    id: campaignTaskId,
+    tenantId: "tenant-a",
+    missionId: "mission-a",
+    taskType: "code_migration",
+    acceptanceCriteria: "Complete the enrolled Fettler unit for repository repo-a.",
+    risk: "medium",
+    actorPrincipalId: "owner",
+    eventId: `${campaignTaskId}-created`,
+    idempotencyKey: `mission-task-create-${campaignTaskId}`,
+    correlationId: "campaign-a",
+    createdAt,
+  });
   ensureDefaultPolicyEnvelopeBinding(db, {
     tenantId: "tenant-a", missionId: "mission-a", actorPrincipalId: "owner",
     correlationId: "campaign-a", createdAt,
@@ -151,6 +172,62 @@ const passingVerify: WardenCampaignExecutionDependencies["verify"] = async (inpu
   }));
 
 describe("field-rename activation end to end through the worker loop", () => {
+  it("carries durable target scope from the production enqueuer into canonical Mission context", async () => {
+    const value = fixture();
+    const enqueued = enqueueReadyWardenCampaignTargets(value.db, {
+      tenantId: "tenant-a", campaignId: "campaign-a", actorPrincipalId: "worker", createdAt,
+      source: source(), renames: [{ from: "amount_cents", to: "amount" }],
+      rolloutDecisionId: "rollout-a",
+      rolloutApproval: { decisionSha256: value.decision.decisionSha256, approvedByPrincipalId: "reviewer", approvedAt: createdAt },
+      ownerApproval: { ownerPrincipalId: "owner", ownerHandle: "@payments", approvedAt: createdAt },
+    });
+    const job = getJob(value.db, enqueued.jobIds[0]!, "tenant-a")!;
+    const payload = JSON.parse(job.payload_json) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      campaignId: "campaign-a",
+      targetId: "target-a",
+      repositoryId: "repo-a",
+      snapshotId: "snapshot-a",
+    });
+
+    const result = await processJobsOnce(value.db, {
+      allTenants: true,
+      runWardenMaintenance: false,
+      wardenCampaignExecution: {
+        resolveDependencies: (renames) => ({
+          ...fieldRenameRecipeDependencies({ deriveRename: payloadRenameDeriver(renames), graphDb: value.graph }),
+          verify: passingVerify,
+        }),
+      },
+    });
+
+    const campaignTaskId = fettlerCampaignMissionTaskId("mission-a", "repo-a");
+    const mission = getMission(value.db, "tenant-a", "mission-a")!;
+    const compiled = buildMissionContext(value.db, {
+      tenantId: "tenant-a",
+      mission,
+      task: {
+        taskId: campaignTaskId,
+        capability: "code_migration",
+        riskClass: "medium",
+        goal: "Complete the exact repository campaign.",
+      },
+      fallback: {
+        objective: mission.objective,
+        repositoryId: payload.repositoryId as string,
+        snapshotId: payload.snapshotId as string,
+      },
+    });
+
+    expect(result).toMatchObject({ claimed: 1, succeeded: 1, failed: 0, retried: 0 });
+    expect(getMissionTask(value.db, "tenant-a", campaignTaskId)).toMatchObject({
+      status: "human_review_required",
+      taskType: "code_migration",
+    });
+    expect(getMissionTask(value.db, "tenant-a", missionTaskIdForJob(job.id))).toBeUndefined();
+    expect(compiled.refs).toContainEqual(expect.objectContaining({ kind: "mission_artifact" }));
+  });
+
   it("routes the payload rename through resolveDependencies and lands the target in review", async () => {
     const value = fixture();
     enqueueJob(value.db, {

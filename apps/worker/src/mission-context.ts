@@ -19,13 +19,15 @@
 import {
   classifyMissionVerificationEvidence,
   evaluateMissionExceptions,
+  fettlerCampaignMissionTaskId,
   getActiveMissionDecisions,
   getMissionPolicyEnvelope,
+  getMissionTask,
   listMissionArtifacts,
-  listMissionTaskPrerequisiteIds,
   listMissionVerifications,
   listOrganizationMemory,
   listTrajectories,
+  listWardenCampaignTargets,
   resolveMissionSnapshotIdentity,
   type AppDb,
   type Mission,
@@ -111,13 +113,45 @@ export function buildMissionContext(
   const { tenantId, mission } = params;
 
   // A caller-supplied Mission id is not sufficient authority to cross repository
-  // or snapshot boundaries. Where the Mission carries an exact binding, it must
-  // equal the immutable job binding before any Mission-scoped store is read.
-  if (mission && mission.repositoryId !== params.fallback.repositoryId) {
-    throw new Error("mission_context_repository_binding_mismatch");
-  }
-  if (mission && mission.snapshotId !== params.fallback.snapshotId) {
-    throw new Error("mission_context_snapshot_binding_mismatch");
+  // or snapshot boundaries. A single-repository Mission carries the binding on
+  // its row. A multi-repository Fettler Mission instead authenticates the exact
+  // canonical repository task against its durable campaign-target row.
+  if (mission) {
+    const missionHasScope = mission.repositoryId !== null || mission.snapshotId !== null;
+    if (missionHasScope) {
+      if (mission.repositoryId !== params.fallback.repositoryId) {
+        throw new Error("mission_context_repository_binding_mismatch");
+      }
+      if (mission.snapshotId !== params.fallback.snapshotId) {
+        throw new Error("mission_context_snapshot_binding_mismatch");
+      }
+    } else if (
+      params.fallback.repositoryId !== null ||
+      params.fallback.snapshotId !== null
+    ) {
+      const repositoryId = params.fallback.repositoryId;
+      const snapshotId = params.fallback.snapshotId;
+      if (!mission.fettlerCampaignId || !repositoryId || !snapshotId) {
+        throw new Error("mission_context_repository_binding_mismatch");
+      }
+      const targets = listWardenCampaignTargets(db, tenantId, mission.fettlerCampaignId);
+      if (!targets.some((target) => target.repositoryId === repositoryId)) {
+        throw new Error("mission_context_repository_binding_mismatch");
+      }
+      if (!targets.some((target) =>
+        target.repositoryId === repositoryId && target.snapshotId === snapshotId)) {
+        throw new Error("mission_context_snapshot_binding_mismatch");
+      }
+      const expectedTaskId = fettlerCampaignMissionTaskId(mission.id, repositoryId);
+      const task = getMissionTask(db, tenantId, params.task.taskId);
+      if (
+        params.task.taskId !== expectedTaskId ||
+        !task ||
+        task.missionId !== mission.id
+      ) {
+        throw new Error("mission_context_task_binding_mismatch");
+      }
+    }
   }
 
   // Organization memory is tenant-scoped and applies with or without a mission.
@@ -219,10 +253,6 @@ export function buildMissionContext(
     ? {
         consulted: true,
         records: (() => {
-          const artifactTaskIds = new Set([
-            params.task.taskId,
-            ...listMissionTaskPrerequisiteIds(db, tenantId, mission.id, params.task.taskId),
-          ]);
           return listMissionArtifacts(db, tenantId, mission.id)
             .filter((artifact) => {
               const exactTaskArtifact =
@@ -230,7 +260,7 @@ export function buildMissionContext(
                 artifact.scopeSchemaVersion === 1 &&
                 artifact.scopeContentDigest !== null &&
                 artifact.taskId !== null &&
-                artifactTaskIds.has(artifact.taskId) &&
+                artifact.taskId === params.task.taskId &&
                 artifact.sourceSnapshot === snapshotId;
               const explicitlyMissionGlobal =
                 params.includeMissionGlobalArtifacts === true &&

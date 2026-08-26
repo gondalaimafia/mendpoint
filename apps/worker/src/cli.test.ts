@@ -59,7 +59,6 @@ import {
   upsertGitHubInstallation,
   getRepairSession,
   listJobs,
-  listMissionTaskPrerequisiteIds,
   fettlerCampaignMissionTaskId,
   linkFettlerCampaignToMission,
   missionTaskIdForJob,
@@ -3596,7 +3595,7 @@ describe("Fettler live resume seam (behavioral, through the job loop)", () => {
     expect(source).toContain("taskId: missionTaskIdForJob(job.id)");
   });
 
-  it("live mission-bound job compiles an artifact registered to its canonical MissionTask", async () => {
+  it("does not inherit a campaign task artifact into an independent agent job", async () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-resume-mission-artifact-"));
     dirs.push(parent);
     const fixture = setupWardenSnapshotJob({
@@ -3706,18 +3705,11 @@ describe("Fettler live resume seam (behavioral, through the job loop)", () => {
     });
     const trajectory = getTrajectoryByRun(fixture.db, "tenant_test", "session-warden-snapshot");
     const runAfter = getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test");
-    const prerequisites = listMissionTaskPrerequisiteIds(
-      fixture.db,
-      "tenant_test",
-      "mission-live-artifact",
-      missionTaskIdForJob("job-warden-snapshot"),
-    );
     fixture.db.raw.close();
     expect({ result, runAfter }).toMatchObject({
       result: { claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 },
     });
-    expect(prerequisites).toContain(campaignTaskId);
-    expect(trajectory?.contextRefs).toContainEqual(expect.objectContaining({
+    expect(trajectory?.contextRefs).not.toContainEqual(expect.objectContaining({
       kind: "mission_artifact",
       artifactId: "artifact-live-context",
     }));

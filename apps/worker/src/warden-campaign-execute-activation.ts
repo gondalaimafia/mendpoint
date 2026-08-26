@@ -77,6 +77,8 @@ export function enqueueReadyWardenCampaignTargets(
         payload: {
           campaignId: input.campaignId,
           targetId: target.id,
+          repositoryId: target.repositoryId,
+          snapshotId: target.snapshotId,
           rolloutDecisionId: input.rolloutDecisionId,
           actorPrincipalId: input.actorPrincipalId,
           runId: `run-${jobId}`,

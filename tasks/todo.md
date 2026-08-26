@@ -3360,3 +3360,21 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Scope authority: exact task and snapshot authority lives in an append-only schema-v1 companion digest structurally bound to tenant, Mission, and registration. Released null/null and matching exact legacy registrations reconcile without rewriting the historical registration; partial, conflicting, unsupported, or corrupt scope fails closed. The compiler accepts exact task context only from the authenticated companion.
 - Writer-to-reader lineage: a production job naming its linked campaign now depends on that campaign's deterministic repository MissionTask. The compiler admits exact-snapshot artifacts from the canonical job task and its validated transitive prerequisites; the real campaign writer to live worker regression records the artifact ref on the trajectory.
 - Verification on merge base `4ce35061ba8e0dd714aa0ade4ca5c71284b2e956`: 170 focused tests pass across database, compiler, campaign executor, resume, bridge, and full worker CLI suites. DB, pipeline, and worker typechecks pass; strict diff checking is clean. `ME-MCC-001` remains partial/internal. Independent exact-head review and GitHub CI remain required.
+
+### 2026-08-25 PR 467 canonical campaign task repair
+
+- [x] Add a red end-to-end regression from `enqueueReadyWardenCampaignTargets` through the real worker and Mission context compiler.
+- [x] Make the production enqueuer carry the target's durable repository and snapshot identity.
+- [x] Resolve and authenticate the campaign, target, repository, and snapshot before binding a claimed execute job.
+- [x] Reuse the enrolled campaign repository MissionTask as the job's canonical task without creating a same-target dependency.
+- [x] Remove the synthetic prerequisite-based artifact-context assumption while preserving authenticated artifact scope and mission-bound failure propagation.
+- [ ] Run focused database, pipeline, and worker regressions, affected typechecks, and strict diff checks on current main.
+- [ ] Commit and force-with-lease push the repaired branch; do not merge or self-approve.
+
+#### Review
+
+RED: the production enqueuer's job payload omitted `repositoryId` and `snapshotId`, and the new end-to-end regression failed on those exact missing fields before execution. The prior bridge also created `missionTaskIdForJob(job.id)` and added the active campaign task as its prerequisite.
+
+GREEN: the enqueuer now carries the durable target scope, and the claim bridge re-resolves the target under the exact tenant and campaign before accepting either claimed field. Released jobs that predate the additive fields rehydrate from the same target row; any supplied mismatch fails closed. Campaign execute reuses the enrolled repository MissionTask, leaves its state transition to the existing campaign-specific claim driver, attributes execution cost to that task, and never creates a job task or dependency. The compiler accepts an unscoped multi-repository Fettler Mission only through the exact durable campaign target and canonical repository task; unrelated dependency tasks no longer grant artifact-context access.
+
+Verification before final rebase: 118 affected worker tests, 24 database task/artifact tests, and 20 pipeline artifact/executor tests pass. Worker, database, and pipeline typechecks pass, and `git diff --check` is clean. A fresh fetch advanced `origin/main` to `4175168bbd6d65b81428be110b8c0ca39e329897`; final rebase verification and publication remain pending.
