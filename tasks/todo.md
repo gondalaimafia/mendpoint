@@ -3417,10 +3417,20 @@ Verification: 46 focused candidate-review lifecycle tests pass. Complete API, da
 
 ## 2026-08-26 Review repair: complete Mission dispatch fencing
 
-- [ ] RED: prove every task authority transition serializes with authorized, dispatching, and uncertain mutations.
-- [ ] RED: prove scope, graph, policy bind, and policy advancement writers share the same Mission fence.
-- [ ] RED: prove green CI observation cannot complete a task while a blocking exception is introduced.
-- [ ] RED: prove legacy mission-bound delivery and update jobs without retained authority are quarantined without remote mutation or fabricated task authority.
-- [ ] Implement the smallest shared-transaction fencing and deterministic upgrade quarantine.
-- [ ] Run focused and complete DB/worker suites, affected typechecks, production build, and strict diff review.
-- [ ] Record exact evidence and remaining review findings; commit locally without pushing.
+- [x] RED: prove every task authority transition serializes with authorized, dispatching, and uncertain mutations.
+- [x] RED: prove scope, graph, policy bind, and policy advancement writers share the same Mission fence.
+- [x] RED: prove green CI observation cannot complete a task while a blocking exception is introduced.
+- [x] RED: prove legacy mission-bound delivery and update jobs without retained authority are quarantined without remote mutation or fabricated task authority.
+- [x] Implement the smallest shared-transaction fencing and deterministic upgrade quarantine.
+- [x] Run focused and complete DB/worker suites, affected typechecks, production build, and strict diff review.
+- [x] Record exact evidence and remaining review findings; commit locally without pushing.
+
+### Review
+
+All reachable Mission authority revision writers are now inside the same `BEGIN IMMEDIATE` dispatch fence: Mission state, repository and snapshot scope, graph version, policy bind and policy advancement, plus every real MissionTask transition. Same-value and same-status replays remain no-op idempotent operations. Authorized intents are revoked; dispatching and uncertain remote effects block the authority change.
+
+Green CI completion reasserts the exact Mission mutation authority with global blocking semantics inside the observation finalization transaction. The adversarial regression introduces a blocker after evidence persistence and proves the observation, cleanup handoff, job settlement, and task completion all remain uncommitted. Delivery settles its own dispatch before task completion inside the same transaction, preserving the crash-replay contract without letting the task fence reject its own known remote effect.
+
+Rolling-upgrade delivery and update rows carrying any Mission binding but no exact retained authority are deterministically quarantined before GitHub. They receive stable nonretryable upgrade-required codes and never synthesize a MissionTask or reconstruct historical authority from current state.
+
+Verification: 77 focused dispatch, task, delivery, update, and Mission tests pass; the exact observation suite passes 13 tests. Complete database and worker suites pass 437 and 612 tests respectively, with one intentional worker skip. Database and worker typechecks and the optimized production build pass, the complete authority-writer and mutation-consumer searches were reviewed, and `git diff --check` is clean. No production state changed and no push was performed. No P0, P1, or P2 review finding remains in this repaired class.

@@ -5,9 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   claimNextJob,
+  bindMissionScope,
   createDb,
+  createMission,
+  createMissionMutationAuthority,
+  createMissionTask,
   enqueueWardenCiCycle,
   getJob,
+  getMission,
+  getMissionTask,
   getWardenCiCycle,
   insertArtifactManifest,
   insertPrincipal,
@@ -15,6 +21,8 @@ import {
   listArtifactManifests,
   listWardenCiObservations,
   listJobs,
+  raiseMissionException,
+  transitionMissionTask,
   type AppDb,
 } from "@mendpoint/db";
 import type { ExactDraftObservation } from "@mendpoint/github";
@@ -82,6 +90,53 @@ function fixture() {
   return { db, cycle, job };
 }
 
+function bindMissionAuthority(value: ReturnType<typeof fixture>) {
+  const { db } = value;
+  insertPrincipal(db, { id: "principal-owner", tenantId: "tenant-a", kind: "human",
+    subject: "owner@example.com", displayName: "Owner", createdAt: "2026-08-13T11:58:00.000Z" });
+  db.raw.prepare(`INSERT INTO scm_connections
+    (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+    VALUES ('scm-mission','tenant-a','github','app://1','1','GitHub',?,?)`)
+    .run("2026-08-13T11:58:00.000Z", "2026-08-13T11:58:00.000Z");
+  db.raw.prepare(`INSERT INTO connected_repositories
+    (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
+     environment, retention_days, status, created_at, updated_at)
+    VALUES ('repo-a','tenant-a','scm-mission','101','acme','service','main','main','production',30,'ready',?,?)`)
+    .run("2026-08-13T11:58:00.000Z", "2026-08-13T11:58:00.000Z");
+  db.raw.prepare(`INSERT INTO repository_snapshots
+    (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+     submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+    VALUES ('snapshot-a','tenant-a','repo-a','main',?,?, 'C:\\snapshot','reject','reject','[]',1,?,?)`)
+    .run(sha("a"), digest("b"), "2026-08-13T11:58:00.000Z", "2099-01-01T00:00:00.000Z");
+  createMission(db, { id: "mission-a", tenantId: "tenant-a", product: "fettler",
+    triggerKind: "provider_change", objective: "Repair CI", ownerPrincipalId: "principal-owner",
+    eventId: "mission-a", idempotencyKey: "mission-a", correlationId: "corr",
+    createdAt: "2026-08-13T11:58:00.000Z" });
+  bindMissionScope(db, { tenantId: "tenant-a", missionId: "mission-a", repositoryId: "repo-a",
+    snapshotId: "snapshot-a", actorPrincipalId: "principal-owner", eventId: "scope-a",
+    idempotencyKey: "scope-a", correlationId: "corr", createdAt: "2026-08-13T11:58:00.000Z" });
+  let task = createMissionTask(db, { id: "task-a", tenantId: "tenant-a", missionId: "mission-a",
+    taskType: "code_migration", acceptanceCriteria: "CI passes", risk: "medium",
+    actorPrincipalId: "principal-owner", eventId: "task-a", idempotencyKey: "task-a",
+    correlationId: "corr", createdAt: "2026-08-13T11:58:00.000Z" });
+  for (const to of ["agent_assigned", "agent_working"] as const) {
+    task = transitionMissionTask(db, { tenantId: "tenant-a", taskId: task.id,
+      expectedRevision: task.revision, to, actorPrincipalId: "principal-owner",
+      eventId: `task-a-${to}`, idempotencyKey: `task-a-${to}`, correlationId: "corr",
+      createdAt: "2026-08-13T11:58:00.000Z" });
+  }
+  const authority = createMissionMutationAuthority({ mission: getMission(db, "tenant-a", "mission-a")!,
+    task, repositoryId: "repo-a", snapshotId: "snapshot-a", resolvedSha: sha("a") });
+  db.raw.prepare(`UPDATE fettler_candidate_deliveries SET mission_authority_json = ?
+    WHERE id = 'delivery-a' AND tenant_id = 'tenant-a'`).run(JSON.stringify(authority));
+  db.raw.prepare(`UPDATE fettler_ci_cycles SET mission_authority_json = ?
+    WHERE id = ? AND tenant_id = 'tenant-a'`).run(JSON.stringify(authority), value.cycle.id);
+  db.raw.prepare(`UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = 'tenant-a'`)
+    .run(JSON.stringify({ cycleId: value.cycle.id, deliveryId: "delivery-a",
+      missionId: "mission-a", missionAuthority: authority }), value.job.id);
+  return { ...value, authority, task, job: getJob(db, value.job.id, "tenant-a")! };
+}
+
 afterEach(() => {
   for (const value of opened.splice(0)) {
     value.db.raw.close();
@@ -117,6 +172,28 @@ function observation(state: "success" | "failure" | "running"): ExactDraftObserv
 }
 
 describe("Warden candidate CI observation", () => {
+  it("atomically refuses green completion when evidence persistence introduces a Mission blocker", async () => {
+    vi.mocked(assertDelegatedPrVerificationApprovalAuthority).mockReturnValue(verifiedAuthority);
+    const value = bindMissionAuthority(fixture());
+    const persistEvidence = vi.fn(async (bytes: Uint8Array) => {
+      raiseMissionException(value.db, { tenantId: "tenant-a", missionId: "mission-a", taskId: "task-a",
+        reason: "late_policy_conflict", impact: "Completion is not authorized.",
+        ownerPrincipalId: "principal-owner", resolutionPath: "Resolve the policy conflict.", blocking: true,
+        correlationId: "corr", createdAt: "2026-08-13T12:01:59.000Z" });
+      return { artifactId: "artifact-blocked-a",
+        digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}` };
+    });
+    await expect(runWardenCandidateObservation({ db: value.db, job: value.job,
+      observe: async () => observation("success"), persistEvidence,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:02:00.000Z" }))
+      .rejects.toThrow("mission_mutation_authority_blocked");
+    expect(listWardenCiObservations(value.db, "tenant-a", value.cycle.id)).toHaveLength(0);
+    expect(getJob(value.db, value.job.id, "tenant-a")?.status).toBe("running");
+    expect(getWardenCiCycle(value.db, "tenant-a", value.cycle.id)?.status).toBe("observation_pending");
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("agent_working");
+  });
+
   it("atomically enqueues one exact cleanup handoff after successful checks", async () => {
     vi.mocked(assertDelegatedPrVerificationApprovalAuthority).mockReturnValue(verifiedAuthority);
     const { db, cycle, job } = fixture();

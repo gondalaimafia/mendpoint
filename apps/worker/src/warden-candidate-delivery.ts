@@ -69,7 +69,10 @@ export type WardenCandidateDeliveryWorkerInput = Readonly<{
   beforeRemoteDispatch?: () => void;
 }>;
 
-function parsePayload(job: JobRow): { deliveryId: string; runId: string; missionAuthority: MissionMutationAuthorityV1 | null } {
+function parsePayload(job: JobRow): {
+  deliveryId: string; runId: string; missionId: string | null;
+  missionAuthority: MissionMutationAuthorityV1 | null;
+} {
   let value: unknown;
   try { value = JSON.parse(job.payload_json); } catch { throw new Error("warden_candidate_delivery_payload_invalid"); }
   if (!value || typeof value !== "object") throw new Error("warden_candidate_delivery_payload_invalid");
@@ -78,6 +81,7 @@ function parsePayload(job: JobRow): { deliveryId: string; runId: string; mission
     throw new Error("warden_candidate_delivery_payload_invalid");
   }
   return { deliveryId: record.deliveryId, runId: record.runId,
+    missionId: typeof record.missionId === "string" && record.missionId.trim() ? record.missionId : null,
     missionAuthority: record.missionAuthority === undefined ? null : parseMissionMutationAuthority(record.missionAuthority) };
 }
 
@@ -260,7 +264,10 @@ function classifyFailure(error: unknown): Readonly<{
   return Object.freeze({
     retryable,
     remoteSideEffectUncertain,
-    errorCode: remoteSideEffectUncertain
+    errorCode: !retryable && error instanceof Error &&
+        error.message === "warden_candidate_delivery_mission_authority_upgrade_required"
+      ? error.message
+      : remoteSideEffectUncertain
       ? "warden_candidate_delivery_remote_side_effect_uncertain"
       : retryable
         ? "warden_candidate_delivery_retryable"
@@ -283,7 +290,15 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
     const run = getAgentRun(input.db, payload.runId, input.job.tenant_id);
     if (!run || run.status !== "candidate_approved") throw new Error("warden_candidate_delivery_run_not_approved");
     const claimedMissionId = sourceMissionId(input, run.job_id);
-    if (claimedMissionId && (!payload.missionAuthority || payload.missionAuthority.missionId !== claimedMissionId)) {
+    const authorityBindings = [payload.missionId, claimedMissionId, delivery.missionAuthority?.missionId]
+      .filter((value): value is string => value !== null && value !== undefined);
+    if (authorityBindings.length > 0 && !payload.missionAuthority) {
+      throw new Error("warden_candidate_delivery_mission_authority_upgrade_required");
+    }
+    if (payload.missionAuthority && (!payload.missionId ||
+        authorityBindings.some((missionId) => missionId !== payload.missionAuthority!.missionId) ||
+        (delivery.missionAuthority &&
+          JSON.stringify(delivery.missionAuthority) !== JSON.stringify(payload.missionAuthority)))) {
       throw new Error("warden_candidate_delivery_mission_authority_required");
     }
     if (payload.missionAuthority) assertMissionMutationAuthority(input.db, input.job.tenant_id,
@@ -330,6 +345,12 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
       const completedAt = now();
       input.db.raw.exec("BEGIN IMMEDIATE");
       try {
+        // Settle this job's own remote-mutation fence before changing task
+        // authority. Both writes remain in this transaction, so any later
+        // failure restores the dispatching state for uncertainty handling.
+        if (payload.missionAuthority) settleMissionMutationDispatch(input.db, {
+          tenantId: delivery.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: completedAt,
+        });
         if (payload.missionAuthority && !input.ciReentry) {
           completeAuthorityBoundMissionTask(input.db, input.job, completedAt);
         }
@@ -378,9 +399,6 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
         { workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation })) {
           throw new Error("warden_candidate_delivery_lease_lost");
         }
-        if (payload.missionAuthority) settleMissionMutationDispatch(input.db, {
-          tenantId: delivery.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: completedAt,
-        });
         input.db.raw.exec("COMMIT");
       } catch (error) {
         if (input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");

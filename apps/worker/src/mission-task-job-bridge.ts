@@ -124,13 +124,17 @@ export function bridgeClaimedJobToMissionTask(
   job: BridgedJob,
   createdAt: string,
 ): MissionTask | undefined {
-  const mission = resolveBoundMissionForJob(db, job);
-  if (!mission) return undefined;
-  const agent = missionTaskAgentPrincipal(db, job.tenant_id, createdAt);
   const payload = payloadRecord(job);
   const authority = missionAuthority(payload);
+  const claimedMissionId = textField(payload, "missionId");
+  const mission = resolveBoundMissionForJob(db, job);
+  if (!mission) return undefined;
+  if ((job.type === "warden.candidate.deliver" || job.type === "warden.candidate.update") && !authority) {
+    return undefined;
+  }
+  const agent = missionTaskAgentPrincipal(db, job.tenant_id, createdAt);
   if (authority) {
-    if (authority.missionId !== mission.id || textField(payload, "missionId") !== mission.id) {
+    if (authority.missionId !== mission.id || claimedMissionId !== mission.id) {
       throw new Error("mission_task_job_authority_mismatch");
     }
     const authorized = assertMissionMutationAuthority(db, job.tenant_id, authority, { allowClaimedTask: true });
@@ -247,6 +251,10 @@ export function completeAuthorityBoundMissionTask(
   const payload = payloadRecord(job);
   const authority = missionAuthority(payload);
   if (!authority?.taskId) return undefined;
+  assertMissionMutationAuthority(db, job.tenant_id, authority, {
+    allowClaimedTask: true,
+    requireNoBlocking: true,
+  });
   const task = bridgeClaimedJobToMissionTask(db, job, createdAt);
   if (!task) throw new Error("mission_task_job_completion_task_missing");
   if (task.status === "complete") return task;

@@ -39,13 +39,20 @@ export type WardenCandidateUpdateInput = Readonly<{
   beforeRemoteDispatch?: () => void;
 }>;
 
-function payload(job: JobRow): Readonly<{ cycleId: string; updateId: string; missionAuthority: MissionMutationAuthorityV1 | null }> {
+function payload(job: JobRow): Readonly<{
+  cycleId: string; updateId: string; missionId: string | null;
+  missionAuthority: MissionMutationAuthorityV1 | null;
+}> {
   let value: unknown;
   try { value = JSON.parse(job.payload_json); } catch { throw new Error("warden_ci_update_payload_invalid"); }
   if (!value || typeof value !== "object" || typeof (value as Record<string, unknown>).cycleId !== "string" ||
       typeof (value as Record<string, unknown>).updateId !== "string") throw new Error("warden_ci_update_payload_invalid");
   return Object.freeze({ cycleId: String((value as Record<string, unknown>).cycleId),
     updateId: String((value as Record<string, unknown>).updateId),
+    missionId: typeof (value as Record<string, unknown>).missionId === "string" &&
+        String((value as Record<string, unknown>).missionId).trim()
+      ? String((value as Record<string, unknown>).missionId)
+      : null,
     missionAuthority: (value as Record<string, unknown>).missionAuthority === undefined ? null
       : parseMissionMutationAuthority((value as Record<string, unknown>).missionAuthority) });
 }
@@ -139,7 +146,15 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
     throw new Error("warden_ci_update_run_invalid");
   }
   const claimedMissionId = sourceMissionId(input.db, cycle.tenantId, run.job_id);
-  if (claimedMissionId && (!parsed.missionAuthority || parsed.missionAuthority.missionId !== claimedMissionId)) {
+  const authorityBindings = [parsed.missionId, claimedMissionId, update.missionAuthority?.missionId,
+    cycle.missionAuthority?.missionId].filter((value): value is string => value !== null && value !== undefined);
+  if (authorityBindings.length > 0 && !parsed.missionAuthority) {
+    throw new Error("warden_ci_update_mission_authority_upgrade_required");
+  }
+  if (parsed.missionAuthority && (!parsed.missionId ||
+      authorityBindings.some((missionId) => missionId !== parsed.missionAuthority!.missionId) ||
+      (update.missionAuthority && JSON.stringify(update.missionAuthority) !== JSON.stringify(parsed.missionAuthority)) ||
+      (cycle.missionAuthority && JSON.stringify(cycle.missionAuthority) !== JSON.stringify(parsed.missionAuthority)))) {
     throw new Error("warden_ci_update_mission_authority_required");
   }
   const assertMutationAuthority = () => {

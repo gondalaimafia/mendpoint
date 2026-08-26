@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { AppDb } from "./index.js";
+import { revokePendingMissionMutationDispatches } from "./mission-mutation-dispatch-fence.js";
 import { appendDomainEvent } from "./trust.js";
 
 // Shared Mission Task engine (spec §6.8). A MissionTask is the single work
@@ -197,6 +198,7 @@ export function transitionMissionTask(db: AppDb, input: {
     if (current.revision !== input.expectedRevision) throw new Error("mission_task_revision_conflict");
     if (current.status === input.to) { if (owns) db.raw.exec("COMMIT"); return hydrate(current); }
     if (!transitions[current.status].includes(input.to)) throw new Error("mission_task_transition_invalid");
+    revokePendingMissionMutationDispatches(db, input.tenantId, current.mission_id, input.createdAt);
     const ownerType = ownerForStatus(input.to, current.owner_type);
     const assigned = input.assignedPrincipalId ?? current.assigned_principal_id;
     const handoffReason = input.handoffReason ?? current.handoff_reason;
