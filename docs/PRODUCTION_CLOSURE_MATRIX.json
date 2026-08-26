@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "canonicalRegister": {
     "path": "docs/PRODUCT_REQUIREMENTS.json",
     "includeAdditionalRegisterSets": true
@@ -13,8 +13,13 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
-      "pullRequests": [],
+      "issues": [
+        430
+      ],
+      "pullRequests": [
+        478,
+        481
+      ],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
     },
@@ -26,7 +31,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        430
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -39,7 +46,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        430
+      ],
       "pullRequests": [
         337
       ],
@@ -54,7 +63,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        430
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -67,7 +78,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        430
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -80,7 +93,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        430
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -93,7 +108,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        430
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -106,7 +123,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        430
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -119,7 +138,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        430
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -132,9 +153,10 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        430
+      ],
       "pullRequests": [
-        284,
         337
       ],
       "testEvidenceIds": [],
@@ -148,7 +170,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-ING-001-AC01-EV01",
@@ -180,7 +204,9 @@
         "availability": "experimental",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-ING-003-AC01-EV01",
@@ -197,7 +223,9 @@
         "availability": "experimental",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-ING-004-AC01-EV01"
@@ -227,7 +255,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-ING-006-AC01-EV01"
@@ -274,7 +304,9 @@
         "availability": "experimental",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-ING-009-AC01-EV01",
@@ -320,7 +352,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        432
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-SCM-003-AC01-EV01",
@@ -339,7 +373,9 @@
         "availability": "experimental",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        432
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-SCM-004-AC01-EV01"
@@ -369,7 +405,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        432
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-SCM-006-AC01-EV01"
@@ -384,7 +422,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [
         384,
         388,
@@ -405,7 +445,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-GRF-002-AC01-EV01"
@@ -437,7 +479,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-GRF-004-AC01-EV01"
@@ -452,7 +496,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-GRF-005-AC01-EV01",
@@ -468,7 +514,9 @@
         "availability": "experimental",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [
         388,
         395
@@ -486,7 +534,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-GRF-007-AC01-EV01"
@@ -501,7 +551,9 @@
         "availability": "experimental",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [
         331
       ],
@@ -519,7 +571,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [
         395,
         401
@@ -538,7 +592,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-WAR-002-AC01-EV01",
@@ -571,7 +627,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        433
+      ],
       "pullRequests": [
         330,
         381,
@@ -591,7 +649,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [
         379
       ],
@@ -609,7 +669,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        433
+      ],
       "pullRequests": [
         381,
         403,
@@ -667,7 +729,9 @@
         "availability": "experimental",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        433
+      ],
       "pullRequests": [
         395
       ],
@@ -685,7 +749,9 @@
         "availability": "planned",
         "claimState": "roadmap_only"
       },
-      "issues": [],
+      "issues": [
+        433
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -698,7 +764,9 @@
         "availability": "experimental",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        434
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-TRN-001-AC01-EV01"
@@ -713,7 +781,9 @@
         "availability": "experimental",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        434
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-TRN-002-AC01-EV01"
@@ -729,6 +799,7 @@
         "claimState": "internal_only"
       },
       "issues": [
+        350,
         361
       ],
       "pullRequests": [
@@ -768,6 +839,7 @@
         "claimState": "experimental_only"
       },
       "issues": [
+        350,
         361
       ],
       "pullRequests": [
@@ -787,7 +859,9 @@
         "availability": "experimental",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        435
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-TRN-006-AC01-EV01",
@@ -824,7 +898,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        435
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-TRN-008-AC01-EV01",
@@ -840,7 +916,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        434
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-TRN-009-AC01-EV01",
@@ -857,7 +935,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        434
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-TRN-010-AC01-EV01",
@@ -890,6 +970,7 @@
         "claimState": "experimental_only"
       },
       "issues": [
+        350,
         361
       ],
       "pullRequests": [
@@ -1005,6 +1086,7 @@
         "claimState": "experimental_only"
       },
       "issues": [
+        350,
         361
       ],
       "pullRequests": [
@@ -1039,7 +1121,9 @@
         "availability": "experimental",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        436
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-RTR-008-AC01-EV01"
@@ -1055,6 +1139,7 @@
         "claimState": "internal_only"
       },
       "issues": [
+        350,
         361
       ],
       "pullRequests": [
@@ -1074,7 +1159,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        437
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-ENT-001-AC01-EV01",
@@ -1090,7 +1177,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        437
+      ],
       "pullRequests": [
         394,
         396
@@ -1110,7 +1199,8 @@
         "claimState": "experimental_only"
       },
       "issues": [
-        351
+        351,
+        438
       ],
       "pullRequests": [
         358
@@ -1130,7 +1220,8 @@
         "claimState": "experimental_only"
       },
       "issues": [
-        351
+        351,
+        438
       ],
       "pullRequests": [
         358
@@ -1149,7 +1240,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        438
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-ENT-005-AC01-EV01",
@@ -1165,7 +1258,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        438
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-ENT-006-AC01-EV01"
@@ -1181,7 +1276,8 @@
         "claimState": "internal_only"
       },
       "issues": [
-        351
+        351,
+        438
       ],
       "pullRequests": [
         358
@@ -1199,7 +1295,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        438
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-ENT-008-AC01-EV01"
@@ -1214,7 +1312,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        438
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-ENT-009-AC01-EV01",
@@ -1230,7 +1330,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        438
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-ENT-010-AC01-EV01"
@@ -1245,7 +1347,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        438
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-ENT-011-AC01-EV01"
@@ -1260,7 +1364,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        438
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-ENT-012-AC01-EV01"
@@ -1309,7 +1415,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        439
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-COM-003-AC01-EV02"
@@ -1391,7 +1499,9 @@
         "availability": "planned",
         "claimState": "roadmap_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -1404,7 +1514,9 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [],
       "testEvidenceIds": [
         "ME-FET-016-AC01-EV02",
@@ -1420,8 +1532,13 @@
         "availability": "experimental",
         "claimState": "experimental_only"
       },
-      "issues": [],
-      "pullRequests": [],
+      "issues": [
+        431
+      ],
+      "pullRequests": [
+        427,
+        440
+      ],
       "testEvidenceIds": [
         "ME-FET-017-AC01-EV02"
       ],
@@ -1435,9 +1552,13 @@
         "availability": "planned",
         "claimState": "roadmap_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [
-        401
+        401,
+        427,
+        440
       ],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -1450,7 +1571,9 @@
         "availability": "planned",
         "claimState": "roadmap_only"
       },
-      "issues": [],
+      "issues": [
+        434
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -1463,7 +1586,9 @@
         "availability": "planned",
         "claimState": "roadmap_only"
       },
-      "issues": [],
+      "issues": [
+        434
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -1476,7 +1601,9 @@
         "availability": "planned",
         "claimState": "roadmap_only"
       },
-      "issues": [],
+      "issues": [
+        434
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -1489,7 +1616,9 @@
         "availability": "planned",
         "claimState": "roadmap_only"
       },
-      "issues": [],
+      "issues": [
+        434
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -1502,7 +1631,9 @@
         "availability": "planned",
         "claimState": "roadmap_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -1515,10 +1646,13 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        430
+      ],
       "pullRequests": [
         415,
-        416
+        416,
+        440
       ],
       "testEvidenceIds": [
         "ME-MSN-001-AC01-EV02"
@@ -1533,7 +1667,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        430
+      ],
       "pullRequests": [
         418,
         419,
@@ -1553,7 +1689,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        430
+      ],
       "pullRequests": [
         383,
         402,
@@ -1578,7 +1716,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        435
+      ],
       "pullRequests": [
         383,
         390,
@@ -1603,7 +1743,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        436
+      ],
       "pullRequests": [
         377
       ],
@@ -1620,7 +1762,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        350
+      ],
       "pullRequests": [
         379,
         400,
@@ -1639,11 +1783,14 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        430
+      ],
       "pullRequests": [
         416,
         420,
-        421
+        421,
+        440
       ],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -1656,7 +1803,9 @@
         "availability": "internal",
         "claimState": "internal_only"
       },
-      "issues": [],
+      "issues": [
+        431
+      ],
       "pullRequests": [
         331,
         337
@@ -1665,13 +1814,280 @@
       "productionEvidenceIds": []
     }
   ],
+  "productionEvidenceAuthority": null,
+  "issueAuthority": {
+    "provider": "github",
+    "repository": "gondalaimafia/mendpoint",
+    "observedAt": "2026-08-26T04:06:40.824Z",
+    "observationDigest": "sha256:29d74e2d40365bdbbeea9bd297e148129267d1843bddb5d4edc211469a1bb5e1",
+    "issues": [
+      {
+        "number": 350,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Make ReGauge production activation and DeepSeek proof exact",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/350",
+        "updatedAt": "2026-08-26T03:04:09.000Z",
+        "requirementIds": [
+          "ME-PEV-001",
+          "ME-RTR-006",
+          "ME-RTR-009",
+          "ME-TRN-003",
+          "ME-TRN-005",
+          "ME-TRN-012"
+        ]
+      },
+      {
+        "number": 351,
+        "state": "closed",
+        "owner": "gondalaimafia",
+        "title": "Harden audit export, public request limits, and production backup automation",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/351",
+        "updatedAt": "2026-08-25T11:03:49.000Z",
+        "requirementIds": [
+          "ME-ENT-003",
+          "ME-ENT-004",
+          "ME-ENT-007"
+        ]
+      },
+      {
+        "number": 361,
+        "state": "closed",
+        "owner": "gondalaimafia",
+        "title": "Make ReGauge DeepSeek advisory dispatch durable and authority-bound",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/361",
+        "updatedAt": "2026-08-25T10:19:23.000Z",
+        "requirementIds": [
+          "ME-RTR-006",
+          "ME-RTR-009",
+          "ME-TRN-003",
+          "ME-TRN-005",
+          "ME-TRN-012"
+        ]
+      },
+      {
+        "number": 430,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Production closure FC 00: foundational specification and release boundaries",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/430",
+        "updatedAt": "2026-08-26T03:04:12.000Z",
+        "requirementIds": [
+          "ME-FND-001",
+          "ME-FND-002",
+          "ME-FND-003",
+          "ME-FND-004",
+          "ME-FND-005",
+          "ME-FND-006",
+          "ME-FND-007",
+          "ME-FND-008",
+          "ME-FND-009",
+          "ME-FND-010",
+          "ME-MCC-001",
+          "ME-MSN-001",
+          "ME-MSN-002",
+          "ME-MSN-003"
+        ]
+      },
+      {
+        "number": 431,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Production closure FC 03: ingestion and Change Graph maturity",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/431",
+        "updatedAt": "2026-08-26T03:04:14.000Z",
+        "requirementIds": [
+          "ME-CGR-001",
+          "ME-FET-015",
+          "ME-FET-016",
+          "ME-FET-017",
+          "ME-FET-018",
+          "ME-GRF-001",
+          "ME-GRF-002",
+          "ME-GRF-004",
+          "ME-GRF-005",
+          "ME-GRF-006",
+          "ME-GRF-007",
+          "ME-GRF-008",
+          "ME-ING-001",
+          "ME-ING-003",
+          "ME-ING-004",
+          "ME-ING-006",
+          "ME-ING-009",
+          "ME-SXT-001",
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005"
+        ]
+      },
+      {
+        "number": 432,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Production closure FC 02: GitHub and GitLab production lifecycle",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/432",
+        "updatedAt": "2026-08-25T11:03:53.000Z",
+        "requirementIds": [
+          "ME-SCM-003",
+          "ME-SCM-004",
+          "ME-SCM-006"
+        ]
+      },
+      {
+        "number": 433,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Production closure FC 04: Fettler customer proof",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/433",
+        "updatedAt": "2026-08-26T03:04:16.000Z",
+        "requirementIds": [
+          "ME-WAR-004",
+          "ME-WAR-006",
+          "ME-WAR-009",
+          "ME-WAR-010"
+        ]
+      },
+      {
+        "number": 434,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Production closure FC 05: ReGauge objective and graph planning",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/434",
+        "updatedAt": "2026-08-25T11:03:56.000Z",
+        "requirementIds": [
+          "ME-REG-015",
+          "ME-REG-016",
+          "ME-REG-017",
+          "ME-REG-018",
+          "ME-TRN-001",
+          "ME-TRN-002",
+          "ME-TRN-009",
+          "ME-TRN-010"
+        ]
+      },
+      {
+        "number": 435,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Production closure FC 06: staged ReGauge delivery and rollback",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/435",
+        "updatedAt": "2026-08-26T03:04:18.000Z",
+        "requirementIds": [
+          "ME-MTE-001",
+          "ME-TRN-006",
+          "ME-TRN-008"
+        ]
+      },
+      {
+        "number": 436,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Production closure FC 08: governed adapter lifecycle",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/436",
+        "updatedAt": "2026-08-25T09:23:14.000Z",
+        "requirementIds": [
+          "ME-OMM-001",
+          "ME-RTR-008"
+        ]
+      },
+      {
+        "number": 437,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Production closure FC 01: production human identity",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/437",
+        "updatedAt": "2026-08-25T09:23:17.000Z",
+        "requirementIds": [
+          "ME-ENT-001",
+          "ME-ENT-002"
+        ]
+      },
+      {
+        "number": 438,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Production closure FC 10: reliability, recovery, VPC, and compliance",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/438",
+        "updatedAt": "2026-08-25T09:20:08.000Z",
+        "requirementIds": [
+          "ME-ENT-003",
+          "ME-ENT-004",
+          "ME-ENT-005",
+          "ME-ENT-006",
+          "ME-ENT-007",
+          "ME-ENT-008",
+          "ME-ENT-009",
+          "ME-ENT-010",
+          "ME-ENT-011",
+          "ME-ENT-012"
+        ]
+      },
+      {
+        "number": 439,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Production closure FC 09: billing and invoice export",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/439",
+        "updatedAt": "2026-08-25T11:04:01.000Z",
+        "requirementIds": [
+          "ME-COM-003"
+        ]
+      },
+      {
+        "number": 482,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Repair production configuration authority after #479",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/482",
+        "updatedAt": "2026-08-26T04:04:28.000Z",
+        "requirementIds": []
+      },
+      {
+        "number": 483,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Correct failure mode authority guidance after #480",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/483",
+        "updatedAt": "2026-08-26T04:04:40.000Z",
+        "requirementIds": []
+      }
+    ]
+  },
   "releaseTrain": {
-    "observedAt": "2026-08-25T02:57:03.6044314Z",
-    "observedMainRevision": "cc21717080a7c6a940ff7837d034ec45c0797a9b",
+    "provider": "github",
+    "repository": "gondalaimafia/mendpoint",
+    "observedAt": "2026-08-26T04:06:40.824Z",
+    "observedMainRevision": "d5c49b9c577236474ed83364917e3a66c055f80f",
+    "observationDigest": "sha256:0020fa32bddc247155235cb2f0b2e7ab16e3c17b1ded701534d1c047c3a3c400",
     "ownershipAuthority": "provisional_branch_prefix_only",
-    "openPullRequests": [
+    "currentPullRequestBootstrap": {
+      "observationSource": "github_api",
+      "number": 481,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/481",
+      "title": "Promote production closure matrix to v2",
+      "baseBranch": "main",
+      "headBranch": "codex/production-matrix-v2-app",
+      "owner": {
+        "actor": "Codex",
+        "source": "github_label",
+        "label": "release-owner:codex"
+      },
+      "disposition": "merge_after_rebase_and_review",
+      "dependencies": {
+        "pullRequests": [],
+        "branches": []
+      },
+      "requirementIds": [
+        "ME-FND-001"
+      ],
+      "blockers": [],
+      "remediatesPullRequests": []
+    },
+    "pullRequests": [
       {
         "number": 284,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/284",
         "title": "Make the public claims gate able to fail",
         "headBranch": "claude/claims-gate-drift",
         "baseBranch": "main",
@@ -1682,18 +2098,35 @@
         },
         "disposition": "extract_smaller_replacement",
         "dependencies": {
-          "pullRequests": [],
+          "pullRequests": [
+            461
+          ],
           "branches": []
         },
         "requirementIds": [
-          "ME-FND-010",
           "ME-GTM-003"
         ],
-        "checkState": "conflicting",
+        "checkState": "behind",
+        "headRevision": "b096e03c5b67d7b344a2bd8a2b79441323e11710",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 330,
+        "state": "closed",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/330",
         "title": "Finish verifier evidence and delegated draft cleanup",
         "headBranch": "codex/non-regauge-inventory-20260822",
         "baseBranch": "main",
@@ -1702,44 +2135,37 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "superseded",
         "dependencies": {
-          "pullRequests": [
-            387
-          ],
+          "pullRequests": [],
           "branches": []
         },
         "requirementIds": [
+          "ME-RTR-006",
           "ME-WAR-004",
-          "ME-WAR-008",
-          "ME-RTR-006"
+          "ME-WAR-008"
         ],
-        "checkState": "conflicting",
-        "blockers": [
-          {
-            "priority": "P1",
-            "summary": "authorizeActor is tautological instead of a durable authorization reread"
-          },
-          {
-            "priority": "P1",
-            "summary": "repository excerpt refusal states collapse into one result"
-          },
-          {
-            "priority": "P1",
-            "summary": "critical evidence joins lack negative deletion tests"
-          },
-          {
-            "priority": "P1",
-            "summary": "the evidence digest is not independently recomputed"
-          },
-          {
-            "priority": "P2",
-            "summary": "allowed-tenant and retain-exact paths lack direct tests"
-          }
-        ]
+        "checkState": "stale_checks",
+        "headRevision": "3c58e6c2dc04804c94f199d80403f686a74c36a0",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
       },
       {
         "number": 331,
+        "state": "closed",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/331",
         "title": "Add pinned Graphify process evaluator",
         "headBranch": "codex/graphify-process-benchmark-20260822",
         "baseBranch": "main",
@@ -1748,20 +2174,36 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "superseded",
         "dependencies": {
           "pullRequests": [],
           "branches": []
         },
         "requirementIds": [
-          "ME-SXT-001",
-          "ME-GRF-008"
+          "ME-GRF-008",
+          "ME-SXT-001"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "6fe093b1272df0016ff2c8e1f2c0d0c4a87991a1",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 333,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/333",
         "title": "Refresh public documentation evidence",
         "headBranch": "codex/public-docs-drift-20260822",
         "baseBranch": "main",
@@ -1770,7 +2212,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -1778,11 +2220,27 @@
         "requirementIds": [
           "ME-GTM-003"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "4a49bd28774606cfcd5c242c00e50de80af89995",
+        "mergeRevision": "b3279db5157a2a33c8684f1cf595356953ff2a96",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 337,
+        "state": "closed",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/337",
         "title": "Promote production runtime profiles",
         "headBranch": "codex/production-only-promotion-20260822",
         "baseBranch": "main",
@@ -1791,7 +2249,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "extract_smaller_replacement",
+        "disposition": "superseded",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -1799,40 +2257,31 @@
         "requirementIds": [
           "ME-FND-003",
           "ME-FND-010",
-          "ME-TRN-013",
+          "ME-GTM-003",
           "ME-SXT-001",
-          "ME-GTM-003"
+          "ME-TRN-013"
         ],
-        "checkState": "conflicting",
-        "blockers": [
-          {
-            "priority": "P1",
-            "summary": "the branch regresses sandbox renewal alerting and fail-closed validation"
-          },
-          {
-            "priority": "P1",
-            "summary": "the dedicated ReGauge hostname and boot profile contradict each other"
-          },
-          {
-            "priority": "P1",
-            "summary": "the branch combines real SCM, polling, external processing, seed removal, and capacity changes"
-          },
-          {
-            "priority": "P1",
-            "summary": "authorizeActor is tautological instead of a durable authorization reread"
-          },
-          {
-            "priority": "P1",
-            "summary": "repository excerpt refusal states collapse into one result"
-          },
-          {
-            "priority": "P2",
-            "summary": "an obsolete test entrypoint can skip script gates"
-          }
-        ]
+        "checkState": "stale_checks",
+        "headRevision": "3dadb982855497ecab0c5673287726274b5f0b06",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
       },
       {
         "number": 358,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/358",
         "title": "Harden public inputs and automate customer backups",
         "headBranch": "codex/351-platform-hardening",
         "baseBranch": "main",
@@ -1841,7 +2290,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -1851,11 +2300,27 @@
           "ME-ENT-004",
           "ME-ENT-007"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "d4f700b515ee472f6d80f4da479406944a17fa3d",
+        "mergeRevision": "a841ee13121a9bc35d1f4785b6a72445508218cc",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 377,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/377",
         "title": "db: mint organization-memory observation evidence on the live path",
         "headBranch": "cursor/org-memory-observation-producer-f457",
         "baseBranch": "main",
@@ -1864,7 +2329,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -1873,10 +2338,26 @@
           "ME-OMM-001"
         ],
         "checkState": "stale_checks",
+        "headRevision": "2d6d3e55b2d2f0de0832d05bbc8fdd052af0dea7",
+        "mergeRevision": "383581d9ccea5d340bed6d5230651f4ca3216fc7",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 379,
+        "state": "closed",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/379",
         "title": "pipeline: enforce the inherited Policy Envelope at campaign execute",
         "headBranch": "cursor/mission-policy-campaign-dispatch-f457",
         "baseBranch": "main",
@@ -1885,22 +2366,36 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "superseded",
         "dependencies": {
-          "pullRequests": [
-            372
-          ],
+          "pullRequests": [],
           "branches": []
         },
         "requirementIds": [
           "ME-PEV-001",
           "ME-WAR-005"
         ],
-        "checkState": "checks_running",
+        "checkState": "stale_checks",
+        "headRevision": "24780a40a08fde5b5d4c0dd865aa74c6071a9c89",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 381,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/381",
         "title": "pipeline: skip Fettler edits a Mission already rejected (FET-021)",
         "headBranch": "cursor/fettler-decision-avoidance-f457",
         "baseBranch": "main",
@@ -1909,12 +2404,9 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            372,
-            379
-          ],
+          "pullRequests": [],
           "branches": []
         },
         "requirementIds": [
@@ -1922,10 +2414,26 @@
           "ME-WAR-006"
         ],
         "checkState": "stale_checks",
+        "headRevision": "2bfc006c7dd9eba173634337e146f33c246b9fe5",
+        "mergeRevision": "c26e57e1a5d1826e5d6daa34abde0587bad7dbba",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 383,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/383",
         "title": "db: drive agent-human-agent handoff through MissionTask and resume standing",
         "headBranch": "cursor/mission-task-handoff-resume-f457",
         "baseBranch": "main",
@@ -1934,22 +2442,36 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            374
-          ],
+          "pullRequests": [],
           "branches": []
         },
         "requirementIds": [
-          "ME-MTE-001",
-          "ME-MSN-003"
+          "ME-MSN-003",
+          "ME-MTE-001"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "a1a202883e6e382916302724cf896c8fcc6f344b",
+        "mergeRevision": "f45b154a8ff8b641119f6a3051d773465c5c2796",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 384,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/384",
         "title": "graph-learn: ingest DEPENDS_ON from package manifests",
         "headBranch": "cursor/depends-on-manifest-ingest-f457",
         "baseBranch": "main",
@@ -1958,7 +2480,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -1967,24 +2489,27 @@
           "ME-GRF-001",
           "ME-GRF-003"
         ],
-        "checkState": "checks_running",
-        "blockers": [
-          {
-            "priority": "P1",
-            "summary": "an unrelated service dependency can open MigrationUnit readiness vacuously"
-          },
-          {
-            "priority": "P1",
-            "summary": "global service-name identifiers can clobber provider and cross-tenant nodes"
-          },
-          {
-            "priority": "P2",
-            "summary": "missing, malformed, and unparseable inputs collapse and discard dependency provenance"
-          }
-        ]
+        "checkState": "stale_checks",
+        "headRevision": "bf9c1247bab5bd245aa527c9a4597366146ee5b7",
+        "mergeRevision": "c7be8d3d75999943409ba315caa4a66c5fe854be",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
       },
       {
         "number": 387,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/387",
         "title": "Make ReGauge advisory verification durable in production",
         "headBranch": "codex/361-deepseek-advisory-clean",
         "baseBranch": "main",
@@ -1993,36 +2518,39 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
           "pullRequests": [],
           "branches": []
         },
         "requirementIds": [
+          "ME-RTR-006",
+          "ME-RTR-009",
           "ME-TRN-003",
           "ME-TRN-005",
-          "ME-TRN-012",
-          "ME-RTR-006",
-          "ME-RTR-009"
+          "ME-TRN-012"
         ],
-        "checkState": "conflicting",
-        "blockers": [
-          {
-            "priority": "P1",
-            "summary": "the workflow creates an unscoped envelope before requiring exact repository and branch binding"
-          },
-          {
-            "priority": "P1",
-            "summary": "consent can be reconstructed after processing instead of being durable before egress"
-          },
-          {
-            "priority": "P1",
-            "summary": "an ambiguous post-response crash can reissue provider work without idempotency or reconciliation"
-          }
-        ]
+        "checkState": "stale_checks",
+        "headRevision": "7d06a39804903b34c5f9c425b550a69df712aa1b",
+        "mergeRevision": "d36aefc8766c7e3955f6fd7e7d298fef10c8c473",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
       },
       {
         "number": 388,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/388",
         "title": "graph-learn: ingest PRESERVES_INVARIANT from source annotations",
         "headBranch": "cursor/preserves-invariant-ingest-f457",
         "baseBranch": "main",
@@ -2031,7 +2559,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -2040,36 +2568,27 @@
           "ME-GRF-001",
           "ME-GRF-006"
         ],
-        "checkState": "behind",
-        "blockers": [
-          {
-            "priority": "P1",
-            "summary": "source comments can be surfaced as verified invariants"
-          },
-          {
-            "priority": "P1",
-            "summary": "exact and heuristic invariant evidence are indistinguishable"
-          },
-          {
-            "priority": "P1",
-            "summary": "a natural in-function comment can bind to a later declaration"
-          },
-          {
-            "priority": "P1",
-            "summary": "a tenant-wide gate can report complete with zero annotations"
-          },
-          {
-            "priority": "P1",
-            "summary": "symbol properties can be overwritten"
-          },
-          {
-            "priority": "P2",
-            "summary": "malformed or unbound evidence is silently discarded and the ADR overstates adjacency"
-          }
-        ]
+        "checkState": "stale_checks",
+        "headRevision": "0ec7eb9413cfbc6b8df82d00b692385c0a0633ef",
+        "mergeRevision": "caa84a0fb8f442b827dd6112663050547651f64c",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
       },
       {
         "number": 390,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/390",
         "title": "worker: bridge claimed jobs onto MissionTask and attribute Fettler MCU",
         "headBranch": "cursor/job-mission-task-mcu-bridge-f457",
         "baseBranch": "main",
@@ -2078,26 +2597,38 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            383
-          ],
-          "branches": [
-            "cursor/mission-task-handoff-resume-f457"
-          ]
+          "pullRequests": [],
+          "branches": []
         },
         "requirementIds": [
-          "ME-MTE-001",
           "ME-COM-001",
           "ME-COM-002",
-          "ME-COM-004"
+          "ME-COM-004",
+          "ME-MTE-001"
         ],
         "checkState": "stale_checks",
+        "headRevision": "c3f846a485aecc8a2ce7f83755a02b6f1bbc1a72",
+        "mergeRevision": "13199d739d75e0abb45052157b327edd105d35c6",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 394,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/394",
         "title": "api: fail closed on /graph-learn when no tenant Change Graph handle exists",
         "headBranch": "cursor/api-graph-handle-f457",
         "baseBranch": "main",
@@ -2106,22 +2637,36 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            397
-          ],
+          "pullRequests": [],
           "branches": []
         },
         "requirementIds": [
-          "ME-GRF-001",
-          "ME-ENT-002"
+          "ME-ENT-002",
+          "ME-GRF-001"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "66524ce91d85e6df27f6b3cbb23b33a431f849e4",
+        "mergeRevision": "c9c5204cbcda5cb4bb614059677ed0dd569c94fa",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 395,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/395",
         "title": "api: distinguish verified no-impact from unknown coverage on the change report",
         "headBranch": "cursor/change-impact-coverage-f457",
         "baseBranch": "main",
@@ -2130,11 +2675,9 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            394
-          ],
+          "pullRequests": [],
           "branches": []
         },
         "requirementIds": [
@@ -2142,11 +2685,27 @@
           "ME-WAR-001",
           "ME-WAR-009"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "c56d35b7c40a743c9581092a56af7a0f2eb280be",
+        "mergeRevision": "4ab7ea7ed7ff2334167f2636eed40b2058304a8e",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 396,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/396",
         "title": "sdk: fail closed when createPlatform has no tenant Change Graph handle",
         "headBranch": "cursor/sdk-graph-handle-f457",
         "baseBranch": "main",
@@ -2155,24 +2714,36 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            394
-          ],
-          "branches": [
-            "cursor/api-graph-handle-f457"
-          ]
+          "pullRequests": [],
+          "branches": []
         },
         "requirementIds": [
-          "ME-GRF-001",
-          "ME-ENT-002"
+          "ME-ENT-002",
+          "ME-GRF-001"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "8c7a923a9b74d8af4aa2020989e481ed727e0139",
+        "mergeRevision": "8ce4be4ccf1b45dee81f2b4d814215592bffef52",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 400,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/400",
         "title": "policy: bind the default envelope on ReGauge Surface A campaign create",
         "headBranch": "cursor/regauge-control-plane-policy-bind-f457",
         "baseBranch": "main",
@@ -2181,24 +2752,36 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            372
-          ],
-          "branches": [
-            "cursor/public-claims-live-refresh-f457"
-          ]
+          "pullRequests": [],
+          "branches": []
         },
         "requirementIds": [
           "ME-PEV-001",
           "ME-TRN-003"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "ef1540382654d90ed4f4ef690cc3bea6c13eaf09",
+        "mergeRevision": "3ecf74f98a5ad01d1e3979fdec369244623c5a06",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 401,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/401",
         "title": "pipeline: stamp FET-018 raw_retrieval when analyzeImpact is the impact path",
         "headBranch": "cursor/fet-018-raw-retrieval-stamp-f457",
         "baseBranch": "main",
@@ -2207,24 +2790,36 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            392
-          ],
-          "branches": [
-            "cursor/fettler-graph-authority-f457"
-          ]
+          "pullRequests": [],
+          "branches": []
         },
         "requirementIds": [
           "ME-FET-018",
           "ME-WAR-001"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "6e5575816c9f3800698f3b66a4a2109591d5580d",
+        "mergeRevision": "40fc949aef9ef4c04c39b3b646a42b476e9eebdc",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 402,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/402",
         "title": "regauge: bind the Mission on HTTP POST /missions/:id/launch",
         "headBranch": "cursor/regauge-http-launch-mission-bind-f457",
         "baseBranch": "main",
@@ -2233,24 +2828,36 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            374
-          ],
-          "branches": [
-            "cursor/public-claims-live-refresh-f457"
-          ]
+          "pullRequests": [],
+          "branches": []
         },
         "requirementIds": [
           "ME-MSN-003",
           "ME-TRN-003"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "c2074295af70aee5d72274e3c3646010034ea847",
+        "mergeRevision": "0773c61b2666e862fe207dfb3b2a11c6b6d0e99a",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 403,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/403",
         "title": "worker: pin Fettler trajectories to a bound Mission when the job claims one",
         "headBranch": "cursor/fettler-trajectory-mission-id-f457",
         "baseBranch": "main",
@@ -2259,22 +2866,36 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            385
-          ],
+          "pullRequests": [],
           "branches": []
         },
         "requirementIds": [
           "ME-MSN-003",
           "ME-WAR-006"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "68e17579f05fdf6460b756335aac748299306231",
+        "mergeRevision": "20877f844ac9898420281847b46a2f082d78a2ee",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 404,
+        "state": "closed",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/404",
         "title": "regauge: create unassigned MissionTasks when a campaign launches",
         "headBranch": "cursor/regauge-launch-mission-task-f457",
         "baseBranch": "main",
@@ -2283,23 +2904,36 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "superseded",
         "dependencies": {
-          "pullRequests": [
-            374,
-            369
-          ],
+          "pullRequests": [],
           "branches": []
         },
         "requirementIds": [
           "ME-MTE-001",
           "ME-TRN-003"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "00da6eb28d535b25d840e141622dc3480bc65d22",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 407,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/407",
         "title": "worker: drive ReGauge MissionTasks on the live pilot-lane claim",
         "headBranch": "cursor/regauge-pilot-mission-task-claim-f457",
         "baseBranch": "main",
@@ -2308,30 +2942,37 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            404
-          ],
-          "branches": [
-            "cursor/regauge-launch-mission-task-f457"
-          ]
+          "pullRequests": [],
+          "branches": []
         },
         "requirementIds": [
           "ME-MTE-001",
           "ME-TRN-003",
           "ME-TRN-007"
         ],
-        "checkState": "conflicting",
-        "blockers": [
-          {
-            "priority": "P2",
-            "summary": "the active pull request and ADR still name the production execution path as a pilot lane"
-          }
-        ]
+        "checkState": "stale_checks",
+        "headRevision": "e05867b21d8f46db01fa88ff996d55e8ad793495",
+        "mergeRevision": "bdec80374478cd836e697a468239d156c220d21d",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
       },
       {
         "number": 408,
+        "state": "closed",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/408",
         "title": "api: create unassigned MissionTasks when a Fettler campaign enrolls",
         "headBranch": "cursor/fettler-enroll-mission-task-f457",
         "baseBranch": "main",
@@ -2340,23 +2981,36 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "superseded",
         "dependencies": {
-          "pullRequests": [
-            374,
-            385
-          ],
+          "pullRequests": [],
           "branches": []
         },
         "requirementIds": [
           "ME-MTE-001",
           "ME-WAR-006"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "5c916b67c1afeccc6aca6354ccbd077fb1d21762",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 409,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/409",
         "title": "worker: drive Fettler MissionTasks on the campaign-execute claim",
         "headBranch": "cursor/fettler-execute-mission-task-claim-f457",
         "baseBranch": "main",
@@ -2365,24 +3019,36 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            408
-          ],
-          "branches": [
-            "cursor/fettler-enroll-mission-task-f457"
-          ]
+          "pullRequests": [],
+          "branches": []
         },
         "requirementIds": [
           "ME-MTE-001",
           "ME-WAR-006"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "e389bfbcab0b63592c50b6060fbe93c8a378f128",
+        "mergeRevision": "890e4a87a7ec46329f0c01410d090f53a00fb29f",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 410,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/410",
         "title": "worker: hand Fettler MissionTasks to review after campaign execute",
         "headBranch": "cursor/fettler-execute-mission-task-review-f457",
         "baseBranch": "main",
@@ -2391,25 +3057,37 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            409
-          ],
-          "branches": [
-            "cursor/fettler-execute-mission-task-claim-f457"
-          ]
+          "pullRequests": [],
+          "branches": []
         },
         "requirementIds": [
           "ME-MTE-001",
           "ME-WAR-004",
           "ME-WAR-006"
         ],
-        "checkState": "conflicting",
+        "checkState": "stale_checks",
+        "headRevision": "f5dc3fe88319233f6515c0879c8e1f9b8758f1d0",
+        "mergeRevision": "b079b3b46de0ebe36a8549c8cdc469d251c7c967",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 413,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/413",
         "title": "worker: copy a claimed Mission id onto Fettler CI-repair agent runs",
         "headBranch": "cursor/ci-repair-mission-id-f457",
         "baseBranch": "main",
@@ -2418,12 +3096,9 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            374,
-            385
-          ],
+          "pullRequests": [],
           "branches": []
         },
         "requirementIds": [
@@ -2431,10 +3106,26 @@
           "ME-WAR-006"
         ],
         "checkState": "stale_checks",
+        "headRevision": "8ad5ed8602cd4000e2fba1c499168da8b385dd11",
+        "mergeRevision": "3289315cf64e1b0ba734d97d0dd0f28a61edb7ee",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 414,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/414",
         "title": "worker: enforce the inherited Policy Envelope on the ReGauge pilot lane",
         "headBranch": "cursor/regauge-pilot-policy-enforce-f457",
         "baseBranch": "main",
@@ -2443,15 +3134,10 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            372,
-            407
-          ],
-          "branches": [
-            "cursor/regauge-pilot-mission-task-claim-f457"
-          ]
+          "pullRequests": [],
+          "branches": []
         },
         "requirementIds": [
           "ME-PEV-001",
@@ -2459,15 +3145,26 @@
           "ME-TRN-007"
         ],
         "checkState": "stale_checks",
-        "blockers": [
-          {
-            "priority": "P2",
-            "summary": "the active pull request title and branch still call the production ReGauge execution path a pilot lane"
-          }
-        ]
+        "headRevision": "7c2da4517f69b32ae5b01492f90f72f690ea42f4",
+        "mergeRevision": "1951381038dd3e4b84b795b77b090440b69a03f7",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
       },
       {
         "number": 415,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/415",
         "title": "pipeline: pin a published Change Graph version onto single-repo Missions",
         "headBranch": "cursor/bind-mission-graph-version-f457",
         "baseBranch": "main",
@@ -2476,23 +3173,37 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            380
-          ],
+          "pullRequests": [],
           "branches": []
         },
         "requirementIds": [
+          "ME-GRF-001",
           "ME-MSN-001",
-          "ME-MSN-003",
-          "ME-GRF-001"
+          "ME-MSN-003"
         ],
         "checkState": "stale_checks",
+        "headRevision": "69d24e0c1cd652048012d5a6c8cc8339a05c703c",
+        "mergeRevision": "edd22d0a918fe10d569514f20bdebbfa8a49b088",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 416,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/416",
         "title": "worker: carry a pinned graph version on Mission context identity",
         "headBranch": "cursor/mission-context-graph-version-f457",
         "baseBranch": "main",
@@ -2501,24 +3212,36 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [
-            415
-          ],
-          "branches": [
-            "cursor/bind-mission-graph-version-f457"
-          ]
+          "pullRequests": [],
+          "branches": []
         },
         "requirementIds": [
-          "ME-MSN-001",
-          "ME-MCC-001"
+          "ME-MCC-001",
+          "ME-MSN-001"
         ],
-        "checkState": "stacked_unverified",
+        "checkState": "stale_checks",
+        "headRevision": "973b37719705155383e4d773edf64b3b8f092d17",
+        "mergeRevision": "636e338c9e44cb6f4160fce59971dd1e74f25040",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 417,
+        "state": "closed",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/417",
         "title": "worker: resume Fettler agent.run through resolveResumeContext",
         "headBranch": "cursor/fettler-resume-context-f457",
         "baseBranch": "main",
@@ -2527,7 +3250,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "superseded",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -2538,10 +3261,26 @@
           "ME-WAR-006"
         ],
         "checkState": "stale_checks",
+        "headRevision": "8f57441e6c300f996bc1bc1db381908b0c8355e0",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 418,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/418",
         "title": "pipeline: register persisted Fettler review artifacts on a bound Mission",
         "headBranch": "cursor/mission-artifact-register-f457",
         "baseBranch": "main",
@@ -2550,7 +3289,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -2561,12 +3300,258 @@
           "ME-WAR-004"
         ],
         "checkState": "stale_checks",
+        "headRevision": "280fd7eae105b268d978f316352a5260bc1128e5",
+        "mergeRevision": "e0211301d53171bdb58162f59dfb492d47c38722",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 419,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/419",
         "title": "db: persist decisionType, category, and taskId on live handoff writers",
         "headBranch": "cursor/mission-decision-annotations-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MSN-002",
+          "ME-MTE-001"
+        ],
+        "checkState": "stale_checks",
+        "headRevision": "b598ad77233d75260f994635affcb7802d6ab484",
+        "mergeRevision": "7603c408ddbd63323549c065229604cceadae385",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 420,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/420",
+        "title": "agent: compile inherited context for bound Missions without the global switch",
+        "headBranch": "cursor/bound-mission-inherited-context-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MCC-001",
+          "ME-MSN-003"
+        ],
+        "checkState": "stale_checks",
+        "headRevision": "24027fc6f224de51358ac8fc2643d381779aae1a",
+        "mergeRevision": "1732a14877cbdf3a58b315cdcd38a0fa9affb4c4",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 421,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/421",
+        "title": "register: point v4-platform locators at live resume, decision, and compile seams",
+        "headBranch": "cursor/v4-register-locator-refresh-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MCC-001",
+          "ME-MSN-002",
+          "ME-MSN-003"
+        ],
+        "checkState": "stale_checks",
+        "headRevision": "c4be21ff450723a77e3b383f69375f8685de409b",
+        "mergeRevision": "989b0c699f53966fb07f889f985e87e0e069fbf4",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 427,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/427",
+        "title": "Surface FET-018 raw_retrieval on GET /changes/:id",
+        "headBranch": "cursor/fet-018-impact-audit-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-FET-017",
+          "ME-FET-018"
+        ],
+        "checkState": "stale_checks",
+        "headRevision": "0ec5683f338609f45cdf432c10473830d8af2a32",
+        "mergeRevision": "635233f3b344e59f5f0341ec4636aa11d55d1365",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 440,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/440",
+        "title": "Harden production closure authority",
+        "headBranch": "codex/production-closure-authority-hardening",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-FET-017",
+          "ME-FET-018",
+          "ME-MCC-001",
+          "ME-MSN-001"
+        ],
+        "checkState": "stale_checks",
+        "headRevision": "614f3abd685ee3a242a6f34b39693fa76a0dfbb5",
+        "mergeRevision": "4121a91935ef848c8f1a16af28042f1607425a1f",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 445,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/445",
+        "title": "docs: re-run the v4 persistent-context gap analysis against current main",
+        "headBranch": "cursor/v4-gap-analysis-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "extract_smaller_replacement",
+        "dependencies": {
+          "pullRequests": [
+            455
+          ],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "behind",
+        "headRevision": "a5526e69f7f16e1e5a30362517c285475af044b1",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 449,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/449",
+        "title": "worker: consult MissionGraphProjection when a live endpoint key exists",
+        "headBranch": "cursor/mission-graph-endpoint-key-f457",
         "baseBranch": "main",
         "owner": {
           "actor": "Cursor",
@@ -2578,64 +3563,555 @@
           "pullRequests": [],
           "branches": []
         },
-        "requirementIds": [
-          "ME-MSN-002",
-          "ME-MTE-001"
-        ],
-        "checkState": "stale_checks",
+        "requirementIds": [],
+        "checkState": "conflicting",
+        "headRevision": "1839a9a5ca4c073c3306d2a78b794eed15d9fedc",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
-        "number": 420,
-        "title": "agent: compile inherited context for bound Missions without the global switch",
-        "headBranch": "cursor/bound-mission-inherited-context-f457",
+        "number": 451,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/451",
+        "title": "pipeline: record Mission verification after campaign execute",
+        "headBranch": "cursor/campaign-execute-verification-f457",
         "baseBranch": "main",
         "owner": {
           "actor": "Cursor",
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "merge_after_rebase_and_review",
         "dependencies": {
           "pullRequests": [
-            417
-          ],
-          "branches": [
-            "cursor/fettler-resume-context-f457"
-          ]
-        },
-        "requirementIds": [
-          "ME-MCC-001",
-          "ME-MSN-003"
-        ],
-        "checkState": "stacked_unverified",
-        "blockers": []
-      },
-      {
-        "number": 421,
-        "title": "register: point v4-platform locators at live resume, decision, and compile seams",
-        "headBranch": "cursor/v4-register-locator-refresh-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "blocked_explicit_dependency",
-        "dependencies": {
-          "pullRequests": [
-            417,
-            419,
-            420
+            463
           ],
           "branches": []
         },
+        "requirementIds": [],
+        "checkState": "behind",
+        "headRevision": "6c0c096abd69dd61cdb9543bdde30a2480c144f0",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 454,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/454",
+        "title": "api: resolve Fettler review handoffs onto agent_resume",
+        "headBranch": "cursor/fettler-resolve-task-handoff-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "conflicting",
+        "headRevision": "006e544217c11fb2ce209ced65dac468f5b4bce6",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 455,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/455",
+        "title": "docs: correct v4 gap analysis evidence",
+        "headBranch": "codex/pr445-review-fixes",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "conflicting",
+        "headRevision": "f788ddd5e8e169953bbf513d23f7f567faae1f2b",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 457,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/457",
+        "title": "pipeline: consult Mission artifacts by reference in compiled context",
+        "headBranch": "cursor/compiler-mission-artifacts-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "extract_smaller_replacement",
+        "dependencies": {
+          "pullRequests": [
+            467
+          ],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "behind",
+        "headRevision": "a8ce5b6337c683b0195a0733464e7c3a752464c9",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 460,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/460",
+        "title": "worker: persist ReGauge Mission artifacts",
+        "headBranch": "codex/pr448-review-fixes",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "conflicting",
+        "headRevision": "684c1923b540a5e1e28a46894da15a6a0d30b7ba",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "the API crash loops on upgrade while the required artifact backend production binding is absent"
+          }
+        ]
+      },
+      {
+        "number": 461,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/461",
+        "title": "claims: detect stale claims whose audited surface changed (mechanism half of #284)",
+        "headBranch": "claims-staleness-mechanism",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Claude",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "behind",
+        "headRevision": "923f85717a8ed6708e0022e33ba460ee7d58a543",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "the provisional Claude owner is not supported by an agent-prefixed branch or a provider-bound owner label"
+          },
+          {
+            "priority": "P1",
+            "summary": "the branch changes two pinned public-claims authority surfaces without a sanctioned runtime rotation"
+          }
+        ]
+      },
+      {
+        "number": 463,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/463",
+        "title": "Bind Fettler Mission scope at campaign start",
+        "headBranch": "codex/pr447-review-fixes",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "conflicting",
+        "headRevision": "a81874651eb0d63b3dbdb2706434d3a4506c47f2",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 465,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/465",
+        "title": "Gate execution on Mission dependencies",
+        "headBranch": "codex/pr459-review-fixes",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "conflicting",
+        "headRevision": "172fd8e8b37febda1ff8c35e97339345a95240fc",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "a persistent handoff can starve later ReGauge campaigns"
+          },
+          {
+            "priority": "P1",
+            "summary": "dependency race abandonment can leave a routing decision without a terminal outcome"
+          }
+        ]
+      },
+      {
+        "number": 466,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/466",
+        "title": "Make reviewer directives deterministic",
+        "headBranch": "codex/pr458-review-fixes",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "conflicting",
+        "headRevision": "cf5a80825b77af627190b334f5d3050dae7d4471",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 467,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/467",
+        "title": "Keep Mission artifact context relevant",
+        "headBranch": "codex/pr457-review-fixes",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [
+            460
+          ],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "conflicting",
+        "headRevision": "7b4aad540dc73c1dace24c38bc2629d687828d52",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "release remains held behind PR 460 and the absent artifact backend production binding"
+          }
+        ]
+      },
+      {
+        "number": 473,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/473",
+        "title": "Restore fail closed customer backups",
+        "headBranch": "codex/revert-green-no-backup",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "behind",
+        "headRevision": "ec0f3eb073efe7fa4d8946dff8a9e0f2fe8a97ec",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "the pull request reverses the proven backup third-state policy and needs an explicit owner decision before it can proceed"
+          }
+        ]
+      },
+      {
+        "number": 478,
+        "state": "closed",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/478",
+        "title": "Promote production closure matrix to v2",
+        "headBranch": "codex/production-matrix-v2",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "superseded",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
         "requirementIds": [
-          "ME-MSN-002",
-          "ME-MSN-003",
-          "ME-MCC-001"
+          "ME-FND-001"
         ],
         "checkState": "stale_checks",
+        "headRevision": "e002e547fd67e0b349027a01f8363b4f8b53139f",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 479,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/479",
+        "title": "ci: gate configuration completeness",
+        "headBranch": "config-gate",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Claude",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "503561c6addae2db867226aa6d4d84e04242bb1f",
+        "mergeRevision": "d5c49b9c577236474ed83364917e3a66c055f80f",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 480,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/480",
+        "title": "docs: catalogue the failure modes that actually shipped here",
+        "headBranch": "failure-modes-doc",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Claude",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [
+            479
+          ],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "97ddcd98480783a55bd0d2f3dfab2125ed2c7881",
+        "mergeRevision": "66dc7d39f550e0e0cb9fc35e0bca60297afdb972",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       }
     ]
