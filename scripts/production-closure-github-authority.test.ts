@@ -951,6 +951,42 @@ describe("GitHub production closure authority", () => {
     expect(JSON.stringify(built)).not.toContain("must-not-be-retained");
   });
 
+  it("keeps the checked-in protected authority policy runnable and App-bound", () => {
+    const policy = JSON.parse(
+      readFileSync(
+        join(import.meta.dirname, "..", "config", "production-closure-authority.json"),
+        "utf8",
+      ),
+    ) as {
+      externalCheckAppId: number | null;
+      controllerCheckAppId: number | null;
+      trustedReviewers: unknown;
+    };
+
+    const built = githubAuthorityContextFromEvent(
+      {
+        GITHUB_EVENT_NAME: "push",
+        GITHUB_REPOSITORY: "gondalaimafia/mendpoint",
+        GITHUB_SHA: MERGED,
+        GITHUB_RUN_ID: "1234",
+      },
+      {},
+      { headRevision: MERGED, parentRevisions: [MAIN] },
+      "2026-08-25T12:05:00.000Z",
+      policy.trustedReviewers,
+    );
+
+    expect(policy.externalCheckAppId).toBe(4718395);
+    expect(policy.controllerCheckAppId).toBe(15368);
+    expect(built.trustedReviewerIdentities.Claude).toEqual([
+      { login: "mendpoint-closure-authority[bot]", userId: 321156448 },
+      // Owner decision (keep both): the human owner stays in the trust root
+      // under the accepted key — also required for rotation continuity, since
+      // main's base root is the human and bot-only would have zero overlap.
+      { login: "gondalaimafia", userId: 273115720 },
+    ]);
+  });
+
   it("uses the explicitly checked-out base authority SHA for review-triggered reevaluation", () => {
     const built = githubAuthorityContextFromEvent(
       {
