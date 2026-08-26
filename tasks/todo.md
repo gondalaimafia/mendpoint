@@ -3368,8 +3368,8 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - [x] Resolve and authenticate the campaign, target, repository, and snapshot before binding a claimed execute job.
 - [x] Reuse the enrolled campaign repository MissionTask as the job's canonical task without creating a same-target dependency.
 - [x] Remove the synthetic prerequisite-based artifact-context assumption while preserving authenticated artifact scope and mission-bound failure propagation.
-- [ ] Run focused database, pipeline, and worker regressions, affected typechecks, and strict diff checks on current main.
-- [ ] Commit and force-with-lease push the repaired branch; do not merge or self-approve.
+- [x] Run focused database, pipeline, and worker regressions, affected typechecks, and strict diff checks on current main.
+- [x] Commit and force-with-lease push the repaired branch; do not merge or self-approve.
 
 #### Review
 
@@ -3377,4 +3377,4 @@ RED: the production enqueuer's job payload omitted `repositoryId` and `snapshotI
 
 GREEN: the enqueuer now carries the durable target scope, and the claim bridge re-resolves the target under the exact tenant and campaign before accepting either claimed field. Released jobs that predate the additive fields rehydrate from the same target row; any supplied mismatch fails closed. Campaign execute reuses the enrolled repository MissionTask, leaves its state transition to the existing campaign-specific claim driver, attributes execution cost to that task, and never creates a job task or dependency. The compiler accepts an unscoped multi-repository Fettler Mission only through the exact durable campaign target and canonical repository task; unrelated dependency tasks no longer grant artifact-context access.
 
-Verification before final rebase: 118 affected worker tests, 24 database task/artifact tests, and 20 pipeline artifact/executor tests pass. Worker, database, and pipeline typechecks pass, and `git diff --check` is clean. A fresh fetch advanced `origin/main` to `4175168bbd6d65b81428be110b8c0ca39e329897`; final rebase verification and publication remain pending.
+Final verification: the repair is rebased onto exact `4175168bbd6d65b81428be110b8c0ca39e329897`. All 118 affected worker tests, 24 database task/artifact tests, and 20 pipeline artifact/executor tests pass on that base. Worker, database, and pipeline typechecks pass, and `git diff --check` is clean. Publication uses force-with-lease on the existing Codex-owned branch; independent exact-head review and GitHub CI remain required before merge.
