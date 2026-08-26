@@ -30,7 +30,7 @@
  *                           as "everything present"
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
 
@@ -165,6 +165,95 @@ function providedNames(spec: Record<string, unknown>): Set<string> {
     for (const match of run.matchAll(/([A-Z][A-Z0-9_]{2,})=/g)) provided.add(match[1]!);
   }
   return provided;
+}
+
+/**
+ * Agent and tooling config that must parse for the tool reading it to work at
+ * all. A malformed file here does not announce itself: an operator's personal
+ * `settings.json` was two concatenated JSON objects for an unknown period, so
+ * every hook, statusLine, plugin, and permission it declared was silently
+ * inert — indistinguishable from a file that was simply configured that way.
+ *
+ * `.codex/config.toml` is deliberately absent: no TOML parser is available
+ * here, and a check that cannot actually parse must not report as if it did.
+ */
+const PARSE_CHECKED: readonly string[] = [
+  ".claude/settings.json",
+  "config/production-closure-authority.json",
+  "config/production-closure-authority-rotation.json",
+  "config/required-configuration.json",
+  "package.json",
+  "tsconfig.base.json",
+];
+
+/** JSON with comments is not valid JSON here; these files are plain JSON. */
+export function parseIssues(root: string = ROOT, files: readonly string[] = PARSE_CHECKED): Issue[] {
+  const issues: Issue[] = [];
+  for (const relative of files) {
+    const path = join(root, relative);
+    let raw: string;
+    try {
+      raw = readFileSync(path, "utf8");
+    } catch {
+      // A tracked config that cannot be read is a failure, not an absence.
+      add(issues, "CONFIG_FILE_UNREADABLE", relative, "tracked configuration file could not be read");
+      continue;
+    }
+    try {
+      JSON.parse(raw);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const concatenated = /after JSON|Unexpected non-whitespace/i.test(detail) || /\}\s*\{/.test(raw);
+      add(
+        issues,
+        "CONFIG_FILE_UNPARSEABLE",
+        relative,
+        concatenated
+          ? `does not parse as JSON (${detail}) — this looks like two concatenated objects; everything the file declares is silently inert until it is merged into one`
+          : `does not parse as JSON (${detail}); everything the file declares is silently inert`,
+      );
+    }
+  }
+  return issues;
+}
+
+/**
+ * A hook whose command points at a missing script fails silently — the same
+ * shape as the malformed settings file: configured, believed active, doing
+ * nothing.
+ */
+export function hookIssues(root: string = ROOT): Issue[] {
+  const issues: Issue[] = [];
+  const settingsPath = join(root, ".claude", "settings.json");
+  let settings: { hooks?: Record<string, unknown> };
+  try {
+    settings = JSON.parse(readFileSync(settingsPath, "utf8")) as { hooks?: Record<string, unknown> };
+  } catch {
+    // Unparseable is already reported by parseIssues; do not double-report.
+    return issues;
+  }
+  for (const [event, matchers] of Object.entries(settings.hooks ?? {})) {
+    for (const matcher of (matchers ?? []) as { hooks?: { command?: string }[] }[]) {
+      for (const hook of matcher.hooks ?? []) {
+        const command = hook.command;
+        if (typeof command !== "string") continue;
+        // Only validate repo-relative script paths the command names.
+        for (const match of command.matchAll(/(?:^|\s)((?:\.[\w./-]+|[\w][\w./-]*)\.(?:mjs|cjs|js|ts|sh))\b/g)) {
+          const script = match[1]!;
+          if (script.startsWith("/") || /^[A-Za-z]:/.test(script)) continue;
+          if (!existsSync(join(root, script))) {
+            add(
+              issues,
+              "CONFIG_HOOK_SCRIPT_MISSING",
+              `${event}:${script}`,
+              `a ${event} hook runs ${script}, which does not exist — the hook silently does nothing`,
+            );
+          }
+        }
+      }
+    }
+  }
+  return issues;
 }
 
 export function staticIssues(manifest: Manifest, workflowDir: string = WORKFLOW_DIR): Issue[] {
@@ -325,7 +414,7 @@ function main(): void {
   const live = process.argv.includes("--live");
   const repo = process.env.MENDPOINT_CONFIG_REPO ?? "gondalaimafia/mendpoint";
   const manifest = loadManifest();
-  const issues = staticIssues(manifest);
+  const issues = [...parseIssues(), ...hookIssues(), ...staticIssues(manifest)];
   let gatedAbsent: Entry[] = [];
 
   if (live) {

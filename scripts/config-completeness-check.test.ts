@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { staticIssues, liveIssues, loadManifest } from "./config-completeness-check.js";
+import { staticIssues, liveIssues, loadManifest, parseIssues, hookIssues } from "./config-completeness-check.js";
 
 const temporaries: string[] = [];
 
@@ -107,6 +107,68 @@ describe("configuration completeness gate", () => {
     );
     expect(issues.map((issue) => issue.code)).toEqual(["CONFIG_MISSING"]);
     expect(issues[0]?.subject).toContain("b");
+  });
+
+  it("fails on a config file of two concatenated JSON objects, and says so", () => {
+    // The operator's personal settings.json was in this state: every hook,
+    // plugin, and permission it declared was silently inert.
+    const root = mkdtempSync(join(tmpdir(), "config-parse-"));
+    temporaries.push(root);
+    writeFileSync(join(root, "a.json"), ['{"a":1}', '{"b":2}', ""].join("\n"), "utf8");
+    const issues = parseIssues(root, ["a.json"]);
+    expect(issues.map((issue) => issue.code)).toEqual(["CONFIG_FILE_UNPARSEABLE"]);
+    expect(issues[0]?.message).toContain("concatenated");
+  });
+
+  it("accepts a config file that parses", () => {
+    const root = mkdtempSync(join(tmpdir(), "config-parse-ok-"));
+    temporaries.push(root);
+    writeFileSync(join(root, "a.json"), ['{"a":1}', ""].join("\n"), "utf8");
+    expect(parseIssues(root, ["a.json"])).toEqual([]);
+  });
+
+  it("treats a tracked config that cannot be read as a failure, not an absence", () => {
+    const root = mkdtempSync(join(tmpdir(), "config-missing-"));
+    temporaries.push(root);
+    expect(parseIssues(root, ["nope.json"]).map((issue) => issue.code)).toEqual([
+      "CONFIG_FILE_UNREADABLE",
+    ]);
+  });
+
+  it("fails when a hook points at a script that does not exist", () => {
+    // A hook naming a missing script is configured, believed active, and doing
+    // nothing — the same shape as the malformed settings file.
+    const root = mkdtempSync(join(tmpdir(), "config-hook-"));
+    temporaries.push(root);
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    writeFileSync(
+      join(root, ".claude", "settings.json"),
+      JSON.stringify({
+        hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "node .claude/hooks/gone.mjs" }] }] },
+      }),
+      "utf8",
+    );
+    expect(hookIssues(root).map((issue) => issue.code)).toEqual(["CONFIG_HOOK_SCRIPT_MISSING"]);
+  });
+
+  it("accepts a hook whose script exists", () => {
+    const root = mkdtempSync(join(tmpdir(), "config-hook-ok-"));
+    temporaries.push(root);
+    mkdirSync(join(root, ".claude", "hooks"), { recursive: true });
+    writeFileSync(join(root, ".claude", "hooks", "here.mjs"), "", "utf8");
+    writeFileSync(
+      join(root, ".claude", "settings.json"),
+      JSON.stringify({
+        hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "node .claude/hooks/here.mjs" }] }] },
+      }),
+      "utf8",
+    );
+    expect(hookIssues(root)).toEqual([]);
+  });
+
+  it("parses every config file the repository actually tracks", () => {
+    expect(parseIssues()).toEqual([]);
+    expect(hookIssues()).toEqual([]);
   });
 
   it("passes the repository's real workflows and manifest", () => {
