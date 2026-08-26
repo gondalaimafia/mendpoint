@@ -3320,6 +3320,18 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Review repair: unsafe rollback proof and thaw commands were removed. The old source remains authenticated and fenced; a later two-volume rollback authority must prove fresh target quiescence before any source restart can be enabled.
 - Exact-head review, current-base CI, and the live cutover remain pending. No production activation occurred in this PR.
 
+## 2026-08-26 Customer backup authority replacement
+
+- [x] Add a failing workflow regression that distinguishes operator intent, the live Fly deployment profile, and indeterminate authority.
+- [x] Derive the live profile through the exact app-scoped Fly credential and fail closed on intent/profile drift.
+- [x] Retain explicit evidence when no backup is taken, without turning the deliberately inactive state into a recurring failure alert.
+- [x] Require authenticated backup output before recording a successful backup result and preserve the customer-profile producer guard.
+- [x] Run the focused workflow suite, YAML parse, configuration check, activation regression, and strict diff review.
+
+### Review
+
+The replacement is based on exact `origin/main` revision `7f74e609` and does not modify production closure authority policy, ledger, rotation, or matrix files. RED first: the focused suite failed two assertions because the old gate had no protected Fly authority and recorded no durable non-success result; a second RED run failed two assertions because both token-scope checks masked producer failures behind process substitution. GREEN: all seven focused workflow and producer-gate regressions pass. The workflow and every embedded shell block parse, the configuration and action-pin gates pass, the scripts TypeScript project passes, and strict diff checking is clean. A successful result is now written only after the remote output proves `backupId`, `manifestAuthentication`, and `publication`. `ME-ENT-007` remains partial pending a production backup provider, approved cross-region recovery infrastructure, and a real production regional failover drill.
+
 ### 2026-08-25 Repair merged closure authority root
 
 - [x] Reproduce the merged `trustedReviewers.owner` configuration failure against the runtime parser.

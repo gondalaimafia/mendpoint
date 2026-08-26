@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { customerBackupInputFromEnv } from "@mendpoint/ops";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
@@ -36,7 +37,9 @@ describe("customer backup workflow", () => {
     const validate = step("Validate app-scoped backup authority");
     expect(validate.env.FLY_API_TOKEN).toBe("${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}");
     expect(validate.env.CUSTOMER_APP).toBe("${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}");
-    expect(validate.run).toContain("flyctl apps list --json | jq -r '.[] | (.Name // .name)'");
+    expect(validate.run).toContain('apps_json="$(flyctl apps list --json)"');
+    expect(validate.run).toContain("'[.[] | (.Name // .name)] | unique'");
+    expect(validate.run).not.toContain("mapfile -t visible_apps < <(");
     expect(validate.run).not.toContain(".[].Name");
     expect(validate.run).toContain("customer_backup_token_not_app_scoped");
     expect(validate.run).toContain('flyctl status --app "$CUSTOMER_APP"');
@@ -51,6 +54,9 @@ describe("customer backup workflow", () => {
     expect(run.run).toContain('flyctl ssh console --app "$CUSTOMER_APP"');
     expect(run.run).toContain("scripts/customer-backup.ts");
     expect(run.run).toContain('tee -a "$evidence"');
+    expect(run.run).toContain("grep -q '\"backupId\"'");
+    expect(run.run).toContain("grep -q '\"manifestAuthentication\"'");
+    expect(run.run).toContain("grep -q '\"publication\"'");
     const upload = step("Retain backup evidence");
     expect(upload.if).toBe("${{ always() }}");
     expect(upload["with"]["retention-days"]).toBe(90);
@@ -69,20 +75,50 @@ describe("customer backup workflow", () => {
   });
 
 
-  it("gates the backup on explicit customer-profile activation, loudly", () => {
+  it("binds operator intent to the live app profile through exact Fly authority", () => {
     const gate = workflow.jobs["profile-gate"] as Record<string, any>;
     expect(gate, "profile-gate job must exist").toBeTruthy();
+    expect(gate.environment).toBe("customer-production-backup");
     const gateStep = (gate.steps as Record<string, any>[]).find(
       (candidate) => candidate.id === "check",
     ) as Record<string, any>;
-    expect(gateStep.env.ACTIVE).toBe("${{ vars.MENDPOINT_CUSTOMER_PROFILE_ACTIVE }}");
-    // The inactive path must be LOUD (a ::notice naming the pending activation),
-    // never a silent skip that fakes "we have backups".
+    expect(gateStep.env.EXPECTED_ACTIVE).toBe("${{ vars.MENDPOINT_CUSTOMER_PROFILE_ACTIVE }}");
+    expect(gateStep.env.FLY_API_TOKEN).toBe("${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}");
+    expect(gateStep.env.CUSTOMER_APP).toBe("${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}");
+    expect(gateStep.run).toContain('apps_json="$(flyctl apps list --json)"');
+    expect(gateStep.run).toContain("'[.[] | (.Name // .name)] | unique'");
+    expect(gateStep.run).not.toContain("mapfile -t visible_apps < <(");
+    expect(gateStep.run).toContain('flyctl ssh console --app "$CUSTOMER_APP"');
+    expect(gateStep.run).toContain("MENDPOINT_DEPLOYMENT_PROFILE");
+    expect(gateStep.run).toContain("customer_backup_profile_authority_mismatch");
+    expect(gateStep.run).toContain("operator_action_required");
+  });
+
+  it("retains an explicit non-success result when the inactive profile takes no backup", () => {
+    const gate = workflow.jobs["profile-gate"] as Record<string, any>;
+    const gateStep = (gate.steps as Record<string, any>[]).find(
+      (candidate) => candidate.id === "check",
+    ) as Record<string, any>;
     expect(gateStep.run).toContain("::notice");
     expect(gateStep.run).toContain("No backup was taken");
+    expect(gateStep.run).toContain('result="not_configured"');
+    expect(gateStep.run).toContain("--argjson backupTaken false");
+
+    const retain = (gate.steps as Record<string, any>[]).find(
+      (candidate) => candidate.name === "Retain backup preflight evidence",
+    ) as Record<string, any>;
+    expect(retain.if).toBe("${{ always() }}");
+    expect(retain["with"]["if-no-files-found"]).toBe("error");
+    expect(retain["with"]["retention-days"]).toBe(90);
+
     expect(job.needs).toBe("profile-gate");
     expect(job.if).toContain("needs.profile-gate.outputs.active == 'true'");
-    // The original default-branch guard must survive composition.
     expect(job.if).toContain("github.event.repository.default_branch");
+  });
+
+  it("keeps the backup producer fail closed outside the customer profile", () => {
+    expect(() => customerBackupInputFromEnv({
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+    })).toThrow("customer_backup_profile_required");
   });
 });
