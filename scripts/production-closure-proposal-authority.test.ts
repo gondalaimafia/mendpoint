@@ -405,6 +405,11 @@ describe("production closure proposal authority", () => {
   it("accepts an exhaustive authority-only rotation interpreted by the base revision", async () => {
     const client = new FixtureClient();
     const authority = baseAuthority();
+    const baseLedger = JSON.parse(authority.rotationLedgerBytes.toString("utf8"));
+    const baseReceipt = baseLedger.rotations.at(-1) ?? null;
+    const rotationObservedAt = new Date(
+      Math.max(Date.parse(OBSERVED_AT), Date.parse(baseReceipt?.issuedAt ?? OBSERVED_AT) + 60_000),
+    ).toISOString();
     const basePolicy = policy();
     basePolicy.trustedReviewers = {
       Claude: [{ login: "claude-reviewer[bot]", userId: 71 }],
@@ -424,11 +429,22 @@ describe("production closure proposal authority", () => {
     const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
     const matrixBytes = client.blobs.get(client.pathToSha.get(matrixPath)!)!;
     const proposedMatrix = JSON.parse(matrixBytes.toString("utf8")) as ProductionClosureMatrix;
+    const bootstrapNumber = proposedMatrix.releaseTrain.currentPullRequestBootstrap!.number;
+    const mappedRequirement = proposedMatrix.requirements[0];
+    proposedMatrix.releaseTrain.currentPullRequestBootstrap!.requirementIds = [
+      ...new Set([
+        ...proposedMatrix.releaseTrain.currentPullRequestBootstrap!.requirementIds,
+        mappedRequirement.requirementId,
+      ]),
+    ].sort();
+    mappedRequirement.pullRequests = [...new Set([...mappedRequirement.pullRequests, bootstrapNumber])].sort(
+      (left, right) => left - right,
+    );
     const rotation = {
       rotationId: "rotation-20260825-001",
       kind: "runtime" as const,
-      issuedAt: "2026-08-25T11:00:00.000Z",
-      expiresAt: "2026-08-26T11:00:00.000Z",
+      issuedAt: rotationObservedAt,
+      expiresAt: new Date(Date.parse(rotationObservedAt) + 24 * 60 * 60 * 1000).toISOString(),
       basePolicySha256: sha256(authority.policyBytes),
       proposedPolicySha256: sha256(proposedPolicyBytes),
     };
@@ -463,9 +479,9 @@ describe("production closure proposal authority", () => {
     ];
     const proposedLedger = {
       schemaVersion: 1,
-      rotations: [{
+      rotations: [...baseLedger.rotations, {
         ...rotation,
-        previousRotationId: null,
+        previousRotationId: baseReceipt?.rotationId ?? null,
         baseRevision: BASE,
         baseLedgerSha256: sha256(authority.rotationLedgerBytes),
         successor: null,
@@ -479,7 +495,7 @@ describe("production closure proposal authority", () => {
       "gondalaimafia/mendpoint",
       HEAD,
       client,
-      OBSERVED_AT,
+      rotationObservedAt,
       authority,
     );
 
@@ -498,7 +514,7 @@ describe("production closure proposal authority", () => {
       "gondalaimafia/mendpoint",
       HEAD,
       client,
-      OBSERVED_AT,
+      rotationObservedAt,
       authority,
     );
     expect(rewritten.issues.map((issue) => issue.code)).toContain(

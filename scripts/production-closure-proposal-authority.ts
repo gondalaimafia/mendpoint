@@ -297,8 +297,16 @@ function referencedRevisions(
   return revisions;
 }
 
-function stableAuthorityRotationMatrixView(matrix: ProductionClosureMatrix): unknown {
+function stableAuthorityRotationMatrixView(
+  matrix: ProductionClosureMatrix,
+  currentPullRequestNumber: number,
+): unknown {
   const copy = JSON.parse(JSON.stringify(matrix)) as ProductionClosureMatrix;
+  for (const row of copy.requirements ?? []) {
+    row.pullRequests = (row.pullRequests ?? []).filter(
+      (pullRequest) => pullRequest !== currentPullRequestNumber,
+    );
+  }
   const releaseTrain = copy.releaseTrain as unknown as Record<string, unknown>;
   delete releaseTrain.observedMainRevision;
   delete releaseTrain.observationDigest;
@@ -716,10 +724,14 @@ export async function verifyProductionClosureProposal(
       }
       try {
         const baseMatrixBytes = await readBasePath("docs/PRODUCTION_CLOSURE_MATRIX.json");
+        const currentPullRequestNumber = matrix.releaseTrain.currentPullRequestBootstrap?.number ?? -1;
         if (
           !baseMatrixBytes ||
-          JSON.stringify(stableAuthorityRotationMatrixView(JSON.parse(baseMatrixBytes.toString("utf8")))) !==
-            JSON.stringify(stableAuthorityRotationMatrixView(matrix))
+          JSON.stringify(stableAuthorityRotationMatrixView(
+            JSON.parse(baseMatrixBytes.toString("utf8")),
+            currentPullRequestNumber,
+          )) !==
+            JSON.stringify(stableAuthorityRotationMatrixView(matrix, currentPullRequestNumber))
         ) {
           add(
             issues,
