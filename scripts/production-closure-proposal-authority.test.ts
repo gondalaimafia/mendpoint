@@ -501,6 +501,7 @@ describe("production closure proposal authority", () => {
       proposedPolicySha256: sha256(proposedPolicyBytes),
     };
     proposedMatrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = rotation;
+    proposedMatrix.releaseTrain.observedAt = rotationObservedAt;
     proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
     const proposedMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
     client.replace(matrixPath, proposedMatrixBytes);

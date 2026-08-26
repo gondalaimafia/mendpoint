@@ -317,6 +317,7 @@ function stableAuthorityRotationMatrixView(
     );
   }
   const releaseTrain = copy.releaseTrain as unknown as Record<string, unknown>;
+  delete releaseTrain.observedAt;
   delete releaseTrain.observedMainRevision;
   delete releaseTrain.observationDigest;
   delete releaseTrain.currentPullRequestBootstrap;
