@@ -3434,3 +3434,13 @@ Green CI completion reasserts the exact Mission mutation authority with global b
 Rolling-upgrade delivery and update rows carrying any Mission binding but no exact retained authority are deterministically quarantined before GitHub. They receive stable nonretryable upgrade-required codes and never synthesize a MissionTask or reconstruct historical authority from current state.
 
 Verification: 77 focused dispatch, task, delivery, update, and Mission tests pass; the exact observation suite passes 13 tests. Complete database and worker suites pass 437 and 612 tests respectively, with one intentional worker skip. Database and worker typechecks and the optimized production build pass, the complete authority-writer and mutation-consumer searches were reviewed, and `git diff --check` is clean. No production state changed and no push was performed. No P0, P1, or P2 review finding remains in this repaired class.
+
+## 2026-08-26 Second review repair: exact task authority scope
+
+- [ ] RED: prove authoritative task creation fences taskless mutation authority before insert.
+- [ ] RED: prove dependency insertion fences and revision-invalidates only the dependent task.
+- [ ] RED: prove task B transitions never revoke or block task A dispatches in the same Mission.
+- [ ] Audit all task create, update, dependency, and removal writers for exact task versus Mission scope.
+- [ ] Implement task-scoped dispatch fencing while retaining Mission-wide fences for Mission and blocker writers.
+- [ ] Run focused and full DB/worker suites, typechecks, production build, and diff integrity.
+- [ ] Commit locally without pushing and record the exact reviewed head.
