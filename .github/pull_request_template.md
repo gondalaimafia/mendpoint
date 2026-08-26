@@ -20,6 +20,20 @@ Explain the underlying problem/root cause.
 
 List the primary areas changed.
 
+
+## Failure-mode checks
+
+See `docs/agents/FAILURE_MODES.md`. Tick what applies; state N/A with a reason.
+
+- [ ] **Delete-the-check run**: each new control was reverted, the suite went red, restored — output quoted
+- [ ] No source-text scan (`readFileSync` + regex) stands in for behavioural coverage
+- [ ] Every value answering a question about the world can express "not determined"; every `catch` and default fails **closed**
+- [ ] Claimed capabilities have a **traced production call path** (not test-only callers)
+- [ ] New DB columns are in **both** the `CREATE TABLE` and the additive-migration list
+- [ ] `completeJob` / `failJob` returning `false` throws — a lost lease is never success
+- [ ] New configuration is declared in `config/required-configuration.json` with its scope
+- [ ] If this touches a scheduled or secret-bearing workflow: **dispatched post-merge and the run's conclusion read** (merge is not done; a green run is)
+
 ## Product impact
 
 - [ ] Fettler
