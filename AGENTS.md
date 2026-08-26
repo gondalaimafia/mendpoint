@@ -9,11 +9,12 @@ The other engineering agent is Claude Code.
 Before substantive work, read:
 
 1. `docs/agents/OPERATING_PROTOCOL.md`
-2. `REVIEW.md`
-3. `docs/agents/SECURITY_BOUNDARIES.md`
-4. relevant sections of `docs/product/mendpoint-product-platform-specification-v4.md`
-5. applicable ADRs
-6. the current GitHub issue
+2. `docs/agents/FAILURE_MODES.md` — the defects that have actually shipped here, and the checks that catch them
+3. `REVIEW.md`
+4. `docs/agents/SECURITY_BOUNDARIES.md`
+5. relevant sections of `docs/product/mendpoint-product-platform-specification-v4.md`
+6. applicable ADRs
+7. the current GitHub issue
 
 ## Canonical products
 

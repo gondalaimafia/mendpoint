@@ -8,6 +8,16 @@ The objective is to gain the speed and independent reasoning benefits of two cod
 
 This protocol is binding for both agents.
 
+## Failure modes
+
+Before writing code, reviewing a PR, or shipping to production, read
+`docs/agents/FAILURE_MODES.md`. It catalogues the defects that have actually
+shipped in this repository — the third-state collapse, tests that survive
+deleting what they test, evidence citing files instead of reachable code,
+configuration CI cannot see, and the tooling traps that turn a failed command
+into a success report. Every entry was diagnosed by reproduction, not by
+inspection.
+
 ## Core operating model
 
 The system uses four controls:
