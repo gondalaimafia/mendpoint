@@ -17,6 +17,7 @@
         430
       ],
       "pullRequests": [
+        478,
         481
       ],
       "testEvidenceIds": [],
@@ -1817,8 +1818,8 @@
   "issueAuthority": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-26T03:56:32.029Z",
-    "observationDigest": "sha256:b49581439d12416817cfdf05265b20fc3c2b644537527f66d5552f5880d403ca",
+    "observedAt": "2026-08-26T04:06:40.824Z",
+    "observationDigest": "sha256:29d74e2d40365bdbbeea9bd297e148129267d1843bddb5d4edc211469a1bb5e1",
     "issues": [
       {
         "number": 350,
@@ -2031,15 +2032,33 @@
         "requirementIds": [
           "ME-COM-003"
         ]
+      },
+      {
+        "number": 482,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Repair production configuration authority after #479",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/482",
+        "updatedAt": "2026-08-26T04:04:28.000Z",
+        "requirementIds": []
+      },
+      {
+        "number": 483,
+        "state": "open",
+        "owner": "gondalaimafia",
+        "title": "Correct failure mode authority guidance after #480",
+        "url": "https://github.com/gondalaimafia/mendpoint/issues/483",
+        "updatedAt": "2026-08-26T04:04:40.000Z",
+        "requirementIds": []
       }
     ]
   },
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-26T03:56:32.029Z",
-    "observedMainRevision": "900c7327cc4fb43d3cf72f7acb3303f269749427",
-    "observationDigest": "sha256:6ebe3fb89329b92bd16a7b829db3b766bd640656c522a6ed054fc796ec1217b5",
+    "observedAt": "2026-08-26T04:06:40.824Z",
+    "observedMainRevision": "d5c49b9c577236474ed83364917e3a66c055f80f",
+    "observationDigest": "sha256:0020fa32bddc247155235cb2f0b2e7ab16e3c17b1ded701534d1c047c3a3c400",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -2079,7 +2098,9 @@
         },
         "disposition": "extract_smaller_replacement",
         "dependencies": {
-          "pullRequests": [],
+          "pullRequests": [
+            461
+          ],
           "branches": []
         },
         "requirementIds": [
@@ -3500,9 +3521,11 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "extract_smaller_replacement",
         "dependencies": {
-          "pullRequests": [],
+          "pullRequests": [
+            455
+          ],
           "branches": []
         },
         "requirementIds": [],
@@ -3572,7 +3595,9 @@
         },
         "disposition": "merge_after_rebase_and_review",
         "dependencies": {
-          "pullRequests": [],
+          "pullRequests": [
+            463
+          ],
           "branches": []
         },
         "requirementIds": [],
@@ -3675,9 +3700,11 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "extract_smaller_replacement",
         "dependencies": {
-          "pullRequests": [],
+          "pullRequests": [
+            467
+          ],
           "branches": []
         },
         "requirementIds": [],
@@ -3775,6 +3802,10 @@
           {
             "priority": "P1",
             "summary": "the provisional Claude owner is not supported by an agent-prefixed branch or a provider-bound owner label"
+          },
+          {
+            "priority": "P1",
+            "summary": "the branch changes two pinned public-claims authority surfaces without a sanctioned runtime rotation"
           }
         ]
       },
@@ -3946,7 +3977,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "blocked_explicit_dependency",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -3967,11 +3998,53 @@
           "submittedAt": null,
           "attributable": false
         },
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "the pull request reverses the proven backup third-state policy and needs an explicit owner decision before it can proceed"
+          }
+        ]
+      },
+      {
+        "number": 478,
+        "state": "closed",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/478",
+        "title": "Promote production closure matrix to v2",
+        "headBranch": "codex/production-matrix-v2",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "superseded",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-FND-001"
+        ],
+        "checkState": "stale_checks",
+        "headRevision": "e002e547fd67e0b349027a01f8363b4f8b53139f",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
         "blockers": []
       },
       {
         "number": 479,
-        "state": "open",
+        "state": "merged",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/479",
         "title": "ci: gate configuration completeness",
         "headBranch": "config-gate",
@@ -3981,15 +4054,15 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "merged",
         "dependencies": {
           "pullRequests": [],
           "branches": []
         },
         "requirementIds": [],
-        "checkState": "checks_failed",
+        "checkState": "stale_checks",
         "headRevision": "503561c6addae2db867226aa6d4d84e04242bb1f",
-        "mergeRevision": null,
+        "mergeRevision": "d5c49b9c577236474ed83364917e3a66c055f80f",
         "checks": [],
         "review": {
           "state": "none",
@@ -4002,40 +4075,11 @@
           "submittedAt": null,
           "attributable": false
         },
-        "blockers": [
-          {
-            "priority": "P1",
-            "summary": "the configuration gate can be disabled without an authority rotation because its implementation and manifest are not protected"
-          },
-          {
-            "priority": "P1",
-            "summary": "environment scope validation misses the sandbox FLY_ORG binding and does not enforce exact environment identity"
-          },
-          {
-            "priority": "P1",
-            "summary": "live required-configuration presence verification is not invoked by a protected production workflow"
-          },
-          {
-            "priority": "P1",
-            "summary": "required-loop discovery ignores non-MENDPOINT names used by the ReGauge production guard"
-          },
-          {
-            "priority": "P1",
-            "summary": "the provisional Claude owner is not supported by an agent-prefixed branch or a provider-bound owner label"
-          },
-          {
-            "priority": "P2",
-            "summary": "GITHUB_ENV discovery is order-insensitive and treats local assignments as durable exports"
-          },
-          {
-            "priority": "P2",
-            "summary": "the manifest loader does not reject optional gated entries without gatedBy or empty and malformed scopes"
-          }
-        ]
+        "blockers": []
       },
       {
         "number": 480,
-        "state": "open",
+        "state": "merged",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/480",
         "title": "docs: catalogue the failure modes that actually shipped here",
         "headBranch": "failure-modes-doc",
@@ -4045,15 +4089,17 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "merged",
         "dependencies": {
-          "pullRequests": [],
+          "pullRequests": [
+            479
+          ],
           "branches": []
         },
         "requirementIds": [],
-        "checkState": "checks_failed",
+        "checkState": "stale_checks",
         "headRevision": "97ddcd98480783a55bd0d2f3dfab2125ed2c7881",
-        "mergeRevision": null,
+        "mergeRevision": "66dc7d39f550e0e0cb9fc35e0bca60297afdb972",
         "checks": [],
         "review": {
           "state": "none",
@@ -4066,24 +4112,7 @@
           "submittedAt": null,
           "attributable": false
         },
-        "blockers": [
-          {
-            "priority": "P1",
-            "summary": "the pull request has no strict requirement mapping and its provisional Claude owner lacks provider-verifiable provenance"
-          },
-          {
-            "priority": "P1",
-            "summary": "the mandatory schema lesson says ensureTables never alters tables even though the additive migration loop executes ALTER TABLE ADD COLUMN"
-          },
-          {
-            "priority": "P2",
-            "summary": "the pull request body says eleven lessons instead of sixteen and incorrectly describes linked required reading as automatically loaded"
-          },
-          {
-            "priority": "P2",
-            "summary": "the mandatory checklist applies fail-closed behavior to every catch and default instead of security, authority, execution, evidence, and claimed-state decisions"
-          }
-        ]
+        "blockers": []
       }
     ]
   }
