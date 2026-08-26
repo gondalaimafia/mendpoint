@@ -21,6 +21,7 @@ import {
   pauseWardenCiCycle,
   rebindWardenCiRepair,
   recordAudit,
+  type AgentRunRow,
   type AppDb,
 } from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
@@ -157,6 +158,60 @@ function ciRepairAuthority(db: AppDb, tenantId: string, runId: string, result: R
     throw new Error("warden_ci_update_not_authorized");
   }
   return Object.freeze({ cycle, observation, trigger, reviewFeedbackDigest });
+}
+
+function rejectedApproachScopes(run: AgentRunRow, candidateDigest: string): string[] {
+  let files: unknown = [];
+  try {
+    files = run.files_changed_json ? JSON.parse(run.files_changed_json) : [];
+  } catch {
+    files = [];
+  }
+  const paths = Array.isArray(files)
+    ? [...new Set(files.filter((path): path is string => typeof path === "string" && path.trim().length > 0)
+      .map((path) => path.trim()))]
+    : [];
+  if (paths.length > 0) return paths;
+  if (candidateDigest) return [`candidate:${candidateDigest}`];
+  return [`reviewer_reject:${run.id}`];
+}
+
+function persistRejectedApproachDecisions(db: AppDb, input: {
+  tenantId: string;
+  run: AgentRunRow;
+  rationale: string;
+  candidateDigest: string;
+  authorPrincipalId: string;
+  createdAt: string;
+}): void {
+  if (!input.run.job_id) return;
+  const original = getJob(db, input.run.job_id, input.tenantId);
+  if (!original || original.type !== "agent.run") return;
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(original.payload_json) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const missionId = typeof payload.missionId === "string" ? payload.missionId : null;
+  if (!missionId || !getMission(db, input.tenantId, missionId)) return;
+  const evidence = [
+    `agent_run:${input.run.id}`,
+    ...(input.candidateDigest ? [`candidate:${input.candidateDigest}`] : []),
+  ];
+  for (const scope of rejectedApproachScopes(input.run, input.candidateDigest)) {
+    recordReviewerDirective(db, {
+      tenantId: input.tenantId,
+      missionId,
+      directive: input.rationale,
+      scope,
+      authorPrincipalId: input.authorPrincipalId,
+      evidence,
+      correlationId: input.run.id,
+      createdAt: input.createdAt,
+      decisionType: "other",
+    });
+  }
 }
 
 export function registerWardenCandidateReviewRoutes(
@@ -382,9 +437,19 @@ export function registerWardenCandidateReviewRoutes(
           ...(seal ? { artifacts: { ...artifacts, approval: { path: seal.path, sha256: seal.sha256 } } } : {}),
           ...(body.decision === "reject" ? { cleanup: { status: "pending", attempts: 0 } } : {}) };
         response = { status };
-        if (body.decision === "reject" && ciAuthority) {
-          pauseWardenCiCycle(db, { tenantId, cycleId: ciAuthority.cycle.id,
-            actorPrincipalId: principal.id, reason: "candidate_rejected", observedAt: reviewedAt });
+        if (body.decision === "reject") {
+          persistRejectedApproachDecisions(db, {
+            tenantId,
+            run,
+            rationale: body.rationale,
+            candidateDigest,
+            authorPrincipalId: trustId!,
+            createdAt: reviewedAt,
+          });
+          if (ciAuthority) {
+            pauseWardenCiCycle(db, { tenantId, cycleId: ciAuthority.cycle.id,
+              actorPrincipalId: principal.id, reason: "candidate_rejected", observedAt: reviewedAt });
+          }
         }
       }
       const updated = db.raw.prepare(
