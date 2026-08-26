@@ -2058,30 +2058,36 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
     "observedMainRevision": "d5c49b9c577236474ed83364917e3a66c055f80f",
-    "observationDigest": "sha256:0020fa32bddc247155235cb2f0b2e7ab16e3c17b1ded701534d1c047c3a3c400",
+    "observationDigest": "sha256:082cf65dc2273959b4c903ea1c0514ca8096dda8d17fa42da0f46734641848b0",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 481,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/481",
-      "title": "Promote production closure matrix to v2",
+      "number": 484,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/484",
+      "title": "authority: judge proposal drift against the merge base, not the base tip",
       "baseBranch": "main",
-      "headBranch": "codex/production-matrix-v2-app",
+      "headBranch": "proposal-mergebase",
       "owner": {
-        "actor": "Codex",
+        "actor": "Claude",
         "source": "github_label",
-        "label": "release-owner:codex"
+        "label": "release-owner:claude"
       },
       "disposition": "merge_after_rebase_and_review",
       "dependencies": {
         "pullRequests": [],
         "branches": []
       },
-      "requirementIds": [
-        "ME-FND-001"
-      ],
+      "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": []
+      "remediatesPullRequests": [],
+      "authorityRotation": {
+        "rotationId": "rotation-20260826-001",
+        "kind": "runtime",
+        "issuedAt": "2026-08-26T04:29:43.219Z",
+        "expiresAt": "2026-08-27T04:29:43.219Z",
+        "basePolicySha256": "sha256:c608eb85fd35ef35acf034f998917b479135116626e17c2a14054c6f68e50d30",
+        "proposedPolicySha256": "sha256:354e22b8f4ca4bcf510b2d190a5598b9ed74557d4068cd1ed48bb5ba055506d4"
+      }
     },
     "pullRequests": [
       {
@@ -4100,6 +4106,43 @@
         "checkState": "stale_checks",
         "headRevision": "97ddcd98480783a55bd0d2f3dfab2125ed2c7881",
         "mergeRevision": "66dc7d39f550e0e0cb9fc35e0bca60297afdb972",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 481,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/481",
+        "title": "Promote production closure matrix to v2",
+        "headBranch": "codex/production-matrix-v2-app",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-FND-001"
+        ],
+        "checkState": "stale_checks",
+        "headRevision": "ef66f709c8c98231ff4aa1da933f35af15410e42",
+        "mergeRevision": "e67a040b65a48f48e425000e0fd038b2ea544b5b",
         "checks": [],
         "review": {
           "state": "none",
