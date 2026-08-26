@@ -6,8 +6,8 @@
       "rotationId": "runtime-proposal-merge-base-20260826",
       "previousRotationId": null,
       "baseRevision": "e67a040b65a48f48e425000e0fd038b2ea544b5b",
-      "issuedAt": "2026-08-26T05:24:03.469Z",
-      "expiresAt": "2026-09-01T05:24:03.469Z",
+      "issuedAt": "2026-08-26T05:30:10.196Z",
+      "expiresAt": "2026-09-01T05:30:10.196Z",
       "baseLedgerSha256": "sha256:230a7c801492e46c7bd126c12625b59cf8e9664228c7bd7ec2993787096c7d4b",
       "basePolicySha256": "sha256:c608eb85fd35ef35acf034f998917b479135116626e17c2a14054c6f68e50d30",
       "proposedPolicySha256": "sha256:34da93ef56c3c399d32d7d4fb86099833e35f657d069df6c97baf20ba08de8f1",
@@ -23,7 +23,7 @@
         {
           "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
           "fromSha256": "sha256:a39bb2c1375be91ee1a344012d4d59553b0607543f87332a760672d67b1e278e",
-          "toSha256": "sha256:9aae2014227cc529a449bc192d8245bf02a765d11bc82be0586bd3129a0be30e",
+          "toSha256": "sha256:e44e2e003c2afc4920bbb91a50fdcf8127c9b1fb220256995d48f8522a19ee1d",
           "fromMode": "100644",
           "toMode": "100644"
         },
