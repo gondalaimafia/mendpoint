@@ -3343,11 +3343,11 @@ Objective: preserve repeated agent to human to agent resume cycles while allowin
 - [x] Keep reject human-owned, make approve/regenerate resolution atomic with the review mutation, and retain reviewer identity and evidence lineage.
 - [x] Revision-qualify every repeated handoff/resume transition so same-cycle replay deduplicates and later cycles cannot collide.
 - [x] Prove multi-task isolation, stale-snapshot refusal, missing-source refusal, malformed payload refusal, cross-tenant refusal, repeated cycles, and Fettler/ReGauge/job-bridge reachability in focused suites.
-- [ ] Run focused and broad API/DB/worker tests, workspace typecheck, full repository tests, optimized build, GA gates, dependency audit, and diff integrity.
+- [x] Run focused and broad API/DB/worker tests, workspace typecheck, full repository tests, optimized build, GA gates, dependency audit, and diff integrity.
 - [ ] Obtain independent same-spec review, fix every finding, then obtain fresh code-quality review before push.
 
 ### Review
 
 PR #454 correctly identified that static transition idempotency keys collide on a second handoff cycle and that a candidate review must resolve a task-bound blocker rather than the first Mission blocker. The replacement removes the sole-blocker guess, reloads the exact tenant repository snapshot, requires it to equal the retained Mission scope, derives the one product task from that exact binding, and resolves only one current task-bound exception. A claimed Mission whose source differs from its retained repository or snapshot now returns conflict and atomically leaves the run, job queue, Mission decisions, and task unchanged. The multi-task regression uses a valid single-repository Mission with a sibling task rather than inventing an impossible multi-repository Mission.
 
-Focused evidence: 27 API review tests, 12 database handoff tests, and 38 Fettler, ReGauge, and shared job-bridge tests pass. API, database, and worker typechecks pass, and strict diff integrity is clean. Broad repository gates and both independent review stages remain pending. No requirement or public-claim status changes are authorized.
+Focused evidence: 27 API review tests, 12 database handoff tests, and 38 Fettler, ReGauge, and shared job-bridge tests pass. The complete repository test command passes every workspace plus 314 root-script tests. Full workspace typecheck, the optimized 50-route build, GA checks, strict diff integrity, and the production dependency audit pass; the audit reports zero vulnerabilities. Both independent review stages remain pending. No requirement or public-claim status changes are authorized.
