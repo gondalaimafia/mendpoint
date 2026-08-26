@@ -134,10 +134,13 @@ class FixtureClient implements ProposalAuthorityClient {
    * never touched, and the merge base holds what both agreed on.
    */
   advanceBase(path: string, bytes: Buffer): void {
-    for (const [key, value] of this.basePathToSha) this.mergeBasePathToSha.set(key, value);
+    if (this.mergeBaseRevision === BASE) {
+      for (const [key, value] of this.basePathToSha) this.mergeBasePathToSha.set(key, value);
+    }
     const blobSha = sha(bytes);
     this.blobs.set(blobSha, bytes);
     this.basePathToSha.set(path, blobSha);
+    this.modes.set(path, "100644");
     this.mergeBaseRevision = MERGE_BASE;
   }
   async getMergeBase(): Promise<string | null> {
@@ -288,6 +291,30 @@ describe("production closure proposal authority", () => {
 
     const codes = result.issues.map((issue) => issue.code);
     expect(codes).not.toContain("PROPOSAL_AUTHORITY_POLICY_DRIFT");
+    expect(codes).not.toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
+    expect(codes.filter((code) => code.startsWith("AUTHORITY_ROTATION_"))).toEqual([]);
+  });
+
+  it("does not charge a proposal for a protected surface the base added after it branched", async () => {
+    const client = new FixtureClient();
+    const addedPath = "scripts/production-closure-new-root.ts";
+    const addedBytes = Buffer.from("export const protectedRoot = true;\n");
+    const advanced = policy();
+    advanced.protectedFiles[addedPath] = sha256(addedBytes);
+    const advancedBytes = Buffer.from(JSON.stringify(advanced));
+    client.advanceBase(addedPath, addedBytes);
+    client.advanceBase("config/production-closure-authority.json", advancedBytes);
+
+    const result = await verifyProductionClosureProposal(
+      advanced,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      { ...baseAuthority(), policyBytes: advancedBytes },
+    );
+
+    const codes = result.issues.map((issue) => issue.code);
     expect(codes).not.toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
     expect(codes.filter((code) => code.startsWith("AUTHORITY_ROTATION_"))).toEqual([]);
   });

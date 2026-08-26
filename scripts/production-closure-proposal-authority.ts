@@ -621,7 +621,7 @@ export async function verifyProductionClosureProposal(
         // A surface this proposal never touched has not drifted, however far
         // the pin has moved on the base since the branch point. A surface it
         // did touch still has to match the pin exactly.
-        if (bytes && !proposalTouched(locator)) continue;
+        if (!proposalTouched(locator)) continue;
         if (!bytes || protectedSurfaceDigest(path, bytes) !== expectedDigest) {
           add(
             issues,
