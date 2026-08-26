@@ -3392,12 +3392,15 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 
 ### 2026-08-25 PR #460 worker-local recovery ordering repair
 
-- [ ] RED: prove unbound local registrations with deleted or tampered evidence are acknowledged without any filesystem read or Mission marker write.
-- [ ] Preflight the exact tenant and campaign Mission binding before local outbox rehydration.
-- [ ] Durably complete unbound local registrations so one historical item cannot poison worker readiness.
-- [ ] Preserve and assess the coordinator E2E timeout budget change; document why the budget exists and whether 30 seconds is sufficient.
+- [x] RED: prove unbound local registrations with deleted or tampered evidence are acknowledged without any filesystem read or Mission marker write.
+- [x] Preflight the exact tenant and campaign Mission binding before local outbox rehydration.
+- [x] Durably complete unbound local registrations so one historical item cannot poison worker readiness.
+- [x] Preserve and assess the coordinator E2E timeout budget change; document why the budget exists and whether 30 seconds is sufficient.
 - [ ] Run focused recovery suites, affected typechecks, strict diff integrity, rebase if needed, commit, and force-with-lease push without approving or merging.
 
 #### Review
 
-- In progress. The current local recovery drain eagerly evaluates `readLocalRegaugeMissionArtifactOutbox(...)` before the registration adapter can reject an unbound campaign. The isolated cross-deployment coordinator test also exceeded the proposed 30 second budget, so the timeout change requires root-cause review rather than an unqualified increase.
+- RED reproduced the deleted-evidence lane poison as `transformer_lane_internal_error`. The repaired drain resolves the exact tenant and campaign Mission first, appends the existing durable registration result when unbound, and never resolves a principal, reads a file, inserts an artifact manifest, or emits a Mission marker for that item.
+- Deleted and digest-invalid local evidence regressions pass and leave zero artifact manifests. Their durable acknowledgement removes the registration from subsequent pending scans without rerunning recipe work.
+- The coordinator case is a multi-boundary integration test covering completion-response loss, advisory retry, SCM-response loss, executor replacement, delivery replay, and observation. The retained 30 second runner budget changes no product timeout. An isolated rerun completed in 16.227 seconds and the full focused matrix passed; one earlier run under concurrent local load exceeded 30 seconds by 0.71 seconds, so another CI miss should trigger fixture profiling rather than another timeout increase.
+- After rebasing onto `origin/main` at `502a2ebb`, all 195 tests across the 10 focused recovery files pass. Transformer, Pipeline, Worker, and API typechecks pass; the two new regressions pass again after strict union narrowing.
