@@ -3386,3 +3386,20 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Historical terminal attempts are discovered from their immutable terminal events and adopted only when the current campaign, exact event sequence, attempt fence, source snapshot, candidate manifest, execution evidence, tenant scope, and shared ciphertext all match. Adoption changes no campaign revision or event and replays idempotently.
 - Focused verification passes: 72 Transformer checkpoint and pilot tests, 48 worker lane and exact-entrypoint tests, and 13 API coordinator and shared-artifact tests. Transformer, worker, and API typechecks pass, and strict diff integrity is clean.
 - Current-base CI exposed one ordering regression in the legacy direct-registration adapter: it read deleted worker-local evidence before recognizing that the campaign had no Mission binding. The adapter now resolves the exact tenant and campaign binding first and returns `skipped_unbound` without touching either file. The six-test regression file and worker typecheck pass, and strict diff integrity remains clean.
+
+### 2026-08-25 PR #460 post-review recovery repairs
+
+- [x] Rebase the existing Codex branch onto `origin/main` at `8b41d777` before editing runtime behavior.
+- [x] Resolve the exact tenant and campaign Mission binding before production shared-artifact rehydration or legacy filesystem publication.
+- [x] Durably acknowledge unbound outbox registrations as skipped so historical evidence loss cannot poison coordinator readiness.
+- [x] Repair request, candidate, and execution reference markers idempotently when replay resumes after checkpoint commit or legacy adoption.
+- [x] Add production-drain and coordinator-readiness regressions for missing and tampered unbound artifacts.
+- [x] Add crash/failure regressions immediately after checkpoint CAS and legacy outbox adoption.
+- [x] Run the focused recovery suites, affected typechecks, strict diff integrity, commit, and force-with-lease push without approving or merging.
+
+#### Blockers and review
+
+- P1 closure: the coordinator resolves the exact tenant and campaign Mission before any shared read, marker write, or legacy filesystem publication. It appends an immutable completion result for a pending unbound registration and an append-only, event-fenced adoption result for a pre-outbox terminal attempt.
+- P2 closure: an authenticated schema-2 checkpoint replay reasserts the coordinator request plus candidate and execution reference markers. The coordinator also reasserts both evidence markers for every bound pending outbox item, including the first restart after legacy adoption committed but marker publication failed.
+- Regression evidence: missing shared evidence and deleted legacy evidence are never read for an unbound campaign; a tampered unbound registration leaves coordinator readiness at HTTP 200; checkpoint marker failure resumes without another command; legacy post-adoption marker failure registers on the next drain.
+- Focused verification: 193 tests pass across 10 checkpoint, pilot, runner, worker, pipeline, coordinator, production-profile, and outbox suites. Transformer, API, worker, and pipeline typechecks pass, strict diff integrity is clean, and the verified rebased branch is ready for its required force-with-lease push.
