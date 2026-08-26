@@ -3333,3 +3333,21 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 #### Review
 
 Main revision `c8d51caa` merged a reviewer key that the runtime ignores and retained null App IDs. The repair uses the verified, nonsecret identity tuple for `mendpoint-closure-authority[bot]` and the observed GitHub Actions App ID. The bot is temporarily bound under `Claude`, which permits reciprocal review of the current Codex and Cursor queue; a second distinct reviewer identity is still required before Claude-owned pull requests can satisfy the same invariant. The 26 GitHub-authority tests, 30 matrix tests, and 12 proposal-authority tests pass, the scripts TypeScript project passes, and `git diff --check` is clean.
+## 2026-08-26 Replace PR #454 with exact Mission handoff authority
+
+Objective: preserve repeated agent to human to agent resume cycles while allowing an authenticated candidate review to resolve only the exact blocking handoff for the reviewed Mission task and immutable source snapshot.
+
+- [x] Inspect PR #454 exact head `006e5442`, both commits, all ten changed files, and the current review, handoff, task-claim, and job-bridge seams.
+- [x] Port the bounded handoff and resume behavior onto current `origin/main` without carrying stale branch state.
+- [x] Require an exact tenant, Mission, product, repository, task, and current snapshot binding before review can close a handoff; missing or ambiguous identity must leave every blocker open.
+- [x] Keep reject human-owned, make approve/regenerate resolution atomic with the review mutation, and retain reviewer identity and evidence lineage.
+- [x] Revision-qualify every repeated handoff/resume transition so same-cycle replay deduplicates and later cycles cannot collide.
+- [x] Prove multi-task isolation, stale-snapshot refusal, missing-source refusal, malformed payload refusal, cross-tenant refusal, repeated cycles, and Fettler/ReGauge/job-bridge reachability in focused suites.
+- [ ] Run focused and broad API/DB/worker tests, workspace typecheck, full repository tests, optimized build, GA gates, dependency audit, and diff integrity.
+- [ ] Obtain independent same-spec review, fix every finding, then obtain fresh code-quality review before push.
+
+### Review
+
+PR #454 correctly identified that static transition idempotency keys collide on a second handoff cycle and that a candidate review must resolve a task-bound blocker rather than the first Mission blocker. The replacement removes the sole-blocker guess, reloads the exact tenant repository snapshot, requires it to equal the retained Mission scope, derives the one product task from that exact binding, and resolves only one current task-bound exception. A claimed Mission whose source differs from its retained repository or snapshot now returns conflict and atomically leaves the run, job queue, Mission decisions, and task unchanged. The multi-task regression uses a valid single-repository Mission with a sibling task rather than inventing an impossible multi-repository Mission.
+
+Focused evidence: 27 API review tests, 12 database handoff tests, and 38 Fettler, ReGauge, and shared job-bridge tests pass. API, database, and worker typechecks pass, and strict diff integrity is clean. Broad repository gates and both independent review stages remain pending. No requirement or public-claim status changes are authorized.

@@ -57,14 +57,14 @@ function parseRisk(value: unknown): MissionTaskRisk {
   return "medium";
 }
 
-function resumeTaskEvent(jobId: string): { eventId: string; idempotencyKey: string } {
+function resumeTaskEvent(jobId: string, revision: number): { eventId: string; idempotencyKey: string } {
   const digest = createHash("sha256")
-    .update(`mission-task:job:${jobId}:agent_working_from_resume`)
+    .update(`mission-task:job:${jobId}:agent_working_from_resume:r${revision}`)
     .digest("hex")
     .slice(0, 32);
   return {
     eventId: `e-mtask-${digest}`,
-    idempotencyKey: `mission-task-job:${jobId}:agent_working_from_resume`,
+    idempotencyKey: `mission-task-job:${jobId}:agent_working_from_resume:r${revision}`,
   };
 }
 function missionTaskAgentPrincipal(db: AppDb, tenantId: string, createdAt: string) {
@@ -131,7 +131,7 @@ export function bridgeClaimedJobToMissionTask(
     to: "agent_working",
     actorPrincipalId: agent.id,
     assignedPrincipalId: agent.id,
-    ...resumeTaskEvent(job.id),
+    ...resumeTaskEvent(job.id, task.revision),
     correlationId: job.id,
     createdAt,
   });
