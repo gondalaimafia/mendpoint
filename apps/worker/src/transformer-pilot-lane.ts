@@ -1174,6 +1174,10 @@ export async function runTransformerPilotLaneOnce(
       },
     });
     if (routed.status === "handoff") {
+      // A router-mandated handoff is still a durable campaign admission. Count
+      // it against the operator's per-cycle bound so an unavailable executor
+      // cannot turn the broader scan budget into unbounded routing handoffs.
+      admittedCampaigns++;
       handoff++;
       errors.push(`transformer_routing_human_handoff:${campaign.campaignId}`);
       continue;

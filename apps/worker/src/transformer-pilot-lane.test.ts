@@ -1292,6 +1292,48 @@ describe("Transformer production pilot lane", () => {
     expect(commandRunner).toHaveBeenCalled();
   });
 
+  it("counts a router handoff against the per-cycle campaign admission limit", async () => {
+    const { root, db, store } = setup();
+    const ready = store.listRunnableCampaigns("tenant-a", 1, gateConfig())[0]!;
+    const second = Object.freeze({ ...ready, campaignId: "campaign-b" });
+    const laneStore = new Proxy(store, {
+      get(target, property) {
+        if (property === "listRunnableCampaignPage") {
+          return () => Object.freeze({
+            campaigns: Object.freeze([ready, second]),
+            scannedCount: 2,
+            nextCursor: null,
+          });
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as TransformerPilotLaneStore;
+    db.raw.prepare(
+      `INSERT INTO routing_executor_health
+        (tenant_id, scope, executor_id, provider_id, consecutive_failures, opened_at, updated_at)
+       VALUES (?, 'provider', '', ?, 3, ?, ?)`,
+    ).run("tenant-a", "mendpoint-transformer", RUN_AT, RUN_AT);
+
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store: laneStore,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-router-handoff-bound",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      maxCampaigns: 1,
+      runId: "run-router-handoff-bound",
+      now: () => RUN_AT,
+    });
+
+    expect(result).toMatchObject({ attempted: 0, completed: 0, failed: 0, handoff: 1 });
+    expect(getRoutingLedgerForJob(db, "campaign-a", "tenant-a")).toHaveLength(1);
+    expect(getRoutingLedgerForJob(db, "campaign-b", "tenant-a")).toEqual([]);
+  });
+
   it("does not hand the launch MissionTask to review when the attempt fails", async () => {
     const { root, db, store } = setup();
     const missionId = seedRegaugeMissionForCampaignA(db);

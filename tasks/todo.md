@@ -3364,6 +3364,7 @@ Current-base review repair: review found that the second completed stage reused 
 - [x] Replace mutable campaign pagination with a stable immutable keyset and bounded SQL pages.
 - [x] Bound each worker campaign scan while carrying its continuation cursor across cycles so blocked campaigns cannot starve later runnable work.
 - [x] Add red-first regressions for stale stage-one approval replay, mutation-stable paging, bounded page reads, and continuation beyond the per-cycle scan budget.
+- [x] Count router-mandated human handoffs against the configured per-cycle campaign admission bound.
 - [x] Run focused Transformer, worker, and API tests, affected typechecks, strict diff review, commit, and push the repaired replacement branch without merging.
 
 #### Review
@@ -3373,3 +3374,5 @@ The stale approval regression first reproduced stage one approval replay moving 
 Campaign paging now uses the immutable stored `created_at`, tenant, and campaign key. Upgrade converges legacy JSON-only rows, creates global and tenant-scoped indexes, and makes the cursor column immutable. Each SQL page reads at most `limit + 1` rows. The lane inspects at most 1,000 rows per cycle by default and returns a continuation that the long-running worker carries into the next cycle.
 
 Current-base verification on `4ce35061`: 254 focused regressions pass across nine database, Transformer, worker, and API files. Database, Transformer, worker, and API typechecks pass. The legacy table upgrade, query-plan index, immutable cursor, between-page mutation, 100-row scan boundary, next-cycle continuation, stale stage-one replay, and fresh stage-two approval are covered. Strict diff integrity passes. The repaired branch is pushed for fresh reciprocal review and is not self-approved or merged.
+
+Final current-base review found that a router-mandated human handoff bypassed `maxCampaigns` and could consume the broader 1,000-row scan budget. The lane now counts that durable routing outcome as one admitted campaign. A breaker-open regression proves `maxCampaigns: 1` persists exactly one handoff and never routes the second campaign. The Transformer lane suite passes 32 of 32 and the worker typecheck and strict diff checks pass.
