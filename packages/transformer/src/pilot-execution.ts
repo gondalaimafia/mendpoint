@@ -1813,25 +1813,43 @@ export class TransformerPilotExecutionStore {
       SELECT e.* FROM tf_pilot_events e
       WHERE e.tenant_id = ?
         AND e.type IN ('attempt.completed', 'attempt.completed_with_checkpoint')
+        AND json_valid(e.payload_json)
+        AND json_type(CASE WHEN json_valid(e.payload_json) THEN e.payload_json ELSE '{}' END, '$.unitId') = 'text'
+        AND json_valid(e.evidence_refs_json)
+        AND json_type(CASE WHEN json_valid(e.evidence_refs_json) THEN e.evidence_refs_json ELSE '[]' END) = 'array'
+        AND e.evidence_refs_json LIKE '%"tcman_%'
+        AND e.evidence_refs_json LIKE '%"tre_execution_%'
         AND NOT EXISTS (
           SELECT 1 FROM tf_pilot_mission_artifact_adoption_results r
           WHERE r.tenant_id = e.tenant_id
             AND r.campaign_id = e.campaign_id
             AND r.terminal_event_sequence = e.sequence
         )
+        AND NOT EXISTS (
+          SELECT 1 FROM tf_pilot_mission_artifact_outbox o
+          WHERE o.tenant_id = e.tenant_id
+            AND o.campaign_id = e.campaign_id
+            AND o.unit_id = json_extract(
+              CASE WHEN json_valid(e.payload_json) THEN e.payload_json ELSE '{}' END,
+              '$.unitId'
+            )
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM tf_pilot_events newer
+          WHERE newer.tenant_id = e.tenant_id
+            AND newer.campaign_id = e.campaign_id
+            AND newer.type IN ('attempt.completed', 'attempt.completed_with_checkpoint')
+            AND json_valid(newer.payload_json)
+            AND json_extract(newer.payload_json, '$.unitId') = json_extract(e.payload_json, '$.unitId')
+            AND newer.sequence > e.sequence
+        )
       ORDER BY e.sequence
-    `).all(tenantId) as Array<Record<string, unknown>>;
+      LIMIT ?
+    `).all(tenantId, limit) as Array<Record<string, unknown>>;
     const candidates: TransformerMissionArtifactAdoptionCandidate[] = [];
     for (const row of rows) {
-      if (candidates.length >= limit) break;
       const candidate = this.missionArtifactAdoptionCandidateFromEvent(tenantId, row);
-      if (!candidate) continue;
-      const existing = this.db.prepare(`
-        SELECT 1 FROM tf_pilot_mission_artifact_outbox
-        WHERE tenant_id = ? AND campaign_id = ? AND unit_id = ?
-        LIMIT 1
-      `).get(tenantId, candidate.campaignId, candidate.unitId);
-      if (existing) continue;
+      if (!candidate) throw new Error("transformer_mission_artifact_adoption_history_invalid");
       candidates.push(candidate);
     }
     return candidates;

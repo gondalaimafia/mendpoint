@@ -387,8 +387,22 @@ describe("Transformer pilot execution coordinator", () => {
     });
     const revisionBefore = store.getCampaign("tenant-a", "campaign-a")!.revision;
     const eventsBefore = store.listEvents("tenant-a", "campaign-a").length;
-    const adoption = store.listMissionArtifactAdoptionCandidates("tenant-a", 10);
+    const raw = (store as unknown as { db: DatabaseSync }).db;
+    const realPrepare = raw.prepare.bind(raw);
+    let adoptionQuery = "";
+    (raw as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      if (sql.includes("SELECT e.* FROM tf_pilot_events e")) adoptionQuery = sql;
+      return realPrepare(sql);
+    };
+    let adoption: ReturnType<typeof store.listMissionArtifactAdoptionCandidates>;
+    try {
+      adoption = store.listMissionArtifactAdoptionCandidates("tenant-a", 10);
+    } finally {
+      (raw as unknown as { prepare: unknown }).prepare = realPrepare;
+    }
     expect(adoption).toHaveLength(1);
+    expect(adoptionQuery).toContain("tf_pilot_mission_artifact_outbox");
+    expect(adoptionQuery).toContain("LIMIT ?");
 
     store.completeMissionArtifactAdoption(adoption[0]!);
     store.completeMissionArtifactAdoption(adoption[0]!);
@@ -3229,6 +3243,7 @@ describe("Transformer pilot execution coordinator", () => {
     expect(store.getCampaign("tenant-a", "campaign-a")!.revision).toBe(revisionBefore);
     expect(store.listEvents("tenant-a", "campaign-a")).toHaveLength(eventsBefore);
     expect(store.listPendingMissionArtifactRegistrations("tenant-a", 10)).toEqual([adopted]);
+    expect(store.listMissionArtifactAdoptionCandidates("tenant-a", 10)).toEqual([]);
     expect(() => store.adoptMissionArtifactRegistration({
       candidate: { ...adoption[0]!, terminalEventSequence: adoption[0]!.terminalEventSequence + 1 },
       registration,

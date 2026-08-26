@@ -3418,3 +3418,15 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Deleted and digest-invalid local evidence regressions pass and leave zero artifact manifests. Their durable acknowledgement removes the registration from subsequent pending scans without rerunning recipe work.
 - The coordinator case is a multi-boundary integration test covering completion-response loss, advisory retry, SCM-response loss, executor replacement, delivery replay, and observation. The retained 30 second runner budget changes no product timeout. An isolated rerun completed in 16.227 seconds and the full focused matrix passed; one earlier run under concurrent local load exceeded 30 seconds by 0.71 seconds, so another CI miss should trigger fixture profiling rather than another timeout increase.
 - After rebasing onto `origin/main` at `502a2ebb`, all 195 tests across the 10 focused recovery files pass. Transformer, Pipeline, Worker, and API typechecks pass; the two new regressions pass again after strict union narrowing.
+
+### 2026-08-25 PR #460 bounded legacy adoption review
+
+- [x] Bound the legacy terminal-event adoption query in SQL instead of loading the tenant's complete history before applying the limit.
+- [x] Exclude units that already have a durable artifact outbox registration so successful adoption cannot be rescanned forever.
+- [x] Consider only the latest terminal event per unit and fail closed when an artifact-bearing terminal event cannot reproduce its authenticated adoption candidate.
+- [x] Add exact query-bound and post-adoption replay regressions and rerun the Transformer execution-store suite.
+- [x] Run the full focused recovery matrix, affected typechecks, and strict diff review. Push and obtain a fresh independent exact-head review before merge.
+
+#### Review
+
+The exact-head review found that successful adoption did not append an adoption-result row and the discovery query read every unmatched terminal event before applying its JavaScript limit. The bounded SQL query now excludes an existing unit outbox, selects only the latest artifact-bearing terminal event for each unit, and applies `LIMIT ?` at the database boundary. The existing authenticated legacy adoption test now proves the query carries both the outbox exclusion and SQL limit and that the adopted event disappears from the next scan. All 195 focused recovery tests pass, as do the Transformer, Pipeline, Worker, and API typechecks. `git diff --check` is clean. Independent review remains a merge gate.
