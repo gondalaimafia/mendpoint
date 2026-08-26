@@ -75,6 +75,7 @@
     "third-state:check": "vitest run scripts/third-state-check.test.ts && tsx scripts/third-state-check.ts",
     "reverts:check": "vitest run scripts/revert-obligation-check.test.ts && tsx scripts/revert-obligation-check.ts",
     "verified:mutation-check": "tsx scripts/mutation-proof.ts",
+    "ga:check:all": "vitest run scripts/ga-check-all.test.ts && tsx scripts/ga-check-all.ts",
     "ga:check": "npm run spec:check && npm run closure:check && npm run config:check && npm run claims:check && npm run actions:check && npm run architecture:check && npm run model:check && npm run names:check && npm run adr:check && npm run third-state:check && npm run evidence:reachability:check && npm run reverts:check && tsx scripts/ga-check.ts",
     "sandbox:image": "node scripts/build-sandbox-image.mjs",
     "sandbox:image:push": "node scripts/build-sandbox-image.mjs --push",
