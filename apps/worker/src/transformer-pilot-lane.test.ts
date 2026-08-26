@@ -930,7 +930,7 @@ describe("Transformer production pilot lane", () => {
     expect(getMissionTask(db, "tenant-a", task.id)).toMatchObject({
       status: "human_review_required",
       ownerType: "human",
-      handoffReason: "pilot_lane_review",
+      handoffReason: "architecture_decision_required",
     });
   });
 

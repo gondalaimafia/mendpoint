@@ -125,7 +125,7 @@ describe("verifier advisory job runner", () => {
     expect(listArtifactManifests(db, "tenant_regauge_canary", "agent_verifier_telemetry")).toHaveLength(1);
     expect(transport.mock.calls.length).toBeGreaterThan(1);
     expect(getMissionTask(db, "tenant_regauge_canary", missionTaskIdForJob(queued.jobId)))
-      .toMatchObject({ status: "human_review_required", handoffReason: "advisory_verification_review" });
+      .toMatchObject({ status: "human_review_required", handoffReason: "architecture_decision_required" });
   });
 
   it("retries an Undici connection timeout that proves the provider was never reached", async () => {
@@ -351,7 +351,7 @@ describe("verifier advisory job runner", () => {
     expect(transport).toHaveBeenCalledTimes(providerCalls);
     expect(getJob(db, queued.jobId, "tenant_regauge_canary")?.status).toBe("done");
     expect(getMissionTask(db, "tenant_regauge_canary", missionTaskIdForJob(queued.jobId)))
-      .toMatchObject({ status: "human_review_required", handoffReason: "advisory_verification_review" });
+      .toMatchObject({ status: "human_review_required", handoffReason: "architecture_decision_required" });
   });
 
   it("rejects and withholds the mission-review handoff when the lease is stolen after the provider returns", async () => {
