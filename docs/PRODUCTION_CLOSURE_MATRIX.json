@@ -2056,9 +2056,9 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-26T09:50:57.521Z",
+    "observedAt": "2026-08-26T10:24:36.208Z",
     "observedMainRevision": "7f74e609ca0c9f05fa1deaaded76c9d7b2d2fbd6",
-    "observationDigest": "sha256:8ee6e37674e7c3787a48c48d64c727106eda5754113eede29abccece29da2f81",
+    "observationDigest": "sha256:77cad1e059c6ddd33340d9afa7e939fb4da5e27f3c4b76bc0eeadf20fb7c4a9e",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -2083,8 +2083,8 @@
       "authorityRotation": {
         "rotationId": "runtime-authority-observation-bootstrap-20260826",
         "kind": "runtime",
-        "issuedAt": "2026-08-26T09:50:57.521Z",
-        "expiresAt": "2026-09-01T09:50:57.521Z",
+        "issuedAt": "2026-08-26T10:24:36.208Z",
+        "expiresAt": "2026-09-01T10:24:36.208Z",
         "basePolicySha256": "sha256:572d299979e55ed409ae21c8f0a720b1c4e8b7f7a6fcb7f217ea12bf4aed03cb",
         "proposedPolicySha256": "sha256:09ebec7eb3ffaf164f997a90d3f4a95cb4a0a2c4bb1067cac6301c0b8ae3af17"
       }
