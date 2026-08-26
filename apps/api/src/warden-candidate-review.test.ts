@@ -10,6 +10,7 @@ import {
   createMissionTask,
   enqueueJob,
   evaluateMissionExceptions,
+  fettlerCampaignMissionTaskId,
   getActiveMissionDecisions,
   getAgentRun,
   getJob,
@@ -30,6 +31,9 @@ import { registerWardenCandidateReviewRoutes } from "./warden-candidate-review.j
 import { enqueueDelegatedPrVerificationJob } from "@mendpoint/worker/delegated-pr-verification-job";
 
 const NOW = "2026-08-06T12:00:00.000Z";
+// The enrollment task the reviewed run drives, derived exactly as the claim
+// modules derive it from the run's (missionId, repositoryId) source binding.
+const REVIEW_TASK_ID = fettlerCampaignMissionTaskId("m1", "repo-1");
 const CANDIDATE_DIGEST = "c".repeat(64);
 const CANDIDATE_MANIFEST_SHA256 = "f".repeat(64);
 const VERIFICATION_AUTHORITY = Object.freeze({
@@ -594,7 +598,7 @@ describe("Warden candidate human review", () => {
 
   function workingTask(db: AppDb): MissionTask {
     let task = createMissionTask(db, {
-      id: "task-review-1", tenantId: "tenant-a", missionId: "m1", taskType: "code_migration",
+      id: REVIEW_TASK_ID, tenantId: "tenant-a", missionId: "m1", taskType: "code_migration",
       acceptanceCriteria: "tests pass", risk: "medium", actorPrincipalId: "trust-human-a",
       eventId: "e-task-1", idempotencyKey: "c-task-1", correlationId: "corr", createdAt: NOW,
     });
@@ -610,6 +614,130 @@ describe("Warden candidate human review", () => {
     });
   }
 
+  // Advance an enrollment task (by its derived id) to agent_working so a handoff
+  // can be opened on it. Event keys are namespaced by the task id.
+  function advanceEnrollmentTask(db: AppDb, taskId: string): MissionTask {
+    let task = createMissionTask(db, {
+      id: taskId, tenantId: "tenant-a", missionId: "m1", taskType: "code_migration",
+      acceptanceCriteria: "tests pass", risk: "medium", actorPrincipalId: "trust-human-a",
+      eventId: `e-create-${taskId}`, idempotencyKey: `c-create-${taskId}`, correlationId: "corr", createdAt: NOW,
+    });
+    task = transitionMissionTask(db, {
+      tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision, to: "agent_assigned",
+      actorPrincipalId: "trust-human-a", eventId: `e-assign-${taskId}`, idempotencyKey: `c-assign-${taskId}`,
+      correlationId: "corr", createdAt: NOW,
+    });
+    return transitionMissionTask(db, {
+      tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision, to: "agent_working",
+      actorPrincipalId: "trust-human-a", eventId: `e-work-${taskId}`, idempotencyKey: `c-work-${taskId}`,
+      correlationId: "corr", createdAt: NOW,
+    });
+  }
+
+  // A second candidate_ready run bound to a specific repository, whose source
+  // job carries mission m1 — the linkage the resolver uses to derive the task.
+  function seedReviewRunForRepo(db: AppDb, input: { runId: string; jobId: string; repositoryId: string }): void {
+    enqueueJob(db, {
+      id: input.jobId, tenantId: "tenant-a", type: "agent.run",
+      payload: { goal: "Repair the SDK", sessionId: input.runId, missionId: "m1" }, createdAt: NOW,
+    });
+    insertAgentRun(db, {
+      id: input.runId, tenantId: "tenant-a", jobId: input.jobId, goal: "Repair the SDK",
+      repoPath: "C:\\snapshot", status: "candidate_ready", ok: true, steps: 3, filesChanged: ["src/client.ts"],
+      resultJson: JSON.stringify({
+        source: { repositoryId: input.repositoryId, snapshotId: "snapshot-1", revision: "a".repeat(40) },
+        artifacts: { candidateDigest: CANDIDATE_DIGEST, candidateManifestSha256: CANDIDATE_MANIFEST_SHA256 },
+      }),
+      createdAt: NOW, finishedAt: NOW,
+    });
+  }
+
+  // repo-1 / snapshot-1 at the exact resolved sha the default fixture run is on,
+  // so a handoff can be observed against the reviewed run's CURRENT snapshot.
+  function seedReviewedSnapshot(db: AppDb): void {
+    db.raw.prepare(`INSERT INTO scm_connections
+      (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+      VALUES ('connection-review', 'tenant-a', 'github', 'app://33', '33', 'GitHub', ?, ?)`)
+      .run(NOW, NOW);
+    db.raw.prepare(`INSERT INTO connected_repositories
+      (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
+       environment, retention_days, status, created_at, updated_at)
+      VALUES ('repo-1', 'tenant-a', 'connection-review', '11', 'acme', 'sdk', 'main', 'main',
+       'production', 30, 'ready', ?, ?)`)
+      .run(NOW, NOW);
+    db.raw.prepare(`INSERT INTO repository_snapshots
+      (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+       submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+      VALUES ('snapshot-1', 'tenant-a', 'repo-1', 'main', ?, ?, 'C:\\snapshot',
+       'reject', 'reject', '[]', 1, ?, '2099-01-01T00:00:00.000Z')`)
+      .run("a".repeat(40), `sha256:${"c".repeat(64)}`, NOW);
+  }
+
+  // CONTROL (Defect B, task binding): on a multi-task mission the resolver must
+  // resolve ONLY the blocker bound to the reviewed run's task, never a sibling's.
+  // Reverting tryResolveBoundReviewHandoff's task-binding turns this RED: the old
+  // first-blocking-match logic resolves task A's (older) exception and records
+  // run B's rationale as task A's answer.
+  it("resolves only the reviewed run's task on a multi-task mission, never a sibling's blocker", async () => {
+    const { app, db } = fixture();
+    bindMission(db);
+    const taskA = fettlerCampaignMissionTaskId("m1", "repo-A");
+    const taskB = fettlerCampaignMissionTaskId("m1", "repo-B");
+    advanceEnrollmentTask(db, taskA);
+    advanceEnrollmentTask(db, taskB);
+    const openedA = openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: taskA, reason: "architecture_decision_required",
+      question: "Task A: keep the public signature?", context: "Task A candidate changed the mapping.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+    });
+    const openedB = openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: taskB, reason: "architecture_decision_required",
+      question: "Task B: keep the public signature?", context: "Task B candidate changed the mapping.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+    });
+    seedReviewRunForRepo(db, { runId: "warden-run-2", jobId: "source-job-2", repositoryId: "repo-B" });
+    const response = await app.request("/agent/runs/warden-run-2/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Task B: keep the public signature." }),
+    });
+    expect(response.status).toBe(202);
+    // Task B resolves and resumes; task A is untouched and still blocking.
+    expect(getMissionTask(db, "tenant-a", taskB)?.status).toBe("agent_resume");
+    expect(getMissionTask(db, "tenant-a", taskA)?.status).toBe("human_review_required");
+    const resolvedSupersedes = evaluateMissionExceptions(db, "tenant-a", "m1").resolved.map((row) => row.supersedesId);
+    expect(resolvedSupersedes).toContain(openedB.id);
+    expect(resolvedSupersedes).not.toContain(openedA.id);
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").blocking.some((row) => row.taskId === taskA)).toBe(true);
+  });
+
+  // CONTROL (Defect B, current snapshot): the resolver passes the reviewed run's
+  // snapshot to evaluateMissionExceptions so a blocker observed against that same
+  // snapshot is current and resolves. Dropping the `current` argument turns this
+  // RED: a context-bound exception with no current supplied is STALE, so it never
+  // enters `blocking` and the handoff is never resolved.
+  it("resolves a handoff observed against the reviewed run's current snapshot", async () => {
+    const { app, db } = fixture();
+    bindMission(db);
+    workingTask(db);
+    seedReviewedSnapshot(db);
+    const opened = openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID, reason: "architecture_decision_required",
+      question: "Keep the public signature?", context: "Candidate changed the mapping.",
+      ownerPrincipalId: "trust-human-a",
+      observedAgainst: { snapshotId: "snapshot-1", resolvedSha: "a".repeat(40) },
+      correlationId: "corr", createdAt: NOW,
+    });
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Keep the public signature." }),
+    });
+    expect(response.status).toBe(202);
+    expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("agent_resume");
+    const current = { snapshotId: "snapshot-1", resolvedSha: "a".repeat(40) };
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1", current).resolved.map((row) => row.supersedesId))
+      .toContain(opened.id);
+  });
+
   // CONTROL: deleting tryResolveBoundReviewHandoff on regenerate leaves the
   // exception blocking and the MissionTask in human_review_required.
   it("resolves an open handoff on mission-bound regenerate and moves the task to agent_resume", async () => {
@@ -619,7 +747,7 @@ describe("Warden candidate human review", () => {
     const openedHandoff = openTaskHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
-      taskId: "task-review-1",
+      taskId: REVIEW_TASK_ID,
       reason: "architecture_decision_required",
       question: "Should the SDK keep the public signature?",
       context: "Candidate changed the request mapping.",
@@ -641,7 +769,7 @@ describe("Warden candidate human review", () => {
     expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(false);
     expect(evaluateMissionExceptions(db, "tenant-a", "m1").resolved.map((row) => row.supersedesId))
       .toContain(openedHandoff.id);
-    expect(getMissionTask(db, "tenant-a", "task-review-1")).toMatchObject({
+    expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)).toMatchObject({
       status: "agent_resume",
       ownerType: "agent",
     });
@@ -661,7 +789,7 @@ describe("Warden candidate human review", () => {
     openTaskHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
-      taskId: "task-review-1",
+      taskId: REVIEW_TASK_ID,
       reason: "architecture_decision_required",
       question: "Should we abandon this approach?",
       context: "Reviewer is rejecting the candidate.",
@@ -676,7 +804,7 @@ describe("Warden candidate human review", () => {
     });
     expect(response.status).toBe(200);
     expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(true);
-    expect(getMissionTask(db, "tenant-a", "task-review-1")?.status).toBe("human_review_required");
+    expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("human_review_required");
   });
 
   it("resolves an open handoff on mission-bound approve", async () => {
@@ -689,7 +817,7 @@ describe("Warden candidate human review", () => {
     openTaskHandoff(db, {
       tenantId: "tenant-a",
       missionId: "m1",
-      taskId: "task-review-1",
+      taskId: REVIEW_TASK_ID,
       reason: "architecture_decision_required",
       question: "Proceed to CI update after verification passed?",
       context: "Post-edit verification passed.",
@@ -704,7 +832,7 @@ describe("Warden candidate human review", () => {
     });
     expect(response.status).toBe(202);
     expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(false);
-    expect(getMissionTask(db, "tenant-a", "task-review-1")?.status).toBe("agent_resume");
+    expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("agent_resume");
   });
 
   it("keeps the committed winner seal through an orchestrated concurrent approval conflict", async () => {

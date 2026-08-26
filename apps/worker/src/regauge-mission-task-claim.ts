@@ -89,8 +89,8 @@ export function assignRegaugeMissionTaskOnClaim(
       to: "agent_working",
       actorPrincipalId: agent.id,
       assignedPrincipalId: agent.id,
-      eventId: `${task.id}-claim-resume`,
-      idempotencyKey: `mission-task-claim-resume-${task.id}`,
+      eventId: `${task.id}-claim-resume-r${task.revision}`,
+      idempotencyKey: `mission-task-claim-resume-${task.id}-r${task.revision}`,
       correlationId: input.campaignId,
       createdAt: input.createdAt,
     });
