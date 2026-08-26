@@ -53,6 +53,35 @@ function markDelegatedVerificationRequest(db: AppDb, jobId: string): void {
     "source-job-1", "tenant-a");
 }
 
+function seedMissionReviewerRun(
+  db: AppDb,
+  runId: string,
+  missionId: string,
+  candidateDigest: string,
+): void {
+  const jobId = `job-${runId}`;
+  enqueueJob(db, {
+    id: jobId,
+    tenantId: "tenant-a",
+    type: "agent.run",
+    payload: { missionId, sessionId: runId },
+    createdAt: NOW,
+  });
+  insertAgentRun(db, {
+    id: runId,
+    tenantId: "tenant-a",
+    jobId,
+    goal: "Repair the candidate",
+    repoPath: "C:\\snapshot",
+    status: "candidate_ready",
+    ok: true,
+    steps: 1,
+    resultJson: JSON.stringify({ artifacts: { candidateDigest } }),
+    createdAt: NOW,
+    finishedAt: NOW,
+  });
+}
+
 function fixture(options: {
   audit?: Parameters<typeof registerWardenCandidateReviewRoutes>[2];
   sealApproval?: NonNullable<Parameters<typeof registerWardenCandidateReviewRoutes>[3]>["sealApproval"];
@@ -572,6 +601,7 @@ describe("Warden candidate human review", () => {
       ["legacy-run-1", "Keep the signature stable.", "2026-08-06T11:58:00.000Z"],
       ["legacy-run-2", "Keep the signature stable and preserve retries.", "2026-08-06T11:59:00.000Z"],
     ] as const) {
+      seedMissionReviewerRun(db, runId, "m1", CANDIDATE_DIGEST);
       recordReviewerDirective(db, {
         tenantId: "tenant-a", missionId: "m1", directive, scope: `reviewer_directive:${runId}`,
         authorPrincipalId: "trust-human-a",

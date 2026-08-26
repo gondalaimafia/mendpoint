@@ -10,17 +10,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  appendDomainEvent,
+  captureVerifiedDomainEventAuthority,
   createDb,
   createMission,
   createMissionTask,
+  enqueueJob,
   evaluateMissionExceptions,
   getActiveMissionDecisions,
   getMissionTask,
   insertPrincipal,
+  insertAgentRun,
   listDomainEvents,
   listMissionDecisions,
   openTaskHandoff,
   recordReviewerDirective,
+  retractMissionDecision,
   replaceReviewerDirective,
   resolveTaskHandoff,
   reviseDecisionOnNewEvidence,
@@ -69,6 +74,35 @@ function fixture(): AppDb {
     createdAt: T0,
   });
   return db;
+}
+
+function seedReviewerRun(
+  db: AppDb,
+  runId: string,
+  candidateDigest: string,
+  missionId = "m1",
+): void {
+  const jobId = `job-${runId}`;
+  enqueueJob(db, {
+    id: jobId,
+    tenantId: "t1",
+    type: "agent.run",
+    payload: { missionId, sessionId: runId },
+    createdAt: T0,
+  });
+  insertAgentRun(db, {
+    id: runId,
+    tenantId: "t1",
+    jobId,
+    goal: "Repair the candidate",
+    repoPath: "C:\\snapshot",
+    status: "candidate_ready",
+    ok: true,
+    steps: 1,
+    resultJson: JSON.stringify({ artifacts: { candidateDigest } }),
+    createdAt: T0,
+    finishedAt: T0,
+  });
 }
 
 describe("mission handoff (durable records)", () => {
@@ -221,6 +255,7 @@ describe("mission handoff (durable records)", () => {
 
   it("replays an identical reviewer directive with a fresh timestamp", () => {
     const db = fixture();
+    seedReviewerRun(db, "run-a", "a".repeat(64));
     const input = {
       tenantId: "t1", missionId: "m1", directive: "  Keep the public signature stable.  ",
       candidateDigest: "a".repeat(64), sourceRunId: "run-a", authorPrincipalId: "human-1",
@@ -237,9 +272,147 @@ describe("mission handoff (durable records)", () => {
     expect(listDomainEvents(db, "t1", "mission", "m1")).toHaveLength(eventCount);
   });
 
+  it("rejects a service-authored head as human reviewer authority", () => {
+    const db = fixture();
+    const candidateDigest = "1".repeat(64);
+    seedReviewerRun(db, "run-human", candidateDigest);
+    insertPrincipal(db, {
+      id: "service-1", tenantId: "t1", kind: "service", subject: "reviewer-worker",
+      displayName: "Reviewer worker", createdAt: T0,
+    });
+    const forged = recordReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Service text is not human authority.",
+      scope: `reviewer_directive:candidate:${candidateDigest}`,
+      authorPrincipalId: "service-1",
+      evidence: ["agent_run:run-human", `candidate:${candidateDigest}`],
+      correlationId: "forged-service", createdAt: T1, decisionType: "verification",
+    });
+
+    expect(() => replaceReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Use the human directive.",
+      candidateDigest, sourceRunId: "run-human", authorPrincipalId: "human-1",
+      correlationId: "human-review", createdAt: T2,
+    })).toThrowError("reviewer_directive_authority_invalid");
+    expect(getActiveMissionDecisions(db, "t1", "m1").map((decision) => decision.id))
+      .toEqual([forged.id]);
+  });
+
+  it("rejects a reviewer directive whose source run does not exist", () => {
+    const db = fixture();
+    expect(() => replaceReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Missing runs cannot authorize review.",
+      candidateDigest: "2".repeat(64), sourceRunId: "missing-run", authorPrincipalId: "human-1",
+      correlationId: "missing-run", createdAt: T1,
+    })).toThrowError("reviewer_directive_source_authority_invalid");
+    expect(getActiveMissionDecisions(db, "t1", "m1")).toEqual([]);
+  });
+
+  it("rejects a reviewer run whose source job belongs to another Mission", () => {
+    const db = fixture();
+    const candidateDigest = "3".repeat(64);
+    seedReviewerRun(db, "run-other-mission", candidateDigest, "m2");
+
+    expect(() => replaceReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Wrong Mission.",
+      candidateDigest, sourceRunId: "run-other-mission", authorPrincipalId: "human-1",
+      correlationId: "wrong-mission", createdAt: T1,
+    })).toThrowError("reviewer_directive_source_authority_invalid");
+  });
+
+  it("rejects a reviewer run whose persisted candidate differs", () => {
+    const db = fixture();
+    seedReviewerRun(db, "run-other-candidate", "4".repeat(64));
+
+    expect(() => replaceReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Wrong candidate.",
+      candidateDigest: "5".repeat(64), sourceRunId: "run-other-candidate",
+      authorPrincipalId: "human-1", correlationId: "wrong-candidate", createdAt: T1,
+    })).toThrowError("reviewer_directive_source_authority_invalid");
+  });
+
+  it("never resurrects a retracted directive on repeated semantic retry", () => {
+    const db = fixture();
+    const candidateDigest = "6".repeat(64);
+    seedReviewerRun(db, "run-retracted", candidateDigest);
+    const input = {
+      tenantId: "t1", missionId: "m1", directive: "Do not change the public API.",
+      candidateDigest, sourceRunId: "run-retracted", authorPrincipalId: "human-1",
+      correlationId: "initial-review", createdAt: T1,
+    } as const;
+    const first = replaceReviewerDirective(db, input);
+    retractMissionDecision(db, {
+      tenantId: "t1", priorDecisionId: first.id, rationale: "Reviewer withdrew this guidance.",
+      authorPrincipalId: "human-1", correlationId: "withdraw-review", createdAt: T2,
+    });
+    const historyCount = listMissionDecisions(db, "t1", "m1").length;
+    const eventCount = listDomainEvents(db, "t1", "mission", "m1").length;
+
+    for (const createdAt of ["2026-01-04T00:00:00.000Z", "2026-01-05T00:00:00.000Z"]) {
+      expect(() => replaceReviewerDirective(db, {
+        ...input, correlationId: `retry-${createdAt}`, createdAt,
+      })).toThrowError("reviewer_directive_terminal_history");
+    }
+    expect(getActiveMissionDecisions(db, "t1", "m1")).toEqual([]);
+    expect(listMissionDecisions(db, "t1", "m1")).toHaveLength(historyCount);
+    expect(listDomainEvents(db, "t1", "mission", "m1")).toHaveLength(eventCount);
+  });
+
+  it("verifies the full ledger before the write lock and bounds lock-held advancement", () => {
+    const db = fixture();
+    const candidateDigest = "0".repeat(64);
+    seedReviewerRun(db, "run-bounded-ledger", candidateDigest);
+    for (let index = 0; index < 96; index++) {
+      appendDomainEvent(db, {
+        id: `unrelated-${index}`, tenantId: "t1", schemaVersion: 1,
+        eventType: "unrelated.observed", aggregateType: "unrelated", aggregateId: `u-${index}`,
+        actorPrincipalId: "human-1", correlationId: `unrelated-${index}`,
+        idempotencyKey: `unrelated-${index}`, payload: { index }, createdAt: T1,
+      });
+    }
+    const authority = captureVerifiedDomainEventAuthority(db, "t1");
+    appendDomainEvent(db, {
+      id: "boundary-event", tenantId: "t1", schemaVersion: 1,
+      eventType: "unrelated.observed", aggregateType: "unrelated", aggregateId: "boundary",
+      actorPrincipalId: "human-1", correlationId: "boundary",
+      idempotencyKey: "boundary", payload: { boundary: true }, createdAt: T1,
+    });
+    const realPrepare = db.raw.prepare.bind(db.raw);
+    let writeLocked = false;
+    let suffixQueries = 0;
+    (db.raw as unknown as { prepare: typeof db.raw.prepare }).prepare = ((sql: string) => {
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      if (writeLocked && normalized.startsWith("SELECT * FROM domain_events") &&
+          normalized.includes("ORDER BY event_sequence ASC") &&
+          !normalized.includes(" LIMIT ")) {
+        throw new Error("unbounded_domain_event_scan_under_write_lock");
+      }
+      if (writeLocked && normalized.includes("event_sequence >")) suffixQueries += 1;
+      return realPrepare(sql);
+    }) as typeof db.raw.prepare;
+    db.raw.exec("BEGIN IMMEDIATE");
+    writeLocked = true;
+    try {
+      replaceReviewerDirective(db, {
+        tenantId: "t1", missionId: "m1", directive: "Use bounded authority.",
+        candidateDigest, sourceRunId: "run-bounded-ledger", authorPrincipalId: "human-1",
+        correlationId: "bounded-ledger", createdAt: T2, eventAuthority: authority,
+      });
+      db.raw.exec("COMMIT");
+    } catch (error) {
+      if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+      throw error;
+    } finally {
+      writeLocked = false;
+      (db.raw as unknown as { prepare: typeof realPrepare }).prepare = realPrepare;
+    }
+    expect(suffixQueries).toBe(1);
+  });
+
   it("keeps newer authority when an older legacy head replays later", () => {
     const db = fixture();
     const candidateDigest = "e".repeat(64);
+    seedReviewerRun(db, "run-old", candidateDigest);
+    seedReviewerRun(db, "run-new", candidateDigest);
     const scope = `reviewer_directive:candidate:${candidateDigest}`;
     const older = recordReviewerDirective(db, {
       tenantId: "t1", missionId: "m1", directive: "Keep the public signature stable.", scope,
@@ -272,6 +445,8 @@ describe("mission handoff (durable records)", () => {
   it("keeps repeated delivery of a retired stale replay permanently idempotent", () => {
     const db = fixture();
     const candidateDigest = "7".repeat(64);
+    seedReviewerRun(db, "run-old", candidateDigest);
+    seedReviewerRun(db, "run-new", candidateDigest);
     const scope = `reviewer_directive:candidate:${candidateDigest}`;
     const older = recordReviewerDirective(db, {
       tenantId: "t1", missionId: "m1", directive: "Keep the public signature stable.", scope,
@@ -310,6 +485,8 @@ describe("mission handoff (durable records)", () => {
   it("uses durable event order when duplicate heads have the same timestamp", () => {
     const db = fixture();
     const candidateDigest = "f".repeat(64);
+    seedReviewerRun(db, "run-same-time-b", candidateDigest);
+    seedReviewerRun(db, "run-same-time-a", candidateDigest);
     const scope = `reviewer_directive:candidate:${candidateDigest}`;
     const older = recordReviewerDirective(db, {
       tenantId: "t1", missionId: "m1", directive: "Keep the public signature stable.", scope,
@@ -341,6 +518,7 @@ describe("mission handoff (durable records)", () => {
   it("rejects a tampered tenant event hash chain before ordering reviewer authority", () => {
     const db = fixture();
     const candidateDigest = "8".repeat(64);
+    seedReviewerRun(db, "run-tampered", candidateDigest);
     const scope = `reviewer_directive:candidate:${candidateDigest}`;
     const recorded = recordReviewerDirective(db, {
       tenantId: "t1", missionId: "m1", directive: "Keep the signature stable.", scope,
@@ -361,6 +539,7 @@ describe("mission handoff (durable records)", () => {
   it("leaves a legacy-shaped head active when its scope and run evidence disagree", () => {
     const db = fixture();
     const candidateDigest = "9".repeat(64);
+    seedReviewerRun(db, "run-current", candidateDigest);
     const malformed = recordReviewerDirective(db, {
       tenantId: "t1", missionId: "m1", directive: "Do not treat this as released legacy authority.",
       scope: "reviewer_directive:run-in-scope", authorPrincipalId: "human-1",
@@ -383,6 +562,8 @@ describe("mission handoff (durable records)", () => {
   it("preserves causation on the superseding reviewer directive event", () => {
     const db = fixture();
     const candidateDigest = "b".repeat(64);
+    seedReviewerRun(db, "run-old", candidateDigest);
+    seedReviewerRun(db, "run-new", candidateDigest);
     recordReviewerDirective(db, {
       tenantId: "t1", missionId: "m1", directive: "Keep the signature stable.",
       scope: `reviewer_directive:candidate:${candidateDigest}`, authorPrincipalId: "human-1",
@@ -401,6 +582,9 @@ describe("mission handoff (durable records)", () => {
   it("opens its transaction before reading and reconciles a writer that commits at that boundary", () => {
     const db = fixture();
     const candidateDigest = "c".repeat(64);
+    seedReviewerRun(db, "run-1", candidateDigest);
+    seedReviewerRun(db, "run-2", candidateDigest);
+    seedReviewerRun(db, "run-3", candidateDigest);
     const scope = `reviewer_directive:candidate:${candidateDigest}`;
     recordReviewerDirective(db, {
       tenantId: "t1", missionId: "m1", directive: "First directive.", scope,
@@ -438,12 +622,15 @@ describe("mission handoff (durable records)", () => {
 
   it("joins an owning transaction so rollback removes the whole replacement", () => {
     const db = fixture();
+    const candidateDigest = "d".repeat(64);
+    seedReviewerRun(db, "run-d", candidateDigest);
+    const eventAuthority = captureVerifiedDomainEventAuthority(db, "t1");
     db.raw.exec("BEGIN IMMEDIATE");
     try {
       replaceReviewerDirective(db, {
         tenantId: "t1", missionId: "m1", directive: "Transactional directive.",
-        candidateDigest: "d".repeat(64), sourceRunId: "run-d", authorPrincipalId: "human-1",
-        correlationId: "corr-d", createdAt: T1,
+        candidateDigest, sourceRunId: "run-d", authorPrincipalId: "human-1",
+        correlationId: "corr-d", createdAt: T1, eventAuthority,
       });
       expect(db.raw.isTransaction).toBe(true);
     } finally {

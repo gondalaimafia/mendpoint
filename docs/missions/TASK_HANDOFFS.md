@@ -112,10 +112,15 @@ string with the rationale concatenated on. The resume side now reads the
 
 ## 4 — Stop repeating rejected approaches and resolved questions
 
-- A rejected approach is recorded as an **active** `mission_decision`
-  (`recordReviewerDirective`). Distinct per-cycle scopes keep every cycle's
-  directive active at once, so cycle 3 still sees cycle 1's — the compiler surfaces
-  all active decisions in `activeDecisions`.
+- A rejected approach is recorded as an **active**, candidate-scoped
+  `mission_decision` (`replaceReviewerDirective`). A later human review of the
+  exact same candidate replaces the current directive, so the compiler surfaces
+  one authenticated reviewer authority for that candidate in `activeDecisions`.
+  Directives for different candidate digests remain independent. Released
+  run-scoped heads are reconciled only when their human author, source run,
+  Mission, and persisted candidate digest all agree with the current scope.
+  An explicitly retracted directive is terminal: a repeated delivery of its old
+  semantic operation cannot recreate it.
 - A resolved question's blocking exception is closed, so
   `evaluateMissionExceptions` no longer surfaces it and the compiler's
   `unresolvedExceptions` excludes it. It is not asked again.
@@ -143,7 +148,12 @@ an unchanged one does not.
 - The **first real caller** of the mission decision store is the mission-bound
   regenerate branch of `warden-candidate-review.ts`: when (and only when) the
   regenerate is part of a formal mission, the reviewer directive is recorded as a
-  durable decision. With no mission it is skipped — nothing is fabricated.
+  durable decision through `replaceReviewerDirective`. The source `agent_run`, its
+  `agent.run` job, the Mission id, candidate digest, and human principal are all
+  revalidated before replacement. With no mission it is skipped — nothing is
+  fabricated. The tenant event ledger is fully authenticated before the writer
+  lock; the transaction then authenticates the captured tip and at most 64 events
+  appended since capture before it changes reviewer authority.
 - The **ReGauge / transformer** path runs deterministic recipes and never reaches
   the model seam, so it is deliberately not wired to write context refs or
   decisions here. ReGauge regeneration remains blocked by an owner decision
@@ -163,10 +173,10 @@ instruction.
 | Unrecognized status is `unknown`, never agent-owned | `task-ownership.test.ts` CONTROL A | the `default: return "unknown"` arm |
 | Resume eligible only after a human/terminal step | `task-ownership.test.ts` CONTROL B | `human_review_required -> agent_resume` in the transition table |
 | A resolved question is not re-asked | `mission-handoff.test.ts` "question resolved ... not re-asked" | the `resolveMissionException` call in `resolveTaskHandoff` |
-| A rejected approach stays active through later cycles | `mission-handoff.test.ts` "rejected in cycle 1 ... through cycle 3" | the `recordMissionDecision` call in `recordReviewerDirective` |
+| One candidate has one authenticated current reviewer directive | `mission-handoff.test.ts` "keeps newer authority ...", "service-authored head ...", and "never resurrects ..." | the human/run/candidate binding and terminal-history guards in `replaceReviewerDirective` |
 | Revisiting requires new evidence (not absolute) | `mission-handoff.test.ts` "changed circumstance ... only with new evidence" | the evidence guard in `reviseDecisionOnNewEvidence` |
 | `context_not_loaded` distinct from `no_prior_context` | `mission-resume.test.ts` CONTROL (store scan) + "four ... distinct" | the `store_not_available` scan in `classifyResumeStanding` |
 | A resumed run reads the earlier decision from the envelope | `mission-resume.test.ts` "reads the earlier decision" | the mission pass-through in `resolveResumeContext` |
 | Bound Missions compile without `MENDPOINT_INHERITED_CONTEXT`, and an explicit `0` still suppresses | `inherited-context.test.ts` CONTROL (bound compile + kill switch) + `agent.test.ts` inherited-context injection seam | `inheritedContextShouldCompile` + the seam gate in `agent.ts` |
 | Instruction-like reviewer text framed as data at the seam | `mission-resume.test.ts` CONTROL (seam) | the fence/header in `renderInheritedContextSystemBlock` |
-| Reviewer directive recorded only when mission-bound | `warden-candidate-review.test.ts` "records the reviewer directive ..." / "no fabrication" | the `recordReviewerDirective` call in the regenerate branch |
+| Reviewer directive replaced only when mission-bound | `warden-candidate-review.test.ts` "records the reviewer directive ...", "replaces a live reviewer directive ...", and "no fabrication" | the `replaceReviewerDirective` call in the regenerate branch |

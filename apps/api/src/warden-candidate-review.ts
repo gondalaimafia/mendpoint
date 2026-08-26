@@ -3,6 +3,7 @@ import type { Context, Hono } from "hono";
 import { nowIso } from "@mendpoint/shared";
 import {
   agentRunToApi,
+  captureVerifiedDomainEventAuthority,
   enqueueJob,
   enqueueWardenCandidateDelivery,
   enqueueWardenCiUpdate,
@@ -329,6 +330,14 @@ export function registerWardenCandidateReviewRoutes(
     const candidateManifestSha256 = typeof artifacts.candidateManifestSha256 === "string"
       ? artifacts.candidateManifestSha256
       : "";
+    let reviewerEventAuthority: ReturnType<typeof captureVerifiedDomainEventAuthority> | undefined;
+    if (body.decision === "regenerate") {
+      try {
+        reviewerEventAuthority = captureVerifiedDomainEventAuthority(db, tenantId);
+      } catch (error) {
+        return mappedErrorResponse(c, error, WARDEN_REVIEW_ERRORS);
+      }
+    }
     if (body.decision === "approve") {
       if (!candidateDigest || !candidateManifestSha256) {
         return mappedErrorResponse(c, new Error("warden_candidate_approval_binding_invalid"), WARDEN_REVIEW_ERRORS);
@@ -417,6 +426,7 @@ export function registerWardenCandidateReviewRoutes(
             authorPrincipalId: trustId!,
             correlationId: next.runId,
             createdAt: reviewedAt,
+            eventAuthority: reviewerEventAuthority!,
           });
         }
         reviewedResult = { ...result, review: { decision: body.decision, rationale: body.rationale,

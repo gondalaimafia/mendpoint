@@ -42,7 +42,11 @@ import {
   type MissionTask,
   type MissionTaskStatus,
 } from "./mission-task.js";
-import { listDomainEvents, verifyDomainEventIntegrity } from "./trust.js";
+import {
+  captureVerifiedDomainEventAuthority,
+  consumeVerifiedDomainEventAuthority,
+  type VerifiedDomainEventAuthority,
+} from "./trust.js";
 
 /**
  * Why a task is being handed to a human. An explicit, closed enum: a handoff
@@ -340,11 +344,15 @@ function sameEvidence(left: readonly string[], right: readonly string[]): boolea
 }
 
 function reviewerDirectiveRunId(
+  db: AppDb,
   decision: MissionDecision,
+  tenantId: string,
+  missionId: string,
   scope: string,
-  candidateEvidence: string,
+  candidateDigest: string,
 ): string | null {
   if (decision.decisionType !== "verification") return null;
+  const candidateEvidence = `candidate:${candidateDigest}`;
   const candidateRefs = decision.evidence.filter((ref) => ref.startsWith("candidate:"));
   if (candidateRefs.length !== 1 || candidateRefs[0] !== candidateEvidence) return null;
   const runRefs = decision.evidence.filter((ref) => ref.startsWith("agent_run:"));
@@ -354,7 +362,50 @@ function reviewerDirectiveRunId(
   // that shape only when the scope and evidence agree; an arbitrary same-prefix
   // scope is not authority to retire a decision.
   if (decision.scope !== scope && decision.scope !== `reviewer_directive:${runId}`) return null;
+  if (!isHumanPrincipal(db, tenantId, decision.authorPrincipalId) ||
+      !reviewerRunMatches(db, tenantId, missionId, runId, candidateDigest)) {
+    throw new Error("reviewer_directive_authority_invalid");
+  }
   return runId;
+}
+
+function isHumanPrincipal(db: AppDb, tenantId: string, principalId: string): boolean {
+  const row = db.raw.prepare(
+    `SELECT kind FROM principals WHERE id = ? AND tenant_id = ?`,
+  ).get(principalId, tenantId) as { kind: string } | undefined;
+  return row?.kind === "human";
+}
+
+function reviewerRunMatches(
+  db: AppDb,
+  tenantId: string,
+  missionId: string,
+  runId: string,
+  candidateDigest: string,
+): boolean {
+  const run = db.raw.prepare(
+    `SELECT job_id, result_json FROM agent_runs WHERE id = ? AND tenant_id = ?`,
+  ).get(runId, tenantId) as { job_id: string | null; result_json: string | null } | undefined;
+  if (!run?.job_id || !run.result_json) return false;
+  const job = db.raw.prepare(
+    `SELECT type, payload_json FROM jobs WHERE id = ? AND tenant_id = ?`,
+  ).get(run.job_id, tenantId) as { type: string; payload_json: string } | undefined;
+  if (!job || job.type !== "agent.run") return false;
+  try {
+    const payload = JSON.parse(job.payload_json) as unknown;
+    const result = JSON.parse(run.result_json) as unknown;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
+        !result || typeof result !== "object" || Array.isArray(result)) return false;
+    const mission = (payload as Record<string, unknown>).missionId;
+    const artifacts = (result as Record<string, unknown>).artifacts;
+    const persistedDigest = artifacts && typeof artifacts === "object" && !Array.isArray(artifacts)
+      ? (artifacts as Record<string, unknown>).candidateDigest
+      : null;
+    return mission === missionId && typeof persistedDigest === "string" &&
+      persistedDigest.trim().toLowerCase() === candidateDigest;
+  } catch {
+    return false;
+  }
 }
 
 function orderReviewerDirectiveHistory(
@@ -363,12 +414,23 @@ function orderReviewerDirectiveHistory(
   missionId: string,
   decisions: readonly MissionDecisionView[],
 ): MissionDecisionView[] {
-  if (!verifyDomainEventIntegrity(db, tenantId).ok) {
-    throw new Error("reviewer_directive_event_chain_invalid");
-  }
-  const events = new Map(listDomainEvents(db, tenantId, "mission", missionId).map((event) => [event.id, event]));
+  if (decisions.length > 256) throw new Error("reviewer_directive_history_limit_exceeded");
   return decisions.map((decision) => {
-    const event = events.get(`mission-decision:${decision.id}`);
+    const event = db.raw.prepare(
+      `SELECT id, event_sequence, event_type, aggregate_type, aggregate_id,
+              actor_principal_id, created_at, payload_json
+       FROM domain_events
+       WHERE tenant_id = ? AND id = ?`,
+    ).get(tenantId, `mission-decision:${decision.id}`) as {
+      id: string;
+      event_sequence: number;
+      event_type: string;
+      aggregate_type: string;
+      aggregate_id: string;
+      actor_principal_id: string;
+      created_at: string;
+      payload_json: string;
+    } | undefined;
     let payload: Record<string, unknown> | null = null;
     try {
       const parsed = event ? JSON.parse(event.payload_json) as unknown : null;
@@ -398,10 +460,10 @@ function orderReviewerDirectiveHistory(
  * on the same textual scope are never superseded.
  *
  * Legacy data may contain multiple active reviewer heads because the generic
- * record primitive permits independent roots. Reconcile those heads in stable
- * creation/id order, retracting every duplicate before replacing the newest
- * head. The entire read/reconcile/write sequence owns one IMMEDIATE transaction
- * unless its caller already owns the transaction.
+ * record primitive permits independent roots. Reconcile at most 256 authenticated
+ * heads in their durable ledger order, retracting every duplicate before replacing
+ * the newest head. The full tenant ledger is authenticated before acquiring the
+ * write lock; the transaction then verifies its exact tip and a bounded suffix.
  */
 export function replaceReviewerDirective(
   db: AppDb,
@@ -415,6 +477,7 @@ export function replaceReviewerDirective(
     correlationId: string;
     causationId?: string | null;
     createdAt: string;
+    eventAuthority?: VerifiedDomainEventAuthority;
   },
 ): MissionDecision {
   const directive = input.directive.trim();
@@ -425,14 +488,47 @@ export function replaceReviewerDirective(
   const candidateEvidence = `candidate:${candidateDigest}`;
   const evidence = [`agent_run:${sourceRunId}`, candidateEvidence] as const;
   const owns = !db.raw.isTransaction;
+  let eventAuthority = input.eventAuthority;
+  if (!eventAuthority) {
+    if (!owns) throw new Error("reviewer_directive_event_authority_required");
+    try {
+      eventAuthority = captureVerifiedDomainEventAuthority(db, input.tenantId);
+    } catch (error) {
+      if (error instanceof Error && error.message === "domain_event_integrity_invalid") {
+        throw new Error("reviewer_directive_event_chain_invalid");
+      }
+      throw error;
+    }
+  }
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
+    try {
+      consumeVerifiedDomainEventAuthority(db, input.tenantId, eventAuthority);
+    } catch (error) {
+      if (error instanceof Error && error.message === "domain_event_integrity_invalid") {
+        throw new Error("reviewer_directive_event_chain_invalid");
+      }
+      throw error;
+    }
+    if (!isHumanPrincipal(db, input.tenantId, input.authorPrincipalId)) {
+      throw new Error("reviewer_directive_authority_invalid");
+    }
+    if (!reviewerRunMatches(db, input.tenantId, input.missionId, sourceRunId, candidateDigest)) {
+      throw new Error("reviewer_directive_source_authority_invalid");
+    }
     const history = orderReviewerDirectiveHistory(
       db,
       input.tenantId,
       input.missionId,
       listMissionDecisions(db, input.tenantId, input.missionId).filter((decision) =>
-        reviewerDirectiveRunId(decision, scope, candidateEvidence) !== null),
+        reviewerDirectiveRunId(
+          db,
+          decision,
+          input.tenantId,
+          input.missionId,
+          scope,
+          candidateDigest,
+        ) !== null),
     );
     const heads = history.filter((decision) => decision.effectiveStatus === "active");
     // createdAt records the first write; it is not part of the semantic operation
@@ -446,6 +542,7 @@ export function replaceReviewerDirective(
     // Authority follows the newest legitimate ledger event, even when wall-clock
     // timestamps collide or a delayed retry matches an older legacy duplicate.
     const survivor = heads.at(-1);
+    if (replay && !survivor) throw new Error("reviewer_directive_terminal_history");
     for (const head of heads) {
       if (head.id === survivor?.id) continue;
       retractMissionDecision(db, {

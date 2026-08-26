@@ -549,15 +549,27 @@ export function listDomainEvents(
   );
 }
 
-export function verifyDomainEventIntegrity(
-  db: AppDb,
+export type VerifiedDomainEventAuthority = Readonly<{
+  tenantId: string;
+  eventSequence: number;
+  eventHash: string | null;
+}>;
+
+const issuedDomainEventAuthorities = new WeakSet<object>();
+const MAX_DOMAIN_EVENT_AUTHORITY_ADVANCE = 64;
+
+function verifyDomainEventRows(
+  rows: readonly DomainEventRow[],
   tenantId: string,
-): { ok: boolean; checked: number; error?: string } {
-  const rows = listDomainEvents(db, tenantId);
-  let previousHash: string | null = null;
+  initialSequence = 0,
+  initialHash: string | null = null,
+): { ok: true; checked: number; eventSequence: number; eventHash: string | null } |
+   { ok: false; checked: number; error: string } {
+  let sequence = initialSequence;
+  let previousHash = initialHash;
   for (let index = 0; index < rows.length; index++) {
-    const row = rows[index];
-    if (row.event_sequence !== index + 1 || row.prev_hash !== previousHash) {
+    const row = rows[index]!;
+    if (row.tenant_id !== tenantId || row.event_sequence !== sequence + 1 || row.prev_hash !== previousHash) {
       return { ok: false, checked: index, error: `domain_event_sequence:${row.id}` };
     }
     const payloadSha256 = digest(row.payload_json);
@@ -579,7 +591,85 @@ export function verifyDomainEventIntegrity(
     if (row.payload_sha256 !== payloadSha256 || row.event_hash !== expected) {
       return { ok: false, checked: index, error: `domain_event_hash:${row.id}` };
     }
+    sequence = row.event_sequence;
     previousHash = row.event_hash;
   }
-  return { ok: true, checked: rows.length };
+  return { ok: true, checked: rows.length, eventSequence: sequence, eventHash: previousHash };
+}
+
+export function verifyDomainEventIntegrity(
+  db: AppDb,
+  tenantId: string,
+): { ok: boolean; checked: number; error?: string } {
+  const rows = listDomainEvents(db, tenantId);
+  const verified = verifyDomainEventRows(rows, tenantId);
+  return verified.ok
+    ? { ok: true, checked: verified.checked }
+    : { ok: false, checked: verified.checked, error: verified.error };
+}
+
+/**
+ * Verify the complete tenant ledger without a writer reservation and issue one
+ * process-local capability for its authenticated tip. The read transaction
+ * keeps the full scan and tip capture on one SQLite snapshot.
+ */
+export function captureVerifiedDomainEventAuthority(
+  db: AppDb,
+  tenantId: string,
+): VerifiedDomainEventAuthority {
+  if (db.raw.isTransaction) throw new Error("domain_event_authority_capture_transaction_active");
+  db.raw.exec("BEGIN");
+  try {
+    const verified = verifyDomainEventRows(listDomainEvents(db, tenantId), tenantId);
+    if (!verified.ok) throw new Error("domain_event_integrity_invalid");
+    const authority = Object.freeze({
+      tenantId,
+      eventSequence: verified.eventSequence,
+      eventHash: verified.eventHash,
+    });
+    db.raw.exec("COMMIT");
+    issuedDomainEventAuthorities.add(authority);
+    return authority;
+  } catch (error) {
+    if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/**
+ * Consume one verified tip while a writer transaction is held. Only the exact
+ * tip row and at most 64 events appended since capture are read under the lock.
+ */
+export function consumeVerifiedDomainEventAuthority(
+  db: AppDb,
+  tenantId: string,
+  authority: VerifiedDomainEventAuthority,
+): void {
+  if (!db.raw.isTransaction) throw new Error("domain_event_authority_transaction_required");
+  if (!issuedDomainEventAuthorities.delete(authority) || authority.tenantId !== tenantId) {
+    throw new Error("domain_event_authority_invalid");
+  }
+  if (authority.eventSequence === 0) {
+    if (authority.eventHash !== null) throw new Error("domain_event_authority_invalid");
+  } else {
+    const tip = one<{ event_hash: string }>(db,
+      `SELECT event_hash FROM domain_events WHERE tenant_id = ? AND event_sequence = ?`,
+      [tenantId, authority.eventSequence]);
+    if (!tip || tip.event_hash !== authority.eventHash) throw new Error("domain_event_authority_stale");
+  }
+  const suffix = many<DomainEventRow>(db,
+    `SELECT * FROM domain_events
+     WHERE tenant_id = ? AND event_sequence > ?
+     ORDER BY event_sequence LIMIT ?`,
+    [tenantId, authority.eventSequence, MAX_DOMAIN_EVENT_AUTHORITY_ADVANCE + 1]);
+  if (suffix.length > MAX_DOMAIN_EVENT_AUTHORITY_ADVANCE) {
+    throw new Error("domain_event_authority_advance_exceeded");
+  }
+  const verified = verifyDomainEventRows(
+    suffix,
+    tenantId,
+    authority.eventSequence,
+    authority.eventHash,
+  );
+  if (!verified.ok) throw new Error("domain_event_integrity_invalid");
 }

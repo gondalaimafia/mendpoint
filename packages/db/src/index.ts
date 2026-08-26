@@ -3938,6 +3938,8 @@ export type {
 
 export {
   appendDomainEvent,
+  captureVerifiedDomainEventAuthority,
+  consumeVerifiedDomainEventAuthority,
   getPrincipal,
   getPrincipalBySubject,
   getLatestCandidateArtifactForSubject,
@@ -3951,6 +3953,7 @@ export {
   listReviewDecisions,
   verifyDomainEventIntegrity,
 } from "./trust.js";
+export type { VerifiedDomainEventAuthority } from "./trust.js";
 
 export {
   changeTenantMembershipRole,

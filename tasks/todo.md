@@ -3414,3 +3414,17 @@ RED: the repeated-delivery regression first returned a new successor and restore
 GREEN: semantic replay identity is now resolved from the immutable eligible decision history, while survivor authority still comes only from current active heads in verified event order. The replacement transaction verifies the tenant domain-event sequence and hash chain before it consumes any event sequence, then retains the existing exact decision-to-event binding checks.
 
 Verification: rebased onto exact `origin/main` `256e40658f5a9670ea38227654f3612068bc611c`. All 20 Mission handoff, eight MissionDecision, and 21 candidate-review API tests pass. Database and API typechecks pass, and both branch and worktree diff-integrity checks are clean. Repair commit `47b8f942` was pushed to the existing PR branch with lease protection; no approval or merge was performed.
+
+### 2026-08-25 PR 466 independent authority review repair
+
+- [x] RED: reject service principals, missing runs, wrong-Mission source jobs, and run/candidate mismatches as reviewer authority.
+- [x] RED: prove a semantic retry cannot resurrect an explicitly retracted directive or emit more records on repeated retry.
+- [x] RED: prove full tenant-ledger verification runs before the write lock and lock-held authority advancement is bounded.
+- [x] Bind every eligible current or released reviewer head to the persisted human principal, exact tenant run, source-job Mission, and candidate digest.
+- [x] Replace lock-held full-ledger verification with a one-use verified tip plus bounded authenticated suffix advancement.
+- [x] Update `TASK_HANDOFFS.md` to the live candidate-bound replacement contract.
+- [ ] Run focused DB/API tests, affected typechecks, strict diff review, rebase if needed, and push for independent re-review.
+
+#### Review
+
+Implementation complete. Pre-rebase verification: 61 focused database and API tests pass, database and API typechecks pass, and the worktree diff-integrity check is clean. Current `origin/main` advanced after implementation, so the required rebase and post-rebase gate remain pending.
