@@ -3372,3 +3372,23 @@ Mission-bound Fettler approve/regenerate now require exactly one current blocker
 The transaction rechecks the durable human principal, creation/expiry/revocation window, active membership, current membership role's `plan:edit`, OIDC method, and membership evidence using the trusted post-seal commit timestamp. Source-job JSON must be a non-null plain object on approve and regenerate.
 
 Verification: 41 focused candidate-review tests pass. Complete API, DB, and worker workspaces pass 537, 431, and 591 tests respectively (one pre-existing worker test skipped). API, DB, and worker typechecks pass, and strict diff integrity is clean. No schema or production configuration changed; no push was performed.
+
+## 2026-08-26 Durable successor and remote-mutation Mission authority
+
+- [x] RED: prove approve and regenerate carry the exact reviewed Mission task and revision through real queue claims and two complete handoff cycles.
+- [x] RED: prove cancel, supersede, or Mission revision drift during the asynchronous seal conflicts before review commit.
+- [x] RED: prove cancellation or a new blocking exception after enqueue or after claim prevents every remote GitHub mutation.
+- [x] RED: prove the ADR record-only compatibility case resolves only one current record-only blocker when the exact task is truly absent, while mixed or ambiguous authority fails closed.
+- [x] Add one versioned durable Mission mutation-authority contract shared by candidate review, delivery, CI update, and worker dispatch.
+- [x] Resume the exact authenticated enrollment task to `agent_working` only when the real successor job is claimed.
+- [x] Revalidate Mission state, revision, snapshot, task authority, and global blocking semantics immediately before every remote mutation.
+- [x] Run focused lifecycle, API, DB, and worker regressions, affected typechecks, build, and strict diff review.
+- [x] Inspect the final diff and create a new local commit without pushing.
+
+### Review
+
+Candidate review now seals and rechecks Mission state and revision, resolves either one exact task-bound blocker or the narrowly retained one-record ADR compatibility case, and writes a versioned Mission authority object into every successor or remote-mutation job. The real queue claim resumes only that reviewed task. Successful regeneration returns the same task to human review, so two complete review cycles no longer depend on a test helper or a fabricated job task.
+
+Draft delivery and CI update validate the durable Mission, task, repository, snapshot, and revision bindings at enqueue, after claim, and immediately before each GitHub mutation. Cancellation, revision drift, a new global blocker, a missing reviewed task, or record/task ambiguity fails closed without a remote call. CI repair successors inherit the exact same authority.
+
+Verification: complete API, database, and worker suites pass 540, 431, and 597 tests respectively, with one intentional worker skip. API, database, and worker typechecks pass. The optimized 50-route production build passes, and `git diff --check` is clean. The durable contract is payload schema version 1, so existing unbound queue records remain readable without adding a table migration. No push was performed.

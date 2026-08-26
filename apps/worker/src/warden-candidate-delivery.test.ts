@@ -5,12 +5,25 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   claimNextJob,
+  bindMissionScope,
   createDb,
+  createMission,
+  createMissionMutationAuthority,
+  createMissionTask,
+  enqueueJob,
   enqueueWardenCandidateDelivery,
   getJob,
   getWardenCandidateDeliveryByRun,
   getWardenCiCycle,
   insertAgentRun,
+  insertPrincipal,
+  getMission,
+  getMissionTask,
+  openTaskHandoff,
+  raiseMissionException,
+  resolveTaskHandoff,
+  transitionMission,
+  transitionMissionTask,
   recoverExpiredJobs,
   type AppDb,
 } from "@mendpoint/db";
@@ -119,6 +132,57 @@ function fixture(preciseEvidence = false, deleted = false) {
   return { db, dataRoot, delivery, job };
 }
 
+function bindMissionAuthority(value: ReturnType<typeof fixture>) {
+  const { db } = value;
+  insertPrincipal(db, { id: "principal-owner", tenantId: "tenant-a", kind: "human",
+    subject: "owner@example.com", displayName: "Owner", createdAt: NOW });
+  db.raw.prepare(`INSERT INTO scm_connections
+    (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+    VALUES ('scm-mission', 'tenant-a', 'github', 'app://1', '1', 'GitHub', ?, ?)`).run(NOW, NOW);
+  db.raw.prepare(`INSERT INTO connected_repositories
+    (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
+     environment, retention_days, status, created_at, updated_at)
+    VALUES ('repo-1', 'tenant-a', 'scm-mission', '1', 'acme', 'sdk', 'main', 'main',
+     'production', 30, 'ready', ?, ?)`).run(NOW, NOW);
+  db.raw.prepare(`INSERT INTO repository_snapshots
+    (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+     submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+    VALUES ('snapshot-1', 'tenant-a', 'repo-1', 'main', ?, ?, 'C:\\snapshot',
+     'reject', 'reject', '[]', 1, ?, '2099-01-01T00:00:00.000Z')`)
+    .run("a".repeat(40), `sha256:${"b".repeat(64)}`, NOW);
+  createMission(db, { id: "mission-1", tenantId: "tenant-a", product: "fettler",
+    triggerKind: "provider_change", objective: "Repair SDK", ownerPrincipalId: "principal-owner",
+    eventId: "e-mission", idempotencyKey: "c-mission", correlationId: "corr", createdAt: NOW });
+  bindMissionScope(db, { tenantId: "tenant-a", missionId: "mission-1", repositoryId: "repo-1",
+    snapshotId: "snapshot-1", actorPrincipalId: "principal-owner", eventId: "e-scope",
+    idempotencyKey: "c-scope", correlationId: "corr", createdAt: NOW });
+  let task = createMissionTask(db, { id: "task-1", tenantId: "tenant-a", missionId: "mission-1",
+    taskType: "code_migration", acceptanceCriteria: "Tests pass", risk: "medium",
+    actorPrincipalId: "principal-owner", eventId: "e-task", idempotencyKey: "c-task",
+    correlationId: "corr", createdAt: NOW });
+  task = transitionMissionTask(db, { tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision,
+    to: "agent_assigned", actorPrincipalId: "principal-owner", eventId: "e-assign",
+    idempotencyKey: "c-assign", correlationId: "corr", createdAt: NOW });
+  task = transitionMissionTask(db, { tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision,
+    to: "agent_working", actorPrincipalId: "principal-owner", eventId: "e-work",
+    idempotencyKey: "c-work", correlationId: "corr", createdAt: NOW });
+  const blocker = openTaskHandoff(db, { tenantId: "tenant-a", missionId: "mission-1", taskId: task.id,
+    reason: "architecture_decision_required", question: "Deliver?", context: "Candidate passed.",
+    ownerPrincipalId: "principal-owner", correlationId: "corr", createdAt: NOW });
+  resolveTaskHandoff(db, { tenantId: "tenant-a", priorExceptionId: blocker.id, taskId: task.id,
+    resolutionNote: "Approve", decision: "Approve", scope: "handoff_resolution:delivery",
+    authorPrincipalId: "principal-owner", correlationId: "corr", createdAt: NOW });
+  enqueueJob(db, { id: "source-job-1", tenantId: "tenant-a", type: "agent.run", createdAt: NOW,
+    payload: { missionId: "mission-1", consumerId: "consumer-1", sessionId: "warden-run-1" } });
+  const authority = createMissionMutationAuthority({ mission: getMission(db, "tenant-a", "mission-1")!,
+    task: getMissionTask(db, "tenant-a", "task-1")!, repositoryId: "repo-1", snapshotId: "snapshot-1",
+    resolvedSha: "a".repeat(40) });
+  db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?")
+    .run(JSON.stringify({ deliveryId: value.delivery.id, runId: "warden-run-1", missionAuthority: authority }),
+      value.job.id, "tenant-a");
+  return { ...value, authority, job: getJob(db, value.job.id, "tenant-a")! };
+}
+
 afterEach(() => {
   while (opened.length) {
     const entry = opened.pop()!;
@@ -220,6 +284,38 @@ describe("Warden exact candidate draft delivery", () => {
     const result = await runWardenCandidateDelivery({ db, job, github, artifactEnv: { MENDPOINT_DATA_DIR: dataRoot },
       now: () => "2026-08-06T12:00:01.000Z",
       resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }) });
+    expect(result.status).toBe("delivery_failed");
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("does not call GitHub when the exact Mission is cancelled after the delivery is claimed", async () => {
+    const value = bindMissionAuthority(fixture());
+    const mission = getMission(value.db, "tenant-a", "mission-1")!;
+    transitionMission(value.db, { tenantId: "tenant-a", missionId: mission.id,
+      expectedRevision: mission.revision, to: "cancelled", actorPrincipalId: "principal-owner",
+      eventId: "e-cancel-delivery", idempotencyKey: "c-cancel-delivery", correlationId: "corr", createdAt: NOW });
+    const deliver = vi.fn();
+    const result = await runWardenCandidateDelivery({ db: value.db, job: value.job,
+      github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }) });
+    expect(result.status).toBe("delivery_failed");
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("does not call GitHub when a blocker is raised after claim but before dispatch", async () => {
+    const value = bindMissionAuthority(fixture());
+    const deliver = vi.fn();
+    const result = await runWardenCandidateDelivery({ db: value.db, job: value.job,
+      github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
+      resolveRepository: () => {
+        raiseMissionException(value.db, { tenantId: "tenant-a", missionId: "mission-1",
+          reason: "policy_exception", impact: "A current policy blocker forbids remote mutation.",
+          resolutionPath: "Resolve the policy exception before delivery.", blocking: true,
+          ownerPrincipalId: "principal-owner", correlationId: "corr", createdAt: NOW });
+        return { owner: "acme", repo: "sdk", baseBranch: "main" };
+      } });
     expect(result.status).toBe("delivery_failed");
     expect(deliver).not.toHaveBeenCalled();
   });

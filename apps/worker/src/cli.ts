@@ -70,6 +70,7 @@ import {
   settleWardenCiRepairWithoutCandidate,
   type AppDb,
   type FeedScheduleRow,
+  type MissionMutationAuthorityV1,
 } from "@mendpoint/db";
 import {
   listCatalogFeeds,
@@ -195,6 +196,7 @@ import {
 } from "./learning-corpus-cli.js";
 import {
   bridgeClaimedJobToMissionTask,
+  handoffCompletedJobToMissionReview,
   recordBoundMissionExecutionCost,
 } from "./mission-task-job-bridge.js";
 import {
@@ -700,6 +702,7 @@ type WardenJobPayload = Readonly<{
   // a separate gap), so this stays undefined and the mission-scoped sections
   // honestly report `no_mission_bound`.
   missionId?: string;
+  missionAuthority?: MissionMutationAuthorityV1;
   source?: Readonly<{
     pipelineJobId: string;
     changeId: string;
@@ -3628,14 +3631,19 @@ if (job.type === "warden.candidate.cleanup") {
             runWrite,
             pendingWardenRoutingFinalizer,
             attempt.status === "succeeded" ? attempt.finalizeTerminal : undefined,
-            attempt.status === "succeeded" && delegatedPrVerification
-              ? () => requestDelegatedPrVerificationJob(db, {
-                  tenantId: job.tenant_id,
-                  runId: sessionId,
-                  correlationId: job.id,
-                  createdAt: nowIso(),
-                  authority: delegatedPrVerification.verificationDependencies,
-                })
+            attempt.status === "succeeded"
+              ? () => {
+                  if (payload.missionAuthority) {
+                    handoffCompletedJobToMissionReview(db, job, nowIso());
+                  }
+                  if (delegatedPrVerification) requestDelegatedPrVerificationJob(db, {
+                    tenantId: job.tenant_id,
+                    runId: sessionId,
+                    correlationId: job.id,
+                    createdAt: nowIso(),
+                    authority: delegatedPrVerification.verificationDependencies,
+                  });
+                }
               : noAction && payload.ciFailure
               ? () => settleWardenCiRepairWithoutCandidate(db, { tenantId: job.tenant_id,
                   cycleId: payload.ciFailure!.cycleId, repairRunId: sessionId,

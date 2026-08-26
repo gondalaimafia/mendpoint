@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AppDb } from "./index.js";
+import { assertMissionMutationAuthority, parseMissionMutationAuthority,
+  type MissionMutationAuthorityV1 } from "./mission-mutation-authority.js";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -503,6 +505,7 @@ export function enqueueWardenCiUpdate(db: AppDb, input: Readonly<{
   expectedFeedbackDigest?: string | null;
   sealedPath: string; sealedSha256: string; reviewerPrincipalId: string; rationale: string;
   observedAt: string;
+  missionAuthority?: MissionMutationAuthorityV1;
 }>): WardenCiUpdate {
   const cycleId = id(input.cycleId, "warden_ci_cycle_invalid");
   const repairRunId = id(input.repairRunId, "warden_ci_repair_run_invalid");
@@ -514,17 +517,31 @@ export function enqueueWardenCiUpdate(db: AppDb, input: Readonly<{
   const reviewerPrincipalId = text(input.reviewerPrincipalId, "warden_ci_update_reviewer_invalid", 500);
   const rationale = text(input.rationale, "warden_ci_update_rationale_invalid", 2_000);
   const observedAt = timestamp(input.observedAt);
+  const missionAuthority = input.missionAuthority
+    ? parseMissionMutationAuthority(input.missionAuthority)
+    : null;
+  if (missionAuthority) assertMissionMutationAuthority(db, input.tenantId, missionAuthority,
+    { requireNoBlocking: true });
   const cycle = getWardenCiCycle(db, input.tenantId, cycleId);
   if (!cycle) throw new Error("warden_ci_update_not_authorized");
+  if (missionAuthority && missionAuthority.repositoryId !== cycle.repositoryId) {
+    throw new Error("warden_ci_update_not_authorized");
+  }
   const updateId = stableId("wardenciupdate", cycle.tenantId, cycleId, repairRunId, expectedHeadSha,
     expectedFeedbackDigest ?? "no-review-feedback");
   const jobId = stableId("wardenciupdatejob", cycle.tenantId, updateId);
   const prior = getWardenCiUpdate(db, cycle.tenantId, updateId);
   if (prior) {
+    const priorJob = db.raw.prepare("SELECT payload_json FROM jobs WHERE id = ? AND tenant_id = ?")
+      .get(prior.jobId, cycle.tenantId) as { payload_json: string } | undefined;
+    const expectedPayload = JSON.stringify({ cycleId, updateId,
+      ...(missionAuthority ? { missionAuthority } : {}) });
     if (prior.expectedHeadSha !== expectedHeadSha || prior.expectedFeedbackDigest !== expectedFeedbackDigest ||
         prior.sealedPath !== sealedPath ||
         prior.sealedSha256 !== sealedSha256 || prior.reviewerPrincipalId !== reviewerPrincipalId ||
-        prior.rationale !== rationale) throw new Error("warden_ci_update_conflict");
+        prior.rationale !== rationale || priorJob?.payload_json !== expectedPayload) {
+      throw new Error("warden_ci_update_conflict");
+    }
     return prior;
   }
   if (cycle.status !== "repair_pending" || cycle.repairRunId !== repairRunId ||
@@ -535,7 +552,8 @@ export function enqueueWardenCiUpdate(db: AppDb, input: Readonly<{
     db.raw.prepare(`INSERT INTO jobs
       (id, tenant_id, type, payload_json, status, attempts, max_attempts, created_at, available_at, lease_generation)
       VALUES (?, ?, 'warden.candidate.update', ?, 'pending', 0, 20, ?, ?, 0)`)
-      .run(jobId, cycle.tenantId, JSON.stringify({ cycleId, updateId }), observedAt, observedAt);
+      .run(jobId, cycle.tenantId, JSON.stringify({ cycleId, updateId,
+        ...(missionAuthority ? { missionAuthority } : {}) }), observedAt, observedAt);
     db.raw.prepare(`INSERT INTO fettler_ci_updates
       (id, tenant_id, cycle_id, repair_run_id, job_id, status, expected_head_sha, expected_feedback_digest, sealed_path,
        sealed_sha256, reviewer_principal_id, rationale, requested_at, updated_at)

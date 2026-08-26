@@ -172,6 +172,7 @@ export async function runWardenCiRepairDispatch(input: WardenCiRepairDispatchInp
   // Copy the source run's claimed Mission id when present. Do not invent one
   // from the delivery or campaign; unbound source runs stay unbound.
   const missionId = claimedMissionId(originalPayload);
+  const missionAuthority = originalPayload.missionAuthority;
   const agentPayload = Object.freeze({
     goal: trigger === "review_feedback"
       ? `Address the authoritative review feedback on draft pull request ${cycle.pullRequestNumber} at exact head ${cycle.currentHeadSha}.`
@@ -188,6 +189,7 @@ export async function runWardenCiRepairDispatch(input: WardenCiRepairDispatchInp
       revision: materialized.revision, manifestSha256: materialized.manifestSha256 }),
     ciFailure,
     ...(missionId ? { missionId } : {}),
+    ...(missionAuthority !== undefined ? { missionAuthority } : {}),
   });
   input.db.raw.exec("BEGIN IMMEDIATE");
   try {

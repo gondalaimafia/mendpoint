@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AppDb } from "./index.js";
+import { assertMissionMutationAuthority, parseMissionMutationAuthority,
+  type MissionMutationAuthorityV1 } from "./mission-mutation-authority.js";
 
 const JOB_TYPE = "warden.candidate.deliver";
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
@@ -142,6 +144,7 @@ export type EnqueueWardenCandidateDeliveryInput = Readonly<{
   tenantId: string; runId: string; repositoryId: string; snapshotId: string;
   baseBranch: string; expectedBaseRevision: string; sealedPath: string; sealedSha256: string;
   requesterPrincipalId: string; rationale: string; maxAttempts?: number; now?: string;
+  missionAuthority?: MissionMutationAuthorityV1;
 }>;
 
 export function getWardenCandidateDelivery(db: AppDb, tenantId: string, deliveryId: string) {
@@ -174,20 +177,32 @@ export function enqueueWardenCandidateDelivery(
   const rationale = text(input.rationale, "warden_candidate_delivery_rationale_invalid", 2_000);
   const now = timestamp(input.now ?? new Date().toISOString(), "warden_candidate_delivery_timestamp_invalid");
   const deterministic = ids(tenantId, runId);
-  const payload = JSON.stringify({ deliveryId: deterministic.deliveryId, runId });
+  const missionAuthority = input.missionAuthority
+    ? parseMissionMutationAuthority(input.missionAuthority)
+    : null;
+  if (missionAuthority && (missionAuthority.repositoryId !== repositoryId ||
+      missionAuthority.snapshotId !== snapshotId || missionAuthority.resolvedSha !== input.expectedBaseRevision)) {
+    throw new Error("warden_candidate_delivery_binding_mismatch");
+  }
+  if (missionAuthority) assertMissionMutationAuthority(db, tenantId, missionAuthority, { requireNoBlocking: true });
+  const payload = JSON.stringify({ deliveryId: deterministic.deliveryId, runId,
+    ...(missionAuthority ? { missionAuthority } : {}) });
   const existing = getWardenCandidateDeliveryByRun(db, tenantId, runId);
   if (existing) {
+    const existingJob = db.raw.prepare("SELECT payload_json FROM jobs WHERE id = ? AND tenant_id = ?")
+      .get(existing.jobId, tenantId) as { payload_json: string } | undefined;
     const same = existing.id === deterministic.deliveryId && existing.jobId === deterministic.jobId &&
       existing.repositoryId === repositoryId && existing.snapshotId === snapshotId &&
       existing.baseBranch === baseBranch && existing.expectedBaseRevision === input.expectedBaseRevision &&
       existing.sealedPath === sealedPath && existing.sealedSha256 === input.sealedSha256 &&
-      existing.requesterPrincipalId === requester && existing.rationale === rationale;
+      existing.requesterPrincipalId === requester && existing.rationale === rationale &&
+      existingJob?.payload_json === payload;
     if (!same) throw new Error("warden_candidate_delivery_conflict");
     return existing;
   }
   const run = db.raw.prepare(
-    "SELECT status, result_json FROM agent_runs WHERE id = ? AND tenant_id = ?",
-  ).get(runId, tenantId) as { status: string; result_json: string | null } | undefined;
+    "SELECT status, result_json, job_id FROM agent_runs WHERE id = ? AND tenant_id = ?",
+  ).get(runId, tenantId) as { status: string; result_json: string | null; job_id: string | null } | undefined;
   if (!run || run.status !== "candidate_approved") {
     throw new Error("warden_candidate_delivery_run_not_approved");
   }
@@ -201,6 +216,19 @@ export function enqueueWardenCandidateDelivery(
     approval.sha256 !== input.sealedSha256 || review?.decision !== "approve" ||
     review.reviewerPrincipalId !== requester || review.rationale !== rationale) {
     throw new Error("warden_candidate_delivery_binding_mismatch");
+  }
+  const sourceJob = run.job_id ? db.raw.prepare("SELECT payload_json FROM jobs WHERE id = ? AND tenant_id = ?")
+    .get(run.job_id, tenantId) as { payload_json: string } | undefined : undefined;
+  if (sourceJob) {
+    let sourcePayload: unknown;
+    try { sourcePayload = JSON.parse(sourceJob.payload_json); } catch { sourcePayload = null; }
+    if (sourcePayload && typeof sourcePayload === "object" && !Array.isArray(sourcePayload) &&
+        typeof (sourcePayload as Record<string, unknown>).missionId === "string") {
+      const claimedMissionId = (sourcePayload as Record<string, unknown>).missionId;
+      if (!missionAuthority || missionAuthority.missionId !== claimedMissionId) {
+        throw new Error("warden_candidate_delivery_binding_mismatch");
+      }
+    }
   }
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");

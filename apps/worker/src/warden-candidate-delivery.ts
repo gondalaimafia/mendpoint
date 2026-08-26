@@ -4,13 +4,17 @@ import {
   completeJob,
   failJob,
   getAgentRun,
+  getJob,
   getWardenCandidateDelivery,
+  assertMissionMutationAuthority,
+  parseMissionMutationAuthority,
   recordAudit,
   recordWardenCandidateDeliveryFailure,
   recordWardenCandidateDeliverySuccess,
   type AppDb,
   type JobRow,
   type WardenCandidateDeliveryRecord,
+  type MissionMutationAuthorityV1,
   enqueueWardenCiCycle,
 } from "@mendpoint/db";
 import {
@@ -57,7 +61,7 @@ export type WardenCandidateDeliveryWorkerInput = Readonly<{
   }>;
 }>;
 
-function parsePayload(job: JobRow): { deliveryId: string; runId: string } {
+function parsePayload(job: JobRow): { deliveryId: string; runId: string; missionAuthority: MissionMutationAuthorityV1 | null } {
   let value: unknown;
   try { value = JSON.parse(job.payload_json); } catch { throw new Error("warden_candidate_delivery_payload_invalid"); }
   if (!value || typeof value !== "object") throw new Error("warden_candidate_delivery_payload_invalid");
@@ -65,7 +69,21 @@ function parsePayload(job: JobRow): { deliveryId: string; runId: string } {
   if (typeof record.deliveryId !== "string" || typeof record.runId !== "string") {
     throw new Error("warden_candidate_delivery_payload_invalid");
   }
-  return { deliveryId: record.deliveryId, runId: record.runId };
+  return { deliveryId: record.deliveryId, runId: record.runId,
+    missionAuthority: record.missionAuthority === undefined ? null : parseMissionMutationAuthority(record.missionAuthority) };
+}
+
+function sourceMissionId(input: WardenCandidateDeliveryWorkerInput, runJobId: string | null): string | null {
+  const sourceJob = runJobId ? getJob(input.db, runJobId, input.job.tenant_id) : undefined;
+  if (!sourceJob) return null;
+  let value: unknown;
+  try { value = JSON.parse(sourceJob.payload_json); } catch { throw new Error("warden_candidate_delivery_source_invalid"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("warden_candidate_delivery_source_invalid");
+  }
+  return typeof (value as Record<string, unknown>).missionId === "string"
+    ? String((value as Record<string, unknown>).missionId)
+    : null;
 }
 
 function assertArtifact(delivery: WardenCandidateDeliveryRecord, artifact: Record<string, unknown>) {
@@ -256,6 +274,12 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
   try {
     const run = getAgentRun(input.db, payload.runId, input.job.tenant_id);
     if (!run || run.status !== "candidate_approved") throw new Error("warden_candidate_delivery_run_not_approved");
+    const claimedMissionId = sourceMissionId(input, run.job_id);
+    if (claimedMissionId && (!payload.missionAuthority || payload.missionAuthority.missionId !== claimedMissionId)) {
+      throw new Error("warden_candidate_delivery_mission_authority_required");
+    }
+    if (payload.missionAuthority) assertMissionMutationAuthority(input.db, input.job.tenant_id,
+      payload.missionAuthority, { requireNoBlocking: true });
     const artifact = readWardenApprovalArtifact({ tenantId: input.job.tenant_id, path: delivery.sealedPath,
       sha256: delivery.sealedSha256, env: input.artifactEnv });
     assertArtifact(delivery, artifact);
@@ -263,6 +287,8 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
     const repository = await input.resolveRepository({ tenantId: delivery.tenantId, repositoryId: delivery.repositoryId,
       snapshotId: delivery.snapshotId, baseBranch: delivery.baseBranch,
       expectedBaseRevision: delivery.expectedBaseRevision });
+    if (payload.missionAuthority) assertMissionMutationAuthority(input.db, input.job.tenant_id,
+      payload.missionAuthority, { requireNoBlocking: true });
     const intent = deliveryIntent(delivery, artifact, repository, run.report_md, reviewedChanges);
     bindWardenCandidateDeliveryIntent(input.db, { tenantId: delivery.tenantId, deliveryId: delivery.id,
       intentDigest: intentDigest(intent), branchName: intent.branch, observedAt: now() });

@@ -4204,6 +4204,12 @@ export type {
   MissionTriggerKind,
 } from "./mission.js";
 export {
+  assertMissionMutationAuthority,
+  createMissionMutationAuthority,
+  parseMissionMutationAuthority,
+} from "./mission-mutation-authority.js";
+export type { MissionMutationAuthorityV1 } from "./mission-mutation-authority.js";
+export {
   MAX_TRAJECTORY_BLOB_CHARS,
   finalizeTrajectory,
   getTrajectory,

@@ -15,15 +15,18 @@ import {
   getActiveMissionDecisions,
   getAgentRun,
   getJob,
+  getMission,
   getMissionTask,
   getWardenCiCycle,
   getWardenCiUpdateByRun,
   insertAgentRun,
   insertPrincipal,
   openTaskHandoff,
+  raiseMissionException,
   regaugeLaunchMissionTaskId,
   recordAudit,
   transitionMissionTask,
+  transitionMission,
   verifyAuditIntegrity,
   type AppDb,
   type MissionTask,
@@ -1087,6 +1090,115 @@ describe("Warden candidate human review", () => {
     expect(response.status).toBe(202);
     expect(evaluateMissionExceptions(db, "tenant-a", "m1").missionBlocked).toBe(false);
     expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("agent_resume");
+    const update = getWardenCiUpdateByRun(db, "tenant-a", "warden-run-1")!;
+    expect(JSON.parse(getJob(db, update.jobId, "tenant-a")!.payload_json)).toMatchObject({
+      missionAuthority: {
+        schemaVersion: 1,
+        missionId: "m1",
+        missionRevision: getMission(db, "tenant-a", "m1")!.revision,
+        missionState: getMission(db, "tenant-a", "m1")!.state,
+        taskId: REVIEW_TASK_ID,
+        taskRevision: getMissionTask(db, "tenant-a", REVIEW_TASK_ID)!.revision,
+        repositoryId: "repo-1",
+        snapshotId: "snapshot-1",
+        resolvedSha: "d".repeat(40),
+      },
+    });
+  });
+
+  it("conflicts when the Mission is cancelled while the approval seal is in flight", async () => {
+    let db!: AppDb;
+    const value = fixture({
+      sealApproval: async () => {
+        const mission = getMission(db, "tenant-a", "m1")!;
+        transitionMission(db, {
+          tenantId: "tenant-a", missionId: mission.id, expectedRevision: mission.revision,
+          to: "cancelled", actorPrincipalId: "trust-human-a", eventId: "e-cancel-during-seal",
+          idempotencyKey: "c-cancel-during-seal", correlationId: "corr", createdAt: NOW,
+        });
+        return { path: "C:\\sealed-cancelled.json", sha256: `sha256:${"b".repeat(64)}`, created: true };
+      },
+    });
+    db = value.db;
+    seedReviewedSnapshot(db);
+    bindMission(db);
+    workingTask(db);
+    openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID,
+      reason: "architecture_decision_required", question: "Proceed?", context: "Awaiting review.",
+      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+    });
+
+    const response = await value.app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", rationale: "Approve only while the Mission remains active." }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(getMission(db, "tenant-a", "m1")?.state).toBe("cancelled");
+    expect(getAgentRun(db, "warden-run-1", "tenant-a")?.status).toBe("candidate_ready");
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get()).toEqual({ count: 0 });
+  });
+
+  it("preserves the single current record-only ADR compatibility handoff when the enrollment task is absent", async () => {
+    const { app, db } = fixture();
+    seedReviewedSnapshot(db);
+    bindMission(db);
+    const blocker = raiseMissionException(db, {
+      tenantId: "tenant-a", missionId: "m1", reason: "architecture_decision_required",
+      impact: "The record-only ADR blocks mutation until a human resolves it.",
+      resolutionPath: "Human review of the retained ADR compatibility record.", blocking: true,
+      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+    });
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Preserve the compatibility contract." }),
+    });
+
+    expect(response.status).toBe(202);
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").resolved.map((row) => row.supersedesId))
+      .toContain(blocker.id);
+    const body = await response.json() as { supersedingJobId: string };
+    expect(JSON.parse(getJob(db, body.supersedingJobId, "tenant-a")!.payload_json)).toMatchObject({
+      missionAuthority: {
+        schemaVersion: 1,
+        missionId: "m1",
+        taskId: null,
+        taskRevision: null,
+        repositoryId: "repo-1",
+        snapshotId: "snapshot-1",
+        resolvedSha: "a".repeat(40),
+      },
+    });
+  });
+
+  it("fails closed when task-bound and record-only handoff authority are mixed", async () => {
+    const { app, db } = fixture();
+    seedReviewedSnapshot(db);
+    bindMission(db);
+    workingTask(db);
+    const taskBlocker = openTaskHandoff(db, {
+      tenantId: "tenant-a", missionId: "m1", taskId: REVIEW_TASK_ID,
+      reason: "architecture_decision_required", question: "Regenerate?", context: "Task review.",
+      ownerPrincipalId: "trust-human-a", correlationId: "task", createdAt: NOW,
+    });
+    const recordBlocker = raiseMissionException(db, {
+      tenantId: "tenant-a", missionId: "m1", reason: "architecture_decision_required",
+      impact: "The record-only ADR also blocks mutation.",
+      resolutionPath: "Resolve the retained ADR independently.", blocking: true,
+      ownerPrincipalId: "trust-human-a", correlationId: "record", createdAt: NOW,
+    });
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Do not guess between mixed authorities." }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(evaluateMissionExceptions(db, "tenant-a", "m1").blocking.map((row) => row.id))
+      .toEqual(expect.arrayContaining([taskBlocker.id, recordBlocker.id]));
+    expect(getMissionTask(db, "tenant-a", REVIEW_TASK_ID)?.status).toBe("human_review_required");
   });
 
   it("keeps the committed winner seal through an orchestrated concurrent approval conflict", async () => {

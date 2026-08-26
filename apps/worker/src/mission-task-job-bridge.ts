@@ -11,12 +11,14 @@
 import { createHash } from "node:crypto";
 import {
   ensureMissionTaskForJob,
+  assertMissionMutationAuthority,
   getMissionTask,
   getMission,
   insertPrincipal,
   listRepositorySnapshots,
   missionTaskIdForJob,
   openTaskHandoff,
+  parseMissionMutationAuthority,
   recordExecutionCostFromRoutingLedger,
   resolveMissionForFettlerCampaign,
   resolveMissionForRegaugeCampaign,
@@ -48,6 +50,10 @@ function payloadRecord(job: BridgedJob): Record<string, unknown> | undefined {
 function textField(record: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = record?.[key];
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function missionAuthority(record: Record<string, unknown> | undefined) {
+  return record?.missionAuthority === undefined ? null : parseMissionMutationAuthority(record.missionAuthority);
 }
 
 function parseRisk(value: unknown): MissionTaskRisk {
@@ -111,6 +117,31 @@ export function bridgeClaimedJobToMissionTask(
   if (!mission) return undefined;
   const agent = missionTaskAgentPrincipal(db, job.tenant_id, createdAt);
   const payload = payloadRecord(job);
+  const authority = missionAuthority(payload);
+  if (authority) {
+    if (authority.missionId !== mission.id || textField(payload, "missionId") !== mission.id) {
+      throw new Error("mission_task_job_authority_mismatch");
+    }
+    const authorized = assertMissionMutationAuthority(db, job.tenant_id, authority, { allowClaimedTask: true });
+    if (!authority.taskId) return undefined;
+    const exactTask = authorized.task;
+    if (!exactTask) throw new Error("mission_task_job_authority_mismatch");
+    if (exactTask.status === "agent_working") return exactTask;
+    if (exactTask.status !== "agent_resume" || exactTask.revision !== authority.taskRevision) {
+      throw new Error("mission_task_job_authority_mismatch");
+    }
+    return transitionMissionTask(db, {
+      tenantId: job.tenant_id,
+      taskId: exactTask.id,
+      expectedRevision: exactTask.revision,
+      to: "agent_working",
+      actorPrincipalId: agent.id,
+      assignedPrincipalId: agent.id,
+      ...resumeTaskEvent(job.id, exactTask.revision),
+      correlationId: job.id,
+      createdAt,
+    });
+  }
   const task = ensureMissionTaskForJob(db, {
     tenantId: job.tenant_id,
     jobId: job.id,
@@ -149,6 +180,23 @@ export function handoffCompletedJobToMissionReview(
 ): MissionTask | undefined {
   const mission = resolveBoundMissionForJob(db, job);
   if (!mission) return undefined;
+  const payload = payloadRecord(job);
+  const authority = missionAuthority(payload);
+  if (authority && authority.taskId === null) {
+    assertMissionMutationAuthority(db, job.tenant_id, authority, { allowClaimedTask: true });
+    openTaskHandoff(db, {
+      tenantId: job.tenant_id,
+      missionId: mission.id,
+      reason: "architecture_decision_required",
+      question: `Should job ${job.id} (${job.type}) under mission ${mission.id} proceed after advisory verification passed?`,
+      context: `Review-first job ${job.id} settled successfully. Human approval is required before delivery.`,
+      ownerPrincipalId: mission.ownerPrincipalId,
+      observedAgainst: { snapshotId: authority.snapshotId, resolvedSha: authority.resolvedSha },
+      correlationId: job.id,
+      createdAt,
+    });
+    return undefined;
+  }
   const task = bridgeClaimedJobToMissionTask(db, job, createdAt)
     ?? getMissionTask(db, job.tenant_id, missionTaskIdForJob(job.id));
   if (!task) throw new Error("mission_task_job_review_task_missing");
@@ -196,11 +244,12 @@ export function recordBoundMissionExecutionCost(
   const mission = resolveBoundMissionForJob(db, input.job);
   if (!mission) return undefined;
   const payload = payloadRecord(input.job);
+  const authority = missionAuthority(payload);
   return recordExecutionCostFromRoutingLedger(db, {
     tenantId: input.job.tenant_id,
     sourceRunId: input.sourceRunId,
     executionId: input.job.id,
-    taskId: missionTaskIdForJob(input.job.id),
+    taskId: authority?.taskId ?? missionTaskIdForJob(input.job.id),
     taskClass: input.job.type,
     route: mission.product,
     campaignId: mission.fettlerCampaignId ?? mission.regaugeCampaignId

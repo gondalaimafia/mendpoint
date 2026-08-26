@@ -5,11 +5,24 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   claimNextJob,
+  bindMissionScope,
   createDb,
+  createMission,
+  createMissionMutationAuthority,
+  createMissionTask,
+  enqueueJob,
   enqueueWardenCiUpdate,
   getJob,
+  getMission,
+  getMissionTask,
   getWardenCiCycle,
   insertAgentRun,
+  insertPrincipal,
+  openTaskHandoff,
+  raiseMissionException,
+  resolveTaskHandoff,
+  transitionMission,
+  transitionMissionTask,
   pauseWardenCiCycle,
   type AppDb,
 } from "@mendpoint/db";
@@ -58,6 +71,65 @@ function fixture(expectedFeedbackDigest: string | null = null, deleted = false) 
         beforeSha256: `sha256:${createHash("sha256").update("old").digest("hex")}`,
       } : {}) }] };
   return { db, root, update, job, artifact };
+}
+
+function bindMissionAuthority(value: ReturnType<typeof fixture>) {
+  const { db } = value;
+  db.raw.prepare(`INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+    VALUES ('tenant-a', 'tenant-a', 'Tenant A', 'team', 'active', 10, ?)`)
+    .run("2026-08-13T12:00:00.000Z");
+  insertPrincipal(db, { id: "principal-owner", tenantId: "tenant-a", kind: "human",
+    subject: "owner@example.com", displayName: "Owner", createdAt: "2026-08-13T12:00:00.000Z" });
+  db.raw.prepare(`INSERT INTO scm_connections
+    (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+    VALUES ('scm-mission', 'tenant-a', 'github', 'app://1', '1', 'GitHub', ?, ?)`)
+    .run("2026-08-13T12:00:00.000Z", "2026-08-13T12:00:00.000Z");
+  db.raw.prepare(`INSERT INTO connected_repositories
+    (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
+     environment, retention_days, status, created_at, updated_at)
+    VALUES ('repo-a', 'tenant-a', 'scm-mission', '101', 'acme', 'service', 'main', 'main',
+     'production', 30, 'ready', ?, ?)`).run("2026-08-13T12:00:00.000Z", "2026-08-13T12:00:00.000Z");
+  db.raw.prepare(`INSERT INTO repository_snapshots
+    (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+     submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+    VALUES ('snapshot-repair-a', 'tenant-a', 'repo-a', 'main', ?, ?, 'C:\\snapshot',
+     'reject', 'reject', '[]', 1, ?, '2099-01-01T00:00:00.000Z')`)
+    .run(sha("d"), digest("a"), "2026-08-13T12:00:00.000Z");
+  createMission(db, { id: "mission-1", tenantId: "tenant-a", product: "fettler",
+    triggerKind: "provider_change", objective: "Repair CI", ownerPrincipalId: "principal-owner",
+    eventId: "e-mission", idempotencyKey: "c-mission", correlationId: "corr",
+    createdAt: "2026-08-13T12:00:00.000Z" });
+  bindMissionScope(db, { tenantId: "tenant-a", missionId: "mission-1", repositoryId: "repo-a",
+    snapshotId: "snapshot-repair-a", actorPrincipalId: "principal-owner", eventId: "e-scope",
+    idempotencyKey: "c-scope", correlationId: "corr", createdAt: "2026-08-13T12:00:00.000Z" });
+  let task = createMissionTask(db, { id: "task-1", tenantId: "tenant-a", missionId: "mission-1",
+    taskType: "code_migration", acceptanceCriteria: "CI passes", risk: "medium",
+    actorPrincipalId: "principal-owner", eventId: "e-task", idempotencyKey: "c-task",
+    correlationId: "corr", createdAt: "2026-08-13T12:00:00.000Z" });
+  task = transitionMissionTask(db, { tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision,
+    to: "agent_assigned", actorPrincipalId: "principal-owner", eventId: "e-assign",
+    idempotencyKey: "c-assign", correlationId: "corr", createdAt: "2026-08-13T12:00:00.000Z" });
+  task = transitionMissionTask(db, { tenantId: "tenant-a", taskId: task.id, expectedRevision: task.revision,
+    to: "agent_working", actorPrincipalId: "principal-owner", eventId: "e-work",
+    idempotencyKey: "c-work", correlationId: "corr", createdAt: "2026-08-13T12:00:00.000Z" });
+  const blocker = openTaskHandoff(db, { tenantId: "tenant-a", missionId: "mission-1", taskId: task.id,
+    reason: "architecture_decision_required", question: "Update?", context: "CI repair passed.",
+    ownerPrincipalId: "principal-owner", correlationId: "corr", createdAt: "2026-08-13T12:00:00.000Z" });
+  resolveTaskHandoff(db, { tenantId: "tenant-a", priorExceptionId: blocker.id, taskId: task.id,
+    resolutionNote: "Approve", decision: "Approve", scope: "handoff_resolution:update",
+    authorPrincipalId: "principal-owner", correlationId: "corr", createdAt: "2026-08-13T12:00:00.000Z" });
+  enqueueJob(db, { id: "repair-agent-job-a", tenantId: "tenant-a", type: "agent.run",
+    createdAt: "2026-08-13T12:00:00.000Z",
+    payload: { missionId: "mission-1", consumerId: "consumer-1", sessionId: "repair-run-a" } });
+  db.raw.prepare("UPDATE agent_runs SET job_id = ? WHERE id = ? AND tenant_id = ?")
+    .run("repair-agent-job-a", "repair-run-a", "tenant-a");
+  const authority = createMissionMutationAuthority({ mission: getMission(db, "tenant-a", "mission-1")!,
+    task: getMissionTask(db, "tenant-a", "task-1")!, repositoryId: "repo-a",
+    snapshotId: "snapshot-repair-a", resolvedSha: sha("d") });
+  db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?")
+    .run(JSON.stringify({ cycleId: "cycle-a", updateId: value.update.id, missionAuthority: authority }),
+      value.job.id, "tenant-a");
+  return { ...value, authority, job: getJob(db, value.job.id, "tenant-a")! };
 }
 
 function observedFeedback(body: string): ExactDraftObservation {
@@ -111,6 +183,37 @@ describe("Warden candidate exact draft update", () => {
       readApprovalArtifact: () => artifact,
       resolveRepository: async () => ({ owner: "acme", repo: "service" }),
       now: () => "2026-08-13T12:05:00.000Z" })).rejects.toThrow("warden_ci_update_not_authorized");
+    expect(updateExactDraft).not.toHaveBeenCalled();
+  });
+
+  it("does not update GitHub when the Mission is cancelled after the update is claimed", async () => {
+    const value = bindMissionAuthority(fixture());
+    const mission = getMission(value.db, "tenant-a", "mission-1")!;
+    transitionMission(value.db, { tenantId: "tenant-a", missionId: mission.id,
+      expectedRevision: mission.revision, to: "cancelled", actorPrincipalId: "principal-owner",
+      eventId: "e-cancel-update", idempotencyKey: "c-cancel-update", correlationId: "corr",
+      createdAt: "2026-08-13T12:04:31.000Z" });
+    const updateExactDraft = vi.fn();
+    await expect(runWardenCandidateUpdate({ db: value.db, job: value.job, updateExactDraft,
+      reconcileExactDraftUpdate: vi.fn(), readApprovalArtifact: () => value.artifact,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:05:00.000Z" })).rejects.toThrow("mission_mutation_authority_stale");
+    expect(updateExactDraft).not.toHaveBeenCalled();
+  });
+
+  it("does not update GitHub when a blocker appears after claim but before dispatch", async () => {
+    const value = bindMissionAuthority(fixture());
+    const updateExactDraft = vi.fn();
+    await expect(runWardenCandidateUpdate({ db: value.db, job: value.job, updateExactDraft,
+      reconcileExactDraftUpdate: vi.fn(), readApprovalArtifact: () => value.artifact,
+      resolveRepository: () => {
+        raiseMissionException(value.db, { tenantId: "tenant-a", missionId: "mission-1",
+          reason: "policy_exception", impact: "A current policy blocker forbids remote mutation.",
+          resolutionPath: "Resolve the policy exception before updating the draft.", blocking: true,
+          ownerPrincipalId: "principal-owner", correlationId: "corr",
+          createdAt: "2026-08-13T12:04:31.000Z" });
+        return { owner: "acme", repo: "service" };
+      }, now: () => "2026-08-13T12:05:00.000Z" })).rejects.toThrow("mission_mutation_authority_blocked");
     expect(updateExactDraft).not.toHaveBeenCalled();
   });
 

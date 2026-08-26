@@ -5,8 +5,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
   createMission,
+  createMissionMutationAuthority,
+  createMissionTask,
   createWardenCampaign,
   getMissionTask,
+  getMission,
+  bindMissionScope,
+  claimNextJob,
+  enqueueJob,
   insertPrincipal,
   linkFettlerCampaignToMission,
   listActualExecutionCosts,
@@ -15,10 +21,12 @@ import {
   recordRoutingDecision,
   recordRoutingOutcome,
   resolveTaskHandoff,
+  transitionMissionTask,
   type AppDb,
 } from "@mendpoint/db";
 import {
   bridgeClaimedJobToMissionTask,
+  handoffCompletedJobToMissionReview,
   recordBoundMissionExecutionCost,
   resolveBoundMissionForJob,
 } from "./mission-task-job-bridge.js";
@@ -200,5 +208,90 @@ describe("mission-task job bridge", () => {
     expect(getMissionTask(db, "t1", working.id)?.status).toBe("agent_resume");
     const resumed = bridgeClaimedJobToMissionTask(db, claimed, at);
     expect(resumed).toMatchObject({ status: "agent_working", ownerType: "agent" });
+  });
+
+  it("drives the exact reviewed enrollment task through two real queued successor claims", () => {
+    const db = fixture();
+    db.raw.prepare(`INSERT INTO scm_connections
+      (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+      VALUES ('scm-1', 't1', 'github', 'app://1', '1', 'GitHub', ?, ?)`)
+      .run(at, at);
+    db.raw.prepare(`INSERT INTO connected_repositories
+      (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
+       environment, retention_days, status, created_at, updated_at)
+      VALUES ('repo-1', 't1', 'scm-1', '1', 'acme', 'sdk', 'main', 'main',
+       'production', 30, 'ready', ?, ?)`)
+      .run(at, at);
+    db.raw.prepare(`INSERT INTO repository_snapshots
+      (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+       submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+      VALUES ('snapshot-1', 't1', 'repo-1', 'main', ?, ?, 'C:\\snapshot',
+       'reject', 'reject', '[]', 1, ?, '2099-01-01T00:00:00.000Z')`)
+      .run("a".repeat(40), `sha256:${"b".repeat(64)}`, at);
+    bindMissionScope(db, {
+      tenantId: "t1", missionId: "m1", repositoryId: "repo-1", snapshotId: "snapshot-1",
+      actorPrincipalId: "p1", eventId: "e-scope", idempotencyKey: "c-scope",
+      correlationId: "corr", createdAt: at,
+    });
+    let task = createMissionTask(db, {
+      id: "mt-reviewed", tenantId: "t1", missionId: "m1", taskType: "code_migration",
+      acceptanceCriteria: "Tests pass", risk: "medium", actorPrincipalId: "p1",
+      eventId: "e-reviewed-create", idempotencyKey: "c-reviewed-create", correlationId: "corr", createdAt: at,
+    });
+    task = transitionMissionTask(db, {
+      tenantId: "t1", taskId: task.id, expectedRevision: task.revision, to: "agent_assigned",
+      actorPrincipalId: "p1", eventId: "e-reviewed-assign", idempotencyKey: "c-reviewed-assign",
+      correlationId: "corr", createdAt: at,
+    });
+    task = transitionMissionTask(db, {
+      tenantId: "t1", taskId: task.id, expectedRevision: task.revision, to: "agent_working",
+      actorPrincipalId: "p1", eventId: "e-reviewed-work", idempotencyKey: "c-reviewed-work",
+      correlationId: "corr", createdAt: at,
+    });
+    const firstBlocker = openTaskHandoff(db, {
+      tenantId: "t1", missionId: "m1", taskId: task.id, reason: "architecture_decision_required",
+      question: "Regenerate?", context: "First candidate needs review.", ownerPrincipalId: "p1",
+      correlationId: "review-1", createdAt: at,
+    });
+    resolveTaskHandoff(db, {
+      tenantId: "t1", priorExceptionId: firstBlocker.id, taskId: task.id,
+      resolutionNote: "Regenerate", decision: "Regenerate", scope: "handoff_resolution:first",
+      authorPrincipalId: "p1", correlationId: "review-1", createdAt: at,
+    });
+
+    for (const cycle of [1, 2]) {
+      const currentTask = getMissionTask(db, "t1", task.id)!;
+      const authority = createMissionMutationAuthority({
+        mission: getMission(db, "t1", "m1")!, task: currentTask, repositoryId: "repo-1",
+        snapshotId: "snapshot-1", resolvedSha: "a".repeat(40),
+      });
+      enqueueJob(db, {
+        id: `successor-${cycle}`, tenantId: "t1", type: "agent.run", createdAt: at,
+        payload: { missionId: "m1", missionAuthority: authority, sessionId: `run-${cycle}`,
+          goal: "Regenerate the reviewed candidate", consumerId: "consumer-1" },
+      });
+      const claimed = claimNextJob(db, ["agent.run"], {
+        tenantId: "t1", workerId: `worker-${cycle}`, leaseMs: 60_000, now: at,
+      })!;
+      expect(bridgeClaimedJobToMissionTask(db, claimed, at)).toMatchObject({
+        id: task.id, status: "agent_working",
+      });
+      const handed = handoffCompletedJobToMissionReview(db, claimed, at)!;
+      expect(handed).toMatchObject({ id: task.id, status: "human_review_required" });
+      if (cycle === 1) {
+        const blocker = db.raw.prepare(`SELECT id FROM mission_exceptions
+          WHERE tenant_id = 't1' AND mission_id = 'm1' AND task_id = ? AND status = 'open'
+            AND NOT EXISTS (SELECT 1 FROM mission_exceptions successor
+              WHERE successor.tenant_id = mission_exceptions.tenant_id
+                AND successor.supersedes_id = mission_exceptions.id)
+          ORDER BY created_at DESC, id DESC LIMIT 1`).get(task.id) as { id: string };
+        resolveTaskHandoff(db, {
+          tenantId: "t1", priorExceptionId: blocker.id, taskId: task.id,
+          resolutionNote: "Regenerate again", decision: "Regenerate again",
+          scope: "handoff_resolution:second", authorPrincipalId: "p1",
+          correlationId: "review-2", createdAt: at,
+        });
+      }
+    }
   });
 });

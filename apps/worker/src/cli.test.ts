@@ -23,6 +23,10 @@ const fixturesRoot = resolve(import.meta.dirname, "..", "..", "..", "fixtures");
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
+  bindMissionScope,
+  createMission,
+  createMissionMutationAuthority,
+  createMissionTask,
   bindConsumerRepoSnapshot,
   claimNextJob,
   createExplicitMemory,
@@ -30,13 +34,19 @@ import {
   failJob,
   enqueueAdaptiveDelivery,
   enqueueWardenCiCycle,
+  evaluateMissionExceptions,
   recordWardenCiObservation,
   getAdaptiveCandidate,
   getAdaptiveDeliveryByCandidate,
   getAgentRun,
   getJob,
+  getMission,
+  getMissionTask,
   getTrajectoryByRun,
   insertPrincipal,
+  openTaskHandoff,
+  resolveTaskHandoff,
+  transitionMissionTask,
   getWardenCiCycle,
   getRoutingLedgerForJob,
   insertAgentRun,
@@ -55,10 +65,11 @@ import {
   upsertGitHubInstallation,
   getRepairSession,
   listJobs,
+  missionTaskIdForJob,
 } from "@mendpoint/db";
 import { nowIso } from "@mendpoint/shared";
 import type { AgentPlanner } from "@mendpoint/agent";
-import type { PipelineReport } from "@mendpoint/pipeline";
+import { ensureDefaultPolicyEnvelopeBinding, type PipelineReport } from "@mendpoint/pipeline";
 import {
   GitHubAppDelivery,
   OctokitGitHubDelivery,
@@ -454,6 +465,113 @@ afterEach(() => {
 });
 
 describe("worker runtime", () => {
+  it("runs two reviewed regenerate successors through real claims and returns the exact task to review each time", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-reviewed-successors-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      useLlm: true,
+    });
+    const at = nowIso();
+    fixture.db.raw.prepare(`INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+      VALUES ('tenant_test', 'tenant-test', 'Tenant test', 'team', 'active', 10, ?)`)
+      .run(at);
+    insertPrincipal(fixture.db, { id: "mission-owner", tenantId: "tenant_test", kind: "human",
+      subject: "owner@example.com", displayName: "Owner", createdAt: at });
+    createMission(fixture.db, { id: "mission-reviewed", tenantId: "tenant_test", product: "fettler",
+      triggerKind: "provider_change", objective: "Repair the exact SDK snapshot",
+      ownerPrincipalId: "mission-owner", eventId: "e-mission-reviewed", idempotencyKey: "c-mission-reviewed",
+      correlationId: "corr-reviewed", createdAt: at });
+    bindMissionScope(fixture.db, { tenantId: "tenant_test", missionId: "mission-reviewed",
+      repositoryId: "repository-warden-snapshot", snapshotId: "snapshot-warden-a",
+      actorPrincipalId: "mission-owner", eventId: "e-reviewed-scope", idempotencyKey: "c-reviewed-scope",
+      correlationId: "corr-reviewed", createdAt: at });
+    ensureDefaultPolicyEnvelopeBinding(fixture.db, { tenantId: "tenant_test", missionId: "mission-reviewed",
+      actorPrincipalId: "mission-owner", correlationId: "corr-reviewed", createdAt: at });
+    let task = createMissionTask(fixture.db, { id: "task-reviewed", tenantId: "tenant_test",
+      missionId: "mission-reviewed", taskType: "code_migration", acceptanceCriteria: "Tests pass",
+      risk: "medium", actorPrincipalId: "mission-owner", eventId: "e-reviewed-task",
+      idempotencyKey: "c-reviewed-task", correlationId: "corr-reviewed", createdAt: at });
+    task = transitionMissionTask(fixture.db, { tenantId: "tenant_test", taskId: task.id,
+      expectedRevision: task.revision, to: "agent_assigned", actorPrincipalId: "mission-owner",
+      eventId: "e-reviewed-assign", idempotencyKey: "c-reviewed-assign",
+      correlationId: "corr-reviewed", createdAt: at });
+    task = transitionMissionTask(fixture.db, { tenantId: "tenant_test", taskId: task.id,
+      expectedRevision: task.revision, to: "agent_working", actorPrincipalId: "mission-owner",
+      eventId: "e-reviewed-work", idempotencyKey: "c-reviewed-work",
+      correlationId: "corr-reviewed", createdAt: at });
+    const initial = openTaskHandoff(fixture.db, { tenantId: "tenant_test", missionId: "mission-reviewed",
+      taskId: task.id, reason: "architecture_decision_required", question: "Regenerate the candidate?",
+      context: "The first reviewed candidate needs correction.", ownerPrincipalId: "mission-owner",
+      correlationId: "review-0", createdAt: at });
+    resolveTaskHandoff(fixture.db, { tenantId: "tenant_test", priorExceptionId: initial.id, taskId: task.id,
+      resolutionNote: "Regenerate", decision: "Regenerate", scope: "handoff_resolution:review-0",
+      authorPrincipalId: "mission-owner", correlationId: "review-0", createdAt: at });
+
+    const basePayload = JSON.parse(
+      getJob(fixture.db, "job-warden-snapshot", "tenant_test")!.payload_json,
+    ) as Record<string, unknown>;
+    const runCycle = async (cycle: number) => {
+      const currentTask = getMissionTask(fixture.db, "tenant_test", task.id)!;
+      const authority = createMissionMutationAuthority({
+        mission: getMission(fixture.db, "tenant_test", "mission-reviewed")!, task: currentTask,
+        repositoryId: "repository-warden-snapshot", snapshotId: "snapshot-warden-a",
+        resolvedSha: "a".repeat(40),
+      });
+      const jobId = cycle === 1 ? "job-warden-snapshot" : `job-reviewed-${cycle}`;
+      const sessionId = cycle === 1 ? "session-warden-snapshot" : `session-reviewed-${cycle}`;
+      const payload = { ...basePayload, missionId: "mission-reviewed", missionAuthority: authority,
+        sessionId, reviewFeedback: `Cycle ${cycle} exact reviewer feedback.` };
+      if (cycle === 1) {
+        fixture.db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?")
+          .run(JSON.stringify(payload), jobId, "tenant_test");
+      } else {
+        enqueueJob(fixture.db, { id: jobId, tenantId: "tenant_test", type: "agent.run", payload, createdAt: nowIso() });
+      }
+      insertAgentRun(fixture.db, { id: sessionId, tenantId: "tenant_test", jobId,
+        goal: String(basePayload.goal), repoPath: fixture.snapshotRoot, status: "queued", ok: false,
+        steps: 0, filesChanged: [], reportMd: null, resultJson: JSON.stringify({ jobId, product: "warden" }),
+        createdAt: nowIso(), finishedAt: null });
+      const outcome = await processJobsOnce(fixture.db, {
+        tenantId: "tenant_test", workerId: `worker-reviewed-${cycle}`, leaseMs: 30_000,
+        wardenPlanner: meteredWardenPlanner(), wardenEnv: {
+          MENDPOINT_DATA_DIR: fixture.dataRoot,
+          MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
+          MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: "tenant_test",
+          MENDPOINT_WARDEN_MODEL_PROVIDER: "openai-compatible",
+          MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "1",
+          MENDPOINT_WARDEN_MODEL_REGION: "us-central",
+          MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+          MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS:
+            JSON.stringify({ tenant_test: { "tenant_test/fixture": "internal" } }),
+          MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.25",
+          MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
+          LLM_AGENT_MODEL: "model-a",
+          LLM_AGENT_URL: "https://models.example/v1",
+        },
+      });
+      expect(outcome).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+      expect(getMissionTask(fixture.db, "tenant_test", task.id)).toMatchObject({
+        status: "human_review_required", ownerType: "human",
+      });
+      expect(getMissionTask(fixture.db, "tenant_test", missionTaskIdForJob(jobId))).toBeUndefined();
+    };
+
+    await runCycle(1);
+    const current = { snapshotId: "snapshot-warden-a", resolvedSha: "a".repeat(40) };
+    const firstReview = evaluateMissionExceptions(fixture.db, "tenant_test", "mission-reviewed", current).blocking;
+    expect(firstReview).toHaveLength(1);
+    resolveTaskHandoff(fixture.db, { tenantId: "tenant_test", priorExceptionId: firstReview[0]!.id,
+      taskId: task.id, resolutionNote: "Regenerate again", decision: "Regenerate again",
+      scope: "handoff_resolution:review-1", authorPrincipalId: "mission-owner",
+      correlationId: "review-1", createdAt: nowIso() });
+    await runCycle(2);
+    expect(evaluateMissionExceptions(fixture.db, "tenant_test", "mission-reviewed", current).blocking).toHaveLength(1);
+    fixture.db.raw.close();
+  }, 30_000);
+
   it("leaves ReGauge advisory dispatch to the durable coordinator", () => {
     const source = readFileSync(new URL("./cli.ts", import.meta.url), "utf8");
     expect(source).not.toContain("onVerifiedCandidateCompleted:");

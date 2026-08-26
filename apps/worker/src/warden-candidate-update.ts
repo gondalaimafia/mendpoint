@@ -3,12 +3,16 @@ import {
   bindWardenCiUpdateIntent,
   completeJob,
   completeWardenCiUpdate,
+  assertMissionMutationAuthority,
   getAgentRun,
+  getJob,
   getWardenCiCycle,
   getWardenCiUpdate,
   markWardenCiUpdateUncertain,
+  parseMissionMutationAuthority,
   type AppDb,
   type JobRow,
+  type MissionMutationAuthorityV1,
 } from "@mendpoint/db";
 import type { ExactDraftObservation, ExactDraftObservationInput, ExactDraftUpdateInput,
   ExactDraftUpdateReconciliation, ExactDraftUpdateResult } from "@mendpoint/github";
@@ -29,13 +33,26 @@ export type WardenCandidateUpdateInput = Readonly<{
   now?: () => string;
 }>;
 
-function payload(job: JobRow): Readonly<{ cycleId: string; updateId: string }> {
+function payload(job: JobRow): Readonly<{ cycleId: string; updateId: string; missionAuthority: MissionMutationAuthorityV1 | null }> {
   let value: unknown;
   try { value = JSON.parse(job.payload_json); } catch { throw new Error("warden_ci_update_payload_invalid"); }
   if (!value || typeof value !== "object" || typeof (value as Record<string, unknown>).cycleId !== "string" ||
       typeof (value as Record<string, unknown>).updateId !== "string") throw new Error("warden_ci_update_payload_invalid");
   return Object.freeze({ cycleId: String((value as Record<string, unknown>).cycleId),
-    updateId: String((value as Record<string, unknown>).updateId) });
+    updateId: String((value as Record<string, unknown>).updateId),
+    missionAuthority: (value as Record<string, unknown>).missionAuthority === undefined ? null
+      : parseMissionMutationAuthority((value as Record<string, unknown>).missionAuthority) });
+}
+
+function sourceMissionId(db: AppDb, tenantId: string, jobId: string | null): string | null {
+  const sourceJob = jobId ? getJob(db, jobId, tenantId) : undefined;
+  if (!sourceJob) return null;
+  let value: unknown;
+  try { value = JSON.parse(sourceJob.payload_json); } catch { throw new Error("warden_ci_update_source_invalid"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("warden_ci_update_source_invalid");
+  return typeof (value as Record<string, unknown>).missionId === "string"
+    ? String((value as Record<string, unknown>).missionId)
+    : null;
 }
 
 function files(artifact: Record<string, unknown>): ExactDraftUpdateInput["files"] {
@@ -115,6 +132,15 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
       source?.revision !== cycle.currentHeadSha || typeof source.snapshotId !== "string") {
     throw new Error("warden_ci_update_run_invalid");
   }
+  const claimedMissionId = sourceMissionId(input.db, cycle.tenantId, run.job_id);
+  if (claimedMissionId && (!parsed.missionAuthority || parsed.missionAuthority.missionId !== claimedMissionId)) {
+    throw new Error("warden_ci_update_mission_authority_required");
+  }
+  const assertMutationAuthority = () => {
+    if (parsed.missionAuthority) assertMissionMutationAuthority(input.db, cycle.tenantId,
+      parsed.missionAuthority, { requireNoBlocking: true });
+  };
+  assertMutationAuthority();
   const artifact = input.readApprovalArtifact({ tenantId: cycle.tenantId, path: update.sealedPath,
     sha256: update.sealedSha256 });
   assertArtifact(artifact, { tenantId: cycle.tenantId, repositoryId: cycle.repositoryId,
@@ -122,6 +148,7 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
     reviewerPrincipalId: update.reviewerPrincipalId, rationale: update.rationale });
   const repository = await input.resolveRepository({ tenantId: cycle.tenantId, repositoryId: cycle.repositoryId,
     installationId: cycle.installationId, remoteRepositoryId: cycle.remoteRepositoryId });
+  assertMutationAuthority();
   const intent = Object.freeze({ owner: repository.owner, repo: repository.repo,
     expectedRepositoryId: cycle.remoteRepositoryId, pullRequestNumber: cycle.pullRequestNumber,
     baseBranch: cycle.baseBranch, branch: cycle.branchName, expectedHeadSha: cycle.currentHeadSha,
@@ -163,6 +190,7 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
       remote = reconciliation.result;
     } else {
       await assertCurrentFeedback();
+      assertMutationAuthority();
       bindWardenCiUpdateIntent(input.db, { tenantId: cycle.tenantId, updateId: update.id,
         intentDigest: digest, workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation,
         observedAt: dispatchAt });
@@ -175,6 +203,7 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
     }
   } else {
     await assertCurrentFeedback();
+    assertMutationAuthority();
     bindWardenCiUpdateIntent(input.db, { tenantId: cycle.tenantId, updateId: update.id,
       intentDigest: digest, workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation,
       observedAt: dispatchAt });

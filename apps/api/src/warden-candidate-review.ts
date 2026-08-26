@@ -7,6 +7,7 @@ import {
   enqueueJob,
   enqueueWardenCandidateDelivery,
   enqueueWardenCiUpdate,
+  createMissionMutationAuthority,
   fettlerCampaignMissionTaskId,
   getAgentRun,
   getJob,
@@ -29,6 +30,7 @@ import {
   recordAudit,
   type AgentRunRow,
   type AppDb,
+  type MissionMutationAuthorityV1,
 } from "@mendpoint/db";
 import type { ApiEnv } from "./auth.js";
 import {
@@ -135,7 +137,7 @@ const HUMAN_HANDOFF_TASK_STATUSES = new Set([
 
 type ReviewHandoffResolution =
   | Readonly<{ kind: "unbound" }>
-  | Readonly<{ kind: "resolved"; exceptionId: string; taskId: string }>
+  | Readonly<{ kind: "resolved"; exceptionId: string; taskId: string | null }>
   | Readonly<{
       kind: "blocked";
       reason: "mission_missing" | "product_mismatch" | "snapshot_mismatch" | "task_missing" |
@@ -175,6 +177,9 @@ export function tryResolveBoundReviewHandoff(
   const mission = getMission(db, input.tenantId, input.missionId);
   if (!mission) return Object.freeze({ kind: "blocked", reason: "mission_missing" });
   if (mission.product !== "fettler") return Object.freeze({ kind: "blocked", reason: "product_mismatch" });
+  if (["accepted", "rejected", "partial", "failed", "cancelled"].includes(mission.state)) {
+    return Object.freeze({ kind: "blocked", reason: "resolution_incomplete" });
+  }
   const snapshot = listRepositorySnapshots(db, input.tenantId, input.repositoryId)
     .find((candidate) => candidate.id === input.current.snapshotId);
   if (!snapshot || snapshot.resolved_sha !== input.current.resolvedSha ||
@@ -183,13 +188,36 @@ export function tryResolveBoundReviewHandoff(
   }
   const expectedTaskId = fettlerCampaignMissionTaskId(input.missionId, input.repositoryId);
   const expectedTask = getMissionTask(db, input.tenantId, expectedTaskId);
+  const blocking = evaluateMissionExceptions(db, input.tenantId, input.missionId, input.current).blocking;
   if (!expectedTask || expectedTask.missionId !== input.missionId) {
-    return Object.freeze({ kind: "blocked", reason: "task_missing" });
+    const recordOnly = blocking.filter((exception) => exception.taskId === null);
+    if (blocking.length !== 1 || recordOnly.length !== 1) {
+      return Object.freeze({ kind: "blocked", reason: blocking.length === 0 ? "task_missing" : "exception_ambiguous" });
+    }
+    const match = recordOnly[0]!;
+    resolveTaskHandoff(db, {
+      tenantId: input.tenantId,
+      priorExceptionId: match.id,
+      resolutionNote: input.rationale,
+      decision: input.rationale,
+      scope: `handoff_resolution:${input.runId}`,
+      authorPrincipalId: input.authorPrincipalId,
+      ...(input.evidence && input.evidence.length > 0 ? { evidence: input.evidence } : {}),
+      correlationId: input.correlationId,
+      createdAt: input.createdAt,
+    });
+    if (evaluateMissionExceptions(db, input.tenantId, input.missionId, input.current).blocking
+      .some((exception) => exception.id === match.id)) {
+      return Object.freeze({ kind: "blocked", reason: "resolution_incomplete" });
+    }
+    return Object.freeze({ kind: "resolved", exceptionId: match.id, taskId: null });
   }
   if (!HUMAN_HANDOFF_TASK_STATUSES.has(expectedTask.status)) {
     return Object.freeze({ kind: "blocked", reason: "task_not_human_owned" });
   }
-  const blocking = evaluateMissionExceptions(db, input.tenantId, input.missionId, input.current).blocking;
+  if (blocking.some((exception) => exception.taskId === null)) {
+    return Object.freeze({ kind: "blocked", reason: "exception_ambiguous" });
+  }
   const candidates = blocking.filter((exception) => exception.taskId === expectedTaskId);
   if (candidates.length === 0) return Object.freeze({ kind: "blocked", reason: "exception_missing" });
   if (candidates.length !== 1) return Object.freeze({ kind: "blocked", reason: "exception_ambiguous" });
@@ -213,6 +241,23 @@ export function tryResolveBoundReviewHandoff(
     return Object.freeze({ kind: "blocked", reason: "resolution_incomplete" });
   }
   return Object.freeze({ kind: "resolved", exceptionId: match.id, taskId: expectedTaskId });
+}
+
+function missionAuthorityAfterResolution(
+  db: AppDb,
+  tenantId: string,
+  missionId: string | null,
+  resolution: ReviewHandoffResolution,
+  binding: NonNullable<CandidateReviewAuthority["binding"]>,
+): MissionMutationAuthorityV1 | null {
+  if (!missionId || resolution.kind === "unbound") return null;
+  if (resolution.kind !== "resolved") throw new Error("warden_candidate_handoff_authority_invalid");
+  const mission = getMission(db, tenantId, missionId);
+  if (!mission) throw new Error("warden_candidate_handoff_authority_invalid");
+  const task = resolution.taskId ? getMissionTask(db, tenantId, resolution.taskId) ?? null : null;
+  if (resolution.taskId && !task) throw new Error("warden_candidate_handoff_authority_invalid");
+  return createMissionMutationAuthority({ mission, task, repositoryId: binding.repositoryId,
+    snapshotId: binding.snapshotId, resolvedSha: binding.revision });
 }
 
 function requireResolvedReviewHandoff(resolution: ReviewHandoffResolution): void {
@@ -341,6 +386,9 @@ function candidateReviewAuthority(
   const mission = missionId ? getMission(db, input.tenantId, missionId) : undefined;
   if (missionId && !mission) throw new Error("warden_candidate_snapshot_binding_mismatch");
   if (mission && mission.product !== "fettler") throw new Error("warden_candidate_mission_product_invalid");
+  if (mission && ["accepted", "rejected", "partial", "failed", "cancelled"].includes(mission.state)) {
+    throw new Error("warden_candidate_review_conflict");
+  }
   const hasCiFailure = plainObject(result.ciFailure);
   let binding = input.decision === "approve" || hasCiFailure || missionId
     ? sourceBinding(db, input.tenantId, result)
@@ -370,6 +418,8 @@ function candidateReviewAuthority(
     mission: mission ? {
       id: mission.id,
       product: mission.product,
+      state: mission.state,
+      revision: mission.revision,
       repositoryId: mission.repositoryId,
       snapshotId: mission.snapshotId,
     } : null,
@@ -604,23 +654,11 @@ export function registerWardenCandidateReviewRoutes(
         });
       }
       let reviewedResult: Record<string, unknown>;
+      let missionAuthority: MissionMutationAuthorityV1 | null = null;
       if (body.decision === "regenerate") {
         if (!run.job_id || !currentAuthority.sourcePayload) throw new Error("warden_candidate_source_job_missing");
         const originalPayload = currentAuthority.sourcePayload;
         const next = regenerationIds(tenantId, run.id);
-        const nextPayload = { ...originalPayload, sessionId: next.runId, reviewFeedback: body.rationale,
-          supersedesRunId: run.id, reviewerPrincipalId: principal.id };
-        enqueueJob(db, { id: next.jobId, tenantId, type: "agent.run", payload: nextPayload, createdAt: reviewedAt });
-        insertAgentRun(db, { id: next.runId, tenantId, jobId: next.jobId, goal: run.goal, repoPath: run.repo_path,
-          status: "queued", ok: false, steps: 0, filesChanged: [], reportMd: null,
-          resultJson: JSON.stringify({ jobId: next.jobId, product: "warden", supersedesRunId: run.id,
-            regenerationFeedback: body.rationale, reviewerPrincipalId: principal.id }),
-          createdAt: reviewedAt, finishedAt: null });
-        if (ciAuthority) {
-          rebindWardenCiRepair(db, { tenantId, cycleId: ciAuthority.cycle.id,
-            currentRepairRunId: run.id, nextRepairRunId: next.runId, nextRepairJobId: next.jobId,
-            observedAt: reviewedAt });
-        }
         // First real caller of the mission decision store. When this regenerate is
         // part of a formal mission, record the reviewer's directive as a durable
         // ACTIVE decision so EVERY prior cycle's guidance survives for the resumed
@@ -657,6 +695,21 @@ export function registerWardenCandidateReviewRoutes(
             createdAt: reviewedAt,
           });
           requireResolvedReviewHandoff(resolution);
+          missionAuthority = missionAuthorityAfterResolution(db, tenantId, regenerateMissionId, resolution, binding);
+        }
+        const nextPayload = { ...originalPayload, sessionId: next.runId, reviewFeedback: body.rationale,
+          supersedesRunId: run.id, reviewerPrincipalId: principal.id,
+          ...(missionAuthority ? { missionAuthority } : {}) };
+        enqueueJob(db, { id: next.jobId, tenantId, type: "agent.run", payload: nextPayload, createdAt: reviewedAt });
+        insertAgentRun(db, { id: next.runId, tenantId, jobId: next.jobId, goal: run.goal, repoPath: run.repo_path,
+          status: "queued", ok: false, steps: 0, filesChanged: [], reportMd: null,
+          resultJson: JSON.stringify({ jobId: next.jobId, product: "warden", supersedesRunId: run.id,
+            regenerationFeedback: body.rationale, reviewerPrincipalId: principal.id }),
+          createdAt: reviewedAt, finishedAt: null });
+        if (ciAuthority) {
+          rebindWardenCiRepair(db, { tenantId, cycleId: ciAuthority.cycle.id,
+            currentRepairRunId: run.id, nextRepairRunId: next.runId, nextRepairJobId: next.jobId,
+            observedAt: reviewedAt });
         }
         reviewedResult = { ...result, review: { decision: body.decision, rationale: body.rationale,
           reviewedAt, reviewerPrincipalId: principal.id, supersedingRunId: next.runId, supersedingJobId: next.jobId },
@@ -702,6 +755,8 @@ export function registerWardenCandidateReviewRoutes(
             createdAt: reviewedAt,
           });
           requireResolvedReviewHandoff(resolution);
+          missionAuthority = missionAuthorityAfterResolution(db, tenantId, currentAuthority.missionId,
+            resolution, binding);
           if (currentAuthority.missionId && evaluateMissionExceptions(db, tenantId,
             currentAuthority.missionId, { snapshotId: binding.snapshotId, resolvedSha: binding.revision }).missionBlocked) {
             throw new Error("warden_candidate_mission_blocked");
@@ -719,13 +774,15 @@ export function registerWardenCandidateReviewRoutes(
             repairRunId: run.id, expectedHeadSha: ciAuthority.cycle.currentHeadSha,
             expectedFeedbackDigest: ciAuthority.reviewFeedbackDigest,
             sealedPath: seal!.path, sealedSha256: seal!.sha256, reviewerPrincipalId: trustId!,
-            rationale: body.rationale, observedAt: reviewedAt });
+            rationale: body.rationale, observedAt: reviewedAt,
+            ...(missionAuthority ? { missionAuthority } : {}) });
           response = { ...response, update };
         } else {
           const delivery = enqueueWardenCandidateDelivery(db, { tenantId, runId: run.id,
             repositoryId: binding!.repositoryId, snapshotId: binding!.snapshotId, baseBranch: binding!.baseBranch,
             expectedBaseRevision: binding!.revision, sealedPath: seal!.path, sealedSha256: seal!.sha256,
-            requesterPrincipalId: trustId!, rationale: body.rationale, now: reviewedAt });
+            requesterPrincipalId: trustId!, rationale: body.rationale, now: reviewedAt,
+            ...(missionAuthority ? { missionAuthority } : {}) });
           response = { ...response, delivery };
         }
       }
