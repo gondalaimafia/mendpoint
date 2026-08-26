@@ -177,3 +177,8 @@
 **Mistake:** A jq schema predicate was captured as though it were the validated JSON object, while the only happy-path test was skipped on the local host because jq was unavailable.
 **Correction:** Independent review traced the production verifier through its next `.releaseRevision` read and showed that valid input yielded the literal boolean `true`.
 **Rule:** For security and backup verifiers, test the exact value passed between every process boundary, not only the predicate verdict. When a required platform tool is unavailable locally, add a non-skipped shape-preserving harness and retain the real-tool case for CI; never let a platform skip remove all coverage of the success path.
+
+### 2026-08-26 — Execute embedded authority scripts as behavior
+**Mistake:** Source and YAML assertions stayed green while the profile gate treated a missing operator binding as an explicit inactive decision.
+**Correction:** Spec review required direct execution of the checked-in profile-gate and incident `run` blocks across the complete authority state table.
+**Rule:** For embedded workflow authority, parse the checked-in YAML and execute its actual shell blocks with controlled provider stubs. Cover missing, invalid, explicit inactive, eligible, failed, successful, and skipped states; source-string assertions may supplement but never substitute for behavioral execution.

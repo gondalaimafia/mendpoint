@@ -3328,6 +3328,7 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - [x] Require authenticated backup output before recording a successful backup result and preserve the customer-profile producer guard.
 - [x] Reconcile one durable incident across profile-authority failures and authenticated backup failures without treating `not_configured` as recovery.
 - [x] Preserve the validated terminal-result object through exact live-release verification.
+- [x] Require explicit profile intent and execute the exact profile-gate and incident state table in tests.
 - [x] Run the focused workflow suite, YAML parse, configuration check, activation regression, and strict diff review.
 
 ### Review
@@ -3337,6 +3338,8 @@ The replacement is based on exact `origin/main` revision `7f74e609` and does not
 Final incident review: the backup-local alert could never run when `profile-gate` failed because the entire backup job was skipped. A default-branch, always-run reconciler now owns the single deduplicated incident. It retains the workflow run and exact evidence artifact name on every failure, leaves intentional `not_configured` runs inert without closing earlier failures, and closes only after eligible profile authority and a real authenticated backup both succeed. The focused lifecycle regression was RED on the missing job and is now GREEN; the broader backup matrix has 13 passing tests with three jq-dependent cases retained for Ubuntu.
 
 Terminal verifier correction: the original jq predicate returned the literal boolean `true`, so the following `.releaseRevision` lookup could never verify a valid production result. A non-skipped shell-flow regression now distinguishes predicate output from retained object output and proves both acceptance at the exact release and rejection at a different release. The jq filter returns the validated input object and raises an error for every invalid shape; the separate exact release comparison remains fail closed.
+
+Spec-review correction: blank profile intent was incorrectly folded into explicit inactive authority. The executable YAML regression ran the exact profile-gate block and observed the old zero exit while 13 other state-table cases passed. Blank intent now exits fail closed with retained `authority_invalid` and operator-action evidence; only literal `false` with a live non-customer profile can produce `not_configured`. Fourteen direct profile and incident behavior cases now cover missing and invalid intent, both valid profile states, deduplicated profile failures, backup failure, authenticated success, and unexpected dependency state.
 
 ### 2026-08-25 Repair merged closure authority root
 

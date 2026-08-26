@@ -71,7 +71,7 @@ jobs:
           live_profile="unknown"
           live_release_revision="unknown"
           release_revision_matches_workflow=false
-          expected_active=false
+          expected_active=null
           operator_action_required=true
 
           write_evidence_and_exit() {
@@ -103,7 +103,13 @@ jobs:
 
           case "$EXPECTED_ACTIVE" in
             true) expected_active=true ;;
-            false|"") expected_active=false ;;
+            false) expected_active=false ;;
+            "")
+              result="authority_invalid"
+              reason="customer_profile_intent_missing"
+              echo customer_profile_intent_missing >&2
+              exit 1
+              ;;
             *)
               result="authority_invalid"
               reason="customer_profile_intent_invalid"
