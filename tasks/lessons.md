@@ -187,3 +187,8 @@
 **Mistake:** The first executable workflow tests covered representative states but omitted release, token scope, runtime, and profile-drift terminal branches.
 **Correction:** Spec re-review required a table-driven execution of the actual workflow controls across the complete terminal-state matrix.
 **Rule:** For fail-closed authority, enumerate every terminal reason and provider-failure boundary before implementation. Assert the exact exit, retained evidence, eligibility output, and incident transition for each row; a representative subset is not a complete matrix.
+
+### 2026-08-26 — Keep configuration readiness aligned with runtime authority
+**Mistake:** The workflow changed a missing binding from safe absence to fail-closed authority, but the configuration manifest still classified that absence as gated and non-failing.
+**Correction:** Code-quality review required the live-compatible configuration gate to report the missing binding as `CONFIG_MISSING`.
+**Rule:** Whenever runtime authority changes whether absence is safe, update the configuration registry and its live-readiness regression in the same change. Verify the provisioned scope directly and never leave a stale `optional_gated` exemption behind.

@@ -90,6 +90,27 @@ describe("configuration completeness gate", () => {
     expect(issues.map((issue) => issue.code)).toEqual(["CONFIG_MISSING"]);
   });
 
+  it("fails live readiness when the repository customer-profile intent binding is absent", () => {
+    const entry = loadManifest().entries.find(
+      (candidate) => candidate.name === "MENDPOINT_CUSTOMER_PROFILE_ACTIVE",
+    );
+    expect(entry).toMatchObject({
+      type: "variable",
+      scope: { kind: "repo" },
+      status: "required",
+    });
+    expect(entry).not.toHaveProperty("gatedBy");
+
+    const reads: string[] = [];
+    const { issues, gatedAbsent } = liveIssues(manifest([entry]), "o/r", (path) => {
+      reads.push(path);
+      return { variables: [] };
+    });
+    expect(reads).toEqual(["repos/o/r/actions/variables?per_page=100"]);
+    expect(issues.map((issue) => issue.code)).toEqual(["CONFIG_MISSING"]);
+    expect(gatedAbsent).toEqual([]);
+  });
+
   it("treats an unreadable scope as unreadable, never as present", () => {
     const entries = [{ name: "NEEDED", type: "secret", scope: { kind: "repo" }, status: "required" }];
     const { issues } = liveIssues(manifest(entries), "o/r", () => {

@@ -234,8 +234,7 @@
       "scope": {
         "kind": "repo"
       },
-      "status": "optional_gated",
-      "gatedBy": "profile-gate job reports NOT-CONFIGURED and skips the backup when unset"
+      "status": "required"
     },
     {
       "name": "REGAUGE_CANARY_BRANCH",
