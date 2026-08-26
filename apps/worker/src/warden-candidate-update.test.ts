@@ -158,18 +158,26 @@ afterEach(() => {
 describe("Warden candidate exact draft update", () => {
   it("quarantines a legacy mission-bound update without retained authority before GitHub", async () => {
     const value = bindMissionAuthority(fixture());
-    value.db.raw.prepare(`UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?`)
+    value.db.raw.prepare(`UPDATE jobs SET payload_json = ?, status = 'pending', lease_owner = NULL,
+      lease_expires_at = NULL WHERE id = ? AND tenant_id = ?`)
       .run(JSON.stringify({ cycleId: "cycle-a", updateId: value.update.id, missionId: "mission-1" }),
         value.job.id, "tenant-a");
     const updateExactDraft = vi.fn();
-    await expect(runWardenCandidateUpdate({ db: value.db,
-      job: getJob(value.db, value.job.id, "tenant-a")!, updateExactDraft,
-      reconcileExactDraftUpdate: vi.fn(), readApprovalArtifact: () => value.artifact,
-      resolveRepository: () => ({ owner: "acme", repo: "service" }),
-      now: () => "2026-08-13T12:05:00.000Z" }))
-      .rejects.toThrow("warden_ci_update_mission_authority_upgrade_required");
+    await expect(processJobsOnce(value.db, { tenantId: "tenant-a", workerId: "worker-upgrade",
+      leaseMs: 60_000, maxJobs: 1, jobTypes: ["warden.candidate.update"], runWardenMaintenance: false,
+      wardenEnv: { MENDPOINT_FETTLER_CI_REENTRY_ENABLED: "1",
+        MENDPOINT_FETTLER_CI_REENTRY_CONFIG_JSON: JSON.stringify({
+          "repo-a": { requiredChecks: ["check:77:unit"], maxCycles: 3, maxModelCalls: 6, maximumCostUsd: 3 },
+        }) },
+      wardenCandidateUpdateRuntime: { updateExactDraft, reconcileExactDraftUpdate: vi.fn(),
+        readApprovalArtifact: () => value.artifact,
+        resolveRepository: () => ({ owner: "acme", repo: "service" }),
+        now: () => "2026-08-13T12:05:00.000Z" } }))
+      .resolves.toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0, inconclusive: 0 });
     expect(updateExactDraft).not.toHaveBeenCalled();
-    expect(getJob(value.db, value.job.id, "tenant-a")?.status).toBe("running");
+    expect(getJob(value.db, value.job.id, "tenant-a")).toMatchObject({ status: "dead_letter",
+      error_code: "warden_ci_update_mission_authority_upgrade_required" });
+    expect(getWardenCiCycle(value.db, "tenant-a", "cycle-a")?.status).toBe("paused");
   });
 
   it("claims an approved CI update through the real job loop and retains fresh Mission authority", async () => {
