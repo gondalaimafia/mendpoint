@@ -182,3 +182,8 @@
 **Mistake:** Source and YAML assertions stayed green while the profile gate treated a missing operator binding as an explicit inactive decision.
 **Correction:** Spec review required direct execution of the checked-in profile-gate and incident `run` blocks across the complete authority state table.
 **Rule:** For embedded workflow authority, parse the checked-in YAML and execute its actual shell blocks with controlled provider stubs. Cover missing, invalid, explicit inactive, eligible, failed, successful, and skipped states; source-string assertions may supplement but never substitute for behavioral execution.
+
+### 2026-08-26 — Enumerate every authority terminal before claiming matrix coverage
+**Mistake:** The first executable workflow tests covered representative states but omitted release, token scope, runtime, and profile-drift terminal branches.
+**Correction:** Spec re-review required a table-driven execution of the actual workflow controls across the complete terminal-state matrix.
+**Rule:** For fail-closed authority, enumerate every terminal reason and provider-failure boundary before implementation. Assert the exact exit, retained evidence, eligibility output, and incident transition for each row; a representative subset is not a complete matrix.

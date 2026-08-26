@@ -41,14 +41,18 @@ function installProfileStubs(directory: string): void {
   executable(directory, "flyctl", `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === "apps" && args[1] === "list") {
-  process.stdout.write(JSON.stringify([{ Name: process.env.STUB_CUSTOMER_APP }]) + "\\n");
+  if (process.env.STUB_APPS_AVAILABLE === "false") process.exit(1);
+  process.stdout.write((process.env.STUB_APPS_JSON ?? process.env.STUB_VISIBLE_APPS) + "\\n");
 } else if (args[0] === "status") {
+  if (process.env.STUB_STATUS_AVAILABLE === "false") process.exit(1);
   process.exit(0);
 } else if (args[0] === "ssh" && args[1] === "console") {
-  process.stdout.write(JSON.stringify({
+  if (process.env.STUB_RUNTIME_AVAILABLE === "false") process.exit(1);
+  process.stdout.write(process.env.STUB_RUNTIME_JSON ?? JSON.stringify({
     deploymentProfile: process.env.STUB_LIVE_PROFILE,
     releaseRevision: process.env.STUB_LIVE_RELEASE,
-  }) + "\\n");
+  }));
+  process.stdout.write("\\n");
 } else {
   process.stderr.write("unexpected flyctl invocation: " + args.join(" ") + "\\n");
   process.exit(64);
@@ -118,11 +122,22 @@ function parseOutputs(path: string): Record<string, string> {
   return result;
 }
 
-function runProfileGate(input: {
+interface ProfileGateInput {
   intent?: string;
   liveProfile?: string;
   liveRelease?: string;
-}): {
+  flyToken?: string;
+  customerApp?: string;
+  visibleApps?: string[];
+  appsAvailable?: boolean;
+  appsJson?: string;
+  workflowRevision?: string;
+  statusAvailable?: boolean;
+  runtimeAvailable?: boolean;
+  runtimeJson?: string;
+}
+
+function runProfileGate(input: ProfileGateInput): {
   status: number | null;
   stderr: string;
   evidence: Record<string, unknown>;
@@ -134,7 +149,9 @@ function runProfileGate(input: {
   mkdirSync(join(directory, "test-results/customer-backup-preflight"), { recursive: true });
   const output = join(directory, "github-output.txt");
   const summary = join(directory, "github-summary.md");
-  const sha = "d".repeat(40);
+  const sha = input.workflowRevision ?? "d".repeat(40);
+  const customerApp = input.customerApp ?? "mendpoint-customer";
+  const visibleApps = input.visibleApps ?? [customerApp];
   const result = spawnSync("bash", ["-c", profileScript], {
     cwd: directory,
     encoding: "utf8",
@@ -142,9 +159,14 @@ function runProfileGate(input: {
       ...process.env,
       PATH: `${directory}${delimiter}${process.env.PATH ?? ""}`,
       EXPECTED_ACTIVE: input.intent ?? "",
-      FLY_API_TOKEN: "app-scoped-token",
-      CUSTOMER_APP: "mendpoint-customer",
-      STUB_CUSTOMER_APP: "mendpoint-customer",
+      FLY_API_TOKEN: input.flyToken ?? "app-scoped-token",
+      CUSTOMER_APP: customerApp,
+      STUB_VISIBLE_APPS: JSON.stringify(visibleApps.map((Name) => ({ Name }))),
+      STUB_APPS_AVAILABLE: input.appsAvailable === false ? "false" : "true",
+      ...(input.appsJson === undefined ? {} : { STUB_APPS_JSON: input.appsJson }),
+      STUB_STATUS_AVAILABLE: input.statusAvailable === false ? "false" : "true",
+      STUB_RUNTIME_AVAILABLE: input.runtimeAvailable === false ? "false" : "true",
+      ...(input.runtimeJson === undefined ? {} : { STUB_RUNTIME_JSON: input.runtimeJson }),
       STUB_LIVE_PROFILE: input.liveProfile ?? "demo",
       STUB_LIVE_RELEASE: input.liveRelease ?? sha,
       GITHUB_SHA: sha,
@@ -446,6 +468,306 @@ describe("customer backup workflow", () => {
       operatorActionRequired: false,
       backupTaken: false,
     });
+  });
+
+  it.each([
+    {
+      name: "missing intent",
+      input: { liveProfile: "demo" },
+      status: 1,
+      result: "authority_invalid",
+      reason: "customer_profile_intent_missing",
+      expectedCustomerProfile: null,
+      operatorActionRequired: true,
+      incident: "comment",
+    },
+    {
+      name: "blank intent",
+      input: { intent: "", liveProfile: "demo" },
+      status: 1,
+      result: "authority_invalid",
+      reason: "customer_profile_intent_missing",
+      expectedCustomerProfile: null,
+      operatorActionRequired: true,
+      incident: "create",
+    },
+    {
+      name: "invalid intent",
+      input: { intent: "TRUE", liveProfile: "demo" },
+      status: 1,
+      result: "authority_invalid",
+      reason: "customer_profile_intent_invalid",
+      expectedCustomerProfile: null,
+      operatorActionRequired: true,
+      incident: "create",
+    },
+    {
+      name: "explicit inactive demo profile",
+      input: { intent: "false", liveProfile: "demo" },
+      status: 0,
+      result: "not_configured",
+      reason: "customer_profile_inactive",
+      expectedCustomerProfile: false,
+      operatorActionRequired: false,
+      liveProfile: "demo",
+      liveReleaseRevision: "d".repeat(40),
+      releaseRevisionMatchesWorkflow: true,
+      incident: "none",
+    },
+    {
+      name: "explicit active exact customer release",
+      input: { intent: "true", liveProfile: "customer" },
+      status: 0,
+      result: "eligible",
+      reason: "live_customer_profile_verified",
+      expectedCustomerProfile: true,
+      operatorActionRequired: false,
+      liveProfile: "customer",
+      liveReleaseRevision: "d".repeat(40),
+      releaseRevisionMatchesWorkflow: true,
+      incident: "close",
+    },
+    {
+      name: "release mismatch",
+      input: { intent: "true", liveProfile: "customer", liveRelease: "e".repeat(40) },
+      status: 1,
+      result: "operator_action_required",
+      reason: "customer_backup_release_revision_mismatch",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      liveProfile: "customer",
+      liveReleaseRevision: "e".repeat(40),
+      releaseRevisionMatchesWorkflow: false,
+      incident: "create",
+    },
+    {
+      name: "missing live release authority",
+      input: { intent: "true", runtimeJson: JSON.stringify({ deploymentProfile: "customer" }) },
+      status: 1,
+      result: "authority_unavailable",
+      reason: "customer_backup_live_runtime_invalid",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      liveProfile: "customer",
+      liveReleaseRevision: "unknown",
+      releaseRevisionMatchesWorkflow: false,
+      incident: "create",
+    },
+    {
+      name: "invalid live release authority",
+      input: { intent: "true", liveProfile: "customer", liveRelease: "not-a-revision" },
+      status: 1,
+      result: "authority_unavailable",
+      reason: "customer_backup_live_runtime_invalid",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      liveProfile: "customer",
+      liveReleaseRevision: "unknown",
+      releaseRevisionMatchesWorkflow: false,
+      incident: "create",
+    },
+    {
+      name: "active intent with noncustomer drift",
+      input: { intent: "true", liveProfile: "demo" },
+      status: 1,
+      result: "operator_action_required",
+      reason: "customer_backup_profile_authority_mismatch",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      liveProfile: "demo",
+      liveReleaseRevision: "d".repeat(40),
+      releaseRevisionMatchesWorkflow: true,
+      incident: "create",
+    },
+    {
+      name: "inactive intent with customer drift",
+      input: { intent: "false", liveProfile: "customer" },
+      status: 1,
+      result: "operator_action_required",
+      reason: "customer_backup_profile_authority_mismatch",
+      expectedCustomerProfile: false,
+      operatorActionRequired: true,
+      liveProfile: "customer",
+      liveReleaseRevision: "d".repeat(40),
+      releaseRevisionMatchesWorkflow: true,
+      incident: "create",
+    },
+    {
+      name: "missing Fly token",
+      input: { intent: "true", flyToken: "", liveProfile: "customer" },
+      status: 1,
+      result: "authority_unavailable",
+      reason: "customer_backup_fly_token_missing",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      incident: "create",
+    },
+    {
+      name: "wrong app scope",
+      input: { intent: "true", visibleApps: ["another-app"], liveProfile: "customer" },
+      status: 1,
+      result: "authority_unavailable",
+      reason: "customer_backup_token_not_app_scoped",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      incident: "create",
+    },
+    {
+      name: "unavailable app-scope authority",
+      input: { intent: "true", appsAvailable: false },
+      status: 1,
+      result: "authority_unavailable",
+      reason: "customer_backup_token_scope_unavailable",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      incident: "create",
+    },
+    {
+      name: "invalid app-scope authority",
+      input: { intent: "true", appsJson: "not-json" },
+      status: 1,
+      result: "authority_unavailable",
+      reason: "customer_backup_token_scope_unavailable",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      incident: "create",
+    },
+    {
+      name: "multi-app scope",
+      input: {
+        intent: "true",
+        visibleApps: ["mendpoint-customer", "another-app"],
+        liveProfile: "customer",
+      },
+      status: 1,
+      result: "authority_unavailable",
+      reason: "customer_backup_token_not_app_scoped",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      incident: "create",
+    },
+    {
+      name: "invalid runtime",
+      input: { intent: "true", runtimeJson: "not-json" },
+      status: 1,
+      result: "authority_unavailable",
+      reason: "customer_backup_live_runtime_invalid",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      incident: "create",
+    },
+    {
+      name: "missing live profile authority",
+      input: {
+        intent: "true",
+        runtimeJson: JSON.stringify({ releaseRevision: "d".repeat(40) }),
+      },
+      status: 1,
+      result: "authority_unavailable",
+      reason: "customer_backup_live_runtime_invalid",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      incident: "create",
+    },
+    {
+      name: "unavailable runtime",
+      input: { intent: "true", runtimeAvailable: false },
+      status: 1,
+      result: "authority_unavailable",
+      reason: "customer_backup_live_runtime_unavailable",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      incident: "create",
+    },
+    {
+      name: "unavailable app status",
+      input: { intent: "true", statusAvailable: false },
+      status: 1,
+      result: "authority_unavailable",
+      reason: "customer_backup_live_runtime_unavailable",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      incident: "create",
+    },
+    {
+      name: "invalid live profile",
+      input: { intent: "true", liveProfile: "staging" },
+      status: 1,
+      result: "authority_invalid",
+      reason: "customer_backup_live_profile_invalid",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      liveProfile: "staging",
+      liveReleaseRevision: "d".repeat(40),
+      releaseRevisionMatchesWorkflow: true,
+      incident: "create",
+    },
+    {
+      name: "invalid workflow revision",
+      input: { intent: "true", workflowRevision: "not-a-revision" },
+      status: 1,
+      result: "authority_invalid",
+      reason: "customer_backup_workflow_revision_invalid",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      incident: "create",
+    },
+    {
+      name: "invalid app binding",
+      input: { intent: "true", customerApp: "INVALID_APP" },
+      status: 1,
+      result: "authority_unavailable",
+      reason: "customer_backup_app_binding_invalid",
+      expectedCustomerProfile: true,
+      operatorActionRequired: true,
+      incident: "create",
+    },
+  ])("executes the profile and incident controls for $name", (testCase) => {
+    const gate = runProfileGate(testCase.input);
+    expect(gate.status, gate.stderr).toBe(testCase.status);
+    expect(gate.outputs).toMatchObject({
+      active: testCase.result === "eligible" ? "true" : "false",
+      result: testCase.result,
+    });
+    expect(gate.evidence).toMatchObject({
+      app: testCase.input.customerApp ?? "mendpoint-customer",
+      workflowRevision: testCase.input.workflowRevision ?? "d".repeat(40),
+      liveProfile: testCase.liveProfile ?? "unknown",
+      liveReleaseRevision: testCase.liveReleaseRevision ?? "unknown",
+      releaseRevisionMatchesWorkflow: testCase.releaseRevisionMatchesWorkflow ?? false,
+      result: testCase.result,
+      reason: testCase.reason,
+      expectedCustomerProfile: testCase.expectedCustomerProfile,
+      operatorActionRequired: testCase.operatorActionRequired,
+      backupTaken: false,
+    });
+
+    const existingIssue = testCase.incident === "comment" || testCase.incident === "close"
+      ? "42"
+      : undefined;
+    const incident = runIncident({
+      profileJobResult: testCase.status === 0 ? "success" : "failure",
+      profileAuthorityResult: gate.outputs.result!,
+      profileActive: gate.outputs.active!,
+      backupJobResult: testCase.result === "eligible" ? "success" : "skipped",
+      existingIssue,
+    });
+    expect(incident.status, incident.stderr).toBe(0);
+    if (testCase.incident === "none") {
+      expect(incident.commands).toEqual([]);
+    } else if (testCase.incident === "comment") {
+      expect(called(incident.commands, "issue", "comment", "42")).toBe(true);
+      expect(called(incident.commands, "issue", "create")).toBe(false);
+      expect(called(incident.commands, "issue", "close")).toBe(false);
+    } else if (testCase.incident === "close") {
+      expect(called(incident.commands, "issue", "close", "42")).toBe(true);
+      expect(called(incident.commands, "issue", "create")).toBe(false);
+      expect(called(incident.commands, "issue", "comment")).toBe(false);
+    } else {
+      expect(called(incident.commands, "issue", "create")).toBe(true);
+      expect(called(incident.commands, "issue", "comment")).toBe(false);
+      expect(called(incident.commands, "issue", "close")).toBe(false);
+    }
   });
 
   it("opens an incident when eligible backup execution or verification fails", () => {

@@ -135,22 +135,43 @@ jobs:
             echo customer_backup_app_binding_invalid >&2
             exit 1
           }
-          apps_json="$(flyctl apps list --json)"
-          visible_apps_json="$(jq -ce '[.[] | (.Name // .name)] | unique' <<< "$apps_json")"
-          visible_app_count="$(jq -r 'length' <<< "$visible_apps_json")"
-          visible_app="$(jq -r '.[0] // ""' <<< "$visible_apps_json")"
+          reason="customer_backup_token_scope_unavailable"
+          apps_json="$(flyctl apps list --json)" || {
+            echo customer_backup_token_scope_unavailable >&2
+            exit 1
+          }
+          visible_apps_json="$(jq -ce '[.[] | (.Name // .name)] | unique' <<< "$apps_json")" || {
+            echo customer_backup_token_scope_unavailable >&2
+            exit 1
+          }
+          visible_app_count="$(jq -r 'length' <<< "$visible_apps_json")" || {
+            echo customer_backup_token_scope_unavailable >&2
+            exit 1
+          }
+          visible_app="$(jq -r '.[0] // ""' <<< "$visible_apps_json")" || {
+            echo customer_backup_token_scope_unavailable >&2
+            exit 1
+          }
+          reason="customer_backup_token_not_app_scoped"
           if [ "$visible_app_count" -ne 1 ] || [ "$visible_app" != "$CUSTOMER_APP" ]; then
-            reason="customer_backup_token_not_app_scoped"
             echo customer_backup_token_not_app_scoped >&2
             exit 1
           fi
-          flyctl status --app "$CUSTOMER_APP" >/dev/null
           reason="customer_backup_live_runtime_unavailable"
+          flyctl status --app "$CUSTOMER_APP" >/dev/null
           runtime_json="$(flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
             --command "node -e 'process.stdout.write(JSON.stringify({deploymentProfile:process.env.MENDPOINT_DEPLOYMENT_PROFILE ?? null,releaseRevision:process.env.MENDPOINT_RELEASE_REVISION ?? null}))'")"
           reason="customer_backup_live_runtime_invalid"
-          live_profile="$(jq -er '.deploymentProfile | strings' <<< "$runtime_json")"
-          live_release_revision="$(jq -er '.releaseRevision | strings | select(test("^[a-f0-9]{40}$"))' <<< "$runtime_json")"
+          parsed_live_profile="$(jq -er '.deploymentProfile | strings' <<< "$runtime_json")" || {
+            echo customer_backup_live_runtime_invalid >&2
+            exit 1
+          }
+          live_profile="$parsed_live_profile"
+          parsed_live_release_revision="$(jq -er '.releaseRevision | strings | select(test("^[a-f0-9]{40}$"))' <<< "$runtime_json")" || {
+            echo customer_backup_live_runtime_invalid >&2
+            exit 1
+          }
+          live_release_revision="$parsed_live_release_revision"
           if [ "$live_release_revision" = "$GITHUB_SHA" ]; then
             release_revision_matches_workflow=true
           fi

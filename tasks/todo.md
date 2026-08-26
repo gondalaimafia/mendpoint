@@ -3329,6 +3329,7 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - [x] Reconcile one durable incident across profile-authority failures and authenticated backup failures without treating `not_configured` as recovery.
 - [x] Preserve the validated terminal-result object through exact live-release verification.
 - [x] Require explicit profile intent and execute the exact profile-gate and incident state table in tests.
+- [x] Execute every profile-authority terminal against controllable Fly, jq, and GitHub stubs and retain validated failure evidence.
 - [x] Run the focused workflow suite, YAML parse, configuration check, activation regression, and strict diff review.
 
 ### Review
@@ -3340,6 +3341,8 @@ Final incident review: the backup-local alert could never run when `profile-gate
 Terminal verifier correction: the original jq predicate returned the literal boolean `true`, so the following `.releaseRevision` lookup could never verify a valid production result. A non-skipped shell-flow regression now distinguishes predicate output from retained object output and proves both acceptance at the exact release and rejection at a different release. The jq filter returns the validated input object and raises an error for every invalid shape; the separate exact release comparison remains fail closed.
 
 Spec-review correction: blank profile intent was incorrectly folded into explicit inactive authority. The executable YAML regression ran the exact profile-gate block and observed the old zero exit while 13 other state-table cases passed. Blank intent now exits fail closed with retained `authority_invalid` and operator-action evidence; only literal `false` with a live non-customer profile can produce `not_configured`. Fourteen direct profile and incident behavior cases now cover missing and invalid intent, both valid profile states, deduplicated profile failures, backup failure, authenticated success, and unexpected dependency state.
+
+Terminal-matrix correction: the representative behavioral set did not exercise all provider and drift branches. The actual embedded profile and incident scripts now run against twenty-two terminal rows, including missing, blank, and invalid intent; release authority; token and app scope; runtime validity and availability; both profile-drift directions; deliberate inactive; and exact eligibility. RED isolated stale `preflight_not_completed` evidence on an unavailable live-app status probe and empty evidence after jq validation failure. The gate now records scope and runtime unavailability before provider calls and assigns live authority only after validation, preserving explicit `unknown` evidence on failure.
 
 ### 2026-08-25 Repair merged closure authority root
 
