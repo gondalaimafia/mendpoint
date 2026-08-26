@@ -21,7 +21,8 @@ export type WardenCiCycle = Readonly<{
   allowedChangedPaths: readonly string[]; maxCycles: number; usedCycles: number;
   maxModelCalls: number; maximumCostUsd: number; currentObservationDigest: string | null;
   repairRunId: string | null; repairJobId: string | null; pausedBy: string | null;
-  pauseReason: string | null; createdAt: string; updatedAt: string;
+  pauseReason: string | null; missionAuthority: MissionMutationAuthorityV1 | null;
+  createdAt: string; updatedAt: string;
 }>;
 
 export type WardenCiObservation = Readonly<{
@@ -36,7 +37,7 @@ export type WardenCiUpdate = Readonly<{
   expectedFeedbackDigest: string | null;
   sealedPath: string; sealedSha256: string; reviewerPrincipalId: string; rationale: string;
   intentDigest: string | null; commitSha: string | null; requestedAt: string;
-  deliveredAt: string | null; updatedAt: string;
+  deliveredAt: string | null; missionAuthority: MissionMutationAuthorityV1 | null; updatedAt: string;
 }>;
 
 type CycleRow = {
@@ -46,7 +47,7 @@ type CycleRow = {
   required_checks_json: string; allowed_changed_paths_json: string; max_cycles: number; used_cycles: number;
   max_model_calls: number; maximum_cost_usd: number; current_observation_digest: string | null;
   repair_run_id: string | null; repair_job_id: string | null; paused_by: string | null;
-  pause_reason: string | null; created_at: string; updated_at: string;
+  pause_reason: string | null; mission_authority_json: string | null; created_at: string; updated_at: string;
 };
 
 type ObservationRow = {
@@ -60,7 +61,7 @@ type UpdateRow = {
   expected_feedback_digest: string | null;
   sealed_sha256: string; reviewer_principal_id: string; rationale: string;
   intent_digest: string | null; commit_sha: string | null; requested_at: string;
-  delivered_at: string | null; updated_at: string;
+  delivered_at: string | null; mission_authority_json: string | null; updated_at: string;
 };
 
 function codeUnits(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
@@ -108,7 +109,10 @@ function cycle(row: CycleRow): WardenCiCycle {
     maxCycles: row.max_cycles, usedCycles: row.used_cycles, maxModelCalls: row.max_model_calls,
     maximumCostUsd: row.maximum_cost_usd, currentObservationDigest: row.current_observation_digest,
     repairRunId: row.repair_run_id, repairJobId: row.repair_job_id, pausedBy: row.paused_by,
-    pauseReason: row.pause_reason, createdAt: row.created_at, updatedAt: row.updated_at,
+    pauseReason: row.pause_reason,
+    missionAuthority: row.mission_authority_json == null ? null
+      : parseMissionMutationAuthority(JSON.parse(row.mission_authority_json)),
+    createdAt: row.created_at, updatedAt: row.updated_at,
   });
 }
 
@@ -126,7 +130,10 @@ function update(row: UpdateRow): WardenCiUpdate {
     expectedFeedbackDigest: row.expected_feedback_digest,
     sealedSha256: row.sealed_sha256, reviewerPrincipalId: row.reviewer_principal_id,
     rationale: row.rationale, intentDigest: row.intent_digest, commitSha: row.commit_sha,
-    requestedAt: row.requested_at, deliveredAt: row.delivered_at, updatedAt: row.updated_at });
+    requestedAt: row.requested_at, deliveredAt: row.delivered_at,
+    missionAuthority: row.mission_authority_json == null ? null
+      : parseMissionMutationAuthority(JSON.parse(row.mission_authority_json)),
+    updatedAt: row.updated_at });
 }
 
 export function getWardenCiCycle(db: AppDb, tenantId: string, cycleId: string): WardenCiCycle | undefined {
@@ -197,7 +204,12 @@ export function wakeWardenCiReviewObservation(db: AppDb, input: Readonly<{
       (id, tenant_id, type, payload_json, status, attempts, max_attempts, created_at, available_at, lease_generation)
       VALUES (?, ?, 'warden.candidate.observe', ?, 'pending', 0, 100, ?, ?, 0)`)
       .run(observationJobId, current.tenantId,
-        JSON.stringify({ cycleId: current.id, deliveryId: current.deliveryId }), observedAt, observedAt);
+        JSON.stringify({ cycleId: current.id, deliveryId: current.deliveryId,
+          ...(current.missionAuthority ? {
+            missionId: current.missionAuthority.missionId,
+            missionAuthority: current.missionAuthority,
+          } : {}),
+        }), observedAt, observedAt);
     const changed = db.raw.prepare(`UPDATE fettler_ci_cycles
       SET status = 'observation_pending', observation_job_id = ?, current_observation_digest = NULL,
           repair_run_id = NULL, repair_job_id = NULL, updated_at = ?
@@ -217,6 +229,7 @@ export function enqueueWardenCiCycle(db: AppDb, input: Readonly<{
   tenantId: string; deliveryId: string; repositoryId: string; remoteRepositoryId: number;
   installationId: number; requiredChecks: readonly string[]; allowedChangedPaths: readonly string[];
   maxCycles: number; maxModelCalls: number; maximumCostUsd: number; observedAt: string;
+  missionAuthority?: MissionMutationAuthorityV1;
 }>): WardenCiCycle {
   const tenantId = text(input.tenantId, "warden_ci_tenant_invalid", 200);
   const deliveryId = id(input.deliveryId, "warden_ci_delivery_invalid");
@@ -230,6 +243,11 @@ export function enqueueWardenCiCycle(db: AppDb, input: Readonly<{
   if (maxModelCalls < maxCycles) throw new Error("warden_ci_budget_invalid");
   if (!Number.isFinite(input.maximumCostUsd) || input.maximumCostUsd <= 0 || input.maximumCostUsd > 1_000) throw new Error("warden_ci_budget_invalid");
   const observedAt = timestamp(input.observedAt);
+  const missionAuthority = input.missionAuthority
+    ? parseMissionMutationAuthority(input.missionAuthority)
+    : null;
+  if (missionAuthority) assertMissionMutationAuthority(db, tenantId, missionAuthority,
+    { allowClaimedTask: true, requireNoBlocking: true });
   const delivery = db.raw.prepare("SELECT * FROM fettler_candidate_deliveries WHERE id = ? AND tenant_id = ?")
     .get(deliveryId, tenantId) as Record<string, unknown> | undefined;
   if (!delivery || delivery.status !== "delivered" || delivery.repository_id !== repositoryId ||
@@ -245,7 +263,10 @@ export function enqueueWardenCiCycle(db: AppDb, input: Readonly<{
         JSON.stringify(existing.requiredChecks) !== JSON.stringify(requiredChecks) ||
         JSON.stringify(existing.allowedChangedPaths) !== JSON.stringify(allowedPaths) ||
         existing.maxCycles !== maxCycles || existing.maxModelCalls !== maxModelCalls ||
-        existing.maximumCostUsd !== input.maximumCostUsd) throw new Error("warden_ci_cycle_conflict");
+        existing.maximumCostUsd !== input.maximumCostUsd ||
+        JSON.stringify(existing.missionAuthority) !== JSON.stringify(missionAuthority)) {
+      throw new Error("warden_ci_cycle_conflict");
+    }
     return existing;
   }
   const owns = !db.raw.isTransaction;
@@ -254,17 +275,19 @@ export function enqueueWardenCiCycle(db: AppDb, input: Readonly<{
     db.raw.prepare(`INSERT INTO jobs
       (id, tenant_id, type, payload_json, status, attempts, max_attempts, created_at, available_at, lease_generation)
       VALUES (?, ?, 'warden.candidate.observe', ?, 'pending', 0, 100, ?, ?, 0)`)
-      .run(jobId, tenantId, JSON.stringify({ cycleId, deliveryId }), observedAt, observedAt);
+      .run(jobId, tenantId, JSON.stringify({ cycleId, deliveryId,
+        ...(missionAuthority ? { missionId: missionAuthority.missionId, missionAuthority } : {}) }), observedAt, observedAt);
     db.raw.prepare(`INSERT INTO fettler_ci_cycles
       (id, tenant_id, delivery_id, observation_job_id, status, repository_id, remote_repository_id,
        installation_id, pull_request_number, base_branch, branch_name, base_revision, current_head_sha,
        required_checks_json, allowed_changed_paths_json, max_cycles, used_cycles, max_model_calls,
-       maximum_cost_usd, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'observation_pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`)
+       maximum_cost_usd, mission_authority_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'observation_pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`)
       .run(cycleId, tenantId, deliveryId, jobId, repositoryId, remoteRepositoryId, installationId,
         Number(delivery.draft_pr_number), String(delivery.base_branch), String(delivery.branch_name),
         String(delivery.base_revision), String(delivery.commit_sha), JSON.stringify(requiredChecks),
-        JSON.stringify(allowedPaths), maxCycles, maxModelCalls, input.maximumCostUsd, observedAt, observedAt);
+        JSON.stringify(allowedPaths), maxCycles, maxModelCalls, input.maximumCostUsd,
+        missionAuthority ? JSON.stringify(missionAuthority) : null, observedAt, observedAt);
     if (owns) db.raw.exec("COMMIT");
   } catch (error) {
     if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
@@ -324,8 +347,13 @@ export function recordWardenCiObservation(db: AppDb, input: Readonly<{
         (id, tenant_id, type, payload_json, status, attempts, max_attempts, created_at, available_at, lease_generation)
         VALUES (?, ?, 'warden.candidate.repair', ?, 'pending', 0, 20, ?, ?, 0)
         ON CONFLICT(id) DO NOTHING`)
-        .run(repairDispatchJobId, current.tenantId,
-          JSON.stringify({ cycleId, observationId, observationDigest }), observedAt, observedAt);
+      .run(repairDispatchJobId, current.tenantId,
+          JSON.stringify({ cycleId, observationId, observationDigest,
+            ...(fresh.missionAuthority ? {
+              missionId: fresh.missionAuthority.missionId,
+              missionAuthority: fresh.missionAuthority,
+            } : {}),
+          }), observedAt, observedAt);
     }
     if (owns) db.raw.exec("COMMIT");
   } catch (error) {
@@ -535,7 +563,7 @@ export function enqueueWardenCiUpdate(db: AppDb, input: Readonly<{
     const priorJob = db.raw.prepare("SELECT payload_json FROM jobs WHERE id = ? AND tenant_id = ?")
       .get(prior.jobId, cycle.tenantId) as { payload_json: string } | undefined;
     const expectedPayload = JSON.stringify({ cycleId, updateId,
-      ...(missionAuthority ? { missionAuthority } : {}) });
+      ...(missionAuthority ? { missionId: missionAuthority.missionId, missionAuthority } : {}) });
     if (prior.expectedHeadSha !== expectedHeadSha || prior.expectedFeedbackDigest !== expectedFeedbackDigest ||
         prior.sealedPath !== sealedPath ||
         prior.sealedSha256 !== sealedSha256 || prior.reviewerPrincipalId !== reviewerPrincipalId ||
@@ -553,16 +581,19 @@ export function enqueueWardenCiUpdate(db: AppDb, input: Readonly<{
       (id, tenant_id, type, payload_json, status, attempts, max_attempts, created_at, available_at, lease_generation)
       VALUES (?, ?, 'warden.candidate.update', ?, 'pending', 0, 20, ?, ?, 0)`)
       .run(jobId, cycle.tenantId, JSON.stringify({ cycleId, updateId,
-        ...(missionAuthority ? { missionAuthority } : {}) }), observedAt, observedAt);
+        ...(missionAuthority ? { missionId: missionAuthority.missionId, missionAuthority } : {}) }), observedAt, observedAt);
     db.raw.prepare(`INSERT INTO fettler_ci_updates
       (id, tenant_id, cycle_id, repair_run_id, job_id, status, expected_head_sha, expected_feedback_digest, sealed_path,
-       sealed_sha256, reviewer_principal_id, rationale, requested_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`)
+       sealed_sha256, reviewer_principal_id, rationale, mission_authority_json, requested_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(updateId, cycle.tenantId, cycleId, repairRunId, jobId, expectedHeadSha, expectedFeedbackDigest, sealedPath,
-        sealedSha256, reviewerPrincipalId, rationale, observedAt, observedAt);
-    const changed = db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'update_pending', updated_at = ?
+        sealedSha256, reviewerPrincipalId, rationale,
+        missionAuthority ? JSON.stringify(missionAuthority) : null, observedAt, observedAt);
+    const changed = db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'update_pending',
+      mission_authority_json = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND status = 'repair_pending' AND repair_run_id = ? AND current_head_sha = ?`)
-      .run(observedAt, cycleId, cycle.tenantId, repairRunId, expectedHeadSha);
+      .run(missionAuthority ? JSON.stringify(missionAuthority) : null,
+        observedAt, cycleId, cycle.tenantId, repairRunId, expectedHeadSha);
     if (Number(changed.changes) !== 1) throw new Error("warden_ci_update_not_authorized");
     if (owns) db.raw.exec("COMMIT");
   } catch (error) {
@@ -623,12 +654,24 @@ export function markWardenCiUpdateUncertain(db: AppDb, input: Readonly<{
 
 export function completeWardenCiUpdate(db: AppDb, input: Readonly<{
   tenantId: string; updateId: string; expectedHeadSha: string; commitSha: string; observedAt: string;
+  missionAuthority?: MissionMutationAuthorityV1;
 }>): WardenCiUpdate {
   const current = getWardenCiUpdate(db, input.tenantId, input.updateId);
   if (!current) throw new Error("warden_ci_update_not_found");
   const expectedHeadSha = sha(input.expectedHeadSha, "warden_ci_head_invalid");
   const commitSha = sha(input.commitSha, "warden_ci_commit_invalid");
   const observedAt = timestamp(input.observedAt);
+  const missionAuthority = input.missionAuthority
+    ? parseMissionMutationAuthority(input.missionAuthority)
+    : null;
+  if ((current.missionAuthority === null) !== (missionAuthority === null) ||
+      (current.missionAuthority && missionAuthority &&
+        (current.missionAuthority.missionId !== missionAuthority.missionId ||
+         current.missionAuthority.taskId !== missionAuthority.taskId))) {
+    throw new Error("warden_ci_update_mission_authority_invalid");
+  }
+  if (missionAuthority) assertMissionMutationAuthority(db, input.tenantId, missionAuthority,
+    { allowClaimedTask: true, requireNoBlocking: true });
   if (commitSha === expectedHeadSha || expectedHeadSha !== current.expectedHeadSha || !current.intentDigest) {
     throw new Error("warden_ci_update_result_invalid");
   }
@@ -647,21 +690,27 @@ export function completeWardenCiUpdate(db: AppDb, input: Readonly<{
     if (cycle.status === "update_pending") db.raw.prepare(`INSERT INTO jobs
       (id, tenant_id, type, payload_json, status, attempts, max_attempts, created_at, available_at, lease_generation)
       VALUES (?, ?, 'warden.candidate.observe', ?, 'pending', 0, 100, ?, ?, 0)`)
-      .run(nextObservationJobId, cycle.tenantId, JSON.stringify({ cycleId: cycle.id, deliveryId: cycle.deliveryId }),
+      .run(nextObservationJobId, cycle.tenantId, JSON.stringify({ cycleId: cycle.id, deliveryId: cycle.deliveryId,
+        ...(missionAuthority ? { missionId: missionAuthority.missionId, missionAuthority } : {}) }),
         observedAt, observedAt);
-    const completed = db.raw.prepare(`UPDATE fettler_ci_updates SET status = 'delivered', commit_sha = ?, delivered_at = ?, updated_at = ?
+    const completed = db.raw.prepare(`UPDATE fettler_ci_updates SET status = 'delivered', commit_sha = ?,
+      mission_authority_json = ?, delivered_at = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND status IN ('intent_bound','uncertain')`)
-      .run(commitSha, observedAt, observedAt, current.id, current.tenantId);
+      .run(commitSha, missionAuthority ? JSON.stringify(missionAuthority) : null,
+        observedAt, observedAt, current.id, current.tenantId);
     if (Number(completed.changes) !== 1) throw new Error("warden_ci_update_not_authorized");
     const advanced = cycle.status === "paused" ? { changes: 1 } : db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'observation_pending',
-      observation_job_id = ?, current_head_sha = ?, current_observation_digest = NULL,
+      observation_job_id = ?, current_head_sha = ?, current_observation_digest = NULL, mission_authority_json = ?,
       repair_run_id = NULL, repair_job_id = NULL, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND status = 'update_pending' AND current_head_sha = ?`)
-      .run(nextObservationJobId, commitSha, observedAt, cycle.id, cycle.tenantId, expectedHeadSha);
+      .run(nextObservationJobId, commitSha, missionAuthority ? JSON.stringify(missionAuthority) : null,
+        observedAt, cycle.id, cycle.tenantId, expectedHeadSha);
     if (cycle.status === "paused") {
-      const reconciled = db.raw.prepare(`UPDATE fettler_ci_cycles SET current_head_sha = ?, updated_at = ?
+      const reconciled = db.raw.prepare(`UPDATE fettler_ci_cycles SET current_head_sha = ?,
+        mission_authority_json = ?, updated_at = ?
         WHERE id = ? AND tenant_id = ? AND status = 'paused' AND current_head_sha = ?`)
-        .run(commitSha, observedAt, cycle.id, cycle.tenantId, expectedHeadSha);
+        .run(commitSha, missionAuthority ? JSON.stringify(missionAuthority) : null,
+          observedAt, cycle.id, cycle.tenantId, expectedHeadSha);
       if (Number(reconciled.changes) !== 1) throw new Error("warden_ci_update_not_authorized");
     } else if (Number(advanced.changes) !== 1) throw new Error("warden_ci_update_not_authorized");
     if (owns) db.raw.exec("COMMIT");

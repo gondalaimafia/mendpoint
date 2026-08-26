@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDb, getJob, insertAgentRun, type AppDb } from "./index.js";
+import { claimNextJob, createDb, getJob, insertAgentRun, type AppDb } from "./index.js";
 import {
   bindWardenCandidateDeliveryIntent,
   enqueueWardenCandidateDelivery,
@@ -133,15 +133,19 @@ describe("Warden candidate delivery outbox", () => {
   it("binds intent and records one draft delivery, idempotently", () => {
     const db = fixture();
     const delivery = enqueueWardenCandidateDelivery(db, deliveryInput);
+    const claimed = claimNextJob(db, ["warden.candidate.deliver"], {
+      tenantId: "tenant-a", workerId: "worker-a", leaseMs: 60_000,
+    })!;
+    const lease = { workerId: "worker-a", leaseGeneration: claimed.lease_generation };
 
     const bound = bindWardenCandidateDeliveryIntent(db, {
       tenantId: "tenant-a", deliveryId: delivery.id, intentDigest: `sha256:${"c".repeat(64)}`,
-      branchName: "mendpoint/warden-run-1", observedAt: NOW,
+      branchName: "mendpoint/warden-run-1", observedAt: NOW, ...lease,
     });
     expect(bound.intentDigest).toBe(`sha256:${"c".repeat(64)}`);
     expect(bindWardenCandidateDeliveryIntent(db, {
       tenantId: "tenant-a", deliveryId: delivery.id, intentDigest: `sha256:${"c".repeat(64)}`,
-      branchName: "mendpoint/warden-run-1", observedAt: NOW,
+      branchName: "mendpoint/warden-run-1", observedAt: NOW, ...lease,
     })).toEqual(bound);
 
     const delivered = recordWardenCandidateDeliverySuccess(db, {
@@ -181,6 +185,7 @@ describe("Warden candidate delivery outbox", () => {
     expect(() => bindWardenCandidateDeliveryIntent(db, {
       tenantId: "tenant-a", deliveryId: delivery.id, intentDigest: `sha256:${"c".repeat(64)}`,
       branchName: "mendpoint/warden-run-1", observedAt: NOW,
+      workerId: "worker-a", leaseGeneration: 1,
     })).toThrow("warden_candidate_delivery_not_pending");
     expect(() => recordWardenCandidateDeliverySuccess(db, {
       tenantId: "tenant-a", deliveryId: delivery.id, branchName: "mendpoint/warden-run-1",

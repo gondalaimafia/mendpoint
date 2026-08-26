@@ -26,6 +26,7 @@ import {
 } from "@mendpoint/github";
 import { assertDelegatedPrVerificationApprovalAuthority,
   type DelegatedPrVerificationApprovalAuthority } from "./delegated-pr-verification-job.js";
+import { completeAuthorityBoundMissionTask } from "./mission-task-job-bridge.js";
 
 const JOB_TYPE = "warden.candidate.observe";
 export const WARDEN_CANDIDATE_CLEANUP_JOB_TYPE = "warden.candidate.cleanup";
@@ -509,6 +510,7 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
         evidenceBytes: bytes,
         observedAt,
       });
+      completeAuthorityBoundMissionTask(input.db, input.job, observedAt);
     }
     const completed = completeJob(input.db, input.job.id, {
       cycleId: cycle.id,

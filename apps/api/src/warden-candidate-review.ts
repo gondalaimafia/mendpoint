@@ -699,7 +699,7 @@ export function registerWardenCandidateReviewRoutes(
         }
         const nextPayload = { ...originalPayload, sessionId: next.runId, reviewFeedback: body.rationale,
           supersedesRunId: run.id, reviewerPrincipalId: principal.id,
-          ...(missionAuthority ? { missionAuthority } : {}) };
+          ...(missionAuthority ? { missionId: missionAuthority.missionId, missionAuthority } : {}) };
         enqueueJob(db, { id: next.jobId, tenantId, type: "agent.run", payload: nextPayload, createdAt: reviewedAt });
         insertAgentRun(db, { id: next.runId, tenantId, jobId: next.jobId, goal: run.goal, repoPath: run.repo_path,
           status: "queued", ok: false, steps: 0, filesChanged: [], reportMd: null,

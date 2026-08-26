@@ -27,8 +27,9 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import { runWardenCandidateUpdate } from "./warden-candidate-update.js";
+import { processJobsOnce } from "./cli.js";
 import { wardenReviewFeedbackDigest } from "./warden-candidate-observation.js";
-import type { ExactDraftObservation } from "@mendpoint/github";
+import type { ExactDraftObservation, ExactDraftUpdateInput } from "@mendpoint/github";
 
 const opened: Array<{ db: AppDb; root: string }> = [];
 const sha = (value: string) => value.repeat(40);
@@ -127,8 +128,13 @@ function bindMissionAuthority(value: ReturnType<typeof fixture>) {
     task: getMissionTask(db, "tenant-a", "task-1")!, repositoryId: "repo-a",
     snapshotId: "snapshot-repair-a", resolvedSha: sha("d") });
   db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?")
-    .run(JSON.stringify({ cycleId: "cycle-a", updateId: value.update.id, missionAuthority: authority }),
+    .run(JSON.stringify({ cycleId: "cycle-a", updateId: value.update.id,
+      missionId: "mission-1", missionAuthority: authority }),
       value.job.id, "tenant-a");
+  db.raw.prepare(`UPDATE fettler_ci_updates SET mission_authority_json = ?
+    WHERE id = ? AND tenant_id = ?`).run(JSON.stringify(authority), value.update.id, "tenant-a");
+  db.raw.prepare(`UPDATE fettler_ci_cycles SET mission_authority_json = ?
+    WHERE id = 'cycle-a' AND tenant_id = 'tenant-a'`).run(JSON.stringify(authority));
   return { ...value, authority, job: getJob(db, value.job.id, "tenant-a")! };
 }
 
@@ -150,6 +156,44 @@ afterEach(() => {
 });
 
 describe("Warden candidate exact draft update", () => {
+  it("claims an approved CI update through the real job loop and retains fresh Mission authority", async () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE jobs SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL
+      WHERE id = ? AND tenant_id = ?`).run(value.job.id, "tenant-a");
+    const updateExactDraft = vi.fn(async (_input: ExactDraftUpdateInput) => ({
+      number: 17, url: "https://github.com/acme/service/pull/17", branch: "mendpoint/warden-a",
+      previousHeadSha: sha("d"), commitSha: sha("f"), draft: true as const,
+    }));
+
+    const outcome = await processJobsOnce(value.db, {
+      tenantId: "tenant-a", workerId: "worker-real-update", leaseMs: 60_000,
+      maxJobs: 1, jobTypes: ["warden.candidate.update"], runWardenMaintenance: false,
+      wardenEnv: {
+        MENDPOINT_FETTLER_CI_REENTRY_ENABLED: "1",
+        MENDPOINT_FETTLER_CI_REENTRY_CONFIG_JSON: JSON.stringify({
+          "repo-a": { requiredChecks: ["check:77:unit"], maxCycles: 3, maxModelCalls: 6, maximumCostUsd: 3 },
+        }),
+      },
+      wardenCandidateUpdateRuntime: {
+        updateExactDraft, reconcileExactDraftUpdate: vi.fn(),
+        readApprovalArtifact: () => value.artifact,
+        resolveRepository: () => ({ owner: "acme", repo: "service" }),
+        now: () => "2026-08-13T12:05:00.000Z",
+      },
+    });
+
+    expect(outcome).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+    expect(getMissionTask(value.db, "tenant-a", "task-1")).toMatchObject({
+      status: "agent_working", revision: value.authority.taskRevision! + 1,
+    });
+    expect(getWardenCiCycle(value.db, "tenant-a", "cycle-a")?.missionAuthority)
+      .toMatchObject({ taskId: "task-1", taskStatus: "agent_working" });
+    expect(JSON.parse(getJob(value.db,
+      getWardenCiCycle(value.db, "tenant-a", "cycle-a")!.observationJobId, "tenant-a")!.payload_json))
+      .toMatchObject({ missionId: "mission-1", missionAuthority: { taskStatus: "agent_working" } });
+    expect(updateExactDraft).toHaveBeenCalledTimes(1);
+  });
+
   it("updates the same draft once and atomically schedules the next CI observation", async () => {
     const { db, update, job, artifact } = fixture();
     const updateExactDraft = vi.fn(async () => ({ number: 17, url: "https://github.com/acme/service/pull/17",
@@ -215,6 +259,67 @@ describe("Warden candidate exact draft update", () => {
         return { owner: "acme", repo: "service" };
       }, now: () => "2026-08-13T12:05:00.000Z" })).rejects.toThrow("mission_mutation_authority_blocked");
     expect(updateExactDraft).not.toHaveBeenCalled();
+  });
+
+  it("revokes an armed update when a blocker lands after intent binding but before remote dispatch", async () => {
+    const value = bindMissionAuthority(fixture());
+    const updateExactDraft = vi.fn();
+    await expect(runWardenCandidateUpdate({ db: value.db, job: value.job, updateExactDraft,
+      reconcileExactDraftUpdate: vi.fn(), readApprovalArtifact: () => value.artifact,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      beforeRemoteDispatch: () => raiseMissionException(value.db, {
+        tenantId: "tenant-a", missionId: "mission-1", reason: "policy_exception",
+        impact: "A late policy decision revokes the armed update.",
+        resolutionPath: "Resolve the policy exception before updating.", blocking: true,
+        ownerPrincipalId: "principal-owner", correlationId: "late-blocker",
+        createdAt: "2026-08-13T12:04:59.000Z",
+      }), now: () => "2026-08-13T12:05:00.000Z" }))
+      .rejects.toThrow("mission_mutation_authority_blocked");
+    expect(updateExactDraft).not.toHaveBeenCalled();
+  });
+
+  it("does not update GitHub when the update lease transfers after intent binding", async () => {
+    const value = bindMissionAuthority(fixture());
+    const updateExactDraft = vi.fn();
+    await expect(runWardenCandidateUpdate({ db: value.db, job: value.job, updateExactDraft,
+      reconcileExactDraftUpdate: vi.fn(), readApprovalArtifact: () => value.artifact,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      beforeRemoteDispatch: () => value.db.raw.prepare(`UPDATE jobs SET lease_owner = 'worker-b',
+        lease_generation = lease_generation + 1 WHERE id = ? AND tenant_id = ?`).run(value.job.id, "tenant-a"),
+      now: () => "2026-08-13T12:05:00.000Z" }))
+      .rejects.toThrow("mission_mutation_dispatch_lease_lost");
+    expect(updateExactDraft).not.toHaveBeenCalled();
+  });
+
+  it("keeps an uncertain Mission mutation non-cancellable and settles it by read-only crash replay", async () => {
+    const value = bindMissionAuthority(fixture());
+    const updateExactDraft = vi.fn().mockRejectedValueOnce(Object.assign(new Error("socket closed"), {
+      remoteSideEffectUncertain: true,
+    }));
+    const args = {
+      db: value.db, job: value.job, updateExactDraft,
+      reconcileExactDraftUpdate: vi.fn(async () => ({ status: "applied" as const, result: {
+        number: 17, url: "https://github.com/acme/service/pull/17", branch: "mendpoint/warden-a",
+        previousHeadSha: sha("d"), commitSha: sha("f"), draft: true as const,
+      } })),
+      readApprovalArtifact: () => value.artifact,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:05:00.000Z",
+    };
+
+    await expect(runWardenCandidateUpdate(args)).rejects.toThrow("socket closed");
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "uncertain" });
+    const mission = getMission(value.db, "tenant-a", "mission-1")!;
+    expect(() => transitionMission(value.db, { tenantId: "tenant-a", missionId: mission.id,
+      expectedRevision: mission.revision, to: "cancelled", actorPrincipalId: "principal-owner",
+      eventId: "e-cancel-uncertain", idempotencyKey: "c-cancel-uncertain", correlationId: "corr",
+      createdAt: "2026-08-13T12:05:01.000Z" })).toThrow("mission_mutation_dispatch_in_flight");
+
+    await expect(runWardenCandidateUpdate(args)).resolves.toMatchObject({ status: "updated" });
+    expect(updateExactDraft).toHaveBeenCalledTimes(1);
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "settled" });
   });
 
   it("updates the same draft with an exact approved file deletion", async () => {

@@ -35,6 +35,7 @@ export type WardenCandidateDeliveryRecord = Readonly<{
   sealedSha256: string;
   requesterPrincipalId: string;
   rationale: string;
+  missionAuthority: MissionMutationAuthorityV1 | null;
   intentDigest: string | null;
   branchName: string | null;
   baseRevision: string | null;
@@ -65,7 +66,7 @@ type Row = {
   error_code: string | null; error_message: string | null; requested_at: string;
   intent_bound_at: string | null; delivered_at: string | null; failed_at: string | null;
   last_error_at: string | null; outcome: string | null; outcome_at: string | null;
-  outcome_source: string | null; updated_at: string;
+  outcome_source: string | null; mission_authority_json: string | null; updated_at: string;
 };
 
 function text(value: unknown, code: string, max = 2_000): string {
@@ -100,7 +101,10 @@ function map(row: Row): WardenCandidateDeliveryRecord {
     snapshotId: row.snapshot_id, baseBranch: row.base_branch,
     expectedBaseRevision: row.expected_base_revision, sealedPath: row.sealed_path,
     sealedSha256: row.sealed_sha256, requesterPrincipalId: row.requester_principal_id,
-    rationale: row.rationale, intentDigest: row.intent_digest, branchName: row.branch_name,
+    rationale: row.rationale,
+    missionAuthority: row.mission_authority_json == null ? null
+      : parseMissionMutationAuthority(JSON.parse(row.mission_authority_json)),
+    intentDigest: row.intent_digest, branchName: row.branch_name,
     baseRevision: row.base_revision, commitSha: row.commit_sha,
     draftPr: row.draft_pr === 1 ? true : null, draftPrNumber: row.draft_pr_number,
     draftPrUrl: row.draft_pr_url, errorCode: row.error_code, errorMessage: row.error_message,
@@ -186,7 +190,7 @@ export function enqueueWardenCandidateDelivery(
   }
   if (missionAuthority) assertMissionMutationAuthority(db, tenantId, missionAuthority, { requireNoBlocking: true });
   const payload = JSON.stringify({ deliveryId: deterministic.deliveryId, runId,
-    ...(missionAuthority ? { missionAuthority } : {}) });
+    ...(missionAuthority ? { missionId: missionAuthority.missionId, missionAuthority } : {}) });
   const existing = getWardenCandidateDeliveryByRun(db, tenantId, runId);
   if (existing) {
     const existingJob = db.raw.prepare("SELECT payload_json FROM jobs WHERE id = ? AND tenant_id = ?")
@@ -196,6 +200,7 @@ export function enqueueWardenCandidateDelivery(
       existing.baseBranch === baseBranch && existing.expectedBaseRevision === input.expectedBaseRevision &&
       existing.sealedPath === sealedPath && existing.sealedSha256 === input.sealedSha256 &&
       existing.requesterPrincipalId === requester && existing.rationale === rationale &&
+      JSON.stringify(existing.missionAuthority) === JSON.stringify(missionAuthority) &&
       existingJob?.payload_json === payload;
     if (!same) throw new Error("warden_candidate_delivery_conflict");
     return existing;
@@ -242,10 +247,11 @@ export function enqueueWardenCandidateDelivery(
       `INSERT INTO fettler_candidate_deliveries
        (id, tenant_id, run_id, job_id, status, repository_id, snapshot_id, base_branch,
         expected_base_revision, sealed_path, sealed_sha256, requester_principal_id, rationale,
-        requested_at, updated_at)
-       VALUES (?, ?, ?, ?, 'delivery_pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        mission_authority_json, requested_at, updated_at)
+       VALUES (?, ?, ?, ?, 'delivery_pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(deterministic.deliveryId, tenantId, runId, deterministic.jobId, repositoryId, snapshotId,
-      baseBranch, input.expectedBaseRevision, sealedPath, input.sealedSha256, requester, rationale, now, now);
+      baseBranch, input.expectedBaseRevision, sealedPath, input.sealedSha256, requester, rationale,
+      missionAuthority ? JSON.stringify(missionAuthority) : null, now, now);
     if (owns) db.raw.exec("COMMIT");
   } catch (error) {
     if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
@@ -256,9 +262,16 @@ export function enqueueWardenCandidateDelivery(
 
 export function bindWardenCandidateDeliveryIntent(db: AppDb, input: {
   tenantId: string; deliveryId: string; intentDigest: string; branchName: string; observedAt: string;
+  workerId: string; leaseGeneration: number;
 }) {
   const current = getWardenCandidateDelivery(db, input.tenantId, input.deliveryId);
   if (!current) throw new Error("warden_candidate_delivery_not_found");
+  if (current.status !== "delivery_pending") throw new Error("warden_candidate_delivery_not_pending");
+  const active = db.raw.prepare(`SELECT 1 AS active FROM jobs WHERE id = ? AND tenant_id = ?
+    AND status = 'running' AND lease_owner = ? AND lease_generation = ? AND lease_expires_at > ?`).get(
+    current.jobId, current.tenantId, input.workerId, input.leaseGeneration, input.observedAt,
+  ) as { active: number } | undefined;
+  if (!active) throw new Error("warden_candidate_delivery_lease_lost");
   if (current.intentDigest && (current.intentDigest !== input.intentDigest || current.branchName !== input.branchName)) {
     throw new Error("warden_candidate_delivery_intent_conflict");
   }
@@ -274,6 +287,19 @@ export function bindWardenCandidateDeliveryIntent(db: AppDb, input: {
      WHERE id = ? AND tenant_id = ? AND status = 'delivery_pending'`,
   ).run(input.intentDigest, input.branchName, input.observedAt, input.observedAt, input.deliveryId, input.tenantId);
   if (Number(changed.changes) !== 1) throw new Error("warden_candidate_delivery_not_pending");
+  return getWardenCandidateDelivery(db, input.tenantId, input.deliveryId)!;
+}
+
+export function refreshWardenCandidateDeliveryMissionAuthority(db: AppDb, input: Readonly<{
+  tenantId: string; deliveryId: string; authority: MissionMutationAuthorityV1; observedAt: string;
+}>): WardenCandidateDeliveryRecord {
+  const authority = parseMissionMutationAuthority(input.authority);
+  const changed = db.raw.prepare(`UPDATE fettler_candidate_deliveries SET mission_authority_json = ?, updated_at = ?
+    WHERE id = ? AND tenant_id = ? AND status = 'delivery_pending' AND repository_id = ? AND snapshot_id = ?`).run(
+    JSON.stringify(authority), input.observedAt, input.deliveryId, input.tenantId,
+    authority.repositoryId, authority.snapshotId,
+  );
+  if (Number(changed.changes) !== 1) throw new Error("warden_candidate_delivery_authority_conflict");
   return getWardenCandidateDelivery(db, input.tenantId, input.deliveryId)!;
 }
 

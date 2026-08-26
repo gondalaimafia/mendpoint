@@ -93,7 +93,7 @@ export function assertMissionMutationAuthority(
   db: AppDb,
   tenantId: string,
   value: MissionMutationAuthorityV1,
-  options: Readonly<{ requireNoBlocking?: boolean; allowClaimedTask?: boolean }> = {},
+  options: Readonly<{ requireNoBlocking?: boolean; allowClaimedTask?: boolean; allowSettledTask?: boolean }> = {},
 ): Readonly<{ mission: Mission; task: MissionTask | null }> {
   const authority = parseMissionMutationAuthority(value);
   const mission = getMission(db, tenantId, authority.missionId);
@@ -119,7 +119,12 @@ export function assertMissionMutationAuthority(
   const claimedTask = options.allowClaimedTask && task && authority.taskStatus === "agent_resume" &&
     task.missionId === mission.id && task.revision === Number(authority.taskRevision) + 1 &&
     task.status === "agent_working";
-  if (authority.taskId && !exactTask && !claimedTask) {
+  const settledTask = options.allowSettledTask && task && task.missionId === mission.id &&
+    task.status === "complete" && (
+      (authority.taskStatus === "agent_resume" && task.revision === Number(authority.taskRevision) + 2) ||
+      (authority.taskStatus === "agent_working" && task.revision === Number(authority.taskRevision) + 1)
+    );
+  if (authority.taskId && !exactTask && !claimedTask && !settledTask) {
     throw new Error("mission_mutation_authority_stale");
   }
   if (options.requireNoBlocking && evaluateMissionExceptions(db, tenantId, mission.id, {
@@ -129,4 +134,23 @@ export function assertMissionMutationAuthority(
     throw new Error("mission_mutation_authority_blocked");
   }
   return Object.freeze({ mission, task });
+}
+
+export function refreshMissionMutationAuthority(
+  db: AppDb,
+  tenantId: string,
+  value: MissionMutationAuthorityV1,
+  options: Readonly<{
+    requireNoBlocking?: boolean; allowClaimedTask?: boolean; allowSettledTask?: boolean;
+  }> = {},
+): MissionMutationAuthorityV1 {
+  const prior = parseMissionMutationAuthority(value);
+  const current = assertMissionMutationAuthority(db, tenantId, prior, options);
+  return createMissionMutationAuthority({
+    mission: current.mission,
+    task: current.task,
+    repositoryId: prior.repositoryId,
+    snapshotId: prior.snapshotId,
+    resolvedSha: prior.resolvedSha,
+  });
 }

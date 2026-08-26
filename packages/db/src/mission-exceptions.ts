@@ -1,5 +1,6 @@
 import type { AppDb } from "./index.js";
 import { appendDomainEvent } from "./trust.js";
+import { revokePendingMissionMutationDispatches } from "./mission-mutation-dispatch-fence.js";
 import {
   all,
   assertMissionScope,
@@ -297,7 +298,13 @@ export function raiseMissionException(db: AppDb, input: {
   assertMissionScope(db, input.tenantId, input.missionId);
   assertRecordPrincipal(db, input.tenantId, input.ownerPrincipalId, "mission_exception_owner_tenant_mismatch");
   const bound = input.observedAgainst ? resolveObservedSnapshot(db, input.tenantId, input.observedAgainst) : null;
-  return insertException(db, {
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    if (input.blocking) revokePendingMissionMutationDispatches(
+      db, input.tenantId, input.missionId, createdAt,
+    );
+    const value = insertException(db, {
     tenantId: input.tenantId,
     missionId: input.missionId,
     reason,
@@ -316,7 +323,13 @@ export function raiseMissionException(db: AppDb, input: {
     createdAt,
     taskId: input.taskId ?? null,
     category: input.category ?? null,
-  });
+    });
+    if (owns) db.raw.exec("COMMIT");
+    return value;
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function loadHead(db: AppDb, tenantId: string, priorId: string): MissionExceptionRow {

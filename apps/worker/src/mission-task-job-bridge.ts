@@ -73,6 +73,17 @@ function resumeTaskEvent(jobId: string, revision: number): { eventId: string; id
     idempotencyKey: `mission-task-job:${jobId}:agent_working_from_resume:r${revision}`,
   };
 }
+
+function completeTaskEvent(jobId: string, revision: number): { eventId: string; idempotencyKey: string } {
+  const digest = createHash("sha256")
+    .update(`mission-task:job:${jobId}:complete:r${revision}`)
+    .digest("hex")
+    .slice(0, 32);
+  return {
+    eventId: `e-mtask-${digest}`,
+    idempotencyKey: `mission-task-job:${jobId}:complete:r${revision}`,
+  };
+}
 function missionTaskAgentPrincipal(db: AppDb, tenantId: string, createdAt: string) {
   const id = `principal-mtask-agent-${createHash("sha256").update(tenantId).digest("hex").slice(0, 24)}`;
   return insertPrincipal(db, {
@@ -225,6 +236,33 @@ export function handoffCompletedJobToMissionReview(
     createdAt,
   });
   return getMissionTask(db, job.tenant_id, task.id);
+}
+
+/** Complete a terminal authority-bound mutation in the same transaction as its job. */
+export function completeAuthorityBoundMissionTask(
+  db: AppDb,
+  job: BridgedJob,
+  createdAt: string,
+): MissionTask | undefined {
+  const payload = payloadRecord(job);
+  const authority = missionAuthority(payload);
+  if (!authority?.taskId) return undefined;
+  const task = bridgeClaimedJobToMissionTask(db, job, createdAt);
+  if (!task) throw new Error("mission_task_job_completion_task_missing");
+  if (task.status === "complete") return task;
+  if (task.status !== "agent_working" || !task.assignedPrincipalId) {
+    throw new Error("mission_task_job_completion_transition_invalid");
+  }
+  return transitionMissionTask(db, {
+    tenantId: job.tenant_id,
+    taskId: task.id,
+    expectedRevision: task.revision,
+    to: "complete",
+    actorPrincipalId: task.assignedPrincipalId,
+    ...completeTaskEvent(job.id, task.revision),
+    correlationId: job.id,
+    createdAt,
+  });
 }
 
 /**

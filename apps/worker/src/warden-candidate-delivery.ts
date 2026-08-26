@@ -2,12 +2,18 @@ import { createHash } from "node:crypto";
 import {
   bindWardenCandidateDeliveryIntent,
   completeJob,
+  authorizeMissionMutationDispatch,
+  beginMissionMutationRemoteCall,
   failJob,
   getAgentRun,
   getJob,
   getWardenCandidateDelivery,
   assertMissionMutationAuthority,
   parseMissionMutationAuthority,
+  refreshMissionMutationAuthority,
+  refreshWardenCandidateDeliveryMissionAuthority,
+  markMissionMutationDispatchUncertain,
+  settleMissionMutationDispatch,
   recordAudit,
   recordWardenCandidateDeliveryFailure,
   recordWardenCandidateDeliverySuccess,
@@ -29,6 +35,7 @@ import {
 } from "@mendpoint/shared";
 import { admitWardenGovernedLearningEvent } from "./warden-learning-producer.js";
 import type { GovernedLearningAdmissionResult } from "./governed-learning-producer.js";
+import { completeAuthorityBoundMissionTask } from "./mission-task-job-bridge.js";
 
 const JOB_TYPE = "warden.candidate.deliver";
 
@@ -59,6 +66,7 @@ export type WardenCandidateDeliveryWorkerInput = Readonly<{
     maxModelCalls: number;
     maximumCostUsd: number;
   }>;
+  beforeRemoteDispatch?: () => void;
 }>;
 
 function parsePayload(job: JobRow): { deliveryId: string; runId: string; missionAuthority: MissionMutationAuthorityV1 | null } {
@@ -279,7 +287,7 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
       throw new Error("warden_candidate_delivery_mission_authority_required");
     }
     if (payload.missionAuthority) assertMissionMutationAuthority(input.db, input.job.tenant_id,
-      payload.missionAuthority, { requireNoBlocking: true });
+      payload.missionAuthority, { allowClaimedTask: true, requireNoBlocking: true });
     const artifact = readWardenApprovalArtifact({ tenantId: input.job.tenant_id, path: delivery.sealedPath,
       sha256: delivery.sealedSha256, env: input.artifactEnv });
     assertArtifact(delivery, artifact);
@@ -288,11 +296,32 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
       snapshotId: delivery.snapshotId, baseBranch: delivery.baseBranch,
       expectedBaseRevision: delivery.expectedBaseRevision });
     if (payload.missionAuthority) assertMissionMutationAuthority(input.db, input.job.tenant_id,
-      payload.missionAuthority, { requireNoBlocking: true });
+      payload.missionAuthority, { allowClaimedTask: true, requireNoBlocking: true });
     const intent = deliveryIntent(delivery, artifact, repository, run.report_md, reviewedChanges);
+    const digest = intentDigest(intent);
     bindWardenCandidateDeliveryIntent(input.db, { tenantId: delivery.tenantId, deliveryId: delivery.id,
-      intentDigest: intentDigest(intent), branchName: intent.branch, observedAt: now() });
-    const remote = await input.github.deliverExactDraft(intent);
+      intentDigest: digest, branchName: intent.branch, observedAt: now(),
+      workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation });
+    if (payload.missionAuthority) authorizeMissionMutationDispatch(input.db, {
+      tenantId: delivery.tenantId, jobId: input.job.id, mutationKind: "fettler_candidate_delivery",
+      aggregateId: delivery.id, authority: payload.missionAuthority, intentDigest: digest,
+      workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation, observedAt: now(),
+    });
+    input.beforeRemoteDispatch?.();
+    if (payload.missionAuthority) beginMissionMutationRemoteCall(input.db, {
+      tenantId: delivery.tenantId, jobId: input.job.id, authority: payload.missionAuthority,
+      intentDigest: digest, workerId: input.job.lease_owner,
+      leaseGeneration: input.job.lease_generation, observedAt: now(), permitUncertainReplay: true,
+    });
+    let remote: ExactDraftDeliveryResult;
+    try {
+      remote = await input.github.deliverExactDraft(intent);
+    } catch (error) {
+      if (payload.missionAuthority) markMissionMutationDispatchUncertain(input.db, {
+        tenantId: delivery.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: now(),
+      });
+      throw error;
+    }
     try {
       // Once the remote call returns, GitHub may already contain the draft.
       // Evidence validation and every local finalization setup step therefore
@@ -301,6 +330,17 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
       const completedAt = now();
       input.db.raw.exec("BEGIN IMMEDIATE");
       try {
+        if (payload.missionAuthority && !input.ciReentry) {
+          completeAuthorityBoundMissionTask(input.db, input.job, completedAt);
+        }
+        const freshMissionAuthority = payload.missionAuthority
+          ? refreshMissionMutationAuthority(input.db, delivery.tenantId, payload.missionAuthority,
+            { allowClaimedTask: true, allowSettledTask: true, requireNoBlocking: true })
+          : null;
+        if (freshMissionAuthority) refreshWardenCandidateDeliveryMissionAuthority(input.db, {
+          tenantId: delivery.tenantId, deliveryId: delivery.id, authority: freshMissionAuthority,
+          observedAt: completedAt,
+        });
         recordWardenCandidateDeliverySuccess(input.db, { tenantId: delivery.tenantId, deliveryId: delivery.id,
           branchName: remote.branch, baseRevision: remote.baseSha, commitSha: remote.commitSha,
           draftPrNumber: remote.number, draftPrUrl: remote.url, observedAt: completedAt });
@@ -320,6 +360,7 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
             maxModelCalls: input.ciReentry.maxModelCalls,
             maximumCostUsd: input.ciReentry.maximumCostUsd,
             observedAt: completedAt,
+            ...(freshMissionAuthority ? { missionAuthority: freshMissionAuthority } : {}),
           });
         }
         recordAudit(input.db, { id: `warden_delivery_audit_${createHash("sha256").update([delivery.tenantId, delivery.id].join("\0")).digest("hex").slice(0, 32)}`,
@@ -337,6 +378,9 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
         { workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation })) {
           throw new Error("warden_candidate_delivery_lease_lost");
         }
+        if (payload.missionAuthority) settleMissionMutationDispatch(input.db, {
+          tenantId: delivery.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: completedAt,
+        });
         input.db.raw.exec("COMMIT");
       } catch (error) {
         if (input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
@@ -366,6 +410,13 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
         pullRequestNumber: remote.number, pullRequestUrl: remote.url, commitSha: remote.commitSha });
     } catch (error) {
       if (error instanceof Error && error.message === "warden_candidate_delivery_lease_lost") throw error;
+      if (payload.missionAuthority) {
+        const dispatch = input.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+          WHERE tenant_id = ? AND job_id = ?`).get(delivery.tenantId, input.job.id) as { state: string } | undefined;
+        if (dispatch?.state === "dispatching") markMissionMutationDispatchUncertain(input.db, {
+          tenantId: delivery.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: now(),
+        });
+      }
       throw new WardenCandidateDeliveryFinalizationError(error);
     }
   } catch (error) {

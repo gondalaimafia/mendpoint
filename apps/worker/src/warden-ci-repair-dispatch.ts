@@ -69,13 +69,6 @@ function parseOriginalPayload(value: string): Readonly<Record<string, unknown> &
   return Object.freeze({ ...(parsed as Record<string, unknown>), consumerId: String((parsed as Record<string, unknown>).consumerId) });
 }
 
-function claimedMissionId(payload: Readonly<Record<string, unknown>>): string | undefined {
-  if (typeof payload.missionId !== "string") return undefined;
-  const missionId = payload.missionId.trim();
-  if (!missionId || missionId !== payload.missionId) return undefined;
-  return missionId;
-}
-
 function evidenceAuthority(bytes: Uint8Array): Readonly<{
   trigger: "ci_failure" | "review_feedback";
   reviewFeedbackDigest: string | null;
@@ -169,10 +162,10 @@ export async function runWardenCiRepairDispatch(input: WardenCiRepairDispatchInp
     observationDigest: observation.observationDigest, evidenceArtifactId: observation.evidenceArtifactId,
     evidenceDigest: observation.evidenceDigest, trigger,
     reviewFeedbackDigest: evidenceAuthorityValue.reviewFeedbackDigest });
-  // Copy the source run's claimed Mission id when present. Do not invent one
-  // from the delivery or campaign; unbound source runs stay unbound.
-  const missionId = claimedMissionId(originalPayload);
-  const missionAuthority = originalPayload.missionAuthority;
+  // The CI cycle retains the latest post-review authority. Never revive the
+  // original candidate job's pre-delivery task revision after a later handoff.
+  const missionAuthority = cycle.missionAuthority;
+  const missionId = missionAuthority?.missionId ?? null;
   const agentPayload = Object.freeze({
     goal: trigger === "review_feedback"
       ? `Address the authoritative review feedback on draft pull request ${cycle.pullRequestNumber} at exact head ${cycle.currentHeadSha}.`
@@ -189,7 +182,7 @@ export async function runWardenCiRepairDispatch(input: WardenCiRepairDispatchInp
       revision: materialized.revision, manifestSha256: materialized.manifestSha256 }),
     ciFailure,
     ...(missionId ? { missionId } : {}),
-    ...(missionAuthority !== undefined ? { missionAuthority } : {}),
+    ...(missionAuthority ? { missionAuthority } : {}),
   });
   input.db.raw.exec("BEGIN IMMEDIATE");
   try {

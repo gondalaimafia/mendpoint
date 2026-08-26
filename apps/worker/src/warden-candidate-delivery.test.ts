@@ -29,6 +29,7 @@ import {
 } from "@mendpoint/db";
 import type { ExactDraftDeliveryInput, GitHubDelivery } from "@mendpoint/github";
 import { runWardenCandidateDelivery } from "./warden-candidate-delivery.js";
+import { processJobsOnce } from "./cli.js";
 
 const NOW = "2026-08-06T12:00:00.000Z";
 const opened: Array<{ db: AppDb; directory: string }> = [];
@@ -178,7 +179,8 @@ function bindMissionAuthority(value: ReturnType<typeof fixture>) {
     task: getMissionTask(db, "tenant-a", "task-1")!, repositoryId: "repo-1", snapshotId: "snapshot-1",
     resolvedSha: "a".repeat(40) });
   db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?")
-    .run(JSON.stringify({ deliveryId: value.delivery.id, runId: "warden-run-1", missionAuthority: authority }),
+    .run(JSON.stringify({ deliveryId: value.delivery.id, runId: "warden-run-1",
+      missionId: "mission-1", missionAuthority: authority }),
       value.job.id, "tenant-a");
   return { ...value, authority, job: getJob(db, value.job.id, "tenant-a")! };
 }
@@ -192,6 +194,95 @@ afterEach(() => {
 });
 
 describe("Warden exact candidate draft delivery", () => {
+  it("claims an approved delivery through the real job loop and resumes the exact reviewed Mission task", async () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE jobs SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL
+      WHERE id = ? AND tenant_id = ?`).run(value.job.id, "tenant-a");
+    const deliver = vi.fn(async (input: ExactDraftDeliveryInput) => ({
+      branch: input.branch, title: input.title, baseBranch: input.baseBranch,
+      baseSha: input.expectedBaseSha, commitSha: "b".repeat(40), draft: true as const,
+      number: 17, url: "https://github.com/acme/sdk/pull/17",
+    }));
+
+    const outcome = await processJobsOnce(value.db, {
+      tenantId: "tenant-a", workerId: "worker-real-delivery", leaseMs: 60_000,
+      maxJobs: 1, jobTypes: ["warden.candidate.deliver"], runWardenMaintenance: false,
+      wardenEnv: {
+        MENDPOINT_DATA_DIR: value.dataRoot,
+        MENDPOINT_FETTLER_CI_REENTRY_ENABLED: "1",
+        MENDPOINT_FETTLER_CI_REENTRY_CONFIG_JSON: JSON.stringify({
+          "repo-1": { requiredChecks: ["check:77:unit"], maxCycles: 2, maxModelCalls: 4, maximumCostUsd: 2 },
+        }),
+      },
+      wardenCandidateGithub: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      wardenCandidateRepositoryResolver: () => ({ owner: "acme", repo: "sdk", baseBranch: "main",
+        remoteRepositoryId: 101, installationId: 202 }),
+    });
+
+    const settledJob = getJob(value.db, value.job.id, "tenant-a")!;
+    expect(settledJob).toMatchObject({ status: "done", error_code: null });
+    expect(outcome).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+    expect(getMissionTask(value.db, "tenant-a", "task-1")).toMatchObject({
+      status: "agent_working", revision: value.authority.taskRevision! + 1,
+    });
+    expect(getWardenCandidateDeliveryByRun(value.db, "tenant-a", "warden-run-1")?.missionAuthority)
+      .toMatchObject({ taskId: "task-1", taskStatus: "agent_working" });
+    const cycle = value.db.raw.prepare(`SELECT id FROM fettler_ci_cycles
+      WHERE tenant_id = 'tenant-a'`).get() as { id: string };
+    const retainedCycle = getWardenCiCycle(value.db, "tenant-a", cycle.id)!;
+    expect(retainedCycle.missionAuthority)
+      .toMatchObject({ missionId: "mission-1", taskId: "task-1", taskStatus: "agent_working" });
+    expect(JSON.parse(getJob(value.db, retainedCycle.observationJobId, "tenant-a")!.payload_json))
+      .toMatchObject({ missionId: "mission-1", missionAuthority: {
+        missionId: "mission-1", taskId: "task-1", taskStatus: "agent_working",
+      } });
+    expect(deliver).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays an uncertain approved delivery under a new lease without losing Mission authority", async () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE jobs SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL
+      WHERE id = ? AND tenant_id = ?`).run(value.job.id, "tenant-a");
+    const deliver = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("response lost"), { remoteSideEffectUncertain: true }))
+      .mockImplementationOnce(async (input: ExactDraftDeliveryInput) => ({
+        branch: input.branch, title: input.title, baseBranch: input.baseBranch,
+        baseSha: input.expectedBaseSha, commitSha: "b".repeat(40), draft: true as const,
+        number: 17, url: "https://github.com/acme/sdk/pull/17",
+      }));
+    const options = {
+      tenantId: "tenant-a", leaseMs: 60_000, maxJobs: 1,
+      jobTypes: ["warden.candidate.deliver"], runWardenMaintenance: false,
+      wardenEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      wardenCandidateGithub: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      wardenCandidateRepositoryResolver: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+    } as const;
+
+    const first = await processJobsOnce(value.db, { ...options, workerId: "worker-delivery-one" });
+    expect(first).toMatchObject({ claimed: 1, failed: 1, retried: 1 });
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "uncertain" });
+    const mission = getMission(value.db, "tenant-a", "mission-1")!;
+    expect(() => transitionMission(value.db, { tenantId: "tenant-a", missionId: mission.id,
+      expectedRevision: mission.revision, to: "cancelled", actorPrincipalId: "principal-owner",
+      eventId: "e-cancel-uncertain-delivery", idempotencyKey: "c-cancel-uncertain-delivery",
+      correlationId: "corr", createdAt: "2026-08-26T18:00:01.000Z" }))
+      .toThrow("mission_mutation_dispatch_in_flight");
+    value.db.raw.prepare(`UPDATE jobs SET available_at = ? WHERE id = ? AND tenant_id = ?`)
+      .run("2026-01-01T00:00:00.000Z", value.job.id, "tenant-a");
+
+    const second = await processJobsOnce(value.db, { ...options, workerId: "worker-delivery-two" });
+    expect(second).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+    expect(deliver).toHaveBeenCalledTimes(2);
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "settled" });
+    expect(getMissionTask(value.db, "tenant-a", "task-1")).toMatchObject({
+      status: "complete", revision: value.authority.taskRevision! + 2,
+    });
+    expect(getWardenCandidateDeliveryByRun(value.db, "tenant-a", "warden-run-1")?.missionAuthority)
+      .toMatchObject({ missionId: "mission-1", taskId: "task-1", taskStatus: "complete" });
+  });
+
   it("reverifies the seal and creates a draft from the exact approved bytes", async () => {
     const { db, dataRoot, job } = fixture();
     const deliver = vi.fn(async (input: ExactDraftDeliveryInput) => ({
@@ -317,6 +408,39 @@ describe("Warden exact candidate draft delivery", () => {
         return { owner: "acme", repo: "sdk", baseBranch: "main" };
       } });
     expect(result.status).toBe("delivery_failed");
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("revokes an armed delivery when cancellation lands after intent binding but before remote dispatch", async () => {
+    const value = bindMissionAuthority(fixture());
+    const deliver = vi.fn();
+    const result = await runWardenCandidateDelivery({ db: value.db, job: value.job,
+      github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      beforeRemoteDispatch: () => {
+        const mission = getMission(value.db, "tenant-a", "mission-1")!;
+        transitionMission(value.db, { tenantId: "tenant-a", missionId: mission.id,
+          expectedRevision: mission.revision, to: "cancelled", actorPrincipalId: "principal-owner",
+          eventId: "e-cancel-armed-delivery", idempotencyKey: "c-cancel-armed-delivery",
+          correlationId: "corr", createdAt: "2026-08-06T12:00:00.500Z" });
+      } });
+    expect(result.status).not.toBe("delivered");
+    expect(deliver).not.toHaveBeenCalled();
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "revoked" });
+  });
+
+  it("does not call GitHub when the delivery lease transfers after intent binding", async () => {
+    const value = bindMissionAuthority(fixture());
+    const deliver = vi.fn();
+    await expect(runWardenCandidateDelivery({ db: value.db, job: value.job,
+      github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      beforeRemoteDispatch: () => value.db.raw.prepare(`UPDATE jobs SET lease_owner = 'worker-b',
+        lease_generation = lease_generation + 1 WHERE id = ? AND tenant_id = ?`).run(value.job.id, "tenant-a") }))
+      .rejects.toThrow("warden_candidate_delivery_lease_lost");
     expect(deliver).not.toHaveBeenCalled();
   });
 

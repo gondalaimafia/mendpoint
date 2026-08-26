@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { AppDb } from "./index.js";
 import { appendDomainEvent } from "./trust.js";
+import { revokePendingMissionMutationDispatches } from "./mission-mutation-dispatch-fence.js";
 
 // Deterministic App-DB mission id for a ReGauge/Transformer control-plane
 // campaign. Shared so that every writer that create-or-binds the mission for a
@@ -187,6 +188,7 @@ export function transitionMission(db: AppDb, input: {
     if (!current) throw new Error("mission_not_found");
     if (current.revision !== input.expectedRevision) throw new Error("mission_revision_conflict");
     if (!missionTransitions[current.state].includes(input.to)) throw new Error("mission_transition_invalid");
+    revokePendingMissionMutationDispatches(db, input.tenantId, input.missionId, input.createdAt);
     const changed = db.raw.prepare(`UPDATE mission SET state = ?, revision = revision + 1, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND revision = ?`).run(input.to, input.createdAt, input.missionId,
         input.tenantId, input.expectedRevision);

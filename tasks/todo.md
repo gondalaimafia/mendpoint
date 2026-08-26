@@ -3392,3 +3392,25 @@ Candidate review now seals and rechecks Mission state and revision, resolves eit
 Draft delivery and CI update validate the durable Mission, task, repository, snapshot, and revision bindings at enqueue, after claim, and immediately before each GitHub mutation. Cancellation, revision drift, a new global blocker, a missing reviewed task, or record/task ambiguity fails closed without a remote call. CI repair successors inherit the exact same authority.
 
 Verification: complete API, database, and worker suites pass 540, 431, and 597 tests respectively, with one intentional worker skip. API, database, and worker typechecks pass. The optimized 50-route production build passes, and `git diff --check` is clean. The durable contract is payload schema version 1, so existing unbound queue records remain readable without adding a table migration. No push was performed.
+
+## 2026-08-26 Mission-authorized remote mutation point of no return
+
+- [x] RED: drive real approve to delivery and approve to CI update jobs through claim and Mission task settlement.
+- [x] RED: prove cancellation, a blocker, or lease transfer after the final authority read but before GitHub prevents the remote call.
+- [x] RED: prove initial approval authority survives draft observation, CI repair, repeated review/update, and crash replay without consulting stale source-job authority.
+- [x] Give delivery and CI update jobs explicit global Mission binding and claimed-task lifecycle semantics.
+- [x] Atomically bind the active lease, Mission/task/snapshot authority, and mutation intent as the durable dispatch point of no return.
+- [x] Serialize Mission transition and blocker writers against pending mutation intents, with explicit revocation and remote uncertainty behavior.
+- [x] Retain and propagate fresh post-review authority through delivery, CI cycle, repair, and update state using versioned migrations.
+- [x] Run focused and widened API, database, and worker suites, affected typechecks, production build, and strict diff checks.
+- [x] Review all producers and consumers, document evidence, and create a new local commit without pushing.
+
+### Review
+
+Authenticated approve now writes the exact Mission id and versioned Mission, task, repository, and snapshot authority into delivery and CI update jobs. The global claim bridge moves only that task from `agent_resume` to `agent_working`; terminal delivery without CI and successful final observation complete the same task atomically with job settlement. Direct route-to-worker tests exercise both approve-to-delivery and approve-to-CI-update through real queue claims.
+
+Every remote mutation now has a durable dispatch record bound to its exact intent digest, aggregate, Mission authority, worker, lease generation, and active lease. Mission transitions and new blockers revoke an authorized pre-dispatch intent under `BEGIN IMMEDIATE`. Once dispatch begins, they fail closed until the remote result is settled or reconciled. Late cancellation, blocker, and lease-transfer regressions prove no remote call occurs before the point of no return; lost-response tests retain an explicit uncertain state and prevent control-plane transitions until exact replay or read-only reconciliation settles it.
+
+Fresh authority is retained on deliveries, CI cycles, and CI updates and propagated through observation, repair dispatch, human review, update, and the next observation. Repair dispatch reads the current cycle authority rather than the original source job, preventing an old task revision from reappearing during repeated repair cycles. Fresh and upgrade-path databases receive the new nullable authority columns and the durable dispatch table.
+
+Verification: 46 focused candidate-review lifecycle tests pass. Complete API, database, and worker suites pass 542, 431, and 606 tests respectively, with one intentional worker skip. API, database, and worker typechecks pass. The optimized 50-route production build passes, all mutation-authority producers and consumers were enumerated, and `git diff --check` is clean. No push was performed.

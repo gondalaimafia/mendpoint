@@ -236,7 +236,10 @@ import {
   createInstallationAccountFetcher,
   reconcileNullInstallationAccounts,
 } from "./installation-account-reconcile.js";
-import { runWardenCandidateUpdate } from "./warden-candidate-update.js";
+import {
+  runWardenCandidateUpdate,
+  type WardenCandidateUpdateInput,
+} from "./warden-candidate-update.js";
 import { createWardenCiEvidenceStore } from "./warden-ci-evidence.js";
 import { materializeWardenCiHead } from "./warden-ci-materializer.js";
 import {
@@ -2587,6 +2590,7 @@ async function processJobsOnceUnfenced(
     transformerAdaptiveRepositoryResolver?: ResolveTransformerAdaptiveRepository;
     wardenCandidateGithub?: GitHubDelivery;
     wardenCandidateRepositoryResolver?: ResolveWardenCandidateRepository;
+    wardenCandidateUpdateRuntime?: Omit<WardenCandidateUpdateInput, "db" | "job">;
     // Fettler campaign per-target execution (review-first). Present only when a
     // deployment has configured the production dependencies (generation
     // planEdits/applyEdits + sandbox verify + draft delivery); absent workers do
@@ -2951,6 +2955,11 @@ if (job.type === "warden.candidate.cleanup") {
       if (job.type === "warden.candidate.update") {
         const cycle = wardenCiCycleForJob(db, job);
         assertWardenCiCycleConfiguration(cycle, workerEnv);
+        if (opts.wardenCandidateUpdateRuntime) {
+          await runWardenCandidateUpdate({ db, job, ...opts.wardenCandidateUpdateRuntime });
+          result.succeeded++;
+          continue;
+        }
         const runtime = createWardenCiGitHubRuntime({ db, tenantId: cycle.tenantId,
           repositoryId: cycle.repositoryId, remoteRepositoryId: cycle.remoteRepositoryId,
           installationId: cycle.installationId, env: workerEnv });
