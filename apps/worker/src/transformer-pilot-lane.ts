@@ -660,6 +660,18 @@ export async function runTransformerPilotLaneOnce(
     )) {
       if (input.shouldContinue?.() === false) break;
       try {
+        // Historical local registrations can outlive a campaign that never had
+        // a Mission binding. Resolve that exact authority before principal
+        // lookup or filesystem rehydration, then durably acknowledge the
+        // unbound record so missing legacy evidence cannot poison readiness.
+        if (!resolveMissionForRegaugeCampaign(
+          input.db,
+          registration.tenantId,
+          registration.campaignId,
+        )) {
+          input.store.completeMissionArtifactRegistration(registration);
+          continue;
+        }
         const principalId = input.regaugeServicePrincipalIdForTenant?.(registration.tenantId);
         const result = registerRegaugeMissionArtifactOutbox(
           input.db,

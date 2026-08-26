@@ -18,6 +18,7 @@ import {
   getMissionTask,
   getRoutingLedgerForJob,
   listAdaptiveCandidates,
+  listArtifactManifests,
   listMissionArtifactLineage,
   listMissionArtifacts,
   insertConnectedRepository,
@@ -1041,6 +1042,106 @@ describe("Transformer production pilot lane", () => {
     expect(listMissionArtifacts(db, "tenant-a", missionId)).toHaveLength(2);
     expect(listMissionArtifactLineage(db, "tenant-a", missionId)).toHaveLength(1);
     expect(commandRunner).not.toHaveBeenCalled();
+  });
+
+  it("durably skips an unbound local registration before reading deleted evidence", async () => {
+    const { root, db, store } = setup();
+    const completed = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-unbound-local-deleted",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-unbound-deleted",
+      commandRunner: async () => ({ exitCode: 0, stdout: "verified", stderr: "" }),
+    });
+    expect(completed).toMatchObject({ attempted: 1, completed: 1, errors: [] });
+    expect(store.listPendingMissionArtifactRegistrations("tenant-a", 10)).toHaveLength(1);
+
+    rmSync(join(root, "candidates"), { recursive: true, force: true });
+    rmSync(join(root, "evidence"), { recursive: true, force: true });
+    const commandRunner = vi.fn(async () => {
+      throw new Error("completed_recipe_work_replayed");
+    });
+    const recovered = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-recovery",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-unbound-local-deleted-recovery",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-unbound-deleted-recovery",
+      commandRunner,
+    });
+
+    expect(recovered).toMatchObject({ attempted: 0, completed: 0, errors: [] });
+    expect(recovered.infrastructureError).toBeUndefined();
+    expect(commandRunner).not.toHaveBeenCalled();
+    expect(store.listPendingMissionArtifactRegistrations("tenant-a", 10)).toEqual([]);
+    expect(listArtifactManifests(db, "tenant-a")).toEqual([]);
+  });
+
+  it("durably skips an unbound local registration before reading tampered evidence", async () => {
+    const { root, db, store } = setup();
+    const completed = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-unbound-local-tampered",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-unbound-tampered",
+      commandRunner: async () => ({ exitCode: 0, stdout: "verified", stderr: "" }),
+    });
+    expect(completed).toMatchObject({ attempted: 1, completed: 1, errors: [] });
+    const [registration] = store.listPendingMissionArtifactRegistrations("tenant-a", 10);
+    expect(registration).toBeDefined();
+    writeFileSync(
+      join(root, "candidates", registration!.candidateManifestPath),
+      "tampered candidate evidence",
+      "utf8",
+    );
+    writeFileSync(
+      join(root, "evidence", registration!.executionEvidencePath),
+      "tampered execution evidence",
+      "utf8",
+    );
+    const commandRunner = vi.fn(async () => {
+      throw new Error("completed_recipe_work_replayed");
+    });
+    const recovered = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-recovery",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-unbound-local-tampered-recovery",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-unbound-tampered-recovery",
+      commandRunner,
+    });
+
+    expect(recovered).toMatchObject({ attempted: 0, completed: 0, errors: [] });
+    expect(recovered.infrastructureError).toBeUndefined();
+    expect(commandRunner).not.toHaveBeenCalled();
+    expect(store.listPendingMissionArtifactRegistrations("tenant-a", 10)).toEqual([]);
+    expect(listArtifactManifests(db, "tenant-a")).toEqual([]);
   });
 
   it("does not hand the launch MissionTask to review when the attempt fails", async () => {
