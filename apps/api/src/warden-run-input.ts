@@ -16,7 +16,6 @@ export type WardenRunInput = Readonly<{
   dryRun?: boolean;
   useLlm?: boolean;
   ingressRedactions: number;
-  missionId?: string;
 }>;
 
 export type WardenRunInputResult =
@@ -112,17 +111,11 @@ export function parseWardenRunInput(body: unknown): WardenRunInputResult {
   if (!Number.isSafeInteger(maxSteps) || maxSteps < 1 || maxSteps > 100) {
     return { ok: false, error: "maxSteps must be an integer from 1 to 100" };
   }
-  let missionId: string | undefined;
   if (input.missionId !== undefined) {
-    if (
-      typeof input.missionId !== "string" ||
-      !input.missionId.trim() ||
-      input.missionId !== input.missionId.trim() ||
-      input.missionId.length > 2_000
-    ) {
-      return { ok: false, error: "missionId must be a nonempty mission id" };
-    }
-    missionId = input.missionId;
+    return {
+      ok: false,
+      error: "mission-bound runs must be created through a Fettler campaign",
+    };
   }
   if (input.dryRun === true) {
     return { ok: false, error: "dryRun is not supported for snapshot bound Fettler runs" };
@@ -147,7 +140,6 @@ export function parseWardenRunInput(body: unknown): WardenRunInputResult {
           ? { useLlm: optionalBoolean(input.useLlm, "useLlm") }
           : {}),
         ingressRedactions: goal.counts.total + (errorLog?.counts.total ?? 0),
-        ...(missionId ? { missionId } : {}),
       }),
     };
   } catch (error) {

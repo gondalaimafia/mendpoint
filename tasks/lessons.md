@@ -182,3 +182,8 @@
 **Mistake:** Exact reconciliation could prove a remote mutation was not applied, but the old CI and Mission uncertainty stayed active while feedback, pause, authority, and lease checks ran for a possible new attempt. Any failure in those checks could dead-letter the job and leave the Mission permanently fenced.
 **Correction:** The review required `not_applied` to settle the old uncertainty transactionally before any fresh decision, and required exact replay and lease-expiry tests at the real worker boundary.
 **Rule:** Treat a definitive no-effect result as its own durable terminal transition. Settle every authority record for the old attempt atomically, then create new intent only after fresh policy, feedback, cycle, and lease checks pass. Exact idempotent replays must return before broader fences or side effects.
+
+### 2026-08-26 — Close incompatible producers, not only downstream consumers
+**Mistake:** Upgrade fences protected delivery and update workers, but the public run producer could still enqueue a bare Mission id that no canonical review handoff could later resolve.
+**Correction:** The review traced the active `POST /agent/runs` producer through claim, candidate completion, and human review, exposing a job that could finish but never acquire the repository-scoped task authority required for approval or regeneration.
+**Rule:** When tightening a durable authority contract, inventory every active producer as well as every consumer. A producer must either write the complete canonical authority payload or reject the unsupported shape before persistence. Never accept a partial identity that can survive execution but strand the next state transition.

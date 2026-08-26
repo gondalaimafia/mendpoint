@@ -3503,3 +3503,17 @@ Exact `not_applied` evidence now settles the prior CI and Mission uncertainty to
 Blocking exception raises now detect an exact existing digest inside the same immediate transaction before invoking the Mission-wide dispatch fence. A stale exact replay returns the immutable row without changing newer authority or emitting another event. Fresh blocking raises and blocking reaffirmations retain the existing atomic fence.
 
 The worker takes a fresh time immediately before the atomic intent authorization and again at the Mission remote-call boundary. The feedback and reconciliation regressions advance time beyond lease expiry and prove GitHub receives no new call. RED evidence was five intended failures with 32 passing controls. GREEN evidence is 38 focused tests, 199 widened Mission and CI tests, 454 complete database tests, and 618 complete worker tests with one intentional skip. Full workspace typecheck, the optimized 50-route build, the 17-test third-state gate, production dependency audit with zero vulnerabilities, and strict diff integrity pass. No production state changed and no push was performed.
+
+## 2026-08-26 Fourth review repair: direct Mission run producer authority
+
+- [x] RED: prove `POST /agent/runs` rejects a bare `missionId` before it can enqueue a permanently unreviewable job.
+- [x] Preserve the canonical campaign producer, Mission task, handoff, approval, regeneration, and remote-mutation authority path.
+- [x] Prove rejected direct requests create no job, AgentRun, MissionTask, exception, or successor authority.
+- [x] Run focused API and worker lifecycle tests, affected typechecks, optimized build, dependency audit, and strict diff checks.
+- [x] Record review evidence and create a local commit without pushing.
+
+### Review
+
+RED evidence: the request parser returned a successful value containing `missionId`, making the unsupported shape queueable. The public route invokes that parser and returns its error before tenant resolution, idempotency derivation, the transaction, `enqueueJob`, or `insertAgentRun`; after the repair every defined `missionId`, including malformed values, receives the same bounded 400 contract and cannot create a job, run, task, exception, or successor.
+
+The canonical positive path remains campaign-owned. Its existing end-to-end regressions prove repository-scoped task claim, one blocking handoff, same-task regenerate and replay, approval, real delivery claim, terminal task settlement, tenant and snapshot mismatch denial, policy enforcement, lease fencing, and no duplicate job on campaign replay. The focused input, candidate-review, and Mission bridge set passes 67 tests. Complete API and worker suites pass 542 and 618 tests respectively, with one intentional worker skip. Full workspace typecheck, the optimized 50-route build, public docs check, 13-test ADR check, production dependency audit with zero vulnerabilities, and strict diff integrity pass. The superseded direct-binding ADR and CI repair compatibility ADR now match the enforced contract. No production state changed and no push was performed.
