@@ -9,9 +9,12 @@ import {
   getAgentRun,
   getJob,
   getMission,
+  getMissionTask,
   getPrincipal,
   getTenantMembership,
   recordReviewerDirective,
+  evaluateMissionExceptions,
+  resolveTaskHandoff,
   getWardenCandidateDeliveryByRun,
   getWardenCiCycle,
   getWardenCiUpdateByRun,
@@ -116,6 +119,54 @@ function parseDecision(value: unknown): { decision: ReviewDecision; rationale: s
 function regenerationIds(tenantId: string, runId: string) {
   const digest = createHash("sha256").update([tenantId, runId, "regenerate"].join("\0"), "utf8").digest("hex");
   return { jobId: `warden-regenerate-job-${digest.slice(0, 32)}`, runId: `warden-regenerate-run-${digest.slice(32)}` };
+}
+
+const HUMAN_HANDOFF_TASK_STATUSES = new Set([
+  "human_review_required",
+  "human_assigned",
+  "human_working",
+]);
+
+/**
+ * Close an open agent→human handoff when a bound Mission already has a
+ * blocking exception. Unbound review skips (never fabricate a Mission).
+ * Reject does not call this: that would send the task to `agent_resume`.
+ */
+export function tryResolveBoundReviewHandoff(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    missionId: string | null;
+    runId: string;
+    rationale: string;
+    authorPrincipalId: string;
+    evidence?: readonly string[];
+    correlationId: string;
+    createdAt: string;
+  },
+): { exceptionId: string; taskId: string | null } | undefined {
+  if (!input.missionId || !getMission(db, input.tenantId, input.missionId)) return undefined;
+  const blocking = evaluateMissionExceptions(db, input.tenantId, input.missionId).blocking;
+  const match = blocking.find((exception) => {
+    if (!exception.taskId) return true;
+    const task = getMissionTask(db, input.tenantId, exception.taskId);
+    return Boolean(task && HUMAN_HANDOFF_TASK_STATUSES.has(task.status));
+  });
+  if (!match) return undefined;
+  const taskId = match.taskId ?? undefined;
+  resolveTaskHandoff(db, {
+    tenantId: input.tenantId,
+    priorExceptionId: match.id,
+    resolutionNote: input.rationale,
+    decision: input.rationale,
+    scope: `handoff_resolution:${input.runId}`,
+    authorPrincipalId: input.authorPrincipalId,
+    ...(input.evidence && input.evidence.length > 0 ? { evidence: input.evidence } : {}),
+    ...(taskId ? { taskId } : {}),
+    correlationId: input.correlationId,
+    createdAt: input.createdAt,
+  });
+  return { exceptionId: match.id, taskId: match.taskId };
 }
 
 function sourceBinding(db: AppDb, tenantId: string, result: Record<string, unknown>) {
@@ -421,6 +472,16 @@ export function registerWardenCandidateReviewRoutes(
             createdAt: reviewedAt,
             decisionType: "verification",
           });
+          tryResolveBoundReviewHandoff(db, {
+            tenantId,
+            missionId: regenerateMissionId,
+            runId: run.id,
+            rationale: body.rationale,
+            authorPrincipalId: trustId!,
+            evidence: [`agent_run:${run.id}`, ...(candidateDigest ? [`candidate:${candidateDigest}`] : [])],
+            correlationId: next.runId,
+            createdAt: reviewedAt,
+          });
         }
         reviewedResult = { ...result, review: { decision: body.decision, rationale: body.rationale,
           reviewedAt, reviewerPrincipalId: principal.id, supersedingRunId: next.runId, supersedingJobId: next.jobId },
@@ -450,6 +511,28 @@ export function registerWardenCandidateReviewRoutes(
             pauseWardenCiCycle(db, { tenantId, cycleId: ciAuthority.cycle.id,
               actorPrincipalId: principal.id, reason: "candidate_rejected", observedAt: reviewedAt });
           }
+        }
+        if (body.decision === "approve") {
+          const sourceJob = run.job_id ? getJob(db, run.job_id, tenantId) : undefined;
+          let approveMissionId: string | null = null;
+          if (sourceJob) {
+            try {
+              const payload = JSON.parse(sourceJob.payload_json) as Record<string, unknown>;
+              approveMissionId = typeof payload.missionId === "string" ? payload.missionId : null;
+            } catch {
+              approveMissionId = null;
+            }
+          }
+          tryResolveBoundReviewHandoff(db, {
+            tenantId,
+            missionId: approveMissionId,
+            runId: run.id,
+            rationale: body.rationale,
+            authorPrincipalId: trustId!,
+            evidence: [`agent_run:${run.id}`, ...(candidateDigest ? [`candidate:${candidateDigest}`] : [])],
+            correlationId: run.id,
+            createdAt: reviewedAt,
+          });
         }
       }
       const updated = db.raw.prepare(
