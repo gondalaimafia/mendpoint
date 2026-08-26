@@ -3423,8 +3423,8 @@ Verification: rebased onto exact `origin/main` `256e40658f5a9670ea38227654f36120
 - [x] Bind every eligible current or released reviewer head to the persisted human principal, exact tenant run, source-job Mission, and candidate digest.
 - [x] Replace lock-held full-ledger verification with a one-use verified tip plus bounded authenticated suffix advancement.
 - [x] Update `TASK_HANDOFFS.md` to the live candidate-bound replacement contract.
-- [ ] Run focused DB/API tests, affected typechecks, strict diff review, rebase if needed, and push for independent re-review.
+- [x] Run focused DB/API tests, affected typechecks, strict diff review, rebase if needed, and push for independent re-review.
 
 #### Review
 
-Implementation complete. Pre-rebase verification: 61 focused database and API tests pass, database and API typechecks pass, and the worktree diff-integrity check is clean. Current `origin/main` advanced after implementation, so the required rebase and post-rebase gate remain pending.
+Complete. The repair rebased cleanly onto exact `origin/main` `502a2ebbe258bc17a65e69ca56aa6c75e268240c`. Post-rebase verification passes all 61 focused trust, MissionDecision, Mission handoff, and candidate-review API tests; database and API typechecks pass; and both branch and worktree diff-integrity checks are clean. Reviewer authority now requires a live human principal plus an exact tenant, Mission, source-job, run, and persisted candidate binding. Explicit retraction remains terminal under repeated retry, and event-ledger authentication no longer scans the full tenant history while holding the writer reservation.
