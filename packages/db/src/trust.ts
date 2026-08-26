@@ -555,6 +555,17 @@ export type VerifiedDomainEventAuthority = Readonly<{
   eventHash: string | null;
 }>;
 
+export type VerifiedDomainEventAdvance = Readonly<{
+  id: string;
+  eventSequence: number;
+  eventType: string;
+  aggregateType: string;
+  aggregateId: string;
+  actorPrincipalId: string;
+  createdAt: string;
+  payloadJson: string;
+}>;
+
 const issuedDomainEventAuthorities = new WeakSet<object>();
 const MAX_DOMAIN_EVENT_AUTHORITY_ADVANCE = 64;
 
@@ -644,7 +655,7 @@ export function consumeVerifiedDomainEventAuthority(
   db: AppDb,
   tenantId: string,
   authority: VerifiedDomainEventAuthority,
-): void {
+): readonly VerifiedDomainEventAdvance[] {
   if (!db.raw.isTransaction) throw new Error("domain_event_authority_transaction_required");
   if (!issuedDomainEventAuthorities.delete(authority) || authority.tenantId !== tenantId) {
     throw new Error("domain_event_authority_invalid");
@@ -672,4 +683,14 @@ export function consumeVerifiedDomainEventAuthority(
     authority.eventHash,
   );
   if (!verified.ok) throw new Error("domain_event_integrity_invalid");
+  return Object.freeze(suffix.map((row) => Object.freeze({
+    id: row.id,
+    eventSequence: row.event_sequence,
+    eventType: row.event_type,
+    aggregateType: row.aggregate_type,
+    aggregateId: row.aggregate_id,
+    actorPrincipalId: row.actor_principal_id,
+    createdAt: row.created_at,
+    payloadJson: row.payload_json,
+  })));
 }

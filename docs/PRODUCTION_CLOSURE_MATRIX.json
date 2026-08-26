@@ -1673,7 +1673,8 @@
       "pullRequests": [
         418,
         419,
-        421
+        421,
+        466
       ],
       "testEvidenceIds": [
         "ME-MSN-002-AC01-EV05",
@@ -1701,7 +1702,8 @@
         417,
         418,
         420,
-        421
+        421,
+        466
       ],
       "testEvidenceIds": [
         "ME-MSN-003-AC01-EV02"
@@ -2057,16 +2059,16 @@
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
-    "observedMainRevision": "e67a040b65a48f48e425000e0fd038b2ea544b5b",
-    "observationDigest": "sha256:b4abb5c88e786934eed4616bd48c09c54e837d3b07c6b195c5fa3476eb78cead",
+    "observedMainRevision": "7f74e609ca0c9f05fa1deaaded76c9d7b2d2fbd6",
+    "observationDigest": "sha256:b60583a06691ca29489b79c3ab6fd5e0bbac0dceefbf208398cb72bb9b1fa0d9",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 485,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/485",
-      "title": "Fix production authority drift and read starvation",
+      "number": 466,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/466",
+      "title": "Make reviewer directives deterministic",
       "baseBranch": "main",
-      "headBranch": "codex/pr484-review-fixes",
+      "headBranch": "codex/pr458-review-fixes",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2077,17 +2079,12 @@
         "pullRequests": [],
         "branches": []
       },
-      "requirementIds": [],
+      "requirementIds": [
+        "ME-MSN-002",
+        "ME-MSN-003"
+      ],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "runtime-authority-read-budget-20260826",
-        "kind": "runtime",
-        "issuedAt": "2026-08-26T07:03:40.449Z",
-        "expiresAt": "2026-09-01T07:03:40.449Z",
-        "basePolicySha256": "sha256:c608eb85fd35ef35acf034f998917b479135116626e17c2a14054c6f68e50d30",
-        "proposedPolicySha256": "sha256:572d299979e55ed409ae21c8f0a720b1c4e8b7f7a6fcb7f217ea12bf4aed03cb"
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
@@ -3907,10 +3904,10 @@
         },
         "disposition": "blocked_explicit_dependency",
         "dependencies": {
-          "pullRequests": [
-            466
-          ],
-          "branches": []
+          "pullRequests": [],
+          "branches": [
+            "codex/pr458-review-fixes"
+          ]
         },
         "requirementIds": [],
         "checkState": "conflicting",
@@ -3938,41 +3935,6 @@
             "summary": "dependency race abandonment can leave a routing decision without a terminal outcome"
           }
         ]
-      },
-      {
-        "number": 466,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/466",
-        "title": "Make reviewer directives deterministic",
-        "headBranch": "codex/pr458-review-fixes",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Codex",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "conflicting",
-        "headRevision": "cf5a80825b77af627190b334f5d3050dae7d4471",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
       },
       {
         "number": 467,
@@ -4223,6 +4185,41 @@
         "checkState": "stale_checks",
         "headRevision": "dd16d12a73cd26e6282e0303093f81018c0d550a",
         "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 485,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/485",
+        "title": "Fix production authority drift and read starvation",
+        "headBranch": "codex/pr484-review-fixes",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "df0d7543d9a80b0846af531e24e1f37e86a034ce",
+        "mergeRevision": "7f74e609ca0c9f05fa1deaaded76c9d7b2d2fbd6",
         "checks": [],
         "review": {
           "state": "none",

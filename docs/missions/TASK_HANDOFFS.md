@@ -119,8 +119,10 @@ string with the rationale concatenated on. The resume side now reads the
   Directives for different candidate digests remain independent. Released
   run-scoped heads are reconciled only when their human author, source run,
   Mission, and persisted candidate digest all agree with the current scope.
-  An explicitly retracted directive is terminal: a repeated delivery of its old
-  semantic operation cannot recreate it.
+  Retraction of the newest authenticated candidate head is terminal for that
+  candidate: every older authenticated duplicate is retracted in the same
+  transaction, and repeated delivery of stale guidance returns the original
+  terminal authority without creating a run, job, decision, or event.
 - A resolved question's blocking exception is closed, so
   `evaluateMissionExceptions` no longer surfaces it and the compiler's
   `unresolvedExceptions` excludes it. It is not asked again.
@@ -151,9 +153,10 @@ an unchanged one does not.
   durable decision through `replaceReviewerDirective`. The source `agent_run`, its
   `agent.run` job, the Mission id, candidate digest, and human principal are all
   revalidated before replacement. With no mission it is skipped — nothing is
-  fabricated. The tenant event ledger is fully authenticated before the writer
-  lock; the transaction then authenticates the captured tip and at most 64 events
-  appended since capture before it changes reviewer authority.
+  fabricated. The tenant event ledger and full Mission history are authenticated
+  before the writer lock. The transaction then authenticates the captured tip,
+  at most 64 appended events, and at most 256 exact candidate decision identities
+  before it changes reviewer authority.
 - The **ReGauge / transformer** path runs deterministic recipes and never reaches
   the model seam, so it is deliberately not wired to write context refs or
   decisions here. ReGauge regeneration remains blocked by an owner decision

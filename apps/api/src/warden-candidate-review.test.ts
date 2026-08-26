@@ -18,6 +18,7 @@ import {
   recordMissionDecision,
   recordAudit,
   recordReviewerDirective,
+  retractMissionDecision,
   verifyAuditIntegrity,
   type AppDb,
 } from "@mendpoint/db";
@@ -548,6 +549,51 @@ describe("Warden candidate human review", () => {
     expect(active[0]!.decisionType).toBe("verification");
   });
 
+  it("records the rejected approach as a path-scoped mission decision when reject is mission-bound", async () => {
+    const { app, db } = fixture();
+    createMission(db, {
+      id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
+      objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-m1", idempotencyKey: "cm-m1", correlationId: "corr", createdAt: NOW,
+    });
+    const src = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(src.payload_json), missionId: "m1" }));
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        decision: "reject",
+        rationale: "Do not rewrite the public SDK surface.",
+      }),
+    });
+    expect(response.status).toBe(200);
+    const active = getActiveMissionDecisions(db, "tenant-a", "m1");
+    expect(active).toHaveLength(1);
+    expect(active[0]).toMatchObject({
+      decision: "Do not rewrite the public SDK surface.",
+      scope: "src/client.ts",
+      decisionType: "other",
+    });
+    expect(active[0]!.evidence).toEqual([
+      "agent_run:warden-run-1",
+      `candidate:${CANDIDATE_DIGEST}`,
+    ]);
+  });
+
+  it("records no mission decision when the reject is not mission-bound (no fabrication)", async () => {
+    const { app, db } = fixture();
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "reject", rationale: "The candidate is not acceptable." }),
+    });
+    expect(response.status).toBe(200);
+    const count = db.raw.prepare("SELECT COUNT(*) AS n FROM mission_decisions").get() as { n: number };
+    expect(count.n).toBe(0);
+  });
+
   it("replaces a live reviewer directive when a later run yields the same candidate identity", async () => {
     const { app, db } = fixture();
     createMission(db, {
@@ -629,6 +675,63 @@ describe("Warden candidate human review", () => {
     ]);
   });
 
+  it("does not regenerate a stale duplicate after the newest candidate guidance was retracted", async () => {
+    const { app, db } = fixture();
+    createMission(db, {
+      id: "m1", tenantId: "tenant-a", product: "fettler", triggerKind: "migration_objective",
+      objective: "Migrate the SDK", ownerPrincipalId: "trust-human-a",
+      eventId: "ev-m1", idempotencyKey: "cm-m1", correlationId: "corr", createdAt: NOW,
+    });
+    const source = getJob(db, "source-job-1", "tenant-a")!;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = 'source-job-1'")
+      .run(JSON.stringify({ ...JSON.parse(source.payload_json), missionId: "m1" }));
+    const scope = `reviewer_directive:candidate:${CANDIDATE_DIGEST}`;
+    const olderRunId = "legacy-terminal-old";
+    const newerRunId = "legacy-terminal-new";
+    seedMissionReviewerRun(db, olderRunId, "m1", CANDIDATE_DIGEST);
+    seedMissionReviewerRun(db, newerRunId, "m1", CANDIDATE_DIGEST);
+    const older = recordReviewerDirective(db, {
+      tenantId: "tenant-a", missionId: "m1", directive: "Keep the signature stable.", scope,
+      authorPrincipalId: "trust-human-a",
+      evidence: [`agent_run:${olderRunId}`, `candidate:${CANDIDATE_DIGEST}`],
+      correlationId: "legacy-terminal-old", createdAt: "2026-08-06T11:57:00.000Z",
+      decisionType: "verification",
+    });
+    const newer = recordReviewerDirective(db, {
+      tenantId: "tenant-a", missionId: "m1", directive: "Keep the signature and bounded retries.", scope,
+      authorPrincipalId: "trust-human-a",
+      evidence: [`agent_run:${newerRunId}`, `candidate:${CANDIDATE_DIGEST}`],
+      correlationId: "legacy-terminal-new", createdAt: "2026-08-06T11:58:00.000Z",
+      decisionType: "verification",
+    });
+    const terminal = retractMissionDecision(db, {
+      tenantId: "tenant-a", priorDecisionId: newer.id,
+      rationale: "Withdraw this candidate guidance.", authorPrincipalId: "trust-human-a",
+      correlationId: "legacy-terminal-retract", createdAt: "2026-08-06T11:59:00.000Z",
+    });
+    expect(getActiveMissionDecisions(db, "tenant-a", "m1").map((decision) => decision.id))
+      .toEqual([older.id]);
+    const jobsBefore = (db.raw.prepare("SELECT COUNT(*) AS n FROM jobs").get() as { n: number }).n;
+    const runsBefore = (db.raw.prepare("SELECT COUNT(*) AS n FROM agent_runs").get() as { n: number }).n;
+
+    for (const rationale of [older.decision, "A delayed stale retry with different text."]) {
+      const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "regenerate", rationale }),
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: "reviewer_directive_terminal_history" });
+      expect(getAgentRun(db, "warden-run-1", "tenant-a")).toMatchObject({ status: "candidate_ready" });
+      expect(getActiveMissionDecisions(db, "tenant-a", "m1")).toEqual([]);
+      expect((db.raw.prepare("SELECT COUNT(*) AS n FROM jobs").get() as { n: number }).n).toBe(jobsBefore);
+      expect((db.raw.prepare("SELECT COUNT(*) AS n FROM agent_runs").get() as { n: number }).n).toBe(runsBefore);
+      expect(db.raw.prepare(
+        "SELECT id FROM mission_decisions WHERE tenant_id = ? AND id = ?",
+      ).get("tenant-a", terminal.id)).toBeTruthy();
+    }
+  });
+
   it("records no mission decision when the regenerate is not mission-bound (no fabrication)", async () => {
     const { app, db } = fixture();
     const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
@@ -640,6 +743,44 @@ describe("Warden candidate human review", () => {
     // No mission exists and none is fabricated: the decision store stays empty.
     const count = db.raw.prepare("SELECT COUNT(*) AS n FROM mission_decisions").get() as { n: number };
     expect(count.n).toBe(0);
+  });
+
+  it("does not consult an unrelated corrupt mission ledger for an unbound regenerate", async () => {
+    const { app, db } = fixture();
+    createMission(db, {
+      id: "unrelated-mission", tenantId: "tenant-a", product: "fettler",
+      triggerKind: "migration_objective", objective: "Unrelated work",
+      ownerPrincipalId: "trust-human-a", eventId: "ev-unrelated-mission",
+      idempotencyKey: "cm-unrelated-mission", correlationId: "corr-unrelated",
+      createdAt: NOW,
+    });
+    seedMissionReviewerRun(db, "unrelated-run", "unrelated-mission", "d".repeat(64));
+    const unrelated = recordReviewerDirective(db, {
+      tenantId: "tenant-a", missionId: "unrelated-mission",
+      directive: "Preserve the unrelated contract.",
+      scope: `reviewer_directive:candidate:${"d".repeat(64)}`,
+      authorPrincipalId: "trust-human-a",
+      evidence: ["agent_run:unrelated-run", `candidate:${"d".repeat(64)}`],
+      correlationId: "corr-unrelated-review", createdAt: NOW,
+      decisionType: "verification",
+    });
+    db.raw.exec("DROP TRIGGER domain_events_append_only_update");
+    db.raw.prepare("UPDATE domain_events SET event_hash = ? WHERE id = ?")
+      .run("tampered", `mission-decision:${unrelated.id}`);
+    const decisionsBefore = (db.raw.prepare(
+      "SELECT COUNT(*) AS n FROM mission_decisions",
+    ).get() as { n: number }).n;
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Repair the internal mapping." }),
+    });
+
+    expect(response.status).toBe(202);
+    expect((db.raw.prepare(
+      "SELECT COUNT(*) AS n FROM mission_decisions",
+    ).get() as { n: number }).n).toBe(decisionsBefore);
   });
 
   it("keeps the committed winner seal through an orchestrated concurrent approval conflict", async () => {

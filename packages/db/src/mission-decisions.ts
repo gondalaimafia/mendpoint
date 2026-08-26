@@ -420,7 +420,13 @@ export function getMissionDecision(db: AppDb, tenantId: string, decisionId: stri
   const row = one<MissionDecisionRow>(db,
     `SELECT * FROM mission_decisions WHERE id = ? AND tenant_id = ?`, [decisionId, tenantId]);
   if (!row) return undefined;
-  return annotate(all<MissionDecisionRow>(db,
-    `SELECT * FROM mission_decisions WHERE tenant_id = ? AND mission_id = ?`,
-    [tenantId, row.mission_id])).find((d) => d.id === decisionId);
+  const decision = hydrate(row);
+  const successor = one<{ id: string }>(db,
+    `SELECT id FROM mission_decisions WHERE tenant_id = ? AND supersedes_id = ? LIMIT 1`,
+    [tenantId, decisionId]);
+  return Object.freeze({
+    ...decision,
+    effectiveStatus: successor ? "superseded" : decision.status,
+    supersededById: successor?.id ?? null,
+  });
 }

@@ -3,7 +3,7 @@ import type { Context, Hono } from "hono";
 import { nowIso } from "@mendpoint/shared";
 import {
   agentRunToApi,
-  captureVerifiedDomainEventAuthority,
+  captureReviewerDirectiveAuthority,
   enqueueJob,
   enqueueWardenCandidateDelivery,
   enqueueWardenCiUpdate,
@@ -22,6 +22,7 @@ import {
   pauseWardenCiCycle,
   rebindWardenCiRepair,
   recordAudit,
+  recordReviewerDirective,
   type AgentRunRow,
   type AppDb,
 } from "@mendpoint/db";
@@ -81,6 +82,14 @@ const WARDEN_REVIEW_ERRORS = [
     "warden_candidate_result_invalid",
     "warden_candidate_review_conflict",
     "reviewer_directive_candidate_digest_invalid",
+    "reviewer_directive_authority_invalid",
+    "reviewer_directive_event_authority_invalid",
+    "reviewer_directive_event_binding_invalid",
+    "reviewer_directive_event_chain_invalid",
+    "reviewer_directive_history_limit_exceeded",
+    "reviewer_directive_mission_invalid",
+    "reviewer_directive_source_authority_invalid",
+    "reviewer_directive_terminal_history",
     "warden_candidate_snapshot_binding_mismatch",
     "warden_candidate_source_invalid",
     "warden_candidate_source_job_invalid",
@@ -330,10 +339,30 @@ export function registerWardenCandidateReviewRoutes(
     const candidateManifestSha256 = typeof artifacts.candidateManifestSha256 === "string"
       ? artifacts.candidateManifestSha256
       : "";
-    let reviewerEventAuthority: ReturnType<typeof captureVerifiedDomainEventAuthority> | undefined;
+    let reviewerAuthority: ReturnType<typeof captureReviewerDirectiveAuthority> | undefined;
+    let regenerationPreflight: Readonly<{ sourceJobId: string; missionId: string | null }> | null = null;
     if (body.decision === "regenerate") {
       try {
-        reviewerEventAuthority = captureVerifiedDomainEventAuthority(db, tenantId);
+        if (!run.job_id) throw new Error("warden_candidate_source_job_missing");
+        const original = getJob(db, run.job_id, tenantId);
+        if (!original || original.type !== "agent.run") throw new Error("warden_candidate_source_job_invalid");
+        const parsed = JSON.parse(original.payload_json) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("warden_candidate_source_job_invalid");
+        }
+        const payload = parsed as Record<string, unknown>;
+        const missionId = typeof payload.missionId === "string" && payload.missionId
+          ? payload.missionId
+          : null;
+        if (missionId) {
+          if (!getMission(db, tenantId, missionId)) throw new Error("reviewer_directive_mission_invalid");
+          reviewerAuthority = captureReviewerDirectiveAuthority(db, {
+            tenantId,
+            missionId,
+            candidateDigest,
+          });
+        }
+        regenerationPreflight = { sourceJobId: original.id, missionId };
       } catch (error) {
         return mappedErrorResponse(c, error, WARDEN_REVIEW_ERRORS);
       }
@@ -393,10 +422,45 @@ export function registerWardenCandidateReviewRoutes(
         if (!run.job_id) throw new Error("warden_candidate_source_job_missing");
         const original = getJob(db, run.job_id, tenantId);
         if (!original || original.type !== "agent.run") throw new Error("warden_candidate_source_job_invalid");
-        const originalPayload = JSON.parse(original.payload_json) as Record<string, unknown>;
+        const parsed = JSON.parse(original.payload_json) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("warden_candidate_source_job_invalid");
+        }
+        const originalPayload = parsed as Record<string, unknown>;
+        const regenerateMissionId = typeof originalPayload.missionId === "string" && originalPayload.missionId
+          ? originalPayload.missionId
+          : null;
+        if (!regenerationPreflight || regenerationPreflight.sourceJobId !== original.id ||
+            regenerationPreflight.missionId !== regenerateMissionId) {
+          throw new Error("warden_candidate_review_conflict");
+        }
         const next = regenerationIds(tenantId, run.id);
         const nextPayload = { ...originalPayload, sessionId: next.runId, reviewFeedback: body.rationale,
           supersedesRunId: run.id, reviewerPrincipalId: principal.id };
+        // A terminal candidate-scoped retraction is durable authority. Reconcile
+        // any older duplicate heads before creating model work, then retain the
+        // candidate in review so an operator can choose a different action.
+        if (regenerateMissionId) {
+          const directive = replaceReviewerDirective(db, {
+            tenantId,
+            missionId: regenerateMissionId,
+            directive: body.rationale,
+            candidateDigest,
+            sourceRunId: run.id,
+            authorPrincipalId: trustId!,
+            correlationId: next.runId,
+            createdAt: reviewedAt,
+            reviewerAuthority: reviewerAuthority!,
+          });
+          if (directive.status === "retracted") {
+            db.raw.exec("COMMIT");
+            return mappedErrorResponse(
+              c,
+              new Error("reviewer_directive_terminal_history"),
+              WARDEN_REVIEW_ERRORS,
+            );
+          }
+        }
         enqueueJob(db, { id: next.jobId, tenantId, type: "agent.run", payload: nextPayload, createdAt: reviewedAt });
         insertAgentRun(db, { id: next.runId, tenantId, jobId: next.jobId, goal: run.goal, repoPath: run.repo_path,
           status: "queued", ok: false, steps: 0, filesChanged: [], reportMd: null,
@@ -407,27 +471,6 @@ export function registerWardenCandidateReviewRoutes(
           rebindWardenCiRepair(db, { tenantId, cycleId: ciAuthority.cycle.id,
             currentRepairRunId: run.id, nextRepairRunId: next.runId, nextRepairJobId: next.jobId,
             observedAt: reviewedAt });
-        }
-        // When this regenerate is part of a formal mission, retain one reviewer
-        // directive for the durable candidate identity. Repeated production runs
-        // that yield the same candidate therefore replace earlier guidance while
-        // distinct edits remain independent. The rationale is untrusted reviewer
-        // text and only reaches a model inside the compiler's data fence. A
-        // Fettler repair with no mission bound skips this; no mission is fabricated.
-        const regenerateMissionId = typeof originalPayload.missionId === "string"
-          ? originalPayload.missionId : null;
-        if (regenerateMissionId && getMission(db, tenantId, regenerateMissionId)) {
-          replaceReviewerDirective(db, {
-            tenantId,
-            missionId: regenerateMissionId,
-            directive: body.rationale,
-            candidateDigest,
-            sourceRunId: run.id,
-            authorPrincipalId: trustId!,
-            correlationId: next.runId,
-            createdAt: reviewedAt,
-            eventAuthority: reviewerEventAuthority!,
-          });
         }
         reviewedResult = { ...result, review: { decision: body.decision, rationale: body.rationale,
           reviewedAt, reviewerPrincipalId: principal.id, supersedingRunId: next.runId, supersedingJobId: next.jobId },

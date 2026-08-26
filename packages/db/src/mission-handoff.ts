@@ -28,6 +28,7 @@ import {
   type SnapshotIdentity,
 } from "./mission-exceptions.js";
 import {
+  getMissionDecision,
   listMissionDecisions,
   recordMissionDecision,
   retractMissionDecision,
@@ -408,6 +409,47 @@ function reviewerRunMatches(
   }
 }
 
+function missionDecisionEventSequence(
+  db: AppDb,
+  tenantId: string,
+  missionId: string,
+  decision: MissionDecision,
+): number {
+  const event = db.raw.prepare(
+    `SELECT id, event_sequence, event_type, aggregate_type, aggregate_id,
+            actor_principal_id, created_at, payload_json
+     FROM domain_events
+     WHERE tenant_id = ? AND id = ?`,
+  ).get(tenantId, `mission-decision:${decision.id}`) as {
+    id: string;
+    event_sequence: number;
+    event_type: string;
+    aggregate_type: string;
+    aggregate_id: string;
+    actor_principal_id: string;
+    created_at: string;
+    payload_json: string;
+  } | undefined;
+  let payload: Record<string, unknown> | null = null;
+  try {
+    const parsed = event ? JSON.parse(event.payload_json) as unknown : null;
+    payload = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    payload = null;
+  }
+  if (!event || !Number.isSafeInteger(event.event_sequence) || event.event_sequence < 1 ||
+      (event.event_type !== "mission.decision_recorded" && event.event_type !== "mission.decision_superseded") ||
+      event.aggregate_type !== "mission" || event.aggregate_id !== missionId ||
+      event.actor_principal_id !== decision.authorPrincipalId || event.created_at !== decision.createdAt ||
+      payload?.decisionId !== decision.id || payload.scope !== decision.scope ||
+      payload.status !== decision.status || payload.supersedesId !== decision.supersedesId) {
+    throw new Error("reviewer_directive_event_binding_invalid");
+  }
+  return event.event_sequence;
+}
+
 function orderReviewerDirectiveHistory(
   db: AppDb,
   tenantId: string,
@@ -415,41 +457,155 @@ function orderReviewerDirectiveHistory(
   decisions: readonly MissionDecisionView[],
 ): MissionDecisionView[] {
   if (decisions.length > 256) throw new Error("reviewer_directive_history_limit_exceeded");
-  return decisions.map((decision) => {
-    const event = db.raw.prepare(
-      `SELECT id, event_sequence, event_type, aggregate_type, aggregate_id,
-              actor_principal_id, created_at, payload_json
-       FROM domain_events
-       WHERE tenant_id = ? AND id = ?`,
-    ).get(tenantId, `mission-decision:${decision.id}`) as {
-      id: string;
-      event_sequence: number;
-      event_type: string;
-      aggregate_type: string;
-      aggregate_id: string;
-      actor_principal_id: string;
-      created_at: string;
-      payload_json: string;
-    } | undefined;
-    let payload: Record<string, unknown> | null = null;
-    try {
-      const parsed = event ? JSON.parse(event.payload_json) as unknown : null;
-      payload = parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? parsed as Record<string, unknown>
-        : null;
-    } catch {
-      payload = null;
+  return decisions.map((decision) => ({
+    decision,
+    sequence: missionDecisionEventSequence(db, tenantId, missionId, decision),
+  })).sort((left, right) => left.sequence - right.sequence).map(({ decision }) => decision);
+}
+
+export type ReviewerDirectiveAuthority = Readonly<{
+  tenantId: string;
+  missionId: string;
+  candidateDigest: string;
+  eventAuthority: VerifiedDomainEventAuthority;
+  history: readonly MissionDecisionView[];
+}>;
+
+const issuedReviewerDirectiveAuthorities = new WeakSet<object>();
+
+/**
+ * Authenticate the full tenant ledger and potentially long Mission history
+ * before acquiring the SQLite writer reservation. The returned capability is
+ * process-local, immutable, and one-use; replacement revalidates its bounded
+ * candidate set plus the authenticated ledger suffix under the lock.
+ */
+export function captureReviewerDirectiveAuthority(
+  db: AppDb,
+  input: Readonly<{ tenantId: string; missionId: string; candidateDigest: string }>,
+): ReviewerDirectiveAuthority {
+  if (db.raw.isTransaction) throw new Error("reviewer_directive_authority_capture_transaction_active");
+  const candidateDigest = input.candidateDigest.trim().toLowerCase();
+  const scope = reviewerDirectiveScope(candidateDigest);
+  let eventAuthority: VerifiedDomainEventAuthority;
+  try {
+    eventAuthority = captureVerifiedDomainEventAuthority(db, input.tenantId);
+  } catch (error) {
+    if (error instanceof Error && error.message === "domain_event_integrity_invalid") {
+      throw new Error("reviewer_directive_event_chain_invalid");
     }
-    if (!event || !Number.isSafeInteger(event.event_sequence) || event.event_sequence < 1 ||
-        (event.event_type !== "mission.decision_recorded" && event.event_type !== "mission.decision_superseded") ||
-        event.aggregate_type !== "mission" || event.aggregate_id !== missionId ||
-        event.actor_principal_id !== decision.authorPrincipalId || event.created_at !== decision.createdAt ||
-        payload?.decisionId !== decision.id || payload.scope !== decision.scope ||
-        payload.status !== decision.status || payload.supersedesId !== decision.supersedesId) {
+    throw error;
+  }
+  const history = orderReviewerDirectiveHistory(
+    db,
+    input.tenantId,
+    input.missionId,
+    listMissionDecisions(db, input.tenantId, input.missionId).filter((decision) =>
+      reviewerDirectiveRunId(
+        db,
+        decision,
+        input.tenantId,
+        input.missionId,
+        scope,
+        candidateDigest,
+      ) !== null),
+  );
+  const authority = Object.freeze({
+    tenantId: input.tenantId,
+    missionId: input.missionId,
+    candidateDigest,
+    eventAuthority,
+    history: Object.freeze([...history]),
+  });
+  issuedReviewerDirectiveAuthorities.add(authority);
+  return authority;
+}
+
+function decisionIdFromEventAdvance(
+  event: Readonly<{
+    eventType: string;
+    aggregateType: string;
+    aggregateId: string;
+    payloadJson: string;
+  }>,
+  missionId: string,
+): string | null {
+  if ((event.eventType !== "mission.decision_recorded" &&
+       event.eventType !== "mission.decision_superseded") ||
+      event.aggregateType !== "mission" || event.aggregateId !== missionId) return null;
+  try {
+    const payload = JSON.parse(event.payloadJson) as unknown;
+    const decisionId = payload && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>).decisionId
+      : null;
+    if (typeof decisionId !== "string" || !decisionId) {
       throw new Error("reviewer_directive_event_binding_invalid");
     }
-    return { decision, sequence: event.event_sequence };
-  }).sort((left, right) => left.sequence - right.sequence).map(({ decision }) => decision);
+    return decisionId;
+  } catch {
+    throw new Error("reviewer_directive_event_binding_invalid");
+  }
+}
+
+function revalidateReviewerDirectiveHistory(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    missionId: string;
+    scope: string;
+    candidateDigest: string;
+    authority: ReviewerDirectiveAuthority;
+    suffix: readonly Readonly<{
+      eventType: string;
+      aggregateType: string;
+      aggregateId: string;
+      payloadJson: string;
+    }>[];
+  }>,
+): MissionDecisionView[] {
+  const preparedIds = new Set(input.authority.history.map((decision) => decision.id));
+  const candidateIds = new Set(preparedIds);
+  for (const event of input.suffix) {
+    const decisionId = decisionIdFromEventAdvance(event, input.missionId);
+    if (decisionId) candidateIds.add(decisionId);
+  }
+  const current: MissionDecisionView[] = [];
+  for (const decisionId of candidateIds) {
+    const decision = getMissionDecision(db, input.tenantId, decisionId);
+    if (!decision || decision.missionId !== input.missionId) {
+      throw new Error("reviewer_directive_event_binding_invalid");
+    }
+    const runId = reviewerDirectiveRunId(
+      db,
+      decision,
+      input.tenantId,
+      input.missionId,
+      input.scope,
+      input.candidateDigest,
+    );
+    if (preparedIds.has(decisionId) && runId === null) {
+      throw new Error("reviewer_directive_authority_invalid");
+    }
+    if (runId !== null) current.push(decision);
+  }
+  return orderReviewerDirectiveHistory(db, input.tenantId, input.missionId, current);
+}
+
+function terminalReviewerRetraction(
+  db: AppDb,
+  tenantId: string,
+  missionId: string,
+  history: readonly MissionDecisionView[],
+): MissionDecision | null {
+  // Only withdrawal of the newest authenticated reviewer head terminalizes the
+  // candidate. Older heads may have retracted successors created by duplicate
+  // reconciliation; treating those maintenance records as candidate withdrawal
+  // would turn a harmless stale replay into a permanent stop.
+  const newest = history.at(-1);
+  if (!newest?.supersededById) return null;
+  const successor = getMissionDecision(db, tenantId, newest.supersededById);
+  if (!successor || successor.missionId !== missionId || successor.status !== "retracted") return null;
+  missionDecisionEventSequence(db, tenantId, missionId, successor);
+  return successor;
 }
 
 /**
@@ -462,8 +618,9 @@ function orderReviewerDirectiveHistory(
  * Legacy data may contain multiple active reviewer heads because the generic
  * record primitive permits independent roots. Reconcile at most 256 authenticated
  * heads in their durable ledger order, retracting every duplicate before replacing
- * the newest head. The full tenant ledger is authenticated before acquiring the
- * write lock; the transaction then verifies its exact tip and a bounded suffix.
+ * the newest head. The full tenant ledger and Mission history are authenticated
+ * before acquiring the write lock; the transaction then verifies its exact tip,
+ * a bounded suffix, and only the bounded candidate identities captured by them.
  */
 export function replaceReviewerDirective(
   db: AppDb,
@@ -477,7 +634,7 @@ export function replaceReviewerDirective(
     correlationId: string;
     causationId?: string | null;
     createdAt: string;
-    eventAuthority?: VerifiedDomainEventAuthority;
+    reviewerAuthority?: ReviewerDirectiveAuthority;
   },
 ): MissionDecision {
   const directive = input.directive.trim();
@@ -488,22 +645,29 @@ export function replaceReviewerDirective(
   const candidateEvidence = `candidate:${candidateDigest}`;
   const evidence = [`agent_run:${sourceRunId}`, candidateEvidence] as const;
   const owns = !db.raw.isTransaction;
-  let eventAuthority = input.eventAuthority;
-  if (!eventAuthority) {
-    if (!owns) throw new Error("reviewer_directive_event_authority_required");
-    try {
-      eventAuthority = captureVerifiedDomainEventAuthority(db, input.tenantId);
-    } catch (error) {
-      if (error instanceof Error && error.message === "domain_event_integrity_invalid") {
-        throw new Error("reviewer_directive_event_chain_invalid");
-      }
-      throw error;
-    }
-  }
+  const reviewerAuthority = input.reviewerAuthority ?? (owns
+    ? captureReviewerDirectiveAuthority(db, {
+        tenantId: input.tenantId,
+        missionId: input.missionId,
+        candidateDigest,
+      })
+    : undefined);
+  if (!reviewerAuthority) throw new Error("reviewer_directive_event_authority_required");
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
+    if (!issuedReviewerDirectiveAuthorities.delete(reviewerAuthority) ||
+        reviewerAuthority.tenantId !== input.tenantId ||
+        reviewerAuthority.missionId !== input.missionId ||
+        reviewerAuthority.candidateDigest !== candidateDigest) {
+      throw new Error("reviewer_directive_event_authority_invalid");
+    }
+    let suffix: ReturnType<typeof consumeVerifiedDomainEventAuthority>;
     try {
-      consumeVerifiedDomainEventAuthority(db, input.tenantId, eventAuthority);
+      suffix = consumeVerifiedDomainEventAuthority(
+        db,
+        input.tenantId,
+        reviewerAuthority.eventAuthority,
+      );
     } catch (error) {
       if (error instanceof Error && error.message === "domain_event_integrity_invalid") {
         throw new Error("reviewer_directive_event_chain_invalid");
@@ -516,20 +680,14 @@ export function replaceReviewerDirective(
     if (!reviewerRunMatches(db, input.tenantId, input.missionId, sourceRunId, candidateDigest)) {
       throw new Error("reviewer_directive_source_authority_invalid");
     }
-    const history = orderReviewerDirectiveHistory(
-      db,
-      input.tenantId,
-      input.missionId,
-      listMissionDecisions(db, input.tenantId, input.missionId).filter((decision) =>
-        reviewerDirectiveRunId(
-          db,
-          decision,
-          input.tenantId,
-          input.missionId,
-          scope,
-          candidateDigest,
-        ) !== null),
-    );
+    const history = revalidateReviewerDirectiveHistory(db, {
+      tenantId: input.tenantId,
+      missionId: input.missionId,
+      scope,
+      candidateDigest,
+      authority: reviewerAuthority,
+      suffix,
+    });
     const heads = history.filter((decision) => decision.effectiveStatus === "active");
     // createdAt records the first write; it is not part of the semantic operation
     // identity because a transport retry observes a new wall-clock time. Search
@@ -542,6 +700,27 @@ export function replaceReviewerDirective(
     // Authority follows the newest legitimate ledger event, even when wall-clock
     // timestamps collide or a delayed retry matches an older legacy duplicate.
     const survivor = heads.at(-1);
+    const terminal = terminalReviewerRetraction(
+      db,
+      input.tenantId,
+      input.missionId,
+      history,
+    );
+    if (terminal) {
+      for (const head of heads) {
+        retractMissionDecision(db, {
+          tenantId: input.tenantId,
+          priorDecisionId: head.id,
+          rationale: `Duplicate reviewer directive terminalized for ${scope}`,
+          authorPrincipalId: input.authorPrincipalId,
+          correlationId: input.correlationId,
+          causationId: input.causationId ?? null,
+          createdAt: input.createdAt,
+        });
+      }
+      if (owns) db.raw.exec("COMMIT");
+      return terminal;
+    }
     if (replay && !survivor) throw new Error("reviewer_directive_terminal_history");
     for (const head of heads) {
       if (head.id === survivor?.id) continue;

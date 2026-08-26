@@ -3428,3 +3428,20 @@ Verification: rebased onto exact `origin/main` `256e40658f5a9670ea38227654f36120
 #### Review
 
 Complete. The repair rebased cleanly onto exact `origin/main` `502a2ebbe258bc17a65e69ca56aa6c75e268240c`. Post-rebase verification passes all 61 focused trust, MissionDecision, Mission handoff, and candidate-review API tests; database and API typechecks pass; and both branch and worktree diff-integrity checks are clean. Reviewer authority now requires a live human principal plus an exact tenant, Mission, source-job, run, and persisted candidate binding. Explicit retraction remains terminal under repeated retry, and event-ledger authentication no longer scans the full tenant history while holding the writer reservation.
+
+### 2026-08-25 PR 466 duplicate retraction and bounded-lock repair
+
+- [x] Preserve current-main mission-bound reject coverage across the rebase conflict.
+- [x] RED: prove retracting the newest authenticated duplicate terminalizes every candidate head and a stale older replay cannot survive.
+- [x] RED: prove no unbounded Mission history or authority lookup occurs under `BEGIN IMMEDIATE`, and make the ledger query-shape guard exact.
+- [x] Move full Mission-history and run/job/principal authentication before the writer reservation while retaining exact tenant, Mission, candidate, run, event, and human bindings.
+- [x] Under the writer reservation, consume the one-use ledger authority and revalidate only a strictly bounded, exact candidate/head/event snapshot.
+- [x] Run focused DB/API tests, affected typechecks, strict diff integrity, and refresh the GitHub-backed closure matrix against current main.
+- [ ] Commit and force-with-lease push the corrected branch head.
+- [ ] Obtain reciprocal approval and protected checks on that exact head before merge.
+
+#### Review
+
+- The exact duplicate-head/newest-retraction replay now terminalizes every authenticated duplicate and remains idempotent on repeated delivery. Full tenant-ledger and Mission-history authentication now occurs before the writer reservation; the lock-held path consumes at most 64 authenticated suffix events and revalidates at most 256 exact candidate decisions. The corrected query-shape regression observes the production `ORDER BY event_sequence` form and rejects Mission-wide decision scans under `BEGIN IMMEDIATE`.
+- Current-main integration preserves both the path-scoped reject writer from #446 and the candidate-bound regenerate replacement. A non-Mission regeneration no longer authenticates an unrelated tenant Mission ledger; the regression corrupts an unrelated Mission event chain and still proves a 202 response with no new Mission decision.
+- Verification on `origin/main` `7f74e609ca0c9f05fa1deaaded76c9d7b2d2fbd6`: 58 focused candidate-review, Mission handoff, and trust tests pass; API and database typechecks pass; the closure matrix validator passes with 101 requirements, 55 static pull requests, and PR #466 as the current bootstrap. Exact-head protected CI and reciprocal approval remain pending until the corrected branch is pushed.

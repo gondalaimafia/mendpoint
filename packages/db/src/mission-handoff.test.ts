@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   appendDomainEvent,
+  captureReviewerDirectiveAuthority,
   captureVerifiedDomainEventAuthority,
   createDb,
   createMission,
@@ -340,7 +341,7 @@ describe("mission handoff (durable records)", () => {
       correlationId: "initial-review", createdAt: T1,
     } as const;
     const first = replaceReviewerDirective(db, input);
-    retractMissionDecision(db, {
+    const terminal = retractMissionDecision(db, {
       tenantId: "t1", priorDecisionId: first.id, rationale: "Reviewer withdrew this guidance.",
       authorPrincipalId: "human-1", correlationId: "withdraw-review", createdAt: T2,
     });
@@ -348,10 +349,59 @@ describe("mission handoff (durable records)", () => {
     const eventCount = listDomainEvents(db, "t1", "mission", "m1").length;
 
     for (const createdAt of ["2026-01-04T00:00:00.000Z", "2026-01-05T00:00:00.000Z"]) {
-      expect(() => replaceReviewerDirective(db, {
+      expect(replaceReviewerDirective(db, {
         ...input, correlationId: `retry-${createdAt}`, createdAt,
-      })).toThrowError("reviewer_directive_terminal_history");
+      })).toMatchObject({ id: terminal.id, status: "retracted" });
     }
+    expect(getActiveMissionDecisions(db, "t1", "m1")).toEqual([]);
+    expect(listMissionDecisions(db, "t1", "m1")).toHaveLength(historyCount);
+    expect(listDomainEvents(db, "t1", "mission", "m1")).toHaveLength(eventCount);
+  });
+
+  it("terminalizes every authenticated duplicate when the newest head was retracted", () => {
+    const db = fixture();
+    const candidateDigest = "a".repeat(64);
+    seedReviewerRun(db, "run-old-retracted-duplicate", candidateDigest);
+    seedReviewerRun(db, "run-new-retracted-duplicate", candidateDigest);
+    const scope = `reviewer_directive:candidate:${candidateDigest}`;
+    const older = recordReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Keep the public signature stable.", scope,
+      authorPrincipalId: "human-1",
+      evidence: ["agent_run:run-old-retracted-duplicate", `candidate:${candidateDigest}`],
+      correlationId: "duplicate-old", createdAt: T0, decisionType: "verification",
+    });
+    const newer = recordReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Keep the signature and add bounded retries.", scope,
+      authorPrincipalId: "human-1",
+      evidence: ["agent_run:run-new-retracted-duplicate", `candidate:${candidateDigest}`],
+      correlationId: "duplicate-new", createdAt: T1, decisionType: "verification",
+    });
+    const terminal = retractMissionDecision(db, {
+      tenantId: "t1", priorDecisionId: newer.id, rationale: "Reviewer withdrew candidate guidance.",
+      authorPrincipalId: "human-1", correlationId: "duplicate-withdraw", createdAt: T2,
+    });
+    expect(getActiveMissionDecisions(db, "t1", "m1").map((decision) => decision.id))
+      .toEqual([older.id]);
+
+    const staleReplay = {
+      tenantId: "t1", missionId: "m1", directive: older.decision,
+      candidateDigest, sourceRunId: "run-old-retracted-duplicate",
+      authorPrincipalId: "human-1", correlationId: "duplicate-stale-replay",
+      createdAt: "2026-01-04T00:00:00.000Z",
+    } as const;
+    expect(replaceReviewerDirective(db, staleReplay)).toMatchObject({
+      id: terminal.id,
+      status: "retracted",
+    });
+    expect(getActiveMissionDecisions(db, "t1", "m1")).toEqual([]);
+    const historyCount = listMissionDecisions(db, "t1", "m1").length;
+    const eventCount = listDomainEvents(db, "t1", "mission", "m1").length;
+
+    expect(replaceReviewerDirective(db, {
+      ...staleReplay,
+      correlationId: "duplicate-stale-replay-again",
+      createdAt: "2026-01-05T00:00:00.000Z",
+    })).toMatchObject({ id: terminal.id, status: "retracted" });
     expect(getActiveMissionDecisions(db, "t1", "m1")).toEqual([]);
     expect(listMissionDecisions(db, "t1", "m1")).toHaveLength(historyCount);
     expect(listDomainEvents(db, "t1", "mission", "m1")).toHaveLength(eventCount);
@@ -369,7 +419,9 @@ describe("mission handoff (durable records)", () => {
         idempotencyKey: `unrelated-${index}`, payload: { index }, createdAt: T1,
       });
     }
-    const authority = captureVerifiedDomainEventAuthority(db, "t1");
+    const authority = captureReviewerDirectiveAuthority(db, {
+      tenantId: "t1", missionId: "m1", candidateDigest,
+    });
     appendDomainEvent(db, {
       id: "boundary-event", tenantId: "t1", schemaVersion: 1,
       eventType: "unrelated.observed", aggregateType: "unrelated", aggregateId: "boundary",
@@ -382,9 +434,14 @@ describe("mission handoff (durable records)", () => {
     (db.raw as unknown as { prepare: typeof db.raw.prepare }).prepare = ((sql: string) => {
       const normalized = sql.replace(/\s+/g, " ").trim();
       if (writeLocked && normalized.startsWith("SELECT * FROM domain_events") &&
-          normalized.includes("ORDER BY event_sequence ASC") &&
+          normalized.includes("ORDER BY event_sequence") &&
           !normalized.includes(" LIMIT ")) {
         throw new Error("unbounded_domain_event_scan_under_write_lock");
+      }
+      if (writeLocked && normalized.startsWith("SELECT * FROM mission_decisions") &&
+          normalized.includes("mission_id = ?") &&
+          !/\b(?:WHERE|AND) id = \?/.test(normalized)) {
+        throw new Error("unbounded_mission_history_scan_under_write_lock");
       }
       if (writeLocked && normalized.includes("event_sequence >")) suffixQueries += 1;
       return realPrepare(sql);
@@ -395,7 +452,7 @@ describe("mission handoff (durable records)", () => {
       replaceReviewerDirective(db, {
         tenantId: "t1", missionId: "m1", directive: "Use bounded authority.",
         candidateDigest, sourceRunId: "run-bounded-ledger", authorPrincipalId: "human-1",
-        correlationId: "bounded-ledger", createdAt: T2, eventAuthority: authority,
+        correlationId: "bounded-ledger", createdAt: T2, reviewerAuthority: authority,
       });
       db.raw.exec("COMMIT");
     } catch (error) {
@@ -624,13 +681,15 @@ describe("mission handoff (durable records)", () => {
     const db = fixture();
     const candidateDigest = "d".repeat(64);
     seedReviewerRun(db, "run-d", candidateDigest);
-    const eventAuthority = captureVerifiedDomainEventAuthority(db, "t1");
+    const reviewerAuthority = captureReviewerDirectiveAuthority(db, {
+      tenantId: "t1", missionId: "m1", candidateDigest,
+    });
     db.raw.exec("BEGIN IMMEDIATE");
     try {
       replaceReviewerDirective(db, {
         tenantId: "t1", missionId: "m1", directive: "Transactional directive.",
         candidateDigest, sourceRunId: "run-d", authorPrincipalId: "human-1",
-        correlationId: "corr-d", createdAt: T1, eventAuthority,
+        correlationId: "corr-d", createdAt: T1, reviewerAuthority,
       });
       expect(db.raw.isTransaction).toBe(true);
     } finally {

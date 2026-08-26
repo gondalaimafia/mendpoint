@@ -172,3 +172,8 @@
 **Mistake:** I started a manual Cursor PR review after finding that the installed review skill pointed to a missing workflow.
 **Correction:** Talal required the necessary skills to be fetched and used, and required findings to be fixed before merge.
 **Rule:** When an applicable review skill is incomplete, fetch its current authoritative runtime before continuing. For agent-authored PRs, use the fetched adversarial review and fixer workflow, then re-review the exact fixed head and require current-base CI before merge.
+
+### 2026-08-26 — Enumerate the whole authority chain before rerunning it
+**Mistake:** The production authority repair was debugged one failing layer per CI cycle, which consumed time and GitHub App quota while deeper failures remained undiscovered.
+**Correction:** Talal required the review to peel every layer at once and learn from the repeated partial diagnoses.
+**Rule:** After the second authority surprise, enumerate every parser, policy digest, proposal gate, provider read, matrix record, reviewer binding, check identity, controller status, branch-protection rule, and shared quota before another remote rerun. Treat step wrappers that tolerate errors as transport only; read the final artifact verdict for every layer.
