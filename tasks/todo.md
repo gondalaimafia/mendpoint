@@ -3351,3 +3351,24 @@ Objective: preserve repeated agent to human to agent resume cycles while allowin
 PR #454 correctly identified that static transition idempotency keys collide on a second handoff cycle and that a candidate review must resolve a task-bound blocker rather than the first Mission blocker. The replacement removes the sole-blocker guess, reloads the exact tenant repository snapshot, requires it to equal the retained Mission scope, derives the one product task from that exact binding, and resolves only one current task-bound exception. A claimed Mission whose source differs from its retained repository or snapshot now returns conflict and atomically leaves the run, job queue, Mission decisions, and task unchanged. The multi-task regression uses a valid single-repository Mission with a sibling task rather than inventing an impossible multi-repository Mission.
 
 Focused evidence: 27 API review tests, 12 database handoff tests, and 38 Fettler, ReGauge, and shared job-bridge tests pass. The complete repository test command passes every workspace plus 314 root-script tests. Full workspace typecheck, the optimized 50-route build, GA checks, strict diff integrity, and the production dependency audit pass; the audit reports zero vulnerabilities. Both independent review stages remain pending. No requirement or public-claim status changes are authorized.
+## 2026-08-26 Fettler candidate handoff authority closure
+
+- [x] RED: prove the Fettler review route refuses ReGauge missions and cannot resolve their tasks.
+- [x] RED: prove an in-flight membership role downgrade removes `plan:edit` authority before commit.
+- [x] RED: prove malformed array source-job payloads and same-status result, binding, digest, repository, or file mutations fail closed.
+- [x] RED: prove missing, ambiguous, or unresolved exact-task handoff authority blocks approve and regenerate while reject remains human-owned.
+- [x] RED: prove any remaining current Mission blocker prevents candidate delivery.
+- [x] Implement one transaction-local authority reconstruction with current product, membership, role, trust, source, candidate, CI, task, and exception bindings.
+- [x] Use a trusted post-seal commit timestamp for expiry checks and every persisted review or delivery timestamp.
+- [x] Run focused candidate-review regressions, widened API, DB, and worker suites, affected typechecks, and diff integrity.
+- [x] Inspect the complete diff and commit locally without pushing.
+
+### Review
+
+The RED suite produced 12 expected failures: all unsafe paths returned 202 (and one immutable-fixture mutation surfaced as 500) before the authority closure. The route now reconstructs and fingerprints the exact run, result bytes, repository path, changed-file list, source-job payload, snapshot binding, candidate digests, Mission identity, and CI authority before sealing and again under `BEGIN IMMEDIATE`; any difference conflicts before persisted review or delivery.
+
+Mission-bound Fettler approve/regenerate now require exactly one current blocker on the exact human-owned Fettler task. ReGauge missions, missing or ambiguous blockers, incomplete resolution, and cross-snapshot authority fail closed. Reject never resolves the handoff. After an exact resolution, approve also enforces global Mission blocking semantics before any delivery enqueue.
+
+The transaction rechecks the durable human principal, creation/expiry/revocation window, active membership, current membership role's `plan:edit`, OIDC method, and membership evidence using the trusted post-seal commit timestamp. Source-job JSON must be a non-null plain object on approve and regenerate.
+
+Verification: 41 focused candidate-review tests pass. Complete API, DB, and worker workspaces pass 537, 431, and 591 tests respectively (one pre-existing worker test skipped). API, DB, and worker typechecks pass, and strict diff integrity is clean. No schema or production configuration changed; no push was performed.
