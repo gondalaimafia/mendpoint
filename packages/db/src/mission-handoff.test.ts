@@ -19,6 +19,7 @@ import {
   enqueueJob,
   evaluateMissionExceptions,
   getActiveMissionDecisions,
+  getMissionDecision,
   getMissionTask,
   insertPrincipal,
   insertAgentRun,
@@ -296,6 +297,42 @@ describe("mission handoff (durable records)", () => {
     })).toThrowError("reviewer_directive_authority_invalid");
     expect(getActiveMissionDecisions(db, "t1", "m1").map((decision) => decision.id))
       .toEqual([forged.id]);
+  });
+
+  it("rejects a service-authored retraction as terminal reviewer authority", () => {
+    const db = fixture();
+    const candidateDigest = "b".repeat(64);
+    seedReviewerRun(db, "run-service-retraction", candidateDigest);
+    insertPrincipal(db, {
+      id: "service-retractor", tenantId: "t1", kind: "service",
+      subject: "reviewer-worker", displayName: "Reviewer worker", createdAt: T0,
+    });
+    const reviewer = replaceReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Keep the public signature stable.",
+      candidateDigest, sourceRunId: "run-service-retraction",
+      authorPrincipalId: "human-1", correlationId: "human-review", createdAt: T1,
+    });
+    const forgedTerminal = retractMissionDecision(db, {
+      tenantId: "t1", priorDecisionId: reviewer.id,
+      rationale: "A service cannot withdraw human reviewer authority.",
+      authorPrincipalId: "service-retractor", correlationId: "service-retraction",
+      createdAt: T2,
+    });
+    const historyCount = listMissionDecisions(db, "t1", "m1").length;
+    const eventCount = listDomainEvents(db, "t1", "mission", "m1").length;
+
+    expect(() => replaceReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: reviewer.decision,
+      candidateDigest, sourceRunId: "run-service-retraction",
+      authorPrincipalId: "human-1", correlationId: "human-retry",
+      createdAt: "2026-01-04T00:00:00.000Z",
+    })).toThrowError("reviewer_directive_authority_invalid");
+    expect(listMissionDecisions(db, "t1", "m1")).toHaveLength(historyCount);
+    expect(listDomainEvents(db, "t1", "mission", "m1")).toHaveLength(eventCount);
+    expect(getMissionDecision(db, "t1", forgedTerminal.id)).toMatchObject({
+      authorPrincipalId: "service-retractor",
+      status: "retracted",
+    });
   });
 
   it("rejects a reviewer directive whose source run does not exist", () => {

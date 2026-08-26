@@ -604,6 +604,9 @@ function terminalReviewerRetraction(
   if (!newest?.supersededById) return null;
   const successor = getMissionDecision(db, tenantId, newest.supersededById);
   if (!successor || successor.missionId !== missionId || successor.status !== "retracted") return null;
+  if (!isHumanPrincipal(db, tenantId, successor.authorPrincipalId)) {
+    throw new Error("reviewer_directive_authority_invalid");
+  }
   missionDecisionEventSequence(db, tenantId, missionId, successor);
   return successor;
 }
