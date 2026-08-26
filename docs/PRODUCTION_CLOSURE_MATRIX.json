@@ -2058,19 +2058,19 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
     "observedMainRevision": "e67a040b65a48f48e425000e0fd038b2ea544b5b",
-    "observationDigest": "sha256:b4abb5c88e786934eed4616bd48c09c54e837d3b07c6b195c5fa3476eb78cead",
+    "observationDigest": "sha256:8b053219aa7c4735dc8f9dac2f623ed3d34d92f2668a642480dc01aa41f09f6b",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 485,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/485",
-      "title": "Fix production authority drift and read starvation",
+      "number": 489,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/489",
+      "title": "authority: scope open-PR head reachability and quiet scheduled sweep",
       "baseBranch": "main",
-      "headBranch": "codex/pr484-review-fixes",
+      "headBranch": "ci-storm-fix",
       "owner": {
-        "actor": "Codex",
+        "actor": "Claude",
         "source": "github_label",
-        "label": "release-owner:codex"
+        "label": "release-owner:claude"
       },
       "disposition": "merge_after_rebase_and_review",
       "dependencies": {
@@ -2081,12 +2081,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "runtime-authority-read-budget-20260826",
+        "rotationId": "rotation-20260826-001",
         "kind": "runtime",
-        "issuedAt": "2026-08-26T07:03:40.449Z",
-        "expiresAt": "2026-09-01T07:03:40.449Z",
-        "basePolicySha256": "sha256:c608eb85fd35ef35acf034f998917b479135116626e17c2a14054c6f68e50d30",
-        "proposedPolicySha256": "sha256:572d299979e55ed409ae21c8f0a720b1c4e8b7f7a6fcb7f217ea12bf4aed03cb"
+        "issuedAt": "2026-08-26T20:54:32.812Z",
+        "expiresAt": "2026-08-27T20:54:32.812Z",
+        "basePolicySha256": "sha256:572d299979e55ed409ae21c8f0a720b1c4e8b7f7a6fcb7f217ea12bf4aed03cb",
+        "proposedPolicySha256": "sha256:3bdfe57b1822cbccd434cef8b874f404cea60fcbf52848ba52899ca7068c4884"
       }
     },
     "pullRequests": [
