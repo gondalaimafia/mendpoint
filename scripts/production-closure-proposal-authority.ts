@@ -98,6 +98,17 @@ export interface ProposalAuthorityClient {
   getBlob(sha: string): Promise<Buffer>;
   revisionExists(revision: string): Promise<boolean>;
   revisionIsAncestor(revision: string, descendant: string): Promise<boolean>;
+  /**
+   * Common ancestor of base and head, or null when it cannot be determined.
+   *
+   * Authority drift must be judged against what the PROPOSAL changed, not
+   * against how far the base has moved since it branched. Comparing head to the
+   * base tip marks every unrebased pull request as having modified the policy
+   * the moment any policy edit lands on the base — demanding a rotation receipt
+   * from proposals that touched nothing. Null is never "unchanged": callers
+   * fail closed.
+   */
+  getMergeBase(base: string, head: string): Promise<string | null>;
 }
 
 function digest(bytes: Buffer): string {
@@ -512,34 +523,32 @@ export async function verifyProductionClosureProposal(
       }
     }
 
-    const bootstrapRotation = matrix.releaseTrain?.currentPullRequestBootstrap?.authorityRotation;
-    const policyChanged = !proposedPolicyBytes.equals(basePolicyBytes);
-    const ledgerChanged = !proposedLedgerBytes.equals(baseLedgerBytes);
-    const rotationRequested = policyChanged || ledgerChanged || bootstrapRotation !== undefined;
-    if (!rotationRequested) {
-      for (const [path, expectedDigest] of Object.entries(policy.protectedFiles)) {
-        const bytes = bytesByPath.get(normalizedPath(path) ?? "");
-        if (!bytes || protectedSurfaceDigest(path, bytes) !== expectedDigest) {
-          add(
-            issues,
-            "PROPOSAL_AUTHORITY_SURFACE_DRIFT",
-            path,
-            "a product proposal cannot modify or remove a pinned authority surface",
-          );
-        }
+    // Authority drift is a property of THIS proposal, not of how far the base
+    // has moved since the proposal branched. Anchoring these comparisons to the
+    // base tip makes every unrebased pull request look like it edited the
+    // policy the moment any policy edit lands on the base, and the gate then
+    // demands a rotation receipt from proposals that changed nothing. Anchor to
+    // the merge base instead: bytes a proposal never touched are not its drift.
+    const revisionReaders = new Map<
+      string,
+      { entries: Map<string, GitTreeEntry>; read: (path: string) => Promise<Buffer | null> }
+    >();
+    const readerFor = async (
+      revision: string,
+    ): Promise<{ entries: Map<string, GitTreeEntry>; read: (path: string) => Promise<Buffer | null> } | null> => {
+      const cachedReader = revisionReaders.get(revision);
+      if (cachedReader) return cachedReader;
+      const revisionTree = await client.getRecursiveTree(revision);
+      if (revisionTree.truncated) {
+        add(issues, "PROPOSAL_BASE_TREE_TRUNCATED", revision, "GitHub did not return the complete base authority tree");
+        return null;
       }
-    } else {
-      const baseTree = await client.getRecursiveTree(baseRevision);
-      if (baseTree.truncated) {
-        add(issues, "PROPOSAL_BASE_TREE_TRUNCATED", baseRevision, "GitHub did not return the complete base authority tree");
-        return observation;
-      }
-      const baseEntries = new Map(baseTree.tree.map((entry) => [entry.path, entry] as const));
-      const baseBytesByPath = new Map<string, Buffer>();
-      const readBasePath = async (path: string): Promise<Buffer | null> => {
-        const cached = baseBytesByPath.get(path);
+      const revisionEntries = new Map(revisionTree.tree.map((entry) => [entry.path, entry] as const));
+      const revisionBytes = new Map<string, Buffer>();
+      const read = async (path: string): Promise<Buffer | null> => {
+        const cached = revisionBytes.get(path);
         if (cached) return cached;
-        const entry = baseEntries.get(path);
+        const entry = revisionEntries.get(path);
         if (
           !entry ||
           entry.type !== "blob" ||
@@ -560,9 +569,76 @@ export async function verifyProductionClosureProposal(
           add(issues, "PROPOSAL_BASE_BLOB_INVALID", path, "base authority bytes must be bounded and match the exact Git blob");
           return null;
         }
-        baseBytesByPath.set(path, bytes);
+        revisionBytes.set(path, bytes);
         return bytes;
       };
+      const reader = { entries: revisionEntries, read };
+      revisionReaders.set(revision, reader);
+      return reader;
+    };
+
+    const mergeBase = await client.getMergeBase(baseRevision, proposalRevision);
+    if (!mergeBase) {
+      add(
+        issues,
+        "PROPOSAL_AUTHORITY_MERGE_BASE_UNRESOLVED",
+        proposalRevision,
+        "authority drift cannot be judged without the proposal's merge base with the base revision",
+      );
+      return observation;
+    }
+    const mergeBaseReader = await readerFor(mergeBase);
+    if (!mergeBaseReader) return observation;
+    // Identical Git blob sha and mode is identical content, so the proposal did
+    // not touch this path; a path absent on both sides is untouched too. This
+    // never reads "could not tell" as "unchanged": an unresolvable merge base
+    // or an incomplete merge-base tree returned above, before any comparison.
+    const proposalTouched = (path: string): boolean => {
+      const from = mergeBaseReader.entries.get(path);
+      const to = entries.get(path);
+      return from?.sha !== to?.sha || from?.mode !== to?.mode;
+    };
+
+    const policyLocator = normalizedPath("config/production-closure-authority.json");
+    const ledgerLocator = normalizedPath(policy.authorityRotationManifestPath);
+    if (!policyLocator || !ledgerLocator) {
+      add(
+        issues,
+        "PROPOSAL_PATH_INVALID",
+        policy.authorityRotationManifestPath,
+        "authority paths must be normalized repository relative paths",
+      );
+      return observation;
+    }
+    const bootstrapRotation = matrix.releaseTrain?.currentPullRequestBootstrap?.authorityRotation;
+    const policyChanged = proposalTouched(policyLocator);
+    const ledgerChanged = proposalTouched(ledgerLocator);
+    const rotationRequested = policyChanged || ledgerChanged || bootstrapRotation !== undefined;
+    if (!rotationRequested) {
+      for (const [path, expectedDigest] of Object.entries(policy.protectedFiles)) {
+        const locator = normalizedPath(path) ?? "";
+        const bytes = bytesByPath.get(locator);
+        // A surface this proposal never touched has not drifted, however far
+        // the pin has moved on the base since the branch point. A surface it
+        // did touch still has to match the pin exactly.
+        if (bytes && !proposalTouched(locator)) continue;
+        if (!bytes || protectedSurfaceDigest(path, bytes) !== expectedDigest) {
+          add(
+            issues,
+            "PROPOSAL_AUTHORITY_SURFACE_DRIFT",
+            path,
+            "a product proposal cannot modify or remove a pinned authority surface",
+          );
+        }
+      }
+    } else {
+      // The rotation receipt is pinned to the exact base revision, so a
+      // rotating proposal is still judged against the base tip and must be up
+      // to date with it. Only untouched surfaces get the merge-base reprieve.
+      const baseReader = await readerFor(baseRevision);
+      if (!baseReader) return observation;
+      const baseEntries = baseReader.entries;
+      const readBasePath = baseReader.read;
       const exactBasePolicyBytes = await readBasePath("config/production-closure-authority.json");
       const exactBaseLedgerBytes = await readBasePath(policy.authorityRotationManifestPath);
       if (
@@ -819,6 +895,13 @@ export class GitHubProposalAuthorityClient implements ProposalAuthorityClient {
       `/repos/${this.repository}/compare/${revision}...${descendant}`,
     );
     return result?.status === "ahead" || result?.status === "identical";
+  }
+  async getMergeBase(base: string, head: string): Promise<string | null> {
+    const result = await this.request<{ merge_base_commit?: { sha?: unknown } }>(
+      `/repos/${this.repository}/compare/${base}...${head}`,
+    );
+    const sha = result?.merge_base_commit?.sha;
+    return typeof sha === "string" && SHA.test(sha) ? sha : null;
   }
 }
 
