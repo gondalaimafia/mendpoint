@@ -152,6 +152,20 @@ describe("mission exception register", () => {
     expect(evaluateMissionExceptions(db, "t1", "m1").missionBlocked).toBe(false);
   });
 
+  it("keeps an exact stale blocking raise replay independent from newer dispatch authority", () => {
+    const db = fixture();
+    const original = raise(db, { observedAgainst: snapA });
+    expect(evaluateMissionExceptions(db, "t1", "m1", snapB).missionBlocked).toBe(false);
+    insertMissionDispatch(db, "authorized", "raise-stale-replay");
+    const beforeEvents = exceptionEventCount(db);
+
+    const replay = raise(db, { observedAgainst: snapA });
+
+    expect(replay).toEqual(original);
+    expect(dispatchState(db, "raise-stale-replay")).toBe("authorized");
+    expect(exceptionEventCount(db)).toBe(beforeEvents);
+  });
+
   it("re-affirming a stale exception against the current snapshot blocks again", () => {
     const db = fixture();
     const e = raise(db, { observedAgainst: snapA });

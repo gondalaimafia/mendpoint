@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { AppDb } from "./index.js";
 import { assertMissionMutationAuthority, parseMissionMutationAuthority,
   type MissionMutationAuthorityV1 } from "./mission-mutation-authority.js";
+import { authorizeMissionMutationDispatch, reauthorizeSettledMissionMutationDispatch }
+  from "./mission-mutation-dispatch.js";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -633,6 +635,104 @@ export function bindWardenCiUpdateIntent(db: AppDb, input: Readonly<{
       .run(intentDigest, observedAt, current.id, current.tenantId, intentDigest,
         workerId, leaseGeneration, observedAt);
     if (Number(changed.changes) !== 1) throw new Error("warden_ci_update_not_authorized");
+    if (owns) db.raw.exec("COMMIT");
+    return getWardenCiUpdate(db, current.tenantId, current.id)!;
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function authorizeWardenCiUpdateIntent(db: AppDb, input: Readonly<{
+  tenantId: string; updateId: string; intentDigest: string; workerId: string;
+  leaseGeneration: number; observedAt: string; missionAuthority?: MissionMutationAuthorityV1 | null;
+}>): WardenCiUpdate {
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const current = getWardenCiUpdate(db, input.tenantId, input.updateId);
+    if (!current) throw new Error("warden_ci_update_not_found");
+    const authority = input.missionAuthority ? parseMissionMutationAuthority(input.missionAuthority) : null;
+    if ((current.missionAuthority === null) !== (authority === null) ||
+        (current.missionAuthority && authority &&
+          JSON.stringify(current.missionAuthority) !== JSON.stringify(authority))) {
+      throw new Error("warden_ci_update_mission_authority_invalid");
+    }
+    const bound = bindWardenCiUpdateIntent(db, input);
+    if (authority) {
+      const settled = db.raw.prepare(`SELECT 1 AS settled FROM mission_mutation_dispatches
+        WHERE tenant_id = ? AND job_id = ? AND mutation_kind = 'fettler_ci_update'
+          AND aggregate_id = ? AND authority_json = ? AND intent_digest = ? AND state = 'settled'`).get(
+        current.tenantId, current.jobId, current.id, JSON.stringify(authority), input.intentDigest,
+      ) as { settled: number } | undefined;
+      if (settled && current.status === "pending") {
+        reauthorizeSettledMissionMutationDispatch(db, {
+          tenantId: current.tenantId, jobId: current.jobId, authority,
+          intentDigest: input.intentDigest, workerId: input.workerId,
+          leaseGeneration: input.leaseGeneration, observedAt: input.observedAt,
+        });
+      } else {
+        authorizeMissionMutationDispatch(db, {
+          tenantId: current.tenantId,
+          jobId: current.jobId,
+          mutationKind: "fettler_ci_update",
+          aggregateId: current.id,
+          authority,
+          intentDigest: input.intentDigest,
+          workerId: input.workerId,
+          leaseGeneration: input.leaseGeneration,
+          observedAt: input.observedAt,
+        });
+      }
+    }
+    if (owns) db.raw.exec("COMMIT");
+    return bound;
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function reconcileWardenCiUpdateNotApplied(db: AppDb, input: Readonly<{
+  tenantId: string; updateId: string; jobId: string; intentDigest: string; observedAt: string;
+}>): WardenCiUpdate {
+  const intentDigest = digest(input.intentDigest, "warden_ci_update_intent_invalid");
+  const observedAt = timestamp(input.observedAt);
+  const jobId = id(input.jobId, "warden_ci_operation_job_invalid");
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const current = getWardenCiUpdate(db, input.tenantId, input.updateId);
+    if (!current || current.jobId !== jobId || current.intentDigest !== intentDigest) {
+      throw new Error("warden_ci_update_not_applied_conflict");
+    }
+    if (current.status === "pending") {
+      if (current.missionAuthority) {
+        const settled = db.raw.prepare(`SELECT 1 AS settled FROM mission_mutation_dispatches
+          WHERE tenant_id = ? AND job_id = ? AND mutation_kind = 'fettler_ci_update'
+            AND aggregate_id = ? AND intent_digest = ? AND state = 'settled'`).get(
+          current.tenantId, current.jobId, current.id, intentDigest,
+        ) as { settled: number } | undefined;
+        if (!settled) throw new Error("warden_ci_update_not_applied_conflict");
+      }
+      if (owns) db.raw.exec("COMMIT");
+      return current;
+    }
+    if (current.status !== "uncertain") throw new Error("warden_ci_update_not_applied_conflict");
+    if (current.missionAuthority) {
+      const dispatch = db.raw.prepare(`UPDATE mission_mutation_dispatches
+        SET state = 'settled', settled_at = COALESCE(settled_at, ?), updated_at = ?
+        WHERE tenant_id = ? AND job_id = ? AND mutation_kind = 'fettler_ci_update'
+          AND aggregate_id = ? AND intent_digest = ? AND state = 'uncertain'`).run(
+        observedAt, observedAt, current.tenantId, current.jobId, current.id, intentDigest,
+      );
+      if (Number(dispatch.changes) !== 1) throw new Error("warden_ci_update_not_applied_conflict");
+    }
+    const updateRow = db.raw.prepare(`UPDATE fettler_ci_updates SET status = 'pending', updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND job_id = ? AND intent_digest = ? AND status = 'uncertain'`).run(
+      observedAt, current.id, current.tenantId, current.jobId, intentDigest,
+    );
+    if (Number(updateRow.changes) !== 1) throw new Error("warden_ci_update_not_applied_conflict");
     if (owns) db.raw.exec("COMMIT");
     return getWardenCiUpdate(db, current.tenantId, current.id)!;
   } catch (error) {

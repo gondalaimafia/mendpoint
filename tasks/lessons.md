@@ -177,3 +177,8 @@
 **Mistake:** A direct update-function replay test proved read-only reconciliation but did not exercise the generic worker failure classifier, job attempt cap, or cycle failure settlement. The remote effect could therefore remain unresolved after the only reconciliation job dead-lettered.
 **Correction:** The review required the post-begin ambiguity to run through real `processJobsOnce`, remain retryable past ordinary caps, and prove that retries do not issue a second remote mutation while the result is unknown.
 **Rule:** For every external point of no return, test both the operation and its real queue settlement. Start at the final ordinary attempt, assert all durable authority records enter uncertainty together, retry read-only reconciliation beyond the cap, and count remote mutation calls through terminal settlement.
+
+### 2026-08-26 — Settle proven absence before fresh authority checks
+**Mistake:** Exact reconciliation could prove a remote mutation was not applied, but the old CI and Mission uncertainty stayed active while feedback, pause, authority, and lease checks ran for a possible new attempt. Any failure in those checks could dead-letter the job and leave the Mission permanently fenced.
+**Correction:** The review required `not_applied` to settle the old uncertainty transactionally before any fresh decision, and required exact replay and lease-expiry tests at the real worker boundary.
+**Rule:** Treat a definitive no-effect result as its own durable terminal transition. Settle every authority record for the old attempt atomically, then create new intent only after fresh policy, feedback, cycle, and lease checks pass. Exact idempotent replays must return before broader fences or side effects.

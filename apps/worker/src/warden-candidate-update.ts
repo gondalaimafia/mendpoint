@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import {
-  bindWardenCiUpdateIntent,
-  authorizeMissionMutationDispatch,
+  authorizeWardenCiUpdateIntent,
   beginMissionMutationRemoteCall,
   completeJob,
   completeWardenCiUpdate,
@@ -13,6 +12,7 @@ import {
   markWardenCiUpdateUncertain,
   markMissionMutationDispatchUncertain,
   parseMissionMutationAuthority,
+  reconcileWardenCiUpdateNotApplied,
   refreshMissionMutationAuthority,
   settleMissionMutationDispatch,
   type AppDb,
@@ -185,7 +185,7 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
     commitMessage: `Apply approved Fettler CI repair ${update.repairRunId}`,
     commitDate: update.requestedAt, files: files(artifact) }) satisfies ExactDraftUpdateInput;
   const now = input.now ?? (() => new Date().toISOString());
-  const dispatchAt = now();
+  const preflightAt = now();
   const currentCycle = getWardenCiCycle(input.db, cycle.tenantId, cycle.id);
   const fence = input.db.raw.prepare(`SELECT status, lease_owner, lease_generation, lease_expires_at FROM jobs
     WHERE id = ? AND tenant_id = ?`).get(input.job.id, cycle.tenantId) as Record<string, unknown> | undefined;
@@ -193,13 +193,8 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
       currentCycle.currentHeadSha !== update.expectedHeadSha ||
       fence?.status !== "running" || fence.lease_owner !== input.job.lease_owner ||
       fence.lease_generation !== input.job.lease_generation || typeof fence.lease_expires_at !== "string" ||
-      fence.lease_expires_at <= dispatchAt) throw new Error("warden_ci_update_not_authorized");
+      fence.lease_expires_at <= preflightAt) throw new Error("warden_ci_update_not_authorized");
   const digest = intentDigest(intent, update.expectedFeedbackDigest);
-  if (parsed.missionAuthority) authorizeMissionMutationDispatch(input.db, {
-    tenantId: cycle.tenantId, jobId: input.job.id, mutationKind: "fettler_ci_update",
-    aggregateId: update.id, authority: parsed.missionAuthority, intentDigest: digest,
-    workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation, observedAt: dispatchAt,
-  });
   const markRemoteOutcomeUncertain = (error: unknown, message?: string) => {
     const owns = !input.db.raw.isTransaction;
     if (owns) input.db.raw.exec("BEGIN IMMEDIATE");
@@ -236,16 +231,42 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
       throw new Error("warden_ci_review_feedback_drift");
     }
   };
+  const dispatchFreshUpdate = async (): Promise<ExactDraftUpdateResult> => {
+    await assertCurrentFeedback();
+    assertMutationAuthority();
+    const authorizationAt = now();
+    authorizeWardenCiUpdateIntent(input.db, {
+      tenantId: cycle.tenantId,
+      updateId: update.id,
+      intentDigest: digest,
+      workerId: input.job.lease_owner!,
+      leaseGeneration: input.job.lease_generation,
+      observedAt: authorizationAt,
+      missionAuthority: parsed.missionAuthority,
+    });
+    input.beforeRemoteDispatch?.();
+    if (parsed.missionAuthority) beginMissionMutationRemoteCall(input.db, {
+      tenantId: cycle.tenantId,
+      jobId: input.job.id,
+      authority: parsed.missionAuthority,
+      intentDigest: digest,
+      workerId: input.job.lease_owner!,
+      leaseGeneration: input.job.lease_generation,
+      observedAt: now(),
+    });
+    try { return await input.updateExactDraft(intent); }
+    catch (error) { throw markRemoteOutcomeUncertain(error); }
+  };
   let remote: ExactDraftUpdateResult;
   if (reconciliationRequired) {
     if (update.status === "intent_bound") {
       markWardenCiUpdateUncertain(input.db, { tenantId: cycle.tenantId, updateId: update.id,
-        intentDigest: digest, observedAt: dispatchAt });
+        intentDigest: digest, observedAt: preflightAt });
       if (parsed.missionAuthority) {
         const mutation = input.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
           WHERE tenant_id = ? AND job_id = ?`).get(cycle.tenantId, input.job.id) as { state: string } | undefined;
         if (mutation?.state === "dispatching") markMissionMutationDispatchUncertain(input.db, {
-          tenantId: cycle.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: dispatchAt,
+          tenantId: cycle.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: preflightAt,
         });
       }
     }
@@ -258,34 +279,17 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
     if (reconciliation.status === "applied") {
       remote = reconciliation.result;
     } else {
-      await assertCurrentFeedback();
-      assertMutationAuthority();
-      bindWardenCiUpdateIntent(input.db, { tenantId: cycle.tenantId, updateId: update.id,
-        intentDigest: digest, workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation,
-        observedAt: dispatchAt });
-      input.beforeRemoteDispatch?.();
-      if (parsed.missionAuthority) beginMissionMutationRemoteCall(input.db, {
-        tenantId: cycle.tenantId, jobId: input.job.id, authority: parsed.missionAuthority,
-        intentDigest: digest, workerId: input.job.lease_owner,
-        leaseGeneration: input.job.lease_generation, observedAt: dispatchAt, permitUncertainReplay: true,
+      reconcileWardenCiUpdateNotApplied(input.db, {
+        tenantId: cycle.tenantId,
+        updateId: update.id,
+        jobId: input.job.id,
+        intentDigest: digest,
+        observedAt: now(),
       });
-      try { remote = await input.updateExactDraft(intent); }
-      catch (error) { throw markRemoteOutcomeUncertain(error); }
+      remote = await dispatchFreshUpdate();
     }
   } else {
-    await assertCurrentFeedback();
-    assertMutationAuthority();
-    bindWardenCiUpdateIntent(input.db, { tenantId: cycle.tenantId, updateId: update.id,
-      intentDigest: digest, workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation,
-      observedAt: dispatchAt });
-    input.beforeRemoteDispatch?.();
-    if (parsed.missionAuthority) beginMissionMutationRemoteCall(input.db, {
-      tenantId: cycle.tenantId, jobId: input.job.id, authority: parsed.missionAuthority,
-      intentDigest: digest, workerId: input.job.lease_owner,
-      leaseGeneration: input.job.lease_generation, observedAt: dispatchAt,
-    });
-    try { remote = await input.updateExactDraft(intent); }
-    catch (error) { throw markRemoteOutcomeUncertain(error); }
+    remote = await dispatchFreshUpdate();
   }
   if (!remote.draft || remote.number !== cycle.pullRequestNumber || remote.branch !== cycle.branchName ||
       remote.previousHeadSha !== cycle.currentHeadSha || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(remote.commitSha)) {

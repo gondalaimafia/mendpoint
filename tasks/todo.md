@@ -3486,3 +3486,20 @@ The RED worker-loop regression reached the ordinary attempt cap after GitHub ret
 The real drain now proves attempts three and four remain pending while exact read-only reconciliation reports unknown, then completes on attempt five when reconciliation proves the original write applied. The remote update function is called exactly once. Non-ambiguous failures retain the existing bounded classifier behavior, and the blocking reaffirmation implementation is unchanged.
 
 Verification: focused CLI and update suites pass 89 tests. The widened Mission dispatch, exception reaffirmation, delivery, observation, and update set passes 60 tests, including all 16 exception tests. The complete worker suite passes 613 tests with one intentional skip. Worker, API, and database typechecks pass. The third-state gate passes 17 tests and its repository scan. The optimized 50-route production build and strict diff integrity pass. No production state changed and no push was performed.
+
+## 2026-08-26 Third review repair: terminal Mission mutation uncertainty
+
+- [x] RED: prove exact `not_applied` reconciliation atomically clears the old CI and Mission uncertainty before pause, feedback drift, or fresh authority checks can fail.
+- [x] RED: prove an exact replay of a stale snapshot-bound blocking exception does not revoke newer authorized mutation authority.
+- [x] RED: prove lease expiry during feedback observation or exact reconciliation prevents a new GitHub mutation.
+- [x] Implement the smallest exact settlement and fresh-dispatch fences while preserving unknown/applied crash replay.
+- [x] Run focused and widened database and worker suites, affected typechecks, optimized build, audit, and strict diff checks.
+- [x] Record the exact evidence and lesson, inspect the final diff, and commit locally without pushing.
+
+### Review
+
+Exact `not_applied` evidence now settles the prior CI and Mission uncertainty together before any new mutation can be considered. A paused cycle or changed review request therefore terminally fails the CI update without leaving active Mission authority. When all current checks still pass, the worker atomically binds the fresh CI intent and reauthorizes only the exact settled tenant, job, aggregate, authority, and intent record. Unknown and applied reconciliation remain read only, and the original remote update is never repeated until absence is proven.
+
+Blocking exception raises now detect an exact existing digest inside the same immediate transaction before invoking the Mission-wide dispatch fence. A stale exact replay returns the immutable row without changing newer authority or emitting another event. Fresh blocking raises and blocking reaffirmations retain the existing atomic fence.
+
+The worker takes a fresh time immediately before the atomic intent authorization and again at the Mission remote-call boundary. The feedback and reconciliation regressions advance time beyond lease expiry and prove GitHub receives no new call. RED evidence was five intended failures with 32 passing controls. GREEN evidence is 38 focused tests, 199 widened Mission and CI tests, 454 complete database tests, and 618 complete worker tests with one intentional skip. Full workspace typecheck, the optimized 50-route build, the 17-test third-state gate, production dependency audit with zero vulnerabilities, and strict diff integrity pass. No production state changed and no push was performed.

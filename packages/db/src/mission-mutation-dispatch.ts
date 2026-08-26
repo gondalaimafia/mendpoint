@@ -118,6 +118,33 @@ export function authorizeMissionMutationDispatch(db: AppDb, input: Readonly<{
   }
 }
 
+export function reauthorizeSettledMissionMutationDispatch(db: AppDb, input: Readonly<{
+  tenantId: string; jobId: string; authority: MissionMutationAuthorityV1;
+  intentDigest: string; workerId: string; leaseGeneration: number; observedAt: string;
+}>): void {
+  const authority = parseMissionMutationAuthority(input.authority);
+  if (!DIGEST.test(input.intentDigest)) throw new Error("mission_mutation_dispatch_intent_invalid");
+  const observedAt = timestamp(input.observedAt);
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    assertMissionMutationAuthority(db, input.tenantId, authority,
+      { allowClaimedTask: true, requireNoBlocking: true });
+    assertLease(db, { ...input, observedAt });
+    const changed = db.raw.prepare(`UPDATE mission_mutation_dispatches
+      SET state = 'authorized', lease_owner = ?, lease_generation = ?, authorized_at = ?, updated_at = ?
+      WHERE tenant_id = ? AND job_id = ? AND authority_json = ? AND intent_digest = ? AND state = 'settled'`).run(
+      input.workerId, input.leaseGeneration, observedAt, observedAt, input.tenantId, input.jobId,
+      JSON.stringify(authority), input.intentDigest,
+    );
+    if (Number(changed.changes) !== 1) throw new Error("mission_mutation_dispatch_settled_replay_conflict");
+    if (owns) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function beginMissionMutationRemoteCall(db: AppDb, input: Readonly<{
   tenantId: string; jobId: string; authority: MissionMutationAuthorityV1;
   intentDigest: string; workerId: string; leaseGeneration: number; observedAt: string;

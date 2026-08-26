@@ -298,13 +298,7 @@ export function raiseMissionException(db: AppDb, input: {
   assertMissionScope(db, input.tenantId, input.missionId);
   assertRecordPrincipal(db, input.tenantId, input.ownerPrincipalId, "mission_exception_owner_tenant_mismatch");
   const bound = input.observedAgainst ? resolveObservedSnapshot(db, input.tenantId, input.observedAgainst) : null;
-  const owns = !db.raw.isTransaction;
-  if (owns) db.raw.exec("BEGIN IMMEDIATE");
-  try {
-    if (input.blocking) revokePendingMissionMutationDispatches(
-      db, input.tenantId, input.missionId, createdAt,
-    );
-    const value = insertException(db, {
+  const record = {
     tenantId: input.tenantId,
     missionId: input.missionId,
     reason,
@@ -312,7 +306,7 @@ export function raiseMissionException(db: AppDb, input: {
     ownerPrincipalId: input.ownerPrincipalId,
     resolutionPath,
     blocking: input.blocking,
-    status: "open",
+    status: "open" as const,
     observedSnapshotId: bound?.snapshotId ?? null,
     observedResolvedSha: bound?.resolvedSha ?? null,
     supersedesId: null,
@@ -323,7 +317,21 @@ export function raiseMissionException(db: AppDb, input: {
     createdAt,
     taskId: input.taskId ?? null,
     category: input.category ?? null,
-    });
+  };
+  const recordId = contentDigest(exceptionDigestBody(record));
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = one<MissionExceptionRow>(db, `SELECT * FROM mission_exceptions WHERE id = ?`, [recordId]);
+    if (existing) {
+      const value = hydrate(existing);
+      if (owns) db.raw.exec("COMMIT");
+      return value;
+    }
+    if (input.blocking) revokePendingMissionMutationDispatches(
+      db, input.tenantId, input.missionId, createdAt,
+    );
+    const value = insertException(db, record);
     if (owns) db.raw.exec("COMMIT");
     return value;
   } catch (error) {
