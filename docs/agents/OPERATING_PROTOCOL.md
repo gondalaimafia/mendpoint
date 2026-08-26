@@ -25,11 +25,11 @@ The system uses four controls:
 1. **Single writer:** one task has one authoring agent.
 2. **Isolated worktrees:** Claude and Codex never author simultaneously in the same working tree.
 3. **GitHub as coordination bus:** issues, branches, PRs, checks, and ADRs are the shared state.
-4. **Independent Claude peer review:** Claude-authored and Cursor Cloud-authored PRs are reviewed by an independent Claude instance (not the author's self-review). Codex-authored PRs are reviewed by Claude.
+4. **Independent Claude peer review:** every material PR is reviewed by an independent Claude instance (not the author's self-review). A `CHANGES REQUIRED` result is a stop-the-line: do not start the next wave in that class until the live caller is fixed.
 
 The normal flow is:
 
-`Issue → claim → isolated worktree → implementation → tests → PR → independent Claude review → author fixes → re-review → CI → author merge → main deploy`
+`Issue → claim → isolated worktree → implementation → tests → PR → independent Claude review → author fixes → re-review → required CI → merge (agent if closure contexts green; operator if they are red) → main deploy`
 
 ## 1. Single-Writer Principle
 
@@ -280,23 +280,25 @@ The current `CI` workflow exposes these pull request check names:
 
 The `deploy` job runs only after a push to `main`. It MUST NOT be configured as a pull request requirement because it does not exist on pull request runs.
 
-## 11. Reciprocal Peer Review
+## 11. Independent Claude Peer Review
 
-Every Claude-authored or Cursor Cloud-authored material PR must receive an independent Claude review (a separate Claude instance, not the author).
+Every material PR must receive an independent Claude review (a separate Claude instance, not the author).
 
-Every Codex-authored material PR must receive an independent Claude review.
-
-Preferred request for every material PR:
+Preferred request:
 
 `@claude review`
 
 If the GitHub integration does not support that exact trigger, use an independent Claude reviewer that posts an attributable review on the pull request.
+
+The review comment MUST identify the reviewing run (Cursor Cloud run URL and `bcId`, or the posting App). Author and reviewer both presenting as "Claude" is not evidence of independence without that identity.
 
 Do not describe the trigger as operational until the requested reviewer posts an attributable review or acknowledgement on the pull request. A comment without an integration response is not review evidence.
 
 The author may self-review before opening the PR, but self-review does not satisfy peer review.
 
 Do not request `@codex review` on Claude-authored or Cursor Cloud-authored PRs.
+
+`CHANGES REQUIRED` is a stop-the-line. Do not open a follow-on PR in the same class until the live production caller is fixed and re-reviewed.
 
 ## 12. Reviewer Independence
 
@@ -343,9 +345,9 @@ For unresolved architectural disagreement, escalate to the human maintainer.
 
 ## 14. Merge Rule
 
-Neither coding agent may independently merge a material PR merely because the author self-reviewed.
+Neither coding agent may independently merge a material PR merely because the author self-reviewed, or merely because an AI reviewer found no defects.
 
-Operator policy (2026-08-26): Claude review, merge, and deploy of Claude-authored / Cursor Cloud-authored work is delegated to the authoring agent.
+Operator policy (2026-08-26): independent Claude review of this agent's work is required. Merge and deploy remain constrained by GitHub branch protection.
 
 Merge requires:
 
@@ -354,9 +356,13 @@ Merge requires:
 - review conversations resolved
 - branch/current-base requirements satisfied
 
-The authoring agent then merges. Production ship is the `CI` workflow `deploy` job on push to `main`. Do not treat `mendpoint-production-closure-authority` as a code merge blocker; that check is ops (GitHub App credentials).
+`main` also requires `mendpoint-production-closure-authority` and `mendpoint-production-closure-controller` with `strict == true`. Those checks fail closed when GitHub App credentials are missing (`GITHUB_AUTHORITY_UNAVAILABLE`). That failure is ops, not a code defect — and it is still a **merge gate**. A red closure context makes merge an operator action. Agents MUST escalate. Do not request or use an admin override.
+
+`trustedReviewerIdentities()` skips a binding whose actor equals the record owner. `config/production-closure-authority.json` currently binds only `Claude`, so Claude-owned pull requests cannot populate `qualifyingReviews()` even with an independent Claude review. Until a distinct reviewer actor is bound, Claude-owned / Cursor Cloud work stays out of the release-train matrix. Independent Claude review is still required; it does not satisfy the trusted-reviewer invariant.
 
 Codex-authored PRs still require independent Claude review. Merge of Codex-authored material remains a human decision unless the operator delegates it the same way.
+
+This protocol change itself is operator-merged. The review/merge rules above apply to later PRs.
 
 ### 14.1 Check for stacked PRs before deleting a merged branch
 

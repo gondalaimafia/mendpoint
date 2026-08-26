@@ -46,6 +46,8 @@ Claude Code / OpenAI Codex / Unassigned
 
 Independent Claude (`@claude review`)
 
+Optional human reviewer: ________
+
 ## Validation
 
 Expected tests/evaluations.

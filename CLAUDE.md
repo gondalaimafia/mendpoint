@@ -29,7 +29,7 @@ When you are AUTHOR:
 
 - use an isolated worktree
 - use `claude/<issue>-<slug>`
-- never modify a Codex-owned branch
+- never modify another agent's branch
 - inspect open issues/PRs for overlap before coding
 - push only your own task branch
 - make the smallest coherent change
@@ -39,17 +39,18 @@ When you are AUTHOR:
 
 ## Reviewer mode
 
-When reviewing a Codex-authored PR:
+When reviewing another agent's PR (Codex, Cursor Cloud, or another Claude instance):
 
 - remain independent
 - do not modify the author's branch
-- follow `REVIEW.md`
-- inspect affected behavior beyond changed lines
+- follow `REVIEW.md` and `docs/agents/FAILURE_MODES.md`
+- inspect affected behavior beyond changed lines — trace the live production caller, not only the new helper
 - verify product/architecture contracts
 - identify concrete, evidence-backed findings
 - re-review after substantive changes
+- post the outcome on the PR, including this reviewing run's identity (Cursor Cloud run URL / `bcId`)
 
-## Reciprocal review
+## Independent review
 
 Claude-authored material PRs require an independent Claude review — a separate Claude instance, not the author's self-review.
 
@@ -57,9 +58,11 @@ Preferred GitHub request:
 
 `@claude review`
 
-If that exact trigger is unavailable, use the installed Claude review mechanism.
+If that exact trigger is unavailable, use the installed Claude review mechanism. The review comment must identify the reviewing run.
 
-After independent Claude review PASS, P0/P1 findings resolved, and required CI green (`test`, `release-gates`, `container-builds`, `deployment-e2e`), the authoring agent merges. Production deploy is the `deploy` job on push to `main`. Do not invent a second deploy path. The `mendpoint-production-closure-authority` check is ops (GitHub App credentials), not a code merge blocker.
+After independent Claude review PASS, P0/P1 findings resolved, and required CI green (`test`, `release-gates`, `container-builds`, `deployment-e2e`): if closure-authority contexts are also green, the authoring agent may merge; if they are red, escalate — do not admin-override. Production deploy is the `deploy` job on push to `main`. Do not invent a second deploy path.
+
+Until `config/production-closure-authority.json` binds a distinct reviewer actor, Claude-owned work cannot satisfy `qualifyingReviews()` and stays out of the release-train matrix.
 
 ## Engineering behavior
 
@@ -117,4 +120,4 @@ Always:
 7. list unresolved risks
 8. open/update the PR
 9. request independent Claude peer review (`@claude review`)
-10. after Claude review PASS and required CI green, merge; deploy follows the `main` `deploy` job
+10. after Claude review PASS and required CI green, merge only if closure contexts are green; otherwise escalate. Deploy follows the `main` `deploy` job. `CHANGES REQUIRED` is a stop-the-line.

@@ -39,17 +39,17 @@ When you are AUTHOR:
 
 ## Reviewer mode
 
-When reviewing a Claude-authored PR:
+When reviewing another agent's PR:
 
 - remain independent
 - do not modify the author's branch
-- follow `REVIEW.md`
-- inspect affected behavior beyond changed lines
+- follow `REVIEW.md` and `docs/agents/FAILURE_MODES.md`
+- inspect affected behavior beyond changed lines — trace the live production caller
 - verify product/architecture contracts
 - identify concrete, evidence-backed findings
 - re-review after substantive changes
 
-## Reciprocal review
+## Independent review
 
 Codex-authored material PRs require Claude review.
 
@@ -142,7 +142,7 @@ Always:
 7. list unresolved risks
 8. open/update the PR
 9. request independent Claude peer review (`@claude review`)
-10. do not merge a Codex-authored material PR solely on your own authority. Claude/Cursor Cloud-authored PRs merge after independent Claude review PASS and required CI green; deploy is the `main` `deploy` job.
+10. do not merge a Codex-authored material PR solely on your own authority. Claude/Cursor Cloud-authored PRs: after independent Claude PASS and required CI green, merge only if closure contexts are green; if they are red, escalate — do not admin-override. Deploy is the `main` `deploy` job.
 
 ## Cursor Cloud specific instructions
 
@@ -153,4 +153,12 @@ Durable, non-obvious notes for Cloud Agents. Standard commands live in `README.m
 - **Running the web dashboard in dev:** `npm run dev:web` (port 3000) serves public pages without auth, but operator dashboards require `MENDPOINT_WEB_ACCESS_TOKEN` (any non-empty value locally) plus `MENDPOINT_API_URL=http://127.0.0.1:3001`. Sign in at `/access` with that token.
 - **Seed/demo (offline):** `npm run db:seed` populates `data/mendpoint.sqlite`; `npm run demo` runs the full change→impact→PR pipeline with no network.
 - **Fettler campaign execute:** `run-service` / `run-jobs` only claim `warden.campaign.execute-target` when `GRAPH_LEARN_DB` points at an existing non-ephemeral Change Graph file. `POST /fettler/campaigns/:id/start` still enqueues; jobs wait until a worker with a real graph is up. Never pass `openGraphLearnMemory()` or `getGraphLearnDb()` (creates a missing file) as a production handle.
-- **Review, merge, deploy:** Request `@claude review` (independent Claude instance), not `@codex review`. After Claude `PEER REVIEW: PASS` (or resolved re-review) and required CI green (`test`, `release-gates`, `container-builds`, `deployment-e2e`), merge. Production deploy is the `CI` `deploy` job on push to `main`. Do not block merge on `mendpoint-production-closure-authority` (ops GitHub App credentials).
+- **Review, merge, deploy:** Request `@claude review` (independent Claude instance), not `@codex review`. The review comment must include this run's identity (Cursor Cloud run URL / `bcId`). After Claude `PEER REVIEW: PASS` and required CI green (`test`, `release-gates`, `container-builds`, `deployment-e2e`), merge only if closure-authority contexts are also green. If they are red, escalate to the operator — do not admin-override. Production deploy is the `CI` `deploy` job on push to `main`. Until a distinct reviewer actor is bound, Claude-owned work stays out of the release-train matrix.
+- **Not done until (hard):** A change is not finished if any of these is missing:
+  1. `docs/agents/FAILURE_MODES.md` was applied as a pre-flight (third-state, delete-the-check, reachable live caller, CI-scope gates).
+  2. The production caller is traced (`apps/api/src/server.ts` route, `apps/worker/src/cli.ts` job branch, or a named CLI command) and the new control actually changes that path — a helper return the caller ignores is not a gate.
+  3. Tests cover that live caller, not only the new helper with a fixture that invents the world production never produces.
+  4. The same package suite CI runs was executed (not only the new test file). `scripts/` and `evals/` are not npm workspaces; a workspace-scoped command skips them.
+  5. At least one test goes red if the new control is deleted (mutation check; do this, do not reason about it).
+  6. The branch is rebased onto current `origin/main` and the contract-sensitive tests were re-run on the rebased tree.
+  7. `CHANGES REQUIRED` on a related PR was treated as a stop-the-line, not as a reason to open the next wave.

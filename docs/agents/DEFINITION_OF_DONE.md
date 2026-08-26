@@ -22,5 +22,5 @@ A task is DONE only when:
 - required PR CI is green
 - rollback implications are understood
 - known risks are documented
-- the PR is merged by the authoring agent after Claude review (Claude/Cursor Cloud work) or ready for human merge (Codex work unless delegated)
+- the PR is merge-ready after independent Claude review: agent merge if closure contexts are green; operator merge if they are red. Codex-authored work stays human merge unless delegated
 - production deploy is the `main` `deploy` job, not a second pipeline

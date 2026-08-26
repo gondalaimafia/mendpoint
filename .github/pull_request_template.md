@@ -83,6 +83,7 @@ List remaining risks.
 - Claude author → independent Claude (`@claude review`)
 - Cursor Cloud author → independent Claude (`@claude review`)
 - Codex author → Claude (`@claude review`)
+- Optional human reviewer: ________
 
 ## Review state
 
@@ -90,5 +91,5 @@ List remaining risks.
 - [ ] Peer review complete
 - [ ] P0/P1 findings resolved
 - [ ] P2 findings resolved or explicitly accepted/escalated
-- [ ] CI green
-- [ ] Ready to merge (Claude review PASS + required CI green)
+- [ ] Required CI green (`test`, `release-gates`, `container-builds`, `deployment-e2e`)
+- [ ] Ready to merge (Claude/Cursor: PASS + required CI; merge is operator if closure contexts are red. Codex: human merge unless delegated)
