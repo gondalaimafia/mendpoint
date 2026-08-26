@@ -403,6 +403,57 @@ describe("production closure proposal authority", () => {
     expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_MERGE_BASE_UNRESOLVED");
   });
 
+  it("queues changed historical declarations for exact provider validation", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    const changedPullRequest = matrix.releaseTrain.pullRequests[0];
+    const changedIssue = matrix.issueAuthority.issues[0];
+    changedPullRequest.title = `${changedPullRequest.title} corrected`;
+    changedIssue.title = `${changedIssue.title} corrected`;
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    client.replace(matrixPath, matrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.providerValidationPullRequests).toEqual([changedPullRequest.number]);
+    expect(result.providerValidationIssues).toEqual([changedIssue.number]);
+  });
+
+  it("rejects removal of a provider declaration without a full observation", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    const removed = matrix.releaseTrain.pullRequests.shift()!;
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    client.replace(matrixPath, matrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED",
+      subject: String(removed.number),
+    }));
+  });
+
   it("accepts an exhaustive authority-only rotation interpreted by the base revision", async () => {
     const client = new FixtureClient();
     const authority = baseAuthority();
@@ -502,6 +553,8 @@ describe("production closure proposal authority", () => {
 
     expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
     expect(result.authorityRotation?.rotationId).toBe(rotation.rotationId);
+    expect(result.providerValidationPullRequests).toEqual([]);
+    expect(result.providerValidationIssues).toEqual([]);
 
     proposedMatrix.issueAuthority.issues[0].title = "Rewritten authority evidence";
     proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
@@ -521,6 +574,9 @@ describe("production closure proposal authority", () => {
     expect(rewritten.issues.map((issue) => issue.code)).toContain(
       "AUTHORITY_ROTATION_MATRIX_SCOPE_INVALID",
     );
+    expect(rewritten.providerValidationIssues).toEqual([
+      proposedMatrix.issueAuthority.issues[0].number,
+    ]);
   });
 
   it("rejects another workflow that can spoof the controller authority surface", async () => {

@@ -136,6 +136,8 @@ function context(
   return {
     eventName: "pull_request",
     observationScope: "full_release_train",
+    providerValidationPullRequests: [],
+    providerValidationIssues: [],
     repository: "gondalaimafia/mendpoint",
     githubSha: MAIN,
     workflowRunId: "1234",
@@ -286,11 +288,11 @@ describe("GitHub production closure authority", () => {
     });
     expect(job.strategy).toMatchObject({
       "fail-fast": false,
-      "max-parallel": 1,
+      "max-parallel": 4,
     });
     expect(workflow.jobs["invalidate-authority"].strategy).toMatchObject({
       "fail-fast": false,
-      "max-parallel": 1,
+      "max-parallel": 4,
     });
     expect(job.concurrency).toEqual({
       group: "production-closure-authority-${{ matrix.pull_request }}",
@@ -317,9 +319,6 @@ describe("GitHub production closure authority", () => {
       expect.objectContaining({
         name: "Verify live GitHub release authority",
         run: "npm run closure:github:check",
-        env: expect.objectContaining({
-          MENDPOINT_CLOSURE_OBSERVATION_SCOPE: "current_pull_request",
-        }),
       }),
     );
     expect(job.steps).toContainEqual(
@@ -369,12 +368,12 @@ describe("GitHub production closure authority", () => {
         run: "npm run closure:github:check",
         env: expect.objectContaining({
           MENDPOINT_CLOSURE_EVENT_NAME: "push",
-          MENDPOINT_CLOSURE_OBSERVATION_SCOPE: "full_release_train",
         }),
       }),
     );
-    expect(mainObservationJob.if).toContain("github.event_name == 'schedule'");
-    expect(mainObservationJob.if).toContain("github.event_name == 'workflow_dispatch'");
+    expect(mainObservationJob.if).toBe(
+      "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+    );
   });
 
   it("limits pull request observations to current-head authority and global invariants", async () => {
@@ -405,6 +404,37 @@ describe("GitHub production closure authority", () => {
     expect(client.issueReads).toEqual([]);
     expect(result.verifiedPullRequests).toEqual([440]);
     expect(result.verifiedIssues).toEqual([]);
+  });
+
+  it("provider-validates historical declarations changed by the proposal", async () => {
+    const configured = matrix();
+    configured.releaseTrain.pullRequests.push({
+      number: 439,
+      state: "closed",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+      title: "Changed historical work",
+      headBranch: "codex/prior-release-work",
+      baseBranch: "main",
+      headRevision: MERGE,
+      mergeRevision: null,
+      requirementIds: ["ME-FND-001"],
+      checkState: "closed",
+    });
+    const client = new FixtureClient();
+
+    const result = await verifyGitHubClosureAuthority(
+      configured,
+      context({
+        observationScope: "current_pull_request",
+        providerValidationPullRequests: [439],
+        providerValidationIssues: [430],
+      }),
+      client,
+    );
+
+    expect(client.pullRequestReads).toEqual([440, 439]);
+    expect(client.issueReads).toEqual([430]);
+    expect(codes(result)).toContain("PR_METADATA_MISMATCH");
   });
 
   it("routes reads onto the closure App token pool and keeps controller writes on GITHUB_TOKEN", () => {
@@ -1121,7 +1151,6 @@ describe("GitHub production closure authority", () => {
         MENDPOINT_CLOSURE_TRUSTED_REVIEWERS_JSON: JSON.stringify({
           Claude: [{ login: "claude-reviewer[bot]", userId: 71 }],
         }),
-        MENDPOINT_CLOSURE_OBSERVATION_SCOPE: "current_pull_request",
         GITHUB_TOKEN: "must-not-be-retained",
       },
       {
@@ -1139,6 +1168,7 @@ describe("GitHub production closure authority", () => {
     );
 
     expect(built.pullRequest?.headRevision).toBe(HEAD);
+    expect(built.observationScope).toBe("current_pull_request");
     expect(built.trustedReviewerIdentities.Claude).toEqual([
       { login: "claude-reviewer[bot]", userId: 71 },
     ]);
@@ -1163,7 +1193,6 @@ describe("GitHub production closure authority", () => {
         GITHUB_REPOSITORY: "gondalaimafia/mendpoint",
         GITHUB_SHA: MERGED,
         GITHUB_RUN_ID: "1234",
-        MENDPOINT_CLOSURE_OBSERVATION_SCOPE: "full_release_train",
       },
       {},
       { headRevision: MERGED, parentRevisions: [MAIN] },
@@ -1173,6 +1202,7 @@ describe("GitHub production closure authority", () => {
 
     expect(policy.externalCheckAppId).toBe(4718395);
     expect(policy.controllerCheckAppId).toBe(15368);
+    expect(built.observationScope).toBe("full_release_train");
     expect(built.trustedReviewerIdentities.Claude).toEqual([
       { login: "mendpoint-closure-authority[bot]", userId: 321156448 },
       // Owner decision (keep both): the human owner stays in the trust root
@@ -1194,7 +1224,6 @@ describe("GitHub production closure authority", () => {
         MENDPOINT_CLOSURE_TRUSTED_REVIEWERS_JSON: JSON.stringify({
           Claude: [{ login: "claude-reviewer[bot]", userId: 71 }],
         }),
-        MENDPOINT_CLOSURE_OBSERVATION_SCOPE: "current_pull_request",
         MENDPOINT_CLOSURE_PR_NUMBER: "440",
         MENDPOINT_CLOSURE_PR_BASE_REF: "main",
         MENDPOINT_CLOSURE_PR_BASE_SHA: MAIN,
@@ -1220,7 +1249,6 @@ describe("GitHub production closure authority", () => {
             Codex: [{ login: "shared-reviewer", userId: 1 }],
             Claude: [{ login: "shared-reviewer", userId: 1 }],
           }),
-          MENDPOINT_CLOSURE_OBSERVATION_SCOPE: "full_release_train",
         },
         {},
         { headRevision: MERGED, parentRevisions: [MAIN] },

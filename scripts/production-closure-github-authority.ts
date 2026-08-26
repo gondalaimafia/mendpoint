@@ -2,11 +2,81 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  defaultGitHubSleep,
-  fetchGitHubReadWithRetry,
-  type GitHubSleep,
-} from "./github-api-read-retry.js";
+
+export type GitHubSleep = (milliseconds: number) => Promise<void>;
+
+const GITHUB_READ_MAX_RETRIES = 2;
+const GITHUB_READ_MAX_TOTAL_WAIT_MS = 180_000;
+
+export const defaultGitHubSleep: GitHubSleep = async (milliseconds) => {
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+};
+
+function retryAfterMilliseconds(value: string | null, now: number): number | null {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1_000);
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - now) : null;
+}
+
+function responseRetryDelay(
+  response: Response,
+  retryIndex: number,
+  now: number,
+): number | null {
+  const retryAfter = retryAfterMilliseconds(response.headers.get("retry-after"), now);
+  if (retryAfter !== null) return retryAfter;
+
+  if (response.headers.get("x-ratelimit-remaining") === "0") {
+    const resetSeconds = Number(response.headers.get("x-ratelimit-reset"));
+    if (Number.isFinite(resetSeconds) && resetSeconds > 0) {
+      return Math.max(1_000, resetSeconds * 1_000 - now + 1_000);
+    }
+  }
+
+  if (response.status === 403 || response.status === 429) {
+    return 60_000 * 2 ** retryIndex;
+  }
+  if ([502, 503, 504].includes(response.status)) {
+    return 1_000 * 2 ** retryIndex;
+  }
+  return null;
+}
+
+export async function fetchGitHubReadWithRetry(
+  url: string,
+  init: RequestInit,
+  fetchImpl: typeof fetch,
+  sleepImpl: GitHubSleep = defaultGitHubSleep,
+  now: () => number = Date.now,
+): Promise<Response> {
+  let totalWait = 0;
+  for (let attempt = 0; attempt <= GITHUB_READ_MAX_RETRIES; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetchImpl(url, init);
+    } catch {
+      if (attempt === GITHUB_READ_MAX_RETRIES) {
+        throw new Error("GitHub API read failed before receiving an HTTP response");
+      }
+      const delay = 1_000 * 2 ** attempt;
+      if (totalWait + delay > GITHUB_READ_MAX_TOTAL_WAIT_MS) {
+        throw new Error("GitHub API read retry budget was exhausted");
+      }
+      totalWait += delay;
+      await sleepImpl(delay);
+      continue;
+    }
+    if (response.ok || attempt === GITHUB_READ_MAX_RETRIES) return response;
+    const delay = responseRetryDelay(response, attempt, now());
+    if (delay === null || totalWait + delay > GITHUB_READ_MAX_TOTAL_WAIT_MS) return response;
+    await response.body?.cancel();
+    totalWait += delay;
+    await sleepImpl(delay);
+  }
+  throw new Error("GitHub API read retry budget was exhausted");
+}
 
 export type ReleaseOwnerActor = "Codex" | "Claude" | "Cursor";
 export interface TrustedReviewerIdentity {
@@ -170,6 +240,8 @@ export interface GitHubAuthorityMatrix {
 export interface GitHubAuthorityContext {
   eventName: "pull_request" | "push";
   observationScope: "current_pull_request" | "full_release_train";
+  providerValidationPullRequests: number[];
+  providerValidationIssues: number[];
   repository: string;
   githubSha: string;
   workflowRunId: string;
@@ -801,9 +873,12 @@ export async function verifyGitHubClosureAuthority(
     );
     observation.verifiedPullRequests.push(bootstrap.number);
 
-    for (const record of context.observationScope === "full_release_train"
+    const pullRequestsToVerify = context.observationScope === "full_release_train"
       ? matrix.releaseTrain.pullRequests
-      : []) {
+      : matrix.releaseTrain.pullRequests.filter((record) =>
+        context.providerValidationPullRequests.includes(record.number)
+      );
+    for (const record of pullRequestsToVerify) {
       const live = await client.getPullRequest(record.number);
       if (
         live.number !== record.number ||
@@ -889,9 +964,12 @@ export async function verifyGitHubClosureAuthority(
       observation.verifiedPullRequests.push(record.number);
     }
 
-    for (const record of context.observationScope === "full_release_train"
+    const issuesToVerify = context.observationScope === "full_release_train"
       ? matrix.issueAuthority.issues
-      : []) {
+      : matrix.issueAuthority.issues.filter((record) =>
+        context.providerValidationIssues.includes(record.number)
+      );
+    for (const record of issuesToVerify) {
       const live = await client.getIssue(record.number);
       const metadataMatches =
         live.pull_request === undefined &&
@@ -1109,18 +1187,9 @@ export function githubAuthorityContextFromEvent(
   if (eventName !== "pull_request" && eventName !== "push") {
     throw new Error("GITHUB_EVENT_NAME must be pull_request or push");
   }
-  const observationScope = requiredEnvironment(
-    environment,
-    "MENDPOINT_CLOSURE_OBSERVATION_SCOPE",
-  );
-  if (
-    observationScope !== "current_pull_request" &&
-    observationScope !== "full_release_train"
-  ) {
-    throw new Error(
-      "MENDPOINT_CLOSURE_OBSERVATION_SCOPE must be current_pull_request or full_release_train",
-    );
-  }
+  const observationScope = eventName === "pull_request"
+    ? "current_pull_request"
+    : "full_release_train";
   const reviewerBindings = configuredReviewerBindings ?? JSON.parse(
     requiredEnvironment(environment, "MENDPOINT_CLOSURE_TRUSTED_REVIEWERS_JSON"),
   ) as unknown;
@@ -1166,6 +1235,8 @@ export function githubAuthorityContextFromEvent(
   const context: GitHubAuthorityContext = {
     eventName,
     observationScope,
+    providerValidationPullRequests: [],
+    providerValidationIssues: [],
     repository: requiredEnvironment(environment, "GITHUB_REPOSITORY"),
     githubSha: environment.MENDPOINT_CLOSURE_AUTHORITY_SHA?.trim() ||
       requiredEnvironment(environment, "GITHUB_SHA"),
@@ -1284,6 +1355,45 @@ async function main(): Promise<void> {
     new Date().toISOString(),
     policy.trustedReviewers,
   );
+  if (context.observationScope === "current_pull_request") {
+    const runnerTemp = requiredEnvironment(process.env, "RUNNER_TEMP");
+    const proposalObservationPath = resolve(
+      runnerTemp,
+      "production-closure-proposal-authority.json",
+    );
+    const proposalObservation = JSON.parse(
+      readFileSync(proposalObservationPath, "utf8"),
+    ) as {
+      proposalRevision?: unknown;
+      verdict?: unknown;
+      providerValidationPullRequests?: unknown;
+      providerValidationIssues?: unknown;
+    };
+    const exactNumbers = (value: unknown, label: string): number[] => {
+      if (
+        !Array.isArray(value) ||
+        value.some((entry) => !Number.isInteger(entry) || entry <= 0) ||
+        new Set(value).size !== value.length
+      ) {
+        throw new Error(`proposal ${label} provider-validation set is invalid`);
+      }
+      return [...value].sort((left, right) => left - right) as number[];
+    };
+    if (
+      proposalObservation.verdict !== "pass" ||
+      proposalObservation.proposalRevision !== context.pullRequest?.headRevision
+    ) {
+      throw new Error("proposal authority observation is not bound to the exact pull request head");
+    }
+    context.providerValidationPullRequests = exactNumbers(
+      proposalObservation.providerValidationPullRequests,
+      "pull request",
+    );
+    context.providerValidationIssues = exactNumbers(
+      proposalObservation.providerValidationIssues,
+      "issue",
+    );
+  }
   if (context.repository !== policy.repository) {
     throw new Error("protected authority repository does not match pinned policy");
   }

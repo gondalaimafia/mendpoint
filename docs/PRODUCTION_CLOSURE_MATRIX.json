@@ -2058,13 +2058,13 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
     "observedMainRevision": "e67a040b65a48f48e425000e0fd038b2ea544b5b",
-    "observationDigest": "sha256:32441c212e00602e80bd6ee52cdf697b1c5b4a8a2c3e3d6d085a3f11af9152dd",
+    "observationDigest": "sha256:c7fbcde08e396ec48b122999c1b9bdf29e4c4809876effd5e8321ad55a97fc5e",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
       "number": 485,
       "url": "https://github.com/gondalaimafia/mendpoint/pull/485",
-      "title": "Fix production authority proposal drift",
+      "title": "Fix production authority drift and read starvation",
       "baseBranch": "main",
       "headBranch": "codex/pr484-review-fixes",
       "owner": {
@@ -2083,10 +2083,10 @@
       "authorityRotation": {
         "rotationId": "runtime-authority-read-budget-20260826",
         "kind": "runtime",
-        "issuedAt": "2026-08-26T06:01:56.210Z",
-        "expiresAt": "2026-09-01T06:01:56.210Z",
+        "issuedAt": "2026-08-26T06:40:25.995Z",
+        "expiresAt": "2026-09-01T06:40:25.995Z",
         "basePolicySha256": "sha256:c608eb85fd35ef35acf034f998917b479135116626e17c2a14054c6f68e50d30",
-        "proposedPolicySha256": "sha256:4c2511ce8de32214f3320976bb09efb3c5e30fb16509a8642b20801ca37ac8a1"
+        "proposedPolicySha256": "sha256:c79aec5813e25f8e39ecbba796c6b686ae51512485d0c879eeb11e0e18d5ab6b"
       }
     },
     "pullRequests": [

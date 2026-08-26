@@ -7,7 +7,7 @@ import {
   defaultGitHubSleep,
   fetchGitHubReadWithRetry,
   type GitHubSleep,
-} from "./github-api-read-retry.js";
+} from "./production-closure-github-authority.js";
 import { parse } from "yaml";
 import {
   verifyAuthorityRotation,
@@ -62,6 +62,8 @@ export interface ProposalAuthorityObservation {
   proposalRevision: string;
   observedAt: string;
   fetchedBlobs: ProposalBlobObservation[];
+  providerValidationPullRequests: number[];
+  providerValidationIssues: number[];
   authorityRotation: {
     rotationId: string;
     kind: "runtime" | "stage_successor" | "activate_successor";
@@ -86,6 +88,8 @@ export function writeProposalAuthorityFailureObservation(
     proposalRevision: "unavailable",
     observedAt,
     fetchedBlobs: [],
+    providerValidationPullRequests: [],
+    providerValidationIssues: [],
     authorityRotation: null,
     verdict: "fail",
     issues: [{
@@ -391,6 +395,8 @@ export async function verifyProductionClosureProposal(
     proposalRevision,
     observedAt,
     fetchedBlobs: [],
+    providerValidationPullRequests: [],
+    providerValidationIssues: [],
     authorityRotation: null,
     verdict: "fail",
     issues,
@@ -602,6 +608,58 @@ export async function verifyProductionClosureProposal(
     }
     const mergeBaseReader = await readerFor(mergeBase);
     if (!mergeBaseReader) return observation;
+    const mergeBaseMatrixBytes = await mergeBaseReader.read(
+      "docs/PRODUCTION_CLOSURE_MATRIX.json",
+    );
+    if (!mergeBaseMatrixBytes) return observation;
+    let mergeBaseMatrix: ProductionClosureMatrix;
+    try {
+      mergeBaseMatrix = JSON.parse(
+        mergeBaseMatrixBytes.toString("utf8"),
+      ) as ProductionClosureMatrix;
+    } catch {
+      add(
+        issues,
+        "PROPOSAL_BASE_MATRIX_INVALID",
+        mergeBase,
+        "merge-base closure matrix must be valid JSON",
+      );
+      return observation;
+    }
+    const changedProviderRecords = <T extends { number: number }>(
+      baseRecords: readonly T[],
+      proposedRecords: readonly T[],
+      kind: "pull request" | "issue",
+    ): number[] => {
+      const baseByNumber = new Map(baseRecords.map((record) => [record.number, record]));
+      const proposedByNumber = new Map(proposedRecords.map((record) => [record.number, record]));
+      for (const number of baseByNumber.keys()) {
+        if (!proposedByNumber.has(number)) {
+          add(
+            issues,
+            "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED",
+            String(number),
+            `${kind} declarations cannot be removed without a provider-verified full observation`,
+          );
+        }
+      }
+      return proposedRecords
+        .filter((record) =>
+          JSON.stringify(baseByNumber.get(record.number)) !== JSON.stringify(record)
+        )
+        .map((record) => record.number)
+        .sort((left, right) => left - right);
+    };
+    observation.providerValidationPullRequests = changedProviderRecords(
+      mergeBaseMatrix.releaseTrain?.pullRequests ?? [],
+      matrix.releaseTrain?.pullRequests ?? [],
+      "pull request",
+    );
+    observation.providerValidationIssues = changedProviderRecords(
+      mergeBaseMatrix.issueAuthority?.issues ?? [],
+      matrix.issueAuthority?.issues ?? [],
+      "issue",
+    );
     // Identical Git blob sha and mode is identical content, so the proposal did
     // not touch this path; a path absent on both sides is untouched too. This
     // never reads "could not tell" as "unchanged": an unresolvable merge base
