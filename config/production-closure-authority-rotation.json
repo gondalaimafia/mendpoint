@@ -79,14 +79,14 @@
         {
           "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
           "fromSha256": "sha256:99133f058671346473ee2dfb13862f631202241a035a609abeff88f2479321d7",
-          "toSha256": "sha256:bfcb2bda8c636a10633e5a40754d04c975ac30e3754c5bab55da6e0cf259213a",
+          "toSha256": "sha256:e7e1866d7effeb13c0af8957a452829e945ecc7787ceaadbd1706e96ee63b8b0",
           "fromMode": "100644",
           "toMode": "100644"
         },
         {
           "path": "scripts/production-closure-proposal-authority.test.ts",
           "fromSha256": "sha256:d5557d0f0da93d3cfbb065e93a8ed9791385a86e05f6132a15c08c49fcd2ca66",
-          "toSha256": "sha256:5805bc687d7da344a014fe63ce757bc5038135ee63233a256efcccc47e6cb36a",
+          "toSha256": "sha256:ddd08c3e933777f78d88f10c91686f1d2bb7f7c14b88de14da592f22ab2d5541",
           "fromMode": "100644",
           "toMode": "100644"
         },

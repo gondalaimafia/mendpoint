@@ -87,6 +87,184 @@ async function loadImmutableBaseVerifier(): Promise<{
   }
 }
 
+function gitBytes(args: string[]): Buffer {
+  return execFileSync("git", args, {
+    cwd: root,
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function gitText(args: string[]): string {
+  return gitBytes(args).toString("utf8").trim();
+}
+
+function bytesAtRevision(revision: string, path: string): Buffer {
+  return gitBytes(["show", `${revision}:${path}`]);
+}
+
+class ExactRepositoryTransitionClient implements ProposalAuthorityClient {
+  private readonly baseEntries = new Map<string, {
+    path: string;
+    mode: string;
+    type: "blob" | "commit";
+    sha: string;
+    size?: number;
+  }>();
+  private readonly proposalEntries = new Map<string, {
+    path: string;
+    mode: string;
+    type: "blob" | "commit";
+    sha: string;
+    size?: number;
+  }>();
+  private readonly blobs = new Map<string, Buffer>();
+  private readonly revisionExistence = new Map<string, boolean>();
+  private readonly ancestry = new Map<string, boolean>();
+
+  constructor(
+    private readonly baseRevision: string,
+    private readonly proposalRevision: string,
+    private readonly repositoryId: number,
+  ) {
+    const baseTree = gitBytes([
+      "ls-tree",
+      "-r",
+      "-z",
+      "-l",
+      "--full-tree",
+      baseRevision,
+    ]).toString("utf8");
+    for (const record of baseTree.split("\0").filter(Boolean)) {
+      const match = /^([0-7]{6}) (blob|commit) ([a-f0-9]{40}) +([0-9]+|-)\t([\s\S]+)$/.exec(record);
+      if (!match) throw new Error(`invalid immutable base tree record: ${record}`);
+      const [, mode, type, blobSha, sizeText, path] = match;
+      this.baseEntries.set(path, {
+        path,
+        mode,
+        type: type as "blob" | "commit",
+        sha: blobSha,
+        ...(sizeText === "-" ? {} : { size: Number(sizeText) }),
+      });
+    }
+
+    const tracked = gitBytes(["ls-files", "-s", "-z"]).toString("utf8");
+    for (const record of tracked.split("\0").filter(Boolean)) {
+      const separator = record.indexOf("\t");
+      const header = separator < 0 ? "" : record.slice(0, separator);
+      const path = separator < 0 ? "" : record.slice(separator + 1);
+      const match = /^([0-7]{6}) ([a-f0-9]{40}) ([0-3])$/.exec(header);
+      if (!match || !path || match[3] !== "0") {
+        throw new Error(`invalid proposed tracked-tree record: ${record}`);
+      }
+      const [, mode, indexedSha] = match;
+      if (mode === "160000") {
+        this.proposalEntries.set(path, {
+          path,
+          mode,
+          type: "commit",
+          sha: indexedSha,
+        });
+        continue;
+      }
+      let bytes: Buffer;
+      try {
+        bytes = readFileSync(resolve(root, path));
+      } catch {
+        continue;
+      }
+      const blobSha = sha(bytes);
+      this.blobs.set(blobSha, bytes);
+      this.proposalEntries.set(path, {
+        path,
+        mode,
+        type: "blob",
+        sha: blobSha,
+        size: bytes.length,
+      });
+    }
+  }
+
+  proposalPathBytes(path: string): Buffer {
+    const entry = this.proposalEntries.get(path);
+    const bytes = entry?.type === "blob" ? this.blobs.get(entry.sha) : undefined;
+    if (!bytes) throw new Error(`proposed tracked path is unavailable: ${path}`);
+    return bytes;
+  }
+
+  replaceProposalPath(path: string, bytes: Buffer): void {
+    const entry = this.proposalEntries.get(path);
+    if (!entry || entry.type !== "blob") throw new Error(`proposed tracked path is unavailable: ${path}`);
+    const blobSha = sha(bytes);
+    this.blobs.set(blobSha, bytes);
+    this.proposalEntries.set(path, {
+      ...entry,
+      sha: blobSha,
+      size: bytes.length,
+    });
+  }
+
+  async getRepositoryId(): Promise<number> {
+    return this.repositoryId;
+  }
+
+  async getRecursiveTree(revision: string) {
+    if (revision === this.baseRevision) {
+      return { truncated: false, tree: [...this.baseEntries.values()] };
+    }
+    if (revision === this.proposalRevision) {
+      return { truncated: false, tree: [...this.proposalEntries.values()] };
+    }
+    throw new Error(`unexpected repository transition revision: ${revision}`);
+  }
+
+  async getBlob(blobSha: string): Promise<Buffer> {
+    const proposed = this.blobs.get(blobSha);
+    if (proposed) return proposed;
+    const base = gitBytes(["cat-file", "blob", blobSha]);
+    this.blobs.set(blobSha, base);
+    return base;
+  }
+
+  async revisionExists(revision: string): Promise<boolean> {
+    const cached = this.revisionExistence.get(revision);
+    if (cached !== undefined) return cached;
+    let exists = false;
+    try {
+      gitBytes(["cat-file", "-e", `${revision}^{commit}`]);
+      exists = true;
+    } catch {
+      exists = false;
+    }
+    this.revisionExistence.set(revision, exists);
+    return exists;
+  }
+
+  async revisionIsAncestor(revision: string, descendant: string): Promise<boolean> {
+    const key = `${revision}:${descendant}`;
+    const cached = this.ancestry.get(key);
+    if (cached !== undefined) return cached;
+    let isAncestor = false;
+    try {
+      gitBytes(["merge-base", "--is-ancestor", revision, descendant]);
+      isAncestor = true;
+    } catch {
+      isAncestor = false;
+    }
+    this.ancestry.set(key, isAncestor);
+    return isAncestor;
+  }
+
+  async getMergeBase(base: string, head: string): Promise<string | null> {
+    try {
+      const mergeBase = gitText(["merge-base", base, head]);
+      return /^[a-f0-9]{40}$/.test(mergeBase) ? mergeBase : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
 class FixtureClient implements ProposalAuthorityClient {
   truncated = false;
   mergeBaseRevision: string = BASE;
@@ -492,6 +670,115 @@ describe("production closure proposal authority", () => {
       subject: String(removed.number),
     }));
   });
+
+  it("executes the exact bootstrap transition under the immutable and proposed verifiers", async () => {
+    const proposalRevision = gitText(["rev-parse", "HEAD"]);
+    const basePolicyBytes = bytesAtRevision(
+      IMMUTABLE_BASE_REVISION,
+      "config/production-closure-authority.json",
+    );
+    const baseRotationLedgerBytes = bytesAtRevision(
+      IMMUTABLE_BASE_REVISION,
+      "config/production-closure-authority-rotation.json",
+    );
+    const basePolicy = JSON.parse(basePolicyBytes.toString("utf8"));
+    const client = new ExactRepositoryTransitionClient(
+      IMMUTABLE_BASE_REVISION,
+      proposalRevision,
+      basePolicy.repositoryId,
+    );
+    const proposedMatrix = JSON.parse(
+      client.proposalPathBytes("docs/PRODUCTION_CLOSURE_MATRIX.json").toString("utf8"),
+    ) as ProductionClosureMatrix;
+    const authority = {
+      revision: IMMUTABLE_BASE_REVISION,
+      policyBytes: basePolicyBytes,
+      rotationLedgerBytes: baseRotationLedgerBytes,
+    };
+    const immutableBase = await loadImmutableBaseVerifier();
+    try {
+      const immutableResult = await immutableBase.verify(
+        basePolicy,
+        "gondalaimafia/mendpoint",
+        proposalRevision,
+        client,
+        proposedMatrix.releaseTrain.observedAt,
+        authority,
+      );
+      expect(immutableResult.issues.map((issue) => issue.code)).toEqual([
+        "AUTHORITY_ROTATION_MATRIX_SCOPE_INVALID",
+      ]);
+
+      const proposedResult = await verifyProductionClosureProposal(
+        basePolicy,
+        "gondalaimafia/mendpoint",
+        proposalRevision,
+        client,
+        proposedMatrix.releaseTrain.observedAt,
+        authority,
+      );
+      expect(proposedResult.verdict, JSON.stringify(proposedResult.issues, null, 2)).toBe("pass");
+      expect(proposedResult.issues).toEqual([]);
+    } finally {
+      immutableBase.cleanup();
+    }
+  }, 30_000);
+
+  it("rejects an exact bootstrap transition whose provider observation is one second late", async () => {
+    const proposalRevision = gitText(["rev-parse", "HEAD"]);
+    const basePolicyBytes = bytesAtRevision(
+      IMMUTABLE_BASE_REVISION,
+      "config/production-closure-authority.json",
+    );
+    const baseRotationLedgerBytes = bytesAtRevision(
+      IMMUTABLE_BASE_REVISION,
+      "config/production-closure-authority-rotation.json",
+    );
+    const basePolicy = JSON.parse(basePolicyBytes.toString("utf8"));
+    const client = new ExactRepositoryTransitionClient(
+      IMMUTABLE_BASE_REVISION,
+      proposalRevision,
+      basePolicy.repositoryId,
+    );
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const ledgerPath = "config/production-closure-authority-rotation.json";
+    const proposedMatrix = JSON.parse(
+      client.proposalPathBytes(matrixPath).toString("utf8"),
+    ) as ProductionClosureMatrix;
+    proposedMatrix.releaseTrain.observedAt = new Date(
+      Date.parse(proposedMatrix.releaseTrain.observedAt) + 1_000,
+    ).toISOString();
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    const mistimedMatrixBytes = Buffer.from(`${JSON.stringify(proposedMatrix, null, 2)}\n`);
+    client.replaceProposalPath(matrixPath, mistimedMatrixBytes);
+
+    const proposedLedger = JSON.parse(client.proposalPathBytes(ledgerPath).toString("utf8"));
+    const matrixChange = proposedLedger.rotations.at(-1)?.changes.find(
+      (change: { path?: unknown }) => change.path === matrixPath,
+    );
+    if (!matrixChange) throw new Error("exact authority rotation does not bind the closure matrix");
+    matrixChange.toSha256 = sha256(mistimedMatrixBytes);
+    client.replaceProposalPath(
+      ledgerPath,
+      Buffer.from(`${JSON.stringify(proposedLedger, null, 2)}\n`),
+    );
+
+    const result = await verifyProductionClosureProposal(
+      basePolicy,
+      "gondalaimafia/mendpoint",
+      proposalRevision,
+      client,
+      proposedMatrix.releaseTrain.observedAt,
+      {
+        revision: IMMUTABLE_BASE_REVISION,
+        policyBytes: basePolicyBytes,
+        rotationLedgerBytes: baseRotationLedgerBytes,
+      },
+    );
+    expect(result.issues.map((issue) => issue.code)).toEqual([
+      "AUTHORITY_ROTATION_OBSERVATION_TIME_MISMATCH",
+    ]);
+  }, 30_000);
 
   it("records the immutable-base bootstrap rejection before the proposed verifier accepts exact evidence", async () => {
     const client = new FixtureClient();
