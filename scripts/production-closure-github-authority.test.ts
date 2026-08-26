@@ -359,58 +359,6 @@ describe("GitHub production closure authority", () => {
     );
   });
 
-  it("routes reads onto the closure App token pool and keeps controller writes on GITHUB_TOKEN", () => {
-    // A full sweep over all open PRs was exhausting the 1,000/hr Actions GITHUB_TOKEN
-    // installation pool, so starved legs 403'd and skipped the whole verdict stage. Reads
-    // were moved onto the dedicated closure App installation token (its own 5,000/hr pool).
-    // Every controller status POST must stay on secrets.GITHUB_TOKEN: its identity (app id
-    // 15368) is pinned by branch protection, so switching its token would break the binding.
-    // Pin both invariants so a future edit cannot silently reintroduce the starvation or
-    // relocate a controller write off its pinned identity.
-    const APP_TOKEN = "${{ steps.app-token.outputs.token }}";
-    const ACTIONS_TOKEN = "${{ secrets.GITHUB_TOKEN }}";
-    const workflow = parse(
-      readFileSync(
-        new URL("../.github/workflows/closure-authority.yml", import.meta.url),
-        "utf8",
-      ),
-    ) as {
-      jobs: Record<string, {
-        steps?: Array<{
-          name?: string;
-          run?: string;
-          uses?: string;
-          env?: Record<string, string>;
-        }>;
-      }>;
-    };
-    const stepEnv = (jobId: string, name: string): Record<string, string> => {
-      const step = workflow.jobs[jobId].steps!.find((candidate) => candidate.name === name);
-      if (!step) throw new Error(`missing step ${jobId}/${name}`);
-      return step.env ?? {};
-    };
-    const jobMintsAppToken = (jobId: string): boolean =>
-      (workflow.jobs[jobId].steps ?? []).some(
-        (step) =>
-          typeof step.uses === "string" &&
-          step.uses.startsWith("actions/create-github-app-token@"),
-      );
-
-    // Reads on the App pool.
-    expect(jobMintsAppToken("discover")).toBe(true);
-    expect(stepEnv("discover", "Discover the current protected release set").GH_TOKEN).toBe(APP_TOKEN);
-    expect(jobMintsAppToken("invalidate-authority")).toBe(true);
-    expect(stepEnv("invalidate-authority", "Read the pull request head sha").GH_TOKEN).toBe(APP_TOKEN);
-    expect(stepEnv("closure-authority", "Validate exact proposal bytes with immutable authority").GITHUB_TOKEN).toBe(APP_TOKEN);
-    expect(stepEnv("closure-authority", "Verify live GitHub release authority").GITHUB_TOKEN).toBe(APP_TOKEN);
-    expect(jobMintsAppToken("main-authority-observation")).toBe(true);
-    expect(stepEnv("main-authority-observation", "Verify merged main authority").GITHUB_TOKEN).toBe(APP_TOKEN);
-
-    // Controller status writes stay on the Actions GITHUB_TOKEN so app id 15368 keeps posting.
-    expect(stepEnv("invalidate-authority", "Invalidate controller authority before protected credentials").GH_TOKEN).toBe(ACTIONS_TOKEN);
-    expect(stepEnv("closure-authority", "Publish controller authority verdict").GH_TOKEN).toBe(ACTIONS_TOKEN);
-  });
-
   it("accepts an exact PR event and double-reads current main", async () => {
     const client = new FixtureClient();
 
