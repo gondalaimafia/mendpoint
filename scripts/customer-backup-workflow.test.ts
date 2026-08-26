@@ -36,7 +36,7 @@ describe("customer backup workflow", () => {
     const validate = step("Validate app-scoped backup authority");
     expect(validate.env.FLY_API_TOKEN).toBe("${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}");
     expect(validate.env.CUSTOMER_APP).toBe("${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}");
-    expect(validate.run).toContain("flyctl apps list --json | jq -r '.[].name'");
+    expect(validate.run).toContain("flyctl apps list --json | jq -r '.[] | (.Name // .name)'");
     expect(validate.run).not.toContain(".[].Name");
     expect(validate.run).toContain("customer_backup_token_not_app_scoped");
     expect(validate.run).toContain('flyctl status --app "$CUSTOMER_APP"');
