@@ -17,7 +17,7 @@
         430
       ],
       "pullRequests": [
-        478
+        481
       ],
       "testEvidenceIds": [],
       "productionEvidenceIds": []
@@ -1817,8 +1817,8 @@
   "issueAuthority": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-26T03:38:47.540Z",
-    "observationDigest": "sha256:501a77d1425b95776c2bb59c41a684c047073eba63b7515e5f42a85a88ecc659",
+    "observedAt": "2026-08-26T03:56:32.029Z",
+    "observationDigest": "sha256:b49581439d12416817cfdf05265b20fc3c2b644537527f66d5552f5880d403ca",
     "issues": [
       {
         "number": 350,
@@ -2037,17 +2037,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-26T03:38:47.540Z",
+    "observedAt": "2026-08-26T03:56:32.029Z",
     "observedMainRevision": "900c7327cc4fb43d3cf72f7acb3303f269749427",
-    "observationDigest": "sha256:484f9d7f1eeaa255071ef9adaddb6abcb1f9c68f12a5f4ee7ee6ec82f90ea735",
+    "observationDigest": "sha256:6ebe3fb89329b92bd16a7b829db3b766bd640656c522a6ed054fc796ec1217b5",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 478,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/478",
+      "number": 481,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/481",
       "title": "Promote production closure matrix to v2",
       "baseBranch": "main",
-      "headBranch": "codex/production-matrix-v2",
+      "headBranch": "codex/production-matrix-v2-app",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -3988,7 +3988,7 @@
         },
         "requirementIds": [],
         "checkState": "checks_failed",
-        "headRevision": "239b492917866345b4cf2f388495dd43b08697e3",
+        "headRevision": "503561c6addae2db867226aa6d4d84e04242bb1f",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -4022,6 +4022,14 @@
           {
             "priority": "P1",
             "summary": "the provisional Claude owner is not supported by an agent-prefixed branch or a provider-bound owner label"
+          },
+          {
+            "priority": "P2",
+            "summary": "GITHUB_ENV discovery is order-insensitive and treats local assignments as durable exports"
+          },
+          {
+            "priority": "P2",
+            "summary": "the manifest loader does not reject optional gated entries without gatedBy or empty and malformed scopes"
           }
         ]
       },
@@ -4062,6 +4070,18 @@
           {
             "priority": "P1",
             "summary": "the pull request has no strict requirement mapping and its provisional Claude owner lacks provider-verifiable provenance"
+          },
+          {
+            "priority": "P1",
+            "summary": "the mandatory schema lesson says ensureTables never alters tables even though the additive migration loop executes ALTER TABLE ADD COLUMN"
+          },
+          {
+            "priority": "P2",
+            "summary": "the pull request body says eleven lessons instead of sixteen and incorrectly describes linked required reading as automatically loaded"
+          },
+          {
+            "priority": "P2",
+            "summary": "the mandatory checklist applies fail-closed behavior to every catch and default instead of security, authority, execution, evidence, and claimed-state decisions"
           }
         ]
       }
