@@ -621,7 +621,14 @@ export async function verifyProductionClosureProposal(
         // A surface this proposal never touched has not drifted, however far
         // the pin has moved on the base since the branch point. A surface it
         // did touch still has to match the pin exactly.
-        if (bytes && !proposalTouched(locator)) continue;
+        //
+        // Absence is judged the same way, which is why this asks nothing about
+        // `bytes` first. A pinned file missing from the proposal because the
+        // base introduced it AFTER the branch point is absent on both sides,
+        // so it is untouched and merging cannot remove it. A pinned file the
+        // proposal DELETED is present at the merge base and absent at the head,
+        // so it is touched, falls through, and fails below.
+        if (!proposalTouched(locator)) continue;
         if (!bytes || protectedSurfaceDigest(path, bytes) !== expectedDigest) {
           add(
             issues,
@@ -890,16 +897,34 @@ export class GitHubProposalAuthorityClient implements ProposalAuthorityClient {
   async revisionExists(revision: string): Promise<boolean> {
     return (await this.request(`/repos/${this.repository}/git/commits/${revision}`, true)) !== null;
   }
-  async revisionIsAncestor(revision: string, descendant: string): Promise<boolean> {
-    const result = await this.request<{ status?: unknown }>(
-      `/repos/${this.repository}/compare/${revision}...${descendant}`,
+  // One compare response answers both ancestry and merge base, so asking for
+  // both costs one request rather than two. This gate has already taken the
+  // repository down once by spending its installation API budget faster than it
+  // refills; every avoidable call here is a real outage risk, not a micro-
+  // optimisation.
+  private readonly comparisons = new Map<
+    string,
+    Promise<{ status?: unknown; merge_base_commit?: { sha?: unknown } } | null>
+  >();
+  private compare(
+    revision: string,
+    descendant: string,
+  ): Promise<{ status?: unknown; merge_base_commit?: { sha?: unknown } } | null> {
+    const key = `${revision}...${descendant}`;
+    const cached = this.comparisons.get(key);
+    if (cached) return cached;
+    const pending = this.request<{ status?: unknown; merge_base_commit?: { sha?: unknown } }>(
+      `/repos/${this.repository}/compare/${key}`,
     );
+    this.comparisons.set(key, pending);
+    return pending;
+  }
+  async revisionIsAncestor(revision: string, descendant: string): Promise<boolean> {
+    const result = await this.compare(revision, descendant);
     return result?.status === "ahead" || result?.status === "identical";
   }
   async getMergeBase(base: string, head: string): Promise<string | null> {
-    const result = await this.request<{ merge_base_commit?: { sha?: unknown } }>(
-      `/repos/${this.repository}/compare/${base}...${head}`,
-    );
+    const result = await this.compare(base, head);
     const sha = result?.merge_base_commit?.sha;
     return typeof sha === "string" && SHA.test(sha) ? sha : null;
   }

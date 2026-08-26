@@ -8,6 +8,7 @@ import {
   releaseTrainIntegrityDigest,
   type ProductionClosureMatrix,
 } from "./production-closure-matrix.js";
+import { type AuthorityRotationLedger } from "./production-closure-authority-rotation.js";
 import {
   verifyProductionClosureProposal,
   writeProposalAuthorityFailureObservation,
@@ -356,6 +357,53 @@ describe("production closure proposal authority", () => {
     expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
   });
 
+  it("does not fail a proposal for a pinned surface the base introduced after it branched", async () => {
+    // A branch cut before a protected file existed carries no copy of it. That
+    // is absence by chronology, not deletion, and merging cannot remove the
+    // file from the base. Charging the proposal for it is the same staleness
+    // bug one level down.
+    const client = new FixtureClient();
+    const newPath = "scripts/production-closure-latecomer.ts";
+    const newBytes = Buffer.from(["export const latecomer = 1;", ""].join("\n"));
+    const advanced = policy();
+    advanced.protectedFiles[newPath] = sha256(newBytes);
+    const advancedBytes = Buffer.from(JSON.stringify(advanced));
+    client.advanceBase("config/production-closure-authority.json", advancedBytes);
+    // The base gained the file itself after the branch point; head and merge
+    // base both lack it.
+    client.blobs.set(sha(newBytes), newBytes);
+    client.modes.set(newPath, "100644");
+    client.basePathToSha.set(newPath, sha(newBytes));
+
+    const result = await verifyProductionClosureProposal(
+      advanced,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      { ...baseAuthority(), policyBytes: advancedBytes },
+    );
+
+    expect(result.issues.map((issue) => issue.code)).not.toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
+  });
+
+  it("still fails a proposal that deletes a pinned surface it did have", async () => {
+    // Present at the merge base, absent at the head: the proposal removed it.
+    const client = new FixtureClient();
+    client.pathToSha.delete("package.json");
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.issues.map((issue) => issue.code)).toContain("PROPOSAL_AUTHORITY_SURFACE_DRIFT");
+  });
+
   it("fails closed when the merge base cannot be resolved", async () => {
     // "Could not determine what this proposal changed" must never read as
     // "this proposal changed nothing".
@@ -434,11 +482,18 @@ describe("production closure proposal authority", () => {
         toMode: "100644" as const,
       },
     ];
+    // The ledger is append-only: a receipt must extend the rotations the base
+    // already holds, not replace them. Building a single-element array only
+    // worked while the ledger was empty, so the first real rotation to land
+    // would have broken this test rather than the code.
+    const baseRotations =
+      (JSON.parse(authority.rotationLedgerBytes.toString("utf8")) as AuthorityRotationLedger)
+        .rotations ?? [];
     const proposedLedger = {
       schemaVersion: 1,
-      rotations: [{
+      rotations: [...baseRotations, {
         ...rotation,
-        previousRotationId: null,
+        previousRotationId: baseRotations.at(-1)?.rotationId ?? null,
         baseRevision: BASE,
         baseLedgerSha256: sha256(authority.rotationLedgerBytes),
         successor: null,
