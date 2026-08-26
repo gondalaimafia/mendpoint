@@ -979,10 +979,11 @@ describe("GitHub production closure authority", () => {
     expect(policy.externalCheckAppId).toBe(4718395);
     expect(policy.controllerCheckAppId).toBe(15368);
     expect(built.trustedReviewerIdentities.Claude).toEqual([
-      {
-        login: "mendpoint-closure-authority[bot]",
-        userId: 321156448,
-      },
+      { login: "mendpoint-closure-authority[bot]", userId: 321156448 },
+      // Owner decision (keep both): the human owner stays in the trust root
+      // under the accepted key — also required for rotation continuity, since
+      // main's base root is the human and bot-only would have zero overlap.
+      { login: "gondalaimafia", userId: 273115720 },
     ]);
   });
 
