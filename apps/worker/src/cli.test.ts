@@ -26,6 +26,8 @@ import {
   bindConsumerRepoSnapshot,
   claimNextJob,
   createMission,
+  createMissionTask,
+  createWardenCampaign,
   createExplicitMemory,
   enqueueJob,
   failJob,
@@ -57,12 +59,18 @@ import {
   upsertGitHubInstallation,
   getRepairSession,
   listJobs,
+  listMissionTaskPrerequisiteIds,
+  fettlerCampaignMissionTaskId,
+  linkFettlerCampaignToMission,
   missionTaskIdForJob,
-  registerMissionArtifact,
 } from "@mendpoint/db";
 import { nowIso } from "@mendpoint/shared";
 import type { AgentPlanner } from "@mendpoint/agent";
-import { ensureDefaultPolicyEnvelopeBinding, type PipelineReport } from "@mendpoint/pipeline";
+import {
+  ensureDefaultPolicyEnvelopeBinding,
+  tryRegisterFettlerCampaignMissionArtifacts,
+  type PipelineReport,
+} from "@mendpoint/pipeline";
 import {
   GitHubAppDelivery,
   OctokitGitHubDelivery,
@@ -3630,6 +3638,29 @@ describe("Fettler live resume seam (behavioral, through the job loop)", () => {
       correlationId: "job-warden-snapshot",
       createdAt: at,
     });
+    createWardenCampaign(fixture.db, {
+      id: "campaign-live-artifact", tenantId: "tenant_test", name: "Live artifact campaign",
+      ownerPrincipalId: "human-mission-artifact", concurrencyLimit: 1, completionPolicy: "all",
+      eventId: "campaign-live-artifact-created", idempotencyKey: "campaign-live-artifact-created",
+      correlationId: "campaign-live-artifact", createdAt: at,
+    });
+    linkFettlerCampaignToMission(fixture.db, {
+      tenantId: "tenant_test", campaignId: "campaign-live-artifact", missionId: "mission-live-artifact",
+      actorPrincipalId: "human-mission-artifact", eventId: "campaign-live-artifact-linked",
+      idempotencyKey: "campaign-live-artifact-linked", correlationId: "campaign-live-artifact", createdAt: at,
+    });
+    const campaignTaskId = fettlerCampaignMissionTaskId(
+      "mission-live-artifact",
+      "repository-warden-snapshot",
+    );
+    createMissionTask(fixture.db, {
+      id: campaignTaskId, tenantId: "tenant_test", missionId: "mission-live-artifact",
+      taskType: "code_migration", acceptanceCriteria: "Complete the exact repository campaign.",
+      risk: "medium", actorPrincipalId: "human-mission-artifact",
+      eventId: "campaign-live-artifact-task-created",
+      idempotencyKey: "campaign-live-artifact-task-created",
+      correlationId: "campaign-live-artifact", createdAt: at,
+    });
     const artifactContent = "prior exact-task candidate";
     insertArtifactManifest(fixture.db, {
       id: "artifact-live-context",
@@ -3643,21 +3674,26 @@ describe("Fettler live resume seam (behavioral, through the job loop)", () => {
       content: artifactContent,
       createdAt: at,
     });
-    registerMissionArtifact(fixture.db, {
+    expect(tryRegisterFettlerCampaignMissionArtifacts(fixture.db, {
       tenantId: "tenant_test",
-      missionId: "mission-live-artifact",
-      role: "candidate_patch",
-      artifactId: "artifact-live-context",
-      label: "prior exact-task candidate",
+      campaignId: "campaign-live-artifact",
       producerPrincipalId: "human-mission-artifact",
-      correlationId: "job-warden-snapshot",
       createdAt: at,
-      taskId: missionTaskIdForJob("job-warden-snapshot"),
+      repositoryId: "repository-warden-snapshot",
       sourceSnapshot: "snapshot-warden-a",
-    });
+      artifacts: [{
+        role: "candidate_patch",
+        artifactId: "artifact-live-context",
+        label: "prior exact-task candidate",
+      }],
+    })).toEqual({ status: "registered", missionId: "mission-live-artifact", count: 1 });
     const job = getJob(fixture.db, "job-warden-snapshot", "tenant_test")!;
     fixture.db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?").run(
-      JSON.stringify({ ...JSON.parse(job.payload_json), missionId: "mission-live-artifact" }),
+      JSON.stringify({
+        ...JSON.parse(job.payload_json),
+        missionId: "mission-live-artifact",
+        campaignId: "campaign-live-artifact",
+      }),
       job.id,
       job.tenant_id,
     );
@@ -3668,13 +3704,88 @@ describe("Fettler live resume seam (behavioral, through the job loop)", () => {
       leaseMs: 30_000,
       wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
     });
-    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
     const trajectory = getTrajectoryByRun(fixture.db, "tenant_test", "session-warden-snapshot");
+    const runAfter = getAgentRun(fixture.db, "session-warden-snapshot", "tenant_test");
+    const prerequisites = listMissionTaskPrerequisiteIds(
+      fixture.db,
+      "tenant_test",
+      "mission-live-artifact",
+      missionTaskIdForJob("job-warden-snapshot"),
+    );
+    fixture.db.raw.close();
+    expect({ result, runAfter }).toMatchObject({
+      result: { claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 },
+    });
+    expect(prerequisites).toContain(campaignTaskId);
     expect(trajectory?.contextRefs).toContainEqual(expect.objectContaining({
       kind: "mission_artifact",
       artifactId: "artifact-live-context",
     }));
+  }, 30_000);
+
+  it("fails a mission-bound job before execution when its snapshot binding differs", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-resume-mission-binding-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+    const at = nowIso();
+    fixture.db.raw.prepare(
+      `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+       VALUES ('tenant_test','tenant-test','Tenant Test','team','active',10,?)`,
+    ).run(at);
+    insertPrincipal(fixture.db, {
+      id: "human-mission-mismatch", tenantId: "tenant_test", kind: "human",
+      subject: "mission-mismatch@example.com", displayName: "Mission Mismatch Owner", createdAt: at,
+    });
+    createMission(fixture.db, {
+      id: "mission-live-mismatch", tenantId: "tenant_test", product: "fettler",
+      triggerKind: "provider_change", objective: "Do not execute on another repository",
+      ownerPrincipalId: "human-mission-mismatch", repositoryId: "repository-warden-snapshot",
+      snapshotId: null, eventId: "mission-live-mismatch-created",
+      idempotencyKey: "mission-live-mismatch-created", correlationId: "job-warden-snapshot", createdAt: at,
+    });
+    ensureDefaultPolicyEnvelopeBinding(fixture.db, {
+      tenantId: "tenant_test", missionId: "mission-live-mismatch",
+      actorPrincipalId: "human-mission-mismatch", correlationId: "job-warden-snapshot", createdAt: at,
+    });
+    const job = getJob(fixture.db, "job-warden-snapshot", "tenant_test")!;
+    fixture.db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?").run(
+      JSON.stringify({ ...JSON.parse(job.payload_json), missionId: "mission-live-mismatch" }),
+      job.id,
+      job.tenant_id,
+    );
+
+    const planner = vi.fn(meteredWardenPlanner());
+    const result = await processJobsOnce(fixture.db, {
+      tenantId: "tenant_test",
+      workerId: "worker-live-mission-mismatch",
+      leaseMs: 30_000,
+      wardenPlanner: planner,
+      wardenEnv: {
+        MENDPOINT_DATA_DIR: fixture.dataRoot,
+        MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
+        MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: "tenant_test",
+        MENDPOINT_WARDEN_MODEL_PROVIDER: "openai-compatible",
+        MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "1",
+        MENDPOINT_WARDEN_MODEL_REGION: "us-central",
+        MENDPOINT_WARDEN_MODEL_MAXIMUM_DATA_CLASSIFICATION: "confidential",
+        MENDPOINT_WARDEN_REPOSITORY_CLASSIFICATIONS:
+          JSON.stringify({ tenant_test: { "tenant_test/fixture": "internal" } }),
+        MENDPOINT_WARDEN_MODEL_ESTIMATED_COST_USD: "0.25",
+        MENDPOINT_WARDEN_MODEL_MAXIMUM_CALL_COST_USD: "1.00",
+        LLM_AGENT_MODEL: "model-a",
+        LLM_AGENT_URL: "https://models.example/v1",
+      },
+    });
+    const trajectory = getTrajectoryByRun(fixture.db, "tenant_test", "session-warden-snapshot");
     fixture.db.raw.close();
+
+    expect(result).toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0, inconclusive: 0 });
+    expect(planner).not.toHaveBeenCalled();
+    expect(trajectory).toBeUndefined();
   }, 30_000);
 
   // The live agent.run loop resumes inherited context through

@@ -3371,12 +3371,15 @@ if (job.type === "warden.candidate.cleanup") {
                   if (standing.status === "loaded") {
                     inheritedContext = standing.injection;
                     inheritedContextRefs = standing.refs;
+                  } else if (standing.status === "context_not_loaded" && missionBound) {
+                    throw new Error(standing.reason);
                   } else if (standing.status === "context_not_loaded" || standing.status === "not_resumable") {
                     console.error(
                       `  Fettler resume context ${standing.status} session=${sessionId}: ${standing.reason}`,
                     );
                   }
                 } catch (error) {
+                  if (missionBound) throw error;
                   console.error(
                     `  Fettler inherited-context compile failed session=${sessionId}: ${
                       error instanceof Error ? error.message : String(error)

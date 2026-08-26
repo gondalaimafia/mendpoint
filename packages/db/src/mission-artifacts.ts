@@ -80,6 +80,8 @@ export type MissionArtifact = Readonly<{
   createdAt: string;
   taskId: string | null;
   sourceSnapshot: string | null;
+  scopeSchemaVersion: 1 | null;
+  scopeContentDigest: string | null;
 }>;
 
 export type MissionArtifactLineageEdge = Readonly<{
@@ -108,6 +110,12 @@ type MissionArtifactRow = {
   created_at: string;
   task_id: string | null;
   source_snapshot: string | null;
+  scope_id: string | null;
+  scope_schema_version: number | null;
+  scope_task_id: string | null;
+  scope_source_snapshot: string | null;
+  scope_content_digest: string | null;
+  scope_created_at: string | null;
 };
 
 type MissionArtifactLineageRow = {
@@ -146,6 +154,26 @@ function artifactDigestBody(input: {
   };
 }
 
+function artifactScopeDigestBody(input: {
+  tenantId: string;
+  missionId: string;
+  artifactRegistrationId: string;
+  taskId: string;
+  sourceSnapshot: string;
+  createdAt: string;
+}) {
+  return {
+    kind: "mission_artifact_scope",
+    schemaVersion: 1,
+    tenantId: input.tenantId,
+    missionId: input.missionId,
+    artifactRegistrationId: input.artifactRegistrationId,
+    taskId: input.taskId,
+    sourceSnapshot: input.sourceSnapshot,
+    createdAt: input.createdAt,
+  };
+}
+
 function lineageDigestBody(input: {
   tenantId: string;
   missionId: string;
@@ -167,6 +195,20 @@ function lineageDigestBody(input: {
   };
 }
 
+const ARTIFACT_WITH_SCOPE_SELECT = `
+  SELECT a.*,
+    s.id AS scope_id,
+    s.schema_version AS scope_schema_version,
+    s.task_id AS scope_task_id,
+    s.source_snapshot AS scope_source_snapshot,
+    s.content_digest AS scope_content_digest,
+    s.created_at AS scope_created_at
+  FROM mission_artifacts a
+  LEFT JOIN mission_artifact_scopes s
+    ON s.tenant_id = a.tenant_id
+    AND s.mission_id = a.mission_id
+    AND s.artifact_registration_id = a.id`;
+
 function hydrateArtifact(row: MissionArtifactRow): MissionArtifact {
   const body = artifactDigestBody({
     tenantId: row.tenant_id,
@@ -181,6 +223,39 @@ function hydrateArtifact(row: MissionArtifactRow): MissionArtifact {
   if (contentDigest(body) !== row.content_digest || row.content_digest !== row.id) {
     throw new Error("mission_artifact_corrupt");
   }
+  const scopeParts = [
+    row.scope_id,
+    row.scope_schema_version,
+    row.scope_task_id,
+    row.scope_source_snapshot,
+    row.scope_content_digest,
+    row.scope_created_at,
+  ];
+  const hasScope = scopeParts.every((value) => value !== null);
+  if (!hasScope && scopeParts.some((value) => value !== null)) {
+    throw new Error("mission_artifact_scope_corrupt");
+  }
+  if (hasScope) {
+    if (row.scope_schema_version !== 1) throw new Error("mission_artifact_scope_version_unsupported");
+    const scopeBody = artifactScopeDigestBody({
+      tenantId: row.tenant_id,
+      missionId: row.mission_id,
+      artifactRegistrationId: row.id,
+      taskId: row.scope_task_id!,
+      sourceSnapshot: row.scope_source_snapshot!,
+      createdAt: row.scope_created_at!,
+    });
+    if (contentDigest(scopeBody) !== row.scope_content_digest || row.scope_content_digest !== row.scope_id) {
+      throw new Error("mission_artifact_scope_corrupt");
+    }
+    const legacyHasTask = row.task_id !== null;
+    const legacyHasSnapshot = row.source_snapshot !== null;
+    if (legacyHasTask !== legacyHasSnapshot) throw new Error("mission_artifact_legacy_scope_ambiguous");
+    if (legacyHasTask &&
+        (row.task_id !== row.scope_task_id || row.source_snapshot !== row.scope_source_snapshot)) {
+      throw new Error("mission_artifact_scope_mismatch");
+    }
+  }
   return Object.freeze({
     id: row.id,
     tenantId: row.tenant_id,
@@ -192,9 +267,15 @@ function hydrateArtifact(row: MissionArtifactRow): MissionArtifact {
     producerPrincipalId: row.producer_principal_id,
     contentDigest: row.content_digest,
     createdAt: row.created_at,
-    taskId: row.task_id ?? null,
-    sourceSnapshot: row.source_snapshot ?? null,
+    taskId: hasScope ? row.scope_task_id! : row.task_id ?? null,
+    sourceSnapshot: hasScope ? row.scope_source_snapshot! : row.source_snapshot ?? null,
+    scopeSchemaVersion: hasScope ? 1 : null,
+    scopeContentDigest: hasScope ? row.scope_content_digest! : null,
   });
+}
+
+function artifactById(db: AppDb, id: string): MissionArtifactRow | undefined {
+  return one<MissionArtifactRow>(db, `${ARTIFACT_WITH_SCOPE_SELECT} WHERE a.id = ?`, [id]);
 }
 
 function hydrateLineage(row: MissionArtifactLineageRow): MissionArtifactLineageEdge {
@@ -241,6 +322,68 @@ function requireTenantArtifact(db: AppDb, tenantId: string, artifactId: string):
   return row.sha256;
 }
 
+function bindArtifactScope(db: AppDb, input: {
+  artifact: MissionArtifactRow;
+  taskId: string;
+  sourceSnapshot: string;
+  producerPrincipalId: string;
+  correlationId: string;
+  causationId?: string | null;
+  createdAt: string;
+}): void {
+  const existing = artifactById(db, input.artifact.id);
+  if (!existing) throw new Error("mission_artifact_not_found");
+  if (existing.scope_id !== null) {
+    const scoped = hydrateArtifact(existing);
+    if (scoped.taskId !== input.taskId || scoped.sourceSnapshot !== input.sourceSnapshot) {
+      throw new Error("mission_artifact_scope_mismatch");
+    }
+    return;
+  }
+  const legacyHasTask = existing.task_id !== null;
+  const legacyHasSnapshot = existing.source_snapshot !== null;
+  if (legacyHasTask !== legacyHasSnapshot) throw new Error("mission_artifact_legacy_scope_ambiguous");
+  if (legacyHasTask &&
+      (existing.task_id !== input.taskId || existing.source_snapshot !== input.sourceSnapshot)) {
+    throw new Error("mission_artifact_scope_mismatch");
+  }
+  const body = artifactScopeDigestBody({
+    tenantId: existing.tenant_id,
+    missionId: existing.mission_id,
+    artifactRegistrationId: existing.id,
+    taskId: input.taskId,
+    sourceSnapshot: input.sourceSnapshot,
+    createdAt: input.createdAt,
+  });
+  const digest = contentDigest(body);
+  db.raw.prepare(`INSERT INTO mission_artifact_scopes
+    (id, tenant_id, mission_id, artifact_registration_id, schema_version,
+     task_id, source_snapshot, content_digest, created_at)
+    VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)`).run(
+    digest, existing.tenant_id, existing.mission_id, existing.id,
+    input.taskId, input.sourceSnapshot, digest, input.createdAt);
+  appendDomainEvent(db, {
+    id: `mission-artifact-scope:${digest}`,
+    tenantId: existing.tenant_id,
+    schemaVersion: 1,
+    eventType: "mission.artifact_scope_bound",
+    aggregateType: "mission",
+    aggregateId: existing.mission_id,
+    actorPrincipalId: input.producerPrincipalId,
+    correlationId: input.correlationId,
+    causationId: input.causationId ?? null,
+    idempotencyKey: `mission-artifact-scope:${digest}`,
+    payload: {
+      artifactRegistrationId: existing.id,
+      scopeContentDigest: digest,
+      taskId: input.taskId,
+      sourceSnapshot: input.sourceSnapshot,
+      scopeSchemaVersion: 1,
+    },
+    createdAt: input.createdAt,
+  });
+}
+
 /**
  * Register an existing artifact manifest as a first-class output of a mission,
  * by REFERENCE. The content stays in artifact_manifests; this records only the
@@ -266,6 +409,15 @@ export function registerMissionArtifact(db: AppDb, input: {
   const label = boundedText(input.label, "mission_artifact_label_invalid", MAX_LABEL);
   const correlationId = boundedText(input.correlationId, "mission_artifact_correlation_invalid", 256);
   const createdAt = exactUtc(input.createdAt, "mission_artifact_created_at_invalid");
+  const taskId = input.taskId
+    ? boundedText(input.taskId, "mission_artifact_task_id_invalid", 256)
+    : null;
+  const sourceSnapshot = input.sourceSnapshot
+    ? boundedText(input.sourceSnapshot, "mission_artifact_source_snapshot_invalid", 256)
+    : null;
+  if ((taskId === null) !== (sourceSnapshot === null)) {
+    throw new Error("mission_artifact_scope_incomplete");
+  }
   assertMissionScope(db, input.tenantId, input.missionId);
   assertRecordPrincipal(db, input.tenantId, input.producerPrincipalId, "mission_artifact_producer_tenant_mismatch");
   const artifactSha256 = requireTenantArtifact(db, input.tenantId, input.artifactId);
@@ -283,9 +435,20 @@ export function registerMissionArtifact(db: AppDb, input: {
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
-    const existing = one<MissionArtifactRow>(db, `SELECT * FROM mission_artifacts WHERE id = ?`, [digest]);
+    const existing = artifactById(db, digest);
     if (existing) {
-      const value = hydrateArtifact(existing);
+      if (taskId !== null && sourceSnapshot !== null) {
+        bindArtifactScope(db, {
+          artifact: existing,
+          taskId,
+          sourceSnapshot,
+          producerPrincipalId: input.producerPrincipalId,
+          correlationId,
+          causationId: input.causationId,
+          createdAt,
+        });
+      }
+      const value = hydrateArtifact(artifactById(db, digest)!);
       if (owns) db.raw.exec("COMMIT");
       return value;
     }
@@ -303,8 +466,7 @@ export function registerMissionArtifact(db: AppDb, input: {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       digest, input.tenantId, input.missionId, role, input.artifactId, artifactSha256, label,
       input.producerPrincipalId, digest, createdAt,
-      input.taskId ? boundedText(input.taskId, "mission_artifact_task_id_invalid", 256) : null,
-      input.sourceSnapshot ? boundedText(input.sourceSnapshot, "mission_artifact_source_snapshot_invalid", 256) : null);
+      taskId, sourceSnapshot);
     appendDomainEvent(db, {
       id: `mission-artifact:${digest}`,
       tenantId: input.tenantId,
@@ -324,7 +486,18 @@ export function registerMissionArtifact(db: AppDb, input: {
       },
       createdAt,
     });
-    const value = hydrateArtifact(one<MissionArtifactRow>(db, `SELECT * FROM mission_artifacts WHERE id = ?`, [digest])!);
+    if (taskId !== null && sourceSnapshot !== null) {
+      bindArtifactScope(db, {
+        artifact: artifactById(db, digest)!,
+        taskId,
+        sourceSnapshot,
+        producerPrincipalId: input.producerPrincipalId,
+        correlationId,
+        causationId: input.causationId,
+        createdAt,
+      });
+    }
+    const value = hydrateArtifact(artifactById(db, digest)!);
     if (owns) db.raw.exec("COMMIT");
     return value;
   } catch (error) {
@@ -465,10 +638,12 @@ export function recordMissionArtifactLineage(db: AppDb, input: {
 export function listMissionArtifacts(db: AppDb, tenantId: string, missionId: string, role?: MissionArtifactRole): MissionArtifact[] {
   const rows = role === undefined
     ? all<MissionArtifactRow>(db,
-        `SELECT * FROM mission_artifacts WHERE tenant_id = ? AND mission_id = ? ORDER BY created_at DESC, id DESC`,
+        `${ARTIFACT_WITH_SCOPE_SELECT}
+         WHERE a.tenant_id = ? AND a.mission_id = ? ORDER BY a.created_at DESC, a.id DESC`,
         [tenantId, missionId])
     : all<MissionArtifactRow>(db,
-        `SELECT * FROM mission_artifacts WHERE tenant_id = ? AND mission_id = ? AND role = ? ORDER BY created_at DESC, id DESC`,
+        `${ARTIFACT_WITH_SCOPE_SELECT}
+         WHERE a.tenant_id = ? AND a.mission_id = ? AND a.role = ? ORDER BY a.created_at DESC, a.id DESC`,
         [tenantId, missionId, role]);
   return rows.map(hydrateArtifact);
 }

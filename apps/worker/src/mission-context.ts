@@ -22,6 +22,7 @@ import {
   getActiveMissionDecisions,
   getMissionPolicyEnvelope,
   listMissionArtifacts,
+  listMissionTaskPrerequisiteIds,
   listMissionVerifications,
   listOrganizationMemory,
   listTrajectories,
@@ -217,25 +218,34 @@ export function buildMissionContext(
   const artifacts: MissionContextInput["artifacts"] = mission
     ? {
         consulted: true,
-        records: listMissionArtifacts(db, tenantId, mission.id)
-          .filter((artifact) => {
-            const exactTaskArtifact =
-              snapshotId !== null &&
-              artifact.taskId === params.task.taskId &&
-              artifact.sourceSnapshot === snapshotId;
-            const explicitlyMissionGlobal =
-              params.includeMissionGlobalArtifacts === true &&
-              artifact.taskId === null && artifact.sourceSnapshot === null;
-            return exactTaskArtifact || explicitlyMissionGlobal;
-          })
-          .map((artifact) => ({
-          tenantId,
-          id: artifact.id,
-          role: artifact.role,
-          artifactId: artifact.artifactId,
-          artifactSha256: artifact.artifactSha256,
-          label: artifact.label,
-          })),
+        records: (() => {
+          const artifactTaskIds = new Set([
+            params.task.taskId,
+            ...listMissionTaskPrerequisiteIds(db, tenantId, mission.id, params.task.taskId),
+          ]);
+          return listMissionArtifacts(db, tenantId, mission.id)
+            .filter((artifact) => {
+              const exactTaskArtifact =
+                snapshotId !== null &&
+                artifact.scopeSchemaVersion === 1 &&
+                artifact.scopeContentDigest !== null &&
+                artifact.taskId !== null &&
+                artifactTaskIds.has(artifact.taskId) &&
+                artifact.sourceSnapshot === snapshotId;
+              const explicitlyMissionGlobal =
+                params.includeMissionGlobalArtifacts === true &&
+                artifact.taskId === null && artifact.sourceSnapshot === null;
+              return exactTaskArtifact || explicitlyMissionGlobal;
+            })
+            .map((artifact) => ({
+              tenantId,
+              id: artifact.id,
+              role: artifact.role,
+              artifactId: artifact.artifactId,
+              artifactSha256: artifact.artifactSha256,
+              label: artifact.label,
+            }));
+        })(),
       }
     : { consulted: false, reason: "no_mission_bound" };
 

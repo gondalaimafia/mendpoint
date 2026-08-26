@@ -165,11 +165,16 @@ describe("mission artifact registry", () => {
     const db = fixture();
     manifest(db, "t1", "art-a", "impact-report", "a");
     const reg = registerMissionArtifact(db, { tenantId: "t1", missionId: "m1", role: "impact_report",
-      artifactId: "art-a", label: "a", producerPrincipalId: "p1", correlationId: "corr", createdAt: at(1) });
+      artifactId: "art-a", label: "a", producerPrincipalId: "p1", correlationId: "corr", createdAt: at(1),
+      taskId: "task-exact", sourceSnapshot: "snapshot-exact" });
     expect(() => db.raw.prepare("UPDATE mission_artifacts SET label = 'x' WHERE id = ?").run(reg.id))
       .toThrow("mission_artifacts_append_only");
     expect(() => db.raw.prepare("DELETE FROM mission_artifacts WHERE id = ?").run(reg.id))
       .toThrow("mission_artifacts_append_only");
+    expect(() => db.raw.prepare("UPDATE mission_artifact_scopes SET task_id = 'changed' WHERE artifact_registration_id = ?")
+      .run(reg.id)).toThrow("mission_artifact_scopes_append_only");
+    expect(() => db.raw.prepare("DELETE FROM mission_artifact_scopes WHERE artifact_registration_id = ?")
+      .run(reg.id)).toThrow("mission_artifact_scopes_append_only");
 
     manifest(db, "t1", "art-b", "candidate-edit", "b");
     registerMissionArtifact(db, { tenantId: "t1", missionId: "m1", role: "candidate_patch",
@@ -209,6 +214,81 @@ describe("mission artifact registry", () => {
     expect(listMissionArtifactLineage(db, "t1", "m1")).toHaveLength(1);
   });
 
+  it("reconciles a released null-scope registration to one authenticated exact scope", () => {
+    const db = fixture();
+    manifest(db, "t1", "art-a", "impact-report", "a");
+    const released = registerMissionArtifact(db, { tenantId: "t1", missionId: "m1", role: "impact_report",
+      artifactId: "art-a", label: "a", producerPrincipalId: "p1", correlationId: "corr", createdAt: at(1) });
+
+    const reconciled = registerMissionArtifact(db, { tenantId: "t1", missionId: "m1", role: "impact_report",
+      artifactId: "art-a", label: "a", producerPrincipalId: "p1", correlationId: "corr", createdAt: at(1),
+      taskId: "task-exact", sourceSnapshot: "snapshot-exact" });
+
+    expect(reconciled.id).toBe(released.id);
+    expect(reconciled).toMatchObject({
+      taskId: "task-exact",
+      sourceSnapshot: "snapshot-exact",
+      scopeSchemaVersion: 1,
+    });
+    expect(reconciled.scopeContentDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(listMissionArtifacts(db, "t1", "m1")).toEqual([reconciled]);
+  });
+
+  it("reconciles a released exact legacy scope without rewriting its registration", () => {
+    const db = fixture();
+    manifest(db, "t1", "art-a", "impact-report", "a");
+    const released = registerMissionArtifact(db, { tenantId: "t1", missionId: "m1", role: "impact_report",
+      artifactId: "art-a", label: "a", producerPrincipalId: "p1", correlationId: "corr", createdAt: at(1) });
+    db.raw.exec("DROP TRIGGER mission_artifacts_no_update");
+    db.raw.prepare("UPDATE mission_artifacts SET task_id = ?, source_snapshot = ? WHERE id = ?")
+      .run("task-exact", "snapshot-exact", released.id);
+    db.raw.exec(`
+      CREATE TRIGGER mission_artifacts_no_update
+      BEFORE UPDATE ON mission_artifacts BEGIN
+        SELECT RAISE(ABORT, 'mission_artifacts_append_only');
+      END;
+    `);
+
+    const reconciled = registerMissionArtifact(db, { tenantId: "t1", missionId: "m1", role: "impact_report",
+      artifactId: "art-a", label: "a", producerPrincipalId: "p1", correlationId: "corr", createdAt: at(1),
+      taskId: "task-exact", sourceSnapshot: "snapshot-exact" });
+
+    expect(reconciled.id).toBe(released.id);
+    expect(reconciled).toMatchObject({
+      taskId: "task-exact",
+      sourceSnapshot: "snapshot-exact",
+      scopeSchemaVersion: 1,
+    });
+  });
+
+  it("fails closed when released scope is partial or conflicts with exact replay", () => {
+    const db = fixture();
+    manifest(db, "t1", "art-a", "impact-report", "a");
+    registerMissionArtifact(db, { tenantId: "t1", missionId: "m1", role: "impact_report",
+      artifactId: "art-a", label: "a", producerPrincipalId: "p1", correlationId: "corr", createdAt: at(1),
+      taskId: "task-old", sourceSnapshot: "snapshot-old" });
+
+    expect(() => registerMissionArtifact(db, { tenantId: "t1", missionId: "m1", role: "impact_report",
+      artifactId: "art-a", label: "a", producerPrincipalId: "p1", correlationId: "corr", createdAt: at(1),
+      taskId: "task-new", sourceSnapshot: "snapshot-new" }))
+      .toThrow("mission_artifact_scope_mismatch");
+  });
+
+  it("detects authenticated scope tampering on read", () => {
+    const db = fixture();
+    manifest(db, "t1", "art-a", "impact-report", "a");
+    const registered = registerMissionArtifact(db, { tenantId: "t1", missionId: "m1", role: "impact_report",
+      artifactId: "art-a", label: "a", producerPrincipalId: "p1", correlationId: "corr", createdAt: at(1),
+      taskId: "task-exact", sourceSnapshot: "snapshot-exact" });
+
+    db.raw.exec("DROP TRIGGER mission_artifact_scopes_no_update");
+    db.raw.prepare("UPDATE mission_artifact_scopes SET content_digest = ? WHERE artifact_registration_id = ?")
+      .run("0".repeat(64), registered.id);
+
+    expect(() => listMissionArtifacts(db, "t1", "m1"))
+      .toThrow("mission_artifact_scope_corrupt");
+  });
+
   it("rejects lineage endpoints that are not registered outputs of the mission", () => {
     const db = fixture();
     manifest(db, "t1", "art-a", "impact-report", "a");
@@ -238,6 +318,7 @@ describe("mission artifact registry", () => {
     expect(verifyDomainEventIntegrity(db, "t1").ok).toBe(true);
     // Simulate the pre-change shape: the registry objects did not exist yet.
     db.raw.exec("DROP TABLE mission_artifact_lineage");
+    db.raw.exec("DROP TABLE mission_artifact_scopes");
     db.raw.exec("DROP TABLE mission_artifacts");
     db.raw.exec("DROP INDEX artifact_manifests_id_tenant_uidx");
     db.raw.close();

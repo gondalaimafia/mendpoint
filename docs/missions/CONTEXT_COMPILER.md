@@ -56,7 +56,9 @@ job binding exactly; a legacy null binding does not authorize a repository-bound
 job. Any difference fails closed with
 `mission_context_repository_binding_mismatch` or
 `mission_context_snapshot_binding_mismatch` before Mission-scoped stores are
-read.
+read and before `runWardenAttempt` starts. Context compilation faults on a
+Mission-bound job fail that job; only an unbound legacy job retains the
+best-effort compatibility path.
 
 Mission artifacts are references only: registration id, role, artifact id,
 canonical SHA-256, and label. Artifact bodies remain in `artifact_manifests` and
@@ -64,11 +66,24 @@ never enter the compiled envelope. The worker selects an artifact only when both
 its `task_id` and `source_snapshot` exactly match the canonical MissionTask and
 immutable snapshot being compiled. Legacy rows with both fields null are
 excluded by default; a caller must explicitly request Mission-global artifact
-context to include them. A partially null row is never inferred to be global.
+context to include them. Legacy task/snapshot values without an authenticated
+scope companion are not eligible as exact task context. A partially null row is
+never inferred to be global.
+Exact task/snapshot authority is recorded in the append-only
+`mission_artifact_scopes` companion at schema version 1. Its digest authenticates
+the tenant, Mission, registration, task, snapshot, version, and timestamp. An
+exact replay may bind one released null/null registration without rewriting its
+historical registration digest. Partial legacy scope, conflicting replay, an
+unsupported version, or a digest mismatch fails closed.
 
 The live Fettler campaign artifact writer records the deterministic repository
 MissionTask id and exact source snapshot. The live worker compiler uses the
-canonical job MissionTask id rather than the raw jobs-row id.
+canonical job MissionTask id rather than the raw jobs-row id. When a production
+job names that linked campaign, the bridge records a dependency from the job
+task to the campaign task. Artifact selection then accepts exact-snapshot
+artifacts of the current task and its validated transitive prerequisites. This
+keeps writer-to-reader lineage explicit instead of treating campaign artifacts
+as Mission-global context.
 
 ## Precedence (property 1 and 2)
 

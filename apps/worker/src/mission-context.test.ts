@@ -475,7 +475,7 @@ describe("worker mission-context producer (real stores)", () => {
     })).toThrow("mission_context_repository_binding_mismatch");
   });
 
-  it("excludes legacy null task/snapshot artifacts unless Mission-global context is explicit", () => {
+  it("excludes legacy unauthenticated scope and includes null scope only when Mission-global is explicit", () => {
     const db = fixture();
     const body = "legacy unscoped output";
     insertArtifactManifest(db, {
@@ -512,10 +512,9 @@ describe("worker mission-context producer (real stores)", () => {
       content: "partially scoped output",
       createdAt: T0,
     });
-    registerMissionArtifact(db, {
+    const partiallyScoped = registerMissionArtifact(db, {
       tenantId: "t1",
       missionId: "m1",
-      taskId: "task-1",
       role: "candidate_patch",
       artifactId: "art-partial-null",
       label: "partial null binding",
@@ -523,6 +522,41 @@ describe("worker mission-context producer (real stores)", () => {
       correlationId: "corr",
       createdAt: T0,
     });
+    insertArtifactManifest(db, {
+      id: "art-legacy-exact",
+      tenantId: "t1",
+      kind: "candidate-edit",
+      schemaVersion: 1,
+      sha256: createHash("sha256").update("legacy exact output").digest("hex"),
+      mediaType: "text/plain",
+      sizeBytes: Buffer.byteLength("legacy exact output", "utf8"),
+      storageRef: "mem://art-legacy-exact",
+      content: "legacy exact output",
+      createdAt: T0,
+    });
+    const legacyExact = registerMissionArtifact(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      role: "verification_report",
+      artifactId: "art-legacy-exact",
+      label: "legacy unauthenticated exact binding",
+      producerPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    // Simulate a released pre-scope row. The current writer rejects partial
+    // scope, but an upgraded database can still contain this legacy shape.
+    db.raw.exec("DROP TRIGGER mission_artifacts_no_update");
+    db.raw.prepare("UPDATE mission_artifacts SET task_id = ? WHERE id = ?")
+      .run("task-1", partiallyScoped.id);
+    db.raw.prepare("UPDATE mission_artifacts SET task_id = ?, source_snapshot = ? WHERE id = ?")
+      .run("task-1", "snapA", legacyExact.id);
+    db.raw.exec(`
+      CREATE TRIGGER mission_artifacts_no_update
+      BEFORE UPDATE ON mission_artifacts BEGIN
+        SELECT RAISE(ABORT, 'mission_artifacts_append_only');
+      END;
+    `);
     const mission = getMission(db, "t1", "m1")!;
     const params = {
       tenantId: "t1",

@@ -3343,3 +3343,17 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - Context honesty: policy, decision, exception, artifact, verification, memory, graph, and history refs now belong to their rendered section and leave when the byte ceiling drops that section.
 - Live seams: the campaign executor registers artifacts under `fettlerCampaignMissionTaskId(missionId, repositoryId)`, and the real worker job loop compiles against `missionTaskIdForJob(job.id)`. The live-loop regression proves an exact-task artifact reaches `trajectories.context_refs_json`.
 - Verification: after rebasing onto exact `c8d51caa`, 123 focused tests pass across the compiler, registration helper, campaign executor, worker producer, and full worker CLI suite. Pipeline and worker typechecks pass and `git diff --check` is clean. `ME-MCC-001` remains partial/internal and this work makes no production-readiness claim. Independent exact-head review and current GitHub CI remain required.
+
+### 2026-08-25 PR 467 exact-head review repair
+
+- [ ] Make a mission-bound repository or snapshot mismatch stop the live job before `runWardenAttempt`.
+- [ ] Version and authenticate Mission artifact task and snapshot scope, including explicit legacy null-scope reconciliation.
+- [ ] Bridge campaign artifact lineage into the canonical job MissionTask consumed by the live compiler.
+- [ ] Add red live-loop, released replay, ambiguous mismatch, and real producer-to-consumer regressions.
+- [ ] Update the Mission Context Compiler contract without promoting `ME-MCC-001`.
+- [ ] Run focused tests, DB, pipeline, and worker typechecks, and strict diff checks.
+- [ ] Commit and push the repaired exact head for independent review; do not merge or self-approve.
+
+#### Review
+
+In progress.

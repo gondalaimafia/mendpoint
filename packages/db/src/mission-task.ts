@@ -368,6 +368,39 @@ function dependsOnTransitively(db: AppDb, tenantId: string, fromTaskId: string, 
   return false;
 }
 
+/** Return the authenticated task's transitive prerequisite ids in stable order. */
+export function listMissionTaskPrerequisiteIds(
+  db: AppDb,
+  tenantId: string,
+  missionId: string,
+  taskId: string,
+): string[] {
+  const task = one<{ mission_id: string }>(
+    db,
+    `SELECT mission_id FROM mission_task WHERE id = ? AND tenant_id = ?`,
+    [taskId, tenantId],
+  );
+  if (!task) return [];
+  if (task.mission_id !== missionId) throw new Error("mission_task_dependency_mission_mismatch");
+  const seen = new Set<string>();
+  const stack = [taskId];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    for (const row of all<{ depends_on_task_id: string; mission_id: string }>(
+      db,
+      `SELECT depends_on_task_id, mission_id FROM mission_task_dependencies
+       WHERE tenant_id = ? AND task_id = ? ORDER BY depends_on_task_id`,
+      [tenantId, current],
+    )) {
+      if (row.mission_id !== missionId) throw new Error("mission_task_dependency_mission_mismatch");
+      if (seen.has(row.depends_on_task_id)) continue;
+      seen.add(row.depends_on_task_id);
+      stack.push(row.depends_on_task_id);
+    }
+  }
+  return [...seen].sort();
+}
+
 /**
  * A task is READY to start when every prerequisite is COMPLETE. Returns false
  * when the task does not exist or any prerequisite is missing/not complete, so a

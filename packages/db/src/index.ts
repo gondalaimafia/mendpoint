@@ -1073,6 +1073,8 @@ CREATE INDEX IF NOT EXISTS mission_artifacts_mission_idx
   ON mission_artifacts(tenant_id, mission_id, role, created_at);
 CREATE INDEX IF NOT EXISTS mission_artifacts_artifact_idx
   ON mission_artifacts(tenant_id, artifact_id);
+CREATE UNIQUE INDEX IF NOT EXISTS mission_artifacts_id_tenant_mission_uidx
+  ON mission_artifacts(id, tenant_id, mission_id);
 CREATE TRIGGER IF NOT EXISTS mission_artifacts_no_update
 BEFORE UPDATE ON mission_artifacts BEGIN
   SELECT RAISE(ABORT, 'mission_artifacts_append_only');
@@ -1080,6 +1082,36 @@ END;
 CREATE TRIGGER IF NOT EXISTS mission_artifacts_no_delete
 BEFORE DELETE ON mission_artifacts BEGIN
   SELECT RAISE(ABORT, 'mission_artifacts_append_only');
+END;
+
+-- Versioned, authenticated exact task/snapshot authority for a Mission artifact.
+-- The base registration digest predates task/snapshot scope and remains immutable;
+-- this one-to-one append-only companion lets an exact released null-scope row be
+-- reconciled without rewriting authenticated history.
+CREATE TABLE IF NOT EXISTS mission_artifact_scopes (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  mission_id TEXT NOT NULL,
+  artifact_registration_id TEXT NOT NULL,
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  task_id TEXT NOT NULL,
+  source_snapshot TEXT NOT NULL,
+  content_digest TEXT NOT NULL CHECK (length(content_digest) = 64),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id),
+  FOREIGN KEY (artifact_registration_id, tenant_id, mission_id)
+    REFERENCES mission_artifacts(id, tenant_id, mission_id),
+  UNIQUE (tenant_id, artifact_registration_id)
+);
+CREATE INDEX IF NOT EXISTS mission_artifact_scopes_task_idx
+  ON mission_artifact_scopes(tenant_id, mission_id, task_id, source_snapshot);
+CREATE TRIGGER IF NOT EXISTS mission_artifact_scopes_no_update
+BEFORE UPDATE ON mission_artifact_scopes BEGIN
+  SELECT RAISE(ABORT, 'mission_artifact_scopes_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS mission_artifact_scopes_no_delete
+BEFORE DELETE ON mission_artifact_scopes BEGIN
+  SELECT RAISE(ABORT, 'mission_artifact_scopes_append_only');
 END;
 
 CREATE TABLE IF NOT EXISTS mission_artifact_lineage (

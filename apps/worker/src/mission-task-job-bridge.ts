@@ -10,7 +10,10 @@
  */
 import { createHash } from "node:crypto";
 import {
+  addMissionTaskDependency,
   ensureMissionTaskForJob,
+  fettlerCampaignMissionTaskId,
+  getConsumerRepo,
   getMissionTask,
   getMission,
   insertPrincipal,
@@ -46,6 +49,54 @@ function payloadRecord(job: BridgedJob): Record<string, unknown> | undefined {
 function textField(record: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = record?.[key];
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function nestedTextField(
+  record: Record<string, unknown> | undefined,
+  parent: string,
+  key: string,
+): string | undefined {
+  const value = record?.[parent];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return textField(value as Record<string, unknown>, key);
+}
+
+function bindJobTaskToFettlerCampaignTask(
+  db: AppDb,
+  job: BridgedJob,
+  mission: Mission,
+  task: MissionTask,
+  createdAt: string,
+): void {
+  const payload = payloadRecord(job);
+  const campaignId = textField(payload, "campaignId") ?? textField(payload, "fettlerCampaignId");
+  if (!campaignId) return;
+  if (mission.fettlerCampaignId !== campaignId) throw new Error("mission_task_job_campaign_mismatch");
+  const claimedRepositoryId = textField(payload, "repositoryId")
+    ?? nestedTextField(payload, "snapshotBinding", "repositoryId");
+  const consumerId = textField(payload, "consumerId");
+  const consumerRepositoryId = consumerId
+    ? getConsumerRepo(db, consumerId, job.tenant_id)?.connected_repository_id ?? undefined
+    : undefined;
+  if (claimedRepositoryId && consumerRepositoryId && claimedRepositoryId !== consumerRepositoryId) {
+    throw new Error("mission_task_job_repository_mismatch");
+  }
+  const repositoryId = claimedRepositoryId ?? consumerRepositoryId;
+  if (!repositoryId) return;
+  const campaignTaskId = fettlerCampaignMissionTaskId(mission.id, repositoryId);
+  if (!getMissionTask(db, job.tenant_id, campaignTaskId)) return;
+  const dependencyDigest = createHash("sha256")
+    .update(`mission-task-job-campaign:${task.id}:${campaignTaskId}`)
+    .digest("hex")
+    .slice(0, 32);
+  addMissionTaskDependency(db, {
+    id: `mtd-job-campaign-${dependencyDigest}`,
+    tenantId: job.tenant_id,
+    missionId: mission.id,
+    taskId: task.id,
+    dependsOnTaskId: campaignTaskId,
+    createdAt,
+  });
 }
 
 function parseRisk(value: unknown): MissionTaskRisk {
@@ -110,7 +161,7 @@ export function bridgeClaimedJobToMissionTask(
   if (!mission) return undefined;
   const agent = missionTaskAgentPrincipal(db, job.tenant_id, createdAt);
   const payload = payloadRecord(job);
-  return ensureMissionTaskForJob(db, {
+  const task = ensureMissionTaskForJob(db, {
     tenantId: job.tenant_id,
     jobId: job.id,
     missionId: mission.id,
@@ -122,6 +173,8 @@ export function bridgeClaimedJobToMissionTask(
     createdAt,
     correlationId: job.id,
   });
+  bindJobTaskToFettlerCampaignTask(db, job, mission, task, createdAt);
+  return task;
 }
 
 /**
