@@ -3437,10 +3437,18 @@ Verification: 77 focused dispatch, task, delivery, update, and Mission tests pas
 
 ## 2026-08-26 Second review repair: exact task authority scope
 
-- [ ] RED: prove authoritative task creation fences taskless mutation authority before insert.
-- [ ] RED: prove dependency insertion fences and revision-invalidates only the dependent task.
-- [ ] RED: prove task B transitions never revoke or block task A dispatches in the same Mission.
-- [ ] Audit all task create, update, dependency, and removal writers for exact task versus Mission scope.
-- [ ] Implement task-scoped dispatch fencing while retaining Mission-wide fences for Mission and blocker writers.
-- [ ] Run focused and full DB/worker suites, typechecks, production build, and diff integrity.
-- [ ] Commit locally without pushing and record the exact reviewed head.
+- [x] RED: prove authoritative task creation fences taskless mutation authority before insert.
+- [x] RED: prove dependency insertion fences and revision-invalidates only the dependent task.
+- [x] RED: prove task B transitions never revoke or block task A dispatches in the same Mission.
+- [x] Audit all task create, update, dependency, and removal writers for exact task versus Mission scope.
+- [x] Implement task-scoped dispatch fencing while retaining Mission-wide fences for Mission and blocker writers.
+- [x] Run focused and full DB/worker suites, typechecks, production build, and diff integrity.
+- [x] Commit locally without pushing and record the exact reviewed head.
+
+### Review
+
+Task creation now fences only taskless authority inside the same immediate transaction before insertion. Authorized taskless dispatch is revoked, dispatching and uncertain taskless effects block enrollment, and an idempotent replay returns the existing task without a second mutation. Later task enrollment remains independent from existing sibling-task dispatches.
+
+Task transitions and dependency changes now use exact task-scoped authority. A transition of task B neither revokes nor blocks task A. Adding a dependency fences the dependent task, increments that task's authority revision, and makes its readiness false atomically; replay does not increment the revision again. Mission revision and blocker writers retain the Mission-wide fence. The writer audit found no dependency-removal writer and no direct task mutation outside the reviewed task module; job enrollment composes the fenced create and transition operations.
+
+Verification: the RED task suite failed 9 of 25 tests across every reported seam before implementation. The final task suite passes 26 tests, the focused Mission and worker lifecycle suites pass 22 and 52 tests, complete database and worker suites pass 447 and 612 tests respectively with one intentional worker skip, both affected typechecks pass, and the optimized 50-route production build passes. The authority-writer and mutation-consumer searches were reviewed and `git diff --check` is clean. No production state changed and no push was performed. No P0, P1, or P2 finding remains in this second repaired class.

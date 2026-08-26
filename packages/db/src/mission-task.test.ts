@@ -213,6 +213,15 @@ describe("mission task engine", () => {
     expect(task(db, "new-authorized").revision).toBe(1);
   });
 
+  it("keeps an existing task dispatch isolated from later task enrollment", () => {
+    const db = fixture();
+    const existing = task(db, "existing-task");
+    insertDispatch(db, "dispatching", "create-sibling", existing.id);
+    expect(task(db, "later-task").status).toBe("unassigned");
+    expect((db.raw.prepare(`SELECT state FROM mission_mutation_dispatches WHERE id = ?`)
+      .get("dispatch-create-sibling") as { state: string }).state).toBe("dispatching");
+  });
+
   it.each(["authorized", "dispatching", "uncertain"] as const)(
     "keeps a sibling task %s dispatch isolated from another task transition",
     (state) => {

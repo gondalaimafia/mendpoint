@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { AppDb } from "./index.js";
-import { revokePendingMissionMutationDispatches } from "./mission-mutation-dispatch-fence.js";
+import { revokePendingMissionTaskMutationDispatches } from "./mission-mutation-dispatch-fence.js";
 import { appendDomainEvent } from "./trust.js";
 
 // Shared Mission Task engine (spec §6.8). A MissionTask is the single work
@@ -158,6 +158,7 @@ export function createMissionTask(db: AppDb, input: {
     if (!one(db, `SELECT id FROM mission WHERE id = ? AND tenant_id = ?`, [input.missionId, input.tenantId])) {
       throw new Error("mission_task_mission_not_found");
     }
+    revokePendingMissionTaskMutationDispatches(db, input.tenantId, input.missionId, null, input.createdAt);
     db.raw.prepare(`INSERT INTO mission_task
       (id, tenant_id, mission_id, task_type, acceptance_criteria, risk, status, owner_type,
        assigned_principal_id, handoff_reason, retry_count, revision, created_at, updated_at)
@@ -198,7 +199,9 @@ export function transitionMissionTask(db: AppDb, input: {
     if (current.revision !== input.expectedRevision) throw new Error("mission_task_revision_conflict");
     if (current.status === input.to) { if (owns) db.raw.exec("COMMIT"); return hydrate(current); }
     if (!transitions[current.status].includes(input.to)) throw new Error("mission_task_transition_invalid");
-    revokePendingMissionMutationDispatches(db, input.tenantId, current.mission_id, input.createdAt);
+    revokePendingMissionTaskMutationDispatches(
+      db, input.tenantId, current.mission_id, current.id, input.createdAt,
+    );
     const ownerType = ownerForStatus(input.to, current.owner_type);
     const assigned = input.assignedPrincipalId ?? current.assigned_principal_id;
     const handoffReason = input.handoffReason ?? current.handoff_reason;
@@ -345,6 +348,15 @@ export function addMissionTaskDependency(db: AppDb, input: {
     if (dependsOnTransitively(db, input.tenantId, input.dependsOnTaskId, input.taskId)) {
       throw new Error("mission_task_dependency_cycle");
     }
+    revokePendingMissionTaskMutationDispatches(
+      db, input.tenantId, input.missionId, input.taskId, input.createdAt,
+    );
+    const changed = db.raw.prepare(`UPDATE mission_task
+      SET revision = revision + 1, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND mission_id = ?`).run(
+      input.createdAt, input.taskId, input.tenantId, input.missionId,
+    );
+    if (Number(changed.changes) !== 1) throw new Error("mission_task_dependency_task_not_found");
     db.raw.prepare(`INSERT INTO mission_task_dependencies
       (id, tenant_id, mission_id, task_id, depends_on_task_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(
       input.id, input.tenantId, input.missionId, input.taskId, input.dependsOnTaskId, input.createdAt);

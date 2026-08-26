@@ -4246,7 +4246,10 @@ export {
   markMissionMutationDispatchUncertain,
   settleMissionMutationDispatch,
 } from "./mission-mutation-dispatch.js";
-export { revokePendingMissionMutationDispatches } from "./mission-mutation-dispatch-fence.js";
+export {
+  revokePendingMissionMutationDispatches,
+  revokePendingMissionTaskMutationDispatches,
+} from "./mission-mutation-dispatch-fence.js";
 export type { MissionMutationDispatchState } from "./mission-mutation-dispatch.js";
 export {
   MAX_TRAJECTORY_BLOB_CHARS,
