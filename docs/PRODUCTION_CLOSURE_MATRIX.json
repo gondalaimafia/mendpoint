@@ -2057,16 +2057,16 @@
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
-    "observedMainRevision": "e67a040b65a48f48e425000e0fd038b2ea544b5b",
-    "observationDigest": "sha256:b4abb5c88e786934eed4616bd48c09c54e837d3b07c6b195c5fa3476eb78cead",
+    "observedMainRevision": "7f74e609ca0c9f05fa1deaaded76c9d7b2d2fbd6",
+    "observationDigest": "sha256:9859e554d96d74f31ba782ee5b487d2ef98b42a888b8487ff310e7dbc39c341f",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 485,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/485",
-      "title": "Fix production authority drift and read starvation",
+      "number": 490,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/490",
+      "title": "authority: scope open-PR head reachability to API oracles",
       "baseBranch": "main",
-      "headBranch": "codex/pr484-review-fixes",
+      "headBranch": "ci-storm-fix-app",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2081,12 +2081,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "runtime-authority-read-budget-20260826",
+        "rotationId": "rotation-20260826-002",
         "kind": "runtime",
-        "issuedAt": "2026-08-26T07:03:40.449Z",
-        "expiresAt": "2026-09-01T07:03:40.449Z",
-        "basePolicySha256": "sha256:c608eb85fd35ef35acf034f998917b479135116626e17c2a14054c6f68e50d30",
-        "proposedPolicySha256": "sha256:572d299979e55ed409ae21c8f0a720b1c4e8b7f7a6fcb7f217ea12bf4aed03cb"
+        "issuedAt": "2026-08-26T22:18:36.924Z",
+        "expiresAt": "2026-08-27T22:18:36.924Z",
+        "basePolicySha256": "sha256:572d299979e55ed409ae21c8f0a720b1c4e8b7f7a6fcb7f217ea12bf4aed03cb",
+        "proposedPolicySha256": "sha256:3bdfe57b1822cbccd434cef8b874f404cea60fcbf52848ba52899ca7068c4884"
       }
     },
     "pullRequests": [
@@ -3741,7 +3741,7 @@
         },
         "requirementIds": [],
         "checkState": "behind",
-        "headRevision": "a8ce5b6337c683b0195a0733464e7c3a752464c9",
+        "headRevision": "d24319a0b86395af5e16f74eb935fcfccbf6465d",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -3958,7 +3958,7 @@
         },
         "requirementIds": [],
         "checkState": "conflicting",
-        "headRevision": "cf5a80825b77af627190b334f5d3050dae7d4471",
+        "headRevision": "c0b429432c2ab0f3933451823db3f1256a7ec225",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -4222,6 +4222,146 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "dd16d12a73cd26e6282e0303093f81018c0d550a",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 486,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/486",
+        "title": "Use local Git for closure proposal authority",
+        "headBranch": "codex/closure-authority-local-git",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "b21de09d92dbd7329569e857e8f35fa96afb4693",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 487,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/487",
+        "title": "Bootstrap closure authority observation time",
+        "headBranch": "codex/closure-authority-bootstrap",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "ed7e84df0d03400533dc503d1928791c8726ca97",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 488,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/488",
+        "title": "docs: review Claude-authored work with Claude, then merge and deploy",
+        "headBranch": "cursor/claude-review-merge-deploy-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "3fd3388ee593a4dbc379b4d9cd5b2e174b6c83bf",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 491,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/491",
+        "title": "fix: enforce LF line endings repo-wide via .gitattributes",
+        "headBranch": "fix/eol-normalize-gitattributes",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Claude",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "88d46636f3f88403d4522be080359ce46ec9ca08",
         "mergeRevision": null,
         "checks": [],
         "review": {
