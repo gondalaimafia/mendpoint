@@ -42,6 +42,14 @@ jobs:
       main_sha: ${{ steps.state.outputs.main_sha }}
       pull_requests: ${{ steps.state.outputs.pull_requests }}
     steps:
+      - name: Create dedicated authority App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_ID }}
+          private-key: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
       - name: Discover the current protected release set
         id: state
         shell: bash
@@ -67,7 +75,9 @@ jobs:
           echo "main_sha=${main_sha}" >> "$GITHUB_OUTPUT"
           echo "pull_requests=${pull_requests}" >> "$GITHUB_OUTPUT"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Reads ride the closure App pool (5,000/hr) so a sweep cannot starve the
+          # 1,000/hr Actions GITHUB_TOKEN pool. This job performs only reads.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
 
   invalidate-authority:
@@ -84,19 +94,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Create dedicated authority App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_ID }}
+          private-key: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - name: Read the pull request head sha
+        id: head
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "head_sha=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')" >> "$GITHUB_OUTPUT"
+        env:
+          # Read rides the closure App pool (5,000/hr) so a sweep cannot starve the
+          # 1,000/hr Actions GITHUB_TOKEN pool.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ matrix.pull_request }}
       - name: Invalidate controller authority before protected credentials
         shell: bash
         run: |
           set -euo pipefail
-          head_sha="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')"
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${head_sha}" \
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
             -f state=pending \
             -f context=mendpoint-production-closure-controller \
             -f description="Protected closure authority is being reevaluated" \
             -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
         env:
+          # Write keeps its pinned controller identity (app id 15368) on GITHUB_TOKEN;
+          # switching this token would break the branch-protection binding. Do not change.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ matrix.pull_request }}
+          HEAD_SHA: ${{ steps.head.outputs.head_sha }}
 
   closure-authority:
     needs: [discover, invalidate-authority]
@@ -166,7 +196,9 @@ jobs:
         continue-on-error: true
         run: npm run closure:proposal:check
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # closure:proposal:check performs only reads (git trees/blobs/commits/compare),
+          # so it rides the closure App pool (5,000/hr) instead of the 1,000/hr GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           MENDPOINT_AUTHORITY_BASE_SHA: ${{ needs.discover.outputs.main_sha }}
           MENDPOINT_PROPOSAL_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
           MENDPOINT_PROPOSAL_OBSERVATION_PATH: ${{ runner.temp }}/production-closure-proposal-authority.json
@@ -248,7 +280,9 @@ jobs:
         continue-on-error: true
         run: npm run closure:github:check
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # closure:github:check performs only reads (git ref, pulls, check-runs, workflow
+          # runs, jobs, issues), so it rides the closure App pool (5,000/hr) not GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           MENDPOINT_CLOSURE_AUTHORITY_SHA: ${{ needs.discover.outputs.main_sha }}
           MENDPOINT_CLOSURE_EVENT_NAME: pull_request
           MENDPOINT_CLOSURE_MATRIX_PATH: ${{ runner.temp }}/proposed-production-closure-matrix.json
@@ -306,6 +340,8 @@ jobs:
         env:
           APP_IDENTITY_OUTCOME: ${{ steps.app-identity.outcome }}
           BRANCH_PROTECTION_OUTCOME: ${{ steps.branch-protection.outcome }}
+          # Controller status write keeps its pinned identity (app id 15368) on GITHUB_TOKEN;
+          # switching this token would break the branch-protection binding. Do not change.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_OUTCOME: ${{ steps.github.outcome }}
           MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
@@ -334,6 +370,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Create dedicated authority App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_ID }}
+          private-key: ${{ secrets.MENDPOINT_CLOSURE_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
       - name: Checkout exact pushed main revision
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -348,7 +392,9 @@ jobs:
       - name: Verify merged main authority
         run: npm run closure:github:check
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # closure:github:check performs only reads, so it rides the closure App pool
+          # (5,000/hr) instead of the 1,000/hr Actions GITHUB_TOKEN pool.
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           MENDPOINT_CLOSURE_EVENT_NAME: push
           MENDPOINT_CLOSURE_OBSERVATION_PATH: ${{ runner.temp }}/production-closure-main-authority.json
       - name: Upload secret-free merged authority evidence
