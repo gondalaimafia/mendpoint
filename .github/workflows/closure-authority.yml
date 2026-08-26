@@ -36,6 +36,7 @@ concurrency:
 
 jobs:
   discover:
+    environment: production-closure-authority
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -81,6 +82,7 @@ jobs:
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
 
   invalidate-authority:
+    environment: production-closure-authority
     needs: discover
     if: needs.discover.outputs.pull_requests != '[]'
     strategy:
@@ -365,6 +367,7 @@ jobs:
           PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
 
   main-authority-observation:
+    environment: production-closure-authority
     needs: discover
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
