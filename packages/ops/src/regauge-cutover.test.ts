@@ -5,6 +5,8 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -27,6 +29,13 @@ import { isBackupFenceActive, tryAcquireMutationLease } from "./disaster-recover
 const KEY = Buffer.alloc(32, 0x31);
 const WRONG_KEY = Buffer.alloc(32, 0x41);
 const roots: string[] = [];
+const LEGACY_SCOPE = [
+  `tenant-${"1".repeat(32)}`,
+  `campaign-${"2".repeat(32)}`,
+  `unit-${"3".repeat(32)}`,
+  `attempt-${"4".repeat(32)}`,
+] as const;
+const LEGACY_EXECUTION_FILE = `tre_execution_${"a".repeat(64)}.json`;
 
 const BINDINGS: RegaugeTransferBindings = Object.freeze({
   tenantId: "tenant_regauge_canary",
@@ -97,6 +106,16 @@ function fixture() {
   createDatabase(join(sourceRoot, "change-sources.sqlite"), "changes");
   createDatabase(join(sourceRoot, "transformer-control-plane.sqlite"), "control");
   createDatabase(join(sourceRoot, "transformer-pilot.sqlite"), "pilot");
+  const candidate = join(sourceRoot, "transformer-candidates", ...LEGACY_SCOPE);
+  const evidence = join(sourceRoot, "transformer-evidence", ...LEGACY_SCOPE);
+  mkdirSync(candidate, { recursive: true });
+  mkdirSync(evidence, { recursive: true });
+  writeFileSync(join(candidate, "manifest.json"), '{"kind":"transformer.candidate"}');
+  mkdirSync(join(candidate, "files"));
+  writeFileSync(join(candidate, "files", "patch.ts"), "not required by legacy adoption");
+  writeFileSync(join(candidate, "files", "manifest.json"), "not an adoption manifest");
+  writeFileSync(join(evidence, LEGACY_EXECUTION_FILE), '{"kind":"transformer.recipe.execution"}');
+  writeFileSync(join(evidence, "unrelated.json"), "not required by legacy adoption");
   return {
     root,
     sourceRoot,
@@ -143,7 +162,7 @@ describe("ReGauge state transfer", () => {
 
     expect(verified).toEqual(manifest);
     expect(manifest).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: "mendpoint.regauge.state-transfer",
       transferId: "cutover-001",
       createdAt: "2026-08-25T12:00:00.000Z",
@@ -152,6 +171,20 @@ describe("ReGauge state transfer", () => {
       authentication: { algorithm: "hmac-sha256", keyId: BINDINGS.transferKeyId },
     });
     expect(manifest.resources.map((resource) => resource.name)).toEqual(REGAUGE_TRANSFER_DATABASES);
+    expect(manifest.legacyArtifacts).toEqual([
+      expect.objectContaining({
+        root: "transformer-candidates",
+        relativePath: `${LEGACY_SCOPE.join("/")}/manifest.json`,
+        plaintextSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        encryptedSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+      expect.objectContaining({
+        root: "transformer-evidence",
+        relativePath: `${LEGACY_SCOPE.join("/")}/${LEGACY_EXECUTION_FILE}`,
+        plaintextSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        encryptedSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    ]);
     expect(manifest.resources.every((resource) =>
       /^[a-f0-9]{64}$/.test(resource.plaintextSha256) &&
       /^[a-f0-9]{64}$/.test(resource.encryptedSha256) &&
@@ -305,6 +338,38 @@ describe("ReGauge state transfer", () => {
     writeFileSync(join(extra.bundleRoot, "unexpected"), "no");
     expect(() => verifyRegaugeStateTransfer({ bundleRoot: extra.bundleRoot, transferKey: KEY }))
       .toThrow("regauge_transfer_bundle_extra_or_missing_resource");
+
+    const legacyTampered = fixture();
+    const legacyManifest = transfer(legacyTampered) as any;
+    const legacyCipher = join(legacyTampered.bundleRoot, legacyManifest.legacyArtifacts[0].ciphertextPath);
+    writeFileSync(legacyCipher, "tampered");
+    expect(() => verifyRegaugeStateTransfer({ bundleRoot: legacyTampered.bundleRoot, transferKey: KEY }))
+      .toThrow("regauge_transfer_legacy_artifact_ciphertext_evidence_mismatch");
+  });
+
+  it("rejects symlink traversal while collecting portable legacy artifacts", () => {
+    const fx = fixture();
+    const escaped = join(fx.root, "escaped");
+    mkdirSync(escaped);
+    writeFileSync(join(escaped, "secret.json"), "secret");
+    symlinkSync(escaped, join(fx.sourceRoot, "transformer-candidates", "escape"), "junction");
+    expect(() => transfer(fx)).toThrow("regauge_transfer_legacy_artifact_aliased");
+  });
+
+  it("rejects hard-linked and oversized adoption evidence before publication", () => {
+    const linked = fixture();
+    const candidate = join(linked.sourceRoot, "transformer-candidates", ...LEGACY_SCOPE, "manifest.json");
+    const execution = join(linked.sourceRoot, "transformer-evidence", ...LEGACY_SCOPE, LEGACY_EXECUTION_FILE);
+    rmSync(execution);
+    linkSync(candidate, execution);
+    expect(() => transfer(linked)).toThrow("regauge_transfer_legacy_artifact_aliased");
+
+    const oversized = fixture();
+    truncateSync(
+      join(oversized.sourceRoot, "transformer-candidates", ...LEGACY_SCOPE, "manifest.json"),
+      64 * 1024 * 1024 + 1,
+    );
+    expect(() => transfer(oversized)).toThrow("regauge_transfer_legacy_artifact_size_invalid");
   });
 
   it("rejects missing and filesystem-aliased source databases", () => {
@@ -327,6 +392,14 @@ describe("ReGauge state transfer", () => {
       transferKey: KEY,
     });
     expect(restoredManifest).toEqual(manifest);
+    expect(readFileSync(join(
+      fx.targetRoot,
+      `transformer-candidates/${LEGACY_SCOPE.join("/")}/manifest.json`,
+    ), "utf8")).toBe('{"kind":"transformer.candidate"}');
+    expect(readFileSync(join(
+      fx.targetRoot,
+      `transformer-evidence/${LEGACY_SCOPE.join("/")}/${LEGACY_EXECUTION_FILE}`,
+    ), "utf8")).toBe('{"kind":"transformer.recipe.execution"}');
     expect(inspectRegaugeLedgerTips(fx.targetRoot)).toEqual(Object.fromEntries(
       manifest.resources.map((resource) => [resource.name, resource.ledgerTips]),
     ));
@@ -342,6 +415,13 @@ describe("ReGauge state transfer", () => {
       transferKey: KEY,
     })).toThrow("regauge_transfer_target_extra_or_missing_resource");
     rmSync(join(fx.targetRoot, "unexpected"));
+    mkdirSync(join(fx.targetRoot, "transformer-candidates", "unexpected-empty-directory"));
+    expect(() => verifyRestoredRegaugeState({
+      targetRoot: fx.targetRoot,
+      importManifest: manifest,
+      transferKey: KEY,
+    })).toThrow("regauge_transfer_target_extra_or_missing_resource");
+    rmSync(join(fx.targetRoot, "transformer-candidates", "unexpected-empty-directory"), { recursive: true });
     expect(() => restoreRegaugeStateTransfer({
       bundleRoot: fx.bundleRoot,
       targetRoot: fx.targetRoot,

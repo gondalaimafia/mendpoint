@@ -198,6 +198,8 @@ export async function freezeAndExportRegaugeState(
     }, transport);
     return Object.freeze({
       transferId: manifest.transferId,
+      manifestSchemaVersion: manifest.schemaVersion,
+      legacyArtifactCount: manifest.legacyArtifacts.length,
       createdAt: manifest.createdAt,
       manifestAuthentication: manifest.authentication.value,
       fenceId: manifest.fence.id,
@@ -219,6 +221,8 @@ export async function verifyPublishedRegaugeState(
   try {
     return Object.freeze({
       transferId: downloaded.manifest.transferId,
+      manifestSchemaVersion: downloaded.manifest.schemaVersion,
+      legacyArtifactCount: downloaded.manifest.legacyArtifacts.length,
       manifestAuthentication: downloaded.manifest.authentication.value,
       resources: downloaded.manifest.resources.map(({ name, plaintextSha256, schemaSha256 }) => ({
         name, plaintextSha256, schemaSha256,
@@ -256,6 +260,8 @@ export async function restorePublishedRegaugeState(
     }, transport);
     return Object.freeze({
       transferId: manifest.transferId,
+      manifestSchemaVersion: manifest.schemaVersion,
+      legacyArtifactCount: manifest.legacyArtifacts.length,
       targetRoot: runtime.targetRoot,
       manifestAuthentication: manifest.authentication.value,
       recoveryReceiptDigest: receipt.integrity.digest,
@@ -286,6 +292,8 @@ export async function verifyRegaugeRestoreReceipt(
     }
     return Object.freeze({
       transferId: runtime.transferId,
+      manifestSchemaVersion: downloaded.manifest.schemaVersion,
+      legacyArtifactCount: downloaded.manifest.legacyArtifacts.length,
       verifiedAt: receipt.verifiedAt,
       manifestAuthentication: receipt.manifestAuthentication,
       recoveryReceiptDigest: receipt.integrity.digest,
@@ -328,6 +336,8 @@ export async function attestRestoredRegaugeState(
     }, transport);
     return Object.freeze({
       transferId: runtime.transferId,
+      manifestSchemaVersion: manifest.schemaVersion,
+      legacyArtifactCount: manifest.legacyArtifacts.length,
       targetRoot: runtime.targetRoot,
       manifestAuthentication: manifest.authentication.value,
       recoveryReceiptDigest: receipt.integrity.digest,

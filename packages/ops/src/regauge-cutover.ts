@@ -29,8 +29,13 @@ export const REGAUGE_TRANSFER_DATABASES = Object.freeze([
   "transformer-control-plane.sqlite",
   "transformer-pilot.sqlite",
 ] as const);
+export const REGAUGE_TRANSFER_LEGACY_ARTIFACT_ROOTS = Object.freeze([
+  "transformer-candidates",
+  "transformer-evidence",
+] as const);
 
 export type RegaugeTransferDatabase = (typeof REGAUGE_TRANSFER_DATABASES)[number];
+export type RegaugeTransferLegacyArtifactRoot = (typeof REGAUGE_TRANSFER_LEGACY_ARTIFACT_ROOTS)[number];
 
 export type RegaugeTransferBindings = Readonly<{
   tenantId: string;
@@ -69,14 +74,25 @@ export type RegaugeDatabaseEvidence = Readonly<{
   ledgerTips: readonly RegaugeLedgerTip[];
 }>;
 
+export type RegaugeLegacyArtifactEvidence = Readonly<{
+  root: RegaugeTransferLegacyArtifactRoot;
+  relativePath: string;
+  ciphertextPath: string;
+  plaintextSha256: string;
+  encryptedSha256: string;
+  plaintextSizeBytes: number;
+  encryptedSizeBytes: number;
+}>;
+
 export type RegaugeTransferManifest = Readonly<{
-  schemaVersion: 1;
+  schemaVersion: 2;
   kind: "mendpoint.regauge.state-transfer";
   transferId: string;
   createdAt: string;
   bindings: RegaugeTransferBindings;
   fence: Readonly<{ id: string; markerSha256: string; held: true }>;
   resources: readonly RegaugeDatabaseEvidence[];
+  legacyArtifacts: readonly RegaugeLegacyArtifactEvidence[];
   authentication: Readonly<{
     algorithm: "hmac-sha256";
     keyId: string;
@@ -103,6 +119,10 @@ const FENCE_NAME = REGAUGE_CUTOVER_FENCE_NAME;
 const EXCLUSIVE_FENCE_NAME = "exclusive.json";
 const RECOVERY_FENCE_NAME = "recovery.json";
 const WRITERS_DIRECTORY_NAME = "writers";
+const LEGACY_ARTIFACTS_DIRECTORY_NAME = "legacy-artifacts";
+const MAX_LEGACY_ARTIFACT_FILES = 10_000;
+const MAX_LEGACY_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_LEGACY_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024;
 const PROCESS_STARTED_AT = new Date().toISOString();
 const LEDGERS = Object.freeze([
   { table: "domain_events", sequence: "event_sequence", type: "event_type" },
@@ -168,6 +188,114 @@ function assertPlainDirectory(path: string, code: string): void {
       !statSync(resolved).isDirectory() || realpathSync(resolved) !== resolved) {
     fail(code);
   }
+}
+
+function portableRelativePath(value: string): string {
+  if (!value || value.includes("\\") || value.startsWith("/") || value.endsWith("/") ||
+      value.split("/").some((segment) => !/^[A-Za-z0-9._-]+$/.test(segment) || segment === "." || segment === "..")) {
+    fail("regauge_transfer_legacy_artifact_path_invalid");
+  }
+  return value;
+}
+
+function collectLegacyArtifactFiles(sourceRoot: string, rejectUnexpectedFiles = false): Array<Readonly<{
+  root: RegaugeTransferLegacyArtifactRoot;
+  relativePath: string;
+  path: string;
+  size: number;
+  identity: string;
+}>> {
+  const files: Array<Readonly<{
+    root: RegaugeTransferLegacyArtifactRoot;
+    relativePath: string;
+    path: string;
+    size: number;
+    identity: string;
+  }>> = [];
+  let totalBytes = 0;
+  for (const rootName of REGAUGE_TRANSFER_LEGACY_ARTIFACT_ROOTS) {
+    const root = resolve(sourceRoot, rootName);
+    assertPlainDirectory(root, "regauge_transfer_legacy_artifact_root_invalid");
+    const visit = (directory: string, prefix = ""): void => {
+      for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (entry.isSymbolicLink()) fail("regauge_transfer_legacy_artifact_aliased");
+        const path = join(directory, entry.name);
+        const relativePath = portableRelativePath(prefix ? `${prefix}/${entry.name}` : entry.name);
+        const observed = lstatSync(path, { bigint: true });
+        if (entry.isDirectory()) {
+          if (!observed.isDirectory() || realpathSync(path) !== resolve(path)) {
+            fail("regauge_transfer_legacy_artifact_aliased");
+          }
+          visit(path, relativePath);
+          continue;
+        }
+        if (!entry.isFile() || !observed.isFile() || observed.nlink !== 1n || realpathSync(path) !== resolve(path)) {
+          fail("regauge_transfer_legacy_artifact_aliased");
+        }
+        const scopePattern = "tenant-[a-f0-9]{32}/campaign-[a-f0-9]{32}/unit-[a-f0-9]{32}/attempt-[a-f0-9]{32}";
+        const adoptionArtifact = rootName === "transformer-candidates"
+          ? new RegExp(`^${scopePattern}/manifest\\.json$`).test(relativePath)
+          : new RegExp(`^${scopePattern}/tre_execution_[a-f0-9]{64}\\.json$`).test(relativePath);
+        if (!adoptionArtifact) {
+          if (rejectUnexpectedFiles) fail("regauge_transfer_target_extra_or_missing_resource");
+          continue;
+        }
+        const size = Number(observed.size);
+        if (!Number.isSafeInteger(size) || size < 1 || size > MAX_LEGACY_ARTIFACT_FILE_BYTES) {
+          fail("regauge_transfer_legacy_artifact_size_invalid");
+        }
+        totalBytes += size;
+        if (files.length >= MAX_LEGACY_ARTIFACT_FILES || totalBytes > MAX_LEGACY_ARTIFACT_TOTAL_BYTES) {
+          fail("regauge_transfer_legacy_artifact_bounds_exceeded");
+        }
+        files.push(Object.freeze({
+          root: rootName,
+          relativePath,
+          path,
+          size,
+          identity: `${observed.dev}:${observed.ino}`,
+        }));
+      }
+    };
+    visit(root);
+  }
+  if (new Set(files.map((file) => file.identity)).size !== files.length) {
+    fail("regauge_transfer_legacy_artifact_aliased");
+  }
+  return files.sort((a, b) => `${a.root}/${a.relativePath}`.localeCompare(`${b.root}/${b.relativePath}`));
+}
+
+function legacyArtifactTree(root: string): string[] {
+  const paths: string[] = [];
+  const visit = (directory: string, prefix = ""): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.isSymbolicLink()) fail("regauge_transfer_target_extra_or_missing_resource");
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        paths.push(`${relativePath}/`);
+        visit(path, relativePath);
+      } else if (entry.isFile()) paths.push(relativePath);
+      else fail("regauge_transfer_target_extra_or_missing_resource");
+    }
+  };
+  visit(root);
+  return paths;
+}
+
+function expectedLegacyArtifactTree(
+  manifest: RegaugeTransferManifest,
+  root: RegaugeTransferLegacyArtifactRoot,
+): string[] {
+  const paths = new Set<string>();
+  for (const artifact of manifest.legacyArtifacts.filter((candidate) => candidate.root === root)) {
+    const segments = artifact.relativePath.split("/");
+    for (let index = 1; index < segments.length; index += 1) {
+      paths.add(`${segments.slice(0, index).join("/")}/`);
+    }
+    paths.add(artifact.relativePath);
+  }
+  return [...paths].sort();
 }
 
 function tableNames(db: DatabaseSync): string[] {
@@ -428,6 +556,21 @@ function aad(bindings: RegaugeTransferBindings, transferId: string, name: string
   return Buffer.from(canonical({ schemaVersion: 1, transferId, bindings, name }), "utf8");
 }
 
+function legacyArtifactAad(
+  bindings: RegaugeTransferBindings,
+  transferId: string,
+  artifact: Pick<RegaugeLegacyArtifactEvidence, "root" | "relativePath">,
+): Buffer {
+  return Buffer.from(canonical({
+    schemaVersion: 2,
+    kind: "mendpoint.regauge.legacy-artifact",
+    transferId,
+    bindings,
+    root: artifact.root,
+    relativePath: artifact.relativePath,
+  }), "utf8");
+}
+
 function encrypt(plain: Buffer, key: Buffer, associatedData: Buffer): Buffer {
   const nonce = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", deriveKey(key, "encryption"), nonce);
@@ -467,9 +610,10 @@ function validateManifest(value: unknown): RegaugeTransferManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("regauge_transfer_manifest_invalid");
   const manifest = value as unknown as RegaugeTransferManifest;
   exactKeys(value as Record<string, unknown>, [
-    "schemaVersion", "kind", "transferId", "createdAt", "bindings", "fence", "resources", "authentication",
+    "schemaVersion", "kind", "transferId", "createdAt", "bindings", "fence", "resources",
+    "legacyArtifacts", "authentication",
   ], "regauge_transfer_manifest_extra_or_missing");
-  if (manifest.schemaVersion !== 1 || manifest.kind !== "mendpoint.regauge.state-transfer") {
+  if (manifest.schemaVersion !== 2 || manifest.kind !== "mendpoint.regauge.state-transfer") {
     fail("regauge_transfer_manifest_version_invalid");
   }
   requiredText(manifest.transferId, "regauge_transfer_id_invalid");
@@ -507,6 +651,37 @@ function validateManifest(value: unknown): RegaugeTransferManifest {
       fail("regauge_transfer_resource_evidence_invalid");
     }
   }
+  if (!Array.isArray(manifest.legacyArtifacts) || manifest.legacyArtifacts.length > MAX_LEGACY_ARTIFACT_FILES) {
+    fail("regauge_transfer_legacy_artifacts_invalid");
+  }
+  let legacyBytes = 0;
+  let previousLegacyKey = "";
+  for (const artifact of manifest.legacyArtifacts) {
+    exactKeys(artifact as unknown as Record<string, unknown>, [
+      "root", "relativePath", "ciphertextPath", "plaintextSha256", "encryptedSha256",
+      "plaintextSizeBytes", "encryptedSizeBytes",
+    ], "regauge_transfer_legacy_artifact_invalid");
+    if (!(REGAUGE_TRANSFER_LEGACY_ARTIFACT_ROOTS as readonly string[]).includes(artifact.root)) {
+      fail("regauge_transfer_legacy_artifact_root_invalid");
+    }
+    portableRelativePath(artifact.relativePath);
+    const legacyKey = `${artifact.root}/${artifact.relativePath}`;
+    if (legacyKey <= previousLegacyKey || artifact.ciphertextPath !==
+        `${LEGACY_ARTIFACTS_DIRECTORY_NAME}/${legacyKey}.aes256gcm` ||
+        !/^[a-f0-9]{64}$/.test(artifact.plaintextSha256) ||
+        !/^[a-f0-9]{64}$/.test(artifact.encryptedSha256) ||
+        !Number.isSafeInteger(artifact.plaintextSizeBytes) || artifact.plaintextSizeBytes < 1 ||
+        artifact.plaintextSizeBytes > MAX_LEGACY_ARTIFACT_FILE_BYTES ||
+        !Number.isSafeInteger(artifact.encryptedSizeBytes) ||
+        artifact.encryptedSizeBytes !== artifact.plaintextSizeBytes + 28) {
+      fail("regauge_transfer_legacy_artifact_evidence_invalid");
+    }
+    previousLegacyKey = legacyKey;
+    legacyBytes += artifact.plaintextSizeBytes;
+    if (legacyBytes > MAX_LEGACY_ARTIFACT_TOTAL_BYTES) {
+      fail("regauge_transfer_legacy_artifact_bounds_exceeded");
+    }
+  }
   if (!manifest.authentication || typeof manifest.authentication !== "object") {
     fail("regauge_transfer_authentication_invalid");
   }
@@ -523,17 +698,30 @@ function validateManifest(value: unknown): RegaugeTransferManifest {
 function assertBundleFiles(bundleRoot: string, manifest: RegaugeTransferManifest): void {
   const rootEntries = readdirSync(bundleRoot, { withFileTypes: true });
   if (rootEntries.some((entry) => entry.isSymbolicLink()) ||
-      canonical(rootEntries.map((entry) => entry.name).sort()) !== canonical([MANIFEST_NAME, "resources"].sort()) ||
+      canonical(rootEntries.map((entry) => entry.name).sort()) !==
+        canonical([MANIFEST_NAME, "resources", LEGACY_ARTIFACTS_DIRECTORY_NAME].sort()) ||
       !rootEntries.find((entry) => entry.name === MANIFEST_NAME)?.isFile() ||
-      !rootEntries.find((entry) => entry.name === "resources")?.isDirectory()) {
+      !rootEntries.find((entry) => entry.name === "resources")?.isDirectory() ||
+      !rootEntries.find((entry) => entry.name === LEGACY_ARTIFACTS_DIRECTORY_NAME)?.isDirectory()) {
     fail("regauge_transfer_bundle_extra_or_missing_resource");
   }
-  const resourceEntries = readdirSync(join(bundleRoot, "resources"), { withFileTypes: true });
-  if (resourceEntries.some((entry) => !entry.isFile() || entry.isSymbolicLink())) {
-    fail("regauge_transfer_bundle_extra_or_missing_resource");
-  }
-  const actual = [MANIFEST_NAME, ...resourceEntries.map((entry) => `resources/${entry.name}`)].sort();
-  const expected = [MANIFEST_NAME, ...manifest.resources.map((resource) => resource.ciphertextPath)].sort();
+  const actual = [MANIFEST_NAME];
+  const visit = (directory: string, prefix: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) fail("regauge_transfer_bundle_extra_or_missing_resource");
+      const relativePath = `${prefix}/${entry.name}`;
+      if (entry.isDirectory()) visit(join(directory, entry.name), relativePath);
+      else if (entry.isFile()) actual.push(relativePath);
+      else fail("regauge_transfer_bundle_extra_or_missing_resource");
+    }
+  };
+  visit(join(bundleRoot, "resources"), "resources");
+  visit(join(bundleRoot, LEGACY_ARTIFACTS_DIRECTORY_NAME), LEGACY_ARTIFACTS_DIRECTORY_NAME);
+  actual.sort();
+  const expected = [MANIFEST_NAME,
+    ...manifest.resources.map((resource) => resource.ciphertextPath),
+    ...manifest.legacyArtifacts.map((artifact) => artifact.ciphertextPath),
+  ].sort();
   if (canonical(actual) !== canonical(expected)) fail("regauge_transfer_bundle_extra_or_missing_resource");
 }
 
@@ -572,6 +760,41 @@ function decryptAndVerifyResource(
   const observed = inspectDatabase(outputPath, resource.name);
   if (canonical(evidenceComparable(observed)) !== canonical(evidenceComparable(resource))) {
     fail("regauge_transfer_database_evidence_mismatch");
+  }
+}
+
+function decryptAndVerifyLegacyArtifact(
+  bundleRoot: string,
+  outputRoot: string,
+  manifest: RegaugeTransferManifest,
+  artifact: RegaugeLegacyArtifactEvidence,
+  key: Buffer,
+): void {
+  const ciphertextPath = resolve(bundleRoot, artifact.ciphertextPath);
+  if (!ciphertextPath.startsWith(`${resolve(bundleRoot)}${sep}`)) {
+    fail("regauge_transfer_legacy_artifact_path_invalid");
+  }
+  assertPlainFile(ciphertextPath, "regauge_transfer_legacy_artifact_ciphertext");
+  const encrypted = readFileSync(ciphertextPath);
+  if (encrypted.byteLength !== artifact.encryptedSizeBytes || sha256(encrypted) !== artifact.encryptedSha256) {
+    fail("regauge_transfer_legacy_artifact_ciphertext_evidence_mismatch");
+  }
+  const plain = decrypt(encrypted, key, legacyArtifactAad(manifest.bindings, manifest.transferId, artifact));
+  if (plain.byteLength !== artifact.plaintextSizeBytes || sha256(plain) !== artifact.plaintextSha256) {
+    fail("regauge_transfer_legacy_artifact_plaintext_evidence_mismatch");
+  }
+  const artifactRoot = join(outputRoot, artifact.root);
+  mkdirSync(artifactRoot, { recursive: true, mode: 0o700 });
+  const outputPath = resolve(artifactRoot, ...portableRelativePath(artifact.relativePath).split("/"));
+  if (!outputPath.startsWith(`${resolve(artifactRoot)}${sep}`)) {
+    fail("regauge_transfer_legacy_artifact_path_invalid");
+  }
+  mkdirSync(dirname(outputPath), { recursive: true, mode: 0o700 });
+  writeFileSync(outputPath, plain, { mode: 0o600, flag: "wx" });
+  assertPlainFile(outputPath, "regauge_transfer_legacy_artifact_target");
+  const readback = readFileSync(outputPath);
+  if (readback.byteLength !== artifact.plaintextSizeBytes || sha256(readback) !== artifact.plaintextSha256) {
+    fail("regauge_transfer_legacy_artifact_target_evidence_mismatch");
   }
 }
 
@@ -615,8 +838,10 @@ export function createRegaugeStateTransfer(input: Readonly<{
   });
   const identities = new Set(sources.map(({ identity }) => `${identity.dev}:${identity.ino}`));
   if (identities.size !== sources.length) fail("regauge_transfer_sources_aliased");
+  const legacySources = collectLegacyArtifactFiles(sourceRoot);
   const staging = `${resolve(input.bundleRoot)}.staging-${randomBytes(8).toString("hex")}`;
   mkdirSync(join(staging, "resources"), { recursive: true, mode: 0o700 });
+  mkdirSync(join(staging, LEGACY_ARTIFACTS_DIRECTORY_NAME), { recursive: true, mode: 0o700 });
   try {
     const resources = sources.map(({ name, path }) => {
       assertFence();
@@ -634,14 +859,46 @@ export function createRegaugeStateTransfer(input: Readonly<{
         encryptedSizeBytes: encrypted.byteLength,
       };
     });
+    const legacyArtifacts = legacySources.map((source) => {
+      assertFence();
+      const plain = readFileSync(source.path);
+      const observed = lstatSync(source.path, { bigint: true });
+      if (!observed.isFile() || observed.nlink !== 1n || Number(observed.size) !== source.size ||
+          `${observed.dev}:${observed.ino}` !== source.identity || realpathSync(source.path) !== resolve(source.path)) {
+        fail("regauge_transfer_legacy_artifact_changed");
+      }
+      const evidenceBase = {
+        root: source.root,
+        relativePath: source.relativePath,
+      } as const;
+      const encrypted = encrypt(
+        plain,
+        input.transferKey,
+        legacyArtifactAad(input.bindings, input.transferId, evidenceBase),
+      );
+      const ciphertextPath = `${LEGACY_ARTIFACTS_DIRECTORY_NAME}/${source.root}/${source.relativePath}.aes256gcm`;
+      const ciphertext = join(staging, ...ciphertextPath.split("/"));
+      mkdirSync(dirname(ciphertext), { recursive: true, mode: 0o700 });
+      writeFileSync(ciphertext, encrypted, { mode: 0o600, flag: "wx" });
+      assertFence();
+      return Object.freeze({
+        ...evidenceBase,
+        ciphertextPath,
+        plaintextSha256: sha256(plain),
+        encryptedSha256: sha256(encrypted),
+        plaintextSizeBytes: plain.byteLength,
+        encryptedSizeBytes: encrypted.byteLength,
+      });
+    });
     const body = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       kind: "mendpoint.regauge.state-transfer" as const,
       transferId: input.transferId,
       createdAt: input.createdAt,
       bindings: Object.freeze({ ...input.bindings }),
       fence: Object.freeze({ id: input.fenceId, markerSha256: initialFence.markerSha256, held: true as const }),
       resources: Object.freeze(resources),
+      legacyArtifacts: Object.freeze(legacyArtifacts),
     };
     const manifest: RegaugeTransferManifest = Object.freeze({
       ...body,
@@ -683,6 +940,9 @@ export function verifyRegaugeStateTransfer(input: Readonly<{
     for (const resource of manifest.resources) {
       decryptAndVerifyResource(bundleRoot, join(verificationRoot, resource.name), manifest, resource, input.transferKey);
     }
+    for (const artifact of manifest.legacyArtifacts) {
+      decryptAndVerifyLegacyArtifact(bundleRoot, verificationRoot, manifest, artifact, input.transferKey);
+    }
   } finally { rmSync(verificationRoot, { recursive: true, force: true }); }
   return manifest;
 }
@@ -702,6 +962,12 @@ export function restoreRegaugeStateTransfer(input: Readonly<{
   try {
     for (const resource of manifest.resources) {
       decryptAndVerifyResource(resolve(input.bundleRoot), join(staging, resource.name), manifest, resource, input.transferKey);
+    }
+    for (const root of REGAUGE_TRANSFER_LEGACY_ARTIFACT_ROOTS) {
+      mkdirSync(join(staging, root), { recursive: true, mode: 0o700 });
+    }
+    for (const artifact of manifest.legacyArtifacts) {
+      decryptAndVerifyLegacyArtifact(resolve(input.bundleRoot), staging, manifest, artifact, input.transferKey);
     }
     renameSync(staging, targetRoot);
     return manifest;
@@ -733,14 +999,38 @@ export function verifyRestoredRegaugeState(input: Readonly<{
     fail("regauge_transfer_target_invalid");
   }
   const entries = readdirSync(targetRoot, { withFileTypes: true });
-  if (entries.some((entry) => !entry.isFile() || entry.isSymbolicLink()) ||
-      canonical(entries.map((entry) => entry.name).sort()) !== canonical([...REGAUGE_TRANSFER_DATABASES].sort())) {
+  if (entries.some((entry) => entry.isSymbolicLink()) ||
+      canonical(entries.map((entry) => entry.name).sort()) !==
+        canonical([...REGAUGE_TRANSFER_DATABASES, ...REGAUGE_TRANSFER_LEGACY_ARTIFACT_ROOTS].sort()) ||
+      REGAUGE_TRANSFER_DATABASES.some((name) => !entries.find((entry) => entry.name === name)?.isFile()) ||
+      REGAUGE_TRANSFER_LEGACY_ARTIFACT_ROOTS.some((name) => !entries.find((entry) => entry.name === name)?.isDirectory())) {
     fail("regauge_transfer_target_extra_or_missing_resource");
   }
   for (const resource of manifest.resources) {
     const observed = inspectDatabase(join(targetRoot, resource.name), resource.name);
     if (canonical(evidenceComparable(observed)) !== canonical(evidenceComparable(resource))) {
       fail("regauge_transfer_target_evidence_mismatch");
+    }
+  }
+  const observedLegacy = collectLegacyArtifactFiles(targetRoot, true).map(({ root, relativePath, path, size }) => ({
+    root,
+    relativePath,
+    plaintextSha256: sha256(readFileSync(path)),
+    plaintextSizeBytes: size,
+  }));
+  const expectedLegacy = manifest.legacyArtifacts.map((artifact) => ({
+    root: artifact.root,
+    relativePath: artifact.relativePath,
+    plaintextSha256: artifact.plaintextSha256,
+    plaintextSizeBytes: artifact.plaintextSizeBytes,
+  }));
+  if (canonical(observedLegacy) !== canonical(expectedLegacy)) {
+    fail("regauge_transfer_target_legacy_artifact_evidence_mismatch");
+  }
+  for (const root of REGAUGE_TRANSFER_LEGACY_ARTIFACT_ROOTS) {
+    if (canonical(legacyArtifactTree(join(targetRoot, root))) !==
+        canonical(expectedLegacyArtifactTree(manifest, root))) {
+      fail("regauge_transfer_target_extra_or_missing_resource");
     }
   }
   return manifest;

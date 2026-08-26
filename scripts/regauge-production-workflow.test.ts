@@ -344,6 +344,9 @@ describe("Regauge production workflow", () => {
     expect(receipt).toContain("scripts/regauge-state-transfer.ts attest-restored");
     expect(receipt).toContain('.targetVolume == $target_volume');
     expect(receipt).toContain('.sourceRevision == $revision');
+    expect(receipt).toContain('.manifestSchemaVersion == 2');
+    expect(receipt).toContain('(.legacyArtifactCount | type) == "number"');
+    expect(receipt).toContain('.legacyArtifactCount >= 0');
     expect(receipt).toContain('test "$((now_epoch - verified_epoch))" -le 300');
     expect(receipt).toContain("restored-state-receipt.json");
     expect(receipt).not.toContain("MENDPOINT_REGAUGE_TRANSFER_KEY=");

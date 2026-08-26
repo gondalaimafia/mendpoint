@@ -92,6 +92,14 @@ function fixture() {
   database(join(source, "mendpoint.sqlite"), "domain");
   database(join(source, "transformer-control-plane.sqlite"), "control");
   database(join(source, "transformer-pilot.sqlite"), "pilot");
+  const legacyScope = [
+    `tenant-${"1".repeat(32)}`, `campaign-${"2".repeat(32)}`,
+    `unit-${"3".repeat(32)}`, `attempt-${"4".repeat(32)}`,
+  ];
+  mkdirSync(join(source, "transformer-candidates", ...legacyScope), { recursive: true });
+  mkdirSync(join(source, "transformer-evidence", ...legacyScope), { recursive: true });
+  writeFileSync(join(source, "transformer-candidates", ...legacyScope, "manifest.json"), "candidate");
+  writeFileSync(join(source, "transformer-evidence", ...legacyScope, `tre_execution_${"a".repeat(64)}.json`), "execution");
   const env = {
     MENDPOINT_BACKUP_TRANSPORT: "rclone_s3",
     MENDPOINT_BACKUP_STAGING_ROOT: join(root, "staging"),

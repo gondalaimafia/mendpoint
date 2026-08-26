@@ -3430,3 +3430,20 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 #### Review
 
 The exact-head review found that successful adoption did not append an adoption-result row and the discovery query read every unmatched terminal event before applying its JavaScript limit. The bounded SQL query now excludes an existing unit outbox, selects only the latest artifact-bearing terminal event for each unit, and applies `LIMIT ?` at the database boundary. The existing authenticated legacy adoption test now proves the query carries both the outbox exclusion and SQL limit and that the adopted event disappears from the next scan. All 195 focused recovery tests pass, as do the Transformer, Pipeline, Worker, and API typechecks. `git diff --check` is clean. Independent review remains a merge gate.
+
+### 2026-08-26 PR #460 portable legacy artifact cutover repair
+
+- [x] RED: prove a cutover with a pending legacy terminal row restores the exact candidate manifest and execution evidence onto a new volume and can adopt them without the source volume.
+- [x] RED: reject oversized, corrupt, missing, extra, symlinked, hard-linked, or traversal-shaped legacy artifact entries before publication or target activation.
+- [x] Authenticate bounded legacy artifact paths, byte sizes, plaintext digests, ciphertext digests, and the exact two retained roots in the transfer manifest.
+- [x] Restore legacy artifacts create-only inside the atomic target publication and verify exact readback before emitting a restored-state attestation.
+- [x] Require the production workflow to accept only the portable transfer manifest version before deployment.
+- [x] Preserve the source cutover fence, tenant and campaign bindings, rollback evidence, and retained old volume.
+- [x] Run focused and widened tests, affected typechecks, build, production audit, and strict diff review.
+- [x] Record final evidence and commit locally without pushing.
+
+#### Review
+
+The schema-2 transfer now carries only the exact hashed candidate-manifest and execution-evidence paths consumed by legacy adoption. Each file is independently authenticated with its tenant/campaign-bound transfer AAD, plaintext and ciphertext digests, exact sizes, strict aggregate bounds, and a portable relative path. Source collection rejects symlinks, hard links, traversal shapes, and unexpected file types; target publication restores create-only in the same atomic staging tree as the databases and then proves the exact directory tree and byte readback before attestation.
+
+Red-first regressions demonstrated that the former database-only bundle restored terminal rows without their required bytes, that nested lookalike files could exceed the intended adoption scope, and that an extra empty target directory escaped file-only comparison. The repaired tests cover pending legacy bytes on a new volume, corruption, missing and extra entries, symlink and hard-link aliases, oversize files, exact path selection, and workflow rejection of schema 1. The focused 13-file recovery matrix passes 217 tests; the full Ops workspace passes 136 tests. Ops, API, Worker, Pipeline, Transformer, and scripts typechecks pass, as do the production build, audit with zero vulnerabilities, and strict diff check. The old source volume remains retained and rollback/fence behavior is unchanged.

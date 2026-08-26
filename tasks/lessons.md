@@ -172,3 +172,8 @@
 **Mistake:** I started a manual Cursor PR review after finding that the installed review skill pointed to a missing workflow.
 **Correction:** Talal required the necessary skills to be fetched and used, and required findings to be fixed before merge.
 **Rule:** When an applicable review skill is incomplete, fetch its current authoritative runtime before continuing. For agent-authored PRs, use the fetched adversarial review and fixer workflow, then re-review the exact fixed head and require current-base CI before merge.
+
+### 2026-08-26 — Transfer every durable consumer dependency
+**Mistake:** The cutover restored durable terminal rows but omitted the local candidate and execution-evidence bytes required to adopt those rows on a new volume.
+**Correction:** The exact-head review required an authenticated portable transfer of those bytes or a provably complete zero-backlog fence before freeze.
+**Rule:** Before declaring a state transfer complete, trace every restored row to its non-database dependencies. Transfer the exact bounded authenticated bytes and prove target readback, or attest that no durable row can reference omitted state.

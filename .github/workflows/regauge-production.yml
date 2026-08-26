@@ -358,6 +358,9 @@ jobs:
             --arg target_volume "$target_volume_id" --arg revision "$GITHUB_SHA" '
               .attested == true
               and .transferId == $transfer
+              and .manifestSchemaVersion == 2
+              and (.legacyArtifactCount | type) == "number"
+              and .legacyArtifactCount >= 0
               and .targetApp == "mendpoint-regauge-production"
               and .targetVolume == $target_volume
               and .sourceRevision == $revision
