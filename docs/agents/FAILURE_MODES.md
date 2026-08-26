@@ -274,6 +274,112 @@ base actually moved by reading it back, then delete. See
 
 ---
 
+## 12. The upgrade path is invisible to CI
+
+**Every test and the deployment-e2e job boot from a *fresh* database. Nothing in
+CI exercises an upgrade.**
+
+A slice added an index on `agent_runs(tenant_id, job_id)` to the static DDL while
+`job_id` arrives via a later additive migration. Everything was green — fresh
+databases have the column. The existing production volume did not; `createDb`
+runs the whole static DDL *before* additive migrations, so boot threw
+`no such column: job_id` and production went down until a manual rollback to the
+previous image.
+
+`CREATE TABLE IF NOT EXISTS` no-ops on an existing table, so **any** static DDL
+statement referencing a migrated column works only on fresh databases.
+
+**The rule.** A new column goes in *both* the `CREATE TABLE` and the additive
+migration list. Static DDL must never reference a column that arrives by
+migration — an index on a migrated column belongs in the migration, not the DDL.
+Before deploying a schema change, boot it once against a copy of the pre-change
+schema; a green fresh-install suite says nothing about upgrades.
+
+---
+
+## 13. A modeled control arm flatters the treatment
+
+**A benchmark arm that is *modeled* rather than *run* encodes the assumption
+being tested.**
+
+The persistent-context benchmark measured "repeated mistakes avoided" as **3.0 of
+3** synthetically and **0.0 of 3** against a live model. The treatment did not
+regress — it scored 0/3 in both. The metric collapsed because the *control*
+changed: a modeled stateless agent repeats every mistake **by construction**,
+while the real model's own priors already avoided them. The whole synthetic delta
+was manufactured by how the control was written.
+
+**The rule.** Before believing a benchmark delta, ask what the control arm
+actually does. If it is a description of a baseline rather than an execution of
+one, the number measures the description. Run both arms.
+
+---
+
+## 14. Orchestration failures
+
+These cost more wall-clock time in practice than any single code defect.
+
+**Agents stall waiting on background work.** Five separate agents in one session
+ended their turn to announce that a gate was running, each needing an identical
+nudge. Put it in the brief, not the recovery: *run all gates in the foreground of
+your own turn; end the turn only with a final report or a precisely named
+blocker.*
+
+**A watcher that is silent on red converts "blocked" into "waiting."** A
+merge-on-green loop correctly refused a red PR for over an hour while emitting
+nothing — indistinguishable from checks still running, and the operator noticed
+before the tooling did. Any such loop must emit a distinct `RED:<pr> <check>` line
+and stop: a completed failure is terminal, and more polling cannot fix it.
+
+**Automation that rebases mid-CI serializes itself.** Rebasing a PR whose checks
+are still running kills the in-flight run and restarts the clock. Rebase only
+when every required check is *completed* and staleness is the last blocker.
+
+**Briefs decay faster than they execute.** Include the standing instruction: *if a
+premise in this brief turns out to be false, stop and report rather than adapting
+the work to fit.* That instruction repeatedly prevented confident changes built on
+something untrue — including an agent told to harden a subsystem another session
+had already deleted.
+
+---
+
+## 15. Environment traps on this host
+
+- **The default `dev/mendpoint` checkout is not `main`.** It is a long-parked
+  worktree on another branch. Read `origin/main` through `git show` or a clean
+  worktree; never trust the working tree.
+- **`git grep` mangles patterns containing an equals-quote-slash sequence**
+  (MSYS path conversion) and returns zero matches. Prefix `MSYS_NO_PATHCONV=1`.
+  See §6.
+- **Windows-python and MSYS tools resolve `/tmp` to different directories.**
+  Mixing them silently breaks backup-and-restore — a restore that "succeeded"
+  once left a mutated file staged for commit.
+- **Some suites carry hard-coded per-test timeouts** and fail under parallel load
+  while passing in isolation. Distinguish an environmental timeout from an
+  assertion failure before reporting either.
+
+---
+
+## 16. Before an irreversible or outward-facing action
+
+Merging, deleting a branch, deploying, sending, publishing, paying, and changing
+branch protection are all one-way doors.
+
+A stated constraint ("schedule, do not publish") was violated minutes later — not
+from forgetting, but because the commitment lived only in conversation prose, and
+a long error-recovery loop had shifted the work into repeating the mechanical
+sequence that worked last time.
+
+**The rules.** Write a constraint on a future irreversible action into the task
+list or a file, never only into conversation. Immediately before the action,
+restate the constraint and confirm this action satisfies it. Treat long
+failure-recovery loops as a trigger to re-read the plan — that is exactly when
+pattern-matching replaces intent. And **query live state before assigning manual
+work to a human**: a chain of manual errands was once justified entirely by a
+stale note, when one live check would have shown the work was already done.
+
+---
+
 ## Quick checklist
 
 Before opening a PR:
