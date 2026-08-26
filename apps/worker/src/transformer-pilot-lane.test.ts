@@ -1108,14 +1108,16 @@ describe("Transformer production pilot lane", () => {
     });
     expect(completed).toMatchObject({ attempted: 1, completed: 1, errors: [] });
     const [registration] = store.listPendingMissionArtifactRegistrations("tenant-a", 10);
-    expect(registration).toBeDefined();
+    if (!registration || registration.schemaVersion !== 1) {
+      throw new Error("expected local Mission artifact registration");
+    }
     writeFileSync(
-      join(root, "candidates", registration!.candidateManifestPath),
+      join(root, "candidates", registration.candidateManifestPath),
       "tampered candidate evidence",
       "utf8",
     );
     writeFileSync(
-      join(root, "evidence", registration!.executionEvidencePath),
+      join(root, "evidence", registration.executionEvidencePath),
       "tampered execution evidence",
       "utf8",
     );
