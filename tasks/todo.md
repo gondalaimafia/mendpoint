@@ -3396,7 +3396,7 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 - [x] Preflight the exact tenant and campaign Mission binding before local outbox rehydration.
 - [x] Durably complete unbound local registrations so one historical item cannot poison worker readiness.
 - [x] Preserve and assess the coordinator E2E timeout budget change; document why the budget exists and whether 30 seconds is sufficient.
-- [ ] Run focused recovery suites, affected typechecks, strict diff integrity, rebase if needed, commit, and force-with-lease push without approving or merging.
+- [x] Run focused recovery suites, affected typechecks, strict diff integrity, rebase if needed, commit, and force-with-lease push without approving or merging.
 
 #### Review
 
