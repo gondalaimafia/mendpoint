@@ -194,6 +194,25 @@ afterEach(() => {
 });
 
 describe("Warden exact candidate draft delivery", () => {
+  it("quarantines a legacy mission-bound delivery without retained authority before GitHub", async () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?`)
+      .run(JSON.stringify({ deliveryId: value.delivery.id, runId: "warden-run-1", missionId: "mission-1" }),
+        value.job.id, "tenant-a");
+    const deliverExactDraft = vi.fn();
+    await expect(runWardenCandidateDelivery({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!,
+      github: { deliverExactDraft } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      now: () => NOW })).resolves.toMatchObject({ status: "delivery_failed" });
+    expect(getJob(value.db, value.job.id, "tenant-a")).toMatchObject({
+      status: "dead_letter",
+      error_code: "warden_candidate_delivery_mission_authority_upgrade_required",
+    });
+    expect(deliverExactDraft).not.toHaveBeenCalled();
+  });
+
   it("claims an approved delivery through the real job loop and resumes the exact reviewed Mission task", async () => {
     const value = bindMissionAuthority(fixture());
     value.db.raw.prepare(`UPDATE jobs SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL

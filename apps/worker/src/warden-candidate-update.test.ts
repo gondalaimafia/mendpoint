@@ -156,6 +156,22 @@ afterEach(() => {
 });
 
 describe("Warden candidate exact draft update", () => {
+  it("quarantines a legacy mission-bound update without retained authority before GitHub", async () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?`)
+      .run(JSON.stringify({ cycleId: "cycle-a", updateId: value.update.id, missionId: "mission-1" }),
+        value.job.id, "tenant-a");
+    const updateExactDraft = vi.fn();
+    await expect(runWardenCandidateUpdate({ db: value.db,
+      job: getJob(value.db, value.job.id, "tenant-a")!, updateExactDraft,
+      reconcileExactDraftUpdate: vi.fn(), readApprovalArtifact: () => value.artifact,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:05:00.000Z" }))
+      .rejects.toThrow("warden_ci_update_mission_authority_upgrade_required");
+    expect(updateExactDraft).not.toHaveBeenCalled();
+    expect(getJob(value.db, value.job.id, "tenant-a")?.status).toBe("running");
+  });
+
   it("claims an approved CI update through the real job loop and retains fresh Mission authority", async () => {
     const value = bindMissionAuthority(fixture());
     value.db.raw.prepare(`UPDATE jobs SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL
