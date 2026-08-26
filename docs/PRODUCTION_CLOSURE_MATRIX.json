@@ -2058,7 +2058,7 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T09:36:57.563Z",
     "observedMainRevision": "7f74e609ca0c9f05fa1deaaded76c9d7b2d2fbd6",
-    "observationDigest": "sha256:3928a06008b2d0fdb506d9a9aa18e74f8f63d76945585b734651b55dd9a5e8d2",
+    "observationDigest": "sha256:c31fde5c0fe0f8cdc6fb98cf2a3b82905abf9e069809fd43c9a597edac287579",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -3949,7 +3949,7 @@
           "branches": []
         },
         "requirementIds": [],
-        "checkState": "conflicting",
+        "checkState": "checks_failed",
         "headRevision": "c0b429432c2ab0f3933451823db3f1256a7ec225",
         "mergeRevision": null,
         "checks": [],
@@ -4215,6 +4215,41 @@
         "checkState": "stale_checks",
         "headRevision": "dd16d12a73cd26e6282e0303093f81018c0d550a",
         "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 485,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/485",
+        "title": "Fix production authority drift and read starvation",
+        "headBranch": "codex/pr484-review-fixes",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "df0d7543d9a80b0846af531e24e1f37e86a034ce",
+        "mergeRevision": "7f74e609ca0c9f05fa1deaaded76c9d7b2d2fbd6",
         "checks": [],
         "review": {
           "state": "none",
