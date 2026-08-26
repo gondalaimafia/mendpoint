@@ -269,6 +269,44 @@ describe("mission handoff (durable records)", () => {
     expect(history.find((decision) => decision.id === older.id)?.effectiveStatus).toBe("superseded");
   });
 
+  it("keeps repeated delivery of a retired stale replay permanently idempotent", () => {
+    const db = fixture();
+    const candidateDigest = "7".repeat(64);
+    const scope = `reviewer_directive:candidate:${candidateDigest}`;
+    const older = recordReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Keep the public signature stable.", scope,
+      authorPrincipalId: "human-1", evidence: ["agent_run:run-old", `candidate:${candidateDigest}`],
+      correlationId: "corr-old", createdAt: T0, decisionType: "verification",
+    });
+    const newer = recordReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Keep the signature and add bounded retries.", scope,
+      authorPrincipalId: "human-1", evidence: ["agent_run:run-new", `candidate:${candidateDigest}`],
+      correlationId: "corr-new", createdAt: T1, decisionType: "verification",
+    });
+    const delayedReplay = {
+      tenantId: "t1", missionId: "m1", directive: older.decision,
+      candidateDigest, sourceRunId: "run-old", authorPrincipalId: "human-1",
+      correlationId: "corr-replay", createdAt: T2,
+    } as const;
+
+    expect(replaceReviewerDirective(db, delayedReplay).id).toBe(newer.id);
+    const historyLength = listMissionDecisions(db, "t1", "m1").length;
+    const eventCount = listDomainEvents(db, "t1", "mission", "m1").length;
+    const repeated = replaceReviewerDirective(db, {
+      ...delayedReplay,
+      correlationId: "corr-replay-again",
+      createdAt: "2026-01-04T00:00:00.000Z",
+    });
+
+    expect(repeated.id).toBe(newer.id);
+    expect(getActiveMissionDecisions(db, "t1", "m1").filter((decision) =>
+      decision.scope === scope && decision.decisionType === "verification")).toEqual([
+      expect.objectContaining({ id: newer.id, decision: newer.decision }),
+    ]);
+    expect(listMissionDecisions(db, "t1", "m1")).toHaveLength(historyLength);
+    expect(listDomainEvents(db, "t1", "mission", "m1")).toHaveLength(eventCount);
+  });
+
   it("uses durable event order when duplicate heads have the same timestamp", () => {
     const db = fixture();
     const candidateDigest = "f".repeat(64);
@@ -298,6 +336,26 @@ describe("mission handoff (durable records)", () => {
       decision.scope === scope && decision.decisionType === "verification")).toEqual([
       expect.objectContaining({ id: newer.id, decision: newer.decision }),
     ]);
+  });
+
+  it("rejects a tampered tenant event hash chain before ordering reviewer authority", () => {
+    const db = fixture();
+    const candidateDigest = "8".repeat(64);
+    const scope = `reviewer_directive:candidate:${candidateDigest}`;
+    const recorded = recordReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: "Keep the signature stable.", scope,
+      authorPrincipalId: "human-1", evidence: ["agent_run:run-tampered", `candidate:${candidateDigest}`],
+      correlationId: "corr-tampered", createdAt: T1, decisionType: "verification",
+    });
+    db.raw.exec("DROP TRIGGER domain_events_append_only_update");
+    db.raw.prepare("UPDATE domain_events SET event_hash = ? WHERE id = ?")
+      .run("tampered", `mission-decision:${recorded.id}`);
+
+    expect(() => replaceReviewerDirective(db, {
+      tenantId: "t1", missionId: "m1", directive: recorded.decision,
+      candidateDigest, sourceRunId: "run-tampered", authorPrincipalId: "human-1",
+      correlationId: "corr-replay", createdAt: T2,
+    })).toThrowError("reviewer_directive_event_chain_invalid");
   });
 
   it("leaves a legacy-shaped head active when its scope and run evidence disagree", () => {

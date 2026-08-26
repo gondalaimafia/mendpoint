@@ -3392,3 +3392,25 @@ RED: the exact released-scope API fixture retained all three verification heads,
 GREEN: eligible heads now require exactly one candidate reference for the requested digest and exactly one non-empty agent-run reference. The current candidate scope is accepted; the released run scope is accepted only when its suffix equals that exact agent-run reference. Foreign decision types, mismatched legacy scope/evidence, and other candidates remain untouched. Eligible heads are ordered by their tenant-scoped Mission domain-event sequence, with exact decision/event binding checks that fail closed instead of falling back to timestamps or hashes.
 
 Verification: rebased onto current `origin/main` `c8d51caa`. All 18 Mission handoff database tests and 21 candidate-review API tests pass. Database and API typechecks pass, and diff integrity is clean.
+
+### 2026-08-25 PR 466 permanent replay and ledger-integrity repair
+
+Review blockers:
+
+- A second delivery of the same delayed legacy replay can restore stale guidance because semantic identity is searched only among active heads after the first delivery retracts the matching historical head.
+- Reviewer authority ordering consumes `domain_events.event_sequence` without first verifying the tenant hash chain, so a corrupt imported or pre-trigger ledger can influence survivor selection instead of failing closed.
+
+- [x] RED: prove the same stale legacy replay remains idempotent after its first delivery has retired the matching head.
+- [x] RED: prove a tampered reviewer-decision event or preceding tenant hash-chain link is rejected before event sequence is used as authority.
+- [x] Preserve durable replay identity across supersession history without allowing an older replay to displace the current active survivor.
+- [x] Verify the relevant tenant domain-event hash chain inside the replacement transaction before ordering eligible heads.
+- [x] Rebase onto current `origin/main` `256e4065`, run focused database and API tests, affected typechecks, and diff integrity.
+- [ ] Commit and push the repaired exact head without approving or merging it.
+
+#### Review
+
+RED: the repeated-delivery regression first returned a new successor and restored the stale directive on the second delayed replay. The ledger-integrity regression first accepted a decision event whose stored hash no longer matched the tenant chain. Both focused failures were observed before production code changed.
+
+GREEN: semantic replay identity is now resolved from the immutable eligible decision history, while survivor authority still comes only from current active heads in verified event order. The replacement transaction verifies the tenant domain-event sequence and hash chain before it consumes any event sequence, then retains the existing exact decision-to-event binding checks.
+
+Verification before commit: rebased onto exact `origin/main` `256e40658f5a9670ea38227654f3612068bc611c`. All 20 Mission handoff, eight MissionDecision, and 21 candidate-review API tests pass. Database and API typechecks pass, and both branch and worktree diff-integrity checks are clean.

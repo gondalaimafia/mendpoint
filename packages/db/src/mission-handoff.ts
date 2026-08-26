@@ -28,11 +28,12 @@ import {
   type SnapshotIdentity,
 } from "./mission-exceptions.js";
 import {
-  getActiveMissionDecisions,
+  listMissionDecisions,
   recordMissionDecision,
   retractMissionDecision,
   supersedeMissionDecision,
   type MissionDecision,
+  type MissionDecisionView,
   type MissionDecisionType,
 } from "./mission-decisions.js";
 import {
@@ -41,7 +42,7 @@ import {
   type MissionTask,
   type MissionTaskStatus,
 } from "./mission-task.js";
-import { listDomainEvents } from "./trust.js";
+import { listDomainEvents, verifyDomainEventIntegrity } from "./trust.js";
 
 /**
  * Why a task is being handed to a human. An explicit, closed enum: a handoff
@@ -356,14 +357,17 @@ function reviewerDirectiveRunId(
   return runId;
 }
 
-function orderReviewerDirectiveHeads(
+function orderReviewerDirectiveHistory(
   db: AppDb,
   tenantId: string,
   missionId: string,
-  heads: readonly MissionDecision[],
-): MissionDecision[] {
+  decisions: readonly MissionDecisionView[],
+): MissionDecisionView[] {
+  if (!verifyDomainEventIntegrity(db, tenantId).ok) {
+    throw new Error("reviewer_directive_event_chain_invalid");
+  }
   const events = new Map(listDomainEvents(db, tenantId, "mission", missionId).map((event) => [event.id, event]));
-  return heads.map((decision) => {
+  return decisions.map((decision) => {
     const event = events.get(`mission-decision:${decision.id}`);
     let payload: Record<string, unknown> | null = null;
     try {
@@ -423,16 +427,19 @@ export function replaceReviewerDirective(
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
-    const heads = orderReviewerDirectiveHeads(
+    const history = orderReviewerDirectiveHistory(
       db,
       input.tenantId,
       input.missionId,
-      getActiveMissionDecisions(db, input.tenantId, input.missionId).filter((decision) =>
+      listMissionDecisions(db, input.tenantId, input.missionId).filter((decision) =>
         reviewerDirectiveRunId(decision, scope, candidateEvidence) !== null),
     );
+    const heads = history.filter((decision) => decision.effectiveStatus === "active");
     // createdAt records the first write; it is not part of the semantic operation
-    // identity because a transport retry observes a new wall-clock time.
-    const replay = heads.find((decision) =>
+    // identity because a transport retry observes a new wall-clock time. Search
+    // immutable history so replay identity survives reconciliation and
+    // supersession instead of expiring when its former head becomes inactive.
+    const replay = history.find((decision) =>
       decision.decision === directive &&
       decision.authorPrincipalId === input.authorPrincipalId &&
       sameEvidence(decision.evidence, evidence));
