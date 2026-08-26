@@ -3452,3 +3452,20 @@ Task creation now fences only taskless authority inside the same immediate trans
 Task transitions and dependency changes now use exact task-scoped authority. A transition of task B neither revokes nor blocks task A. Adding a dependency fences the dependent task, increments that task's authority revision, and makes its readiness false atomically; replay does not increment the revision again. Mission revision and blocker writers retain the Mission-wide fence. The writer audit found no dependency-removal writer and no direct task mutation outside the reviewed task module; job enrollment composes the fenced create and transition operations.
 
 Verification: the RED task suite failed 9 of 25 tests across every reported seam before implementation. The final task suite passes 26 tests, the focused Mission and worker lifecycle suites pass 22 and 52 tests, complete database and worker suites pass 447 and 612 tests respectively with one intentional worker skip, both affected typechecks pass, and the optimized 50-route production build passes. The authority-writer and mutation-consumer searches were reviewed and `git diff --check` is clean. No production state changed and no push was performed. No P0, P1, or P2 finding remains in this second repaired class.
+## 2026-08-26 Review repair: fence blocking exception reaffirmation
+
+- [x] RED: prove a blocking reaffirmation revokes an authorized Mission mutation dispatch.
+- [x] RED: prove dispatching and uncertain Mission mutations reject reaffirmation without changing the exception chain, event ledger, standing, or dispatch state.
+- [x] RED: prove the fence is scoped to the exact tenant and Mission and that snapshot validation and transaction rollback remain fail closed.
+- [x] Preserve nonblocking reaffirmation, resolution, withdrawal, and exact replay behavior.
+- [x] Audit every exception raise, reaffirm, resolve, withdraw, reopen, and supersede path for an equivalent blocking-head bypass.
+- [x] Run focused and widened database, API, and worker suites, affected typechecks, optimized build, and strict diff checks.
+- [x] Inspect the final diff, record review evidence, and commit locally without pushing.
+
+### Review
+
+Blocking reaffirmation now loads the exact tenant-scoped exception head inside `BEGIN IMMEDIATE`, then invokes the Mission-wide mutation-dispatch fence before inserting the superseding open head. Authorized intent is revoked atomically. Dispatching or uncertain remote effects reject the reaffirmation without changing the dispatch, exception chain, exception event ledger, or current standing. Invalid snapshot authority fails before the fence. Nonblocking reaffirmation remains independent, and an exact blocking replay fails on the already-superseded head before it can revoke later authority.
+
+The writer audit found one insert seam. New raises already fence before `insertException`; reaffirmation is the only transition that can create an open blocking head; resolution and withdrawal always create nonblocking terminal heads. There is no separate reopen writer or direct production SQL writer outside this module.
+
+RED evidence: four focused assertions failed before the repair: two authorized dispatches remained live, and dispatching and uncertain effects both allowed the reaffirmed head. GREEN evidence: the exception suite passes 16 tests; widened Mission database tests pass 76, candidate-review API tests pass 46, and worker mutation/lifecycle tests pass 48. Complete database, API, and worker suites pass 453, 542, and 612 tests respectively, with one intentional worker skip. The API and worker suites were run with one Vitest worker after unrelated duration-only failures under concurrent load; every isolated timeout case also passed. Database, API, and worker typechecks pass. The optimized 50-route production build and `git diff --check` pass. No production state changed and no push was performed.

@@ -360,6 +360,11 @@ function transition(db: AppDb, input: {
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const prior = loadHead(db, input.tenantId, input.priorExceptionId);
+    if (input.status === "open" && input.blocking) {
+      revokePendingMissionMutationDispatches(
+        db, input.tenantId, prior.mission_id, input.createdAt,
+      );
+    }
     // A resolution/withdrawal records the resolver's note on the resolution_path
     // so the chain carries how it was closed; a re-affirmation keeps the prior
     // resolution_path unchanged.
