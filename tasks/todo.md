@@ -3469,3 +3469,20 @@ Blocking reaffirmation now loads the exact tenant-scoped exception head inside `
 The writer audit found one insert seam. New raises already fence before `insertException`; reaffirmation is the only transition that can create an open blocking head; resolution and withdrawal always create nonblocking terminal heads. There is no separate reopen writer or direct production SQL writer outside this module.
 
 RED evidence: four focused assertions failed before the repair: two authorized dispatches remained live, and dispatching and uncertain effects both allowed the reaffirmed head. GREEN evidence: the exception suite passes 16 tests; widened Mission database tests pass 76, candidate-review API tests pass 46, and worker mutation/lifecycle tests pass 48. Complete database, API, and worker suites pass 453, 542, and 612 tests respectively, with one intentional worker skip. The API and worker suites were run with one Vitest worker after unrelated duration-only failures under concurrent load; every isolated timeout case also passed. Database, API, and worker typechecks pass. The optimized 50-route production build and `git diff --check` pass. No production state changed and no push was performed.
+
+## 2026-08-26 Review repair: durable CI update reconciliation
+
+- [x] RED: drive a post-begin ambiguous CI update through real `processJobsOnce` settlement at the ordinary attempt cap.
+- [x] Prove every ambiguous retry remains read only until exact reconciliation determines whether the first remote mutation applied.
+- [x] Keep the update job retryable past the ordinary cap and settle the Mission dispatch only from exact reconciliation.
+- [x] Preserve the blocking reaffirmation repair and all non-ambiguous worker failure behavior.
+- [x] Run focused worker regressions, affected typechecks, relevant complete gates, build, and strict diff checks.
+- [x] Record exact evidence, inspect the final diff, and commit locally without pushing.
+
+### Review
+
+The RED worker-loop regression reached the ordinary attempt cap after GitHub returned an invalid post-call result and failed with `retried: 0`; the job dead-lettered while its Mission dispatch remained `dispatching`. The repair atomically marks both the CI update and exact Mission dispatch uncertain, attaches an explicit post-call uncertainty signal to remote, validation, reconciliation, and finalization failures, and carries that signal through generic job settlement so reconciliation remains pending beyond the ordinary cap.
+
+The real drain now proves attempts three and four remain pending while exact read-only reconciliation reports unknown, then completes on attempt five when reconciliation proves the original write applied. The remote update function is called exactly once. Non-ambiguous failures retain the existing bounded classifier behavior, and the blocking reaffirmation implementation is unchanged.
+
+Verification: focused CLI and update suites pass 89 tests. The widened Mission dispatch, exception reaffirmation, delivery, observation, and update set passes 60 tests, including all 16 exception tests. The complete worker suite passes 613 tests with one intentional skip. Worker, API, and database typechecks pass. The third-state gate passes 17 tests and its repository scan. The optimized 50-route production build and strict diff integrity pass. No production state changed and no push was performed.

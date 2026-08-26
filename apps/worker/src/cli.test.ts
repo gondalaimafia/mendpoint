@@ -640,6 +640,13 @@ describe("worker runtime", () => {
       errorCode: "transient_dependency",
       retryable: true,
     });
+    expect(classifyJobFailure(Object.assign(new Error("socket closed"), {
+      remoteSideEffectUncertain: true,
+    }))).toMatchObject({
+      errorCode: "transient_dependency",
+      retryable: true,
+      retryPastMaxAttempts: true,
+    });
   });
 
   it("validates intervals and applies bounded backoff", () => {

@@ -218,6 +218,70 @@ describe("Warden candidate exact draft update", () => {
     expect(updateExactDraft).toHaveBeenCalledTimes(1);
   });
 
+  it("reconciles an ambiguous remote result read only past the ordinary job attempt cap", async () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE jobs SET status = 'pending', attempts = 2, max_attempts = 3,
+      available_at = '2026-08-13T12:04:00.000Z', lease_owner = NULL, lease_expires_at = NULL
+      WHERE id = ? AND tenant_id = ?`).run(value.job.id, "tenant-a");
+    const updateExactDraft = vi.fn(async () => ({
+      number: 17, url: "https://github.com/acme/service/pull/17", branch: "mendpoint/warden-a",
+      previousHeadSha: sha("d"), commitSha: "invalid", draft: true as const,
+    }));
+    const reconcileExactDraftUpdate = vi.fn()
+      .mockResolvedValueOnce({ status: "unknown" as const })
+      .mockResolvedValueOnce({ status: "applied" as const, result: {
+        number: 17, url: "https://github.com/acme/service/pull/17", branch: "mendpoint/warden-a",
+        previousHeadSha: sha("d"), commitSha: sha("f"), draft: true as const,
+      } });
+    const workerOptions = {
+      tenantId: "tenant-a", workerId: "worker-uncertain-update", leaseMs: 60_000,
+      maxJobs: 1, jobTypes: ["warden.candidate.update"], runWardenMaintenance: false,
+      wardenEnv: {
+        MENDPOINT_FETTLER_CI_REENTRY_ENABLED: "1",
+        MENDPOINT_FETTLER_CI_REENTRY_CONFIG_JSON: JSON.stringify({
+          "repo-a": { requiredChecks: ["check:77:unit"], maxCycles: 3, maxModelCalls: 6,
+            maximumCostUsd: 3 },
+        }),
+      },
+      wardenCandidateUpdateRuntime: {
+        updateExactDraft, reconcileExactDraftUpdate,
+        readApprovalArtifact: () => value.artifact,
+        resolveRepository: () => ({ owner: "acme", repo: "service" }),
+        now: () => "2026-08-13T12:05:00.000Z",
+      },
+    } as const;
+
+    await expect(processJobsOnce(value.db, workerOptions))
+      .resolves.toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 1, inconclusive: 0 });
+    expect(getJob(value.db, value.job.id, "tenant-a")).toMatchObject({
+      status: "pending", attempts: 3, error_code: "warden_ci_update_result_invalid",
+    });
+    expect(value.db.raw.prepare(`SELECT status FROM fettler_ci_updates
+      WHERE tenant_id = 'tenant-a' AND id = ?`).get(value.update.id)).toEqual({ status: "uncertain" });
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "uncertain" });
+    expect(updateExactDraft).toHaveBeenCalledTimes(1);
+
+    value.db.raw.prepare(`UPDATE jobs SET available_at = '2026-08-13T12:04:00.000Z'
+      WHERE id = ? AND tenant_id = ?`).run(value.job.id, "tenant-a");
+    await expect(processJobsOnce(value.db, workerOptions))
+      .resolves.toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 1, inconclusive: 0 });
+    expect(getJob(value.db, value.job.id, "tenant-a")).toMatchObject({
+      status: "pending", attempts: 4, error_code: "warden_ci_update_outcome_uncertain",
+    });
+    expect(updateExactDraft).toHaveBeenCalledTimes(1);
+
+    value.db.raw.prepare(`UPDATE jobs SET available_at = '2026-08-13T12:04:00.000Z'
+      WHERE id = ? AND tenant_id = ?`).run(value.job.id, "tenant-a");
+    await expect(processJobsOnce(value.db, workerOptions))
+      .resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+    expect(getJob(value.db, value.job.id, "tenant-a")).toMatchObject({ status: "done", attempts: 5 });
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "settled" });
+    expect(reconcileExactDraftUpdate).toHaveBeenCalledTimes(2);
+    expect(updateExactDraft).toHaveBeenCalledTimes(1);
+  });
+
   it("updates the same draft once and atomically schedules the next CI observation", async () => {
     const { db, update, job, artifact } = fixture();
     const updateExactDraft = vi.fn(async () => ({ number: 17, url: "https://github.com/acme/service/pull/17",

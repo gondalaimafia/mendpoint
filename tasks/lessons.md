@@ -172,3 +172,8 @@
 **Mistake:** I started a manual Cursor PR review after finding that the installed review skill pointed to a missing workflow.
 **Correction:** Talal required the necessary skills to be fetched and used, and required findings to be fixed before merge.
 **Rule:** When an applicable review skill is incomplete, fetch its current authoritative runtime before continuing. For agent-authored PRs, use the fetched adversarial review and fixer workflow, then re-review the exact fixed head and require current-base CI before merge.
+
+### 2026-08-26 — Test remote ambiguity through worker settlement
+**Mistake:** A direct update-function replay test proved read-only reconciliation but did not exercise the generic worker failure classifier, job attempt cap, or cycle failure settlement. The remote effect could therefore remain unresolved after the only reconciliation job dead-lettered.
+**Correction:** The review required the post-begin ambiguity to run through real `processJobsOnce`, remain retryable past ordinary caps, and prove that retries do not issue a second remote mutation while the result is unknown.
+**Rule:** For every external point of no return, test both the operation and its real queue settlement. Start at the final ordinary attempt, assert all durable authority records enter uncertainty together, retry read-only reconciliation beyond the cap, and count remote mutation calls through terminal settlement.

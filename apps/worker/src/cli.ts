@@ -559,20 +559,23 @@ export function classifyJobFailure(error: unknown): {
   message: string;
   errorCode: string;
   retryable: boolean;
+  retryPastMaxAttempts: boolean;
 } {
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.toLowerCase();
   const explicitCode = /^[a-z][a-z0-9_]{2,63}$/.test(message) ? message : null;
+  const retryPastMaxAttempts =
+    (error as { remoteSideEffectUncertain?: unknown } | null)?.remoteSideEffectUncertain === true;
   const authorizationFailure =
     /auth|permission|forbidden|unauthorized|bad credentials/.test(normalized) ||
     /github_app_(?:credentials|token_(?:installation|invalid)|installation|repository|permissions|connection|delivery_mode|selected_repositories)/.test(
       normalized,
     );
   const retryable =
-    !authorizationFailure &&
+    retryPastMaxAttempts || (!authorizationFailure &&
     /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable/.test(
         normalized,
-      );
+      ));
   const errorCode = explicitCode ?? (retryable
     ? /rate.?limit|429/.test(normalized)
       ? "rate_limited"
@@ -586,7 +589,7 @@ export function classifyJobFailure(error: unknown): {
       : /verify|repair|warden|gate/.test(normalized)
         ? "verification_failed"
         : "job_failed");
-  return { message, errorCode, retryable };
+  return { message, errorCode, retryable, retryPastMaxAttempts };
 }
 
 // The agent planner reports a non-ok model status as the stop reason
@@ -3909,6 +3912,7 @@ if (job.type === "warden.candidate.cleanup") {
         try {
           const failure = failJob(db, job.id, classified.message, nowIso(), {
             ...fence, errorCode: classified.errorCode, retryable: classified.retryable,
+            retryPastMaxAttempts: classified.retryPastMaxAttempts,
             baseDelayMs: 5_000, maxDelayMs: 300_000,
           });
           if (failure.applied && failure.status === "dead_letter") {

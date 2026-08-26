@@ -25,6 +25,15 @@ import { wardenReviewFeedbackDigest } from "./warden-candidate-observation.js";
 
 const JOB_TYPE = "warden.candidate.update";
 
+class WardenCandidateUpdateOutcomeUncertainError extends Error {
+  readonly remoteSideEffectUncertain = true;
+
+  constructor(readonly cause: unknown, message?: string) {
+    super(message ?? (cause instanceof Error ? cause.message : String(cause)));
+    this.name = "WardenCandidateUpdateOutcomeUncertainError";
+  }
+}
+
 export type WardenCandidateUpdateInput = Readonly<{
   db: AppDb;
   job: JobRow;
@@ -191,6 +200,29 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
     aggregateId: update.id, authority: parsed.missionAuthority, intentDigest: digest,
     workerId: input.job.lease_owner, leaseGeneration: input.job.lease_generation, observedAt: dispatchAt,
   });
+  const markRemoteOutcomeUncertain = (error: unknown, message?: string) => {
+    const owns = !input.db.raw.isTransaction;
+    if (owns) input.db.raw.exec("BEGIN IMMEDIATE");
+    try {
+      const observedAt = now();
+      if (parsed.missionAuthority) {
+        const mutation = input.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+          WHERE tenant_id = ? AND job_id = ?`).get(cycle.tenantId, input.job.id) as { state: string } | undefined;
+        if (mutation?.state === "dispatching") markMissionMutationDispatchUncertain(input.db, {
+          tenantId: cycle.tenantId, jobId: input.job.id, intentDigest: digest, observedAt,
+        });
+      }
+      const current = getWardenCiUpdate(input.db, cycle.tenantId, update.id);
+      if (current?.status === "intent_bound") markWardenCiUpdateUncertain(input.db, {
+        tenantId: cycle.tenantId, updateId: update.id, intentDigest: digest, observedAt,
+      });
+      if (owns) input.db.raw.exec("COMMIT");
+      return new WardenCandidateUpdateOutcomeUncertainError(error, message);
+    } catch (markError) {
+      if (owns && input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
+      return new WardenCandidateUpdateOutcomeUncertainError(markError, message);
+    }
+  };
   const assertCurrentFeedback = async () => {
     if (!update.expectedFeedbackDigest) return;
     if (!input.observeExactDraft) throw new Error("warden_ci_review_observer_required");
@@ -217,8 +249,12 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
         });
       }
     }
-    const reconciliation = await input.reconcileExactDraftUpdate(intent);
-    if (reconciliation.status === "unknown") throw new Error("warden_ci_update_outcome_uncertain");
+    let reconciliation: ExactDraftUpdateReconciliation;
+    try { reconciliation = await input.reconcileExactDraftUpdate(intent); }
+    catch (error) { throw markRemoteOutcomeUncertain(error); }
+    if (reconciliation.status === "unknown") {
+      throw markRemoteOutcomeUncertain(null, "warden_ci_update_outcome_uncertain");
+    }
     if (reconciliation.status === "applied") {
       remote = reconciliation.result;
     } else {
@@ -234,14 +270,7 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
         leaseGeneration: input.job.lease_generation, observedAt: dispatchAt, permitUncertainReplay: true,
       });
       try { remote = await input.updateExactDraft(intent); }
-      catch (error) {
-        if (parsed.missionAuthority) markMissionMutationDispatchUncertain(input.db, {
-          tenantId: cycle.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: now(),
-        });
-        markWardenCiUpdateUncertain(input.db, { tenantId: cycle.tenantId, updateId: update.id,
-          intentDigest: digest, observedAt: now() });
-        throw error;
-      }
+      catch (error) { throw markRemoteOutcomeUncertain(error); }
     }
   } else {
     await assertCurrentFeedback();
@@ -256,22 +285,11 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
       leaseGeneration: input.job.lease_generation, observedAt: dispatchAt,
     });
     try { remote = await input.updateExactDraft(intent); }
-    catch (error) {
-      if (parsed.missionAuthority) markMissionMutationDispatchUncertain(input.db, {
-        tenantId: cycle.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: now(),
-      });
-      markWardenCiUpdateUncertain(input.db, { tenantId: cycle.tenantId, updateId: update.id,
-        intentDigest: digest, observedAt: now() });
-      throw error;
-    }
+    catch (error) { throw markRemoteOutcomeUncertain(error); }
   }
   if (!remote.draft || remote.number !== cycle.pullRequestNumber || remote.branch !== cycle.branchName ||
       remote.previousHeadSha !== cycle.currentHeadSha || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(remote.commitSha)) {
-    const current = getWardenCiUpdate(input.db, cycle.tenantId, update.id);
-    if (current?.status === "intent_bound") markWardenCiUpdateUncertain(input.db, {
-      tenantId: cycle.tenantId, updateId: update.id, intentDigest: digest, observedAt: now(),
-    });
-    throw new Error("warden_ci_update_result_invalid");
+    throw markRemoteOutcomeUncertain(null, "warden_ci_update_result_invalid");
   }
   const completedAt = now();
   input.db.raw.exec("BEGIN IMMEDIATE");
@@ -294,18 +312,7 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
     input.db.raw.exec("COMMIT");
   } catch (error) {
     if (input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
-    if (parsed.missionAuthority) {
-      const mutation = input.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
-        WHERE tenant_id = ? AND job_id = ?`).get(cycle.tenantId, input.job.id) as { state: string } | undefined;
-      if (mutation?.state === "dispatching") markMissionMutationDispatchUncertain(input.db, {
-        tenantId: cycle.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: now(),
-      });
-    }
-    const current = getWardenCiUpdate(input.db, cycle.tenantId, update.id);
-    if (current?.status === "intent_bound") markWardenCiUpdateUncertain(input.db, {
-      tenantId: cycle.tenantId, updateId: update.id, intentDigest: digest, observedAt: now(),
-    });
-    throw error;
+    throw markRemoteOutcomeUncertain(error);
   }
   return Object.freeze({ status: "updated" as const, updateId: update.id, cycleId: cycle.id,
     commitSha: remote.commitSha, pullRequestNumber: remote.number, pullRequestUrl: remote.url });
