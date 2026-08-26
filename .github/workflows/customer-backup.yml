@@ -202,7 +202,6 @@ jobs:
     environment: customer-production-backup
     permissions:
       contents: read
-      issues: write
     steps:
       - name: Check out verifier
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -267,41 +266,73 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      - name: Alert on backup failure
-        if: ${{ failure() }}
+  backup-incident:
+    needs: [profile-gate, backup]
+    if: ${{ always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Reconcile customer backup incident
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PROFILE_JOB_RESULT: ${{ needs.profile-gate.result }}
+          PROFILE_AUTHORITY_RESULT: ${{ needs.profile-gate.outputs.result }}
+          PROFILE_ACTIVE: ${{ needs.profile-gate.outputs.active }}
+          BACKUP_JOB_RESULT: ${{ needs.backup.result }}
         run: |
           set -euo pipefail
           label="customer-production-backup-failure"
+          preflight_artifact="customer-production-backup-preflight-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          backup_artifact="customer-production-backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          # Deliberate non-customer operation is durable evidence, not an incident
+          # and not recovery. Preserve any earlier backup incident until a real
+          # eligible backup passes its authenticated terminal-result verifier.
+          if [ "$PROFILE_JOB_RESULT" = "success" ] && \
+             [ "$PROFILE_AUTHORITY_RESULT" = "not_configured" ] && \
+             [ "$PROFILE_ACTIVE" != "true" ] && \
+             [ "$BACKUP_JOB_RESULT" = "skipped" ]; then
+            echo "::notice title=Customer backup not configured::No incident state changes are permitted for intentional not_configured operation."
+            exit 0
+          fi
+
+          if [ "$PROFILE_JOB_RESULT" = "success" ] && \
+             [ "$PROFILE_AUTHORITY_RESULT" = "eligible" ] && \
+             [ "$PROFILE_ACTIVE" = "true" ] && \
+             [ "$BACKUP_JOB_RESULT" = "success" ]; then
+            for number in $(gh issue list --repo "$GH_REPO" --state open --label "$label" \
+              --json number --jq '.[].number'); do
+              gh issue close "$number" --repo "$GH_REPO" --reason completed \
+                --comment "Customer profile authority and authenticated backup succeeded: $RUN_URL. Evidence artifact: $backup_artifact at $RUN_URL#artifacts. Closing automatically."
+            done
+            exit 0
+          fi
+
+          incident_reason=""
+          evidence_artifact="$preflight_artifact"
+          if [ "$PROFILE_JOB_RESULT" != "success" ]; then
+            incident_reason="Customer backup profile authority failed before backup execution."
+          elif [ "$PROFILE_AUTHORITY_RESULT" != "eligible" ] || [ "$PROFILE_ACTIVE" != "true" ]; then
+            incident_reason="Customer backup profile authority returned an unexpected incomplete state."
+          else
+            incident_reason="Customer backup execution or authenticated result verification failed."
+            evidence_artifact="$backup_artifact"
+          fi
+
           gh label create "$label" --repo "$GH_REPO" --color b60205 \
             --description "Automated: customer production backup failed" >/dev/null 2>&1 || true
           existing="$(gh issue list --repo "$GH_REPO" --state open --label "$label" \
             --json number --jq '.[0].number // empty')"
+          body="$incident_reason Run: $RUN_URL. Evidence artifact: $evidence_artifact at $RUN_URL#artifacts. Runbook: docs/CUSTOMER_INCIDENT_RUNBOOK.md"
           if [ -n "$existing" ]; then
-            gh issue comment "$existing" --repo "$GH_REPO" \
-              --body "Customer backup failed again. Failed run: $RUN_URL"
+            gh issue comment "$existing" --repo "$GH_REPO" --body "$body"
           else
             gh issue create --repo "$GH_REPO" --label "$label" \
-              --title "Customer production backup FAILED" \
-              --body "The recurring authenticated customer backup failed. Failed run: $RUN_URL. Runbook: docs/CUSTOMER_INCIDENT_RUNBOOK.md"
+              --title "Customer production backup FAILED" --body "$body"
           fi
-
-      - name: Resolve backup failure alert
-        if: ${{ success() }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          label="customer-production-backup-failure"
-          for number in $(gh issue list --repo "$GH_REPO" --state open --label "$label" \
-            --json number --jq '.[].number'); do
-            gh issue close "$number" --repo "$GH_REPO" --reason completed \
-              --comment "Customer backup succeeded: $RUN_URL. Closing automatically."
-          done

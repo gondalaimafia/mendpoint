@@ -83,14 +83,35 @@ describe("customer backup workflow", () => {
   });
 
   it("opens one deduplicated GitHub issue on failure and closes it after recovery", () => {
-    expect(job.permissions).toMatchObject({ contents: "read", issues: "write" });
-    const alert = step("Alert on backup failure");
-    expect(alert.if).toBe("${{ failure() }}");
-    expect(alert.run).toContain("gh issue create");
-    expect(alert.run).toContain("customer-production-backup-failure");
-    const resolveAlert = step("Resolve backup failure alert");
-    expect(resolveAlert.if).toBe("${{ success() }}");
-    expect(resolveAlert.run).toContain("gh issue close");
+    const notifier = workflow.jobs["backup-incident"] as Record<string, any>;
+    expect(notifier, "backup-incident job must exist").toBeTruthy();
+    expect(notifier.needs).toEqual(["profile-gate", "backup"]);
+    expect(notifier.if).toContain("always()");
+    expect(notifier.if).toContain("github.event.repository.default_branch");
+    expect(notifier.permissions).toMatchObject({ contents: "read", issues: "write" });
+
+    const notify = (notifier.steps as Record<string, any>[]).find(
+      (candidate) => candidate.name === "Reconcile customer backup incident",
+    ) as Record<string, any>;
+    expect(notify, "incident reconciler step must exist").toBeTruthy();
+    expect(notify.env.PROFILE_JOB_RESULT).toBe("${{ needs.profile-gate.result }}");
+    expect(notify.env.PROFILE_AUTHORITY_RESULT).toBe("${{ needs.profile-gate.outputs.result }}");
+    expect(notify.env.PROFILE_ACTIVE).toBe("${{ needs.profile-gate.outputs.active }}");
+    expect(notify.env.BACKUP_JOB_RESULT).toBe("${{ needs.backup.result }}");
+    expect(notify.run).toContain("customer-production-backup-failure");
+    expect(notify.run).toContain("gh issue create");
+    expect(notify.run).toContain("gh issue comment");
+    expect(notify.run).toContain("gh issue close");
+    expect(notify.run).toContain('PROFILE_AUTHORITY_RESULT" = "not_configured"');
+    expect(notify.run).toContain("No incident state changes are permitted");
+    expect(notify.run).toContain('PROFILE_JOB_RESULT" = "success"');
+    expect(notify.run).toContain('PROFILE_ACTIVE" = "true"');
+    expect(notify.run).toContain('BACKUP_JOB_RESULT" = "success"');
+    expect(notify.run).toContain("Evidence artifact:");
+    expect(notify.run).toContain("$RUN_URL#artifacts");
+
+    expect(steps.some((candidate) => candidate.name === "Alert on backup failure")).toBe(false);
+    expect(steps.some((candidate) => candidate.name === "Resolve backup failure alert")).toBe(false);
   });
 
 
