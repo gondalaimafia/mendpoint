@@ -25,6 +25,8 @@ describe("customer backup workflow", () => {
     expect(workflow.on).toHaveProperty("workflow_dispatch");
     expect(workflow.on).not.toHaveProperty("push");
     expect(job.if).toContain("github.event.repository.default_branch");
+    const gate = workflow.jobs["profile-gate"] as Record<string, any>;
+    expect(gate.if).toBe("${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}");
     expect(job.environment).toBe("customer-production-backup");
     expect(job["timeout-minutes"]).toBe(270);
     expect(workflow.concurrency).toMatchObject({
@@ -54,9 +56,13 @@ describe("customer backup workflow", () => {
     expect(run.run).toContain('flyctl ssh console --app "$CUSTOMER_APP"');
     expect(run.run).toContain("scripts/customer-backup.ts");
     expect(run.run).toContain('tee -a "$evidence"');
-    expect(run.run).toContain("grep -q '\"backupId\"'");
-    expect(run.run).toContain("grep -q '\"manifestAuthentication\"'");
-    expect(run.run).toContain("grep -q '\"publication\"'");
+    expect(run.run).toContain('bash scripts/verify-customer-backup-result.sh "$evidence"');
+    expect(run.run).not.toContain("grep -q '\"backupId\"'");
+    expect(run.run).not.toContain("grep -q '\"manifestAuthentication\"'");
+    expect(run.run).not.toContain("grep -q '\"publication\"'");
+    expect(run.run.indexOf("verify-customer-backup-result.sh")).toBeLessThan(
+      run.run.indexOf("backupTaken=true"),
+    );
     const upload = step("Retain backup evidence");
     expect(upload.if).toBe("${{ always() }}");
     expect(upload["with"]["retention-days"]).toBe(90);
@@ -90,6 +96,13 @@ describe("customer backup workflow", () => {
     expect(gateStep.run).not.toContain("mapfile -t visible_apps < <(");
     expect(gateStep.run).toContain('flyctl ssh console --app "$CUSTOMER_APP"');
     expect(gateStep.run).toContain("MENDPOINT_DEPLOYMENT_PROFILE");
+    expect(gateStep.run).toContain("MENDPOINT_RELEASE_REVISION");
+    expect(gateStep.run).toContain('live_release_revision="$(');
+    expect(gateStep.run).toContain('[ "$live_release_revision" != "$GITHUB_SHA" ]');
+    expect(gateStep.run).toContain("customer_backup_release_revision_mismatch");
+    expect(gateStep.run.indexOf("customer_backup_release_revision_mismatch")).toBeLessThan(
+      gateStep.run.lastIndexOf("active=true"),
+    );
     expect(gateStep.run).toContain("customer_backup_profile_authority_mismatch");
     expect(gateStep.run).toContain("operator_action_required");
   });
@@ -103,6 +116,10 @@ describe("customer backup workflow", () => {
     expect(gateStep.run).toContain("No backup was taken");
     expect(gateStep.run).toContain('result="not_configured"');
     expect(gateStep.run).toContain("--argjson backupTaken false");
+    expect(gateStep.run).toContain('--arg workflowRevision "$GITHUB_SHA"');
+    expect(gateStep.run).toContain('--arg liveReleaseRevision "$live_release_revision"');
+    expect(gateStep.run).toContain("--argjson releaseRevisionMatchesWorkflow");
+    expect(gateStep.run).not.toContain('--arg revision "$GITHUB_SHA"');
 
     const retain = (gate.steps as Record<string, any>[]).find(
       (candidate) => candidate.name === "Retain backup preflight evidence",

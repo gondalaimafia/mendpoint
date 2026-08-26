@@ -20,6 +20,7 @@ jobs:
   # non-customer state is retained as NOT CONFIGURED, never as backup success. Drift or
   # an indeterminate live profile fails closed.
   profile-gate:
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: customer-production-backup
@@ -37,7 +38,8 @@ jobs:
           evidence="test-results/customer-backup-preflight/preflight-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
           jq -n \
             --arg app "$CUSTOMER_APP" \
-            --arg revision "$GITHUB_SHA" \
+            --arg workflowRevision "$GITHUB_SHA" \
+            --arg liveReleaseRevision "unknown" \
             --arg runId "$GITHUB_RUN_ID" \
             --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
             --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -45,7 +47,8 @@ jobs:
             --arg reason "preflight_not_completed" \
             --argjson backupTaken false \
             --argjson operatorActionRequired true \
-            '{schemaVersion:1,kind:"customer_backup_preflight",app:$app,revision:$revision,runId:$runId,runAttempt:$runAttempt,observedAt:$observedAt,result:$result,reason:$reason,backupTaken:$backupTaken,operatorActionRequired:$operatorActionRequired}' \
+            --argjson releaseRevisionMatchesWorkflow false \
+            '{schemaVersion:1,kind:"customer_backup_preflight",app:$app,workflowRevision:$workflowRevision,liveReleaseRevision:$liveReleaseRevision,releaseRevisionMatchesWorkflow:$releaseRevisionMatchesWorkflow,runId:$runId,runAttempt:$runAttempt,observedAt:$observedAt,result:$result,reason:$reason,backupTaken:$backupTaken,operatorActionRequired:$operatorActionRequired}' \
             > "$evidence"
 
       - name: Install Fly CLI
@@ -66,6 +69,8 @@ jobs:
           result="authority_unavailable"
           reason="preflight_not_completed"
           live_profile="unknown"
+          live_release_revision="unknown"
+          release_revision_matches_workflow=false
           expected_active=false
           operator_action_required=true
 
@@ -74,7 +79,8 @@ jobs:
             trap - EXIT
             jq -n \
               --arg app "$CUSTOMER_APP" \
-              --arg revision "$GITHUB_SHA" \
+              --arg workflowRevision "$GITHUB_SHA" \
+              --arg liveReleaseRevision "$live_release_revision" \
               --arg runId "$GITHUB_RUN_ID" \
               --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
               --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -82,14 +88,15 @@ jobs:
               --arg reason "$reason" \
               --arg liveProfile "$live_profile" \
               --argjson expectedCustomerProfile "$expected_active" \
+              --argjson releaseRevisionMatchesWorkflow "$release_revision_matches_workflow" \
               --argjson backupTaken false \
               --argjson operatorActionRequired "$operator_action_required" \
-              '{schemaVersion:1,kind:"customer_backup_preflight",app:$app,revision:$revision,runId:$runId,runAttempt:$runAttempt,observedAt:$observedAt,result:$result,reason:$reason,liveProfile:$liveProfile,expectedCustomerProfile:$expectedCustomerProfile,backupTaken:$backupTaken,operatorActionRequired:$operatorActionRequired}' \
+              '{schemaVersion:1,kind:"customer_backup_preflight",app:$app,workflowRevision:$workflowRevision,liveReleaseRevision:$liveReleaseRevision,releaseRevisionMatchesWorkflow:$releaseRevisionMatchesWorkflow,runId:$runId,runAttempt:$runAttempt,observedAt:$observedAt,result:$result,reason:$reason,liveProfile:$liveProfile,expectedCustomerProfile:$expectedCustomerProfile,backupTaken:$backupTaken,operatorActionRequired:$operatorActionRequired}' \
               > "$evidence"
             echo "active=$active" >> "$GITHUB_OUTPUT"
             echo "result=$result" >> "$GITHUB_OUTPUT"
-            printf '### Customer production backup\n\nResult: `%s`  \nLive profile: `%s`  \nBackup taken: `false`\n' \
-              "$result" "$live_profile" >> "$GITHUB_STEP_SUMMARY"
+            printf '### Customer production backup\n\nResult: `%s`  \nLive profile: `%s`  \nWorkflow revision: `%s`  \nLive release revision: `%s`  \nBackup taken: `false`\n' \
+              "$result" "$live_profile" "$GITHUB_SHA" "$live_release_revision" >> "$GITHUB_STEP_SUMMARY"
             exit "$status"
           }
           trap write_evidence_and_exit EXIT
@@ -104,6 +111,13 @@ jobs:
               exit 1
               ;;
           esac
+
+          [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+            result="authority_invalid"
+            reason="customer_backup_workflow_revision_invalid"
+            echo customer_backup_workflow_revision_invalid >&2
+            exit 1
+          }
 
           test -n "$FLY_API_TOKEN" || {
             reason="customer_backup_fly_token_missing"
@@ -125,10 +139,15 @@ jobs:
             exit 1
           fi
           flyctl status --app "$CUSTOMER_APP" >/dev/null
-          live_profile="$(flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
-            --command "printenv MENDPOINT_DEPLOYMENT_PROFILE")"
-          live_profile="${live_profile//$'\r'/}"
-          live_profile="${live_profile//$'\n'/}"
+          reason="customer_backup_live_runtime_unavailable"
+          runtime_json="$(flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
+            --command "node -e 'process.stdout.write(JSON.stringify({deploymentProfile:process.env.MENDPOINT_DEPLOYMENT_PROFILE ?? null,releaseRevision:process.env.MENDPOINT_RELEASE_REVISION ?? null}))'")"
+          reason="customer_backup_live_runtime_invalid"
+          live_profile="$(jq -er '.deploymentProfile | strings' <<< "$runtime_json")"
+          live_release_revision="$(jq -er '.releaseRevision | strings | select(test("^[a-f0-9]{40}$"))' <<< "$runtime_json")"
+          if [ "$live_release_revision" = "$GITHUB_SHA" ]; then
+            release_revision_matches_workflow=true
+          fi
           case "$live_profile" in
             customer|demo|pilot) ;;
             *)
@@ -140,6 +159,12 @@ jobs:
           esac
 
           if [ "$expected_active" = "true" ] && [ "$live_profile" = "customer" ]; then
+            if [ "$live_release_revision" != "$GITHUB_SHA" ]; then
+              result="operator_action_required"
+              reason="customer_backup_release_revision_mismatch"
+              echo customer_backup_release_revision_mismatch >&2
+              exit 1
+            fi
             active=true
             result="eligible"
             reason="live_customer_profile_verified"
@@ -190,7 +215,7 @@ jobs:
           set -euo pipefail
           mkdir -p test-results/customer-backup
           evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
-          printf 'run=%s attempt=%s app=%s revision=%s\n' \
+          printf 'run=%s attempt=%s app=%s workflow_revision=%s\n' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$CUSTOMER_APP" "$GITHUB_SHA" > "$evidence"
 
       - name: Validate app-scoped backup authority
@@ -225,9 +250,7 @@ jobs:
           evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
           flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
             --command "node --import tsx scripts/customer-backup.ts" 2>&1 | tee -a "$evidence"
-          grep -q '"backupId"' "$evidence"
-          grep -q '"manifestAuthentication"' "$evidence"
-          grep -q '"publication"' "$evidence"
+          bash scripts/verify-customer-backup-result.sh "$evidence" >/dev/null
           printf 'result=success backupTaken=true\n' >> "$evidence"
 
       - name: Retain backup evidence

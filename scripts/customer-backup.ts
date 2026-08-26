@@ -74,7 +74,10 @@ async function main(): Promise<void> {
       manifestAuthentication: manifest.integrity.digest,
       publication,
     });
-    console.log(JSON.stringify({
+    console.log(`MENDPOINT_CUSTOMER_BACKUP_RESULT ${JSON.stringify({
+      schemaVersion: 1,
+      kind: "customer_backup_result",
+      result: "success",
       backupId: manifest.backupId,
       publication,
       createdAt: manifest.createdAt,
@@ -86,7 +89,7 @@ async function main(): Promise<void> {
         sizeBytes: resource.sizeBytes,
         fileCount: resource.fileCount,
       })),
-    }, null, 2));
+    })}`);
   } finally {
     rmSync(input.backupRoot, { recursive: true, force: true });
   }
