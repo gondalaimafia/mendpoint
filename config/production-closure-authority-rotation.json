@@ -170,7 +170,7 @@
         {
           "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
           "fromSha256": "sha256:bcc36c11779ee88e9208ce08a8bb685e14eba35be2d95a6ff3b8bbcedf89205d",
-          "toSha256": "sha256:dd9735ab5ee18739e08bc173f5a4ae54bca3d365768e46d24c0babd042199ce0",
+          "toSha256": "sha256:b7b8ca61bf4c89b93738ab99dca0fa83305ab52ed80407ec1fc5ea3a08d67600",
           "fromMode": "100644",
           "toMode": "100644"
         },

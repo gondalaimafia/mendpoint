@@ -2058,7 +2058,7 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
     "observedMainRevision": "2257f98961184044aab63982d89aa9b391aa3fbd",
-    "observationDigest": "sha256:2b46a9162a4eb7145a0c893c14ff3134787261dcf5ac64551a574d4aba486652",
+    "observationDigest": "sha256:0b87614e075cd16efa45baacd4d83caa861b6ed765314dfe196d1b32a218a0fc",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -4264,41 +4264,6 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "585b9c43a9f5b31d034bdc3a3d7229627069142b",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 495,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/495",
-        "title": "Separate authority sweep health from PR eligibility",
-        "headBranch": "codex/494-authority-sweep-semantics",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Codex",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "3e300352cf0b85347c31b63895f74caba3f69cd3",
         "mergeRevision": null,
         "checks": [],
         "review": {
