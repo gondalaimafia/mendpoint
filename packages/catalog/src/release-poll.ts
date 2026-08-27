@@ -56,6 +56,18 @@ export type ReleasePollSourceReference = Readonly<{
   suppliedSha256: string;
 }>;
 
+export const RELEASE_POLL_ERROR_CODES = Object.freeze([
+  "release_poll_fetch_failed",
+  "release_poll_ingestion_failed",
+  "release_poll_executor_failed",
+] as const);
+export type ReleasePollErrorCode = typeof RELEASE_POLL_ERROR_CODES[number];
+const RELEASE_POLL_ERROR_CODE_SET = new Set<string>(RELEASE_POLL_ERROR_CODES);
+
+export function isReleasePollErrorCode(value: unknown): value is ReleasePollErrorCode {
+  return typeof value === "string" && RELEASE_POLL_ERROR_CODE_SET.has(value);
+}
+
 export type ValidReleasePollResult =
   | Readonly<ReleasePollIdentity & {
       status: "ingested" | "unchanged";
@@ -65,7 +77,7 @@ export type ValidReleasePollResult =
     }>
   | Readonly<ReleasePollIdentity & {
       status: "failed";
-      error: string;
+      error: ReleasePollErrorCode;
       inserted: 0;
       artifacts: readonly ReleaseArtifactReference[];
       dispatches: readonly ReleaseDispatchReference[];
@@ -310,7 +322,7 @@ export function parseReleasePollConfiguration(
 
 function failed(
   pollIdentity: ReleasePollIdentity,
-  error: string,
+  error: ReleasePollErrorCode,
 ): ValidReleasePollResult {
   return Object.freeze({
     ...pollIdentity,
@@ -342,7 +354,7 @@ export async function pollReleaseSource(
     provider: snapshot.provider.slug,
   });
   if (!fetched.ok || fetched.body === undefined) {
-    return failed(pollIdentity, fetched.error ?? "release_poll_fetch_failed");
+    return failed(pollIdentity, "release_poll_fetch_failed");
   }
   try {
     const ingested = ingestReleaseDocument(store, {
@@ -375,6 +387,6 @@ export async function pollReleaseSource(
       dispatches,
     });
   } catch (cause) {
-    return failed(pollIdentity, cause instanceof Error ? cause.message : String(cause));
+    return failed(pollIdentity, "release_poll_ingestion_failed");
   }
 }

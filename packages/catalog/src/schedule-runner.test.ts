@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createDb, upsertFeedSchedule, type AppDb } from "@mendpoint/db";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  ingestReleaseDocument,
   listReleaseDispatches,
   openReleaseIngestionStore,
   type ReleaseIngestionStore,
@@ -78,6 +79,48 @@ function releaseStore(): ReleaseIngestionStore {
   });
   releaseStores.push(store);
   return store;
+}
+
+function persistedRelease(
+  store: ReleaseIngestionStore,
+  config: ReleasePollConfigurationV1,
+  status: "ingested" | "unchanged" = "ingested",
+): ReleasePollResult {
+  const ingested = ingestReleaseDocument(store, {
+    tenantId: config.tenantId,
+    providerSlug: config.provider.slug,
+    adapter: config.adapter,
+    sourceUrl: durableSourceUrl(config.source.url),
+    body: `<?xml version="1.0"?><rss><channel><item>
+      <guid>persisted-${config.tenantId}-${config.provider.slug}</guid>
+      <title>Persisted release</title><link>https://docs.example.com/release</link>
+      <pubDate>Sat, 02 Aug 2026 12:00:00 GMT</pubDate>
+      <description>Changed one field.</description></item></channel></rss>`,
+    observedAt: "2026-08-02T12:00:30.000Z",
+    now: "2026-08-02T12:00:30.000Z",
+  });
+  const artifactIds = new Set(ingested.artifacts.map((artifact) => artifact.id));
+  const dispatches = listReleaseDispatches(store, config.tenantId)
+    .filter((dispatch) => artifactIds.has(dispatch.artifactId));
+  return {
+    contractVersion: config.contractVersion,
+    tenantId: config.tenantId,
+    providerSlug: config.provider.slug,
+    adapter: config.adapter,
+    sourceUrl: durableSourceUrl(config.source.url),
+    sourceMaxBytes: config.source.maxBytes ?? null,
+    status,
+    inserted: status === "ingested" ? ingested.inserted : 0,
+    artifacts: ingested.artifacts.map((artifact) => ({
+      artifactId: artifact.id,
+      contentSha256: artifact.contentSha256,
+    })),
+    dispatches: dispatches.map((dispatch) => ({
+      dispatchId: dispatch.id,
+      artifactId: dispatch.artifactId,
+      artifactContentSha256: dispatch.artifactContentSha256,
+    })),
+  };
 }
 
 afterEach(() => {
@@ -325,7 +368,7 @@ describe("feed schedule runner", () => {
       sourceUrl: durableSourceUrl("https://docs.example.com/releases.xml"),
       sourceMaxBytes: null,
       status: "failed",
-      error: "release HTTP 503",
+      error: "release_poll_fetch_failed",
       inserted: 0,
       artifacts: [],
       dispatches: [],
@@ -347,9 +390,9 @@ describe("feed schedule runner", () => {
     expect(result.executions[0]).toMatchObject({
       status: "failed",
       poll: { status: "unchanged" },
-      error: "release: release HTTP 503",
+      error: "release: release_poll_fetch_failed",
       openApiOutcome: { status: "succeeded", result: { status: "unchanged" } },
-      releaseOutcome: { status: "failed", error: "release HTTP 503", result: releaseFailure },
+      releaseOutcome: { status: "failed", error: "release_poll_fetch_failed", result: releaseFailure },
     });
   });
 
@@ -357,18 +400,7 @@ describe("feed schedule runner", () => {
     const db = fixture();
     const store = releaseStore();
     const configuredFeeds = feeds(1);
-    const releaseSuccess: ReleasePollResult = {
-      contractVersion: RELEASE_POLL_CONTRACT_VERSION,
-      tenantId: "tenant_default",
-      providerSlug: "provider-1",
-      adapter: "rss",
-      sourceUrl: durableSourceUrl("https://docs.example.com/releases.xml"),
-      sourceMaxBytes: null,
-      status: "unchanged",
-      inserted: 0,
-      artifacts: [],
-      dispatches: [],
-    };
+    const releaseSuccess = persistedRelease(store, releaseConfiguration(), "unchanged");
 
     const result = await runFeedSchedules({
       db,
@@ -396,18 +428,7 @@ describe("feed schedule runner", () => {
     const db = fixture();
     const store = releaseStore();
     const config = releaseConfiguration("tenant_default", "release-only");
-    const releaseSuccess: ReleasePollResult = {
-      contractVersion: RELEASE_POLL_CONTRACT_VERSION,
-      tenantId: "tenant_default",
-      providerSlug: "release-only",
-      adapter: "rss",
-      sourceUrl: durableSourceUrl(config.source.url),
-      sourceMaxBytes: null,
-      status: "unchanged",
-      inserted: 0,
-      artifacts: [],
-      dispatches: [],
-    };
+    const releaseSuccess = persistedRelease(store, config, "unchanged");
 
     const result = await runFeedSchedules({
       db,
@@ -528,18 +549,7 @@ describe("feed schedule runner", () => {
       releaseFeeds: [valid, invalid],
       releaseExecute: async (_store, config) => {
         releaseCalls++;
-        return {
-          contractVersion: config.contractVersion,
-          tenantId: config.tenantId,
-          providerSlug: config.provider.slug,
-          adapter: config.adapter,
-          sourceUrl: durableSourceUrl(config.source.url),
-          sourceMaxBytes: config.source.maxBytes ?? null,
-          status: "unchanged",
-          inserted: 0,
-          artifacts: [],
-          dispatches: [],
-        };
+        return persistedRelease(store, config, "unchanged");
       },
     });
 
@@ -588,7 +598,7 @@ describe("feed schedule runner", () => {
       releaseFeeds: [...duplicates, unrelated],
       releaseExecute: async (_store, config) => {
         releaseCalls.push(config.provider.slug);
-        return unchangedRelease(config);
+        return persistedRelease(store, config, "unchanged");
       },
     });
 
@@ -662,7 +672,7 @@ describe("feed schedule runner", () => {
       releaseFeeds: [...tenantADuplicates, tenantB],
       releaseExecute: async (_store, config) => {
         releaseTenants.push(config.tenantId);
-        return unchangedRelease(config);
+        return persistedRelease(store, config, "unchanged");
       },
     });
 
@@ -741,6 +751,127 @@ describe("feed schedule runner", () => {
     expect(serialized).not.toContain("mystery-status");
   });
 
+  it.each(["failed result", "thrown exception"] as const)(
+  "redacts release executor secrets from every %s output and durable error field",
+  async (failureMode) => {
+    const db = fixture();
+    const store = releaseStore();
+    const config = releaseConfiguration();
+    const secret = "password=release-executor-secret body-private";
+    const failedResult = {
+      ...unchangedRelease(config),
+      status: "failed" as const,
+      error: secret,
+    } as unknown as ReleasePollResult;
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed) => ({ slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const }),
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: async () => {
+        if (failureMode === "thrown exception") throw new Error(secret);
+        return failedResult;
+      },
+    });
+    expect(result).toMatchObject({
+      succeeded: 0,
+      failed: 1,
+      executions: [{
+        status: "failed",
+        error: "release: release_poll_executor_failed",
+        releaseOutcome: { status: "failed", error: "release_poll_executor_failed" },
+      }],
+    });
+    const durable = db.raw.prepare(`SELECT error FROM feed_schedule_windows
+      UNION ALL SELECT last_error AS error FROM feed_schedules`).all();
+    expect(JSON.stringify({ result, durable })).not.toContain(secret);
+    expect(JSON.stringify({ result, durable })).not.toContain("body-private");
+  });
+
+  it.each([
+    "absent artifact",
+    "mismatched artifact digest",
+    "absent dispatch",
+    "inserted count exceeds references",
+    "cross-tenant artifact",
+    "foreign provider artifact",
+  ] as const)("rejects %s executor references before terminal success", async (failureMode) => {
+    const db = fixture();
+    const store = releaseStore();
+    const config = releaseConfiguration();
+    const persisted = persistedRelease(store, config, "ingested") as ReleasePollResult & { status: "ingested" };
+    const digest = "f".repeat(64);
+    let forged: ReleasePollResult = persisted;
+    if (failureMode === "absent artifact") {
+      forged = { ...persisted, artifacts: [{ artifactId: "rel_ffffffffffffffffffffffffffffffff", contentSha256: digest }] };
+    } else if (failureMode === "mismatched artifact digest") {
+      forged = { ...persisted, artifacts: [{ ...persisted.artifacts[0]!, contentSha256: digest }] };
+    } else if (failureMode === "absent dispatch") {
+      forged = { ...persisted, dispatches: [{
+        dispatchId: "rdi_ffffffffffffffffffffffffffffffff",
+        artifactId: persisted.artifacts[0]!.artifactId,
+        artifactContentSha256: persisted.artifacts[0]!.contentSha256,
+      }] };
+    } else if (failureMode === "inserted count exceeds references") {
+      forged = { ...persisted, inserted: persisted.artifacts.length + 1 };
+    } else {
+      const foreign = failureMode === "cross-tenant artifact"
+        ? releaseConfiguration("tenant-foreign", config.provider.slug)
+        : releaseConfiguration(config.tenantId, "provider-foreign");
+      const foreignResult = persistedRelease(store, foreign, "ingested") as ReleasePollResult & { status: "ingested" };
+      forged = { ...persisted, artifacts: foreignResult.artifacts, dispatches: foreignResult.dispatches };
+    }
+    const result = await runFeedSchedules({
+      db,
+      tenantId: config.tenantId,
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed) => ({ slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const }),
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: async () => forged,
+    });
+    expect(result).toMatchObject({
+      succeeded: 0,
+      failed: 1,
+      executions: [{
+        status: "failed",
+        releaseOutcome: {
+          status: "failed",
+          error: "release_poll_executor_result_invalid",
+          result: { status: "invalid_configuration", identity: null },
+        },
+      }],
+    });
+  });
+
+  it.each(["ingested", "unchanged"] as const)(
+  "accepts a %s executor result only when every reference is ledger-backed",
+  async (status) => {
+    const db = fixture();
+    const store = releaseStore();
+    const config = releaseConfiguration();
+    const persisted = persistedRelease(store, config, status);
+    const result = await runFeedSchedules({
+      db,
+      tenantId: config.tenantId,
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed) => ({ slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const }),
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: async () => persisted,
+    });
+    expect(result).toMatchObject({
+      succeeded: 1,
+      failed: 0,
+      executions: [{ status: "succeeded", releaseOutcome: { status: "succeeded", result: persisted } }],
+    });
+  });
+
   it("reports unbound redacted configuration failures without suppressing valid schedules", async () => {
     const db = fixture();
     const store = releaseStore();
@@ -770,27 +901,56 @@ describe("feed schedule runner", () => {
       releaseFeeds: [releaseConfiguration(), ...collisionInputs],
       releaseExecute: async (_store, config) => {
         releaseCalls++;
-        return unchangedRelease(config);
+        return persistedRelease(store, config, "unchanged");
       },
     });
 
     expect(openApiCalls).toBe(1);
     expect(releaseCalls).toBe(1);
     expect(result).toMatchObject({
+      status: "degraded",
       succeeded: 1,
-      failed: 2,
+      failed: 0,
+      configurationFailed: 2,
+      configurationHealth: { status: "degraded", failed: 2 },
       releaseConfigurationFailures: [
         { status: "invalid_configuration", identity: null, configurationBinding: null },
         { status: "invalid_configuration", identity: null, configurationBinding: null },
       ],
       executions: [{ status: "succeeded" }],
-      health: { status: "degraded", counts: { healthy: 1, stale: 0, failed: 2 } },
+      health: { status: "healthy", counts: { healthy: 1, stale: 0, failed: 0 } },
     });
     expect(result.executions).toHaveLength(1);
     const serialized = JSON.stringify(result.releaseConfigurationFailures);
     expect(serialized).not.toContain("first-unbound-secret");
     expect(serialized).not.toContain("second-unbound-secret");
     expect(serialized).not.toContain("tenant-a\\nprovider-b");
+  });
+
+  it("reports only-invalid unbound configurations without fabricating schedule counts", async () => {
+    const db = fixture();
+    const invalid = [
+      { ...releaseConfiguration("bad tenant", "provider-a"), source: { url: "https://example.com/secret-a" } },
+      { ...releaseConfiguration("tenant-b", "bad provider"), source: { url: "https://example.com/secret-b" } },
+    ] as unknown as ReleasePollConfigurationV1[];
+    const result = await runFeedSchedules({
+      db,
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: [],
+      releaseFeeds: invalid,
+    });
+    expect(result).toMatchObject({
+      status: "degraded",
+      claimed: 0,
+      succeeded: 0,
+      failed: 0,
+      alreadyClaimed: 0,
+      configurationFailed: 2,
+      configurationHealth: { status: "degraded", failed: 2 },
+      executions: [],
+      health: { status: "healthy", counts: { healthy: 0, stale: 0, failed: 0 } },
+    });
+    expect(result.releaseConfigurationFailures).toHaveLength(2);
   });
 
   it.each([
@@ -801,22 +961,9 @@ describe("feed schedule runner", () => {
     const db = fixture();
     const store = releaseStore();
     const config = releaseConfiguration();
-    const digest = "a".repeat(64);
     const releaseResult = releaseStatus === "failed"
-      ? { ...unchangedRelease(config), status: "failed" as const, error: "release failure" }
-      : releaseStatus === "ingested"
-        ? {
-            ...unchangedRelease(config),
-            status: "ingested" as const,
-            inserted: 1,
-            artifacts: [{ artifactId: "rel_11111111111111111111111111111111", contentSha256: digest }],
-            dispatches: [{
-              dispatchId: "rdi_11111111111111111111111111111111",
-              artifactId: "rel_11111111111111111111111111111111",
-              artifactContentSha256: digest,
-            }],
-          }
-        : unchangedRelease(config);
+      ? { ...unchangedRelease(config), status: "failed" as const, error: "release_poll_executor_failed" as const }
+      : persistedRelease(store, config, releaseStatus);
 
     const result = await runFeedSchedules({
       db,
@@ -931,7 +1078,7 @@ describe("feed schedule runner", () => {
       sourceUrl: durableSourceUrl(config.source.url),
       sourceMaxBytes: null,
       status: "failed",
-      error: "release HTTP 502",
+      error: "release_poll_executor_failed",
       inserted: 0,
       artifacts: [],
       dispatches: [],
@@ -956,14 +1103,14 @@ describe("feed schedule runner", () => {
       executions: [{
         status: "failed",
         poll: { status: "error", error: "OpenAPI HTTP 503" },
-        error: "OpenAPI: OpenAPI HTTP 503; release: release HTTP 502",
+        error: "OpenAPI: OpenAPI HTTP 503; release: release_poll_executor_failed",
         openApiOutcome: { status: "failed", error: "OpenAPI HTTP 503" },
-        releaseOutcome: { status: "failed", error: "release HTTP 502", result: releaseFailure },
+        releaseOutcome: { status: "failed", error: "release_poll_executor_failed", result: releaseFailure },
       }],
       health: {
         status: "degraded",
         counts: { healthy: 0, stale: 0, failed: 1 },
-        schedules: [{ lastError: "OpenAPI: OpenAPI HTTP 503; release: release HTTP 502" }],
+        schedules: [{ lastError: "OpenAPI: OpenAPI HTTP 503; release: release_poll_executor_failed" }],
       },
     });
   });

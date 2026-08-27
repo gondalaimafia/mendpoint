@@ -46,10 +46,13 @@ export {
 
 export {
   RELEASE_POLL_CONTRACT_VERSION,
+  RELEASE_POLL_ERROR_CODES,
+  isReleasePollErrorCode,
   pollReleaseSource,
   type ReleaseArtifactReference,
   type ReleaseDispatchReference,
   type ReleasePollConfigurationV1,
+  type ReleasePollErrorCode,
   type ReleasePollOptions,
   type ReleasePollResult,
 } from "./release-poll.js";
