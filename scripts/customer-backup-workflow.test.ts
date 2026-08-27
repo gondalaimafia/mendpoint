@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  copyFileSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -166,6 +167,19 @@ interface ProfileGateInput {
   releaseMap?: string;
 }
 
+function flyPermissionToken(
+  apps: Readonly<Record<string, string>>,
+  extraCaveats: readonly unknown[] = [],
+): Record<string, unknown> {
+  return {
+    location: "https://api.fly.io/v1",
+    caveats: [
+      { type: "Apps", body: { apps } },
+      ...extraCaveats,
+    ],
+  };
+}
+
 function runProfileGate(input: ProfileGateInput): {
   status: number | null;
   stderr: string;
@@ -175,19 +189,20 @@ function runProfileGate(input: ProfileGateInput): {
   const directory = mkdtempSync(join(tmpdir(), "mendpoint-profile-gate-"));
   temporaryRoots.push(directory);
   installProfileStubs(directory);
+  mkdirSync(join(directory, "scripts"), { recursive: true });
+  copyFileSync(
+    resolve(root, "scripts/verify-fly-app-token-scope.mjs"),
+    join(directory, "scripts/verify-fly-app-token-scope.mjs"),
+  );
   mkdirSync(join(directory, "test-results/customer-backup-preflight"), { recursive: true });
   const output = join(directory, "github-output.txt");
   const summary = join(directory, "github-summary.md");
   const sha = input.workflowRevision ?? "d".repeat(40);
   const customerApp = input.customerApp ?? "mendpoint-customer";
   const visibleApps = input.visibleApps ?? [customerApp];
-  const derivedTokenDebug = JSON.stringify([{
-    location: "https://api.fly.io",
-    caveats: [{
-      type: "Apps",
-      value: visibleApps.map((name) => name === customerApp ? 123 : 999),
-    }],
-  }]);
+  const derivedTokenDebug = JSON.stringify([flyPermissionToken(Object.fromEntries(
+    visibleApps.map((name) => [name === customerApp ? "123" : "999", "rw"]),
+  ))]);
   const result = spawnSync("bash", ["-c", profileScript], {
     cwd: directory,
     encoding: "utf8",
@@ -195,7 +210,7 @@ function runProfileGate(input: ProfileGateInput): {
       ...process.env,
       PATH: `${directory}${delimiter}${process.env.PATH ?? ""}`,
       EXPECTED_ACTIVE: input.intent ?? "",
-      FLY_API_TOKEN: input.flyToken ?? "app-scoped-token",
+      FLY_API_TOKEN: input.flyToken ?? "FlyV1 fm2_YQ==",
       CUSTOMER_APP: customerApp,
       STUB_VISIBLE_APPS: JSON.stringify(visibleApps.map((Name) => ({ Name }))),
       STUB_APPS_AVAILABLE: input.appsAvailable === false ? "false" : "true",
@@ -215,6 +230,7 @@ function runProfileGate(input: ProfileGateInput): {
       GITHUB_RUN_ATTEMPT: "2",
       GITHUB_OUTPUT: output,
       GITHUB_STEP_SUMMARY: summary,
+      GITHUB_WORKSPACE: directory,
     },
   });
   const evidence = JSON.parse(readFileSync(
@@ -314,10 +330,21 @@ describe("customer backup workflow", () => {
     expect(validate.run).toContain('token_debug_json="$(flyctl tokens debug)"');
     expect(validate.run).toContain("customer_backup_token_debug_invalid");
     expect(validate.run).toContain("customer_backup_token_not_app_scoped");
+    expect(validate.run).toContain("MENDPOINT_FLY_TOKEN_DEBUG_JSON");
+    expect(validate.run).toContain(
+      'node "$GITHUB_WORKSPACE/scripts/verify-fly-app-token-scope.mjs"',
+    );
+    expect(validate.run).toContain("--credential-only");
+    expect(validate.run.indexOf("--credential-only")).toBeLessThan(
+      validate.run.indexOf("flyctl tokens debug"),
+    );
+    expect(validate.run).not.toContain("node -e");
     expect(validate.run).not.toContain('apps_json="$(flyctl apps list --json)"');
     expect(validate.run).not.toContain("mapfile -t visible_apps < <(");
     expect(validate.run).not.toContain(".[].Name");
     expect(validate.run).toContain('flyctl status --app "$CUSTOMER_APP"');
+    expect(source.match(/node "\$GITHUB_WORKSPACE\/scripts\/verify-fly-app-token-scope\.mjs"/g))
+      .toHaveLength(4);
   });
 
   it("executes the authenticated backup remotely with bounded evidence retention", () => {
@@ -393,6 +420,13 @@ describe("customer backup workflow", () => {
     const gate = workflow.jobs["profile-gate"] as Record<string, any>;
     expect(gate, "profile-gate job must exist").toBeTruthy();
     expect(gate.environment).toBe("customer-production-backup");
+    const gateCheckout = (gate.steps as Record<string, any>[]).find(
+      (candidate) => candidate.name === "Check out authority verifier",
+    ) as Record<string, any>;
+    expect(gateCheckout.uses).toBe(
+      "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+    );
+    expect(gateCheckout.with).toEqual({ "persist-credentials": false });
     const gateStep = (gate.steps as Record<string, any>[]).find(
       (candidate) => candidate.id === "check",
     ) as Record<string, any>;
@@ -514,19 +548,65 @@ describe("customer backup workflow", () => {
   });
 
   it.each([
-    ["organization token", [{ location: "https://api.fly.io", caveats: [{ type: "Organizations", value: [7] }] }]],
-    ["personal token", [{ location: "https://api.fly.io", caveats: [] }]],
-    ["wildcard app caveat", [{ location: "https://api.fly.io", caveats: [{ type: "Apps", value: [0] }] }]],
-    ["wrong app caveat", [{ location: "https://api.fly.io", caveats: [{ type: "Apps", value: [999] }] }]],
-    ["mixed permission tokens", [
-      { location: "https://api.fly.io", caveats: [{ type: "Apps", value: [123] }] },
-      { location: "https://api.fly.io", caveats: [{ type: "Apps", value: [999] }] },
-    ]],
-  ])("rejects %s from backup authority", (_name, tokenDebug) => {
+    {
+      name: "organization token",
+      tokenDebug: [{
+        location: "https://api.fly.io/v1",
+        caveats: [{ type: "Organization", body: { id: 7, mask: "rw" } }],
+      }],
+    },
+    { name: "personal token omitted by debug", flyToken: "fo1_personal", tokenDebug: [] },
+    {
+      name: "mixed personal and app credential omitted by debug",
+      flyToken: "FlyV1 fm2_YQ==,fo1_personal",
+      tokenDebug: [flyPermissionToken({ "123": "rw" })],
+    },
+    {
+      name: "multiple raw macaroons",
+      flyToken: "FlyV1 fm2_YQ==,fm2_Yg==",
+      tokenDebug: [flyPermissionToken({ "123": "rw" }), flyPermissionToken({ "123": "rw" })],
+    },
+    { name: "wildcard app caveat", tokenDebug: [flyPermissionToken({ "0": "rw" })] },
+    { name: "wrong app caveat", tokenDebug: [flyPermissionToken({ "999": "rw" })] },
+    {
+      name: "multiple app caveat",
+      tokenDebug: [flyPermissionToken({ "123": "rw", "999": "rw" })],
+    },
+    {
+      name: "wrapped app caveat",
+      tokenDebug: [{
+        location: "https://api.fly.io/v1",
+        caveats: [{
+          type: "IfPresent",
+          body: { caveats: [{ type: "Apps", body: { apps: { "123": "rw" } } }] },
+        }],
+      }],
+    },
+    {
+      name: "mixed permission tokens",
+      tokenDebug: [flyPermissionToken({ "123": "rw" }), flyPermissionToken({ "999": "rw" })],
+    },
+  ])("rejects $name from backup authority", ({ tokenDebug, flyToken }) => {
     const gate = runProfileGate({
       intent: "true",
       liveProfile: "customer",
       tokenDebugJson: JSON.stringify(tokenDebug),
+      ...(flyToken === undefined ? {} : { flyToken }),
+    });
+    expect(gate.status).toBe(1);
+    expect(gate.evidence).toMatchObject({
+      result: "authority_unavailable",
+      reason: "customer_backup_token_not_app_scoped",
+      backupTaken: false,
+    });
+  });
+
+  it("rejects a mixed raw credential before token debugging", () => {
+    const gate = runProfileGate({
+      intent: "true",
+      liveProfile: "customer",
+      flyToken: "FlyV1 fm2_YQ==,fo1_personal",
+      appsAvailable: false,
     });
     expect(gate.status).toBe(1);
     expect(gate.evidence).toMatchObject({

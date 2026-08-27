@@ -52,6 +52,11 @@ jobs:
             '{schemaVersion:1,kind:"customer_backup_preflight",app:$app,workflowRevision:$workflowRevision,liveReleaseRevision:$liveReleaseRevision,releaseRevisionMatchesWorkflow:$releaseRevisionMatchesWorkflow,runId:$runId,runAttempt:$runAttempt,observedAt:$observedAt,result:$result,reason:$reason,backupTaken:$backupTaken,operatorActionRequired:$operatorActionRequired}' \
             > "$evidence"
 
+      - name: Check out authority verifier
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
       - name: Install Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
 
@@ -138,6 +143,12 @@ jobs:
             echo customer_backup_app_binding_invalid >&2
             exit 1
           }
+          if ! node "$GITHUB_WORKSPACE/scripts/verify-fly-app-token-scope.mjs" \
+            --credential-only >/dev/null 2>&1; then
+            reason="customer_backup_token_not_app_scoped"
+            echo customer_backup_token_not_app_scoped >&2
+            exit 1
+          fi
           reason="customer_backup_live_runtime_unavailable"
           app_status_json="$(flyctl status --app "$CUSTOMER_APP" --json)"
           app_id="$(jq -er '(.ID // .id // .App.ID // .app.id) | tostring | select(test("^[1-9][0-9]*$"))' <<< "$app_status_json")" || {
@@ -149,19 +160,10 @@ jobs:
             echo customer_backup_token_scope_unavailable >&2
             exit 1
           }
-          if ! TOKEN_DEBUG_JSON="$token_debug_json" EXPECTED_APP_ID="$app_id" node -e '
-            const decoded = JSON.parse(process.env.TOKEN_DEBUG_JSON ?? "null");
-            const permissions = Array.isArray(decoded)
-              ? decoded.filter((token) => /api\.fly\.io/.test(token?.location ?? "")) : [];
-            const valid = permissions.length > 0 && permissions.every((token) => {
-              const apps = (token.caveats ?? []).filter((caveat) =>
-                String(caveat.type ?? caveat.name ?? caveat.kind ?? "").toLowerCase() === "apps"
-              ).map((caveat) => caveat.value ?? caveat.values ?? caveat.args ?? caveat.apps ?? []);
-              return apps.length === 1 && Array.isArray(apps[0]) && apps[0].length === 1 &&
-                String(apps[0][0]) === process.env.EXPECTED_APP_ID && /^[1-9][0-9]*$/.test(String(apps[0][0]));
-            });
-            process.exit(valid ? 0 : 1);
-          ' >/dev/null 2>&1; then
+          if ! MENDPOINT_FLY_TOKEN_DEBUG_JSON="$token_debug_json" \
+            MENDPOINT_EXPECTED_FLY_APP_ID="$app_id" \
+            node "$GITHUB_WORKSPACE/scripts/verify-fly-app-token-scope.mjs" \
+            >/dev/null 2>&1; then
             reason="customer_backup_token_not_app_scoped"
             echo customer_backup_token_not_app_scoped >&2
             exit 1
@@ -284,10 +286,18 @@ jobs:
             echo customer_backup_app_binding_invalid >&2
             exit 1
           }
+          if ! node "$GITHUB_WORKSPACE/scripts/verify-fly-app-token-scope.mjs" \
+            --credential-only >/dev/null 2>&1; then
+            echo customer_backup_token_not_app_scoped >&2
+            exit 1
+          fi
           app_status_json="$(flyctl status --app "$CUSTOMER_APP" --json)"
           app_id="$(jq -er '(.ID // .id // .App.ID // .app.id) | tostring | select(test("^[1-9][0-9]*$"))' <<< "$app_status_json")"
           token_debug_json="$(flyctl tokens debug)" || { echo customer_backup_token_debug_invalid >&2; exit 1; }
-          if ! TOKEN_DEBUG_JSON="$token_debug_json" EXPECTED_APP_ID="$app_id" node -e 'const decoded=JSON.parse(process.env.TOKEN_DEBUG_JSON??"null");const permissions=Array.isArray(decoded)?decoded.filter((token)=>/api\.fly\.io/.test(token?.location??"")):[];const valid=permissions.length>0&&permissions.every((token)=>{const apps=(token.caveats??[]).filter((caveat)=>String(caveat.type??caveat.name??caveat.kind??"").toLowerCase()==="apps").map((caveat)=>caveat.value??caveat.values??caveat.args??caveat.apps??[]);return apps.length===1&&Array.isArray(apps[0])&&apps[0].length===1&&String(apps[0][0])===process.env.EXPECTED_APP_ID&&/^[1-9][0-9]*$/.test(String(apps[0][0]));});process.exit(valid?0:1)' >/dev/null 2>&1; then
+          if ! MENDPOINT_FLY_TOKEN_DEBUG_JSON="$token_debug_json" \
+            MENDPOINT_EXPECTED_FLY_APP_ID="$app_id" \
+            node "$GITHUB_WORKSPACE/scripts/verify-fly-app-token-scope.mjs" \
+            >/dev/null 2>&1; then
             echo customer_backup_token_not_app_scoped >&2
             exit 1
           fi
