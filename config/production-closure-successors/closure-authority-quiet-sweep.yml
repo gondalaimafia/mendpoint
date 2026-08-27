@@ -1,4 +1,4 @@
-name: Production Closure Authority
+name: Production Closure Authority Reactive
 
 on:
   push:
@@ -34,7 +34,7 @@ permissions:
 # group with cron or manual sweeps. Reactive events coalesce by the exact PR head
 # or tracked issue while the per-PR job lock below preserves publication order.
 concurrency:
-  group: closure-authority-${{ github.event_name == 'push' && format('push-{0}', github.sha) || (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && format('pr-head-{0}', github.event.pull_request.head.sha) || github.event_name == 'workflow_run' && format('pr-head-{0}', github.event.workflow_run.head_sha) || (github.event_name == 'issues' || github.event_name == 'issue_comment') && format('issue-{0}', github.event.issue.number) || github.event_name == 'branch_protection_rule' && 'branch-protection' || 'sweep' }}
+  group: closure-authority-${{ github.event_name == 'push' && format('push-{0}', github.sha) || (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'workflow_run' && format('pr-head-{0}', github.event.workflow_run.head_sha) || (github.event_name == 'issues' || github.event_name == 'issue_comment') && format('issue-{0}', github.event.issue.number) || github.event_name == 'branch_protection_rule' && 'branch-protection' || 'sweep' }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
@@ -179,7 +179,7 @@ jobs:
           set -euo pipefail
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
             -f state=pending \
-            -f context=mendpoint-production-closure-controller-quiet-sweep \
+            -f context=mendpoint-production-closure-controller-reactive \
             -f description="Protected closure authority is being reevaluated" \
             -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
         env:
@@ -238,7 +238,7 @@ jobs:
           echo "check_id=${check_id}" >> "$GITHUB_OUTPUT"
           echo "check_name=${CHECK_NAME}" >> "$GITHUB_OUTPUT"
         env:
-          CHECK_NAME: mendpoint-production-closure-authority-quiet-sweep
+          CHECK_NAME: mendpoint-production-closure-authority-reactive
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
       - name: Checkout exact immutable main authority
@@ -440,7 +440,7 @@ jobs:
           fi
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${PR_HEAD_SHA}" \
             -f state="$state" \
-            -f context=mendpoint-production-closure-controller-quiet-sweep \
+            -f context=mendpoint-production-closure-controller-reactive \
             -f description="Protected closure authority verdict" \
             -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
         env:

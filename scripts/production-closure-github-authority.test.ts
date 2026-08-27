@@ -235,13 +235,16 @@ function codes(result: Awaited<ReturnType<typeof verifyGitHubClosureAuthority>>)
 }
 
 describe("GitHub production closure authority", () => {
-  it("runs per-PR authority from default-branch code and publishes an App-bound verdict", () => {
-    const workflow = parse(
-      readFileSync(
-        new URL("../.github/workflows/closure-authority-quiet-sweep.yml", import.meta.url),
-        "utf8",
+  it("preauthorizes reactive per-PR authority with an App-bound verdict", () => {
+    const workflowSource = readFileSync(
+      new URL(
+        "../config/production-closure-successors/closure-authority-quiet-sweep.yml",
+        import.meta.url,
       ),
-    ) as {
+      "utf8",
+    );
+    const workflow = parse(workflowSource) as {
+      name: string;
       on: Record<string, unknown>;
       permissions: Record<string, string>;
       concurrency?: unknown;
@@ -262,6 +265,9 @@ describe("GitHub production closure authority", () => {
     const job = workflow.jobs["closure-authority"];
     const mainObservationJob = workflow.jobs["main-authority-observation"];
 
+    expect(workflow.name).toBe("Production Closure Authority Reactive");
+    expect(workflowSource).toContain("mendpoint-production-closure-authority-reactive");
+    expect(workflowSource).toContain("mendpoint-production-closure-controller-reactive");
     expect(workflow.on).toHaveProperty("push");
     expect(workflow.on).toHaveProperty("pull_request_target");
     expect(workflow.on).toHaveProperty("schedule");
@@ -293,7 +299,7 @@ describe("GitHub production closure authority", () => {
     // by a later cron. Reactive PR events are scoped instead of becoming full sweeps.
     expect(workflow.concurrency).toEqual({
       group:
-        "closure-authority-${{ github.event_name == 'push' && format('push-{0}', github.sha) || (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && format('pr-head-{0}', github.event.pull_request.head.sha) || github.event_name == 'workflow_run' && format('pr-head-{0}', github.event.workflow_run.head_sha) || (github.event_name == 'issues' || github.event_name == 'issue_comment') && format('issue-{0}', github.event.issue.number) || github.event_name == 'branch_protection_rule' && 'branch-protection' || 'sweep' }}",
+        "closure-authority-${{ github.event_name == 'push' && format('push-{0}', github.sha) || (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'workflow_run' && format('pr-head-{0}', github.event.workflow_run.head_sha) || (github.event_name == 'issues' || github.event_name == 'issue_comment') && format('issue-{0}', github.event.issue.number) || github.event_name == 'branch_protection_rule' && 'branch-protection' || 'sweep' }}",
       "cancel-in-progress": "${{ github.event_name != 'push' }}",
     });
     expect(workflow.permissions).toEqual({
@@ -435,20 +441,6 @@ describe("GitHub production closure authority", () => {
     expect(mainObservationJob.if).toBe(
       "github.event_name == 'push' && github.ref == 'refs/heads/main'",
     );
-    expect(
-      readFileSync(
-        new URL(
-          "../config/production-closure-successors/closure-authority-quiet-sweep.yml",
-          import.meta.url,
-        ),
-        "utf8",
-      ),
-    ).toBe(
-      readFileSync(
-        new URL("../.github/workflows/closure-authority-quiet-sweep.yml", import.meta.url),
-        "utf8",
-      ),
-    );
   });
 
   it("limits pull request observations to current-head authority and global invariants", async () => {
@@ -524,7 +516,10 @@ describe("GitHub production closure authority", () => {
     const ACTIONS_TOKEN = "${{ secrets.GITHUB_TOKEN }}";
     const workflow = parse(
       readFileSync(
-        new URL("../.github/workflows/closure-authority-quiet-sweep.yml", import.meta.url),
+        new URL(
+          "../config/production-closure-successors/closure-authority-quiet-sweep.yml",
+          import.meta.url,
+        ),
         "utf8",
       ),
     ) as {
