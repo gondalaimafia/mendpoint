@@ -455,12 +455,19 @@ type WorkerFeedScheduleRunResult = Readonly<{
     failed: number;
     failures: readonly unknown[];
   }>;
+  releaseReadiness?: Readonly<{
+    ok: boolean;
+    required: number;
+    succeeded: number;
+    missing: readonly unknown[];
+  }>;
 }>;
 
 export function summarizeWorkerFeedScheduleRun(
   result: WorkerFeedScheduleRunResult,
   configuredCount: number,
 ) {
+  const releaseReady = configuredCount === 0 || result.releaseReadiness?.ok === true;
   return Object.freeze({
     ok:
       result.status === "healthy" &&
@@ -468,11 +475,14 @@ export function summarizeWorkerFeedScheduleRun(
       result.configurationHealth.ok === true &&
       result.configurationFailed === 0 &&
       result.configurationHealth.failed === 0 &&
-      result.failed === 0,
+      result.failed === 0 &&
+      releaseReady,
     feedScheduleStatus: result.status,
     releaseConfigurationStatus: configuredCount === 0
       ? "not_configured" as const
-      : result.configurationHealth.status,
+      : result.configurationHealth.ok && releaseReady
+        ? "healthy" as const
+        : "degraded" as const,
     releaseConfigurationFailed: result.configurationFailed,
   });
 }

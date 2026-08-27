@@ -385,6 +385,39 @@ describe("release ingestion", () => {
     ]) expect(visible).not.toContain(secret);
   });
 
+  it("digests hierarchical source item identifiers and preserves opaque IDs and URNs", () => {
+    const ledger = store();
+    const hierarchical = [
+      "ftp://alice:ftp-password@files.example.com/private-release-path",
+      "file://local-user/private/file-secret",
+      "custom+release://service-user:custom-password@provider/private-custom-path",
+    ];
+    const identifiers = ["opaque-release-42", "urn:provider:release:42", ...hierarchical];
+    const body = `<?xml version="1.0"?><rss><channel>${identifiers.map((id, index) =>
+      `<item><guid>${id}</guid><title>Release ${index}</title>
+        <link>https://docs.example.com/releases/${index}</link>
+        <pubDate>Sat, 02 Aug 2026 12:00:00 GMT</pubDate>
+        <description>Changed field ${index}.</description></item>`).join("")}</channel></rss>`;
+
+    const result = ingestReleaseDocument(ledger, input("rss", body));
+
+    expect(result.artifacts.map((artifact) => artifact.sourceItemId).slice(0, 2)).toEqual([
+      "opaque-release-42",
+      "urn:provider:release:42",
+    ]);
+    expect(result.artifacts.map((artifact) => artifact.sourceItemId).slice(2)).toEqual(
+      hierarchical.map((id) => `release-item-id-sha256:${createHash("sha256")
+        .update(`release-source-item-uri-v1\0${id}`)
+        .digest("hex")}`),
+    );
+    const durableRows = ledger.raw.prepare("SELECT * FROM release_ingestion_artifacts").all();
+    const visible = JSON.stringify({ result, durableRows });
+    for (const secret of [
+      "alice", "ftp-password", "private-release-path", "local-user", "file-secret",
+      "service-user", "custom-password", "private-custom-path",
+    ]) expect(visible).not.toContain(secret);
+  });
+
   it("normalizes GitHub releases and a constrained provider page fixture", () => {
     const ledger = store();
     const github = ingestReleaseDocument(ledger, input("github_releases", fixture("github-releases.json")));

@@ -582,13 +582,8 @@ function safeStoredItemUrl(value: unknown): string {
 function safeSourceItemId(value: unknown): string {
   const itemId = required("release_source_item_id", value, 512);
   if (/[\u0000-\u001f\u007f]/.test(itemId)) throw new Error("release_source_item_id_invalid");
-  try {
-    const parsed = new URL(itemId);
-    if (parsed.protocol === "https:") {
-      return `release-item-id-sha256:${sha256(parsed.toString())}`;
-    }
-  } catch {
-    // Non-URL provider identifiers remain valid, subject to the control-character check.
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(itemId)) {
+    return `release-item-id-sha256:${sha256(`release-source-item-uri-v1\0${itemId}`)}`;
   }
   if (itemId.includes("?") || itemId.includes("#")) {
     return `release-item-id-sha256:${sha256(itemId)}`;

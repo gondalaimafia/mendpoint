@@ -187,3 +187,18 @@
 **Mistake:** I proposed creating or importing another GSD roadmap even though an authoritative plan already existed.
 **Correction:** Talal required GSD execution, verification, and shipping mechanics to apply directly to the existing plan.
 **Rule:** Do not duplicate an authoritative plan; planning duplication is delay, not progress.
+
+### 2026-08-27 — Fence durable scheduler work across crashes
+**Mistake:** A running schedule window had no expiring authority, and readiness treated creation time as evidence of release success.
+**Correction:** Quality review reproduced a crash that left configured release polling permanently unclaimable while the worker reported healthy.
+**Rule:** Long-running durable claims need expiry and generation fencing, and configured readiness must require a distinct durable success fact.
+
+### 2026-08-27 — Redact identifier shape, not an allowed scheme list
+**Mistake:** Source item redaction hashed HTTPS identifiers but returned other hierarchical URI schemes verbatim.
+**Correction:** Quality review showed FTP and custom identifiers could expose credentials and private paths.
+**Rule:** Digest every hierarchical `scheme://` identifier with domain separation; preserve only explicitly safe opaque identifier forms.
+
+### 2026-08-27 — Verify line endings as a file contract
+**Mistake:** A CRLF source file became mixed-EOL after localized edits.
+**Correction:** Quality review required the worker entrypoint restored to its baseline CRLF convention without broad formatting.
+**Rule:** For line-ending-sensitive files, inspect index and working-tree EOL before and after edits, normalize only the target file, and review the semantic diff separately.

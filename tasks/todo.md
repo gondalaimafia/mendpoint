@@ -3451,3 +3451,23 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Behavior evidence: the scheduler derives one safe binding per deduplicated release scope. A pinned invocation retains its existing tenant-local OpenAPI and release seeding behavior; an unpinned invocation seeds only the configured release tenant/provider pairs, then uses the existing schedule claim, concurrency, completion, health, and replay paths unchanged. Same-window replay reports two already-claimed schedules and makes no additional executor calls.
 - Tenant evidence: no global `MENDPOINT_TENANT_ID` is required. Each canonical configuration remains bound to its own tenant and provider; duplicate and invalid configurations retain their existing isolated outcomes.
 - Remaining activation gates are unchanged: release-ingestion backup and restore coverage with operator approval, plus dispatch outbox drain activation and proof. ME-ING-003 and ME-ING-004 remain partial and internal only.
+
+## 2026-08-27 Release polling quality review fixes
+
+- [x] RED: reproduce crash-left running schedule health, unexpired replay, expiry takeover, stale completion, configured first-success readiness, and recovery.
+- [x] GREEN: add durable expiring generation-fenced schedule claims through the existing DB schema and APIs.
+- [x] GREEN: require a durable successful completion for every configured release tenant and provider before scheduler and worker readiness can be healthy.
+- [x] RED/GREEN: digest every hierarchical URI-style source item identifier while preserving opaque IDs and URNs.
+- [x] Restore `apps/worker/src/cli.ts` to its baseline CRLF convention without broad formatting.
+- [x] Run focused and full catalog and worker tests, workspace typecheck, production audit, secret scan, diff check, and EOL check.
+- [x] Self-review the complete delta, stage only owned files, and create new commits without remote changes.
+
+### Review
+
+- RED evidence: the durable DB regression failed at expired same-window takeover; the crash/restart scheduler returned `healthy` with one replay, zero calls, and no success; the worker summary returned `ok: true`; and FTP, file, and custom hierarchical item identifiers returned credentials and private paths verbatim.
+- Durable claim evidence: running windows carry an expiry and generation in the existing additive DB migration path. Unexpired replay cannot execute, expiry takeover increments the generation, stale or expired completion cannot mutate terminal state, and the legacy boolean claim API remains compatible. A release-specific durable success timestamp is written only under current completion authority.
+- Readiness evidence: every deduplicated configured release tenant and provider must have a durable release success before scheduler status and worker readiness become healthy. Crash/restart remains 503 with zero executor calls; expiry takeover executes once; successful recovery and same-window replay remain healthy and idempotent.
+- Identifier evidence: every RFC-style `scheme://` item identifier uses a domain-separated SHA-256 digest before return or persistence. Safe opaque IDs and URNs remain unchanged; FTP, file, and custom credentials and paths are absent from returned artifacts and durable rows.
+- Verification evidence: full Catalog passes 156 of 156, DB passes 432 of 432 across 56 files including schema upgrade divergence, Worker passes 608 with one intentional skip across 66 files, and the public health route passes 11 of 11. Full-workspace typecheck passes after one test fixture was updated for the additive nullable field. `npm audit --omit=dev` reports zero vulnerabilities, the production source secret scan is clean, and the CRLF-aware diff check is clean.
+- EOL evidence: `apps/worker/src/cli.ts` is normalized to 4,745 CRLF lines with zero bare LF; its semantic diff is limited to configured release readiness.
+- Remaining activation gates and requirement status are unchanged. This quality repair does not count release plumbing as additional Mendpoint 101 product progress.

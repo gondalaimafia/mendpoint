@@ -78,6 +78,7 @@ export type FeedScheduleRow = {
   enabled: number;
   last_attempt_at: string | null;
   last_success_at: string | null;
+  release_last_success_at: string | null;
   consecutive_failures: number;
   alert_state: "healthy" | "stale" | "failed";
   last_error: string | null;
@@ -93,6 +94,8 @@ export type FeedScheduleWindowRow = {
   status: "running" | "succeeded" | "failed";
   error: string | null;
   attempted_at: string;
+  lease_expires_at: string | null;
+  lease_generation: number;
   completed_at: string | null;
 };
 
