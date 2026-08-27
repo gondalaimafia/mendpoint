@@ -1280,8 +1280,7 @@
         438
       ],
       "pullRequests": [
-        358,
-        498
+        358
       ],
       "testEvidenceIds": [
         "ME-ENT-007-AC01-EV01"
@@ -1674,8 +1673,7 @@
       "pullRequests": [
         418,
         419,
-        421,
-        499
+        421
       ],
       "testEvidenceIds": [
         "ME-MSN-002-AC01-EV05",
@@ -1703,8 +1701,7 @@
         417,
         418,
         420,
-        421,
-        499
+        421
       ],
       "testEvidenceIds": [
         "ME-MSN-003-AC01-EV02"
@@ -1731,8 +1728,7 @@
         409,
         410,
         417,
-        419,
-        499
+        419
       ],
       "testEvidenceIds": [
         "ME-MTE-001-AC01-EV04"
@@ -2060,9 +2056,9 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-27T04:53:14.433Z",
+    "observedAt": "2026-08-27T05:11:13.598Z",
     "observedMainRevision": "2257f98961184044aab63982d89aa9b391aa3fbd",
-    "observationDigest": "sha256:5a2c425cca4e3db4474a05745f164cf8a1396b96f63ce005aed5eabd63706364",
+    "observationDigest": "sha256:0524da19658c3628420119587847c330613d0c21134a0c291a1854f800defa30",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -4378,9 +4374,7 @@
           "pullRequests": [],
           "branches": []
         },
-        "requirementIds": [
-          "ME-ENT-007"
-        ],
+        "requirementIds": [],
         "checkState": "checks_failed",
         "headRevision": "9241fa80a6e0bde57fd2935f70fe88821ae9016f",
         "mergeRevision": null,
@@ -4415,11 +4409,7 @@
           "pullRequests": [],
           "branches": []
         },
-        "requirementIds": [
-          "ME-MSN-002",
-          "ME-MSN-003",
-          "ME-MTE-001"
-        ],
+        "requirementIds": [],
         "checkState": "checks_failed",
         "headRevision": "97243f81d4b37469375d0adef4a6cd0bbc6398c3",
         "mergeRevision": null,

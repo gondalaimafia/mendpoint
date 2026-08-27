@@ -172,8 +172,3 @@
 **Mistake:** I started a manual Cursor PR review after finding that the installed review skill pointed to a missing workflow.
 **Correction:** Talal required the necessary skills to be fetched and used, and required findings to be fixed before merge.
 **Rule:** When an applicable review skill is incomplete, fetch its current authoritative runtime before continuing. For agent-authored PRs, use the fetched adversarial review and fixer workflow, then re-review the exact fixed head and require current-base CI before merge.
-
-### 2026-08-26 — Enumerate the whole failure chain before another CI cycle
-**Mistake:** Repeated retries can peel one hidden authority or integration layer at a time, consuming a full CI cycle without proving the next layer is ready.
-**Correction:** Talal required the lessons already learned to be applied whenever an issue appears or progress takes too long.
-**Rule:** At the second hidden failure layer, or when a retry produces no new evidence, stop retrying. Enumerate every input, predicate, downstream transition, and required external check locally; repair the complete reachable chain; then run one evidence-producing CI cycle.
