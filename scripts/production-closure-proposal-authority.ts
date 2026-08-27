@@ -39,6 +39,8 @@ import { revisionReachabilityIssues } from "./public-claims-check.js";
 const SHA = /^[a-f0-9]{40}$/;
 const MAX_BLOB_BYTES = 10 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+const MAX_TREE_OUTPUT_BYTES = 64 * 1024 * 1024;
+const MAX_TREE_ENTRIES = 200_000;
 
 interface GitTreeEntry {
   path: string;
@@ -103,6 +105,7 @@ export function writeProposalAuthorityFailureObservation(
 
 export interface ProposalAuthorityClient {
   getRepositoryId(): Promise<number>;
+  proposalHeadIsSameRepository(revision: string): Promise<boolean>;
   getRecursiveTree(revision: string): Promise<{ truncated: boolean; tree: GitTreeEntry[] }>;
   getBlob(sha: string): Promise<Buffer>;
   revisionExists(revision: string): Promise<boolean>;
@@ -199,14 +202,20 @@ function protectedSurfaceDigest(path: string, bytes: Buffer): string {
   return path === AUTHORITY_MANIFEST_PATH ? authorityScriptSliceDigest(bytes) : digest(bytes);
 }
 
+function validGitTreePath(path: string): boolean {
+  return Boolean(
+    path &&
+    !path.startsWith("/") &&
+    !path.includes("\0") &&
+    !path.split("/").some((part) => part === "" || part === "." || part === ".."),
+  );
+}
+
 function normalizedPath(locator: string): string | null {
   const path = locator.split("#", 1)[0];
   if (
-    !path ||
-    path.startsWith("/") ||
-    path.includes("\\") ||
-    path.includes("\0") ||
-    path.split("/").some((part) => part === "" || part === "." || part === "..")
+    !validGitTreePath(path) ||
+    path.includes("\\")
   ) {
     return null;
   }
@@ -317,6 +326,7 @@ function stableAuthorityRotationMatrixView(
     );
   }
   const releaseTrain = copy.releaseTrain as unknown as Record<string, unknown>;
+  delete releaseTrain.observedAt;
   delete releaseTrain.observedMainRevision;
   delete releaseTrain.observationDigest;
   delete releaseTrain.currentPullRequestBootstrap;
@@ -412,6 +422,15 @@ export async function verifyProductionClosureProposal(
       !SHA.test(proposalRevision)
     ) {
       add(issues, "PROPOSAL_AUTHORITY_IDENTITY_INVALID", "policy", "repository policy and proposal identity must match");
+      return observation;
+    }
+    if (!(await client.proposalHeadIsSameRepository(proposalRevision))) {
+      add(
+        issues,
+        "PROPOSAL_HEAD_NOT_SAME_REPOSITORY",
+        proposalRevision,
+        "proposal head must be reachable from an exact fetched branch in the protected repository",
+      );
       return observation;
     }
     const tree = await client.getRecursiveTree(proposalRevision);
@@ -837,6 +856,14 @@ export async function verifyProductionClosureProposal(
           "base and proposed closure matrices must remain structurally comparable",
         );
       }
+      if (matrix.releaseTrain.observedAt !== receipt?.issuedAt) {
+        add(
+          issues,
+          "AUTHORITY_ROTATION_OBSERVATION_TIME_MISMATCH",
+          "releaseTrain.observedAt",
+          "provider observation time must equal the exact authority rotation receipt issue time",
+        );
+      }
       if (
         !receipt ||
         !bootstrapRotation ||
@@ -940,15 +967,17 @@ export async function verifyProductionClosureProposal(
 
 export class GitHubProposalAuthorityClient implements ProposalAuthorityClient {
   private readonly apiBase = "https://api.github.com";
+  private repositoryIdPromise: Promise<number> | undefined;
 
   constructor(
     private readonly repository: string,
     private readonly token: string,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly sleepImpl: GitHubSleep = defaultGitHubSleep,
+    private readonly checkoutRoot: string = process.cwd(),
   ) {}
 
-  private async request<T>(path: string, allowMissing = false): Promise<T | null> {
+  private async request<T>(path: string): Promise<T> {
     const response = await fetchGitHubReadWithRetry(`${this.apiBase}${path}`, {
       headers: {
         accept: "application/vnd.github+json",
@@ -957,53 +986,157 @@ export class GitHubProposalAuthorityClient implements ProposalAuthorityClient {
         "x-github-api-version": "2022-11-28",
       },
     }, this.fetchImpl, this.sleepImpl);
-    if (allowMissing && response.status === 404) return null;
     if (!response.ok) throw new Error(`GitHub API request failed with HTTP ${response.status}`);
     return (await response.json()) as T;
   }
 
-  async getRepositoryId(): Promise<number> {
+  private async readRepositoryId(): Promise<number> {
     const result = await this.request<{ id?: unknown }>(`/repos/${this.repository}`);
-    if (!result || !Number.isInteger(result.id)) throw new Error("repository identity is invalid");
+    if (!Number.isInteger(result.id)) throw new Error("repository identity is invalid");
     return result.id as number;
   }
+
+  async getRepositoryId(): Promise<number> {
+    this.repositoryIdPromise ??= this.readRepositoryId();
+    return this.repositoryIdPromise;
+  }
+
+  private exactSha(value: string): string {
+    if (!SHA.test(value)) throw new Error("local authority reads require an exact Git object SHA");
+    return value;
+  }
+
+  private gitEnvironment(): NodeJS.ProcessEnv {
+    return { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" };
+  }
+
+  private gitOutput(args: string[], maxBuffer: number): Buffer {
+    return execFileSync("git", args, {
+      cwd: resolve(this.checkoutRoot),
+      env: this.gitEnvironment(),
+      maxBuffer,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+  }
+
+  private gitStatus(args: string[]): number {
+    try {
+      execFileSync("git", args, {
+        cwd: resolve(this.checkoutRoot),
+        env: this.gitEnvironment(),
+        shell: false,
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      return 0;
+    } catch (error) {
+      const status = (error as { status?: unknown }).status;
+      if (typeof status === "number") return status;
+      throw error;
+    }
+  }
+
+  async proposalHeadIsSameRepository(revision: string): Promise<boolean> {
+    const refs = this.gitOutput(
+      [
+        "for-each-ref",
+        "--contains",
+        this.exactSha(revision),
+        "--format=%(refname)",
+        "refs/remotes/origin/",
+      ],
+      1024 * 1024,
+    ).toString("utf8").split(/\r?\n/).filter(Boolean);
+    return refs.some((ref) => /^refs\/remotes\/origin\/[^/].*$/.test(ref));
+  }
+
   async getRecursiveTree(revision: string): Promise<{ truncated: boolean; tree: GitTreeEntry[] }> {
-    const result = await this.request<{ truncated?: unknown; tree?: unknown }>(
-      `/repos/${this.repository}/git/trees/${revision}?recursive=1`,
+    const output = this.gitOutput(
+      ["ls-tree", "-r", "-t", "-z", "-l", "--full-tree", this.exactSha(revision)],
+      MAX_TREE_OUTPUT_BYTES,
     );
-    if (!result || typeof result.truncated !== "boolean" || !Array.isArray(result.tree)) {
-      throw new Error("proposal tree response is invalid");
+    if (output.length > 0 && output.at(-1) !== 0) {
+      throw new Error("local proposal tree is not NUL terminated");
     }
-    return { truncated: result.truncated, tree: result.tree as GitTreeEntry[] };
+    const tree: GitTreeEntry[] = [];
+    const paths = new Set<string>();
+    let start = 0;
+    while (start < output.length) {
+      const end = output.indexOf(0, start);
+      if (end < 0) throw new Error("local proposal tree record is incomplete");
+      const record = output.subarray(start, end);
+      start = end + 1;
+      const separator = record.indexOf(0x09);
+      if (separator <= 0 || separator === record.length - 1) {
+        throw new Error("local proposal tree record is invalid");
+      }
+      const header = record.subarray(0, separator).toString("ascii");
+      const match = /^([0-7]{6}) (blob|tree|commit) ([a-f0-9]{40}) +([0-9]+|-)$/.exec(header);
+      if (!match) throw new Error("local proposal tree header is invalid");
+      const [, mode, type, sha, sizeText] = match;
+      const pathBytes = record.subarray(separator + 1);
+      const path = pathBytes.toString("utf8");
+      if (!Buffer.from(path, "utf8").equals(pathBytes) || !validGitTreePath(path)) {
+        throw new Error("local proposal tree path is invalid");
+      }
+      if (paths.has(path)) throw new Error("local proposal tree contains duplicate paths");
+      paths.add(path);
+      const validMode =
+        (type === "blob" && ["100644", "100755", "120000"].includes(mode)) ||
+        (type === "tree" && mode === "040000") ||
+        (type === "commit" && mode === "160000");
+      const size = sizeText === "-" ? undefined : Number(sizeText);
+      if (
+        !validMode ||
+        (type === "blob" && (!Number.isSafeInteger(size) || (size ?? -1) < 0)) ||
+        (type !== "blob" && size !== undefined)
+      ) {
+        throw new Error("local proposal tree entry is invalid");
+      }
+      tree.push({ path, mode, type, sha, ...(size === undefined ? {} : { size }) });
+      if (tree.length > MAX_TREE_ENTRIES) throw new Error("local proposal tree entry budget exceeded");
+    }
+    return { truncated: false, tree };
   }
+
   async getBlob(sha: string): Promise<Buffer> {
-    const result = await this.request<{ encoding?: unknown; content?: unknown; size?: unknown }>(
-      `/repos/${this.repository}/git/blobs/${sha}`,
-    );
-    if (!result || result.encoding !== "base64" || typeof result.content !== "string") {
-      throw new Error("proposal blob response is invalid");
-    }
-    const bytes = Buffer.from(result.content.replace(/\s+/g, ""), "base64");
-    if (typeof result.size === "number" && result.size !== bytes.length) {
-      throw new Error("proposal blob size is invalid");
-    }
-    return bytes;
+    return this.gitOutput(["cat-file", "blob", this.exactSha(sha)], MAX_BLOB_BYTES + 1);
   }
+
   async revisionExists(revision: string): Promise<boolean> {
-    return (await this.request(`/repos/${this.repository}/git/commits/${revision}`, true)) !== null;
+    const status = this.gitStatus(["cat-file", "-e", `${this.exactSha(revision)}^{commit}`]);
+    if (status === 0) return true;
+    if (status === 1 || status === 128) return false;
+    throw new Error(`local Git revision check failed with status ${status}`);
   }
+
   async revisionIsAncestor(revision: string, descendant: string): Promise<boolean> {
-    const result = await this.request<{ status?: unknown }>(
-      `/repos/${this.repository}/compare/${revision}...${descendant}`,
-    );
-    return result?.status === "ahead" || result?.status === "identical";
+    const status = this.gitStatus([
+      "merge-base",
+      "--is-ancestor",
+      this.exactSha(revision),
+      this.exactSha(descendant),
+    ]);
+    if (status === 0) return true;
+    if (status === 1) return false;
+    throw new Error(`local Git ancestry check failed with status ${status}`);
   }
+
   async getMergeBase(base: string, head: string): Promise<string | null> {
-    const result = await this.request<{ merge_base_commit?: { sha?: unknown } }>(
-      `/repos/${this.repository}/compare/${base}...${head}`,
-    );
-    const sha = result?.merge_base_commit?.sha;
-    return typeof sha === "string" && SHA.test(sha) ? sha : null;
+    try {
+      const result = this.gitOutput(
+        ["merge-base", this.exactSha(base), this.exactSha(head)],
+        1024,
+      ).toString("ascii").trim();
+      if (!SHA.test(result)) throw new Error("local Git merge base is invalid");
+      return result;
+    } catch (error) {
+      const status = (error as { status?: unknown }).status;
+      if (status === 1) return null;
+      throw error;
+    }
   }
 }
 

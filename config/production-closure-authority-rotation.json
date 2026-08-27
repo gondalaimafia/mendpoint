@@ -140,6 +140,48 @@
           "toMode": "100644"
         }
       ]
+    },
+    {
+      "rotationId": "rotation-20260827-004",
+      "kind": "runtime",
+      "issuedAt": "2026-08-27T05:34:29.853Z",
+      "expiresAt": "2026-08-28T05:34:29.853Z",
+      "basePolicySha256": "sha256:809f79e92cd7be5ce58c6f7920d44f0640c24138f553656911842d74c76d8a67",
+      "proposedPolicySha256": "sha256:dcb2238abb3933d4316f3caddd7e2af705c2f5c19ce9e84edf86abcade3599be",
+      "previousRotationId": "rotation-20260827-003",
+      "baseRevision": "2257f98961184044aab63982d89aa9b391aa3fbd",
+      "baseLedgerSha256": "sha256:a08226358359c37befbe0a5c58b7d691a918acbf1d0b467aa4f49f0cc047cb9c",
+      "successor": null,
+      "changes": [
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:809f79e92cd7be5ce58c6f7920d44f0640c24138f553656911842d74c76d8a67",
+          "toSha256": "sha256:dcb2238abb3933d4316f3caddd7e2af705c2f5c19ce9e84edf86abcade3599be",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:bcc36c11779ee88e9208ce08a8bb685e14eba35be2d95a6ff3b8bbcedf89205d",
+          "toSha256": "sha256:5a8ff8932c63856b266611adc393c00f1e35a8c86443a9113c52e82c248407b6",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-proposal-authority.test.ts",
+          "fromSha256": "sha256:b16a9027ea23f8b6599feb5e7d23df18e5da89780754f852442d1b5eb4597e86",
+          "toSha256": "sha256:8583e1410989dcc5781edc2e77cb153b2db5f48dd5b430304f4ad66dc9496fc9",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-proposal-authority.ts",
+          "fromSha256": "sha256:7c3d531bbd8bd7639fb7d610cac95d724a68444028a06202f1076a9f8b6f336d",
+          "toSha256": "sha256:51d86e5498cc588b7cae5cd59266e005eafb6e04b9f83c1877517a536cccf209",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
     }
   ]
 }

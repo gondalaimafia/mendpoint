@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -45,6 +45,67 @@ function baseAuthority() {
     rotationLedgerBytes: readFileSync(
       resolve(root, "config", "production-closure-authority-rotation.json"),
     ),
+  };
+}
+
+function createDivergedRepository(): {
+  directory: string;
+  baseRevision: string;
+  headRevision: string;
+  mainRevision: string;
+  localOnlyRevision: string;
+  headBlobSha: string;
+  headBlobBytes: Buffer;
+} {
+  const directory = mkdtempSync(join(tmpdir(), "mendpoint-proposal-local-git-"));
+  const git = (...args: string[]) => execFileSync("git", args, {
+    cwd: directory,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+  git("init", "-b", "main");
+  git("config", "user.email", "proposal-authority@example.invalid");
+  git("config", "user.name", "Proposal Authority Test");
+  writeFileSync(join(directory, "base.txt"), "base\n");
+  git("add", "base.txt");
+  git("commit", "-m", "base");
+  const baseRevision = git("rev-parse", "HEAD");
+
+  git("switch", "-c", "feature");
+  mkdirSync(join(directory, "nested"));
+  const headBlobBytes = Buffer.from("exact proposal bytes\n");
+  const proposalPath = join(directory, "nested", "proposal.txt");
+  writeFileSync(proposalPath, headBlobBytes);
+  chmodSync(proposalPath, 0o755);
+  writeFileSync(join(directory, "literal#name.txt"), "literal Git path\n");
+  git("add", "nested/proposal.txt");
+  git("add", "literal#name.txt");
+  git("update-index", "--chmod=+x", "nested/proposal.txt");
+  git("commit", "-m", "proposal");
+  const headRevision = git("rev-parse", "HEAD");
+  const headBlobSha = git("rev-parse", "HEAD:nested/proposal.txt");
+
+  git("switch", "main");
+  writeFileSync(join(directory, "main.txt"), "main\n");
+  git("add", "main.txt");
+  git("commit", "-m", "main");
+  const mainRevision = git("rev-parse", "HEAD");
+  git("switch", "-c", "local-only", "feature");
+  writeFileSync(join(directory, "local-only.txt"), "not published to origin\n");
+  git("add", "local-only.txt");
+  git("commit", "-m", "local only");
+  const localOnlyRevision = git("rev-parse", "HEAD");
+  git("switch", "main");
+  git("update-ref", "refs/remotes/origin/main", mainRevision);
+  git("update-ref", "refs/remotes/origin/feature", headRevision);
+  return {
+    directory,
+    baseRevision,
+    headRevision,
+    mainRevision,
+    localOnlyRevision,
+    headBlobSha,
+    headBlobBytes,
   };
 }
 
@@ -126,6 +187,9 @@ class FixtureClient implements ProposalAuthorityClient {
   }
   async getRepositoryId(): Promise<number> {
     return 1309389373;
+  }
+  async proposalHeadIsSameRepository(): Promise<boolean> {
+    return true;
   }
   /**
    * Move the base tip ahead of the branch point, leaving the proposal alone.
@@ -567,6 +631,7 @@ describe("production closure proposal authority", () => {
       proposedPolicySha256: sha256(proposedPolicyBytes),
     };
     proposedMatrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = rotation;
+    proposedMatrix.releaseTrain.observedAt = rotationObservedAt;
     proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
     const proposedMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
     client.replace(matrixPath, proposedMatrixBytes);
@@ -622,6 +687,28 @@ describe("production closure proposal authority", () => {
     expect(result.providerValidationPullRequests).toEqual([]);
     expect(result.providerValidationIssues).toEqual([]);
 
+    proposedMatrix.releaseTrain.observedAt = new Date(
+      Date.parse(rotationObservedAt) + 1_000,
+    ).toISOString();
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    const mistimedMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
+    client.replace(matrixPath, mistimedMatrixBytes);
+    changes.find((change) => change.path === matrixPath)!.toSha256 = sha256(mistimedMatrixBytes);
+    client.replace("config/production-closure-authority-rotation.json", proposedLedger);
+
+    const mistimed = await verifyProductionClosureProposal(
+      basePolicy,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      rotationObservedAt,
+      authority,
+    );
+    expect(mistimed.issues.map((issue) => issue.code)).toContain(
+      "AUTHORITY_ROTATION_OBSERVATION_TIME_MISMATCH",
+    );
+
+    proposedMatrix.releaseTrain.observedAt = rotationObservedAt;
     proposedMatrix.issueAuthority.issues[0].title = "Rewritten authority evidence";
     proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
     const rewrittenMatrixBytes = Buffer.from(JSON.stringify(proposedMatrix));
@@ -871,21 +958,105 @@ describe("production closure proposal authority", () => {
     expect(JSON.stringify({ attempts, waits })).not.toContain("sensitive-token");
   });
 
-  it("keeps an allowed missing revision as a single non-retried read", async () => {
-    let attempts = 0;
+  it("reads immutable proposal objects locally and performs one cached provider identity read", async () => {
+    const repository = createDivergedRepository();
+    const requests: string[] = [];
     const client = new GitHubProposalAuthorityClient(
       "gondalaimafia/mendpoint",
       "sensitive-token",
-      async () => {
-        attempts += 1;
-        return new Response(null, { status: 404 });
+      async (input) => {
+        requests.push(String(input));
+        return new Response(JSON.stringify({ id: 1309389373 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
       },
       async () => {
         throw new Error("unexpected retry");
       },
+      repository.directory,
     );
 
-    await expect(client.revisionExists(HEAD)).resolves.toBe(false);
-    expect(attempts).toBe(1);
+    try {
+      const tree = await client.getRecursiveTree(repository.headRevision);
+      expect(tree.truncated).toBe(false);
+      expect(tree.tree).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: "literal#name.txt", mode: "100644", type: "blob" }),
+        expect.objectContaining({
+          path: "nested/proposal.txt",
+          mode: "100755",
+          type: "blob",
+          sha: repository.headBlobSha,
+          size: repository.headBlobBytes.length,
+        }),
+      ]));
+      await expect(client.getBlob(repository.headBlobSha)).resolves.toEqual(repository.headBlobBytes);
+      await expect(client.proposalHeadIsSameRepository(repository.headRevision)).resolves.toBe(true);
+      await expect(client.proposalHeadIsSameRepository(repository.localOnlyRevision)).resolves.toBe(false);
+      await expect(client.revisionExists(repository.headRevision)).resolves.toBe(true);
+      await expect(client.revisionIsAncestor(repository.baseRevision, repository.headRevision)).resolves.toBe(true);
+      await expect(client.revisionIsAncestor(repository.mainRevision, repository.headRevision)).resolves.toBe(false);
+      await expect(client.getMergeBase(repository.mainRevision, repository.headRevision)).resolves.toBe(
+        repository.baseRevision,
+      );
+      await expect(client.getRepositoryId()).resolves.toBe(1309389373);
+      await expect(client.getRepositoryId()).resolves.toBe(1309389373);
+      expect(requests).toEqual(["https://api.github.com/repos/gondalaimafia/mendpoint"]);
+    } finally {
+      rmSync(repository.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on absent local objects without falling back to GitHub", async () => {
+    const repository = createDivergedRepository();
+    let requests = 0;
+    const client = new GitHubProposalAuthorityClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => {
+        requests += 1;
+        return new Response(JSON.stringify({ id: 1309389373 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      async () => {
+        throw new Error("unexpected retry");
+      },
+      repository.directory,
+    );
+    const absentRevision = "f".repeat(40);
+
+    try {
+      await expect(client.getRecursiveTree(absentRevision)).rejects.toThrow();
+      await expect(client.getBlob(absentRevision)).rejects.toThrow();
+      await expect(client.revisionExists(absentRevision)).resolves.toBe(false);
+      await expect(client.revisionIsAncestor(absentRevision, repository.headRevision)).rejects.toThrow();
+      await expect(client.getMergeBase(absentRevision, repository.headRevision)).rejects.toThrow();
+      await expect(client.getBlob("HEAD")).rejects.toThrow("exact Git object SHA");
+      expect(requests).toBe(0);
+    } finally {
+      rmSync(repository.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a proposal head that is not reachable from the protected repository", async () => {
+    const client = new FixtureClient();
+    client.proposalHeadIsSameRepository = async () => false;
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.verdict).toBe("fail");
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "PROPOSAL_HEAD_NOT_SAME_REPOSITORY",
+      subject: HEAD,
+    }));
   });
 });
