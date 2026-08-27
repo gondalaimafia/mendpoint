@@ -418,6 +418,40 @@ describe("release ingestion", () => {
     ]) expect(visible).not.toContain(secret);
   });
 
+  it.each([
+    [
+      "HTTPS://Docs.Example.com:443/releases/../releases/v1?channel=stable#notes",
+      "https://docs.example.com/releases/v1?channel=stable#notes",
+    ],
+    [
+      "https://docs.example.com:443/a/./b/../release/%7Eteam",
+      "https://docs.example.com/a/release/%7Eteam",
+    ],
+  ])("reuses the legacy HTTPS artifact and dispatch identity for %s", (rawGuid, canonicalGuid) => {
+    const ledger = store();
+    expect(new URL(rawGuid).toString()).toBe(canonicalGuid);
+    const legacySourceItemId = `release-item-id-sha256:${createHash("sha256")
+      .update(canonicalGuid)
+      .digest("hex")}`;
+    const rss = (guid: string) => `<?xml version="1.0"?><rss><channel><item>
+      <guid>${guid}</guid><title>Canonical HTTPS release</title>
+      <link>https://docs.example.com/releases/canonical</link>
+      <pubDate>Sat, 02 Aug 2026 12:00:00 GMT</pubDate>
+      <description>Changed canonical identity behavior.</description>
+    </item></channel></rss>`;
+
+    const seeded = ingestReleaseDocument(ledger, input("rss", rss(legacySourceItemId)));
+    const replay = ingestReleaseDocument(ledger, input("rss", rss(rawGuid)));
+
+    expect(seeded.inserted).toBe(1);
+    expect(seeded.artifacts[0]?.sourceItemId).toBe(legacySourceItemId);
+    expect(replay.inserted).toBe(0);
+    expect(replay.artifacts).toHaveLength(1);
+    expect(replay.artifacts[0]?.id).toBe(seeded.artifacts[0]?.id);
+    expect(listReleaseArtifacts(ledger, "tenant-a")).toHaveLength(1);
+    expect(listReleaseDispatches(ledger, "tenant-a")).toHaveLength(1);
+  });
+
   it("normalizes GitHub releases and a constrained provider page fixture", () => {
     const ledger = store();
     const github = ingestReleaseDocument(ledger, input("github_releases", fixture("github-releases.json")));
