@@ -125,6 +125,17 @@ class FixtureClient implements ProposalAuthorityClient {
     this.basePathToSha.delete(path);
     this.modes.delete(path);
   }
+  changedFile(path: string) {
+    const fromBlob = this.basePathToSha.get(path);
+    const toBlob = this.pathToSha.get(path);
+    return {
+      path,
+      fromSha256: fromBlob ? sha256(this.blobs.get(fromBlob)!) : null,
+      toSha256: toBlob ? sha256(this.blobs.get(toBlob)!) : null,
+      fromMode: fromBlob ? "100644" as const : null,
+      toMode: toBlob ? "100644" as const : null,
+    };
+  }
   async getRepositoryId(): Promise<number> {
     return 1309389373;
   }
@@ -681,6 +692,239 @@ describe("production closure proposal authority", () => {
     ]);
   });
 
+  it("accepts a complete stage_successor proposal and exempts only its proven controller", async () => {
+    const client = new FixtureClient();
+    const authority = baseAuthority();
+    const basePolicy = policy();
+    const baseLedger = JSON.parse(authority.rotationLedgerBytes.toString("utf8"));
+    const priorReceipt = baseLedger.rotations.at(-1) ?? null;
+    const issuedAt = new Date(
+      Math.max(Date.parse(OBSERVED_AT), Date.parse(priorReceipt?.issuedAt ?? OBSERVED_AT) + 60_000),
+    ).toISOString();
+    const expiresAt = new Date(Date.parse(issuedAt) + 24 * 60 * 60 * 1000).toISOString();
+    const templatePath = "config/production-closure-successors/closure-authority-v2.yml";
+    const workflowPath = ".github/workflows/closure-authority-v2.yml";
+    const successorBytes = client.blobs.get(client.pathToSha.get(templatePath)!)!;
+    const successor = {
+      templatePath,
+      workflowPath,
+      workflowSha256: sha256(successorBytes),
+      externalCheckName: "mendpoint-production-closure-authority-v2",
+      externalCheckAppId: basePolicy.externalCheckAppId,
+      controllerCheckName: "mendpoint-production-closure-controller-v2",
+      controllerCheckAppId: basePolicy.controllerCheckAppId,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
+      activationDeadline: expiresAt,
+    };
+    const proposedPolicy = structuredClone(basePolicy);
+    proposedPolicy.successor = {
+      phase: "staged",
+      stagedByRotationId: "rotation-20260827-stage-v2",
+      activatedByRotationId: null,
+      ...successor,
+    };
+    proposedPolicy.protectedFiles[workflowPath] = successor.workflowSha256;
+    const proposedPolicyBytes = Buffer.from(JSON.stringify(proposedPolicy));
+    client.replace("config/production-closure-authority.json", proposedPolicyBytes);
+    client.add(workflowPath, successorBytes, false);
+
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const proposedMatrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    const bootstrapRotation = {
+      rotationId: "rotation-20260827-stage-v2",
+      kind: "stage_successor" as const,
+      issuedAt,
+      expiresAt,
+      basePolicySha256: sha256(authority.policyBytes),
+      proposedPolicySha256: sha256(proposedPolicyBytes),
+      successor,
+    };
+    proposedMatrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = bootstrapRotation;
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    client.replace(matrixPath, proposedMatrix);
+
+    const changes = [
+      client.changedFile("config/production-closure-authority.json"),
+      client.changedFile(workflowPath),
+      client.changedFile(matrixPath),
+    ];
+    client.replace("config/production-closure-authority-rotation.json", {
+      schemaVersion: 1,
+      rotations: [...baseLedger.rotations, {
+        ...bootstrapRotation,
+        previousRotationId: priorReceipt?.rotationId ?? null,
+        baseRevision: BASE,
+        baseLedgerSha256: sha256(authority.rotationLedgerBytes),
+        changes,
+      }],
+    });
+
+    const result = await verifyProductionClosureProposal(
+      basePolicy,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      issuedAt,
+      authority,
+    );
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(result.authorityRotation).toMatchObject({
+      rotationId: bootstrapRotation.rotationId,
+      kind: "stage_successor",
+      successor,
+    });
+  });
+
+  it("accepts a complete activate_successor proposal and removes the predecessor", async () => {
+    const client = new FixtureClient();
+    const predecessorPath = ".github/workflows/closure-authority.yml";
+    const templatePath = "config/production-closure-successors/closure-authority-v2.yml";
+    const workflowPath = ".github/workflows/closure-authority-v2.yml";
+    const successorBytes = client.blobs.get(client.pathToSha.get(templatePath)!)!;
+    const originalPolicy = policy();
+    const originalLedger = JSON.parse(
+      readFileSync(resolve(root, "config", "production-closure-authority-rotation.json"), "utf8"),
+    );
+    const priorReceipt = originalLedger.rotations.at(-1) ?? null;
+    const stageIssuedAt = new Date(
+      Math.max(Date.parse(OBSERVED_AT), Date.parse(priorReceipt?.issuedAt ?? OBSERVED_AT) + 60_000),
+    ).toISOString();
+    const activateIssuedAt = new Date(Date.parse(stageIssuedAt) + 60_000).toISOString();
+    const expiresAt = new Date(Date.parse(stageIssuedAt) + 24 * 60 * 60 * 1000).toISOString();
+    const successor = {
+      templatePath,
+      workflowPath,
+      workflowSha256: sha256(successorBytes),
+      externalCheckName: "mendpoint-production-closure-authority-v2",
+      externalCheckAppId: originalPolicy.externalCheckAppId,
+      controllerCheckName: "mendpoint-production-closure-controller-v2",
+      controllerCheckAppId: originalPolicy.controllerCheckAppId,
+      controllerStatusCreatorLogin: "github-actions[bot]",
+      controllerStatusCreatorUserId: 41898282,
+      activationDeadline: expiresAt,
+    };
+
+    const stagedPolicy = structuredClone(originalPolicy);
+    stagedPolicy.successor = {
+      phase: "staged",
+      stagedByRotationId: "rotation-20260827-stage-v2",
+      activatedByRotationId: null,
+      ...successor,
+    };
+    stagedPolicy.protectedFiles[workflowPath] = successor.workflowSha256;
+    const stagedPolicyBytes = Buffer.from(JSON.stringify(stagedPolicy));
+    const stagedReceipt = {
+      kind: "stage_successor" as const,
+      rotationId: "rotation-20260827-stage-v2",
+      previousRotationId: priorReceipt?.rotationId ?? null,
+      baseRevision: BASE,
+      issuedAt: stageIssuedAt,
+      expiresAt,
+      baseLedgerSha256: sha256(Buffer.from(JSON.stringify(originalLedger))),
+      basePolicySha256: sha256(Buffer.from(JSON.stringify(originalPolicy))),
+      proposedPolicySha256: sha256(stagedPolicyBytes),
+      successor,
+      changes: [],
+    };
+    const stagedLedger = {
+      schemaVersion: 1,
+      rotations: [...originalLedger.rotations, stagedReceipt],
+    };
+    const stagedLedgerBytes = Buffer.from(JSON.stringify(stagedLedger));
+    client.add(workflowPath, successorBytes, true);
+    client.replace("config/production-closure-authority.json", stagedPolicyBytes);
+    client.basePathToSha.set(
+      "config/production-closure-authority.json",
+      client.pathToSha.get("config/production-closure-authority.json")!,
+    );
+    client.replace("config/production-closure-authority-rotation.json", stagedLedgerBytes);
+    client.basePathToSha.set(
+      "config/production-closure-authority-rotation.json",
+      client.pathToSha.get("config/production-closure-authority-rotation.json")!,
+    );
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const stagedMatrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    stagedMatrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = {
+      rotationId: stagedReceipt.rotationId,
+      kind: stagedReceipt.kind,
+      issuedAt: stagedReceipt.issuedAt,
+      expiresAt: stagedReceipt.expiresAt,
+      basePolicySha256: stagedReceipt.basePolicySha256,
+      proposedPolicySha256: stagedReceipt.proposedPolicySha256,
+      successor,
+    };
+    stagedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(stagedMatrix);
+    client.replace(matrixPath, stagedMatrix);
+    client.basePathToSha.set(matrixPath, client.pathToSha.get(matrixPath)!);
+
+    const proposedPolicy = structuredClone(stagedPolicy);
+    proposedPolicy.workflowPath = successor.workflowPath;
+    proposedPolicy.externalCheckName = successor.externalCheckName;
+    proposedPolicy.externalCheckAppId = successor.externalCheckAppId;
+    proposedPolicy.controllerCheckName = successor.controllerCheckName;
+    proposedPolicy.controllerCheckAppId = successor.controllerCheckAppId;
+    proposedPolicy.successor = null;
+    delete proposedPolicy.protectedFiles[predecessorPath];
+    const proposedPolicyBytes = Buffer.from(JSON.stringify(proposedPolicy));
+    client.replace("config/production-closure-authority.json", proposedPolicyBytes);
+    client.pathToSha.delete(predecessorPath);
+
+    const proposedMatrix = structuredClone(stagedMatrix);
+    const bootstrapRotation = {
+      rotationId: "rotation-20260827-activate-v2",
+      kind: "activate_successor" as const,
+      issuedAt: activateIssuedAt,
+      expiresAt,
+      basePolicySha256: sha256(stagedPolicyBytes),
+      proposedPolicySha256: sha256(proposedPolicyBytes),
+      successor,
+    };
+    proposedMatrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = bootstrapRotation;
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    client.replace(matrixPath, proposedMatrix);
+    const changes = [
+      client.changedFile("config/production-closure-authority.json"),
+      client.changedFile(predecessorPath),
+      client.changedFile(matrixPath),
+    ];
+    client.replace("config/production-closure-authority-rotation.json", {
+      schemaVersion: 1,
+      rotations: [...stagedLedger.rotations, {
+        ...bootstrapRotation,
+        previousRotationId: stagedReceipt.rotationId,
+        baseRevision: BASE,
+        baseLedgerSha256: sha256(stagedLedgerBytes),
+        changes,
+      }],
+    });
+
+    const result = await verifyProductionClosureProposal(
+      stagedPolicy,
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      activateIssuedAt,
+      {
+        revision: BASE,
+        policyBytes: stagedPolicyBytes,
+        rotationLedgerBytes: stagedLedgerBytes,
+      },
+    );
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(result.authorityRotation).toMatchObject({
+      rotationId: bootstrapRotation.rotationId,
+      kind: "activate_successor",
+      successor,
+    });
+  });
+
   it("rejects another workflow that can spoof the controller authority surface", async () => {
     const client = new FixtureClient();
     client.replace(
@@ -875,6 +1119,63 @@ describe("production closure proposal authority", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("selects the one exact open pull request for the proposal head", async () => {
+    const client = new GitHubProposalAuthorityClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => new Response(JSON.stringify([
+        { number: 41, state: "closed", head: { sha: HEAD } },
+        { number: 42, state: "open", head: { sha: BASE } },
+        { number: 43, state: "open", head: { sha: HEAD } },
+      ]), { status: 200, headers: { "content-type": "application/json" } }),
+    );
+
+    await expect(client.getOpenPullRequestNumberForHead(HEAD)).resolves.toBe(43);
+  });
+
+  it.each([
+    ["zero exact open heads", []],
+    ["only a closed exact head", [{ number: 43, state: "closed", head: { sha: HEAD } }]],
+    ["only a mismatched open head", [{ number: 43, state: "open", head: { sha: BASE } }]],
+    ["duplicate exact open heads", [
+      { number: 43, state: "open", head: { sha: HEAD } },
+      { number: 44, state: "open", head: { sha: HEAD } },
+    ]],
+  ])("returns no proposal identity for %s", async (_name, response) => {
+    const client = new GitHubProposalAuthorityClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await expect(client.getOpenPullRequestNumberForHead(HEAD)).resolves.toBeNull();
+  });
+
+  it.each([
+    ["non-array", { number: 43, state: "open", head: { sha: HEAD } }],
+    ["missing number", [{ state: "open", head: { sha: HEAD } }]],
+    ["non-positive number", [{ number: 0, state: "open", head: { sha: HEAD } }]],
+    ["unknown state", [{ number: 43, state: "draft", head: { sha: HEAD } }]],
+    ["missing head", [{ number: 43, state: "open" }]],
+    ["malformed head sha", [{ number: 43, state: "open", head: { sha: "not-a-sha" } }]],
+  ])("fails closed for a malformed pull request response: %s", async (_name, response) => {
+    const client = new GitHubProposalAuthorityClient(
+      "gondalaimafia/mendpoint",
+      "sensitive-token",
+      async () => new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await expect(client.getOpenPullRequestNumberForHead(HEAD)).rejects.toThrow(
+      "proposal pull request identity is invalid",
+    );
   });
 
   it("retries a throttled proposal read without exposing the token", async () => {

@@ -236,7 +236,7 @@ function codes(result: Awaited<ReturnType<typeof verifyGitHubClosureAuthority>>)
 }
 
 describe("GitHub production closure authority", () => {
-  it("preauthorizes an inert successor template whose PR verdict fails only targeted runs", () => {
+  it("preauthorizes an inert successor template that tolerates only evaluated red sweep verdicts", () => {
     const templatePath = resolve(root, "config", "production-closure-successors", "closure-authority-v2.yml");
     const templateBytes = readFileSync(templatePath);
     const successor = parse(templateBytes.toString("utf8")) as {
@@ -245,7 +245,14 @@ describe("GitHub production closure authority", () => {
     const enforcement = successor.jobs["closure-authority"].steps?.find(
       (step) => step.name === "Enforce protected authority verdict",
     );
-    expect(enforcement?.if).toBe("always() && github.event_name == 'pull_request_target'");
+    expect(enforcement?.if).toBe("always()");
+    expect(enforcement?.run).toContain('if [ "$GITHUB_EVENT_NAME" = pull_request_target ]');
+    expect(enforcement?.run).toContain('test "$EXTERNAL_PUBLICATION_OUTCOME" = success');
+    expect(enforcement?.run).toContain('test "$CONTROLLER_PUBLICATION_OUTCOME" = success');
+    expect(enforcement?.run).toContain('test -s "$observation"');
+    expect(enforcement?.run).toContain('(.verdict == "fail" and (.issues | length) > 0)');
+    expect(enforcement?.run).toContain('PROPOSAL_AUTHORITY_CONFIGURATION_INVALID');
+    expect(enforcement?.run).toContain('GITHUB_AUTHORITY_UNAVAILABLE');
   });
   it("runs per-PR authority from default-branch code and publishes an App-bound verdict", () => {
     const workflow = parse(

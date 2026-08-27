@@ -358,7 +358,9 @@ function successorWorkflowSafetyIssues(
       uses.length === 0 ||
       uses.some((use) => !/@[a-f0-9]{40}$/.test(use)) ||
       checkoutRefs.length === 0 ||
-      checkoutRefs.some((ref) => ref !== "${{ needs.discover.outputs.main_sha }}") ||
+      checkoutRefs.some((ref) =>
+        !["${{ needs.discover.outputs.main_sha }}", "${{ github.sha }}"].includes(ref)
+      ) ||
       source.includes("github.event.pull_request.head") ||
       !source.includes(successor.externalCheckName) ||
       !source.includes(successor.controllerCheckName)
@@ -973,8 +975,17 @@ export class GitHubProposalAuthorityClient implements ProposalAuthorityClient {
       head?: { sha?: unknown };
     }>>(`/repos/${this.repository}/commits/${revision}/pulls`);
     if (!Array.isArray(result)) throw new Error("proposal pull request identity is invalid");
+    if (result.some((pullRequest) =>
+      !pullRequest ||
+      !Number.isInteger(pullRequest.number) ||
+      (pullRequest.number as number) <= 0 ||
+      !["open", "closed"].includes(String(pullRequest.state)) ||
+      typeof pullRequest.head?.sha !== "string" ||
+      !SHA.test(pullRequest.head.sha)
+    )) {
+      throw new Error("proposal pull request identity is invalid");
+    }
     const matches = result.filter((pullRequest) =>
-      Number.isInteger(pullRequest.number) &&
       pullRequest.state === "open" &&
       pullRequest.head?.sha === revision
     );

@@ -305,6 +305,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
       - name: Publish dedicated authority App verdict
+        id: publish-external
         if: always() && steps.external-check.outputs.check_id != ''
         shell: bash
         run: |
@@ -326,6 +327,7 @@ jobs:
           MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
           PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
       - name: Publish controller authority verdict
+        id: publish-controller
         if: always()
         shell: bash
         run: |
@@ -350,23 +352,51 @@ jobs:
           PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
           PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
       - name: Enforce protected authority verdict
-        # Full sweeps publish exact red contexts for ineligible proposals without
-        # reporting healthy controller execution as a failed production sweep.
-        if: always() && github.event_name == 'pull_request_target'
+        # A targeted run is the merge gate, so any red semantic verdict fails the
+        # job. A full sweep may discover and publish an exact red semantic verdict
+        # without making the controller itself unhealthy, but it must still fail on
+        # evaluator crashes, malformed/missing observations, prerequisite failures,
+        # or either failed verdict publication.
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
           test "$APP_IDENTITY_OUTCOME" = success
           test "$BRANCH_PROTECTION_OUTCOME" = success
-          test "$PROPOSAL_OUTCOME" = success
           test "$MATRIX_OUTCOME" = success
-          test "$GITHUB_OUTCOME" = success
+          test "$EXTERNAL_PUBLICATION_OUTCOME" = success
+          test "$CONTROLLER_PUBLICATION_OUTCOME" = success
+          if [ "$GITHUB_EVENT_NAME" = pull_request_target ]; then
+            test "$PROPOSAL_OUTCOME" = success
+            test "$GITHUB_OUTCOME" = success
+            exit 0
+          fi
+          for observation in "$PROPOSAL_OBSERVATION" "$GITHUB_OBSERVATION"; do
+            test -s "$observation"
+            jq -e '
+              .schemaVersion == 1 and
+              (.verdict == "pass" or .verdict == "fail") and
+              (.issues | type == "array") and
+              ((.verdict == "pass" and (.issues | length) == 0) or
+               (.verdict == "fail" and (.issues | length) > 0)) and
+              ([.issues[]?.code] | all(
+                . != "PROPOSAL_AUTHORITY_CONFIGURATION_INVALID" and
+                . != "PROPOSAL_AUTHORITY_UNAVAILABLE" and
+                . != "GITHUB_AUTHORITY_CONFIGURATION_INVALID" and
+                . != "GITHUB_AUTHORITY_UNAVAILABLE"
+              ))
+            ' "$observation" >/dev/null
+          done
         env:
           APP_IDENTITY_OUTCOME: ${{ steps.app-identity.outcome }}
           BRANCH_PROTECTION_OUTCOME: ${{ steps.branch-protection.outcome }}
           GITHUB_OUTCOME: ${{ steps.github.outcome }}
           MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
           PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
+          EXTERNAL_PUBLICATION_OUTCOME: ${{ steps.publish-external.outcome }}
+          CONTROLLER_PUBLICATION_OUTCOME: ${{ steps.publish-controller.outcome }}
+          PROPOSAL_OBSERVATION: ${{ runner.temp }}/production-closure-proposal-authority.json
+          GITHUB_OBSERVATION: ${{ runner.temp }}/production-closure-github-authority.json
 
   main-authority-observation:
     environment: production-closure-authority
@@ -410,4 +440,3 @@ jobs:
           path: ${{ runner.temp }}/production-closure-main-authority.json
           if-no-files-found: warn
           retention-days: 30
-
