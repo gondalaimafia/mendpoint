@@ -14,6 +14,7 @@ import {
   insertEvidenceRecord,
   pauseWardenCiCycle,
   recordWardenCiObservation,
+  replayWardenCandidateDeliveryMergedOutcome,
   type AppDb,
   type JobRow,
 } from "@mendpoint/db";
@@ -516,6 +517,9 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
         evidenceBytes: bytes,
         observedAt,
       });
+      replayWardenCandidateDeliveryMergedOutcome(
+        input.db, cycle.tenantId, cycle.deliveryId, observedAt,
+      );
     }
     const completed = completeJob(input.db, input.job.id, {
       cycleId: cycle.id,

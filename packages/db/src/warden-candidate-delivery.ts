@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AppDb } from "./index.js";
 import { assertMissionMutationAuthority, completeMissionMutationAuthorityTask, parseMissionMutationAuthority,
-  type MissionMutationAuthorityV1 } from "./mission-mutation-authority.js";
+  refreshMissionMutationAuthority, type MissionMutationAuthorityV1 } from "./mission-mutation-authority.js";
 
 const JOB_TYPE = "warden.candidate.deliver";
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
@@ -149,44 +149,182 @@ function missionOutcomeSettlementDeferred(error: unknown): boolean {
   return error instanceof Error && DEFERRED_MISSION_OUTCOME_SETTLEMENT_ERRORS.has(error.message);
 }
 
-function settleMergedMissionOutcome(
+function sameMissionOutcomeAuthorityLane(
+  delivery: MissionMutationAuthorityV1,
+  current: MissionMutationAuthorityV1,
+): boolean {
+  return delivery.missionId === current.missionId &&
+    delivery.missionRevision === current.missionRevision &&
+    delivery.missionState === current.missionState &&
+    delivery.taskId === current.taskId &&
+    delivery.repositoryId === current.repositoryId &&
+    delivery.snapshotId === current.snapshotId &&
+    delivery.resolvedSha === current.resolvedSha;
+}
+
+export type WardenMergedMissionOutcomeReplay = Readonly<{
+  status: "settled" | "deferred" | "not_applicable";
+  tenantId: string;
+  deliveryId: string;
+}>;
+
+export function replayWardenCandidateDeliveryMergedOutcome(
   db: AppDb,
   tenantId: string,
   deliveryId: string,
-  authority: MissionMutationAuthorityV1,
   observedAt: string,
-): void {
+): WardenMergedMissionOutcomeReplay {
+  const replayedAt = timestamp(observedAt, "warden_candidate_delivery_timestamp_invalid");
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
-    const cycle = db.raw.prepare(`SELECT id, status FROM fettler_ci_cycles
+    const delivery = getWardenCandidateDelivery(db, tenantId, deliveryId);
+    if (!delivery || delivery.outcome !== "merged" || !delivery.missionAuthority) {
+      if (owns) db.raw.exec("COMMIT");
+      return Object.freeze({ status: "not_applicable", tenantId, deliveryId });
+    }
+    const cycle = db.raw.prepare(`SELECT id, status, mission_authority_json FROM fettler_ci_cycles
       WHERE tenant_id = ? AND delivery_id = ?`).get(tenantId, deliveryId) as
-        { id: string; status: string } | undefined;
+        { id: string; status: string; mission_authority_json: string | null } | undefined;
     // A CI-backed delivery is accepted only from the exact green state. Other
     // states remain resumable and retain their lifecycle evidence unchanged.
+    if (cycle?.status === "succeeded") {
+      if (owns) db.raw.exec("COMMIT");
+      return Object.freeze({ status: "settled", tenantId, deliveryId });
+    }
     if (cycle && cycle.status !== "awaiting_review") {
       if (owns) db.raw.exec("COMMIT");
-      return;
+      return Object.freeze({ status: "deferred", tenantId, deliveryId });
     }
-    completeMissionMutationAuthorityTask(db, tenantId, authority, {
+    const retainedAuthority = cycle
+      ? cycle.mission_authority_json === null
+        ? null
+        : parseMissionMutationAuthority(JSON.parse(cycle.mission_authority_json))
+      : delivery.missionAuthority;
+    if (!retainedAuthority ||
+        !sameMissionOutcomeAuthorityLane(delivery.missionAuthority, retainedAuthority)) {
+      throw new Error("warden_candidate_delivery_outcome_authority_conflict");
+    }
+    const currentAuthority = refreshMissionMutationAuthority(db, tenantId, retainedAuthority, {
+      allowClaimedTask: true,
+      allowSettledTask: true,
+      requireNoBlocking: true,
+    });
+    if (!sameMissionOutcomeAuthorityLane(delivery.missionAuthority, currentAuthority)) {
+      throw new Error("warden_candidate_delivery_outcome_authority_conflict");
+    }
+    if (JSON.stringify(delivery.missionAuthority) !== JSON.stringify(currentAuthority)) {
+      const rebound = db.raw.prepare(`UPDATE fettler_candidate_deliveries
+        SET mission_authority_json = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND outcome = 'merged' AND mission_authority_json = ?`).run(
+        JSON.stringify(currentAuthority), replayedAt, deliveryId, tenantId,
+        JSON.stringify(delivery.missionAuthority),
+      );
+      if (Number(rebound.changes) !== 1) {
+        throw new Error("warden_candidate_delivery_outcome_authority_conflict");
+      }
+    }
+    completeMissionMutationAuthorityTask(db, tenantId, currentAuthority, {
       correlationId: `delivery-outcome:${deliveryId}`,
-      createdAt: observedAt,
+      createdAt: replayedAt,
     });
     if (cycle) {
       const changed = db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'succeeded', updated_at = ?
         WHERE id = ? AND tenant_id = ? AND delivery_id = ? AND status = 'awaiting_review'`).run(
-        observedAt, cycle.id, tenantId, deliveryId,
+        replayedAt, cycle.id, tenantId, deliveryId,
       );
       if (Number(changed.changes) !== 1) throw new Error("warden_ci_cycle_acceptance_conflict");
     }
     if (owns) db.raw.exec("COMMIT");
+    return Object.freeze({ status: "settled", tenantId, deliveryId });
   } catch (error) {
     if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
     // A late blocker or stale task authority changes whether the Mission may
     // settle, never the already-observed fact that GitHub merged the PR.
-    if (missionOutcomeSettlementDeferred(error)) return;
+    if (missionOutcomeSettlementDeferred(error)) {
+      return Object.freeze({ status: "deferred", tenantId, deliveryId });
+    }
     throw error;
   }
+}
+
+export function replayPendingWardenCandidateDeliveryMergedOutcomes(
+  db: AppDb,
+  input: Readonly<{ observedAt: string; tenantId?: string; limit?: number }>,
+): Readonly<{ examined: number; settled: number; deferred: number; failed: number }> {
+  const observedAt = timestamp(input.observedAt, "warden_candidate_delivery_timestamp_invalid");
+  const tenantId = input.tenantId === undefined
+    ? null
+    : text(input.tenantId, "warden_candidate_delivery_tenant_invalid", 200);
+  const limit = input.limit ?? 100;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+    throw new Error("warden_candidate_delivery_outcome_replay_limit_invalid");
+  }
+  const rows = db.raw.prepare(`SELECT delivery.tenant_id, delivery.id
+    FROM fettler_candidate_deliveries delivery
+    LEFT JOIN fettler_ci_cycles cycle
+      ON cycle.tenant_id = delivery.tenant_id AND cycle.delivery_id = delivery.id
+    WHERE delivery.outcome = 'merged' AND delivery.mission_authority_json IS NOT NULL
+      AND json_valid(delivery.mission_authority_json) = 1
+      AND (? IS NULL OR delivery.tenant_id = ?)
+      AND (cycle.status = 'awaiting_review' OR (
+        cycle.id IS NULL
+        AND json_extract(CASE WHEN json_valid(delivery.mission_authority_json) = 1
+          THEN delivery.mission_authority_json ELSE '{}' END, '$.taskId') IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM mission_task task
+          WHERE task.tenant_id = delivery.tenant_id
+            AND task.id = json_extract(CASE WHEN json_valid(delivery.mission_authority_json) = 1
+              THEN delivery.mission_authority_json ELSE '{}' END, '$.taskId')
+            AND task.status <> 'complete'
+        )
+      ))
+    ORDER BY delivery.updated_at, delivery.outcome_at, delivery.id
+    LIMIT ?`).all(tenantId, tenantId, limit) as Array<{ tenant_id: string; id: string }>;
+  const remaining = limit - rows.length;
+  const malformedRows = remaining === 0 ? [] : db.raw.prepare(`SELECT delivery.tenant_id, delivery.id
+    FROM fettler_candidate_deliveries delivery
+    LEFT JOIN fettler_ci_cycles cycle
+      ON cycle.tenant_id = delivery.tenant_id AND cycle.delivery_id = delivery.id
+    WHERE delivery.outcome = 'merged' AND delivery.mission_authority_json IS NOT NULL
+      AND json_valid(delivery.mission_authority_json) = 0
+      AND (? IS NULL OR delivery.tenant_id = ?)
+      AND (cycle.id IS NULL OR cycle.status = 'awaiting_review')
+    ORDER BY delivery.updated_at, delivery.outcome_at, delivery.id
+    LIMIT ?`).all(tenantId, tenantId, remaining) as Array<{ tenant_id: string; id: string }>;
+  let settled = 0;
+  let deferred = 0;
+  let failed = malformedRows.length;
+  for (const row of malformedRows) {
+    db.raw.prepare(`UPDATE fettler_candidate_deliveries SET updated_at = ?
+      WHERE tenant_id = ? AND id = ? AND outcome = 'merged'`).run(
+      observedAt, row.tenant_id, row.id,
+    );
+  }
+  for (const row of rows) {
+    try {
+      const replay = replayWardenCandidateDeliveryMergedOutcome(
+        db, row.tenant_id, row.id, observedAt,
+      );
+      if (replay.status === "settled") settled++;
+      else if (replay.status === "deferred") {
+        deferred++;
+        db.raw.prepare(`UPDATE fettler_candidate_deliveries SET updated_at = ?
+          WHERE tenant_id = ? AND id = ? AND outcome = 'merged'`).run(
+          observedAt, row.tenant_id, row.id,
+        );
+      }
+    } catch {
+      // One corrupt authority lane must not starve unrelated durable outcomes.
+      // The caller receives the failure count and can surface it operationally.
+      failed++;
+      db.raw.prepare(`UPDATE fettler_candidate_deliveries SET updated_at = ?
+        WHERE tenant_id = ? AND id = ? AND outcome = 'merged'`).run(
+        observedAt, row.tenant_id, row.id,
+      );
+    }
+  }
+  return Object.freeze({ examined: rows.length + malformedRows.length, settled, deferred, failed });
 }
 
 function ids(tenantId: string, runId: string) {
@@ -452,9 +590,9 @@ export function recordWardenCandidateDeliveryOutcome(db: AppDb, input: {
     const updated = getWardenCandidateDelivery(db, tenantId, deliveryId)!;
     if (owns) db.raw.exec("COMMIT");
     if (input.outcome === "merged" && updated.missionAuthority) {
-      settleMergedMissionOutcome(db, tenantId, deliveryId, updated.missionAuthority, observedAt);
+      replayWardenCandidateDeliveryMergedOutcome(db, tenantId, deliveryId, observedAt);
     }
-    return updated;
+    return getWardenCandidateDelivery(db, tenantId, deliveryId)!;
   } catch (error) {
     if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
     throw error;

@@ -52,6 +52,7 @@ import {
   insertAgentRun,
   recordAgentRunMeter,
   releaseRunUsage,
+  replayPendingWardenCandidateDeliveryMergedOutcomes,
   settleRunUsage,
   RUN_USAGE_RESERVATION_KEY,
   RUN_USAGE_RESERVED_MCU_KEY,
@@ -1314,6 +1315,16 @@ export function maintainWardenArtifactsOnce(
   const total = { tenants: tenants.length, expired: 0, cleaned: 0, cleanupPending: 0 };
   for (const row of tenants) {
     try {
+      const outcomeReplay = replayPendingWardenCandidateDeliveryMergedOutcomes(db, {
+        tenantId: row.tenant_id,
+        observedAt,
+        limit: 100,
+      });
+      if (outcomeReplay.failed > 0) {
+        console.error(
+          `  Fettler merged-outcome replay failed tenant=${row.tenant_id} count=${outcomeReplay.failed}`,
+        );
+      }
       const key = safeTenantId(row.tenant_id);
       const candidateRoot = privateWardenChildDirectory(
         dataRoot,

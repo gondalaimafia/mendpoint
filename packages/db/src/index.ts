@@ -4125,6 +4125,8 @@ export {
   getWardenCandidateDeliveryByRun,
   bindWardenCandidateDeliveryIntent,
   refreshWardenCandidateDeliveryMissionAuthority,
+  replayWardenCandidateDeliveryMergedOutcome,
+  replayPendingWardenCandidateDeliveryMergedOutcomes,
   recordWardenCandidateDeliverySuccess,
   recordWardenCandidateDeliveryFailure,
   findWardenCandidateDeliveryByPrUrl,
