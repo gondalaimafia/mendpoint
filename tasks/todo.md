@@ -3487,3 +3487,21 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Safety evidence: only HTTPS uses the legacy formula. FTP, file, and custom hierarchical identifiers retain the domain-separated literal digest, while opaque IDs and URNs remain unchanged; the complete ingestion suite re-proves returned and durable secret redaction.
 - Verification evidence: the focused upgrade regression passes 2 of 2, the complete ingestion file passes 33 of 33, and the full Catalog suite passes 158 of 158 across eight files. Full-workspace typecheck passes, `npm audit --omit=dev` reports zero vulnerabilities, the changed production source secret scan has no matches, and the CRLF-aware diff check is clean.
 - EOL and scope evidence: the two Catalog files remain LF, the worker CLI remains `i/crlf w/crlf`, and only the two Catalog files plus `tasks/todo.md` and `tasks/lessons.md` changed. No remote mutation occurred.
+
+## 2026-08-27 Release ingestion backup and restore closure
+
+- [x] RED: require releaseIngestion as the eighth current backup resource and prove the v3 seven-resource contract remains authenticated and restorable.
+- [x] GREEN: emit manifest schema v4 while retaining schema-specific v3 verification, restore, and drill behavior.
+- [x] Keep disaster-recovery policy schema v1, advance only the policy version, and preserve release-ingestion SQLite schema v3.
+- [x] Pre-materialize release-ingestion.sqlite for the customer profile even when release polling is dormant.
+- [x] Bind the release-ingestion path through the protected customer profile, example environment, Compose, readiness, preflight, and DR drill fixtures.
+- [x] Run focused and full Ops and Worker tests, a real eight-resource DR drill, full workspace typecheck, dependency audit, secret review, and CRLF-aware diff integrity.
+
+### Review
+
+- RED evidence: the focused recovery suite produced 16 failures while the current policy and v3 producer omitted releaseIngestion; the worker suite produced one failure because a dormant customer profile did not create the release store.
+- Compatibility evidence: current backups emit authenticated manifest v4 with eight resources. Authenticated manifest v3 bundles retain their exact seven-resource contract and restore without fabricating release-ingestion.sqlite.
+- Runtime evidence: a customer-profile worker opens and closes the release store even with zero configured release feeds, producing the existing release-ingestion schema v3 database before the first protected backup. Non-customer dormant profiles still open no release store.
+- Recovery evidence: the complete Ops suite passes 135 of 135, the complete Worker suite passes 609 with one intentional skip, the real eight-resource DR drill passes with measured RTO 0.206 seconds and RPO 5.156 seconds, and full workspace typecheck passes.
+- P1 review repair: authenticated schema v3 evidence remains valid for historical verification and restore but can no longer satisfy current customer readiness. Local and published readiness now require authenticated evidence schema v3 carrying a schema v4 manifest summary, the current policy identity, and the exact eight-resource contract. Focused readiness and disaster-recovery tests pass 28 of 28, and full workspace typecheck passes after the repair.
+- Activation remains fail closed. Release polling and draining still require an off-host authenticated v4 backup, isolated restore and measured drill, explicit operator approval, and a tenant-scoped dispatch consumer. ME-ING-003 and ME-ING-004 remain partial and internal only.

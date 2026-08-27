@@ -35,6 +35,7 @@ const CUSTOMER_BACKUP_ENV = {
   MENDPOINT_BACKUP_DATABASE_PATH: "mendpoint.sqlite",
   MENDPOINT_BACKUP_GRAPH_PATH: "graph-learn.sqlite",
   MENDPOINT_BACKUP_CHANGE_SOURCES_PATH: "change-sources.sqlite",
+  MENDPOINT_BACKUP_RELEASE_INGESTION_PATH: "release-ingestion.sqlite",
   MENDPOINT_BACKUP_REGAUGE_CONTROL_PLANE_PATH: "transformer-control-plane.sqlite",
   MENDPOINT_BACKUP_REGAUGE_PILOT_PATH: "transformer-pilot.sqlite",
   MENDPOINT_BACKUP_ARTIFACTS_PATH: ".",

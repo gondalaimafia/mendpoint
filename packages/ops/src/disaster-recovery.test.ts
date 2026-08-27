@@ -1,4 +1,8 @@
 import {
+  createHmac,
+  hkdfSync,
+} from "node:crypto";
+import {
   linkSync,
   mkdtempSync,
   mkdirSync,
@@ -29,6 +33,7 @@ import {
   validateCustomerRestorePathSafety,
   verifyBackupBundle,
   verifyRecoveryDrillReport,
+  type BackupManifest,
   type DisasterRecoveryPolicy,
 } from "./disaster-recovery.js";
 
@@ -45,6 +50,7 @@ const TEST_RESOURCES = {
   database: "database.sqlite",
   graph: "graph.sqlite",
   changeSources: "change-sources.sqlite",
+  releaseIngestion: "release-ingestion.sqlite",
   transformerControlPlane: "transformer-control-plane.sqlite",
   transformerPilot: "transformer-pilot.sqlite",
   artifacts: "artifacts",
@@ -60,6 +66,29 @@ function createSqlite(path: string, table: string, value = "sentinel-customer-va
   }
 }
 
+function authenticateManifest(
+  unsigned: Omit<BackupManifest, "integrity">,
+  key = BACKUP_KEY,
+): BackupManifest {
+  const authentication = { algorithm: "hmac-sha256" as const, keyId: BACKUP_KEY_ID };
+  const manifestKey = Buffer.from(hkdfSync(
+    "sha256",
+    key,
+    Buffer.from(unsigned.backupId, "utf8"),
+    Buffer.from("mendpoint:manifest-authentication:v1", "utf8"),
+    32,
+  ));
+  return {
+    ...unsigned,
+    integrity: {
+      ...authentication,
+      digest: createHmac("sha256", manifestKey)
+        .update(JSON.stringify({ ...unsigned, authentication }))
+        .digest("hex"),
+    },
+  };
+}
+
 function secureFixture() {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-dr-secure-"));
   roots.push(root);
@@ -70,6 +99,7 @@ function secureFixture() {
   createSqlite(join(source, "mendpoint.sqlite"), "main_state");
   createSqlite(join(source, "graph-learn.sqlite"), "graph_state");
   createSqlite(join(source, "change-sources.sqlite"), "change_state");
+  createSqlite(join(source, "release-ingestion.sqlite"), "release_state");
   createSqlite(join(source, "transformer-control-plane.sqlite"), "control_state");
   createSqlite(join(source, "transformer-pilot.sqlite"), "pilot_state");
   writeFileSync(
@@ -86,6 +116,7 @@ function secureFixture() {
       database: "mendpoint.sqlite",
       graph: "graph-learn.sqlite",
       changeSources: "change-sources.sqlite",
+      releaseIngestion: "release-ingestion.sqlite",
       transformerControlPlane: "transformer-control-plane.sqlite",
       transformerPilot: "transformer-pilot.sqlite",
       artifacts: "artifacts",
@@ -104,8 +135,8 @@ function allFileContents(root: string): Buffer[] {
 const POLICY = Object.freeze({
   schemaVersion: 1,
   policyId: "mendpoint-core",
-  version: "2026-08-02",
-  effectiveAt: "2026-08-02T00:00:00.000Z",
+  version: "2026-08-27",
+  effectiveAt: "2026-08-27T00:00:00.000Z",
   rtoSeconds: 900,
   rpoSeconds: 3600,
   drillCadenceDays: 30,
@@ -115,6 +146,7 @@ const POLICY = Object.freeze({
     "configuration",
     "database",
     "graph",
+    "releaseIngestion",
     "transformerControlPlane",
     "transformerPilot",
   ] as const),
@@ -141,6 +173,7 @@ function fixture() {
   createSqlite(join(source, "database.sqlite"), "database_state", "database-v1");
   createSqlite(join(source, "graph.sqlite"), "graph_state", "graph-v1");
   createSqlite(join(source, "change-sources.sqlite"), "change_state", "change-v1");
+  createSqlite(join(source, "release-ingestion.sqlite"), "release_state", "release-v1");
   createSqlite(join(source, "transformer-control-plane.sqlite"), "control_state", "control-v1");
   createSqlite(join(source, "transformer-pilot.sqlite"), "pilot_state", "pilot-v1");
   writeFileSync(join(source, "artifacts", "warden-evidence", "result.json"), "{\"ok\":true}");
@@ -164,6 +197,7 @@ function customerBackupEnv(root: string): Record<string, string> {
     MENDPOINT_BACKUP_DATABASE_PATH: "mendpoint.sqlite",
     MENDPOINT_BACKUP_GRAPH_PATH: "graph-learn.sqlite",
     MENDPOINT_BACKUP_CHANGE_SOURCES_PATH: "change-sources.sqlite",
+    MENDPOINT_BACKUP_RELEASE_INGESTION_PATH: "release-ingestion.sqlite",
     MENDPOINT_BACKUP_REGAUGE_CONTROL_PLANE_PATH: "transformer-control-plane.sqlite",
     MENDPOINT_BACKUP_REGAUGE_PILOT_PATH: "transformer-pilot.sqlite",
     MENDPOINT_BACKUP_ARTIFACTS_PATH: ".",
@@ -209,6 +243,7 @@ describe("disaster recovery", () => {
       MENDPOINT_BACKUP_DATABASE_PATH: "mendpoint.sqlite",
       MENDPOINT_BACKUP_GRAPH_PATH: "graph-learn.sqlite",
       MENDPOINT_BACKUP_CHANGE_SOURCES_PATH: "change-sources.sqlite",
+      MENDPOINT_BACKUP_RELEASE_INGESTION_PATH: "release-ingestion.sqlite",
       MENDPOINT_BACKUP_REGAUGE_CONTROL_PLANE_PATH: "transformer-control-plane.sqlite",
       MENDPOINT_BACKUP_REGAUGE_PILOT_PATH: "transformer-pilot.sqlite",
       MENDPOINT_BACKUP_ARTIFACTS_PATH: ".",
@@ -232,6 +267,7 @@ describe("disaster recovery", () => {
         database: "mendpoint.sqlite",
         graph: "graph-learn.sqlite",
         changeSources: "change-sources.sqlite",
+        releaseIngestion: "release-ingestion.sqlite",
         transformerControlPlane: "transformer-control-plane.sqlite",
         transformerPilot: "transformer-pilot.sqlite",
         artifacts: ".",
@@ -358,6 +394,7 @@ describe("disaster recovery", () => {
       "configuration",
       "database",
       "graph",
+      "releaseIngestion",
       "transformerControlPlane",
       "transformerPilot",
     ]);
@@ -371,6 +408,40 @@ describe("disaster recovery", () => {
       ok: false,
       issues: expect.arrayContaining([expect.stringContaining("database_ciphertext_hash_mismatch")]),
     });
+  });
+
+  it("restores authenticated v3 bundles with their seven-resource contract", () => {
+    const { source, backup, restore } = fixture();
+    const current = createBackupBundle({
+      policy: POLICY,
+      backupId: "backup-v3-compatible",
+      createdAt: "2026-08-27T01:00:00.000Z",
+      sourceRoot: source,
+      backupRoot: backup,
+      resources: TEST_RESOURCES,
+      key: BACKUP_KEY,
+      keyId: BACKUP_KEY_ID,
+    });
+    const { integrity: _integrity, ...unsignedCurrent } = current;
+    const legacy = authenticateManifest({
+      ...unsignedCurrent,
+      schemaVersion: 3,
+      resources: unsignedCurrent.resources.filter(
+        (resource) => resource.kind !== "releaseIngestion",
+      ),
+    });
+    writeFileSync(join(backup, "manifest.json"), `${JSON.stringify(legacy, null, 2)}\n`);
+
+    expect(verifyBackupBundle(backup, legacy, BACKUP_KEY)).toEqual({ ok: true, issues: [] });
+    restoreBackupAtomically({ backupRoot: backup, targetRoot: restore, manifest: legacy, key: BACKUP_KEY });
+    expect(() => readFileSync(join(restore, "release-ingestion.sqlite"))).toThrow();
+    const restoredDb = new DatabaseSync(join(restore, "database.sqlite"), { readOnly: true });
+    try {
+      expect(restoredDb.prepare("SELECT value FROM database_state").get())
+        .toEqual({ value: "database-v1" });
+    } finally {
+      restoredDb.close();
+    }
   });
 
   it("captures a consistent live WAL database and verifies relational integrity", () => {
