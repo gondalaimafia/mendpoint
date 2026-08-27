@@ -112,6 +112,44 @@ describe("release source polling", () => {
     expect(observedUserAgent).not.toMatch(/token|secret|key|tenant/i);
   });
 
+  it("aborts an in-flight pinned release request when service drain is signaled", async () => {
+    const store = ledger();
+    const controller = new AbortController();
+    let requestSignal: AbortSignal | undefined;
+    let started!: () => void;
+    const requestStarted = new Promise<void>((resolve) => { started = resolve; });
+    const running = pollReleaseSource(store, configuration(), {
+      at: NOW,
+      fetchOptions: {
+        production: true,
+        signal: controller.signal,
+        resolveHostname: async () => ["93.184.216.34"],
+        trustedTestOnlyPinnedFetchImpl: async (_url, _address, init) => {
+          requestSignal = init?.signal ?? undefined;
+          started();
+          await new Promise<void>((_resolve, reject) => {
+            requestSignal?.addEventListener(
+              "abort",
+              () => reject(requestSignal?.reason),
+              { once: true },
+            );
+          });
+          throw new Error("unreachable");
+        },
+      },
+    });
+    await requestStarted;
+    controller.abort(new DOMException("service drain", "AbortError"));
+
+    await expect(running).resolves.toMatchObject({
+      status: "failed",
+      error: "release_poll_fetch_failed",
+    });
+    expect(requestSignal?.aborted).toBe(true);
+    expect(listReleaseArtifacts(store, "tenant-a")).toHaveLength(0);
+    expect(listReleaseDispatches(store, "tenant-a")).toHaveLength(0);
+  });
+
   it("binds persisted release and outbox identities to the explicit tenant, provider, adapter, and source", async () => {
     const store = ledger();
     const config = configuration();
