@@ -18,6 +18,7 @@ import {
   getWardenCiCycle,
   insertAgentRun,
   insertPrincipal,
+  markWardenCiUpdateTakeoverUncertain,
   openTaskHandoff,
   raiseMissionException,
   resolveTaskHandoff,
@@ -146,6 +147,26 @@ function observedFeedback(body: string): ExactDraftObservation {
     evidenceRefs: Object.freeze([]), reviewFeedback: Object.freeze({ verdict: "changes_requested" as const,
       changeRequests: Object.freeze([{ id: "7", reviewer: "reviewer", commitRevision: sha("d"), body,
         submittedAt: "2026-08-13T12:01:40.000Z" }]), comments: Object.freeze([]) }) });
+}
+
+async function armMissionTakeoverPair(value: ReturnType<typeof bindMissionAuthority>) {
+  const updateExactDraft = vi.fn().mockRejectedValueOnce(new Error("socket closed"));
+  await expect(runWardenCandidateUpdate({
+    db: value.db,
+    job: value.job,
+    updateExactDraft,
+    reconcileExactDraftUpdate: vi.fn(),
+    readApprovalArtifact: () => value.artifact,
+    resolveRepository: () => ({ owner: "acme", repo: "service" }),
+    now: () => "2026-08-13T12:05:00.000Z",
+  })).rejects.toThrow("socket closed");
+  const update = value.db.raw.prepare(`SELECT intent_digest FROM fettler_ci_updates
+    WHERE id = ? AND tenant_id = ?`).get(value.update.id, "tenant-a") as { intent_digest: string };
+  value.db.raw.prepare(`UPDATE fettler_ci_updates SET status = 'intent_bound'
+    WHERE id = ? AND tenant_id = ?`).run(value.update.id, "tenant-a");
+  value.db.raw.prepare(`UPDATE mission_mutation_dispatches SET state = 'dispatching'
+    WHERE tenant_id = ? AND job_id = ?`).run("tenant-a", value.job.id);
+  return update.intent_digest;
 }
 
 afterEach(() => {
@@ -571,6 +592,151 @@ describe("Warden candidate exact draft update", () => {
     expect(updateExactDraft).toHaveBeenCalledTimes(1);
     expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
       WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "settled" });
+  });
+
+  it("rolls back both takeover records when the paired transition is interrupted", async () => {
+    const value = bindMissionAuthority(fixture());
+    const intentDigest = await armMissionTakeoverPair(value);
+    value.db.raw.exec(`CREATE TRIGGER abort_ci_takeover BEFORE UPDATE OF status ON fettler_ci_updates
+      WHEN NEW.status = 'uncertain' BEGIN SELECT RAISE(ABORT, 'simulated_takeover_crash'); END;`);
+
+    expect(() => markWardenCiUpdateTakeoverUncertain(value.db, {
+      tenantId: "tenant-a",
+      updateId: value.update.id,
+      jobId: value.job.id,
+      intentDigest,
+      observedAt: "2026-08-13T12:05:01.000Z",
+    })).toThrow("simulated_takeover_crash");
+    expect(value.db.raw.prepare(`SELECT status FROM fettler_ci_updates
+      WHERE id = ? AND tenant_id = ?`).get(value.update.id, "tenant-a"))
+      .toEqual({ status: "intent_bound" });
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = ? AND job_id = ?`).get("tenant-a", value.job.id))
+      .toEqual({ state: "dispatching" });
+
+    value.db.raw.exec("DROP TRIGGER abort_ci_takeover");
+    markWardenCiUpdateTakeoverUncertain(value.db, {
+      tenantId: "tenant-a",
+      updateId: value.update.id,
+      jobId: value.job.id,
+      intentDigest,
+      observedAt: "2026-08-13T12:05:02.000Z",
+    });
+    expect(value.db.raw.prepare(`SELECT status FROM fettler_ci_updates
+      WHERE id = ? AND tenant_id = ?`).get(value.update.id, "tenant-a"))
+      .toEqual({ status: "uncertain" });
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = ? AND job_id = ?`).get("tenant-a", value.job.id))
+      .toEqual({ state: "uncertain" });
+  });
+
+  it("restarts a historical split takeover and rearms only the exact not-applied intent", async () => {
+    const value = bindMissionAuthority(fixture());
+    const intentDigest = await armMissionTakeoverPair(value);
+    value.db.raw.prepare(`UPDATE fettler_ci_updates SET status = 'uncertain'
+      WHERE id = ? AND tenant_id = ?`).run(value.update.id, "tenant-a");
+    value.db.raw.close();
+    opened.splice(opened.findIndex((entry) => entry.db === value.db), 1);
+    const restartedDb = createDb(join(value.root, "worker.sqlite"));
+    opened.push({ db: restartedDb, root: value.root });
+    const restartedJob = getJob(restartedDb, value.job.id, "tenant-a")!;
+    const reconcileExactDraftUpdate = vi.fn(async () => ({ status: "not_applied" as const }));
+    const updateExactDraft = vi.fn(async () => ({
+      number: 17,
+      url: "https://github.com/acme/service/pull/17",
+      branch: "mendpoint/warden-a",
+      previousHeadSha: sha("d"),
+      commitSha: sha("f"),
+      draft: true as const,
+    }));
+
+    await expect(runWardenCandidateUpdate({
+      db: restartedDb,
+      job: restartedJob,
+      updateExactDraft,
+      reconcileExactDraftUpdate,
+      readApprovalArtifact: () => value.artifact,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:05:03.000Z",
+    })).resolves.toMatchObject({ status: "updated" });
+    expect(reconcileExactDraftUpdate).toHaveBeenCalledTimes(1);
+    expect(updateExactDraft).toHaveBeenCalledTimes(1);
+    expect(restartedDb.raw.prepare(`SELECT status, intent_digest FROM fettler_ci_updates
+      WHERE id = ? AND tenant_id = ?`).get(value.update.id, "tenant-a"))
+      .toEqual({ status: "delivered", intent_digest: intentDigest });
+    expect(restartedDb.raw.prepare(`SELECT state, intent_digest FROM mission_mutation_dispatches
+      WHERE tenant_id = ? AND job_id = ?`).get("tenant-a", value.job.id))
+      .toEqual({ state: "settled", intent_digest: intentDigest });
+  });
+
+  it.each(["applied", "unknown"] as const)(
+    "keeps a historical split takeover fail closed when reconciliation is %s",
+    async (status) => {
+      const value = bindMissionAuthority(fixture());
+      await armMissionTakeoverPair(value);
+      value.db.raw.prepare(`UPDATE fettler_ci_updates SET status = 'uncertain'
+        WHERE id = ? AND tenant_id = ?`).run(value.update.id, "tenant-a");
+      const updateExactDraft = vi.fn();
+      const reconciliation = status === "applied"
+        ? { status: "applied" as const, result: {
+          number: 17,
+          url: "https://github.com/acme/service/pull/17",
+          branch: "mendpoint/warden-a",
+          previousHeadSha: sha("d"),
+          commitSha: sha("f"),
+          draft: true as const,
+        } }
+        : { status: "unknown" as const };
+      const run = runWardenCandidateUpdate({
+        db: value.db,
+        job: value.job,
+        updateExactDraft,
+        reconcileExactDraftUpdate: vi.fn(async () => reconciliation),
+        readApprovalArtifact: () => value.artifact,
+        resolveRepository: () => ({ owner: "acme", repo: "service" }),
+        now: () => "2026-08-13T12:05:03.000Z",
+      });
+      if (status === "applied") await expect(run).resolves.toMatchObject({ status: "updated" });
+      else await expect(run).rejects.toThrow("warden_ci_update_outcome_uncertain");
+      expect(updateExactDraft).not.toHaveBeenCalled();
+      expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+        WHERE tenant_id = ? AND job_id = ?`).get("tenant-a", value.job.id))
+        .toEqual({ state: status === "applied" ? "settled" : "uncertain" });
+    },
+  );
+
+  it("rejects tenant, aggregate, and intent drift without splitting takeover state", async () => {
+    const value = bindMissionAuthority(fixture());
+    const intentDigest = await armMissionTakeoverPair(value);
+    expect(() => markWardenCiUpdateTakeoverUncertain(value.db, {
+      tenantId: "tenant-b",
+      updateId: value.update.id,
+      jobId: value.job.id,
+      intentDigest,
+      observedAt: "2026-08-13T12:05:01.000Z",
+    })).toThrow("warden_ci_update_not_found");
+    expect(() => markWardenCiUpdateTakeoverUncertain(value.db, {
+      tenantId: "tenant-a",
+      updateId: value.update.id,
+      jobId: value.job.id,
+      intentDigest: digest("9"),
+      observedAt: "2026-08-13T12:05:01.000Z",
+    })).toThrow("warden_ci_update_takeover_conflict");
+    value.db.raw.prepare(`UPDATE mission_mutation_dispatches SET aggregate_id = 'update-drift'
+      WHERE tenant_id = ? AND job_id = ?`).run("tenant-a", value.job.id);
+    expect(() => markWardenCiUpdateTakeoverUncertain(value.db, {
+      tenantId: "tenant-a",
+      updateId: value.update.id,
+      jobId: value.job.id,
+      intentDigest,
+      observedAt: "2026-08-13T12:05:01.000Z",
+    })).toThrow("warden_ci_update_takeover_conflict");
+    expect(value.db.raw.prepare(`SELECT status FROM fettler_ci_updates
+      WHERE id = ? AND tenant_id = ?`).get(value.update.id, "tenant-a"))
+      .toEqual({ status: "intent_bound" });
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = ? AND job_id = ?`).get("tenant-a", value.job.id))
+      .toEqual({ state: "dispatching" });
   });
 
   it("keeps an uncertain Mission mutation non-cancellable and settles it by read-only crash replay", async () => {

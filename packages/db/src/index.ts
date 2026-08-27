@@ -4157,6 +4157,7 @@ export {
   bindWardenCiUpdateIntent,
   authorizeWardenCiUpdateIntent,
   markWardenCiUpdateUncertain,
+  markWardenCiUpdateTakeoverUncertain,
   reconcileWardenCiUpdateNotApplied,
   completeWardenCiUpdate,
   type WardenCiCycle,

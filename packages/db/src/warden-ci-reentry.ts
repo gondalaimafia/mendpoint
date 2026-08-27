@@ -752,6 +752,55 @@ export function markWardenCiUpdateUncertain(db: AppDb, input: Readonly<{
   return getWardenCiUpdate(db, input.tenantId, input.updateId)!;
 }
 
+export function markWardenCiUpdateTakeoverUncertain(db: AppDb, input: Readonly<{
+  tenantId: string; updateId: string; jobId: string; intentDigest: string; observedAt: string;
+}>): WardenCiUpdate {
+  const intentDigest = digest(input.intentDigest, "warden_ci_update_intent_invalid");
+  const observedAt = timestamp(input.observedAt);
+  const jobId = id(input.jobId, "warden_ci_operation_job_invalid");
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const current = getWardenCiUpdate(db, input.tenantId, input.updateId);
+    if (!current) throw new Error("warden_ci_update_not_found");
+    if (!current.missionAuthority || current.jobId !== jobId || current.intentDigest !== intentDigest ||
+        (current.status !== "intent_bound" && current.status !== "uncertain")) {
+      throw new Error("warden_ci_update_takeover_conflict");
+    }
+    const authorityJson = JSON.stringify(current.missionAuthority);
+    const dispatch = db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = ? AND job_id = ? AND mission_id = ? AND mutation_kind = 'fettler_ci_update'
+        AND aggregate_id = ? AND authority_json = ? AND intent_digest = ?`).get(
+      current.tenantId, current.jobId, current.missionAuthority.missionId, current.id, authorityJson, intentDigest,
+    ) as { state: string } | undefined;
+    if (!dispatch || (dispatch.state !== "dispatching" && dispatch.state !== "uncertain")) {
+      throw new Error("warden_ci_update_takeover_conflict");
+    }
+    if (dispatch.state === "dispatching") {
+      const dispatchChanged = db.raw.prepare(`UPDATE mission_mutation_dispatches
+        SET state = 'uncertain', uncertain_at = COALESCE(uncertain_at, ?), updated_at = ?
+        WHERE tenant_id = ? AND job_id = ? AND mission_id = ? AND mutation_kind = 'fettler_ci_update'
+          AND aggregate_id = ? AND authority_json = ? AND intent_digest = ? AND state = 'dispatching'`).run(
+        observedAt, observedAt, current.tenantId, current.jobId, current.missionAuthority.missionId,
+        current.id, authorityJson, intentDigest,
+      );
+      if (Number(dispatchChanged.changes) !== 1) throw new Error("warden_ci_update_takeover_conflict");
+    }
+    if (current.status === "intent_bound") {
+      const updateChanged = db.raw.prepare(`UPDATE fettler_ci_updates SET status = 'uncertain', updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND job_id = ? AND intent_digest = ? AND status = 'intent_bound'`).run(
+        observedAt, current.id, current.tenantId, current.jobId, intentDigest,
+      );
+      if (Number(updateChanged.changes) !== 1) throw new Error("warden_ci_update_takeover_conflict");
+    }
+    if (owns) db.raw.exec("COMMIT");
+    return getWardenCiUpdate(db, current.tenantId, current.id)!;
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function completeWardenCiUpdate(db: AppDb, input: Readonly<{
   tenantId: string; updateId: string; expectedHeadSha: string; commitSha: string; observedAt: string;
   missionAuthority?: MissionMutationAuthorityV1;

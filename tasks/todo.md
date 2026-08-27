@@ -3431,6 +3431,38 @@ All reachable Mission authority revision writers are now inside the same `BEGIN 
 
 Green CI completion reasserts the exact Mission mutation authority with global blocking semantics inside the observation finalization transaction. The adversarial regression introduces a blocker after evidence persistence and proves the observation, cleanup handoff, job settlement, and task completion all remain uncommitted. Delivery settles its own dispatch before task completion inside the same transaction, preserving the crash-replay contract without letting the task fence reject its own known remote effect.
 
+## 2026-08-26 Review repair: atomic Mission CI takeover
+
+- [x] RED: reproduce rollback at the historical split boundary between Mission dispatch and CI update uncertainty.
+- [x] RED: restart from the historical split state and prove exact not-applied, applied, and unknown reconciliation behavior.
+- [x] Reject cross-tenant, cross-aggregate, and intent-drift takeover without changing either authority record.
+- [x] Implement one database transaction for the Mission-bound takeover while retaining the non-Mission path.
+- [x] Run focused regressions, complete database, API, and worker suites, affected typechecks, closure, ADR, and strict diff checks.
+- [x] Record exact evidence, commit, and push the repaired PR head without merging or deploying.
+
+### Review
+
+Mission-bound CI takeover now moves the exact `fettler_ci_updates` row and its exact
+`mission_mutation_dispatches` row to uncertainty in one immediate transaction. The
+transition binds tenant, job, aggregate, retained authority JSON, intent digest,
+and expected source states. A simulated failure on the second write rolls the first
+write back. Non-Mission updates retain their original single-row transition.
+
+The same transaction recognizes both historical partial states. A persisted
+`update=uncertain, dispatch=dispatching` pair is normalized after closing and
+reopening the database. Exact `not_applied` evidence settles the old intent and
+rearms that same intent once; `applied` settles without a second GitHub mutation;
+`unknown` remains uncertain and read only. Tenant, aggregate, and intent drift are
+rejected without changing either record.
+
+RED evidence was three focused failures: the paired function was absent and the
+historical split dead-ended at `warden_ci_update_not_applied_conflict`. GREEN
+evidence is 27 focused update tests, 455 complete database tests, 543 complete API
+tests, and 644 complete worker tests with one intentional skip. Database and worker
+typechecks pass. The 32-test closure gate reports 101 requirements and current PR
+499; the 13-test ADR gate reports 50 valid ADRs. Strict diff integrity passes. No
+merge, deployment, or production state mutation was performed.
+
 Rolling-upgrade delivery and update rows carrying any Mission binding but no exact retained authority are deterministically quarantined before GitHub. They receive stable nonretryable upgrade-required codes and never synthesize a MissionTask or reconstruct historical authority from current state.
 
 Verification: 77 focused dispatch, task, delivery, update, and Mission tests pass; the exact observation suite passes 13 tests. Complete database and worker suites pass 437 and 612 tests respectively, with one intentional worker skip. Database and worker typechecks and the optimized production build pass, the complete authority-writer and mutation-consumer searches were reviewed, and `git diff --check` is clean. No production state changed and no push was performed. No P0, P1, or P2 review finding remains in this repaired class.

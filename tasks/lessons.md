@@ -196,3 +196,8 @@
 **Mistake:** I interpreted "extend the authority timeline until Friday" as changing the protected production-closure receipt instead of extending the just-granted Codex self-deploy waiver.
 **Correction:** Talal clarified it was about Codex-owned work without Claude review.
 **Rule:** When "authority" could mean a protected technical artifact or conversational action authorization, bind it to the immediately preceding topic; do not mutate protected authority unless the user names that artifact or operation explicitly.
+
+### 2026-08-26 — Repair the persisted split as well as the split writer
+**Mistake:** The takeover path treated two related authority rows as independent transitions, and the first proposed boundary focused only on making future writes atomic.
+**Correction:** The full failure chain includes historical rows already persisted between those writes; exact reconciliation must recover them without weakening tenant, aggregate, or intent binding.
+**Rule:** When replacing a split durable transition with one transaction, enumerate every partially committed state that an older revision could have left behind. Prove both atomic rollback for new writes and bounded reconciliation for each historical split before declaring the state machine repaired.

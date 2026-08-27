@@ -10,6 +10,7 @@ import {
   getWardenCiCycle,
   getWardenCiUpdate,
   markWardenCiUpdateUncertain,
+  markWardenCiUpdateTakeoverUncertain,
   markMissionMutationDispatchUncertain,
   parseMissionMutationAuthority,
   reconcileWardenCiUpdateNotApplied,
@@ -271,14 +272,18 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
     if (update.status === "intent_bound" && dispatch?.state === "authorized") {
       remote = await dispatchFreshUpdate();
     } else {
-      if (update.status === "intent_bound") {
+      if (parsed.missionAuthority &&
+          (update.status === "intent_bound" || dispatch?.state === "dispatching")) {
+        markWardenCiUpdateTakeoverUncertain(input.db, {
+          tenantId: cycle.tenantId,
+          updateId: update.id,
+          jobId: input.job.id,
+          intentDigest: digest,
+          observedAt: preflightAt,
+        });
+      } else if (update.status === "intent_bound") {
         markWardenCiUpdateUncertain(input.db, { tenantId: cycle.tenantId, updateId: update.id,
           intentDigest: digest, observedAt: preflightAt });
-        if (parsed.missionAuthority && dispatch?.state === "dispatching") {
-          markMissionMutationDispatchUncertain(input.db, {
-            tenantId: cycle.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: preflightAt,
-          });
-        }
       }
       let reconciliation: ExactDraftUpdateReconciliation;
       try { reconciliation = await input.reconcileExactDraftUpdate(intent); }
