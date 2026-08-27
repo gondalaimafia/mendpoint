@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   RELEASE_POLL_CONTRACT_VERSION,
+  RELEASE_POLL_ERROR_CODES,
   detectVendors,
   findVendorByPackage,
   listCatalog,
   pollReleaseSource,
+  isReleasePollErrorCode,
 } from "./index.js";
 
 const dirs: string[] = [];
@@ -53,5 +55,8 @@ describe("vendor catalog", () => {
   it("exports the versioned release polling contract", () => {
     expect(RELEASE_POLL_CONTRACT_VERSION).toBe("release-poll.v1");
     expect(pollReleaseSource).toBeTypeOf("function");
+    expect(RELEASE_POLL_ERROR_CODES).toContain("release_poll_executor_failed");
+    expect(isReleasePollErrorCode("release_poll_fetch_failed")).toBe(true);
+    expect(isReleasePollErrorCode("password=secret")).toBe(false);
   });
 });

@@ -20,6 +20,7 @@ import {
 import {
   duplicateReleasePollConfigurationResult,
   invalidReleasePollExecutorResult,
+  isReleasePollErrorCode,
   parseReleasePollConfiguration,
   pollReleaseSource,
   type CanonicalReleasePollConfigurationV1,
@@ -28,7 +29,11 @@ import {
   type ReleasePollResult,
   type ValidReleasePollResult,
 } from "./release-poll.js";
-import type { ReleaseIngestionStore } from "./release-ingestion.js";
+import {
+  listReleaseDispatches,
+  rehydrateReleaseArtifact,
+  type ReleaseIngestionStore,
+} from "./release-ingestion.js";
 import type { FetchFeedOptions, FetchOpenApiResult, PollableFeed } from "./poll.js";
 
 export type FeedScheduleSourceOutcome<T> =
@@ -234,6 +239,9 @@ function validateReleaseExecutorResult(
         snapshot.inserted !== 0 || typeof snapshot.error !== "string" ||
         !snapshot.error.trim() || snapshot.error.length > 1024
       ) return null;
+      const error = isReleasePollErrorCode(snapshot.error)
+        ? snapshot.error
+        : "release_poll_executor_failed" as const;
       return Object.freeze({
         status,
         contractVersion: snapshot.contractVersion,
@@ -245,7 +253,7 @@ function validateReleaseExecutorResult(
         inserted: 0,
         artifacts,
         dispatches,
-        error: snapshot.error,
+        error,
       }) as ValidReleasePollResult;
     } else if (status === "unchanged" && snapshot.inserted !== 0) {
       return null;
@@ -266,6 +274,60 @@ function validateReleaseExecutorResult(
     }) as ValidReleasePollResult;
   } catch {
     return null;
+  }
+}
+
+function releaseReferencesHaveAuthority(
+  store: ReleaseIngestionStore,
+  config: CanonicalReleasePollConfigurationV1,
+  result: ValidReleasePollResult,
+): boolean {
+  if (result.status === "failed") return true;
+  if (result.artifacts.length === 0) return false;
+  if (result.status === "ingested" && result.inserted > result.artifacts.length) return false;
+  try {
+    const expectedCollection = expectedReleaseSourceUrl(config);
+    const artifactById = new Map<string, (typeof result.artifacts)[number]>();
+    for (const reference of result.artifacts) {
+      if (artifactById.has(reference.artifactId)) return false;
+      const artifact = rehydrateReleaseArtifact(store, {
+        tenantId: config.tenantId,
+        artifactId: reference.artifactId,
+        expectedContentSha256: reference.contentSha256,
+      });
+      if (
+        artifact.tenantId !== config.tenantId ||
+        artifact.providerSlug !== config.provider.slug ||
+        artifact.adapter !== config.adapter ||
+        artifact.collectionUrl !== expectedCollection ||
+        artifact.contentSha256 !== reference.contentSha256 ||
+        !artifact.identityCanonical
+      ) return false;
+      artifactById.set(reference.artifactId, reference);
+    }
+    const durableDispatches = new Map(
+      listReleaseDispatches(store, config.tenantId).map((dispatch) => [dispatch.id, dispatch]),
+    );
+    const coveredArtifacts = new Set<string>();
+    const seenDispatches = new Set<string>();
+    for (const reference of result.dispatches) {
+      if (seenDispatches.has(reference.dispatchId)) return false;
+      seenDispatches.add(reference.dispatchId);
+      const artifact = artifactById.get(reference.artifactId);
+      const dispatch = durableDispatches.get(reference.dispatchId);
+      if (
+        !artifact || !dispatch || dispatch.tenantId !== config.tenantId ||
+        dispatch.artifactId !== reference.artifactId ||
+        dispatch.artifactContentSha256 !== reference.artifactContentSha256 ||
+        artifact.contentSha256 !== reference.artifactContentSha256
+      ) return false;
+      coveredArtifacts.add(reference.artifactId);
+    }
+    return result.status !== "ingested" ||
+      (result.dispatches.length === result.artifacts.length &&
+        coveredArtifacts.size === result.artifacts.length);
+  } catch {
+    return false;
   }
 }
 
@@ -403,7 +465,7 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
                   fetchOptions: options.releaseFetchOptions,
                 });
             const result = validateReleaseExecutorResult(untrustedResult, releaseConfig);
-            if (!result) {
+            if (!result || !releaseReferencesHaveAuthority(options.releaseStore, releaseConfig, result)) {
               const invalid = invalidReleasePollExecutorResult({
                 tenantId: releaseConfig.tenantId,
                 providerSlug: releaseConfig.provider.slug,
@@ -431,7 +493,7 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
           } catch (cause) {
             releaseOutcome = Object.freeze({
               status: "failed" as const,
-              error: cause instanceof Error ? cause.message : String(cause),
+              error: "release_poll_executor_failed",
             });
           }
         }
@@ -481,28 +543,26 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
     },
   );
 
-  const durableHealth = getFeedScheduleHealth(options.db, at, options.tenantId);
-  const health = releaseConfigurationFailures.length === 0
-    ? durableHealth
-    : {
-        ...durableHealth,
-        status: "degraded" as const,
-        counts: {
-          ...durableHealth.counts,
-          failed: durableHealth.counts.failed + releaseConfigurationFailures.length,
-        },
-        configurationFailures: Object.freeze([...releaseConfigurationFailures]),
-      };
+  const health = getFeedScheduleHealth(options.db, at, options.tenantId);
+  const configurationFailed = releaseConfigurationFailures.length;
+  const configurationHealth = Object.freeze({
+    ok: configurationFailed === 0,
+    status: configurationFailed === 0 ? "healthy" as const : "degraded" as const,
+    failed: configurationFailed,
+    failures: Object.freeze([...releaseConfigurationFailures]),
+  });
   return {
     at,
+    status: health.ok && configurationHealth.ok ? "healthy" as const : "degraded" as const,
     maxConcurrency: boundedConcurrency(options.maxConcurrency),
     claimed: executions.filter((execution) => execution.status !== "already_claimed").length,
     succeeded: executions.filter((execution) => execution.status === "succeeded").length,
-    failed: executions.filter((execution) => execution.status === "failed").length +
-      releaseConfigurationFailures.length,
+    failed: executions.filter((execution) => execution.status === "failed").length,
     alreadyClaimed: executions.filter((execution) => execution.status === "already_claimed").length,
     executions,
     releaseConfigurationFailures: Object.freeze([...releaseConfigurationFailures]),
+    configurationFailed,
+    configurationHealth,
     health,
   };
 }

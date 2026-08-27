@@ -183,7 +183,7 @@ describe("release source polling", () => {
       adapter: "rss",
       sourceUrl: durableSourceUrl("https://127.0.0.1/releases"),
       sourceMaxBytes: null,
-      error: "production feed URL resolves to a blocked address",
+      error: "release_poll_fetch_failed",
     });
     expect(fetches).toBe(0);
     expect(listReleaseArtifacts(store, "tenant-a")).toEqual([]);
@@ -291,9 +291,7 @@ describe("release source polling", () => {
       },
     });
     expect(rejected).toMatchObject({ status: "failed" });
-    expect(rejected.status === "failed" ? rejected.error : "").toContain(
-      `exceeds the ${RELEASE_POLL_MAX_BYTES}-byte limit`,
-    );
+    expect(rejected.status === "failed" ? rejected.error : "").toBe("release_poll_fetch_failed");
     expect(listReleaseArtifacts(store, "tenant-b")).toEqual([]);
   });
 
