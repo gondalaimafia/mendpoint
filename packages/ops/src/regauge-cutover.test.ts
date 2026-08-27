@@ -12,6 +12,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
+import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   REGAUGE_TRANSFER_DATABASES,
@@ -372,7 +373,7 @@ describe("ReGauge state transfer", () => {
     expect(() => transfer(oversized)).toThrow("regauge_transfer_legacy_artifact_size_invalid");
   });
 
-  it("rejects missing and filesystem-aliased source databases", () => {
+  it("rejects missing, cross-aliased, and externally hard-linked source databases", () => {
     const missing = fixture();
     rmSync(join(missing.sourceRoot, "change-sources.sqlite"));
     expect(() => transfer(missing)).toThrow("regauge_transfer_source_change-sources.sqlite_missing");
@@ -380,10 +381,64 @@ describe("ReGauge state transfer", () => {
     const aliased = fixture();
     rmSync(join(aliased.sourceRoot, "change-sources.sqlite"));
     linkSync(join(aliased.sourceRoot, "mendpoint.sqlite"), join(aliased.sourceRoot, "change-sources.sqlite"));
-    expect(() => transfer(aliased)).toThrow("regauge_transfer_sources_aliased");
+    expect(() => transfer(aliased)).toThrow("regauge_transfer_source_change-sources.sqlite_aliased");
+
+    for (const name of REGAUGE_TRANSFER_DATABASES) {
+      const linked = fixture();
+      const source = join(linked.sourceRoot, name);
+      linkSync(source, join(linked.root, `external-${name}`));
+      expect(() => transfer(linked)).toThrow(`regauge_transfer_source_${name}_aliased`);
+    }
   });
 
-  it("restores create-only through an atomic directory publication and preserves evidence", () => {
+  it("rejects every source database replaced after identity capture", async () => {
+    for (const name of REGAUGE_TRANSFER_DATABASES) {
+      const fx = fixture();
+      const sourcePath = join(fx.sourceRoot, name);
+      const source = new DatabaseSync(sourcePath);
+      try {
+        source.exec("CREATE TABLE snapshot_delay (payload BLOB NOT NULL); INSERT INTO snapshot_delay VALUES (randomblob(8388608))");
+      } finally { source.close(); }
+      const replacement = join(fx.root, `replacement-${name}`);
+      createDatabase(replacement, `replacement-${name}`);
+      const stolen = join(fx.root, `stolen-${name}`);
+      const worker = new Worker(`
+        const { parentPort, workerData } = require("node:worker_threads");
+        const fs = require("node:fs");
+        const path = require("node:path");
+        parentPort.postMessage("ready");
+        const deadline = Date.now() + 10000;
+        let replaced = false;
+        while (Date.now() < deadline) {
+          const staging = fs.readdirSync(workerData.root).some((entry) => entry.startsWith("bundle.staging-"));
+          if (staging) {
+            try {
+              fs.renameSync(workerData.source, workerData.stolen);
+              fs.renameSync(workerData.replacement, workerData.source);
+              replaced = true;
+              break;
+            } catch {}
+          }
+        }
+        parentPort.postMessage(replaced ? "replaced" : "timeout");
+      `, { eval: true, workerData: { root: fx.root, source: sourcePath, replacement, stolen } });
+      await new Promise<void>((resolve, reject) => {
+        worker.once("message", (message) => message === "ready" ? resolve() : reject(new Error(String(message))));
+        worker.once("error", reject);
+      });
+      let observed: unknown;
+      try { transfer(fx); } catch (error) { observed = error; }
+      const outcome = await new Promise<string>((resolve, reject) => {
+        worker.once("message", resolve);
+        worker.once("error", reject);
+      });
+      await worker.terminate();
+      expect(outcome).toBe("replaced");
+      expect(observed).toMatchObject({ message: "regauge_transfer_source_changed" });
+    }
+  }, 60_000);
+
+  it("restores through a create-only owned destination and preserves evidence", () => {
     const fx = fixture();
     const manifest = transfer(fx);
     const restoredManifest = restoreRegaugeStateTransfer({
@@ -447,5 +502,54 @@ describe("ReGauge state transfer", () => {
     })).toThrow();
     expect(existsSync(failed.targetRoot)).toBe(false);
   });
+
+  it("does not delete or populate an ABA replacement after restore ownership changes", async () => {
+    const fx = fixture();
+    const source = new DatabaseSync(join(fx.sourceRoot, "change-sources.sqlite"));
+    try {
+      source.exec("CREATE TABLE restore_delay (payload BLOB NOT NULL); INSERT INTO restore_delay VALUES (randomblob(16777216))");
+    } finally { source.close(); }
+    transfer(fx);
+    const stolenRoot = `${fx.targetRoot}-stolen`;
+    const replacementSentinel = join(fx.targetRoot, "replacement-owner");
+    const worker = new Worker(`
+      const { parentPort, workerData } = require("node:worker_threads");
+      const fs = require("node:fs");
+      parentPort.postMessage("ready");
+      const deadline = Date.now() + 15000;
+      let replaced = false;
+      while (Date.now() < deadline) {
+        if (fs.existsSync(workerData.target)) {
+          try {
+            fs.renameSync(workerData.target, workerData.stolen);
+            fs.mkdirSync(workerData.target);
+            fs.writeFileSync(workerData.sentinel, "replacement");
+            replaced = true;
+            break;
+          } catch {}
+        }
+      }
+      parentPort.postMessage(replaced ? "replaced" : "timeout");
+    `, { eval: true, workerData: { target: fx.targetRoot, stolen: stolenRoot, sentinel: replacementSentinel } });
+    await new Promise<void>((resolve, reject) => {
+      worker.once("message", (message) => message === "ready" ? resolve() : reject(new Error(String(message))));
+      worker.once("error", reject);
+    });
+    let observed: unknown;
+    try {
+      restoreRegaugeStateTransfer({ bundleRoot: fx.bundleRoot, targetRoot: fx.targetRoot, transferKey: KEY });
+    } catch (error) {
+      observed = error;
+    }
+    const outcome = await new Promise<string>((resolve, reject) => {
+      worker.once("message", resolve);
+      worker.once("error", reject);
+    });
+    await worker.terminate();
+    expect(outcome).toBe("replaced");
+    expect(observed).toMatchObject({ message: "regauge_transfer_target_ownership_changed" });
+    expect(readFileSync(replacementSentinel, "utf8")).toBe("replacement");
+    expect(existsSync(stolenRoot)).toBe(true);
+  }, 30_000);
 
 });

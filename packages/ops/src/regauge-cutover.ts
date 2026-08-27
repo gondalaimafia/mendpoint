@@ -16,8 +16,10 @@ import {
   renameSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
+import type { BigIntStats } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -120,6 +122,7 @@ const EXCLUSIVE_FENCE_NAME = "exclusive.json";
 const RECOVERY_FENCE_NAME = "recovery.json";
 const WRITERS_DIRECTORY_NAME = "writers";
 const LEGACY_ARTIFACTS_DIRECTORY_NAME = "legacy-artifacts";
+const RESTORE_OWNER_NAME = ".regauge-restore-owner.json";
 const MAX_LEGACY_ARTIFACT_FILES = 10_000;
 const MAX_LEGACY_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_LEGACY_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024;
@@ -178,8 +181,9 @@ function sqlLiteral(value: string): string {
 
 function assertPlainFile(path: string, code: string): void {
   if (!existsSync(path)) fail(`${code}_missing`);
-  if (lstatSync(path).isSymbolicLink()) fail(`${code}_aliased`);
-  if (!statSync(path).isFile() || realpathSync(path) !== resolve(path)) fail(`${code}_aliased`);
+  const observed = lstatSync(path, { bigint: true });
+  if (observed.isSymbolicLink() || !observed.isFile() || observed.nlink !== 1n ||
+      realpathSync(path) !== resolve(path)) fail(`${code}_aliased`);
 }
 
 function assertPlainDirectory(path: string, code: string): void {
@@ -373,9 +377,45 @@ function inspectDatabase(path: string, name: RegaugeTransferDatabase): RegaugeDa
   }
 }
 
-function snapshotDatabase(source: string, destination: string): void {
+function sameFileIdentity(
+  left: BigIntStats,
+  right: BigIntStats,
+): boolean {
+  return left.isFile() && right.isFile() && left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameDirectoryIdentity(path: string, expected: BigIntStats): boolean {
+  if (!existsSync(path)) return false;
+  const observed = lstatSync(path, { bigint: true });
+  return observed.isDirectory() && !observed.isSymbolicLink() &&
+    observed.dev === expected.dev && observed.ino === expected.ino;
+}
+
+function ownsRestoreTarget(
+  targetRoot: string,
+  targetIdentity: BigIntStats,
+  ownerPath: string,
+  ownerBytes: Buffer,
+): boolean {
+  if (!sameDirectoryIdentity(targetRoot, targetIdentity)) return false;
+  try {
+    return readFileSync(ownerPath).equals(ownerBytes);
+  } catch {
+    return false;
+  }
+}
+
+function snapshotDatabase(source: string, destination: string, expected: BigIntStats): void {
+  const before = lstatSync(source, { bigint: true });
+  if (before.nlink !== 1n || !sameFileIdentity(before, expected)) {
+    fail("regauge_transfer_source_changed");
+  }
   const db = new DatabaseSync(source);
   try { db.exec(`VACUUM INTO ${sqlLiteral(destination)}`); } finally { db.close(); }
+  const after = lstatSync(source, { bigint: true });
+  if (after.nlink !== 1n || !sameFileIdentity(after, expected)) {
+    fail("regauge_transfer_source_changed");
+  }
 }
 
 function deriveKey(key: Buffer, purpose: "encryption" | "authentication" | "fence" | "rollback"): Buffer {
@@ -834,7 +874,7 @@ export function createRegaugeStateTransfer(input: Readonly<{
     const path = resolve(sourceRoot, name);
     if (!path.startsWith(`${sourceRoot}${sep}`)) fail("regauge_transfer_source_path_invalid");
     assertPlainFile(path, `regauge_transfer_source_${name}`);
-    return { name, path, identity: statSync(path, { bigint: true }) };
+    return { name, path, identity: lstatSync(path, { bigint: true }) };
   });
   const identities = new Set(sources.map(({ identity }) => `${identity.dev}:${identity.ino}`));
   if (identities.size !== sources.length) fail("regauge_transfer_sources_aliased");
@@ -843,10 +883,10 @@ export function createRegaugeStateTransfer(input: Readonly<{
   mkdirSync(join(staging, "resources"), { recursive: true, mode: 0o700 });
   mkdirSync(join(staging, LEGACY_ARTIFACTS_DIRECTORY_NAME), { recursive: true, mode: 0o700 });
   try {
-    const resources = sources.map(({ name, path }) => {
+    const resources = sources.map(({ name, path, identity }) => {
       assertFence();
       const snapshot = join(staging, `${name}.snapshot`);
-      snapshotDatabase(path, snapshot);
+      snapshotDatabase(path, snapshot, identity);
       assertFence();
       const baseEvidence = inspectDatabase(snapshot, name);
       const encrypted = encrypt(readFileSync(snapshot), input.transferKey, aad(input.bindings, input.transferId, name));
@@ -957,22 +997,56 @@ export function restoreRegaugeStateTransfer(input: Readonly<{
   const targetRoot = resolve(input.targetRoot);
   const targetParent = dirname(targetRoot);
   assertPlainDirectory(targetParent, "regauge_transfer_target_parent_invalid");
-  const staging = join(targetParent, `.regauge-restore-${randomBytes(8).toString("hex")}`);
-  mkdirSync(staging, { recursive: true, mode: 0o700 });
+  const owner = Object.freeze({
+    schemaVersion: 1 as const,
+    kind: "mendpoint.regauge.restore-owner" as const,
+    nonce: randomBytes(32).toString("hex"),
+  });
+  const ownerBytes = Buffer.from(`${canonical(owner)}\n`, "utf8");
   try {
+    mkdirSync(targetRoot, { mode: 0o700 });
+  } catch (error) {
+    if (existsSync(targetRoot)) fail("regauge_transfer_target_exists");
+    throw error;
+  }
+  const targetIdentity = lstatSync(targetRoot, { bigint: true });
+  const ownerPath = join(targetRoot, RESTORE_OWNER_NAME);
+  try {
+    writeFileSync(ownerPath, ownerBytes, { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    if (sameDirectoryIdentity(targetRoot, targetIdentity)) rmSync(targetRoot, { recursive: true, force: true });
+    throw error;
+  }
+  const assertOwnership = (): void => {
+    if (!ownsRestoreTarget(targetRoot, targetIdentity, ownerPath, ownerBytes)) {
+      fail("regauge_transfer_target_ownership_changed");
+    }
+  };
+  try {
+    assertOwnership();
     for (const resource of manifest.resources) {
-      decryptAndVerifyResource(resolve(input.bundleRoot), join(staging, resource.name), manifest, resource, input.transferKey);
+      assertOwnership();
+      decryptAndVerifyResource(resolve(input.bundleRoot), join(targetRoot, resource.name), manifest, resource, input.transferKey);
+      assertOwnership();
     }
     for (const root of REGAUGE_TRANSFER_LEGACY_ARTIFACT_ROOTS) {
-      mkdirSync(join(staging, root), { recursive: true, mode: 0o700 });
+      assertOwnership();
+      mkdirSync(join(targetRoot, root), { recursive: true, mode: 0o700 });
+      assertOwnership();
     }
     for (const artifact of manifest.legacyArtifacts) {
-      decryptAndVerifyLegacyArtifact(resolve(input.bundleRoot), staging, manifest, artifact, input.transferKey);
+      assertOwnership();
+      decryptAndVerifyLegacyArtifact(resolve(input.bundleRoot), targetRoot, manifest, artifact, input.transferKey);
+      assertOwnership();
     }
-    renameSync(staging, targetRoot);
+    unlinkSync(ownerPath);
     return manifest;
   } catch (error) {
-    rmSync(staging, { recursive: true, force: true });
+    if (ownsRestoreTarget(targetRoot, targetIdentity, ownerPath, ownerBytes)) {
+      rmSync(targetRoot, { recursive: true, force: true });
+    } else {
+      fail("regauge_transfer_target_ownership_changed");
+    }
     throw error;
   }
 }
