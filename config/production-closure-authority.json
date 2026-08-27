@@ -41,7 +41,7 @@
     "package-lock.json": "sha256:193181927b3e5813f43471c60c343c0300c6c71540a9b3921968a215cb57cd0d",
     "tsconfig.base.json": "sha256:7c157e5eafd2be931e382044c0bdbf7008e111c119c3932f6fd31603a28e8ede",
     "scripts/tsconfig.json": "sha256:8607a9e57b531b9c941819da05b1ba70c991389a5d1b3d13be06d109d49b22e5",
-    "scripts/production-closure-proposal-authority.ts": "sha256:7c3d531bbd8bd7639fb7d610cac95d724a68444028a06202f1076a9f8b6f336d",
+    "scripts/production-closure-proposal-authority.ts": "sha256:51d86e5498cc588b7cae5cd59266e005eafb6e04b9f83c1877517a536cccf209",
     "scripts/production-closure-github-authority.ts": "sha256:da77bc9a1a8b1f336e2002c0284753c038880d51845360e1b856e2314f1cef59",
     "scripts/production-closure-authority-rotation.ts": "sha256:a028ddc9accff22771211afba38573cf7482856e1539b81535d711b8b1f8271f",
     "scripts/production-closure-matrix.ts": "sha256:3a11f017b1f29d89a3c9234a8fa708c00d997ae63de8576fb6295175b7cbb1e2",

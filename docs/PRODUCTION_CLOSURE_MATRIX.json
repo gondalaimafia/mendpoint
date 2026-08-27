@@ -2057,16 +2057,16 @@
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
-    "observedMainRevision": "4fbf32605cff364bff8d4fc14600137cdaa98180",
-    "observationDigest": "sha256:d1ed4abbfd583837aeceaff9aeee510afc5dbdbd15938f33e1602dcf407d3289",
+    "observedMainRevision": "2257f98961184044aab63982d89aa9b391aa3fbd",
+    "observationDigest": "sha256:2851976e740a468ea8060264d6fe6dfa50fcec425fa48229b3bf0ce565510b30",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 449,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/449",
-      "title": "worker: consult MissionGraphProjection when a live endpoint key exists",
+      "number": 486,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/486",
+      "title": "Use local Git for closure proposal authority",
       "baseBranch": "main",
-      "headBranch": "cursor/mission-graph-endpoint-key-f457",
+      "headBranch": "codex/closure-authority-local-git",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2079,7 +2079,15 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": []
+      "remediatesPullRequests": [],
+      "authorityRotation": {
+        "rotationId": "rotation-20260827-004",
+        "kind": "runtime",
+        "issuedAt": "2026-08-27T05:34:29.853Z",
+        "expiresAt": "2026-08-28T05:34:29.853Z",
+        "basePolicySha256": "sha256:809f79e92cd7be5ce58c6f7920d44f0640c24138f553656911842d74c76d8a67",
+        "proposedPolicySha256": "sha256:dcb2238abb3933d4316f3caddd7e2af705c2f5c19ce9e84edf86abcade3599be"
+      }
     },
     "pullRequests": [
       {
@@ -4097,41 +4105,6 @@
         "blockers": []
       },
       {
-        "number": 486,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/486",
-        "title": "Use local Git for closure proposal authority",
-        "headBranch": "codex/closure-authority-local-git",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Codex",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "b21de09d92dbd7329569e857e8f35fa96afb4693",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
         "number": 487,
         "state": "open",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/487",
@@ -4290,7 +4263,147 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "3e300352cf0b85347c31b63895f74caba3f69cd3",
+        "headRevision": "98ecbc55ac6987ca9ed694fb36b6c6f9a0529081",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 496,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/496",
+        "title": "docs: lead the public page with the shipped product, demote the demo",
+        "headBranch": "readme-refresh",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Claude",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "e1be32a7658b669f60c1961c5e8c5028adf3bdd2",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 497,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/497",
+        "title": "Correct README production availability claims",
+        "headBranch": "codex/pr496-review-fixes",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "2a87ceab5f1280d8fcc3d4e887e7829c022469aa",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 498,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/498",
+        "title": "Restore fail-closed customer backup authority",
+        "headBranch": "codex/replace-backup-authority",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "9241fa80a6e0bde57fd2935f70fe88821ae9016f",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 499,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/499",
+        "title": "Preserve Mission authority across remote mutations",
+        "headBranch": "codex/replace-mission-handoff-authority",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "97243f81d4b37469375d0adef4a6cd0bbc6398c3",
         "mergeRevision": null,
         "checks": [],
         "review": {
