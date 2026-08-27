@@ -365,7 +365,7 @@
       "issuedAt": "2026-08-27T22:15:57.236Z",
       "expiresAt": "2026-08-28T22:15:57.236Z",
       "basePolicySha256": "sha256:45cafb53dd1d6af6ca8410f024d2191ca64a2b621b79235faaf43174f6824ba8",
-      "proposedPolicySha256": "sha256:b028c6eaaf59b1d6e862771e125c8cc6b9eaaa7df18c88a3ebb2b39303ac5f51",
+      "proposedPolicySha256": "sha256:4552350adb2a42679c99417dfae896812834937926fc8951b7402bc32bd34fd5",
       "previousRotationId": "rotation-20260827-008",
       "baseRevision": "cf02b747d1661cc84c0a84d2cdb1c2f62ef9e7a4",
       "baseLedgerSha256": "sha256:7478698bbe0e73e491e4cde36d3168cd054c612613d540efe919fa87f1364b1a",
@@ -374,28 +374,28 @@
         {
           "path": "config/production-closure-authority.json",
           "fromSha256": "sha256:45cafb53dd1d6af6ca8410f024d2191ca64a2b621b79235faaf43174f6824ba8",
-          "toSha256": "sha256:b028c6eaaf59b1d6e862771e125c8cc6b9eaaa7df18c88a3ebb2b39303ac5f51",
+          "toSha256": "sha256:4552350adb2a42679c99417dfae896812834937926fc8951b7402bc32bd34fd5",
           "fromMode": "100644",
           "toMode": "100644"
         },
         {
           "path": "config/production-closure-successors/closure-authority-quiet-sweep.yml",
           "fromSha256": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
-          "toSha256": "sha256:ee8ae8bcf181e6249776cd14b7927478351190354857d1d7269bcf4408dafe47",
+          "toSha256": "sha256:6279e70fe0808b0084061c92c947311218a0a29aa8368dfeb0047a04aaf28d9f",
           "fromMode": "100644",
           "toMode": "100644"
         },
         {
           "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
           "fromSha256": "sha256:03148d902c421af460407069b63d9a541b6459b1363d1eb3dcebdf8d82a335e7",
-          "toSha256": "sha256:85a7f8c1817b5e178bed4ebfaa1b5668761d8ec2d862134bc3979aae9fb77f68",
+          "toSha256": "sha256:aa6abf200dc8253253be7a37f8d949aa3fb669795b7c38464cba031798b4d38b",
           "fromMode": "100644",
           "toMode": "100644"
         },
         {
           "path": "scripts/production-closure-github-authority.test.ts",
           "fromSha256": "sha256:0eb51927c08f28ac91ec94b705e4179d9863d0516294a8cadcb432e0c6c6a944",
-          "toSha256": "sha256:a3345dd62dca3a4e0f5ddcc5b085901ba43d632f33cf020562afbc69d1a0bde0",
+          "toSha256": "sha256:17760fde504c4f24d62564a32725f69458331c0cfd8c7bd1d87887f6363d7712",
           "fromMode": "100644",
           "toMode": "100644"
         },
