@@ -2080,7 +2080,8 @@ function migrateWardenCiAwaitingReview(db: AppDb): void {
     "remote_repository_id", "installation_id", "pull_request_number", "base_branch", "branch_name",
     "base_revision", "current_head_sha", "required_checks_json", "allowed_changed_paths_json",
     "max_cycles", "used_cycles", "max_model_calls", "maximum_cost_usd", "current_observation_digest",
-    "repair_run_id", "repair_job_id", "paused_by", "pause_reason", "created_at", "updated_at",
+    "repair_run_id", "repair_job_id", "paused_by", "pause_reason", "mission_authority_json",
+    "created_at", "updated_at",
   ].join(", ");
   db.raw.exec("BEGIN IMMEDIATE");
   try {
@@ -2113,6 +2114,7 @@ function migrateWardenCiAwaitingReview(db: AppDb): void {
         repair_job_id TEXT,
         paused_by TEXT,
         pause_reason TEXT,
+        mission_authority_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE (tenant_id, delivery_id)

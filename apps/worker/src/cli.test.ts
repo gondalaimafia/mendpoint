@@ -2858,34 +2858,46 @@ describe("worker runtime", () => {
         maxAttempts: 3,
       },
     });
+    // Maintenance now discovers tenants only from Fettler agent runs and
+    // agent.run jobs. Seed the former so this regression reaches the damaged
+    // artifact-root path before proving ordinary jobs continue.
+    insertWardenLifecycleRun(db, {
+      id: "run-maint-fail",
+      tenantId: "tenant_test",
+      status: "candidate_ready",
+      resultJson: JSON.stringify({ artifacts: {} }),
+    });
     // Point the Warden data dir at a file so maintenance throws before touching jobs.
     const badDataDir = join(parent, "not-a-directory");
     writeFileSync(badDataDir, "x");
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await expect(
-      processJobsOnce(db, {
-        tenantId: "tenant_test",
-        workerId: "worker-maint-fail",
-        leaseMs: 5_000,
-        wardenEnv: { MENDPOINT_DATA_DIR: badDataDir },
-      }),
-    ).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+    try {
+      await expect(
+        processJobsOnce(db, {
+          tenantId: "tenant_test",
+          workerId: "worker-maint-fail",
+          leaseMs: 5_000,
+          wardenEnv: { MENDPOINT_DATA_DIR: badDataDir },
+        }),
+      ).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
 
-    expect(
-      errorSpy.mock.calls.some((call) =>
-        String(call[0]).includes("Fettler maintenance unavailable"),
-      ),
-    ).toBe(true);
-    expect(getRepairSession(db, "session-maint-fail", "tenant_test")).toMatchObject({
-      status: "verified",
-      ok: 1,
-    });
-    expect(listJobs(db, 10, "tenant_test")[0]).toMatchObject({
-      id: "job-maint-fail",
-      status: "done",
-    });
-    db.raw.close();
+      expect(
+        errorSpy.mock.calls.some((call) =>
+          String(call[0]).includes("Fettler maintenance deferred"),
+        ),
+      ).toBe(true);
+      expect(getRepairSession(db, "session-maint-fail", "tenant_test")).toMatchObject({
+        status: "verified",
+        ok: 1,
+      });
+      expect(listJobs(db, 10, "tenant_test")[0]).toMatchObject({
+        id: "job-maint-fail",
+        status: "done",
+      });
+    } finally {
+      db.raw.close();
+    }
   });
 
   it("reserves both source and evidence bytes against the candidate quota", async () => {
