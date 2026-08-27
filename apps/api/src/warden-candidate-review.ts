@@ -6,12 +6,18 @@ import {
   enqueueJob,
   enqueueWardenCandidateDelivery,
   enqueueWardenCiUpdate,
+  fettlerCampaignMissionTaskId,
   getAgentRun,
   getJob,
   getMission,
+  getMissionTask,
   getPrincipal,
   getTenantMembership,
   recordReviewerDirective,
+  regaugeLaunchMissionTaskId,
+  evaluateMissionExceptions,
+  resolveTaskHandoff,
+  type SnapshotIdentity,
   getWardenCandidateDeliveryByRun,
   getWardenCiCycle,
   getWardenCiUpdateByRun,
@@ -116,6 +122,89 @@ function parseDecision(value: unknown): { decision: ReviewDecision; rationale: s
 function regenerationIds(tenantId: string, runId: string) {
   const digest = createHash("sha256").update([tenantId, runId, "regenerate"].join("\0"), "utf8").digest("hex");
   return { jobId: `warden-regenerate-job-${digest.slice(0, 32)}`, runId: `warden-regenerate-run-${digest.slice(32)}` };
+}
+
+const HUMAN_HANDOFF_TASK_STATUSES = new Set([
+  "human_review_required",
+  "human_assigned",
+  "human_working",
+]);
+
+/**
+ * Close an open agent→human handoff when a bound Mission already has a
+ * blocking exception. Unbound review skips (never fabricate a Mission).
+ * Reject does not call this: that would send the task to `agent_resume`.
+ *
+ * The reviewed run drives exactly ONE enrollment/launch task, derived the same
+ * way the claim modules derive it — `(missionId, repositoryId)` under the
+ * product's task-id helper. Resolution binds to that one task: resolving any
+ * other task's blocker would answer a sibling task's question with THIS run's
+ * rationale and close the wrong blocker. When the reviewed run cannot be matched
+ * to a single blocking task-bound exception, we SKIP and log rather than guess.
+ * The reviewed run's snapshot is passed to the evaluator so a blocker observed
+ * against a superseded snapshot is STALE, never resolved here as current.
+ */
+export function tryResolveBoundReviewHandoff(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    missionId: string | null;
+    repositoryId: string | null;
+    current?: SnapshotIdentity;
+    runId: string;
+    rationale: string;
+    authorPrincipalId: string;
+    evidence?: readonly string[];
+    correlationId: string;
+    createdAt: string;
+  },
+): { exceptionId: string; taskId: string | null } | undefined {
+  if (!input.missionId) return undefined;
+  const mission = getMission(db, input.tenantId, input.missionId);
+  if (!mission) return undefined;
+  const expectedTaskId = input.repositoryId
+    ? mission.product === "fettler"
+      ? fettlerCampaignMissionTaskId(input.missionId, input.repositoryId)
+      : mission.product === "regauge"
+        ? regaugeLaunchMissionTaskId(input.missionId, input.repositoryId)
+        : null
+    : null;
+  const blocking = evaluateMissionExceptions(db, input.tenantId, input.missionId, input.current).blocking;
+  const candidates = blocking.filter((exception) => {
+    if (!exception.taskId) return false;
+    if (expectedTaskId !== null && exception.taskId !== expectedTaskId) return false;
+    const task = getMissionTask(db, input.tenantId, exception.taskId);
+    return Boolean(task && HUMAN_HANDOFF_TASK_STATUSES.has(task.status));
+  });
+  if (candidates.length !== 1) {
+    if (blocking.length > 0) {
+      console.warn(JSON.stringify({
+        event: "warden_review_handoff_resolution_skipped",
+        tenantId: input.tenantId,
+        missionId: input.missionId,
+        runId: input.runId,
+        expectedTaskId,
+        blockingCount: blocking.length,
+        candidateCount: candidates.length,
+      }));
+    }
+    return undefined;
+  }
+  const match = candidates[0]!;
+  const taskId = match.taskId ?? undefined;
+  resolveTaskHandoff(db, {
+    tenantId: input.tenantId,
+    priorExceptionId: match.id,
+    resolutionNote: input.rationale,
+    decision: input.rationale,
+    scope: `handoff_resolution:${input.runId}`,
+    authorPrincipalId: input.authorPrincipalId,
+    ...(input.evidence && input.evidence.length > 0 ? { evidence: input.evidence } : {}),
+    ...(taskId ? { taskId } : {}),
+    correlationId: input.correlationId,
+    createdAt: input.createdAt,
+  });
+  return { exceptionId: match.id, taskId: match.taskId };
 }
 
 function sourceBinding(db: AppDb, tenantId: string, result: Record<string, unknown>) {
@@ -310,6 +399,19 @@ export function registerWardenCandidateReviewRoutes(
     }
     if (run.status !== "candidate_ready") return c.json({ error: "candidate is not awaiting review" }, 409);
     const reviewedAt = clock();
+    // The reviewed run's source binding, read directly from its recorded result
+    // (available on both regenerate and approve, unlike `binding` which is only
+    // computed for approve/CI). Used to bind handoff resolution to the one task
+    // this run drives and to pass the run's snapshot to the exception evaluator.
+    const reviewedSource = result.source && typeof result.source === "object"
+      ? result.source as Record<string, unknown>
+      : null;
+    const reviewedRepositoryId = typeof reviewedSource?.repositoryId === "string"
+      ? reviewedSource.repositoryId : null;
+    const reviewedSnapshot: SnapshotIdentity | undefined =
+      typeof reviewedSource?.snapshotId === "string" && typeof reviewedSource?.revision === "string"
+        ? { snapshotId: reviewedSource.snapshotId, resolvedSha: reviewedSource.revision }
+        : undefined;
     let binding: ReturnType<typeof sourceBinding> | null = null;
     let ciAuthority: ReturnType<typeof ciRepairAuthority> = null;
     if (body.decision === "approve" || (result.ciFailure && typeof result.ciFailure === "object")) {
@@ -383,7 +485,18 @@ export function registerWardenCandidateReviewRoutes(
         if (!run.job_id) throw new Error("warden_candidate_source_job_missing");
         const original = getJob(db, run.job_id, tenantId);
         if (!original || original.type !== "agent.run") throw new Error("warden_candidate_source_job_invalid");
-        const originalPayload = JSON.parse(original.payload_json) as Record<string, unknown>;
+        let originalPayload: Record<string, unknown>;
+        try {
+          originalPayload = JSON.parse(original.payload_json) as Record<string, unknown>;
+        } catch (error) {
+          // Do not silently proceed on a corrupt source payload (which would drop
+          // the reviewer directive and handoff resolution): surface it and fail closed.
+          console.error(JSON.stringify({
+            event: "warden_candidate_source_job_payload_unparseable",
+            tenantId, runId: run.id, sourceJobId: run.job_id,
+          }));
+          throw new Error("warden_candidate_source_job_invalid");
+        }
         const next = regenerationIds(tenantId, run.id);
         const nextPayload = { ...originalPayload, sessionId: next.runId, reviewFeedback: body.rationale,
           supersedesRunId: run.id, reviewerPrincipalId: principal.id };
@@ -421,6 +534,18 @@ export function registerWardenCandidateReviewRoutes(
             createdAt: reviewedAt,
             decisionType: "verification",
           });
+          tryResolveBoundReviewHandoff(db, {
+            tenantId,
+            missionId: regenerateMissionId,
+            repositoryId: reviewedRepositoryId,
+            ...(reviewedSnapshot ? { current: reviewedSnapshot } : {}),
+            runId: run.id,
+            rationale: body.rationale,
+            authorPrincipalId: trustId!,
+            evidence: [`agent_run:${run.id}`, ...(candidateDigest ? [`candidate:${candidateDigest}`] : [])],
+            correlationId: next.runId,
+            createdAt: reviewedAt,
+          });
         }
         reviewedResult = { ...result, review: { decision: body.decision, rationale: body.rationale,
           reviewedAt, reviewerPrincipalId: principal.id, supersedingRunId: next.runId, supersedingJobId: next.jobId },
@@ -450,6 +575,30 @@ export function registerWardenCandidateReviewRoutes(
             pauseWardenCiCycle(db, { tenantId, cycleId: ciAuthority.cycle.id,
               actorPrincipalId: principal.id, reason: "candidate_rejected", observedAt: reviewedAt });
           }
+        }
+        if (body.decision === "approve") {
+          const sourceJob = run.job_id ? getJob(db, run.job_id, tenantId) : undefined;
+          let approveMissionId: string | null = null;
+          if (sourceJob) {
+            try {
+              const payload = JSON.parse(sourceJob.payload_json) as Record<string, unknown>;
+              approveMissionId = typeof payload.missionId === "string" ? payload.missionId : null;
+            } catch {
+              approveMissionId = null;
+            }
+          }
+          tryResolveBoundReviewHandoff(db, {
+            tenantId,
+            missionId: approveMissionId,
+            repositoryId: reviewedRepositoryId,
+            ...(reviewedSnapshot ? { current: reviewedSnapshot } : {}),
+            runId: run.id,
+            rationale: body.rationale,
+            authorPrincipalId: trustId!,
+            evidence: [`agent_run:${run.id}`, ...(candidateDigest ? [`candidate:${candidateDigest}`] : [])],
+            correlationId: run.id,
+            createdAt: reviewedAt,
+          });
         }
       }
       const updated = db.raw.prepare(

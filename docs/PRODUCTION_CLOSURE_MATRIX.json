@@ -2057,16 +2057,16 @@
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
-    "observedMainRevision": "550ddf59645539ce0f40f75ec8edaa11da3e8ead",
-    "observationDigest": "sha256:58d1c86d41531b0023afaccbe7f9bfe6aacd94d47a813b90e269e1f168aaf108",
+    "observedMainRevision": "4fbf32605cff364bff8d4fc14600137cdaa98180",
+    "observationDigest": "sha256:d1ed4abbfd583837aeceaff9aeee510afc5dbdbd15938f33e1602dcf407d3289",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 451,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/451",
-      "title": "pipeline: record Mission verification after campaign execute",
+      "number": 449,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/449",
+      "title": "worker: consult MissionGraphProjection when a live endpoint key exists",
       "baseBranch": "main",
-      "headBranch": "cursor/campaign-execute-verification-f457",
+      "headBranch": "cursor/mission-graph-endpoint-key-f457",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -3545,89 +3545,6 @@
         "blockers": []
       },
       {
-        "number": 449,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/449",
-        "title": "worker: consult MissionGraphProjection when a live endpoint key exists",
-        "headBranch": "cursor/mission-graph-endpoint-key-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "blocked_explicit_dependency",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "conflicting",
-        "headRevision": "1a74a1e5596719f81444bc059029fbc8618e0bc4",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": [
-          {
-            "priority": "P1",
-            "summary": "graph lookup failure continues execution instead of failing closed"
-          },
-          {
-            "priority": "P1",
-            "summary": "no live producer supplies the endpoint key required by this path"
-          },
-          {
-            "priority": "P1",
-            "summary": "Mission graph scope is not bound to the exact repository snapshot"
-          }
-        ]
-      },
-      {
-        "number": 454,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/454",
-        "title": "api: resolve Fettler review handoffs onto agent_resume",
-        "headBranch": "cursor/fettler-resolve-task-handoff-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "conflicting",
-        "headRevision": "44428bafc08e96ca787ee3a46566c7b3e599806d",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
         "number": 455,
         "state": "open",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/455",
@@ -4339,6 +4256,41 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "585b9c43a9f5b31d034bdc3a3d7229627069142b",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 495,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/495",
+        "title": "Separate authority sweep health from PR eligibility",
+        "headBranch": "codex/494-authority-sweep-semantics",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "3e300352cf0b85347c31b63895f74caba3f69cd3",
         "mergeRevision": null,
         "checks": [],
         "review": {

@@ -19,6 +19,7 @@ import {
   type DelegatedPrCandidateOperationDependencies,
   type DelegatedPrVerificationDependencies,
   type PipelineReport,
+  resolveTenantGraphHandle,
 } from "@mendpoint/pipeline";
 import {
   resolveFanoutSettlementMcuMicros,
@@ -700,6 +701,12 @@ type WardenJobPayload = Readonly<{
   // a separate gap), so this stays undefined and the mission-scoped sections
   // honestly report `no_mission_bound`.
   missionId?: string;
+  /**
+   * Live Fettler endpoint key (canonicalKey) when the enqueueing surface already
+   * has one. Never invented here; absent keeps MissionGraphProjection
+   * `endpoint_key_absent`.
+   */
+  endpointKey?: string;
   source?: Readonly<{
     pipelineJobId: string;
     changeId: string;
@@ -3351,29 +3358,45 @@ if (job.type === "warden.candidate.cleanup") {
               const missionBound = Boolean(payload.missionId);
               if (inheritedContextShouldCompile(process.env, { missionBound })) {
                 try {
-                  const standing = resolveResumeContext(db, {
-                    tenantId: job.tenant_id,
-                    currentRunStatus: sessionRun?.status ?? "running",
-                    missionId: payload.missionId,
-                    task: {
-                      taskId: job.id,
-                      capability: (payload.mode ?? "repair") === "feature" ? "feature" : "repair",
-                      riskClass: repositoryClassification,
-                      goal: executionGoal,
-                    },
-                    fallback: {
-                      objective: executionGoal,
-                      repositoryId: binding.repositoryId,
-                      snapshotId: binding.snapshotId,
-                    },
-                  });
-                  if (standing.status === "loaded") {
-                    inheritedContext = standing.injection;
-                    inheritedContextRefs = standing.refs;
-                  } else if (standing.status === "context_not_loaded" || standing.status === "not_resumable") {
-                    console.error(
-                      `  Fettler resume context ${standing.status} session=${sessionId}: ${standing.reason}`,
-                    );
+                  const endpointKey = payload.endpointKey?.trim() ?? "";
+                  let graphDb: import("@mendpoint/graph-learn").GraphLearnDb | undefined;
+                  let closeGraph: (() => void) | undefined;
+                  if (endpointKey) {
+                    const handle = resolveTenantGraphHandle({ tenantId: job.tenant_id });
+                    if (handle.status === "ready") {
+                      graphDb = handle.graphDb;
+                      closeGraph = handle.close;
+                    }
+                  }
+                  try {
+                    const standing = resolveResumeContext(db, {
+                      tenantId: job.tenant_id,
+                      currentRunStatus: sessionRun?.status ?? "running",
+                      missionId: payload.missionId,
+                      task: {
+                        taskId: job.id,
+                        capability: (payload.mode ?? "repair") === "feature" ? "feature" : "repair",
+                        riskClass: repositoryClassification,
+                        goal: executionGoal,
+                        ...(endpointKey ? { endpointKey } : {}),
+                      },
+                      fallback: {
+                        objective: executionGoal,
+                        repositoryId: binding.repositoryId,
+                        snapshotId: binding.snapshotId,
+                      },
+                      ...(graphDb ? { graphDb } : {}),
+                    });
+                    if (standing.status === "loaded") {
+                      inheritedContext = standing.injection;
+                      inheritedContextRefs = standing.refs;
+                    } else if (standing.status === "context_not_loaded" || standing.status === "not_resumable") {
+                      console.error(
+                        `  Fettler resume context ${standing.status} session=${sessionId}: ${standing.reason}`,
+                      );
+                    }
+                  } finally {
+                    closeGraph?.();
                   }
                 } catch (error) {
                   console.error(

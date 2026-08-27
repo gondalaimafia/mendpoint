@@ -57,6 +57,16 @@ function parseRisk(value: unknown): MissionTaskRisk {
   return "medium";
 }
 
+function resumeTaskEvent(jobId: string, revision: number): { eventId: string; idempotencyKey: string } {
+  const digest = createHash("sha256")
+    .update(`mission-task:job:${jobId}:agent_working_from_resume:r${revision}`)
+    .digest("hex")
+    .slice(0, 32);
+  return {
+    eventId: `e-mtask-${digest}`,
+    idempotencyKey: `mission-task-job:${jobId}:agent_working_from_resume:r${revision}`,
+  };
+}
 function missionTaskAgentPrincipal(db: AppDb, tenantId: string, createdAt: string) {
   const id = `principal-mtask-agent-${createHash("sha256").update(tenantId).digest("hex").slice(0, 24)}`;
   return insertPrincipal(db, {
@@ -101,7 +111,7 @@ export function bridgeClaimedJobToMissionTask(
   if (!mission) return undefined;
   const agent = missionTaskAgentPrincipal(db, job.tenant_id, createdAt);
   const payload = payloadRecord(job);
-  return ensureMissionTaskForJob(db, {
+  const task = ensureMissionTaskForJob(db, {
     tenantId: job.tenant_id,
     jobId: job.id,
     missionId: mission.id,
@@ -112,6 +122,18 @@ export function bridgeClaimedJobToMissionTask(
     assignedPrincipalId: agent.id,
     createdAt,
     correlationId: job.id,
+  });
+  if (task.status !== "agent_resume") return task;
+  return transitionMissionTask(db, {
+    tenantId: job.tenant_id,
+    taskId: task.id,
+    expectedRevision: task.revision,
+    to: "agent_working",
+    actorPrincipalId: agent.id,
+    assignedPrincipalId: agent.id,
+    ...resumeTaskEvent(job.id, task.revision),
+    correlationId: job.id,
+    createdAt,
   });
 }
 

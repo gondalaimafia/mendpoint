@@ -11,7 +11,9 @@ import {
   linkRegaugeCampaignToMission,
   listMissionTasks,
   listMissionExceptions,
+  openTaskHandoff,
   regaugeLaunchMissionTaskId,
+  resolveTaskHandoff,
   transitionMissionTask,
   type AppDb,
 } from "@mendpoint/db";
@@ -91,6 +93,40 @@ describe("assignRegaugeMissionTaskOnClaim", () => {
       ownerType: "agent",
     });
     expect(driven?.assignedPrincipalId).toMatch(/^principal-mtask-agent-/);
+  });
+
+  it("returns an agent_resume task to agent_working on the next claim", () => {
+    const { db, missionId } = fixture();
+    launchTask(db, missionId, "repo-a");
+    assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    });
+    const exception = openTaskHandoff(db, {
+      tenantId: "t1",
+      missionId,
+      taskId: regaugeLaunchMissionTaskId(missionId, "repo-a"),
+      reason: "architecture_decision_required",
+      question: "Accept the pilot attempt?",
+      context: "Pilot verification passed.",
+      ownerPrincipalId: "p1",
+      correlationId: "campaign-a",
+      createdAt: at,
+    });
+    resolveTaskHandoff(db, {
+      tenantId: "t1",
+      priorExceptionId: exception.id,
+      taskId: regaugeLaunchMissionTaskId(missionId, "repo-a"),
+      resolutionNote: "Yes.",
+      decision: "Accept the attempt",
+      scope: "handoff_resolution:attempt-1",
+      authorPrincipalId: "p1",
+      correlationId: "campaign-a",
+      createdAt: at,
+    });
+    const resumed = assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    });
+    expect(resumed).toMatchObject({ status: "agent_working", ownerType: "agent" });
   });
 
   it("does not resolve a repo-scoped claim to the mission-level launch task", () => {
