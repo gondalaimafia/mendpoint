@@ -89,7 +89,10 @@ describe("Fly app token scope verifier", () => {
       location: "https://api.fly.io/v1",
       caveats: [{
         type: "IfPresent",
-        body: { caveats: [{ type: "Apps", body: { apps: { "123": "rw" } } }] },
+        body: {
+          ifs: [{ type: "Apps", body: { apps: { "123": "rw" } } }],
+          else: [],
+        },
       }],
     }],
   ])("rejects %s", async (_name, token) => {
@@ -106,10 +109,11 @@ describe("Fly app token scope verifier", () => {
     const machineExec = permissionToken({ "123": "rw" }, [{
       type: "IfPresent",
       body: {
-        caveats: [{
+        ifs: [{
           type: "Commands",
-          body: { commands: { "fly ssh console": "r" } },
+          body: [{ args: ["fly", "ssh", "console"], exact: true }],
         }],
+        else: [],
       },
     }]);
     expect(() => verifyFlyAppTokenScope({
@@ -123,7 +127,10 @@ describe("Fly app token scope verifier", () => {
     const { verifyFlyAppTokenScope } = await verifier();
     const ambiguous = permissionToken({ "123": "rw" }, [{
       type: "IfPresent",
-      body: { caveats: [{ type: "Apps", body: { apps: { "123": "rw" } } }] },
+      body: {
+        ifs: [{ type: "Apps", body: { apps: { "123": "rw" } } }],
+        else: [],
+      },
     }]);
     expect(() => verifyFlyAppTokenScope({
       rawCredential: pureCredential,

@@ -44,21 +44,26 @@ jobs:
             --arg runId "$GITHUB_RUN_ID" \
             --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
             --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg result "authority_unavailable" \
-            --arg reason "preflight_not_completed" \
+            --arg phase "not_started" \
+            --arg result "pending" \
+            --arg reason "not_started" \
             --argjson backupTaken false \
             --argjson operatorActionRequired true \
             --argjson releaseRevisionMatchesWorkflow false \
-            '{schemaVersion:1,kind:"customer_backup_preflight",app:$app,workflowRevision:$workflowRevision,liveReleaseRevision:$liveReleaseRevision,releaseRevisionMatchesWorkflow:$releaseRevisionMatchesWorkflow,runId:$runId,runAttempt:$runAttempt,observedAt:$observedAt,result:$result,reason:$reason,backupTaken:$backupTaken,operatorActionRequired:$operatorActionRequired}' \
+            '{schemaVersion:1,kind:"customer_backup_preflight",app:$app,workflowRevision:$workflowRevision,liveReleaseRevision:$liveReleaseRevision,releaseRevisionMatchesWorkflow:$releaseRevisionMatchesWorkflow,runId:$runId,runAttempt:$runAttempt,observedAt:$observedAt,phase:$phase,result:$result,reason:$reason,backupTaken:$backupTaken,operatorActionRequired:$operatorActionRequired}' \
             > "$evidence"
 
       - name: Check out authority verifier
+        id: checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
       - name: Install Fly CLI
+        id: setup_flyctl
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        with:
+          version: 0.4.79
 
       - name: Inspect live customer profile authority
         id: check
@@ -80,6 +85,7 @@ jobs:
           release_revision_matches_workflow=false
           expected_active=null
           operator_action_required=true
+          phase="authority_check"
 
           write_evidence_and_exit() {
             status=$?
@@ -91,6 +97,7 @@ jobs:
               --arg runId "$GITHUB_RUN_ID" \
               --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
               --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --arg phase "$phase" \
               --arg result "$result" \
               --arg reason "$reason" \
               --arg liveProfile "$live_profile" \
@@ -98,7 +105,7 @@ jobs:
               --argjson releaseRevisionMatchesWorkflow "$release_revision_matches_workflow" \
               --argjson backupTaken false \
               --argjson operatorActionRequired "$operator_action_required" \
-              '{schemaVersion:1,kind:"customer_backup_preflight",app:$app,workflowRevision:$workflowRevision,liveReleaseRevision:$liveReleaseRevision,releaseRevisionMatchesWorkflow:$releaseRevisionMatchesWorkflow,runId:$runId,runAttempt:$runAttempt,observedAt:$observedAt,result:$result,reason:$reason,liveProfile:$liveProfile,expectedCustomerProfile:$expectedCustomerProfile,backupTaken:$backupTaken,operatorActionRequired:$operatorActionRequired}' \
+              '{schemaVersion:1,kind:"customer_backup_preflight",app:$app,workflowRevision:$workflowRevision,liveReleaseRevision:$liveReleaseRevision,releaseRevisionMatchesWorkflow:$releaseRevisionMatchesWorkflow,runId:$runId,runAttempt:$runAttempt,observedAt:$observedAt,phase:$phase,result:$result,reason:$reason,liveProfile:$liveProfile,expectedCustomerProfile:$expectedCustomerProfile,backupTaken:$backupTaken,operatorActionRequired:$operatorActionRequired}' \
               > "$evidence"
             echo "active=$active" >> "$GITHUB_OUTPUT"
             echo "result=$result" >> "$GITHUB_OUTPUT"
@@ -234,6 +241,38 @@ jobs:
             exit 1
           fi
 
+      - name: Finalize backup preflight evidence
+        if: ${{ always() }}
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SETUP_OUTCOME: ${{ steps.setup_flyctl.outcome }}
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/customer-backup-preflight/preflight-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          current_result="$(jq -r '.result // "pending"' "$evidence" 2>/dev/null || printf pending)"
+          if [ "$current_result" = "pending" ]; then
+            phase="authority_check"
+            result="authority_unavailable"
+            reason="customer_backup_authority_check_not_run"
+            if [ "$CHECKOUT_OUTCOME" != "success" ]; then
+              phase="checkout"
+              reason="customer_backup_checkout_failed"
+            elif [ "$SETUP_OUTCOME" != "success" ]; then
+              phase="runtime_setup"
+              reason="customer_backup_flyctl_setup_failed"
+            elif [ "$CHECK_OUTCOME" = "cancelled" ]; then
+              reason="customer_backup_authority_check_cancelled"
+            fi
+            updated="$(mktemp "$RUNNER_TEMP/customer-backup-preflight/final.XXXXXX")"
+            jq --arg phase "$phase" --arg result "$result" --arg reason "$reason" \
+              --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '.phase=$phase | .result=$result | .reason=$reason | .observedAt=$observedAt | .operatorActionRequired=true' \
+              "$evidence" > "$updated"
+            mv "$updated" "$evidence"
+          fi
+
       - name: Retain backup preflight evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -262,19 +301,27 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/customer-backup"
-          evidence="$RUNNER_TEMP/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
-          printf 'run=%s attempt=%s app=%s workflow_revision=%s result=authority_unavailable backupTaken=false\n' \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$CUSTOMER_APP" "$GITHUB_SHA" > "$evidence"
+          evidence="$RUNNER_TEMP/customer-backup/state-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          jq -n --arg runId "$GITHUB_RUN_ID" --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg app "$CUSTOMER_APP" --arg workflowRevision "$GITHUB_SHA" \
+            --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{schemaVersion:1,kind:"customer_backup_run",runId:$runId,runAttempt:$runAttempt,app:$app,workflowRevision:$workflowRevision,observedAt:$observedAt,phase:"not_started",result:"pending",reason:"not_started",backupTaken:false}' \
+            > "$evidence"
 
       - name: Check out verifier
+        id: checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
       - name: Install Fly CLI
+        id: setup_flyctl
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        with:
+          version: 0.4.79
 
       - name: Validate app-scoped backup authority
+        id: validate_authority
         shell: bash
         env:
           FLY_API_TOKEN: ${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}
@@ -304,6 +351,7 @@ jobs:
           unset token_debug_json
 
       - name: Run authenticated customer backup
+        id: run_backup
         shell: bash
         env:
           FLY_API_TOKEN: ${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}
@@ -315,7 +363,44 @@ jobs:
           flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
             --command "node --import tsx scripts/customer-backup.ts --expected-release $EXPECTED_RELEASE" 2>&1 | tee -a "$evidence"
           bash scripts/verify-customer-backup-result.sh "$evidence" "$EXPECTED_RELEASE" >/dev/null
-          printf 'result=success backupTaken=true\n' >> "$evidence"
+
+      - name: Finalize backup evidence
+        if: ${{ always() }}
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SETUP_OUTCOME: ${{ steps.setup_flyctl.outcome }}
+          AUTHORITY_OUTCOME: ${{ steps.validate_authority.outcome }}
+          BACKUP_OUTCOME: ${{ steps.run_backup.outcome }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/customer-backup/state-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          phase="backup"
+          result="failure"
+          reason="customer_backup_execution_failed"
+          backup_taken=false
+          if [ "$CHECKOUT_OUTCOME" != "success" ]; then
+            phase="checkout"
+            reason="customer_backup_checkout_failed"
+          elif [ "$SETUP_OUTCOME" != "success" ]; then
+            phase="runtime_setup"
+            reason="customer_backup_flyctl_setup_failed"
+          elif [ "$AUTHORITY_OUTCOME" != "success" ]; then
+            phase="authority_check"
+            reason="customer_backup_authority_check_failed"
+          elif [ "$BACKUP_OUTCOME" = "success" ]; then
+            result="success"
+            reason="customer_backup_completed"
+            backup_taken=true
+          elif [ "$BACKUP_OUTCOME" = "cancelled" ]; then
+            reason="customer_backup_execution_cancelled"
+          fi
+          updated="$(mktemp "$RUNNER_TEMP/customer-backup/final.XXXXXX")"
+          jq --arg phase "$phase" --arg result "$result" --arg reason "$reason" \
+            --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson backupTaken "$backup_taken" \
+            '.phase=$phase | .result=$result | .reason=$reason | .observedAt=$observedAt | .backupTaken=$backupTaken' \
+            "$evidence" > "$updated"
+          mv "$updated" "$evidence"
 
       - name: Retain backup evidence
         if: ${{ always() }}

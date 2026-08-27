@@ -372,12 +372,10 @@ describe("customer backup workflow", () => {
     expect(run.run).toContain("scripts/customer-backup.ts");
     expect(run.run).toContain('tee -a "$evidence"');
     expect(run.run).toContain('bash scripts/verify-customer-backup-result.sh "$evidence" "$EXPECTED_RELEASE"');
+    expect(run.run).not.toContain("result=success backupTaken=true");
     expect(run.run).not.toContain("grep -q '\"backupId\"'");
     expect(run.run).not.toContain("grep -q '\"manifestAuthentication\"'");
     expect(run.run).not.toContain("grep -q '\"publication\"'");
-    expect(run.run.indexOf("verify-customer-backup-result.sh")).toBeLessThan(
-      run.run.indexOf("backupTaken=true"),
-    );
     const upload = step("Retain backup evidence");
     expect(upload.if).toBe("${{ always() }}");
     expect(upload["with"]["retention-days"]).toBe(90);
@@ -399,10 +397,45 @@ describe("customer backup workflow", () => {
       expect(initializeIndex).toBeLessThan(checkoutIndex);
       expect(initializeIndex).toBeLessThan(setupIndex);
       expect(targetSteps[initializeIndex]?.run).toContain("$RUNNER_TEMP");
+      expect(targetSteps[initializeIndex]?.run).toContain("pending");
+      expect(targetSteps[initializeIndex]?.run).toContain("not_started");
       expect(upload.if).toBe("${{ always() }}");
       expect(upload.with.path).toBe(`\${{ runner.temp }}/${artifactDirectory}/`);
       expect(upload.with["if-no-files-found"]).toBe("error");
     }
+  });
+
+  it("pins the reviewed Fly CLI version in both authority jobs", () => {
+    for (const jobName of ["profile-gate", "backup"] as const) {
+      const targetJob = workflow.jobs[jobName] as Record<string, any>;
+      const setup = (targetJob.steps as Record<string, any>[]).find(
+        (candidate) => candidate.name === "Install Fly CLI",
+      ) as Record<string, any>;
+      expect(setup.id).toBe("setup_flyctl");
+      expect(setup.with).toEqual({ version: "0.4.79" });
+    }
+    expect(source.match(/version: 0\.4\.79/g)).toHaveLength(2);
+  });
+
+  it("finalizes one exact terminal state for early and runtime failures", () => {
+    const gateFinalize = (profileGate.steps as Record<string, any>[]).find(
+      (candidate) => candidate.name === "Finalize backup preflight evidence",
+    ) as Record<string, any>;
+    const backupFinalize = steps.find(
+      (candidate) => candidate.name === "Finalize backup evidence",
+    ) as Record<string, any>;
+    for (const finalize of [gateFinalize, backupFinalize]) {
+      expect(finalize.if).toBe("${{ always() }}");
+      expect(finalize.run).toContain('phase="checkout"');
+      expect(finalize.run).toContain('reason="customer_backup_checkout_failed"');
+      expect(finalize.run).toContain('phase="runtime_setup"');
+      expect(finalize.run).toContain('reason="customer_backup_flyctl_setup_failed"');
+      expect(finalize.run).toContain(".phase=$phase | .result=$result | .reason=$reason");
+      expect(finalize.run).toContain('mv "$updated" "$evidence"');
+    }
+    expect(backupFinalize.run).toContain('reason="customer_backup_authority_check_failed"');
+    expect(backupFinalize.run).toContain('reason="customer_backup_execution_failed"');
+    expect(backupFinalize.run).toContain('reason="customer_backup_completed"');
   });
 
   it("opens one deduplicated GitHub issue on failure and closes it after recovery", () => {
@@ -573,10 +606,11 @@ describe("customer backup workflow", () => {
     const tokenDebug = [flyPermissionToken({ "123": "rw" }, [{
       type: "IfPresent",
       body: {
-        caveats: [{
+        ifs: [{
           type: "Commands",
-          body: { commands: { "fly ssh console": "r" } },
+          body: [{ args: ["fly", "ssh", "console"], exact: true }],
         }],
+        else: [],
       },
     }])];
     const gate = runProfileGate({
@@ -620,7 +654,10 @@ describe("customer backup workflow", () => {
         location: "https://api.fly.io/v1",
         caveats: [{
           type: "IfPresent",
-          body: { caveats: [{ type: "Apps", body: { apps: { "123": "rw" } } }] },
+          body: {
+            ifs: [{ type: "Apps", body: { apps: { "123": "rw" } } }],
+            else: [],
+          },
         }],
       }],
     },
