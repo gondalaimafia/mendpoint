@@ -2056,17 +2056,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-27T07:58:19.011Z",
-    "observedMainRevision": "8e0706425a9cd417b23692cf354615a49602f5f5",
-    "observationDigest": "sha256:e98e22282e87035e330b82de6d0fe06772c90e1c3cce2130ad3b98ec159f6b7a",
+    "observedAt": "2026-08-27T22:15:57.236Z",
+    "observedMainRevision": "cf02b747d1661cc84c0a84d2cdb1c2f62ef9e7a4",
+    "observationDigest": "sha256:740f7e945af8c52516adccd4f1184b292a8d38e3141f5ece1884d5b4f99e7aa4",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 509,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/509",
-      "title": "authority: clear the activate_successor bootstrap to a normal self-declaration",
+      "number": 511,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/511",
+      "title": "Repair reactive production authority",
       "baseBranch": "main",
-      "headBranch": "clear-activate-bootstrap",
+      "headBranch": "codex/510-authority-reactive-gates",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2079,7 +2079,15 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": []
+      "remediatesPullRequests": [],
+      "authorityRotation": {
+        "rotationId": "rotation-20260827-009",
+        "kind": "runtime",
+        "issuedAt": "2026-08-27T22:15:57.236Z",
+        "expiresAt": "2026-08-28T22:15:57.236Z",
+        "basePolicySha256": "sha256:45cafb53dd1d6af6ca8410f024d2191ca64a2b621b79235faaf43174f6824ba8",
+        "proposedPolicySha256": "sha256:55e435a9d7f7c5dc728fd440bca7a953a8b3a57cb4d710402f0496ef76e9f99f"
+      }
     },
     "pullRequests": [
       {
