@@ -2056,9 +2056,9 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-27T00:36:32.136Z",
-    "observedMainRevision": "26d8f26b6bf1bfc74422c3959861cbe2aa1db762",
-    "observationDigest": "sha256:b81a6369f8142e4c49f9dffb550381c1412de39175c0292700ef0bbcf5d8cb19",
+    "observedAt": "2026-08-26T04:06:40.824Z",
+    "observedMainRevision": "7f74e609ca0c9f05fa1deaaded76c9d7b2d2fbd6",
+    "observationDigest": "sha256:8f75a227630ab4e4d761c46f714b2a1629ba8ea8ede986df2534875173b902b5",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -4376,50 +4376,6 @@
           "attributable": false
         },
         "blockers": []
-      },
-      {
-        "number": 493,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/493",
-        "title": "authority: exempt self-promoted bootstrap from removal and active controller from surface collision",
-        "headBranch": "r0-gate-exemptions",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Codex",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "blocked_explicit_dependency",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "58631a5dcad85f1398fa010cedfa301756c62dbf",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": [
-          {
-            "priority": "P2",
-            "summary": "Self-bootstrap removal exemption is not bound to the judged pull request"
-          },
-          {
-            "priority": "P2",
-            "summary": "Proposed controller path exemption precedes valid activate-successor proof"
-          }
-        ]
       }
     ]
   }
