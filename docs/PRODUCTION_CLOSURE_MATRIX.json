@@ -2056,17 +2056,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-26T04:06:40.824Z",
-    "observedMainRevision": "550ddf59645539ce0f40f75ec8edaa11da3e8ead",
-    "observationDigest": "sha256:58d1c86d41531b0023afaccbe7f9bfe6aacd94d47a813b90e269e1f168aaf108",
+    "observedAt": "2026-08-27T01:52:51.063Z",
+    "observedMainRevision": "aff4e7925bf0db23b318142db7888fe3df08315a",
+    "observationDigest": "sha256:0ad09fa60c84ee2c914ce3b49a0703f53c380d2f32c0f8d203e6e421e7ffca1b",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 451,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/451",
-      "title": "pipeline: record Mission verification after campaign execute",
+      "number": 495,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/495",
+      "title": "Separate authority sweep health from PR eligibility",
       "baseBranch": "main",
-      "headBranch": "cursor/campaign-execute-verification-f457",
+      "headBranch": "codex/494-authority-sweep-semantics",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2079,7 +2079,15 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": []
+      "remediatesPullRequests": [],
+      "authorityRotation": {
+        "rotationId": "rotation-20260827-004",
+        "kind": "runtime",
+        "issuedAt": "2026-08-27T01:52:51.063Z",
+        "expiresAt": "2026-08-28T01:52:51.063Z",
+        "basePolicySha256": "sha256:809f79e92cd7be5ce58c6f7920d44f0640c24138f553656911842d74c76d8a67",
+        "proposedPolicySha256": "sha256:e55f339ca5824ea91fc1984f6edbfd4d11e023b034dcca7ff2015ad77ae028d5"
+      }
     },
     "pullRequests": [
       {
@@ -3611,7 +3619,7 @@
         },
         "requirementIds": [],
         "checkState": "conflicting",
-        "headRevision": "44428bafc08e96ca787ee3a46566c7b3e599806d",
+        "headRevision": "5f8969d00ed9d57fe82f52fbc8db8a409e275d76",
         "mergeRevision": null,
         "checks": [],
         "review": {
