@@ -2056,17 +2056,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-27T06:07:04.527Z",
-    "observedMainRevision": "ca2580f1bf99ace4807e41bd51d3171398825ca1",
-    "observationDigest": "sha256:19c9602add47a68bc888d42b6ba92f7c447e8690d46b93e2419156ca43089d1a",
+    "observedAt": "2026-08-27T06:25:53.291Z",
+    "observedMainRevision": "30c34dc805d5d1890fbd1e35d0c34f71d1776635",
+    "observationDigest": "sha256:83735bfbf7ce2a2518f5204ba43609cba6d0e89e2098f1e146c123520e279bea",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 500,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/500",
-      "title": "authority: runtime closure-authority-quiet-sweep",
+      "number": 497,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/497",
+      "title": "Correct README production availability claims",
       "baseBranch": "main",
-      "headBranch": "ceremony-r1-preauth",
+      "headBranch": "codex/pr496-review-fixes",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2079,15 +2079,7 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "rotation-20260827-005",
-        "kind": "runtime",
-        "issuedAt": "2026-08-27T06:07:04.527Z",
-        "expiresAt": "2026-08-28T06:07:04.675Z",
-        "basePolicySha256": "sha256:dcb2238abb3933d4316f3caddd7e2af705c2f5c19ce9e84edf86abcade3599be",
-        "proposedPolicySha256": "sha256:ac80ee9fe864a8c35d34095393792847610d6c606a6a6dccdce946c4c9f9122e"
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
@@ -4264,41 +4256,6 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "98ecbc55ac6987ca9ed694fb36b6c6f9a0529081",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 497,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/497",
-        "title": "Correct README production availability claims",
-        "headBranch": "codex/pr496-review-fixes",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Codex",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "2a87ceab5f1280d8fcc3d4e887e7829c022469aa",
         "mergeRevision": null,
         "checks": [],
         "review": {
