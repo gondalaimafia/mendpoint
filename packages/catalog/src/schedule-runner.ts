@@ -23,6 +23,7 @@ import {
   isReleasePollErrorCode,
   parseReleasePollConfiguration,
   pollReleaseSource,
+  RELEASE_POLL_MAX_REFERENCES,
   type CanonicalReleasePollConfigurationV1,
   type ParsedReleasePollConfiguration,
   type ReleasePollConfigurationV1,
@@ -209,6 +210,12 @@ function validateReleaseExecutorResult(
       ...(status === "failed" ? ["error"] : []),
     ];
     if (!exactRecord(candidate, keys)) return null;
+    if (
+      !Array.isArray(candidate.artifacts) || !Array.isArray(candidate.dispatches) ||
+      candidate.artifacts.length > RELEASE_POLL_MAX_REFERENCES ||
+      candidate.dispatches.length > RELEASE_POLL_MAX_REFERENCES ||
+      (status === "failed" && (candidate.artifacts.length !== 0 || candidate.dispatches.length !== 0))
+    ) return null;
     const artifacts = parseArtifactReferences(candidate.artifacts);
     const dispatches = parseDispatchReferences(candidate.dispatches);
     const snapshot = Object.freeze({

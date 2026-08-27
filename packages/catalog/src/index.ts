@@ -47,6 +47,7 @@ export {
 export {
   RELEASE_POLL_CONTRACT_VERSION,
   RELEASE_POLL_ERROR_CODES,
+  RELEASE_POLL_MAX_REFERENCES,
   isReleasePollErrorCode,
   pollReleaseSource,
   type ReleaseArtifactReference,

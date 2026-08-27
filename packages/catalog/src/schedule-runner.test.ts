@@ -12,6 +12,7 @@ import {
 } from "./release-ingestion.js";
 import {
   RELEASE_POLL_CONTRACT_VERSION,
+  RELEASE_POLL_MAX_REFERENCES,
   type ReleasePollConfigurationV1,
   type ReleasePollResult,
 } from "./release-poll.js";
@@ -789,6 +790,135 @@ describe("feed schedule runner", () => {
       UNION ALL SELECT last_error AS error FROM feed_schedules`).all();
     expect(JSON.stringify({ result, durable })).not.toContain(secret);
     expect(JSON.stringify({ result, durable })).not.toContain("body-private");
+  });
+
+  it.each(["fabricated", "cross-tenant"] as const)(
+  "rejects %s references on failed executor results without returning them",
+  async (referenceMode) => {
+    const db = fixture();
+    const store = releaseStore();
+    const config = releaseConfiguration();
+    const references = referenceMode === "cross-tenant"
+      ? persistedRelease(store, releaseConfiguration("tenant-foreign", config.provider.slug), "ingested")
+      : {
+          artifacts: [{
+            artifactId: "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            contentSha256: "c".repeat(64),
+          }],
+          dispatches: [{
+            dispatchId: "rdi_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            artifactId: "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            artifactContentSha256: "c".repeat(64),
+          }],
+        };
+    const failed = {
+      ...unchangedRelease(config),
+      status: "failed" as const,
+      error: "release_poll_fetch_failed" as const,
+      artifacts: references.artifacts,
+      dispatches: references.dispatches,
+    };
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: config.tenantId,
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed) => ({ slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const }),
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: async () => failed,
+    });
+
+    expect(result).toMatchObject({
+      failed: 1,
+      succeeded: 0,
+      executions: [{
+        releaseOutcome: {
+          status: "failed",
+          error: "release_poll_executor_result_invalid",
+          result: { status: "invalid_configuration", identity: null },
+        },
+      }],
+    });
+    for (const reference of [...references.artifacts, ...references.dispatches]) {
+      for (const value of Object.values(reference)) {
+        expect(JSON.stringify(result)).not.toContain(String(value));
+      }
+    }
+  });
+
+  it.each(["artifacts", "dispatches"] as const)(
+  "rejects oversized successful %s before iterating attacker-controlled entries",
+  async (target) => {
+    const db = fixture();
+    const store = releaseStore();
+    const config = releaseConfiguration();
+    const persisted = persistedRelease(store, config, "ingested");
+    let entryReads = 0;
+    const oversized = new Proxy(new Array(RELEASE_POLL_MAX_REFERENCES + 1), {
+      get(array, property, receiver) {
+        if (property === Symbol.iterator || (typeof property === "string" && /^\d+$/.test(property))) {
+          entryReads++;
+        }
+        return Reflect.get(array, property, receiver);
+      },
+    });
+    const untrusted = { ...persisted, [target]: oversized } as unknown as ReleasePollResult;
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: config.tenantId,
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed) => ({ slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const }),
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: async () => untrusted,
+    });
+
+    expect(entryReads).toBe(0);
+    expect(result).toMatchObject({
+      failed: 1,
+      succeeded: 0,
+      executions: [{
+        releaseOutcome: {
+          status: "failed",
+          error: "release_poll_executor_result_invalid",
+          result: { status: "invalid_configuration", identity: null },
+        },
+      }],
+    });
+  });
+
+  it("allows the exact successful reference boundary to reach entry validation", async () => {
+    const db = fixture();
+    const store = releaseStore();
+    const config = releaseConfiguration();
+    const persisted = persistedRelease(store, config, "ingested");
+    let entryReads = 0;
+    const boundary = new Proxy(new Array(RELEASE_POLL_MAX_REFERENCES), {
+      get(array, property, receiver) {
+        if (property === Symbol.iterator || (typeof property === "string" && /^\d+$/.test(property))) {
+          entryReads++;
+        }
+        return Reflect.get(array, property, receiver);
+      },
+    });
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: config.tenantId,
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed) => ({ slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const }),
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: async () => ({ ...persisted, artifacts: boundary } as unknown as ReleasePollResult),
+    });
+
+    expect(entryReads).toBeGreaterThan(0);
+    expect(result).toMatchObject({ failed: 1, succeeded: 0 });
   });
 
   it.each([

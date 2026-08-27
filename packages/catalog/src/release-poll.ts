@@ -12,6 +12,7 @@ import {
 } from "./poll.js";
 
 export const RELEASE_POLL_CONTRACT_VERSION = "release-poll.v1" as const;
+export const RELEASE_POLL_MAX_REFERENCES = 4_096;
 
 export type ReleasePollConfigurationV1 = Readonly<{
   contractVersion: typeof RELEASE_POLL_CONTRACT_VERSION;
