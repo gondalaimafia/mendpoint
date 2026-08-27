@@ -2056,17 +2056,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-27T06:07:04.527Z",
-    "observedMainRevision": "ca2580f1bf99ace4807e41bd51d3171398825ca1",
-    "observationDigest": "sha256:19c9602add47a68bc888d42b6ba92f7c447e8690d46b93e2419156ca43089d1a",
+    "observedAt": "2026-08-27T06:27:31.315Z",
+    "observedMainRevision": "30c34dc805d5d1890fbd1e35d0c34f71d1776635",
+    "observationDigest": "sha256:9629dc488b6478dd2598549450f8793e7d9d591485a42d8bb2c10c4f659b8ac5",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 500,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/500",
-      "title": "authority: runtime closure-authority-quiet-sweep",
+      "number": 501,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/501",
+      "title": "authority: stage_successor closure-authority-quiet-sweep",
       "baseBranch": "main",
-      "headBranch": "ceremony-r1-preauth",
+      "headBranch": "ceremony-r2-stage",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2081,12 +2081,24 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260827-005",
-        "kind": "runtime",
-        "issuedAt": "2026-08-27T06:07:04.527Z",
-        "expiresAt": "2026-08-28T06:07:04.675Z",
-        "basePolicySha256": "sha256:dcb2238abb3933d4316f3caddd7e2af705c2f5c19ce9e84edf86abcade3599be",
-        "proposedPolicySha256": "sha256:ac80ee9fe864a8c35d34095393792847610d6c606a6a6dccdce946c4c9f9122e"
+        "rotationId": "rotation-20260827-006",
+        "kind": "stage_successor",
+        "issuedAt": "2026-08-27T06:27:31.315Z",
+        "expiresAt": "2026-08-28T06:27:31.315Z",
+        "basePolicySha256": "sha256:ac80ee9fe864a8c35d34095393792847610d6c606a6a6dccdce946c4c9f9122e",
+        "proposedPolicySha256": "sha256:012ac6a9b491fe1b7d72cfa75bf9013d29efe528b91d64ce9a910f2e89251fba",
+        "successor": {
+          "templatePath": "config/production-closure-successors/closure-authority-quiet-sweep.yml",
+          "workflowPath": ".github/workflows/closure-authority-quiet-sweep.yml",
+          "workflowSha256": "sha256:364c1d36558824c3158933e3932bf92b4835eb5357f794ac88418abcb45b7e75",
+          "externalCheckName": "mendpoint-production-closure-authority-quiet-sweep",
+          "externalCheckAppId": 4718395,
+          "controllerCheckName": "mendpoint-production-closure-controller-quiet-sweep",
+          "controllerCheckAppId": 15368,
+          "controllerStatusCreatorLogin": "github-actions[bot]",
+          "controllerStatusCreatorUserId": 41898282,
+          "activationDeadline": "2026-09-02T06:27:31.315Z"
+        }
       }
     },
     "pullRequests": [
@@ -4298,7 +4310,7 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "2a87ceab5f1280d8fcc3d4e887e7829c022469aa",
+        "headRevision": "44c861d111ad03ce437e6830fbbf17e3ef02ce30",
         "mergeRevision": null,
         "checks": [],
         "review": {
