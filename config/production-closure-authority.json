@@ -20,7 +20,21 @@
     "scripts/production-closure-matrix.test.ts",
     "scripts/production-closure-proposal-authority.test.ts"
   ],
-  "successor": null,
+  "successor": {
+    "phase": "staged",
+    "stagedByRotationId": "rotation-20260827-007",
+    "activatedByRotationId": null,
+    "templatePath": "config/production-closure-successors/closure-authority-quiet-sweep.yml",
+    "workflowPath": ".github/workflows/closure-authority-quiet-sweep.yml",
+    "workflowSha256": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
+    "externalCheckName": "mendpoint-production-closure-authority-quiet-sweep",
+    "externalCheckAppId": 4718395,
+    "controllerCheckName": "mendpoint-production-closure-controller-quiet-sweep",
+    "controllerCheckAppId": 15368,
+    "controllerStatusCreatorLogin": "github-actions[bot]",
+    "controllerStatusCreatorUserId": 41898282,
+    "activationDeadline": "2026-09-02T07:40:40.173Z"
+  },
   "trustedReviewers": {
     "Claude": [
       {
@@ -48,6 +62,7 @@
     "scripts/production-closure-matrix.ts": "sha256:3a11f017b1f29d89a3c9234a8fa708c00d997ae63de8576fb6295175b7cbb1e2",
     "scripts/public-claims-check.ts": "sha256:31ce71d0cc998a4b534714bf8fd17f577876b235ca1255a2a76c8e38815ea248",
     "packages/contract/src/product-requirements.ts": "sha256:a0ee9719e472bee1a73f44c44df9626f5f91d881608c628d5b2eb4c9fb7f4e98",
-    "packages/contract/src/public-claims.ts": "sha256:10b9739ff30ea52f17a8d1ca9822268f8c57e09b5a5f2d31a3b9a9189ad6aac0"
+    "packages/contract/src/public-claims.ts": "sha256:10b9739ff30ea52f17a8d1ca9822268f8c57e09b5a5f2d31a3b9a9189ad6aac0",
+    ".github/workflows/closure-authority-quiet-sweep.yml": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9"
   }
 }
