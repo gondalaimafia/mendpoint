@@ -299,6 +299,7 @@ describe("feed schedule runner", () => {
       providerSlug: "provider-1",
       adapter: "rss",
       sourceUrl: "https://docs.example.com/releases.xml",
+      sourceMaxBytes: null,
       status: "failed",
       error: "release HTTP 503",
       inserted: 0,
@@ -338,6 +339,7 @@ describe("feed schedule runner", () => {
       providerSlug: "provider-1",
       adapter: "rss",
       sourceUrl: "https://docs.example.com/releases.xml",
+      sourceMaxBytes: null,
       status: "unchanged",
       inserted: 0,
       artifacts: [],
@@ -376,6 +378,7 @@ describe("feed schedule runner", () => {
       providerSlug: "release-only",
       adapter: "rss",
       sourceUrl: config.source.url,
+      sourceMaxBytes: null,
       status: "unchanged",
       inserted: 0,
       artifacts: [],
@@ -402,6 +405,111 @@ describe("feed schedule runner", () => {
         openApiOutcome: { status: "not_configured" },
         releaseOutcome: { status: "succeeded", result: releaseSuccess },
       }],
+    });
+  });
+
+  it.each([
+    ["contract version", { contractVersion: "release-poll.v2" }],
+    ["tenant", { tenantId: "tenant-spoof" }],
+    ["provider", { providerSlug: "provider-spoof" }],
+    ["adapter", { adapter: "atom" }],
+    ["source", { sourceUrl: "https://docs.example.com/spoofed.xml" }],
+    ["source size limit", { sourceMaxBytes: 1024 }],
+  ] as const)("rejects a successful release executor with spoofed %s identity", async (_field, patch) => {
+    const db = fixture();
+    const store = releaseStore();
+    const config = releaseConfiguration();
+    const spoofed = {
+      contractVersion: RELEASE_POLL_CONTRACT_VERSION,
+      tenantId: config.tenantId,
+      providerSlug: config.provider.slug,
+      adapter: config.adapter,
+      sourceUrl: config.source.url,
+      sourceMaxBytes: null,
+      status: "unchanged",
+      inserted: 0,
+      artifacts: [],
+      dispatches: [],
+      ...patch,
+    } as unknown as ReleasePollResult;
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed) => ({
+        slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const,
+      }),
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: async () => spoofed,
+    });
+
+    expect(result).toMatchObject({
+      succeeded: 0,
+      failed: 1,
+      health: { status: "degraded", counts: { healthy: 0, stale: 0, failed: 1 } },
+      executions: [{
+        status: "failed",
+        poll: { status: "unchanged" },
+        error: "release: release_poll_result_identity_mismatch",
+        openApiOutcome: { status: "succeeded", result: { status: "unchanged" } },
+        releaseOutcome: {
+          status: "failed",
+          error: "release_poll_result_identity_mismatch",
+          result: spoofed,
+        },
+      }],
+    });
+  });
+
+  it("retains both source failures and an honest aggregate outcome", async () => {
+    const db = fixture();
+    const store = releaseStore();
+    const config = releaseConfiguration();
+    const releaseFailure: ReleasePollResult = {
+      contractVersion: RELEASE_POLL_CONTRACT_VERSION,
+      tenantId: config.tenantId,
+      providerSlug: config.provider.slug,
+      adapter: config.adapter,
+      sourceUrl: config.source.url,
+      sourceMaxBytes: null,
+      status: "failed",
+      error: "release HTTP 502",
+      inserted: 0,
+      artifacts: [],
+      dispatches: [],
+    };
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed) => ({
+        slug: feed.slug, url: feed.openapiUrl, status: "error" as const, error: "OpenAPI HTTP 503",
+      }),
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: async () => releaseFailure,
+    });
+
+    expect(result).toMatchObject({
+      succeeded: 0,
+      failed: 1,
+      executions: [{
+        status: "failed",
+        poll: { status: "error", error: "OpenAPI HTTP 503" },
+        error: "OpenAPI: OpenAPI HTTP 503; release: release HTTP 502",
+        openApiOutcome: { status: "failed", error: "OpenAPI HTTP 503" },
+        releaseOutcome: { status: "failed", error: "release HTTP 502", result: releaseFailure },
+      }],
+      health: {
+        status: "degraded",
+        counts: { healthy: 0, stale: 0, failed: 1 },
+        schedules: [{ lastError: "OpenAPI: OpenAPI HTTP 503; release: release HTTP 502" }],
+      },
     });
   });
 });
