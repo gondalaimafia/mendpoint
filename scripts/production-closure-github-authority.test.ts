@@ -1,4 +1,6 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -20,6 +22,10 @@ import {
   type GitHubWorkflowJob,
   type GitHubWorkflowRun,
 } from "./production-closure-github-authority.js";
+import {
+  isHealthyFullSweepObservation,
+  sweepIssueCategories,
+} from "./production-closure-sweep-authority.js";
 
 const MAIN = "a".repeat(40);
 const HEAD = "b".repeat(40);
@@ -235,7 +241,199 @@ function codes(result: Awaited<ReturnType<typeof verifyGitHubClosureAuthority>>)
   return result.issues.map((entry) => entry.code);
 }
 
+function runSweepClassifier(authority: string, observation: unknown): number | null {
+  const directory = mkdtempSync(join(tmpdir(), "mendpoint-sweep-authority-"));
+  try {
+    const observationPath = join(directory, "observation.json");
+    writeFileSync(observationPath, `${JSON.stringify(observation)}\n`);
+    return spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        resolve(root, "scripts", "production-closure-sweep-authority.ts"),
+        authority,
+        observationPath,
+      ],
+      { cwd: root, stdio: "ignore" },
+    ).status;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+function validSweepObservation(
+  authority: "proposal" | "github",
+  verdict: "pass" | "fail",
+  issues: unknown[],
+): Record<string, unknown> {
+  const common = {
+    schemaVersion: 1,
+    repository: "gondalaimafia/mendpoint",
+    observedAt: "2026-08-27T00:00:00.000Z",
+    verdict,
+    issues,
+  };
+  if (authority === "proposal") {
+    return {
+      ...common,
+      repositoryId: 1309389373,
+      proposalRevision: HEAD,
+      fetchedBlobs: [],
+      providerValidationPullRequests: [],
+      providerValidationIssues: [],
+      authorityRotation: null,
+    };
+  }
+  return {
+    ...common,
+    eventName: "pull_request",
+    workflowRunId: "1234",
+    githubSha: MAIN,
+    checkoutRevision: MAIN,
+    mainRevisionStart: MAIN,
+    mainRevisionEnd: MAIN,
+    eventPullRequest: 495,
+    openPullRequests: [495],
+    verifiedPullRequests: [495],
+    verifiedIssues: [],
+    checkRunIds: [],
+    workflowRunIds: [],
+    reviewIds: [],
+  };
+}
+
 describe("GitHub production closure authority", () => {
+  it("pins the exhaustive sweep issue category inventory", () => {
+    const inventory = Object.entries(sweepIssueCategories)
+      .flatMap(([authority, categories]) =>
+        Object.entries(categories).map(([code, category]) => `${authority}:${code}:${category}`)
+      )
+      .sort()
+      .join("\n");
+    expect(createHash("sha256").update(inventory).digest("hex")).toBe(
+      "ebf1db9de1da3261f99aefb1457b60df0c66f6f61d65638bd0c17e1f5f208e80",
+    );
+  });
+
+  it("accepts every enumerated semantic authority failure during a full sweep", () => {
+    for (const [authority, categories] of Object.entries(sweepIssueCategories)) {
+      const semanticCodes = Object.entries(categories)
+        .filter(([, category]) => category === "semantic")
+        .map(([code]) => code);
+      expect(semanticCodes.length).toBeGreaterThan(0);
+      expect(isHealthyFullSweepObservation(
+        authority,
+        validSweepObservation(
+          authority as "proposal" | "github",
+          "fail",
+          semanticCodes.map((code) => ({ code, subject: "fixture", message: "fixture" })),
+        ),
+      )).toBe(true);
+    }
+  });
+
+  it("rejects every enumerated operational authority failure during a full sweep", () => {
+    for (const [authority, categories] of Object.entries(sweepIssueCategories)) {
+      const operationalCodes = Object.entries(categories)
+        .filter(([, category]) => category === "operational")
+        .map(([code]) => code);
+      expect(operationalCodes.length).toBeGreaterThan(0);
+      for (const code of operationalCodes) {
+        expect(isHealthyFullSweepObservation(
+          authority,
+          validSweepObservation(
+            authority as "proposal" | "github",
+            "fail",
+            [{ code, subject: "fixture", message: "fixture" }],
+          ),
+        ), `${authority}:${code}`).toBe(false);
+      }
+    }
+  });
+
+  it("rejects truncated proposal and base trees during a full sweep", () => {
+    for (const code of ["PROPOSAL_TREE_TRUNCATED", "PROPOSAL_BASE_TREE_TRUNCATED"]) {
+      expect(isHealthyFullSweepObservation(
+        "proposal",
+        validSweepObservation("proposal", "fail", [
+          { code, subject: HEAD, message: "GitHub returned an incomplete tree" },
+        ]),
+      )).toBe(false);
+    }
+  });
+
+  it("rejects malformed authority issue objects and unknown codes", () => {
+    for (const issue of [
+      null,
+      {},
+      { code: 1, subject: "fixture", message: "fixture" },
+      { code: "UNKNOWN_AUTHORITY_FAILURE", subject: "fixture", message: "fixture" },
+      { code: "PR_METADATA_MISMATCH", subject: "", message: "fixture" },
+      { code: "PR_METADATA_MISMATCH", subject: "fixture", message: "" },
+    ]) {
+      expect(isHealthyFullSweepObservation(
+        "github",
+        validSweepObservation("github", "fail", [issue]),
+      )).toBe(false);
+    }
+  });
+
+  it("requires exact authority observation verdict and issue cardinality", () => {
+    expect(isHealthyFullSweepObservation(
+      "proposal",
+      validSweepObservation("proposal", "pass", []),
+    )).toBe(true);
+    expect(isHealthyFullSweepObservation(
+      "proposal",
+      validSweepObservation("proposal", "pass", [
+        { code: "SPEC_MISSING", subject: "spec", message: "missing" },
+      ]),
+    )).toBe(false);
+    expect(isHealthyFullSweepObservation(
+      "proposal",
+      validSweepObservation("proposal", "fail", []),
+    )).toBe(false);
+    expect(isHealthyFullSweepObservation("unknown", {
+      schemaVersion: 1,
+      verdict: "pass",
+      issues: [],
+    })).toBe(false);
+  });
+
+  it("rejects semantic observations missing their authority bindings", () => {
+    expect(isHealthyFullSweepObservation("proposal", {
+      schemaVersion: 1,
+      verdict: "fail",
+      issues: [{ code: "SPEC_MISSING", subject: "spec", message: "missing" }],
+    })).toBe(false);
+    expect(isHealthyFullSweepObservation("github", {
+      schemaVersion: 1,
+      verdict: "fail",
+      issues: [{ code: "PR_METADATA_MISMATCH", subject: "495", message: "stale" }],
+    })).toBe(false);
+  });
+
+  it("runs the workflow classifier CLI fail closed", () => {
+    expect(runSweepClassifier(
+      "github",
+      validSweepObservation("github", "fail", [
+        { code: "PR_METADATA_MISMATCH", subject: "495", message: "stale" },
+      ]),
+    )).toBe(0);
+    for (const observation of [
+      validSweepObservation("proposal", "fail", [
+        { code: "PROPOSAL_TREE_TRUNCATED", subject: HEAD, message: "truncated" },
+      ]),
+      validSweepObservation("proposal", "fail", [
+        { code: "UNKNOWN_AUTHORITY_FAILURE", subject: "fixture", message: "unknown" },
+      ]),
+      validSweepObservation("proposal", "fail", [{}]),
+    ]) {
+      expect(runSweepClassifier("proposal", observation)).not.toBe(0);
+    }
+  });
+
   it("preauthorizes an inert successor template that tolerates only evaluated red sweep verdicts", () => {
     const templatePath = resolve(root, "config", "production-closure-successors", "closure-authority-v2.yml");
     const templateBytes = readFileSync(templatePath);
@@ -250,9 +448,7 @@ describe("GitHub production closure authority", () => {
     expect(enforcement?.run).toContain('test "$EXTERNAL_PUBLICATION_OUTCOME" = success');
     expect(enforcement?.run).toContain('test "$CONTROLLER_PUBLICATION_OUTCOME" = success');
     expect(enforcement?.run).toContain('test -s "$observation"');
-    expect(enforcement?.run).toContain('(.verdict == "fail" and (.issues | length) > 0)');
-    expect(enforcement?.run).toContain('PROPOSAL_AUTHORITY_CONFIGURATION_INVALID');
-    expect(enforcement?.run).toContain('GITHUB_AUTHORITY_UNAVAILABLE');
+    expect(enforcement?.run).toContain("production-closure-sweep-authority.ts");
   });
   it("runs per-PR authority from default-branch code and publishes an App-bound verdict", () => {
     const workflow = parse(

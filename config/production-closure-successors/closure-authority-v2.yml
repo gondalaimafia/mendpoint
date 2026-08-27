@@ -371,21 +371,14 @@ jobs:
             test "$GITHUB_OUTCOME" = success
             exit 0
           fi
-          for observation in "$PROPOSAL_OBSERVATION" "$GITHUB_OBSERVATION"; do
+          for authority_observation in \
+            "proposal:$PROPOSAL_OBSERVATION" \
+            "github:$GITHUB_OBSERVATION"; do
+            authority="${authority_observation%%:*}"
+            observation="${authority_observation#*:}"
             test -s "$observation"
-            jq -e '
-              .schemaVersion == 1 and
-              (.verdict == "pass" or .verdict == "fail") and
-              (.issues | type == "array") and
-              ((.verdict == "pass" and (.issues | length) == 0) or
-               (.verdict == "fail" and (.issues | length) > 0)) and
-              ([.issues[]?.code] | all(
-                . != "PROPOSAL_AUTHORITY_CONFIGURATION_INVALID" and
-                . != "PROPOSAL_AUTHORITY_UNAVAILABLE" and
-                . != "GITHUB_AUTHORITY_CONFIGURATION_INVALID" and
-                . != "GITHUB_AUTHORITY_UNAVAILABLE"
-              ))
-            ' "$observation" >/dev/null
+            node --import tsx scripts/production-closure-sweep-authority.ts \
+              "$authority" "$observation"
           done
         env:
           APP_IDENTITY_OUTCOME: ${{ steps.app-identity.outcome }}
