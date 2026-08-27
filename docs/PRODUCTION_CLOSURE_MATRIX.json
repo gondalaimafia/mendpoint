@@ -2056,17 +2056,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-27T07:40:40.173Z",
-    "observedMainRevision": "fb4509286e77c332be2974872e6bb6daf6b19c9a",
-    "observationDigest": "sha256:c61e424897c5612cf0cdbb448c86033311d67de87a287579e0ff440dc4c868ec",
+    "observedAt": "2026-08-27T07:58:19.011Z",
+    "observedMainRevision": "8fefab697568e51524acffda70c27ea09e68e5f2",
+    "observationDigest": "sha256:99a05b1e2dd94dd42c8df90c55ff65bb705e35651228e5384309fd498e3a2c2a",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 503,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/503",
-      "title": "authority: stage_successor closure-authority-quiet-sweep",
+      "number": 508,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/508",
+      "title": "authority: activate_successor closure-authority-quiet-sweep",
       "baseBranch": "main",
-      "headBranch": "ceremony-r2b-stage",
+      "headBranch": "ceremony-r3-activate",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2081,12 +2081,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260827-007",
-        "kind": "stage_successor",
-        "issuedAt": "2026-08-27T07:40:40.173Z",
-        "expiresAt": "2026-08-28T07:40:40.173Z",
-        "basePolicySha256": "sha256:03ae8e73980fe826944162e4b9e27fc69621eafb4ef3332b1003e9f67997e089",
-        "proposedPolicySha256": "sha256:fbd31a0cf495e903c9e633962ceb2e2023cc00d17d4f38952916e963f84a99f1",
+        "rotationId": "rotation-20260827-008",
+        "kind": "activate_successor",
+        "issuedAt": "2026-08-27T07:58:19.011Z",
+        "expiresAt": "2026-08-28T07:58:19.011Z",
+        "basePolicySha256": "sha256:fbd31a0cf495e903c9e633962ceb2e2023cc00d17d4f38952916e963f84a99f1",
+        "proposedPolicySha256": "sha256:45cafb53dd1d6af6ca8410f024d2191ca64a2b621b79235faaf43174f6824ba8",
         "successor": {
           "templatePath": "config/production-closure-successors/closure-authority-quiet-sweep.yml",
           "workflowPath": ".github/workflows/closure-authority-quiet-sweep.yml",
@@ -4118,7 +4118,7 @@
       },
       {
         "number": 487,
-        "state": "open",
+        "state": "closed",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/487",
         "title": "Bootstrap closure authority observation time",
         "headBranch": "codex/closure-authority-bootstrap",
@@ -4128,7 +4128,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "superseded",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -4346,6 +4346,146 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "97243f81d4b37469375d0adef4a6cd0bbc6398c3",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 507,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/507",
+        "title": "Drain release dispatches through tenant authority",
+        "headBranch": "codex/release-dispatch-drain",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "569b8c8ed38de9431218e440e4336045e5d67998",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 506,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/506",
+        "title": "Protect release ingestion recovery authority",
+        "headBranch": "codex/release-ingestion-backup",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "5ff21e20c05395bfb3e0da43f527d46b654b22ba",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 505,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/505",
+        "title": "Add tenant scoped release polling runtime",
+        "headBranch": "codex/live-release-polling",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "86959b64820143554831abbf7ade05a6e4062df5",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 504,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/504",
+        "title": "Permit authenticated staged successor replacement",
+        "headBranch": "codex/successor-restage-protocol",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "a66864c694fa476fce304f18c7b7905da903040a",
         "mergeRevision": null,
         "checks": [],
         "review": {

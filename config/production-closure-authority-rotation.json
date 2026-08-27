@@ -298,6 +298,66 @@
           "toMode": "100644"
         }
       ]
+    },
+    {
+      "rotationId": "rotation-20260827-008",
+      "kind": "activate_successor",
+      "issuedAt": "2026-08-27T07:58:19.011Z",
+      "expiresAt": "2026-08-28T07:58:19.011Z",
+      "basePolicySha256": "sha256:fbd31a0cf495e903c9e633962ceb2e2023cc00d17d4f38952916e963f84a99f1",
+      "proposedPolicySha256": "sha256:45cafb53dd1d6af6ca8410f024d2191ca64a2b621b79235faaf43174f6824ba8",
+      "previousRotationId": "rotation-20260827-007",
+      "baseRevision": "8fefab697568e51524acffda70c27ea09e68e5f2",
+      "baseLedgerSha256": "sha256:83b33316c3dd7ae113bc110b84c2d95ead95af9f5a1fa3775c87969075d0d208",
+      "successor": {
+        "templatePath": "config/production-closure-successors/closure-authority-quiet-sweep.yml",
+        "workflowPath": ".github/workflows/closure-authority-quiet-sweep.yml",
+        "workflowSha256": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
+        "externalCheckName": "mendpoint-production-closure-authority-quiet-sweep",
+        "externalCheckAppId": 4718395,
+        "controllerCheckName": "mendpoint-production-closure-controller-quiet-sweep",
+        "controllerCheckAppId": 15368,
+        "controllerStatusCreatorLogin": "github-actions[bot]",
+        "controllerStatusCreatorUserId": 41898282,
+        "activationDeadline": "2026-09-02T07:40:40.173Z"
+      },
+      "changes": [
+        {
+          "path": ".github/workflows/closure-authority.yml",
+          "fromSha256": "sha256:1756bd261278a16bc2df82974dddb189b8021ba65652d39627c08f026e877567",
+          "toSha256": null,
+          "fromMode": "100644",
+          "toMode": null
+        },
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:fbd31a0cf495e903c9e633962ceb2e2023cc00d17d4f38952916e963f84a99f1",
+          "toSha256": "sha256:45cafb53dd1d6af6ca8410f024d2191ca64a2b621b79235faaf43174f6824ba8",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:edf111a4369030611a1768012fa62a4cac397599f44f60b029b480c2d403dee3",
+          "toSha256": "sha256:718c7116fd90eca84ee828cd69623f75e07d9f1e8fc7ed8a786683db2df468d2",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-github-authority.test.ts",
+          "fromSha256": "sha256:8363820e2b0f9a39ad7574de183c1e6363562b570424ccc26571314e528177b9",
+          "toSha256": "sha256:0eb51927c08f28ac91ec94b705e4179d9863d0516294a8cadcb432e0c6c6a944",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-proposal-authority.test.ts",
+          "fromSha256": "sha256:8583e1410989dcc5781edc2e77cb153b2db5f48dd5b430304f4ad66dc9496fc9",
+          "toSha256": "sha256:f1769325e860ba6b2afe2f2cff1672775f95c7ad0ba0867d44ad87281b39e973",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
     }
   ]
 }
