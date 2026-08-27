@@ -3517,3 +3517,35 @@ The worker takes a fresh time immediately before the atomic intent authorization
 RED evidence: the request parser returned a successful value containing `missionId`, making the unsupported shape queueable. The public route invokes that parser and returns its error before tenant resolution, idempotency derivation, the transaction, `enqueueJob`, or `insertAgentRun`; after the repair every defined `missionId`, including malformed values, receives the same bounded 400 contract and cannot create a job, run, task, exception, or successor.
 
 The canonical positive path remains campaign-owned. Its existing end-to-end regressions prove repository-scoped task claim, one blocking handoff, same-task regenerate and replay, approval, real delivery claim, terminal task settlement, tenant and snapshot mismatch denial, policy enforcement, lease fencing, and no duplicate job on campaign replay. The focused input, candidate-review, and Mission bridge set passes 67 tests. Complete API and worker suites pass 542 and 618 tests respectively, with one intentional worker skip. Full workspace typecheck, the optimized 50-route build, public docs check, 13-test ADR check, production dependency audit with zero vulnerabilities, and strict diff integrity pass. The superseded direct-binding ADR and CI repair compatibility ADR now match the enforced contract. No production state changed and no push was performed.
+
+## 2026-08-26 Fifth review repair: durable outcome replay isolation
+
+- [x] RED: prove artifact filesystem failure cannot block DB-only merged-outcome settlement.
+- [x] RED: prove one bounded order observes syntax-invalid and structurally-invalid authority before later valid work.
+- [x] Select and classify one global deterministic replay batch, rotating every examined row without starvation.
+- [x] Record the durable remote-mutation state machine, migration, rollback, and point-of-no-return invariants in an ADR.
+- [x] Run focused and affected suites, typechecks, ADR and production gates, and strict diff review.
+- [x] Record exact evidence and commit locally without pushing.
+
+### Review
+
+Merged current `origin/main` at `4fbf3260` while preserving the branch's stricter
+Mission authority implementation and the revision-qualified handoff behavior
+already shipped on main. Durable merged-outcome replay now executes before any
+artifact path is created or inspected, so an unavailable filesystem defers only
+artifact cleanup. The replay reader selects one global order before parsing;
+syntax-invalid, structurally-invalid, valid, deferred, and already-settled rows
+share one limit and every examined row advances the deterministic scan cursor.
+The result reports malformed and not-applicable classifications separately.
+
+RED evidence: the focused observation suite failed exactly two new regressions.
+Artifact storage raised `EEXIST` before DB settlement, and the split valid-first
+queries settled the later valid authority while observing only one of two older
+malformed rows. GREEN evidence: 111 affected worker tests, 47 affected database
+tests, and 47 candidate-review API tests pass. Database, worker, and API
+typechecks pass. The optimized 50-route build, complete GA gate, 13-test ADR
+gate, 17-test third-state gate, and strict diff integrity pass. ADR
+`2026-08-26-durable-mission-remote-mutation-dispatch` records the state machine,
+migration, rollback, and the committed `dispatching` point of no clean rollback.
+No push, merge, production mutation, requirement promotion, or public-claim
+change was performed.

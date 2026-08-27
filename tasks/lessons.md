@@ -187,3 +187,7 @@
 **Mistake:** Upgrade fences protected delivery and update workers, but the public run producer could still enqueue a bare Mission id that no canonical review handoff could later resolve.
 **Correction:** The review traced the active `POST /agent/runs` producer through claim, candidate completion, and human review, exposing a job that could finish but never acquire the repository-scoped task authority required for approval or regeneration.
 **Rule:** When tightening a durable authority contract, inventory every active producer as well as every consumer. A producer must either write the complete canonical authority payload or reject the unsupported shape before persistence. Never accept a partial identity that can survive execution but strand the next state transition.
+### 2026-08-26 — Attribute shipped work precisely
+**Mistake:** I reported all repository merges as my own shipping output even when Claude or Cursor authored them and another process merged them.
+**Correction:** Talal required attribution of Codex work separately from Claude/Cursor work.
+**Rule:** Report authored, reviewed, merged, and deployed as separate facts; count a PR as Codex-shipped only when Codex performed the material repair/review-to-merge path and has evidence.
