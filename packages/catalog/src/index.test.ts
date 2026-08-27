@@ -2,7 +2,13 @@ import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { detectVendors, listCatalog, findVendorByPackage } from "./index.js";
+import {
+  RELEASE_POLL_CONTRACT_VERSION,
+  detectVendors,
+  findVendorByPackage,
+  listCatalog,
+  pollReleaseSource,
+} from "./index.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -42,5 +48,10 @@ describe("vendor catalog", () => {
     const hits = detectVendors(root);
     expect(hits.some((h) => h.slug === "stripe" && h.source === "package.json")).toBe(true);
     expect(hits.some((h) => h.slug === "openai")).toBe(true);
+  });
+
+  it("exports the versioned release polling contract", () => {
+    expect(RELEASE_POLL_CONTRACT_VERSION).toBe("release-poll.v1");
+    expect(pollReleaseSource).toBeTypeOf("function");
   });
 });

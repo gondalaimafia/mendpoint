@@ -3,10 +3,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb, upsertFeedSchedule, type AppDb } from "@mendpoint/db";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  listReleaseDispatches,
+  openReleaseIngestionStore,
+  type ReleaseIngestionStore,
+} from "./release-ingestion.js";
+import {
+  RELEASE_POLL_CONTRACT_VERSION,
+  type ReleasePollConfigurationV1,
+  type ReleasePollResult,
+} from "./release-poll.js";
 import { runFeedSchedules } from "./schedule-runner.js";
 import type { PollableFeed } from "./poll.js";
 
 const opened: Array<{ db: AppDb; directory: string }> = [];
+const releaseStores: ReleaseIngestionStore[] = [];
 
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "mendpoint-feed-schedules-"));
@@ -24,11 +35,33 @@ function feeds(count: number): PollableFeed[] {
   }));
 }
 
+function releaseConfiguration(
+  tenantId = "tenant_default",
+  providerSlug = "provider-1",
+): ReleasePollConfigurationV1 {
+  return {
+    contractVersion: RELEASE_POLL_CONTRACT_VERSION,
+    tenantId,
+    provider: { slug: providerSlug },
+    adapter: "rss",
+    source: { url: "https://docs.example.com/releases.xml" },
+  };
+}
+
+function releaseStore(): ReleaseIngestionStore {
+  const store = openReleaseIngestionStore(":memory:", {
+    clock: () => "2026-08-02T12:00:30.000Z",
+  });
+  releaseStores.push(store);
+  return store;
+}
+
 afterEach(() => {
   for (const { db, directory } of opened.splice(0)) {
     db.raw.close();
     rmSync(directory, { recursive: true, force: true });
   }
+  for (const store of releaseStores.splice(0)) store.close();
 });
 
 describe("feed schedule runner", () => {
@@ -214,5 +247,161 @@ describe("feed schedule runner", () => {
     });
     expect(fetches).toBe(1);
     expect(result).toMatchObject({ claimed: 2, succeeded: 2, failed: 0 });
+  });
+
+  it("runs a tenant-matched release source through the existing schedule window", async () => {
+    const db = fixture();
+    const store = releaseStore();
+    const configuredFeeds = feeds(1);
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: configuredFeeds,
+      execute: async (feed) => ({
+        slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const,
+      }),
+      releaseStore: store,
+      releaseFeeds: [releaseConfiguration()],
+      releaseFetchOptions: {
+        production: true,
+        resolveHostname: async () => ["93.184.216.34"],
+        fetchImpl: async () => new Response(`<?xml version="1.0"?><rss><channel><item>
+          <guid>release-1</guid><title>Release 1</title>
+          <link>https://docs.example.com/releases/1</link>
+          <pubDate>Sat, 02 Aug 2026 12:00:00 GMT</pubDate>
+          <description>Renamed old_field to new_field.</description>
+        </item></channel></rss>`, { status: 200 }),
+      },
+    });
+
+    expect(result).toMatchObject({
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      executions: [{
+        status: "succeeded",
+        poll: { status: "unchanged" },
+        openApiOutcome: { status: "succeeded", result: { status: "unchanged" } },
+        releaseOutcome: { status: "succeeded", result: { status: "ingested", inserted: 1 } },
+      }],
+    });
+    expect(listReleaseDispatches(store, "tenant_default")).toHaveLength(1);
+  });
+
+  it("keeps the successful OpenAPI outcome visible when release polling fails", async () => {
+    const db = fixture();
+    const store = releaseStore();
+    const configuredFeeds = feeds(1);
+    const releaseFailure: ReleasePollResult = {
+      contractVersion: RELEASE_POLL_CONTRACT_VERSION,
+      tenantId: "tenant_default",
+      providerSlug: "provider-1",
+      adapter: "rss",
+      sourceUrl: "https://docs.example.com/releases.xml",
+      status: "failed",
+      error: "release HTTP 503",
+      inserted: 0,
+      artifacts: [],
+      dispatches: [],
+    };
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: configuredFeeds,
+      execute: async (feed) => ({
+        slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const,
+      }),
+      releaseStore: store,
+      releaseFeeds: [releaseConfiguration()],
+      releaseExecute: async () => releaseFailure,
+    });
+
+    expect(result.executions[0]).toMatchObject({
+      status: "failed",
+      poll: { status: "unchanged" },
+      error: "release: release HTTP 503",
+      openApiOutcome: { status: "succeeded", result: { status: "unchanged" } },
+      releaseOutcome: { status: "failed", error: "release HTTP 503", result: releaseFailure },
+    });
+  });
+
+  it("keeps the successful release outcome visible when OpenAPI polling fails", async () => {
+    const db = fixture();
+    const store = releaseStore();
+    const configuredFeeds = feeds(1);
+    const releaseSuccess: ReleasePollResult = {
+      contractVersion: RELEASE_POLL_CONTRACT_VERSION,
+      tenantId: "tenant_default",
+      providerSlug: "provider-1",
+      adapter: "rss",
+      sourceUrl: "https://docs.example.com/releases.xml",
+      status: "unchanged",
+      inserted: 0,
+      artifacts: [],
+      dispatches: [],
+    };
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: configuredFeeds,
+      execute: async (feed) => ({
+        slug: feed.slug, url: feed.openapiUrl, status: "error" as const, error: "OpenAPI HTTP 503",
+      }),
+      releaseStore: store,
+      releaseFeeds: [releaseConfiguration()],
+      releaseExecute: async () => releaseSuccess,
+    });
+
+    expect(result.executions[0]).toMatchObject({
+      status: "failed",
+      poll: { status: "error", error: "OpenAPI HTTP 503" },
+      error: "OpenAPI: OpenAPI HTTP 503",
+      openApiOutcome: { status: "failed", error: "OpenAPI HTTP 503" },
+      releaseOutcome: { status: "succeeded", result: releaseSuccess },
+    });
+  });
+
+  it("schedules a configured release source when no OpenAPI source exists", async () => {
+    const db = fixture();
+    const store = releaseStore();
+    const config = releaseConfiguration("tenant_default", "release-only");
+    const releaseSuccess: ReleasePollResult = {
+      contractVersion: RELEASE_POLL_CONTRACT_VERSION,
+      tenantId: "tenant_default",
+      providerSlug: "release-only",
+      adapter: "rss",
+      sourceUrl: config.source.url,
+      status: "unchanged",
+      inserted: 0,
+      artifacts: [],
+      dispatches: [],
+    };
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: [],
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: async () => releaseSuccess,
+    });
+
+    expect(result).toMatchObject({
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      executions: [{
+        providerSlug: "release-only",
+        status: "succeeded",
+        openApiOutcome: { status: "not_configured" },
+        releaseOutcome: { status: "succeeded", result: releaseSuccess },
+      }],
+    });
   });
 });

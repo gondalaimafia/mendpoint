@@ -9,15 +9,18 @@ import { BlockList, isIP } from "node:net";
 import { join, resolve } from "node:path";
 import { VENDOR_CATALOG, type VendorEntry } from "./vendors.js";
 
-export type FetchOpenApiResult = {
+export type FetchFeedResult = {
   ok: boolean;
   url: string;
   body?: string;
+  error?: string;
+  status?: number;
+};
+
+export type FetchOpenApiResult = FetchFeedResult & {
   openapi?: unknown;
   contentHash?: string;
   versionLabel?: string;
-  error?: string;
-  status?: number;
 };
 
 export type OpenApiValidationEvidence = {
@@ -125,7 +128,7 @@ export function resolveFeedUrl(url: string, monorepoRoot?: string): string {
 
 type HostResolver = (hostname: string) => Promise<string[]>;
 
-export type FetchOpenApiOptions = {
+export type FetchFeedOptions = {
   monorepoRoot?: string;
   timeoutMs?: number;
   maxBytes?: number;
@@ -135,6 +138,8 @@ export type FetchOpenApiOptions = {
   /** Human-readable provider/feed label, surfaced in size-limit errors. */
   provider?: string;
 };
+
+export type FetchOpenApiOptions = FetchFeedOptions;
 
 /**
  * Default ceiling for a fetched OpenAPI feed body.
@@ -257,10 +262,10 @@ async function boundedResponseText(
   return Buffer.concat(chunks, size).toString("utf8");
 }
 
-export async function fetchOpenApiDocument(
+export async function fetchFeedDocument(
   url: string,
-  opts?: FetchOpenApiOptions,
-): Promise<FetchOpenApiResult> {
+  opts?: FetchFeedOptions,
+): Promise<FetchFeedResult> {
   const production =
     opts?.production ?? process.env.NODE_ENV === "production";
   if (production && url.startsWith("file:")) {
@@ -278,7 +283,7 @@ export async function fetchOpenApiDocument(
         return { ok: false, url: resolved, error: `file not found: ${path}` };
       }
       const body = readFileSync(path, "utf8");
-      return parseOpenApiBody(resolved, body);
+      return { ok: true, url: resolved, body };
     }
 
     const fetchImpl = opts?.fetchImpl ?? fetch;
@@ -333,7 +338,7 @@ export async function fetchOpenApiDocument(
             body,
           };
         }
-        return parseOpenApiBody(current.href, body, res.status);
+        return { ok: true, url: current.href, status: res.status, body };
       } finally {
         clearTimeout(t);
       }
@@ -350,6 +355,15 @@ export async function fetchOpenApiDocument(
       error: e instanceof Error ? e.message : String(e),
     };
   }
+}
+
+export async function fetchOpenApiDocument(
+  url: string,
+  opts?: FetchOpenApiOptions,
+): Promise<FetchOpenApiResult> {
+  const fetched = await fetchFeedDocument(url, opts);
+  if (!fetched.ok || fetched.body === undefined) return fetched;
+  return parseOpenApiBody(fetched.url, fetched.body, fetched.status);
 }
 
 function parseOpenApiBody(
