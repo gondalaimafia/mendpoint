@@ -108,6 +108,18 @@ describe("customer backup terminal result", () => {
     expect(result.stderr).toContain("customer_backup_result_release_revision_mismatch");
   });
 
+  it("accepts and exactly binds a canonical 64 character release", () => {
+    const release = "e".repeat(64);
+    const record = resultRecord({ releaseRevision: release });
+    const accepted = verifyObjectRetention([record], release);
+    expect(accepted.status, accepted.stderr).toBe(0);
+    expect(JSON.parse(accepted.stdout)).toMatchObject({ releaseRevision: release });
+
+    const stale = verifyObjectRetention([record], "f".repeat(64));
+    expect(stale.status).toBe(1);
+    expect(stale.stderr).toContain("customer_backup_result_release_revision_mismatch");
+  });
+
   it("retains the validated JSON object for exact release binding", () => {
     const record = resultRecord();
     const accepted = verifyObjectRetention([record]);

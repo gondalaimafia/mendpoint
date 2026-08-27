@@ -8,7 +8,7 @@ fi
 
 evidence="$1"
 expected_release_revision="$2"
-if [[ ! "$expected_release_revision" =~ ^[a-f0-9]{40}$ ]]; then
+if [[ ! "$expected_release_revision" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ ]]; then
   echo customer_backup_result_expected_release_revision_invalid >&2
   exit 1
 fi
