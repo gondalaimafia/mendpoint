@@ -1,10 +1,10 @@
 # Mendpoint
 
-**Fettler — the first AI API Engineer** is Mendpoint's API integration teammate, generally available at **GA 1.0**. Its companion **ReGauge — the first AI Legacy Engineer** takes on legacy and multi-repo migration campaigns as an experimental planning preview. Mendpoint follows a **graph engineering** approach: specialized loop-nodes (change intel → call-graph expand → generate → verify → human review), not one overloaded agent. **It never auto-merges by default** — every change lands as a reviewable pull request that a person approves and merges.
+**Fettler — the first AI API Engineer** is Mendpoint's API integration teammate, available as a **Private Design Partner Preview** for approved pilot teams. Its companion **ReGauge — the first AI Legacy Engineer** takes on legacy and multi-repo migration campaigns as an experimental planning preview. Mendpoint follows a **graph engineering** approach: specialized loop-nodes (change intel → call-graph expand → generate → verify → human review), not one overloaded agent. **It never auto-merges by default** — every change lands as a reviewable pull request that a person approves and merges.
 
-When an API provider ships a breaking change or a high-value capability, Mendpoint (with explicit customer permission) scans the configured repository and opens a reviewable migration PR with its evidence attached. Customers review and merge.
+For submitted OpenAPI changes, Mendpoint can analyze configured repository snapshots and generate evidence-backed migration pull request candidates for supported GitHub repositories. Customers review and merge.
 
-> Platform: **Mendpoint**. Products: **Fettler (GA 1.0)** and **ReGauge (preview)**. Production runbook: [`docs/PRODUCTION_GA.md`](./docs/PRODUCTION_GA.md). Claim-safe language: [`docs/WARDEN_CLAIMS.md`](./docs/WARDEN_CLAIMS.md). Doctrine: [`docs/GRAPH_ENGINEERING.md`](./docs/GRAPH_ENGINEERING.md).
+> Platform: **Mendpoint**. Products: **Fettler (Private Design Partner Preview)** and **ReGauge (experimental planning preview)**. Production runbook: [`docs/PRODUCTION_GA.md`](./docs/PRODUCTION_GA.md). Claim-safe language: [`docs/WARDEN_CLAIMS.md`](./docs/WARDEN_CLAIMS.md). Doctrine: [`docs/GRAPH_ENGINEERING.md`](./docs/GRAPH_ENGINEERING.md).
 
 ## How it works
 
@@ -18,9 +18,9 @@ Mendpoint runs a migration as a graph of specialized nodes, each with a narrow j
 
 See [`docs/GRAPH_ENGINEERING.md`](./docs/GRAPH_ENGINEERING.md) for the doctrine and [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full impact-analysis design.
 
-## Production quickstart (self-hosted)
+## Pilot quickstart (self-hosted)
 
-Fettler is generally available for **self-hosted** and **API-key multi-tenant** control planes.
+The Fettler preview supports approved pilot evaluation on a single-node self-hosted control plane.
 
 ```bash
 git clone https://github.com/gondalaimafia/mendpoint.git
@@ -39,9 +39,9 @@ In production (`NODE_ENV=production`) the API requires authentication, enforces 
 
 ## Products
 
-### Fettler — AI API Engineer (GA 1.0)
+### Fettler — AI API Engineer (Private Design Partner Preview)
 
-Fettler turns a detected OpenAPI change into graph-backed impact analysis and a review-first migration PR for supported GitHub repositories. It also runs an on-demand API debug loop — a goal-driven, bounded multi-step tool loop for protocol, serialization, semantic, network, and rate-limit failures. Generally available for self-hosted and API-key multi-tenant control planes.
+Fettler turns submitted OpenAPI changes into graph-backed impact analysis and proposed patches for supported migration patterns on configured GitHub repositories. It also runs an on-demand API debug loop — a goal-driven, bounded multi-step tool loop for protocol, serialization, semantic, network, and rate-limit failures. Access is limited to approved private pilot teams.
 
 ### ReGauge — AI Legacy Engineer (preview)
 
