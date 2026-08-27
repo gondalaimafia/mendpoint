@@ -395,10 +395,10 @@ export function verifyAuthorityRotation(
   } else if (transitionKind === "stage_successor") {
     const successor = receipt.successor;
     const staged = input.basePolicy.successor;
-    const stagedByReceipt = staged
+    const isRestage = staged !== null && staged !== undefined;
+    const stagedByReceipt = isRestage
       ? baseRotations.find((candidate) => candidate.rotationId === staged.stagedByRotationId) ?? null
       : null;
-    const isRestage = staged !== null;
     const expectedState: AuthoritySuccessorState = {
       phase: "staged",
       stagedByRotationId: receipt.rotationId,
@@ -417,17 +417,18 @@ export function verifyAuthorityRotation(
       );
     }
     if (
-      isRestage && (
+      staged === undefined || (isRestage && (
+        !validSuccessorTuple(staged) ||
         staged.phase !== "staged" ||
         staged.activatedByRotationId !== null ||
         stagedByReceipt?.kind !== "stage_successor" ||
         !exactSuccessorTuple(stagedByReceipt.successor, staged)
-      )
+      ))
     ) {
       add(
         issues,
         "AUTHORITY_SUCCESSOR_RESTAGE_AUTHORITY_INVALID",
-        staged.stagedByRotationId,
+        staged?.stagedByRotationId ?? receipt.rotationId,
         "re-staging requires the immutable stage receipt for the exact unactivated successor tuple",
       );
     }

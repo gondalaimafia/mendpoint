@@ -260,6 +260,24 @@ describe("production closure authority rotation", () => {
     );
   });
 
+  it("fails closed without throwing when the base successor slot is malformed", () => {
+    const { input } = stagedSuccessorFixture();
+    input.basePolicy.successor = undefined as never;
+    input.basePolicyBytes = Buffer.from(JSON.stringify(input.basePolicy));
+    const receipt = input.proposedLedger.rotations.at(-1)!;
+    receipt.basePolicySha256 = digest(input.basePolicyBytes);
+    input.changedFiles[0] = {
+      ...input.changedFiles[0],
+      fromSha256: digest(input.basePolicyBytes),
+    };
+    receipt.changes = input.changedFiles.map((change) => ({ ...change }));
+
+    expect(() => verifyAuthorityRotation(input)).not.toThrow();
+    expect(verifyAuthorityRotation(input).map((issue) => issue.code)).toContain(
+      "AUTHORITY_SUCCESSOR_RESTAGE_AUTHORITY_INVALID",
+    );
+  });
+
   it.each([
     ["workflow paths", {
       templatePath: "config/production-closure-successors/closure-authority-v3.yml",
