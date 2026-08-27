@@ -55,6 +55,14 @@ function publicFetchOptions(body = rss) {
   } as const;
 }
 
+type MutableReleasePollConfiguration = {
+  contractVersion: string;
+  tenantId: string;
+  provider: { slug: string };
+  adapter: string;
+  source: { url: string; maxBytes?: number };
+};
+
 describe("release source polling", () => {
   it("binds persisted release and outbox identities to the explicit tenant, provider, adapter, and source", async () => {
     const store = ledger();
@@ -72,6 +80,7 @@ describe("release source polling", () => {
       providerSlug: "stripe",
       adapter: "rss",
       sourceUrl: "https://docs.stripe.com/changelog/feed",
+      sourceMaxBytes: null,
       inserted: 1,
       artifacts: [{
         artifactId: expect.stringMatching(/^rel_[a-f0-9]{32}$/),
@@ -160,9 +169,98 @@ describe("release source polling", () => {
       providerSlug: "stripe",
       adapter: "rss",
       sourceUrl: "https://127.0.0.1/releases",
+      sourceMaxBytes: null,
       error: "production feed URL resolves to a blocked address",
     });
     expect(fetches).toBe(0);
     expect(listReleaseArtifacts(store, "tenant-a")).toEqual([]);
+  });
+
+  it.each([
+    ["tenant", (config: MutableReleasePollConfiguration) => { config.tenantId = "tenant-b"; }],
+    ["provider", (config: MutableReleasePollConfiguration) => { config.provider.slug = "openai"; }],
+    ["adapter", (config: MutableReleasePollConfiguration) => { config.adapter = "atom"; }],
+    ["source", (config: MutableReleasePollConfiguration) => {
+      config.source.url = "https://platform.openai.com/docs/changelog.atom";
+    }],
+    ["size limit", (config: MutableReleasePollConfiguration) => { config.source.maxBytes = 1; }],
+    ["contract version", (config: MutableReleasePollConfiguration) => {
+      config.contractVersion = "release-poll.v2";
+    }],
+  ] as const)("snapshots %s identity before the asynchronous fetch boundary", async (_field, mutate) => {
+    const store = ledger();
+    const config = configuration() as unknown as MutableReleasePollConfiguration;
+    const result = await pollReleaseSource(
+      store,
+      config as ReleasePollConfigurationV1,
+      {
+        at: NOW,
+        fetchOptions: {
+          production: true,
+          resolveHostname: async () => ["93.184.216.34"],
+          fetchImpl: async () => {
+            mutate(config);
+            return new Response(rss, { status: 200 });
+          },
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      status: "ingested",
+      contractVersion: RELEASE_POLL_CONTRACT_VERSION,
+      tenantId: "tenant-a",
+      providerSlug: "stripe",
+      adapter: "rss",
+      sourceUrl: "https://docs.stripe.com/changelog/feed",
+      sourceMaxBytes: null,
+      inserted: 1,
+    });
+    expect(listReleaseArtifacts(store, "tenant-a")[0]).toMatchObject({
+      tenantId: "tenant-a",
+      providerSlug: "stripe",
+      adapter: "rss",
+      collectionUrl: "https://docs.stripe.com/changelog/feed",
+    });
+    expect(listReleaseArtifacts(store, "tenant-b")).toEqual([]);
+  });
+
+  it("uses one canonical identity for normalized configuration, results, ledger, and rehydration", async () => {
+    const store = ledger();
+    const config = {
+      contractVersion: RELEASE_POLL_CONTRACT_VERSION,
+      tenantId: "  tenant-a  ",
+      provider: { slug: "  stripe  " },
+      adapter: "rss",
+      source: {
+        url: "  HTTPS://DOCS.STRIPE.COM:443/changelog/../changelog/feed  ",
+      },
+    } satisfies ReleasePollConfigurationV1;
+
+    const result = await pollReleaseSource(store, config, {
+      at: NOW,
+      fetchOptions: publicFetchOptions(),
+    });
+
+    expect(result).toMatchObject({
+      status: "ingested",
+      tenantId: "tenant-a",
+      providerSlug: "stripe",
+      adapter: "rss",
+      sourceUrl: "https://docs.stripe.com/changelog/feed",
+      sourceMaxBytes: null,
+    });
+    if (result.status === "failed") throw new Error(result.error);
+    const reference = result.artifacts[0]!;
+    expect(rehydrateReleaseArtifact(store, {
+      tenantId: result.tenantId,
+      artifactId: reference.artifactId,
+      expectedContentSha256: reference.contentSha256,
+    })).toMatchObject({
+      tenantId: result.tenantId,
+      providerSlug: result.providerSlug,
+      adapter: result.adapter,
+      collectionUrl: result.sourceUrl,
+    });
   });
 });

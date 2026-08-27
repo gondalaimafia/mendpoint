@@ -18,7 +18,9 @@ import {
   type PollOneResult,
 } from "./run-poll.js";
 import {
+  canonicalizeReleasePollConfiguration,
   pollReleaseSource,
+  type CanonicalReleasePollConfigurationV1,
   type ReleasePollConfigurationV1,
   type ReleasePollResult,
 } from "./release-poll.js";
@@ -124,17 +126,32 @@ function releaseScope(tenantId: string, providerSlug: string): string {
   return `${tenantId}\n${providerSlug}`;
 }
 
+function releaseResultMatchesConfiguration(
+  result: ReleasePollResult,
+  config: CanonicalReleasePollConfigurationV1,
+): boolean {
+  return (
+    result.contractVersion === config.contractVersion &&
+    result.tenantId === config.tenantId &&
+    result.providerSlug === config.provider.slug &&
+    result.adapter === config.adapter &&
+    result.sourceUrl === config.source.url &&
+    result.sourceMaxBytes === (config.source.maxBytes ?? null)
+  );
+}
+
 export async function runFeedSchedules(options: FeedScheduleRunOptions) {
   const at = options.at ?? nowIso();
   const intervalMs = options.defaultIntervalMs ?? 60 * 60 * 1_000;
   const staleAfterMs = options.defaultStaleAfterMs ?? intervalMs * 2;
   if (staleAfterMs < intervalMs) throw new Error("feed_schedule_stale_window_invalid");
   const feeds = [...(options.feeds ?? listPollableFeeds(options.db))];
-  const releaseByScope = new Map<string, ReleasePollConfigurationV1>();
+  const releaseByScope = new Map<string, CanonicalReleasePollConfigurationV1>();
   for (const config of options.releaseFeeds ?? []) {
-    const scope = releaseScope(config.tenantId, config.provider.slug);
+    const snapshot = canonicalizeReleasePollConfiguration(config);
+    const scope = releaseScope(snapshot.tenantId, snapshot.provider.slug);
     if (releaseByScope.has(scope)) throw new Error("release_poll_configuration_duplicate");
-    releaseByScope.set(scope, config);
+    releaseByScope.set(scope, snapshot);
   }
   if (options.tenantId) {
     const providerSlugs = new Set(feeds.map((feed) => feed.slug));
@@ -234,9 +251,17 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
                   at,
                   fetchOptions: options.releaseFetchOptions,
                 });
-            releaseOutcome = result.status === "failed"
-              ? Object.freeze({ status: "failed" as const, error: result.error, result })
-              : Object.freeze({ status: "succeeded" as const, result });
+            if (result.status !== "failed" && !releaseResultMatchesConfiguration(result, releaseConfig)) {
+              releaseOutcome = Object.freeze({
+                status: "failed" as const,
+                error: "release_poll_result_identity_mismatch",
+                result,
+              });
+            } else {
+              releaseOutcome = result.status === "failed"
+                ? Object.freeze({ status: "failed" as const, error: result.error, result })
+                : Object.freeze({ status: "succeeded" as const, result });
+            }
           } catch (cause) {
             releaseOutcome = Object.freeze({
               status: "failed" as const,
