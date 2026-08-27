@@ -17,7 +17,15 @@ import {
 import { resolveCustomerBackupReleaseAuthority } from "./customer-backup-release-authority.js";
 
 async function main(): Promise<void> {
-  const releaseRevision = resolveCustomerBackupReleaseAuthority(process.env);
+  const expectedIndex = process.argv.indexOf("--expected-release");
+  const expectedRelease = expectedIndex >= 0 ? process.argv[expectedIndex + 1]?.trim() : undefined;
+  if (!expectedRelease || process.argv.indexOf("--expected-release", expectedIndex + 1) >= 0) {
+    throw new Error("customer_backup_expected_release_argument_required");
+  }
+  const releaseRevision = resolveCustomerBackupReleaseAuthority({
+    MENDPOINT_EXPECTED_BACKUP_RELEASE_REVISION: expectedRelease,
+    MENDPOINT_RELEASE_REVISION: process.env.MENDPOINT_RELEASE_REVISION,
+  });
   const input = customerBackupInputFromEnv();
   const objectStore = loadCustomerObjectStoreConfig(process.env);
   const transport = createRcloneCustomerObjectStoreTransport(objectStore, process.env);

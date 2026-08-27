@@ -39,6 +39,24 @@ describe("customer backup release authority", () => {
     })).rejects.toThrow("customer_backup_release_revision_invalid");
   });
 
+  it("accepts canonical 64 character release identities without weakening exact matching", async () => {
+    const revision = "c".repeat(64);
+    await expect(resolveAuthority({
+      MENDPOINT_EXPECTED_BACKUP_RELEASE_REVISION: revision,
+      MENDPOINT_RELEASE_REVISION: revision,
+    })).resolves.toBe(revision);
+    await expect(resolveAuthority({
+      MENDPOINT_EXPECTED_BACKUP_RELEASE_REVISION: revision,
+      MENDPOINT_RELEASE_REVISION: "d".repeat(64),
+    })).rejects.toThrow("customer_backup_release_revision_mismatch");
+  });
+
+  it("requires the manual entrypoint to receive explicit release authority", () => {
+    const producer = readFileSync(resolve(root, "scripts/customer-backup.ts"), "utf8");
+    expect(producer).toContain("--expected-release");
+    expect(producer).not.toContain("resolveCustomerBackupReleaseAuthority(process.env)");
+  });
+
   it("rejects a stale live release and returns only an exact match", async () => {
     await expect(resolveAuthority({
       MENDPOINT_EXPECTED_BACKUP_RELEASE_REVISION: "a".repeat(40),
@@ -53,7 +71,7 @@ describe("customer backup release authority", () => {
   it("enforces release authority before the backup entrypoint is resolved", () => {
     const producer = readFileSync(resolve(root, "scripts/customer-backup.ts"), "utf8");
     const authority = producer.indexOf(
-      "const releaseRevision = resolveCustomerBackupReleaseAuthority(process.env);",
+      "const releaseRevision = resolveCustomerBackupReleaseAuthority({",
     );
     const input = producer.indexOf("customerBackupInputFromEnv()");
     expect(authority).toBeGreaterThanOrEqual(0);

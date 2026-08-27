@@ -229,6 +229,16 @@
       "status": "required"
     },
     {
+      "name": "MENDPOINT_CUSTOMER_BACKUP_RELEASE_MAP",
+      "type": "variable",
+      "scope": {
+        "kind": "environment",
+        "environment": "customer-production-backup"
+      },
+      "status": "optional_gated",
+      "gatedBy": "required when the live immutable release identity is 64 lowercase hexadecimal characters; maps the exact 40 character workflow source revision to that release"
+    },
+    {
       "name": "MENDPOINT_CUSTOMER_PROFILE_ACTIVE",
       "type": "variable",
       "scope": {

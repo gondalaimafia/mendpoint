@@ -1,4 +1,4 @@
-const RELEASE_REVISION = /^[a-f0-9]{40}$/;
+const RELEASE_REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 
 export function resolveCustomerBackupReleaseAuthority(
   env: Readonly<Record<string, string | undefined>>,

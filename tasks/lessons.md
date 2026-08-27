@@ -192,3 +192,8 @@
 **Mistake:** The workflow changed a missing binding from safe absence to fail-closed authority, but the configuration manifest still classified that absence as gated and non-failing.
 **Correction:** Code-quality review required the live-compatible configuration gate to report the missing binding as `CONFIG_MISSING`.
 **Rule:** Whenever runtime authority changes whether absence is safe, update the configuration registry and its live-readiness regression in the same change. Verify the provisioned scope directly and never leave a stale `optional_gated` exemption behind.
+
+### 2026-08-26 — Inspect credentials instead of inferring scope from visibility
+**Mistake:** Backup authority treated the number of apps visible through a credential as proof that the credential was app scoped.
+**Correction:** Exact scope must come from the decoded Fly macaroon, and every permission token must carry one nonzero Apps caveat for the configured app.
+**Rule:** Never infer credential scope from successful API calls or resource-list cardinality. Decode the provider authority, validate every permission-bearing token, suppress decoded credential output, and fail closed on absent, wildcard, mixed, or mismatched caveats.

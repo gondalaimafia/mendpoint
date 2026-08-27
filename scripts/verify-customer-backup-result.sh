@@ -27,7 +27,7 @@ if ! verified="$(jq -ce '
     .schemaVersion == 1 and
     .kind == "customer_backup_result" and
     .result == "success" and
-    (.releaseRevision | type == "string" and test("^[a-f0-9]{40}$")) and
+    (.releaseRevision | type == "string" and test("^([a-f0-9]{40}|[a-f0-9]{64})$")) and
     (.backupId | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
     (.manifestAuthentication | type == "string" and test("^[a-f0-9]{64}$")) and
     (.publication | type == "object") and

@@ -45,7 +45,10 @@ if (args[0] === "apps" && args[1] === "list") {
   process.stdout.write((process.env.STUB_APPS_JSON ?? process.env.STUB_VISIBLE_APPS) + "\\n");
 } else if (args[0] === "status") {
   if (process.env.STUB_STATUS_AVAILABLE === "false") process.exit(1);
-  process.exit(0);
+  process.stdout.write(JSON.stringify({ ID: Number(process.env.STUB_APP_ID) }) + "\\n");
+} else if (args[0] === "tokens" && args[1] === "debug") {
+  if (process.env.STUB_TOKEN_DEBUG_AVAILABLE === "false") process.exit(1);
+  process.stdout.write(process.env.STUB_TOKEN_DEBUG_JSON + "\\n");
 } else if (args[0] === "ssh" && args[1] === "console") {
   if (process.env.STUB_RUNTIME_AVAILABLE === "false") process.exit(1);
   process.stdout.write(process.env.STUB_RUNTIME_JSON ?? JSON.stringify({
@@ -93,7 +96,7 @@ if (args.includes("-n")) {
 }
 let input;
 try { input = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(4); }
-if (filter.includes("[.[]")) {
+if (filter.includes("[.[]") && !filter.includes("ascii_downcase")) {
   const names = [...new Set(input.map((entry) => entry.Name ?? entry.name))];
   process.stdout.write(JSON.stringify(names) + "\\n");
 } else if (filter === "length") {
@@ -104,8 +107,31 @@ if (filter.includes("[.[]")) {
   if (typeof input.deploymentProfile !== "string") process.exit(4);
   process.stdout.write(input.deploymentProfile + "\\n");
 } else if (filter.includes("releaseRevision")) {
-  if (typeof input.releaseRevision !== "string" || !/^[a-f0-9]{40}$/.test(input.releaseRevision)) process.exit(4);
+  if (typeof input.releaseRevision !== "string" || !/^([a-f0-9]{40}|[a-f0-9]{64})$/.test(input.releaseRevision)) process.exit(4);
   process.stdout.write(input.releaseRevision + "\\n");
+} else if (filter.includes(".ID // .id")) {
+  const id = input.ID ?? input.id ?? input.App?.ID ?? input.app?.id;
+  if (!Number.isInteger(Number(id)) || Number(id) <= 0) process.exit(4);
+  process.stdout.write(String(id) + "\\n");
+} else if (filter.includes("ascii_downcase")) {
+  if (!Array.isArray(input)) process.exit(1);
+  const permissions = input.filter((token) => /api\\.fly\\.io/.test(token.location ?? ""));
+  const appIdIndex = args.indexOf("--arg");
+  const appId = appIdIndex >= 0 ? args[appIdIndex + 2] : "";
+  const ok = permissions.length > 0 && permissions.every((token) => {
+    const apps = (token.caveats ?? []).filter((caveat) =>
+      String(caveat.type ?? caveat.name ?? caveat.kind ?? "").toLowerCase() === "apps"
+    ).map((caveat) => caveat.value ?? caveat.values ?? caveat.args ?? caveat.apps ?? []);
+    return apps.length === 1 && Array.isArray(apps[0]) && apps[0].length === 1 &&
+      String(apps[0][0]) === appId && /^[1-9][0-9]*$/.test(String(apps[0][0]));
+  });
+  process.exit(ok ? 0 : 1);
+} else if (filter.includes(".[$source]")) {
+  const sourceIndex = args.indexOf("--arg");
+  const source = sourceIndex >= 0 ? args[sourceIndex + 2] : "";
+  const value = input?.[source];
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) process.exit(4);
+  process.stdout.write(value + "\\n");
 } else {
   process.stderr.write("unexpected jq filter: " + filter + "\\n");
   process.exit(64);
@@ -135,6 +161,9 @@ interface ProfileGateInput {
   statusAvailable?: boolean;
   runtimeAvailable?: boolean;
   runtimeJson?: string;
+  tokenDebugJson?: string;
+  appId?: string;
+  releaseMap?: string;
 }
 
 function runProfileGate(input: ProfileGateInput): {
@@ -152,6 +181,13 @@ function runProfileGate(input: ProfileGateInput): {
   const sha = input.workflowRevision ?? "d".repeat(40);
   const customerApp = input.customerApp ?? "mendpoint-customer";
   const visibleApps = input.visibleApps ?? [customerApp];
+  const derivedTokenDebug = JSON.stringify([{
+    location: "https://api.fly.io",
+    caveats: [{
+      type: "Apps",
+      value: visibleApps.map((name) => name === customerApp ? 123 : 999),
+    }],
+  }]);
   const result = spawnSync("bash", ["-c", profileScript], {
     cwd: directory,
     encoding: "utf8",
@@ -169,6 +205,11 @@ function runProfileGate(input: ProfileGateInput): {
       ...(input.runtimeJson === undefined ? {} : { STUB_RUNTIME_JSON: input.runtimeJson }),
       STUB_LIVE_PROFILE: input.liveProfile ?? "demo",
       STUB_LIVE_RELEASE: input.liveRelease ?? sha,
+      STUB_TOKEN_DEBUG_JSON: input.tokenDebugJson ??
+        (input.appsJson === undefined ? derivedTokenDebug : input.appsJson),
+      STUB_TOKEN_DEBUG_AVAILABLE: input.appsAvailable === false ? "false" : "true",
+      STUB_APP_ID: input.appId ?? "123",
+      RELEASE_MAP: input.releaseMap ?? "",
       GITHUB_SHA: sha,
       GITHUB_RUN_ID: "123",
       GITHUB_RUN_ATTEMPT: "2",
@@ -270,11 +311,12 @@ describe("customer backup workflow", () => {
     const validate = step("Validate app-scoped backup authority");
     expect(validate.env.FLY_API_TOKEN).toBe("${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}");
     expect(validate.env.CUSTOMER_APP).toBe("${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}");
-    expect(validate.run).toContain('apps_json="$(flyctl apps list --json)"');
-    expect(validate.run).toContain("'[.[] | (.Name // .name)] | unique'");
+    expect(validate.run).toContain('token_debug_json="$(flyctl tokens debug)"');
+    expect(validate.run).toContain("customer_backup_token_debug_invalid");
+    expect(validate.run).toContain("customer_backup_token_not_app_scoped");
+    expect(validate.run).not.toContain('apps_json="$(flyctl apps list --json)"');
     expect(validate.run).not.toContain("mapfile -t visible_apps < <(");
     expect(validate.run).not.toContain(".[].Name");
-    expect(validate.run).toContain("customer_backup_token_not_app_scoped");
     expect(validate.run).toContain('flyctl status --app "$CUSTOMER_APP"');
   });
 
@@ -297,10 +339,11 @@ describe("customer backup workflow", () => {
     const run = step("Run authenticated customer backup");
     expect(run.env.FLY_API_TOKEN).toBe("${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}");
     expect(run.run).toContain('flyctl ssh console --app "$CUSTOMER_APP"');
-    expect(run.run).toContain("MENDPOINT_EXPECTED_BACKUP_RELEASE_REVISION=$GITHUB_SHA");
+    expect(run.env.EXPECTED_RELEASE).toBe("${{ needs.profile-gate.outputs.release }}");
+    expect(run.run).toContain("--expected-release $EXPECTED_RELEASE");
     expect(run.run).toContain("scripts/customer-backup.ts");
     expect(run.run).toContain('tee -a "$evidence"');
-    expect(run.run).toContain('bash scripts/verify-customer-backup-result.sh "$evidence" "$GITHUB_SHA"');
+    expect(run.run).toContain('bash scripts/verify-customer-backup-result.sh "$evidence" "$EXPECTED_RELEASE"');
     expect(run.run).not.toContain("grep -q '\"backupId\"'");
     expect(run.run).not.toContain("grep -q '\"manifestAuthentication\"'");
     expect(run.run).not.toContain("grep -q '\"publication\"'");
@@ -356,14 +399,14 @@ describe("customer backup workflow", () => {
     expect(gateStep.env.EXPECTED_ACTIVE).toBe("${{ vars.MENDPOINT_CUSTOMER_PROFILE_ACTIVE }}");
     expect(gateStep.env.FLY_API_TOKEN).toBe("${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}");
     expect(gateStep.env.CUSTOMER_APP).toBe("${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}");
-    expect(gateStep.run).toContain('apps_json="$(flyctl apps list --json)"');
-    expect(gateStep.run).toContain("'[.[] | (.Name // .name)] | unique'");
+    expect(gateStep.env.RELEASE_MAP).toBe("${{ vars.MENDPOINT_CUSTOMER_BACKUP_RELEASE_MAP }}");
+    expect(gateStep.run).toContain('token_debug_json="$(flyctl tokens debug)"');
     expect(gateStep.run).not.toContain("mapfile -t visible_apps < <(");
     expect(gateStep.run).toContain('flyctl ssh console --app "$CUSTOMER_APP"');
     expect(gateStep.run).toContain("MENDPOINT_DEPLOYMENT_PROFILE");
     expect(gateStep.run).toContain("MENDPOINT_RELEASE_REVISION");
     expect(gateStep.run).toContain('live_release_revision="$(');
-    expect(gateStep.run).toContain('[ "$live_release_revision" != "$GITHUB_SHA" ]');
+    expect(gateStep.run).toContain('[ "$live_release_revision" != "$expected_release" ]');
     expect(gateStep.run).toContain("customer_backup_release_revision_mismatch");
     expect(gateStep.run.indexOf("customer_backup_release_revision_mismatch")).toBeLessThan(
       gateStep.run.lastIndexOf("active=true"),
@@ -468,6 +511,45 @@ describe("customer backup workflow", () => {
       operatorActionRequired: false,
       backupTaken: false,
     });
+  });
+
+  it.each([
+    ["organization token", [{ location: "https://api.fly.io", caveats: [{ type: "Organizations", value: [7] }] }]],
+    ["personal token", [{ location: "https://api.fly.io", caveats: [] }]],
+    ["wildcard app caveat", [{ location: "https://api.fly.io", caveats: [{ type: "Apps", value: [0] }] }]],
+    ["wrong app caveat", [{ location: "https://api.fly.io", caveats: [{ type: "Apps", value: [999] }] }]],
+    ["mixed permission tokens", [
+      { location: "https://api.fly.io", caveats: [{ type: "Apps", value: [123] }] },
+      { location: "https://api.fly.io", caveats: [{ type: "Apps", value: [999] }] },
+    ]],
+  ])("rejects %s from backup authority", (_name, tokenDebug) => {
+    const gate = runProfileGate({
+      intent: "true",
+      liveProfile: "customer",
+      tokenDebugJson: JSON.stringify(tokenDebug),
+    });
+    expect(gate.status).toBe(1);
+    expect(gate.evidence).toMatchObject({
+      result: "authority_unavailable",
+      reason: "customer_backup_token_not_app_scoped",
+      backupTaken: false,
+    });
+  });
+
+  it("requires a protected exact mapping before a 64 character release is eligible", () => {
+    const workflowRevision = "d".repeat(40);
+    const release = "e".repeat(64);
+    const missing = runProfileGate({ intent: "true", liveProfile: "customer", liveRelease: release });
+    expect(missing.status).toBe(1);
+    expect(missing.evidence).toMatchObject({ reason: "customer_backup_release_mapping_missing" });
+    const mapped = runProfileGate({
+      intent: "true",
+      liveProfile: "customer",
+      liveRelease: release,
+      releaseMap: JSON.stringify({ [workflowRevision]: release }),
+    });
+    expect(mapped.status, mapped.stderr).toBe(0);
+    expect(mapped.outputs).toMatchObject({ active: "true", release });
   });
 
   it.each([
@@ -627,7 +709,7 @@ describe("customer backup workflow", () => {
       input: { intent: "true", appsJson: "not-json" },
       status: 1,
       result: "authority_unavailable",
-      reason: "customer_backup_token_scope_unavailable",
+      reason: "customer_backup_token_not_app_scoped",
       expectedCustomerProfile: true,
       operatorActionRequired: true,
       incident: "create",

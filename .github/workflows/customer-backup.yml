@@ -27,6 +27,7 @@ jobs:
     outputs:
       active: ${{ steps.check.outputs.active }}
       result: ${{ steps.check.outputs.result }}
+      release: ${{ steps.check.outputs.release }}
     steps:
       - name: Initialize backup preflight evidence
         shell: bash
@@ -61,6 +62,7 @@ jobs:
           EXPECTED_ACTIVE: ${{ vars.MENDPOINT_CUSTOMER_PROFILE_ACTIVE }}
           FLY_API_TOKEN: ${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}
           CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
+          RELEASE_MAP: ${{ vars.MENDPOINT_CUSTOMER_BACKUP_RELEASE_MAP }}
         run: |
           set -euo pipefail
 
@@ -95,6 +97,7 @@ jobs:
               > "$evidence"
             echo "active=$active" >> "$GITHUB_OUTPUT"
             echo "result=$result" >> "$GITHUB_OUTPUT"
+            echo "release=$live_release_revision" >> "$GITHUB_OUTPUT"
             printf '### Customer production backup\n\nResult: `%s`  \nLive profile: `%s`  \nWorkflow revision: `%s`  \nLive release revision: `%s`  \nBackup taken: `false`\n' \
               "$result" "$live_profile" "$GITHUB_SHA" "$live_release_revision" >> "$GITHUB_STEP_SUMMARY"
             exit "$status"
@@ -135,30 +138,36 @@ jobs:
             echo customer_backup_app_binding_invalid >&2
             exit 1
           }
+          reason="customer_backup_live_runtime_unavailable"
+          app_status_json="$(flyctl status --app "$CUSTOMER_APP" --json)"
+          app_id="$(jq -er '(.ID // .id // .App.ID // .app.id) | tostring | select(test("^[1-9][0-9]*$"))' <<< "$app_status_json")" || {
+            echo customer_backup_app_id_unavailable >&2
+            exit 1
+          }
           reason="customer_backup_token_scope_unavailable"
-          apps_json="$(flyctl apps list --json)" || {
+          token_debug_json="$(flyctl tokens debug)" || {
             echo customer_backup_token_scope_unavailable >&2
             exit 1
           }
-          visible_apps_json="$(jq -ce '[.[] | (.Name // .name)] | unique' <<< "$apps_json")" || {
-            echo customer_backup_token_scope_unavailable >&2
-            exit 1
-          }
-          visible_app_count="$(jq -r 'length' <<< "$visible_apps_json")" || {
-            echo customer_backup_token_scope_unavailable >&2
-            exit 1
-          }
-          visible_app="$(jq -r '.[0] // ""' <<< "$visible_apps_json")" || {
-            echo customer_backup_token_scope_unavailable >&2
-            exit 1
-          }
-          reason="customer_backup_token_not_app_scoped"
-          if [ "$visible_app_count" -ne 1 ] || [ "$visible_app" != "$CUSTOMER_APP" ]; then
+          if ! TOKEN_DEBUG_JSON="$token_debug_json" EXPECTED_APP_ID="$app_id" node -e '
+            const decoded = JSON.parse(process.env.TOKEN_DEBUG_JSON ?? "null");
+            const permissions = Array.isArray(decoded)
+              ? decoded.filter((token) => /api\.fly\.io/.test(token?.location ?? "")) : [];
+            const valid = permissions.length > 0 && permissions.every((token) => {
+              const apps = (token.caveats ?? []).filter((caveat) =>
+                String(caveat.type ?? caveat.name ?? caveat.kind ?? "").toLowerCase() === "apps"
+              ).map((caveat) => caveat.value ?? caveat.values ?? caveat.args ?? caveat.apps ?? []);
+              return apps.length === 1 && Array.isArray(apps[0]) && apps[0].length === 1 &&
+                String(apps[0][0]) === process.env.EXPECTED_APP_ID && /^[1-9][0-9]*$/.test(String(apps[0][0]));
+            });
+            process.exit(valid ? 0 : 1);
+          ' >/dev/null 2>&1; then
+            reason="customer_backup_token_not_app_scoped"
             echo customer_backup_token_not_app_scoped >&2
             exit 1
           fi
+          unset token_debug_json
           reason="customer_backup_live_runtime_unavailable"
-          flyctl status --app "$CUSTOMER_APP" >/dev/null
           runtime_json="$(flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
             --command "node -e 'process.stdout.write(JSON.stringify({deploymentProfile:process.env.MENDPOINT_DEPLOYMENT_PROFILE ?? null,releaseRevision:process.env.MENDPOINT_RELEASE_REVISION ?? null}))'")"
           reason="customer_backup_live_runtime_invalid"
@@ -167,12 +176,26 @@ jobs:
             exit 1
           }
           live_profile="$parsed_live_profile"
-          parsed_live_release_revision="$(jq -er '.releaseRevision | strings | select(test("^[a-f0-9]{40}$"))' <<< "$runtime_json")" || {
+          parsed_live_release_revision="$(jq -er '.releaseRevision | strings | select(test("^([a-f0-9]{40}|[a-f0-9]{64})$"))' <<< "$runtime_json")" || {
             echo customer_backup_live_runtime_invalid >&2
             exit 1
           }
           live_release_revision="$parsed_live_release_revision"
-          if [ "$live_release_revision" = "$GITHUB_SHA" ]; then
+          expected_release="$GITHUB_SHA"
+          if [ "${#live_release_revision}" -eq 64 ]; then
+            expected_release="$(RELEASE_MAP_JSON="${RELEASE_MAP:-}" SOURCE_REVISION="$GITHUB_SHA" node -e '
+              const map = JSON.parse(process.env.RELEASE_MAP_JSON ?? "null");
+              const value = map?.[process.env.SOURCE_REVISION ?? ""];
+              if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) process.exit(1);
+              process.stdout.write(value);
+            ' 2>/dev/null)" || {
+              result="operator_action_required"
+              reason="customer_backup_release_mapping_missing"
+              echo customer_backup_release_mapping_missing >&2
+              exit 1
+            }
+          fi
+          if [ "$live_release_revision" = "$expected_release" ]; then
             release_revision_matches_workflow=true
           fi
           case "$live_profile" in
@@ -186,7 +209,7 @@ jobs:
           esac
 
           if [ "$expected_active" = "true" ] && [ "$live_profile" = "customer" ]; then
-            if [ "$live_release_revision" != "$GITHUB_SHA" ]; then
+            if [ "$live_release_revision" != "$expected_release" ]; then
               result="operator_action_required"
               reason="customer_backup_release_revision_mismatch"
               echo customer_backup_release_revision_mismatch >&2
@@ -261,27 +284,27 @@ jobs:
             echo customer_backup_app_binding_invalid >&2
             exit 1
           }
-          apps_json="$(flyctl apps list --json)"
-          visible_apps_json="$(jq -ce '[.[] | (.Name // .name)] | unique' <<< "$apps_json")"
-          visible_app_count="$(jq -r 'length' <<< "$visible_apps_json")"
-          visible_app="$(jq -r '.[0] // ""' <<< "$visible_apps_json")"
-          if [ "$visible_app_count" -ne 1 ] || [ "$visible_app" != "$CUSTOMER_APP" ]; then
+          app_status_json="$(flyctl status --app "$CUSTOMER_APP" --json)"
+          app_id="$(jq -er '(.ID // .id // .App.ID // .app.id) | tostring | select(test("^[1-9][0-9]*$"))' <<< "$app_status_json")"
+          token_debug_json="$(flyctl tokens debug)" || { echo customer_backup_token_debug_invalid >&2; exit 1; }
+          if ! TOKEN_DEBUG_JSON="$token_debug_json" EXPECTED_APP_ID="$app_id" node -e 'const decoded=JSON.parse(process.env.TOKEN_DEBUG_JSON??"null");const permissions=Array.isArray(decoded)?decoded.filter((token)=>/api\.fly\.io/.test(token?.location??"")):[];const valid=permissions.length>0&&permissions.every((token)=>{const apps=(token.caveats??[]).filter((caveat)=>String(caveat.type??caveat.name??caveat.kind??"").toLowerCase()==="apps").map((caveat)=>caveat.value??caveat.values??caveat.args??caveat.apps??[]);return apps.length===1&&Array.isArray(apps[0])&&apps[0].length===1&&String(apps[0][0])===process.env.EXPECTED_APP_ID&&/^[1-9][0-9]*$/.test(String(apps[0][0]));});process.exit(valid?0:1)' >/dev/null 2>&1; then
             echo customer_backup_token_not_app_scoped >&2
             exit 1
           fi
-          flyctl status --app "$CUSTOMER_APP" >/dev/null
+          unset token_debug_json
 
       - name: Run authenticated customer backup
         shell: bash
         env:
           FLY_API_TOKEN: ${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}
           CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
+          EXPECTED_RELEASE: ${{ needs.profile-gate.outputs.release }}
         run: |
           set -euo pipefail
           evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
           flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
-            --command "MENDPOINT_EXPECTED_BACKUP_RELEASE_REVISION=$GITHUB_SHA node --import tsx scripts/customer-backup.ts" 2>&1 | tee -a "$evidence"
-          bash scripts/verify-customer-backup-result.sh "$evidence" "$GITHUB_SHA" >/dev/null
+            --command "node --import tsx scripts/customer-backup.ts --expected-release $EXPECTED_RELEASE" 2>&1 | tee -a "$evidence"
+          bash scripts/verify-customer-backup-result.sh "$evidence" "$EXPECTED_RELEASE" >/dev/null
           printf 'result=success backupTaken=true\n' >> "$evidence"
 
       - name: Retain backup evidence

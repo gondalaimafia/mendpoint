@@ -3322,6 +3322,21 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 
 ## 2026-08-26 Customer backup authority replacement
 
+### Exact release and token authority follow-up
+
+- [x] Preserve exact 40 or 64 character immutable release identities and bind 64 character releases to a protected workflow-source mapping.
+- [x] Prove Fly token scope from every decoded permission token's single exact Apps caveat, never visible-app cardinality.
+- [x] Require explicit `--expected-release` authority for manual backup execution.
+- [x] Run focused tests, script typecheck, workflow checks, build, audit, and diff integrity; commit locally only.
+
+#### Follow-up review
+
+The workflow now accepts only canonical lowercase 40 or 64 character immutable release identities. A 40 character live release remains bound to the exact workflow SHA. A 64 character live release is eligible only when the protected environment map binds that workflow SHA to the exact live release, and the same expected release is passed to the remote producer and terminal verifier.
+
+Fly scope proof no longer depends on the number of visible apps. Both preflight and execution resolve the configured app's numeric ID, decode the credential with `fly tokens debug`, suppress decoded output, and require every Fly API permission token to carry exactly one Apps caveat containing only that nonzero ID. The executable matrix rejects organization, personal, wildcard, wrong-app, multi-app, mixed-token, unavailable, and malformed authority.
+
+Manual `npm run backup:customer` now fails before backup input or storage access unless the operator supplies `--expected-release`. Verification passes 74 focused tests with three retained jq-dependent Ubuntu cases, the scripts TypeScript project, configuration completeness, action pins, optimized 50-route production build, dependency audit with zero vulnerabilities, and diff integrity.
+
 - [x] Add a failing workflow regression that distinguishes operator intent, the live Fly deployment profile, and indeterminate authority.
 - [x] Derive the live profile through the exact app-scoped Fly credential and fail closed on intent/profile drift.
 - [x] Retain explicit evidence when no backup is taken, without turning the deliberately inactive state into a recurring failure alert.
