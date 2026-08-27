@@ -147,7 +147,7 @@
       "issuedAt": "2026-08-27T01:52:51.063Z",
       "expiresAt": "2026-08-28T01:52:51.063Z",
       "basePolicySha256": "sha256:809f79e92cd7be5ce58c6f7920d44f0640c24138f553656911842d74c76d8a67",
-      "proposedPolicySha256": "sha256:df1cdd085f05440fbfcc7b9e8c3099dfc84e8eecd0ad760804f8fb3fda61aac9",
+      "proposedPolicySha256": "sha256:b2312f5db35c1511e34807e1d99efe16e0b750fcdf47ab448d068bf9371b571d",
       "previousRotationId": "rotation-20260827-003",
       "baseRevision": "2257f98961184044aab63982d89aa9b391aa3fbd",
       "baseLedgerSha256": "sha256:a08226358359c37befbe0a5c58b7d691a918acbf1d0b467aa4f49f0cc047cb9c",
@@ -156,28 +156,28 @@
         {
           "path": "config/production-closure-authority.json",
           "fromSha256": "sha256:809f79e92cd7be5ce58c6f7920d44f0640c24138f553656911842d74c76d8a67",
-          "toSha256": "sha256:df1cdd085f05440fbfcc7b9e8c3099dfc84e8eecd0ad760804f8fb3fda61aac9",
+          "toSha256": "sha256:b2312f5db35c1511e34807e1d99efe16e0b750fcdf47ab448d068bf9371b571d",
           "fromMode": "100644",
           "toMode": "100644"
         },
         {
           "path": "config/production-closure-successors/closure-authority-v2.yml",
           "fromSha256": null,
-          "toSha256": "sha256:8d9236ab5b2cea098cecab56e21df67ead9319cf7399badbce47c06422971d57",
+          "toSha256": "sha256:146e458e3fe5df07ef547d0216f24b741950abb6f6e5f19799b084123b7b8dd3",
           "fromMode": null,
           "toMode": "100644"
         },
         {
           "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
           "fromSha256": "sha256:bcc36c11779ee88e9208ce08a8bb685e14eba35be2d95a6ff3b8bbcedf89205d",
-          "toSha256": "sha256:5238105ba99562379db2d14eebbda39195e18f17da23ba491cee0fa06b34b5e1",
+          "toSha256": "sha256:3f1c9d67bf8d04f69ec0489b518d8b08afa96f79893a3ddb9bbb089528d2be7f",
           "fromMode": "100644",
           "toMode": "100644"
         },
         {
           "path": "scripts/production-closure-github-authority.test.ts",
           "fromSha256": "sha256:8363820e2b0f9a39ad7574de183c1e6363562b570424ccc26571314e528177b9",
-          "toSha256": "sha256:87366855535bfa63b45ba245943f2946b73e254d0c2a2cade8774c8b6a86d8c6",
+          "toSha256": "sha256:eeb05e42f935707fc8e3380d645a9882e175b77adbf2b413a0daebc62861550a",
           "fromMode": "100644",
           "toMode": "100644"
         },
@@ -198,7 +198,7 @@
         {
           "path": "scripts/production-closure-sweep-authority.ts",
           "fromSha256": null,
-          "toSha256": "sha256:06cc1f881ad7958905eb71de4514d6b5713499935afd06b2dcd6af5262021149",
+          "toSha256": "sha256:72b4e0c7c052b9d903305e6a37f0cbe7d7cd1f7ebb5356ca6978d55ef5186dc7",
           "fromMode": null,
           "toMode": "100644"
         }

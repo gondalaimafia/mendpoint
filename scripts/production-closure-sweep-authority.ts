@@ -5,6 +5,16 @@ import { pathToFileURL } from "node:url";
 export type SweepAuthorityKind = "proposal" | "github";
 export type SweepIssueCategory = "semantic" | "operational";
 
+export interface SweepExecutionOutcomes {
+  appIdentity: string;
+  branchProtection: string;
+  matrix: string;
+  externalPublication: string;
+  controllerPublication: string;
+  proposal: string;
+  github: string;
+}
+
 export const sweepIssueCategories = {
   proposal: {
     PROPOSAL_AUTHORITY_CONFIGURATION_INVALID: "operational",
@@ -355,16 +365,84 @@ export function isHealthyFullSweepObservation(
   );
 }
 
+function observationVerdict(value: unknown): "pass" | "fail" | null {
+  if (!isRecord(value)) return null;
+  return value.verdict === "pass" || value.verdict === "fail" ? value.verdict : null;
+}
+
+export function isHealthySweepExecution(
+  eventName: string,
+  outcomes: SweepExecutionOutcomes,
+  proposalObservation: unknown,
+  githubObservation: unknown,
+): boolean {
+  if (
+    outcomes.appIdentity !== "success" ||
+    outcomes.branchProtection !== "success" ||
+    outcomes.matrix !== "success" ||
+    outcomes.externalPublication !== "success" ||
+    outcomes.controllerPublication !== "success"
+  ) {
+    return false;
+  }
+  if (
+    !isHealthyFullSweepObservation("proposal", proposalObservation) ||
+    !isHealthyFullSweepObservation("github", githubObservation)
+  ) {
+    return false;
+  }
+
+  const proposalVerdict = observationVerdict(proposalObservation);
+  const githubVerdict = observationVerdict(githubObservation);
+  if (eventName === "pull_request_target") {
+    return outcomes.proposal === "success" &&
+      outcomes.github === "success" &&
+      proposalVerdict === "pass" &&
+      githubVerdict === "pass";
+  }
+  if (!["push", "schedule", "workflow_dispatch"].includes(eventName)) return false;
+  return (
+    (outcomes.proposal === "success" && proposalVerdict === "pass") ||
+    (outcomes.proposal === "failure" && proposalVerdict === "fail")
+  ) && (
+    (outcomes.github === "success" && githubVerdict === "pass") ||
+    (outcomes.github === "failure" && githubVerdict === "fail")
+  );
+}
+
+function readJson(path: string): unknown {
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
 function main(): void {
-  const [authority, observationPath] = process.argv.slice(2);
-  let observation: unknown;
+  const [mode, ...args] = process.argv.slice(2);
   try {
-    observation = JSON.parse(readFileSync(observationPath, "utf8"));
+    if (mode === "execution") {
+      const [eventName, proposalPath, githubPath] = args;
+      const outcomes: SweepExecutionOutcomes = {
+        appIdentity: process.env.APP_IDENTITY_OUTCOME ?? "",
+        branchProtection: process.env.BRANCH_PROTECTION_OUTCOME ?? "",
+        matrix: process.env.MATRIX_OUTCOME ?? "",
+        externalPublication: process.env.EXTERNAL_PUBLICATION_OUTCOME ?? "",
+        controllerPublication: process.env.CONTROLLER_PUBLICATION_OUTCOME ?? "",
+        proposal: process.env.PROPOSAL_OUTCOME ?? "",
+        github: process.env.GITHUB_OUTCOME ?? "",
+      };
+      if (!isHealthySweepExecution(
+        eventName,
+        outcomes,
+        readJson(proposalPath),
+        readJson(githubPath),
+      )) {
+        process.exitCode = 1;
+      }
+      return;
+    }
+    const [observationPath] = args;
+    if (!isHealthyFullSweepObservation(mode, readJson(observationPath))) process.exitCode = 1;
   } catch {
     process.exitCode = 1;
-    return;
   }
-  if (!isHealthyFullSweepObservation(authority, observation)) process.exitCode = 1;
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) main();

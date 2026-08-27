@@ -262,6 +262,59 @@ function runSweepClassifier(authority: string, observation: unknown): number | n
   }
 }
 
+interface SweepExecutionOutcomes {
+  appIdentity: string;
+  branchProtection: string;
+  matrix: string;
+  externalPublication: string;
+  controllerPublication: string;
+  proposal: string;
+  github: string;
+}
+
+function runSweepExecution(
+  eventName: string,
+  outcomes: SweepExecutionOutcomes,
+  proposalObservation: unknown,
+  githubObservation: unknown,
+): number | null {
+  const directory = mkdtempSync(join(tmpdir(), "mendpoint-sweep-execution-"));
+  try {
+    const proposalPath = join(directory, "proposal.json");
+    const githubPath = join(directory, "github.json");
+    writeFileSync(proposalPath, `${JSON.stringify(proposalObservation)}\n`);
+    writeFileSync(githubPath, `${JSON.stringify(githubObservation)}\n`);
+    return spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        resolve(root, "scripts", "production-closure-sweep-authority.ts"),
+        "execution",
+        eventName,
+        proposalPath,
+        githubPath,
+      ],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          APP_IDENTITY_OUTCOME: outcomes.appIdentity,
+          BRANCH_PROTECTION_OUTCOME: outcomes.branchProtection,
+          MATRIX_OUTCOME: outcomes.matrix,
+          EXTERNAL_PUBLICATION_OUTCOME: outcomes.externalPublication,
+          CONTROLLER_PUBLICATION_OUTCOME: outcomes.controllerPublication,
+          PROPOSAL_OUTCOME: outcomes.proposal,
+          GITHUB_OUTCOME: outcomes.github,
+        },
+        stdio: "ignore",
+      },
+    ).status;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 function validSweepObservation(
   authority: "proposal" | "github",
   verdict: "pass" | "fail",
@@ -434,6 +487,82 @@ describe("GitHub production closure authority", () => {
     }
   });
 
+  it("requires every non-observation outcome during a full sweep", () => {
+    const outcomes: SweepExecutionOutcomes = {
+      appIdentity: "success",
+      branchProtection: "success",
+      matrix: "success",
+      externalPublication: "success",
+      controllerPublication: "success",
+      proposal: "failure",
+      github: "failure",
+    };
+    const proposalObservation = validSweepObservation("proposal", "fail", [
+      { code: "SPEC_MISSING", subject: "spec", message: "missing" },
+    ]);
+    const githubObservation = validSweepObservation("github", "fail", [
+      { code: "PR_METADATA_MISMATCH", subject: "495", message: "stale" },
+    ]);
+    expect(runSweepExecution("schedule", outcomes, proposalObservation, githubObservation)).toBe(0);
+    for (const outcome of [
+      "appIdentity",
+      "branchProtection",
+      "matrix",
+      "externalPublication",
+      "controllerPublication",
+    ] as const) {
+      expect(runSweepExecution(
+        "schedule",
+        { ...outcomes, [outcome]: "failure" },
+        proposalObservation,
+        githubObservation,
+      ), outcome).not.toBe(0);
+    }
+  });
+
+  it("tolerates only evaluator failures with matching semantic observations", () => {
+    const mandatorySuccess: SweepExecutionOutcomes = {
+      appIdentity: "success",
+      branchProtection: "success",
+      matrix: "success",
+      externalPublication: "success",
+      controllerPublication: "success",
+      proposal: "failure",
+      github: "failure",
+    };
+    const semanticProposal = validSweepObservation("proposal", "fail", [
+      { code: "SPEC_MISSING", subject: "spec", message: "missing" },
+    ]);
+    const semanticGitHub = validSweepObservation("github", "fail", [
+      { code: "PR_METADATA_MISMATCH", subject: "495", message: "stale" },
+    ]);
+    expect(runSweepExecution("workflow_dispatch", mandatorySuccess, semanticProposal, semanticGitHub)).toBe(0);
+    expect(runSweepExecution(
+      "workflow_dispatch",
+      { ...mandatorySuccess, proposal: "skipped" },
+      semanticProposal,
+      semanticGitHub,
+    )).not.toBe(0);
+    expect(runSweepExecution(
+      "workflow_dispatch",
+      { ...mandatorySuccess, proposal: "success" },
+      semanticProposal,
+      semanticGitHub,
+    )).not.toBe(0);
+    expect(runSweepExecution(
+      "workflow_dispatch",
+      mandatorySuccess,
+      validSweepObservation("proposal", "pass", []),
+      semanticGitHub,
+    )).not.toBe(0);
+    expect(runSweepExecution(
+      "workflow_dispatch",
+      { ...mandatorySuccess, proposal: "success", github: "success" },
+      validSweepObservation("proposal", "pass", []),
+      validSweepObservation("github", "pass", []),
+    )).toBe(0);
+  });
+
   it("preauthorizes an inert successor template that tolerates only evaluated red sweep verdicts", () => {
     const templatePath = resolve(root, "config", "production-closure-successors", "closure-authority-v2.yml");
     const templateBytes = readFileSync(templatePath);
@@ -444,11 +573,16 @@ describe("GitHub production closure authority", () => {
       (step) => step.name === "Enforce protected authority verdict",
     );
     expect(enforcement?.if).toBe("always()");
-    expect(enforcement?.run).toContain('if [ "$GITHUB_EVENT_NAME" = pull_request_target ]');
-    expect(enforcement?.run).toContain('test "$EXTERNAL_PUBLICATION_OUTCOME" = success');
-    expect(enforcement?.run).toContain('test "$CONTROLLER_PUBLICATION_OUTCOME" = success');
-    expect(enforcement?.run).toContain('test -s "$observation"');
-    expect(enforcement?.run).toContain("production-closure-sweep-authority.ts");
+    expect(enforcement?.run).toContain("production-closure-sweep-authority.ts execution");
+    expect(enforcement?.env).toMatchObject({
+      APP_IDENTITY_OUTCOME: "${{ steps.app-identity.outcome }}",
+      BRANCH_PROTECTION_OUTCOME: "${{ steps.branch-protection.outcome }}",
+      MATRIX_OUTCOME: "${{ steps.matrix.outcome }}",
+      EXTERNAL_PUBLICATION_OUTCOME: "${{ steps.publish-external.outcome }}",
+      CONTROLLER_PUBLICATION_OUTCOME: "${{ steps.publish-controller.outcome }}",
+      PROPOSAL_OUTCOME: "${{ steps.proposal.outcome }}",
+      GITHUB_OUTCOME: "${{ steps.github.outcome }}",
+    });
   });
   it("runs per-PR authority from default-branch code and publishes an App-bound verdict", () => {
     const workflow = parse(

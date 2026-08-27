@@ -1280,7 +1280,8 @@
         438
       ],
       "pullRequests": [
-        358
+        358,
+        498
       ],
       "testEvidenceIds": [
         "ME-ENT-007-AC01-EV01"
@@ -1673,7 +1674,8 @@
       "pullRequests": [
         418,
         419,
-        421
+        421,
+        499
       ],
       "testEvidenceIds": [
         "ME-MSN-002-AC01-EV05",
@@ -1701,7 +1703,8 @@
         417,
         418,
         420,
-        421
+        421,
+        499
       ],
       "testEvidenceIds": [
         "ME-MSN-003-AC01-EV02"
@@ -1728,7 +1731,8 @@
         409,
         410,
         417,
-        419
+        419,
+        499
       ],
       "testEvidenceIds": [
         "ME-MTE-001-AC01-EV04"
@@ -2056,9 +2060,9 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-26T04:06:40.824Z",
+    "observedAt": "2026-08-27T04:53:14.433Z",
     "observedMainRevision": "2257f98961184044aab63982d89aa9b391aa3fbd",
-    "observationDigest": "sha256:a1cebf87352a6143ec621469cfd4a9ecc3ca12d38d21301e8cca79e67f1f1e3d",
+    "observationDigest": "sha256:5a2c425cca4e3db4474a05745f164cf8a1396b96f63ce005aed5eabd63706364",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -2086,7 +2090,7 @@
         "issuedAt": "2026-08-27T01:52:51.063Z",
         "expiresAt": "2026-08-28T01:52:51.063Z",
         "basePolicySha256": "sha256:809f79e92cd7be5ce58c6f7920d44f0640c24138f553656911842d74c76d8a67",
-        "proposedPolicySha256": "sha256:df1cdd085f05440fbfcc7b9e8c3099dfc84e8eecd0ad760804f8fb3fda61aac9"
+        "proposedPolicySha256": "sha256:b2312f5db35c1511e34807e1d99efe16e0b750fcdf47ab448d068bf9371b571d"
       }
     },
     "pullRequests": [
@@ -3602,7 +3606,7 @@
         "disposition": "extract_smaller_replacement",
         "dependencies": {
           "pullRequests": [
-            467
+            499
           ],
           "branches": []
         },
@@ -3724,9 +3728,11 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "extract_smaller_replacement",
         "dependencies": {
-          "pullRequests": [],
+          "pullRequests": [
+            499
+          ],
           "branches": []
         },
         "requirementIds": [],
@@ -3772,10 +3778,10 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "extract_smaller_replacement",
         "dependencies": {
           "pullRequests": [
-            466
+            499
           ],
           "branches": []
         },
@@ -3818,9 +3824,11 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "extract_smaller_replacement",
         "dependencies": {
-          "pullRequests": [],
+          "pullRequests": [
+            499
+          ],
           "branches": []
         },
         "requirementIds": [],
@@ -3853,10 +3861,10 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "extract_smaller_replacement",
         "dependencies": {
           "pullRequests": [
-            460
+            499
           ],
           "branches": []
         },
@@ -3895,9 +3903,11 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "extract_smaller_replacement",
         "dependencies": {
-          "pullRequests": [],
+          "pullRequests": [
+            498
+          ],
           "branches": []
         },
         "requirementIds": [],
@@ -4264,6 +4274,154 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "585b9c43a9f5b31d034bdc3a3d7229627069142b",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 496,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/496",
+        "title": "docs: lead the public page with the shipped product, demote the demo",
+        "headBranch": "readme-refresh",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "extract_smaller_replacement",
+        "dependencies": {
+          "pullRequests": [
+            497
+          ],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "checks_failed",
+        "headRevision": "e1be32a7658b669f60c1961c5e8c5028adf3bdd2",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 497,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/497",
+        "title": "Correct README production availability claims",
+        "headBranch": "codex/pr496-review-fixes",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "checks_failed",
+        "headRevision": "2a87ceab5f1280d8fcc3d4e887e7829c022469aa",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 498,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/498",
+        "title": "Restore fail-closed customer backup authority",
+        "headBranch": "codex/replace-backup-authority",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-ENT-007"
+        ],
+        "checkState": "checks_failed",
+        "headRevision": "9241fa80a6e0bde57fd2935f70fe88821ae9016f",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 499,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/499",
+        "title": "Preserve Mission authority across remote mutations",
+        "headBranch": "codex/replace-mission-handoff-authority",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-MSN-002",
+          "ME-MSN-003",
+          "ME-MTE-001"
+        ],
+        "checkState": "checks_failed",
+        "headRevision": "97243f81d4b37469375d0adef4a6cd0bbc6398c3",
         "mergeRevision": null,
         "checks": [],
         "review": {

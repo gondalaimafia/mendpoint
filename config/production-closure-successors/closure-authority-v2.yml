@@ -361,25 +361,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$APP_IDENTITY_OUTCOME" = success
-          test "$BRANCH_PROTECTION_OUTCOME" = success
-          test "$MATRIX_OUTCOME" = success
-          test "$EXTERNAL_PUBLICATION_OUTCOME" = success
-          test "$CONTROLLER_PUBLICATION_OUTCOME" = success
-          if [ "$GITHUB_EVENT_NAME" = pull_request_target ]; then
-            test "$PROPOSAL_OUTCOME" = success
-            test "$GITHUB_OUTCOME" = success
-            exit 0
-          fi
-          for authority_observation in \
-            "proposal:$PROPOSAL_OBSERVATION" \
-            "github:$GITHUB_OBSERVATION"; do
-            authority="${authority_observation%%:*}"
-            observation="${authority_observation#*:}"
-            test -s "$observation"
-            node --import tsx scripts/production-closure-sweep-authority.ts \
-              "$authority" "$observation"
-          done
+          node --import tsx scripts/production-closure-sweep-authority.ts execution \
+            "$GITHUB_EVENT_NAME" \
+            "$PROPOSAL_OBSERVATION" \
+            "$GITHUB_OBSERVATION"
         env:
           APP_IDENTITY_OUTCOME: ${{ steps.app-identity.outcome }}
           BRANCH_PROTECTION_OUTCOME: ${{ steps.branch-protection.outcome }}
