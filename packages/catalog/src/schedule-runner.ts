@@ -323,9 +323,8 @@ function releaseReferencesHaveAuthority(
       ) return false;
       coveredArtifacts.add(reference.artifactId);
     }
-    return result.status !== "ingested" ||
-      (result.dispatches.length === result.artifacts.length &&
-        coveredArtifacts.size === result.artifacts.length);
+    return result.dispatches.length === result.artifacts.length &&
+      coveredArtifacts.size === result.artifacts.length;
   } catch {
     return false;
   }
