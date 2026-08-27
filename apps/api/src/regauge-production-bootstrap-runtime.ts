@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import {
   appendDomainEvent,
   bindMissionScope,
@@ -35,6 +36,11 @@ import {
   resolveGitHubTenantAccountBinding,
   type InstallationRepository,
 } from "@mendpoint/github";
+import {
+  ingestManifestDependencies,
+  openGraphLearnDb,
+  type GraphLearnDb,
+} from "@mendpoint/graph-learn";
 import {
   bindVerifierAdvisoryPolicyAuthorityAtMissionLaunch,
   ensureDefaultPolicyEnvelopeBinding,
@@ -381,6 +387,7 @@ type RuntimeOptions = Readonly<{
   control: TransformerCampaignService;
   executions: TransformerPilotExecutionService;
   missions: TransformerMissionService;
+  dependencyGraph: GraphLearnDb;
   repositoryDependencies: RepositoryConnectionDependencies;
   verifierConsentAuthority?: RegaugeVerifierConsentAuthority;
   verifierPolicyAuthority?: Readonly<{
@@ -700,6 +707,19 @@ export function createRegaugeProductionBootstrapRuntime(
       const recipe = matchingRecipe(bootstrap);
       const authority = createAppDbTransformerMissionAuthority(options.db)
         .repositories.load(bootstrap.tenantId, stored.id, at, recipe.allowedPaths, materialized.snapshot.id);
+      const snapshots = listRepositorySnapshots(options.db, bootstrap.tenantId, stored.id)
+        .filter((candidate) => candidate.id === materialized.snapshot.id);
+      if (snapshots.length !== 1) throw new Error("regauge_production_bootstrap_snapshot_ambiguous");
+      const dependencyEvidence = ingestManifestDependencies(options.dependencyGraph, {
+        repoPath: snapshots[0]!.storage_path,
+        repoId: stored.id,
+        tenantId: bootstrap.tenantId,
+      });
+      if (dependencyEvidence.status !== "ingested") {
+        throw new Error(
+          `regauge_production_bootstrap_dependency_evidence_incomplete:${dependencyEvidence.reason}`,
+        );
+      }
       return Object.freeze({
         repositoryId: stored.id,
         snapshotId: materialized.snapshot.id,
@@ -937,6 +957,14 @@ export async function runRegaugeProductionBootstrapFromEnvironment(
     rawGateConfig: input.gateConfig,
     environment: input.environment,
   });
+  const graphPath = env.GRAPH_LEARN_DB?.trim();
+  if (!graphPath || !existsSync(graphPath)) {
+    executions.close();
+    control.close();
+    db.raw.close();
+    throw new Error("regauge_production_bootstrap_dependency_graph_required");
+  }
+  const dependencyGraph = openGraphLearnDb(graphPath);
   const authority = createAppDbTransformerMissionAuthority(db);
   const missions = new TransformerMissionService(
     control,
@@ -947,6 +975,7 @@ export async function runRegaugeProductionBootstrapFromEnvironment(
     input.environment,
     () => new Date().toISOString(),
     {
+      graph: dependencyGraph,
       organizationMemory: (tenantId) => listOrganizationMemory(db, { tenantId }),
     },
   );
@@ -956,6 +985,7 @@ export async function runRegaugeProductionBootstrapFromEnvironment(
       control,
       executions,
       missions,
+      dependencyGraph,
       repositoryDependencies: {
         credentialBroker: broker,
         actorId: "service:regauge-production-bootstrap",
@@ -972,6 +1002,7 @@ export async function runRegaugeProductionBootstrapFromEnvironment(
     });
     return await bootstrapRegaugeProductionCampaign(input, runtime);
   } finally {
+    dependencyGraph.raw.close();
     executions.close();
     control.close();
     db.raw.close();

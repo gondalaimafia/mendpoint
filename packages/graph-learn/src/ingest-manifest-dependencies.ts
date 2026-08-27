@@ -9,6 +9,7 @@
  * nodes plus DEPENDS_ON edges. Malformed manifests are skipped, never guessed.
  */
 import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { upsertEdge, upsertNode, type GraphLearnDb } from "./store.js";
 
@@ -36,6 +37,8 @@ export type ManifestIngestResult = Readonly<{
   packageName: string | null;
   dependencies: number;
   skipped: number;
+  contentDigest: string | null;
+  evidenceRefs: readonly string[];
 }>;
 
 /**
@@ -157,6 +160,8 @@ function writeDependencies(
     sourcePath: string;
     packageName: string;
     deps: readonly ManifestDependency[];
+    contentDigest: string;
+    evidenceRefs: readonly string[];
   },
 ): { dependencies: number; skipped: number } {
   const tenantProps = input.tenantId ? { tenant_id: input.tenantId } : {};
@@ -166,7 +171,14 @@ function writeDependencies(
     kind: "Service",
     label: input.packageName,
     repo_id: input.repoId,
-    props: { ...tenantProps, ecosystem: input.deps[0]?.ecosystem ?? "npm", manifest: input.sourcePath },
+    props: {
+      ...tenantProps,
+      ecosystem: input.deps[0]?.ecosystem ?? "npm",
+      manifest: input.sourcePath,
+      manifest_ingest_status: "complete",
+      manifest_content_digest: input.contentDigest,
+      manifest_evidence_refs: [...input.evidenceRefs],
+    },
   });
   let dependencies = 0;
   let skipped = 0;
@@ -192,7 +204,14 @@ function writeDependencies(
       target: targetId,
       source_system: "manifest",
       confidence: 1,
-      props: { specifier: dep.specifier, ecosystem: dep.ecosystem, block: dep.block, manifest: input.sourcePath },
+      props: {
+        specifier: dep.specifier,
+        ecosystem: dep.ecosystem,
+        block: dep.block,
+        manifest: input.sourcePath,
+        manifest_content_digest: input.contentDigest,
+        evidence_refs: [...input.evidenceRefs],
+      },
     });
     dependencies++;
   }
@@ -218,7 +237,15 @@ export function ingestManifestDependencies(
     reason: ManifestSkipReason,
     manifest: string | null,
   ): ManifestIngestResult => ({
-    status: "skipped", reason, manifest, ecosystem: null, packageName: null, dependencies: 0, skipped: 0,
+    status: "skipped",
+    reason,
+    manifest,
+    ecosystem: null,
+    packageName: null,
+    dependencies: 0,
+    skipped: 0,
+    contentDigest: null,
+    evidenceRefs: [],
   });
   const candidates = ["package.json", "pyproject.toml", "go.mod"] as const;
   let chosen: { path: string; text: string } | undefined;
@@ -241,12 +268,16 @@ export function ingestManifestDependencies(
   if (!chosen) return notIngested("no-manifest", null);
   const parsed = parseManifest(chosen.path, chosen.text);
   if (!parsed.ok) return notIngested(parsed.reason, chosen.path);
+  const contentDigest = `sha256:${createHash("sha256").update(chosen.text, "utf8").digest("hex")}`;
+  const evidenceRefs = [`manifest-ingest:${contentDigest}`];
   const written = writeDependencies(db, {
     repoId: opts.repoId,
     tenantId: opts.tenantId,
     sourcePath: chosen.path,
     packageName: parsed.name,
     deps: parsed.deps,
+    contentDigest,
+    evidenceRefs,
   });
   return {
     status: "ingested",
@@ -256,5 +287,7 @@ export function ingestManifestDependencies(
     packageName: parsed.name,
     dependencies: written.dependencies,
     skipped: written.skipped,
+    contentDigest,
+    evidenceRefs,
   };
 }

@@ -16,6 +16,43 @@ import {
 } from "./recipe.js";
 
 const MAX_RECIPE_CATALOG = 128;
+export const REGAUGE_DEPENDENCY_PROJECTION_SCHEMA_VERSION = "2026-08-27.v1" as const;
+
+export type RegaugeDependencyCoverage = "complete" | "unknown" | "not_consulted";
+
+export type RegaugeDependencyProjectionRepositoryV1 = Readonly<{
+  repositoryId: string;
+  serviceId: string | null;
+  coverage: RegaugeDependencyCoverage;
+  reason: string;
+  dependsOnRepositoryIds: readonly string[];
+  evidenceRefs: readonly string[];
+}>;
+
+export type RegaugeDependencyProjectionEdgeV1 = Readonly<{
+  sourceRepositoryId: string;
+  targetRepositoryId: string;
+  graphEdgeId: string;
+  sourceSystem: string;
+  confidence: number;
+  evidenceRefs: readonly string[];
+}>;
+
+export type RegaugeDependencyProjectionV1 = Readonly<{
+  schemaVersion: typeof REGAUGE_DEPENDENCY_PROJECTION_SCHEMA_VERSION;
+  tenantId: string;
+  requestedRepositoryIds: readonly string[];
+  repositories: readonly RegaugeDependencyProjectionRepositoryV1[];
+  edges: readonly RegaugeDependencyProjectionEdgeV1[];
+  contentDigest: string;
+}>;
+
+export type RegaugeDependencyProjectionInputV1 = Readonly<{
+  tenantId: string;
+  requestedRepositoryIds: readonly string[];
+  repositories: readonly RegaugeDependencyProjectionRepositoryV1[];
+  edges: readonly RegaugeDependencyProjectionEdgeV1[];
+}>;
 
 export type TransformerMissionPlanningRepository = Readonly<{
   id: string;
@@ -34,6 +71,7 @@ export type TransformerMissionPlanningRepository = Readonly<{
 }>;
 
 export type TransformerMissionPlanningInput = Readonly<{
+  tenantId: string;
   evaluatedAt: string;
   plannerActorId: string;
   maxEvidenceAgeMs: number;
@@ -46,11 +84,7 @@ export type TransformerMissionPlanningInput = Readonly<{
   repositories: readonly TransformerMissionPlanningRepository[];
   objective: Omit<TransformerObjective, "units">;
   recipeCatalog: readonly MigrationRecipeContract[];
-  /**
-   * Repository-id → repository-ids this unit depends on, from a consulted Change
-   * Graph. Absent or empty means the planner does not invent dependencies.
-   */
-  dependsOnByRepositoryId?: Readonly<Record<string, readonly string[]>>;
+  dependencyProjection: RegaugeDependencyProjectionV1;
 }>;
 
 function compareCodeUnits(left: string, right: string): number {
@@ -59,6 +93,132 @@ function compareCodeUnits(left: string, right: string): number {
 
 function digest(value: string): string {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => compareCodeUnits(left, right))
+      .map(([key, entry]) => [key, stableValue(entry)]));
+  }
+  return value;
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(stableValue(value));
+}
+
+function projectionDigest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(stableJson(value), "utf8").digest("hex")}`;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  return Object.freeze(value);
+}
+
+function requiredProjectionText(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value === value.trim() && value.length <= 1_000;
+}
+
+function sortedUnique(values: readonly string[]): string[] {
+  return [...new Set(values)].sort(compareCodeUnits);
+}
+
+export function createRegaugeDependencyProjectionV1(
+  rawInput: RegaugeDependencyProjectionInputV1,
+): RegaugeDependencyProjectionV1 {
+  const input = structuredClone(rawInput);
+  if (!requiredProjectionText(input.tenantId)) throw new Error("regauge_dependency_projection_invalid");
+  const requestedRepositoryIds = sortedUnique(input.requestedRepositoryIds);
+  if (!requestedRepositoryIds.length || requestedRepositoryIds.length !== input.requestedRepositoryIds.length ||
+      requestedRepositoryIds.some((id) => !requiredProjectionText(id))) {
+    throw new Error("regauge_dependency_projection_invalid");
+  }
+  const requested = new Set(requestedRepositoryIds);
+  const repositories = input.repositories.map((repository) => ({
+    repositoryId: repository.repositoryId,
+    serviceId: repository.serviceId,
+    coverage: repository.coverage,
+    reason: repository.reason,
+    dependsOnRepositoryIds: sortedUnique(repository.dependsOnRepositoryIds),
+    evidenceRefs: sortedUnique(repository.evidenceRefs),
+  })).sort((left, right) => compareCodeUnits(left.repositoryId, right.repositoryId));
+  if (
+    repositories.length !== requestedRepositoryIds.length ||
+    repositories.some((repository, index) =>
+      repository.repositoryId !== requestedRepositoryIds[index] ||
+      !requiredProjectionText(repository.repositoryId) ||
+      (repository.serviceId !== null && !requiredProjectionText(repository.serviceId)) ||
+      !["complete", "unknown", "not_consulted"].includes(repository.coverage) ||
+      !requiredProjectionText(repository.reason) ||
+      repository.dependsOnRepositoryIds.some((id) => !requested.has(id) || id === repository.repositoryId) ||
+      repository.evidenceRefs.some((ref) => !requiredProjectionText(ref)) ||
+      (repository.coverage === "complete"
+        ? repository.serviceId === null || repository.evidenceRefs.length === 0
+        : repository.dependsOnRepositoryIds.length > 0)
+    )
+  ) {
+    throw new Error("regauge_dependency_projection_invalid");
+  }
+  const edges = input.edges.map((edge) => ({
+    sourceRepositoryId: edge.sourceRepositoryId,
+    targetRepositoryId: edge.targetRepositoryId,
+    graphEdgeId: edge.graphEdgeId,
+    sourceSystem: edge.sourceSystem,
+    confidence: edge.confidence,
+    evidenceRefs: sortedUnique(edge.evidenceRefs),
+  })).sort((left, right) => compareCodeUnits(
+    `${left.sourceRepositoryId}\u0000${left.targetRepositoryId}\u0000${left.graphEdgeId}`,
+    `${right.sourceRepositoryId}\u0000${right.targetRepositoryId}\u0000${right.graphEdgeId}`,
+  ));
+  const edgeIds = new Set<string>();
+  for (const edge of edges) {
+    const source = repositories.find((repository) => repository.repositoryId === edge.sourceRepositoryId);
+    if (
+      !source || !requested.has(edge.targetRepositoryId) || edge.sourceRepositoryId === edge.targetRepositoryId ||
+      !source.dependsOnRepositoryIds.includes(edge.targetRepositoryId) ||
+      !requiredProjectionText(edge.graphEdgeId) || edgeIds.has(edge.graphEdgeId) ||
+      !requiredProjectionText(edge.sourceSystem) || !Number.isFinite(edge.confidence) ||
+      edge.confidence < 0 || edge.confidence > 1 || edge.evidenceRefs.length === 0 ||
+      edge.evidenceRefs.some((ref) => !requiredProjectionText(ref))
+    ) {
+      throw new Error("regauge_dependency_projection_invalid");
+    }
+    edgeIds.add(edge.graphEdgeId);
+  }
+  for (const repository of repositories) {
+    for (const dependency of repository.dependsOnRepositoryIds) {
+      if (!edges.some((edge) =>
+        edge.sourceRepositoryId === repository.repositoryId && edge.targetRepositoryId === dependency)) {
+        throw new Error("regauge_dependency_projection_invalid");
+      }
+    }
+  }
+  const body = {
+    schemaVersion: REGAUGE_DEPENDENCY_PROJECTION_SCHEMA_VERSION,
+    tenantId: input.tenantId,
+    requestedRepositoryIds,
+    repositories,
+    edges,
+  };
+  return deepFreeze({ ...body, contentDigest: projectionDigest(body) });
+}
+
+export function verifyRegaugeDependencyProjectionV1(
+  value: RegaugeDependencyProjectionV1,
+): RegaugeDependencyProjectionV1 {
+  try {
+    const { contentDigest, schemaVersion, ...input } = structuredClone(value);
+    if (schemaVersion !== REGAUGE_DEPENDENCY_PROJECTION_SCHEMA_VERSION) throw new Error("schema");
+    const expected = createRegaugeDependencyProjectionV1(input);
+    if (contentDigest !== expected.contentDigest || stableJson(value) !== stableJson(expected)) throw new Error("digest");
+    return expected;
+  } catch {
+    throw new Error("regauge_dependency_projection_integrity_invalid");
+  }
 }
 
 function unitId(repositoryId: string, recipeId: string): string {
@@ -89,6 +249,24 @@ export function planTransformerMission(
   } catch {
     return abstained(["mission_input_invalid"]);
   }
+  if (!input.dependencyProjection) return abstained(["dependency_projection_required"]);
+  let dependencyProjection: RegaugeDependencyProjectionV1;
+  try {
+    dependencyProjection = verifyRegaugeDependencyProjectionV1(input.dependencyProjection);
+  } catch {
+    return abstained(["dependency_projection_integrity_invalid"]);
+  }
+  if (dependencyProjection.tenantId !== input.tenantId) {
+    return abstained(["dependency_projection_tenant_mismatch"]);
+  }
+  const planningRepositoryIds = input.repositories.map((repository) => repository.id).sort(compareCodeUnits);
+  if (stableJson(dependencyProjection.requestedRepositoryIds) !== stableJson(planningRepositoryIds)) {
+    return abstained(["dependency_projection_repository_scope_mismatch"]);
+  }
+  const incomplete = dependencyProjection.repositories
+    .filter((repository) => repository.coverage !== "complete")
+    .map((repository) => `dependency_projection_incomplete:${repository.repositoryId}:${repository.reason}`);
+  if (incomplete.length) return abstained(incomplete);
   if (!Array.isArray(input.recipeCatalog) || input.recipeCatalog.length === 0 ||
       input.recipeCatalog.length > MAX_RECIPE_CATALOG) {
     return abstained(["recipe_catalog_invalid"]);
@@ -198,8 +376,11 @@ export function planTransformerMission(
   if (reasons.length > 0) return abstained(reasons);
   if (units.length === 0) return abstained(["mission_unit_required"]);
   const unitByRepository = new Map(units.map((unit) => [unit.repositoryId, unit.id]));
+  const dependencyByRepository = new Map(
+    dependencyProjection.repositories.map((repository) => [repository.repositoryId, repository]),
+  );
   for (const unit of units) {
-    const declared = input.dependsOnByRepositoryId?.[unit.repositoryId] ?? [];
+    const declared = dependencyByRepository.get(unit.repositoryId)!.dependsOnRepositoryIds;
     unit.dependsOn = [...new Set(declared)]
       .map((repositoryId) => unitByRepository.get(repositoryId))
       .filter((dependencyId): dependencyId is string => Boolean(dependencyId) && dependencyId !== unit.id)
@@ -213,6 +394,7 @@ export function planTransformerMission(
     constraints: input.constraints,
     organization: input.organization,
     repositories: blueprintRepositories,
+    dependencyProjection,
     objective: { ...input.objective, units },
   });
 }

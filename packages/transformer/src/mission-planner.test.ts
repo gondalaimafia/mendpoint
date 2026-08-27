@@ -6,9 +6,11 @@ import {
   recipeFilesDigest,
 } from "./recipe.js";
 import {
+  createRegaugeDependencyProjectionV1,
   planTransformerMission,
   type TransformerMissionPlanningInput,
 } from "./mission-planner.js";
+import { verifyTransformerBlueprint } from "./blueprint-planner.js";
 
 const sha256 = (value: string) =>
   `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
@@ -19,8 +21,40 @@ const files = {
   "src/unrelated.ts": "export const untouched = true;\n",
 };
 
+function dependencyProjection(
+  repositories: ReadonlyArray<{
+    repositoryId: string;
+    dependsOnRepositoryIds?: readonly string[];
+    coverage?: "complete" | "unknown" | "not_consulted";
+    reason?: string;
+  }> = [{ repositoryId: "repo-a" }],
+) {
+  return createRegaugeDependencyProjectionV1({
+    tenantId: "tenant-a",
+    requestedRepositoryIds: repositories.map((repository) => repository.repositoryId),
+    repositories: repositories.map((repository) => ({
+      repositoryId: repository.repositoryId,
+      serviceId: `service:${repository.repositoryId}:service`,
+      coverage: repository.coverage ?? "complete",
+      reason: repository.reason ?? "manifest_ingest_complete",
+      dependsOnRepositoryIds: repository.dependsOnRepositoryIds ?? [],
+      evidenceRefs: [`evidence:manifest:${repository.repositoryId}`],
+    })),
+    edges: repositories.flatMap((repository) =>
+      (repository.dependsOnRepositoryIds ?? []).map((targetRepositoryId) => ({
+        sourceRepositoryId: repository.repositoryId,
+        targetRepositoryId,
+        graphEdgeId: `DEPENDS_ON:${repository.repositoryId}:${targetRepositoryId}`,
+        sourceSystem: "manifest",
+        confidence: 1,
+        evidenceRefs: [`evidence:manifest:${repository.repositoryId}`],
+      }))),
+  });
+}
+
 function input(): TransformerMissionPlanningInput {
   return {
+    tenantId: "tenant-a",
     evaluatedAt: "2026-08-13T12:00:00.000Z",
     plannerActorId: "planner-a",
     maxEvidenceAgeMs: 60 * 60 * 1_000,
@@ -75,6 +109,7 @@ function input(): TransformerMissionPlanningInput {
       }],
     },
     recipeCatalog: [NODE_RUNTIME_20_TO_22_RECIPE, NODE_RUNTIME_18_TO_20_RECIPE],
+    dependencyProjection: dependencyProjection(),
   };
 }
 
@@ -143,7 +178,7 @@ describe("self serving Transformer mission planner", () => {
     })).toMatchObject({ decision: "abstained", reasons: ["repository_operation_owner_missing:repo-a"] });
   });
 
-  it("applies consulted graph dependencies onto units and ignores unknown repos", () => {
+  it("persists exact dependency evidence and orders A after B", () => {
     const candidate = input();
     const repoB = {
       ...candidate.repositories[0]!,
@@ -157,15 +192,73 @@ describe("self serving Transformer mission planner", () => {
         repositoryIds: ["repo-a", "repo-b"],
       },
       repositories: [repoB, candidate.repositories[0]!],
-      dependsOnByRepositoryId: {
-        "repo-a": ["repo-b", "repo-missing"],
-        "repo-b": [],
-      },
+      dependencyProjection: dependencyProjection([
+        { repositoryId: "repo-a", dependsOnRepositoryIds: ["repo-b"] },
+        { repositoryId: "repo-b" },
+      ]),
     });
     expect(result.decision).toBe("planned");
     if (result.decision !== "planned") throw new Error(result.reasons.join(","));
     const byRepo = Object.fromEntries(result.blueprint.units.map((unit) => [unit.repositoryId, unit.dependsOn]));
     expect(byRepo["repo-a"]).toEqual(["repo-b-node-runtime-18-to-20"]);
     expect(byRepo["repo-b"]).toEqual([]);
+    expect(result.blueprint.waves).toEqual([
+      { id: "wave-001", unitIds: ["repo-b-node-runtime-18-to-20"] },
+      { id: "wave-002", unitIds: ["repo-a-node-runtime-18-to-20"] },
+    ]);
+    expect(result.blueprint.evidence.dependencies).toEqual(
+      dependencyProjection([
+        { repositoryId: "repo-a", dependsOnRepositoryIds: ["repo-b"] },
+        { repositoryId: "repo-b" },
+      ]),
+    );
+  });
+
+  it("abstains when dependency evidence is missing, incomplete, tenant-mismatched, or tampered", () => {
+    const candidate = input();
+    expect(planTransformerMission({
+      ...candidate,
+      dependencyProjection: undefined,
+    } as unknown as TransformerMissionPlanningInput)).toMatchObject({
+      decision: "abstained",
+      reasons: ["dependency_projection_required"],
+    });
+    expect(planTransformerMission({
+      ...candidate,
+      dependencyProjection: dependencyProjection([{
+        repositoryId: "repo-a",
+        coverage: "unknown",
+        reason: "manifest_ingest_evidence_missing",
+      }]),
+    })).toMatchObject({
+      decision: "abstained",
+      reasons: ["dependency_projection_incomplete:repo-a:manifest_ingest_evidence_missing"],
+    });
+    expect(planTransformerMission({
+      ...candidate,
+      tenantId: "tenant-b",
+    })).toMatchObject({
+      decision: "abstained",
+      reasons: ["dependency_projection_tenant_mismatch"],
+    });
+    const tampered = structuredClone(candidate.dependencyProjection) as {
+      repositories: Array<{ dependsOnRepositoryIds: string[] }>;
+    } & TransformerMissionPlanningInput["dependencyProjection"];
+    tampered.repositories[0]!.dependsOnRepositoryIds.push("repo-b");
+    expect(planTransformerMission({ ...candidate, dependencyProjection: tampered })).toMatchObject({
+      decision: "abstained",
+      reasons: ["dependency_projection_integrity_invalid"],
+    });
+  });
+
+  it("rejects dependency evidence tampering through blueprint integrity verification", () => {
+    const result = planTransformerMission(input());
+    expect(result.decision).toBe("planned");
+    if (result.decision !== "planned") throw new Error(result.reasons.join(","));
+    const tampered = structuredClone(result.blueprint);
+    const dependencies = tampered.evidence.dependencies;
+    if (!dependencies) throw new Error("expected dependency projection");
+    (dependencies.repositories[0]!.evidenceRefs as string[]).push("evidence:forged");
+    expect(() => verifyTransformerBlueprint(tampered)).toThrow("transformer_blueprint_integrity_invalid");
   });
 });

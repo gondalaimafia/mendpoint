@@ -2,6 +2,7 @@ import {
   compileApprovedTransformerMission,
   planTransformerMission,
   resolveRecipe,
+  verifyRegaugeDependencyProjectionV1,
   verifyTransformerBlueprint,
   type MigrationRecipeContract,
   type OrganizationConstraintContract,
@@ -110,6 +111,24 @@ export class TransformerMissionService {
     if (repositoryIds.length !== input.repositoryIds.length || repositoryIds.length === 0) {
       throw new Error("transformer_mission_repository_invalid");
     }
+    const graphPlan = consultRegaugeGraphDependencies({
+      graph: this.consults.graph ?? null,
+      tenantId: request.tenantId,
+      repositoryIds,
+    });
+    const incompleteDependencies = graphPlan.repositories
+      .filter((repository) => repository.coverage !== "complete")
+      .map((repository) =>
+        `dependency_projection_incomplete:${repository.repositoryId}:${repository.reason}`)
+      .sort(compareCodeUnits);
+    if (incompleteDependencies.length) {
+      return Object.freeze({
+        decision: "abstained" as const,
+        reasons: Object.freeze(incompleteDependencies),
+        blueprint: null,
+        graphPlan,
+      });
+    }
     const repositories = repositoryIds.map((repositoryId) =>
       this.repositories.load(request.tenantId, repositoryId, input.evaluatedAt).planning);
     const authority = this.organizations.load(
@@ -126,11 +145,6 @@ export class TransformerMissionService {
     ) {
       throw new Error("transformer_mission_authority_invalid");
     }
-    const graphPlan = consultRegaugeGraphDependencies({
-      graph: this.consults.graph ?? null,
-      tenantId: request.tenantId,
-      repositoryIds,
-    });
     const organizationMemory = consultRegaugeOrganizationMemory({
       tenantId: request.tenantId,
       records: this.consults.organizationMemory
@@ -143,6 +157,7 @@ export class TransformerMissionService {
       },
     });
     const planned = planTransformerMission({
+      tenantId: request.tenantId,
       evaluatedAt: input.evaluatedAt,
       plannerActorId: request.actorId,
       maxEvidenceAgeMs: input.maxEvidenceAgeMs,
@@ -151,7 +166,7 @@ export class TransformerMissionService {
       repositories,
       objective: input.objective,
       recipeCatalog: this.recipeCatalog,
-      dependsOnByRepositoryId: graphPlan.dependsOnByRepositoryId,
+      dependencyProjection: graphPlan,
     });
     if (planned.decision === "abstained") return planned;
     const blueprint = planned.blueprint;
@@ -203,6 +218,12 @@ export class TransformerMissionService {
     const stored = this.control.store.getBlueprint(request.tenantId, campaign.blueprintId);
     if (!stored || stored.state !== "reviewed") throw new Error("transformer_mission_review_required");
     const blueprint = verifyTransformerBlueprint(stored.content as unknown as TransformerBlueprint);
+    const dependencyProjection = blueprint.evidence.dependencies;
+    if (!dependencyProjection) throw new Error("transformer_mission_dependency_evidence_missing");
+    const approvedDependencies = verifyRegaugeDependencyProjectionV1(dependencyProjection);
+    if (approvedDependencies.tenantId !== request.tenantId) {
+      throw new Error("transformer_mission_dependency_authority_drift");
+    }
     const approvals = blueprint.review.reviewerIds.flatMap((reviewerId) => {
       const approval = this.control.store.getApproval(
         request.tenantId,
@@ -218,8 +239,12 @@ export class TransformerMissionService {
           }]
         : [];
     });
-    const repositoryIds = [...new Set(blueprint.units.map((unit) => unit.repositoryId))]
+    const unitRepositoryIds = [...new Set(blueprint.units.map((unit) => unit.repositoryId))]
       .sort(compareCodeUnits);
+    const repositoryIds = [...approvedDependencies.requestedRepositoryIds];
+    if (repositoryIds.join("\u0000") !== unitRepositoryIds.join("\u0000")) {
+      throw new Error("transformer_mission_dependency_authority_drift");
+    }
     const authority = this.organizations.load(
       request.tenantId,
       repositoryIds,

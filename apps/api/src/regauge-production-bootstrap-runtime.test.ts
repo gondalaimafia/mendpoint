@@ -17,6 +17,7 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
+import { listNodesByKind, openGraphLearnMemory } from "@mendpoint/graph-learn";
 import { reconcileVerifierAdvisoryPolicyAuthority } from "@mendpoint/pipeline";
 import {
   CredentialBroker,
@@ -25,7 +26,7 @@ import {
   type GitHubTransportRequest,
   type GitHubTransportResponse,
 } from "@mendpoint/platform";
-import { NODE_RUNTIME_20_TO_22_RECIPE } from "@mendpoint/transformer";
+import { NODE_RUNTIME_20_TO_22_RECIPE, type TransformerBlueprint } from "@mendpoint/transformer";
 import { bootstrapRegaugeProductionCampaign } from "./regauge-production-bootstrap.js";
 import {
   createRegaugeProductionBootstrapRuntime,
@@ -243,6 +244,8 @@ describe("Regauge production bootstrap runtime", () => {
     });
     services.push(control, executions);
     const authority = createAppDbTransformerMissionAuthority(db);
+    const dependencyGraph = openGraphLearnMemory();
+    services.push({ close: () => dependencyGraph.raw.close() });
     const missions = new TransformerMissionService(
       control,
       executions,
@@ -251,6 +254,7 @@ describe("Regauge production bootstrap runtime", () => {
       [NODE_RUNTIME_20_TO_22_RECIPE],
       "production",
       () => new Date().toISOString(),
+      { graph: dependencyGraph },
     );
     const secrets = new MemorySecretProvider({ installation: "test-installation-token" });
     const broker = new CredentialBroker({ providers: [secrets], audit: () => undefined });
@@ -264,6 +268,7 @@ describe("Regauge production bootstrap runtime", () => {
       control,
       executions,
       missions,
+      dependencyGraph,
       repositoryDependencies: {
         credentialBroker: broker,
         githubTransport: new GitHubSnapshotTransport(),
@@ -316,6 +321,31 @@ describe("Regauge production bootstrap runtime", () => {
       regaugeProductionBootstrapInputFromEnvironment(environment()),
       runtime,
     );
+    const campaign = control.store.getCampaign("tenant_regauge_canary", first.campaignId)!;
+    const blueprint = control.store.getBlueprint("tenant_regauge_canary", campaign.blueprintId)!;
+    const dependencyEvidence = (blueprint.content as unknown as TransformerBlueprint).evidence.dependencies;
+    expect(dependencyEvidence).toMatchObject({
+      tenantId: "tenant_regauge_canary",
+      requestedRepositoryIds: [first.repositoryId],
+      repositories: [{
+        repositoryId: first.repositoryId,
+        coverage: "complete",
+        reason: "manifest_ingest_complete",
+        dependsOnRepositoryIds: [],
+        evidenceRefs: [expect.stringMatching(/^manifest-ingest:sha256:/)],
+      }],
+      contentDigest: expect.stringMatching(/^sha256:/),
+    });
+    expect(listNodesByKind(dependencyGraph, "Service")).toEqual([
+      expect.objectContaining({
+        repo_id: first.repositoryId,
+        label: "mendpoint-canary-drill",
+        props: expect.objectContaining({
+          tenant_id: "tenant_regauge_canary",
+          manifest_ingest_status: "complete",
+        }),
+      }),
+    ]);
     expect(findActiveLearningConsent(db, {
       tenantId: "tenant_regauge_canary",
       purpose: REGAUGE_VERIFIER_CONSENT_PURPOSE,

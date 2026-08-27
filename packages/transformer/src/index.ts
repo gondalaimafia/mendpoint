@@ -328,7 +328,15 @@ export {
 } from "./mission-compiler.js";
 
 export {
+  REGAUGE_DEPENDENCY_PROJECTION_SCHEMA_VERSION,
+  createRegaugeDependencyProjectionV1,
   planTransformerMission,
+  verifyRegaugeDependencyProjectionV1,
+  type RegaugeDependencyCoverage,
+  type RegaugeDependencyProjectionEdgeV1,
+  type RegaugeDependencyProjectionInputV1,
+  type RegaugeDependencyProjectionRepositoryV1,
+  type RegaugeDependencyProjectionV1,
   type TransformerMissionPlanningInput,
   type TransformerMissionPlanningRepository,
 } from "./mission-planner.js";

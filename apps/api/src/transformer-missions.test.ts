@@ -9,6 +9,7 @@ import {
   recipeFilesDigest,
 } from "@mendpoint/transformer";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
+import { ingestManifestDependencies, openGraphLearnMemory } from "@mendpoint/graph-learn";
 import { TransformerCampaignService } from "./transformer-control-plane.js";
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
 import {
@@ -42,7 +43,7 @@ function request(actorId: string, key: string) {
   };
 }
 
-function fixture() {
+function fixture(graphMode: "complete" | "not_consulted" = "complete") {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-transformer-mission-"));
   roots.push(root);
   const gate = JSON.stringify({
@@ -151,6 +152,16 @@ function fixture() {
       };
     },
   };
+  const graph = graphMode === "complete" ? openGraphLearnMemory() : null;
+  if (graph) {
+    ingestManifestDependencies(graph, {
+      repoPath: "/unused",
+      repoId: "repo-a",
+      tenantId: "tenant-a",
+      files: [{ path: "package.json", text: JSON.stringify({ name: "service", dependencies: {} }) }],
+    });
+    services.push({ close: () => graph.raw.close() });
+  }
   const service = new TransformerMissionService(
     control,
     executions,
@@ -158,6 +169,8 @@ function fixture() {
     organizations,
     [NODE_RUNTIME_18_TO_20_RECIPE],
     "test",
+    undefined,
+    { graph },
   );
   return {
     control,
@@ -200,7 +213,14 @@ describe("Transformer mission application service", () => {
     });
     expect(planned.decision).toBe("planned");
     if (planned.decision === "planned") {
-      expect(planned.graphPlan.coverage.basis).toBe("not_consulted");
+      expect(planned.graphPlan.repositories[0]).toMatchObject({
+        repositoryId: "repo-a",
+        coverage: "complete",
+        dependsOnRepositoryIds: [],
+      });
+      const dependencies = planned.blueprint.evidence.dependencies;
+      if (!dependencies) throw new Error("expected dependency projection");
+      expect(dependencies.contentDigest).toBe(planned.graphPlan.contentDigest);
       // No Organization Memory provider is wired on this fixture, so the consult
       // must declare "not consulted" rather than resolving into a hard-policy win
       // that is indistinguishable from a real but empty consult.
@@ -290,5 +310,106 @@ describe("Transformer mission application service", () => {
     }));
     expect(() => service.launch(request("reviewer-a", "launch-drift"), "campaign-drift"))
       .toThrow("transformer_mission_authority_drift");
+  });
+
+  it("abstains with zero control-plane writes when any requested dependency coverage is incomplete", () => {
+    const { control, service } = fixture("not_consulted");
+    const result = service.plan(request("planner-a", "plan-no-graph"), {
+      campaignId: "campaign-no-graph",
+      environment: "test",
+      evaluatedAt: new Date(Date.now() - 30_000).toISOString(),
+      maxEvidenceAgeMs: 10 * 60_000,
+      constraints: { maxUnits: 4, maxRepositories: 2, maxPathsPerUnit: 8 },
+      repositoryIds: ["repo-a"],
+      objective: {
+        id: "upgrade-node-no-graph",
+        statement: "Upgrade the service from Node 18 to Node 20.",
+        sourceSystem: "node@18",
+        targetSystem: "node@20",
+        evidenceRefs: ["evidence:objective:no-graph"],
+        assumptions: [{
+          id: "snapshot-stability-no-graph",
+          statement: "The reviewed snapshot remains immutable.",
+          evidenceRefs: ["evidence:assumption:no-graph"],
+        }],
+        risks: [{
+          id: "runtime-compatibility-no-graph",
+          statement: "Runtime behavior can change.",
+          severity: "high",
+          ownerId: "owner-a",
+          evidenceRefs: ["evidence:risk:no-graph"],
+        }],
+      },
+    });
+    expect(result).toMatchObject({
+      decision: "abstained",
+      reasons: ["dependency_projection_incomplete:repo-a:graph_not_supplied"],
+      blueprint: null,
+      graphPlan: {
+        tenantId: "tenant-a",
+        repositories: [{ repositoryId: "repo-a", coverage: "not_consulted" }],
+      },
+    });
+    expect(control.store.getCampaign("tenant-a", "campaign-no-graph")).toBeUndefined();
+    expect(control.events("tenant-a", "campaign-no-graph")).toEqual([]);
+  });
+
+  it("rejects launch when the reviewed dependency projection was tampered", () => {
+    const { control, service } = fixture();
+    const planned = service.plan(request("planner-a", "plan-tamper"), {
+      campaignId: "campaign-tamper",
+      environment: "test",
+      evaluatedAt: new Date(Date.now() - 30_000).toISOString(),
+      maxEvidenceAgeMs: 10 * 60_000,
+      constraints: { maxUnits: 4, maxRepositories: 2, maxPathsPerUnit: 8 },
+      repositoryIds: ["repo-a"],
+      objective: {
+        id: "upgrade-node-tamper",
+        statement: "Upgrade the service from Node 18 to Node 20.",
+        sourceSystem: "node@18",
+        targetSystem: "node@20",
+        evidenceRefs: ["evidence:objective:tamper"],
+        assumptions: [{
+          id: "snapshot-stability-tamper",
+          statement: "The reviewed snapshot remains immutable.",
+          evidenceRefs: ["evidence:assumption:tamper"],
+        }],
+        risks: [{
+          id: "runtime-compatibility-tamper",
+          statement: "Runtime behavior can change.",
+          severity: "high",
+          ownerId: "owner-a",
+          evidenceRefs: ["evidence:risk:tamper"],
+        }],
+      },
+    });
+    expect(planned.decision).toBe("planned");
+    if (planned.decision !== "planned") throw new Error(planned.reasons.join(","));
+    const stored = control.store.getBlueprint("tenant-a", planned.blueprint.id)!;
+    const tampered = structuredClone(stored.content);
+    const dependencyEvidence = tampered.evidence as {
+      dependencies: { repositories: Array<{ evidenceRefs: string[] }> };
+    };
+    dependencyEvidence.dependencies.repositories[0]!.evidenceRefs.push("evidence:forged");
+    control.store.reviseBlueprint(
+      "tenant-a",
+      planned.blueprint.id,
+      { content: tampered, policy: stored.policy },
+      1,
+      {
+        actorId: "planner-a",
+        correlationId: "request-tamper",
+        causationId: "request-tamper",
+        evidenceRefs: ["evidence:tamper-test"],
+        idempotencyKey: "tamper-blueprint",
+      },
+    );
+    control.reviewToReady(request("reviewer-a", "review-tamper"), "campaign-tamper", {
+      campaign: 1,
+      blueprint: 2,
+      bsg: 1,
+    });
+    expect(() => service.launch(request("reviewer-a", "launch-tamper"), "campaign-tamper"))
+      .toThrow("transformer_blueprint_integrity_invalid");
   });
 });

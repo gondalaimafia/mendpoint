@@ -37,6 +37,8 @@ describe("ingestManifestDependencies", () => {
       ecosystem: "npm",
       packageName: "@acme/payments",
       dependencies: 2,
+      contentDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      evidenceRefs: [expect.stringMatching(/^manifest-ingest:sha256:/)],
     });
     const source = "service:tenant-x:@acme/payments";
     const depEdges = edgesFrom(db, source, ["DEPENDS_ON"]);
@@ -56,6 +58,18 @@ describe("ingestManifestDependencies", () => {
       "service:tenant-x:react": "peerDependencies",
       "service:tenant-x:stripe": "dependencies",
     });
+    expect(getNode(db, source)?.props).toMatchObject({
+      tenant_id: "tenant-x",
+      manifest_ingest_status: "complete",
+      manifest_content_digest: result.contentDigest,
+      manifest_evidence_refs: result.evidenceRefs,
+    });
+    for (const edge of depEdges) {
+      expect(edge.props).toMatchObject({
+        manifest_content_digest: result.contentDigest,
+        evidence_refs: result.evidenceRefs,
+      });
+    }
   });
 
   it("skips unparseable manifests rather than inventing edges", () => {
@@ -71,6 +85,7 @@ describe("ingestManifestDependencies", () => {
     // A present-but-broken manifest is distinguishable from an absent one and
     // from one whose package name is unusable.
     expect(result).toMatchObject({ status: "skipped", reason: "unparseable", manifest: "package.json" });
+    expect(result).toMatchObject({ contentDigest: null, evidenceRefs: [] });
   });
 
   it("distinguishes a missing manifest and a missing/path-like package name from unparseable text", () => {

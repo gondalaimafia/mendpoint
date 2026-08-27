@@ -4,6 +4,7 @@ import {
   type RecipeReference,
   type RecipeVerificationCommand,
 } from "./recipe.js";
+import type { RegaugeDependencyProjectionV1 } from "./mission-planner.js";
 
 const BLUEPRINT_SCHEMA_VERSION = "2026-08-02.v1" as const;
 const REVISION = /^[a-f0-9]{40}$/;
@@ -90,6 +91,7 @@ export type TransformerBlueprintPlanningInput = {
   };
   organization: TransformerBlueprintOrganizationEvidence;
   repositories: TransformerBlueprintRepositoryEvidence[];
+  dependencyProjection?: RegaugeDependencyProjectionV1;
   objective: TransformerObjective;
 };
 
@@ -120,6 +122,7 @@ export type TransformerBlueprint = Readonly<{
       observedAt: string;
       evidenceRefs: readonly string[];
     }>[];
+    dependencies?: RegaugeDependencyProjectionV1;
   }>;
   scope: Readonly<{
     repositories: readonly Readonly<{
@@ -639,6 +642,9 @@ export function planTransformerBlueprint(
           evidenceRefs: [...repository.evidenceRefs].sort(),
         };
       }),
+      ...(input.dependencyProjection
+        ? { dependencies: structuredClone(input.dependencyProjection) }
+        : {}),
     },
     scope: { repositories: repositoryScope },
     units: normalizedUnits,

@@ -7,11 +7,16 @@
  */
 import {
   createTenantGraphView,
-  listAllEdges,
   listNodesByKind,
   edgesFrom,
   type GraphLearnDb,
 } from "@mendpoint/graph-learn";
+import {
+  createRegaugeDependencyProjectionV1,
+  type RegaugeDependencyProjectionEdgeV1,
+  type RegaugeDependencyProjectionRepositoryV1,
+  type RegaugeDependencyProjectionV1,
+} from "@mendpoint/transformer";
 import {
   organizationMemoryPrecedenceLayer,
   resolveOrganizationDecision,
@@ -24,14 +29,7 @@ type MemoryHead = Pick<
   "tenantId" | "memoryId" | "recordId" | "status" | "statement"
 >;
 
-export type RegaugeGraphPlanConsult = Readonly<{
-  consulted: boolean;
-  coverage: Readonly<{
-    basis: "complete" | "target_absent" | "not_consulted";
-    reason?: string;
-  }>;
-  dependsOnByRepositoryId: Readonly<Record<string, readonly string[]>>;
-}>;
+export type RegaugeGraphPlanConsult = RegaugeDependencyProjectionV1;
 
 export type RegaugeOrgMemoryConsult =
   | Readonly<{
@@ -48,12 +46,36 @@ export type RegaugeOrgMemoryConsult =
       overriddenMemoryIds: readonly string[];
     }>;
 
-function serviceMatchesRepository(nodeId: string, label: string, repositoryId: string): boolean {
-  return (
-    nodeId === `service:${repositoryId}` ||
-    label === repositoryId ||
-    nodeId.endsWith(`:${repositoryId}`)
-  );
+const DIGEST = /^sha256:[a-f0-9]{64}$/;
+
+function strings(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.some((entry) =>
+    typeof entry !== "string" || !entry.trim() || entry !== entry.trim())) return null;
+  return [...new Set(value as string[])].sort();
+}
+
+function manifestRootEvidence(
+  node: ReturnType<typeof listNodesByKind>[number],
+  tenantId: string,
+  repositoryId: string,
+): { evidenceRefs: string[]; contentDigest: string } | null {
+  const props = node.props;
+  const contentDigest = props?.manifest_content_digest;
+  const evidenceRefs = strings(props?.manifest_evidence_refs);
+  if (
+    node.repo_id !== repositoryId ||
+    props?.tenant_id !== tenantId ||
+    props?.manifest_ingest_status !== "complete" ||
+    props?.declared === true ||
+    typeof props?.manifest !== "string" || !props.manifest.trim() ||
+    typeof contentDigest !== "string" || !DIGEST.test(contentDigest) ||
+    !evidenceRefs || !evidenceRefs.includes(`manifest-ingest:${contentDigest}`)
+  ) return null;
+  return { evidenceRefs, contentDigest };
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 export function consultRegaugeGraphDependencies(input: {
@@ -61,52 +83,131 @@ export function consultRegaugeGraphDependencies(input: {
   tenantId: string;
   repositoryIds: readonly string[];
 }): RegaugeGraphPlanConsult {
+  const requestedRepositoryIds = [...new Set(input.repositoryIds)].sort(compareCodeUnits);
   if (!input.graph) {
-    return Object.freeze({
-      consulted: false,
-      coverage: { basis: "not_consulted" as const, reason: "tenant_graph_not_supplied" },
-      dependsOnByRepositoryId: Object.freeze({}),
+    return createRegaugeDependencyProjectionV1({
+      tenantId: input.tenantId,
+      requestedRepositoryIds,
+      repositories: requestedRepositoryIds.map((repositoryId) => ({
+        repositoryId,
+        serviceId: null,
+        coverage: "not_consulted" as const,
+        reason: "graph_not_supplied",
+        dependsOnRepositoryIds: [],
+        evidenceRefs: [],
+      })),
+      edges: [],
     });
   }
   const scoped = createTenantGraphView(input.graph, { tenantId: input.tenantId });
   try {
-    const populated = listAllEdges(scoped).some((edge) => edge.kind === "DEPENDS_ON");
-    if (!populated) {
-      return Object.freeze({
-        consulted: true,
-        coverage: {
-          basis: "target_absent" as const,
-          reason: "DEPENDS_ON is not populated by any ingest path",
-        },
-        dependsOnByRepositoryId: Object.freeze({}),
-      });
+    const services = listNodesByKind(scoped, "Service").sort((left, right) => compareCodeUnits(left.id, right.id));
+    const roots = new Map<string, Array<{
+      node: (typeof services)[number];
+      evidence: { evidenceRefs: string[]; contentDigest: string };
+    }>>();
+    for (const repositoryId of requestedRepositoryIds) {
+      roots.set(repositoryId, services.flatMap((node) => {
+        const evidence = manifestRootEvidence(node, input.tenantId, repositoryId);
+        return evidence ? [{ node, evidence }] : [];
+      }));
     }
-    const services = listNodesByKind(scoped, "Service");
-    const dependsOnByRepositoryId: Record<string, string[]> = {};
-    for (const repositoryId of input.repositoryIds) {
-      const source = services.find((node) =>
-        serviceMatchesRepository(node.id, node.label, repositoryId),
-      );
-      if (!source) {
-        dependsOnByRepositoryId[repositoryId] = [];
+    const rootByLabel = new Map<string, Array<{ repositoryId: string; serviceId: string }>>();
+    for (const [repositoryId, candidates] of roots) {
+      if (candidates.length !== 1) continue;
+      const root = candidates[0]!.node;
+      rootByLabel.set(root.label, [
+        ...(rootByLabel.get(root.label) ?? []),
+        { repositoryId, serviceId: root.id },
+      ]);
+    }
+    const repositories: RegaugeDependencyProjectionRepositoryV1[] = [];
+    const projectionEdges: RegaugeDependencyProjectionEdgeV1[] = [];
+    for (const repositoryId of requestedRepositoryIds) {
+      const candidates = roots.get(repositoryId) ?? [];
+      if (candidates.length === 0) {
+        repositories.push({
+          repositoryId,
+          serviceId: null,
+          coverage: "unknown",
+          reason: "manifest_ingest_evidence_missing",
+          dependsOnRepositoryIds: [],
+          evidenceRefs: [],
+        });
         continue;
       }
-      const deps = edgesFrom(scoped, source.id, ["DEPENDS_ON"])
-        .map((edge) => {
-          const target = services.find((node) => node.id === edge.target);
-          if (!target) return null;
-          return input.repositoryIds.find((id) =>
-            serviceMatchesRepository(target.id, target.label, id),
-          ) ?? null;
-        })
-        .filter((id): id is string => Boolean(id) && id !== repositoryId)
-        .sort();
-      dependsOnByRepositoryId[repositoryId] = [...new Set(deps)];
+      if (candidates.length > 1) {
+        repositories.push({
+          repositoryId,
+          serviceId: null,
+          coverage: "unknown",
+          reason: "manifest_root_ambiguous",
+          dependsOnRepositoryIds: [],
+          evidenceRefs: candidates.flatMap((candidate) => candidate.evidence.evidenceRefs),
+        });
+        continue;
+      }
+      const { node: source, evidence } = candidates[0]!;
+      const repositoryEdges: RegaugeDependencyProjectionEdgeV1[] = [];
+      let reason: string | null = null;
+      for (const edge of edgesFrom(scoped, source.id, ["DEPENDS_ON"])
+        .filter((candidate) => candidate.source_system === "manifest")
+        .sort((left, right) => compareCodeUnits(left.id, right.id))) {
+        const edgeEvidenceRefs = strings(edge.props?.evidence_refs);
+        const target = services.find((node) => node.id === edge.target);
+        if (
+          !target || edge.props?.manifest_content_digest !== evidence.contentDigest ||
+          !edgeEvidenceRefs || !evidence.evidenceRefs.every((ref) => edgeEvidenceRefs.includes(ref))
+        ) {
+          reason = "dependency_edge_evidence_invalid";
+          break;
+        }
+        const matches = (rootByLabel.get(target.label) ?? [])
+          .filter((candidate) => candidate.repositoryId !== repositoryId);
+        if (matches.length === 0) {
+          reason = "dependency_target_unmapped";
+          break;
+        }
+        if (matches.length > 1) {
+          reason = "dependency_target_ambiguous";
+          break;
+        }
+        repositoryEdges.push({
+          sourceRepositoryId: repositoryId,
+          targetRepositoryId: matches[0]!.repositoryId,
+          graphEdgeId: edge.id,
+          sourceSystem: "manifest",
+          confidence: edge.confidence ?? 1,
+          evidenceRefs: edgeEvidenceRefs,
+        });
+      }
+      if (reason) {
+        repositories.push({
+          repositoryId,
+          serviceId: source.id,
+          coverage: "unknown",
+          reason,
+          dependsOnRepositoryIds: [],
+          evidenceRefs: evidence.evidenceRefs,
+        });
+        continue;
+      }
+      projectionEdges.push(...repositoryEdges);
+      repositories.push({
+        repositoryId,
+        serviceId: source.id,
+        coverage: "complete",
+        reason: "manifest_ingest_complete",
+        dependsOnRepositoryIds: [...new Set(repositoryEdges.map((edge) => edge.targetRepositoryId))]
+          .sort(compareCodeUnits),
+        evidenceRefs: evidence.evidenceRefs,
+      });
     }
-    return Object.freeze({
-      consulted: true,
-      coverage: { basis: "complete" as const },
-      dependsOnByRepositoryId: Object.freeze(dependsOnByRepositoryId),
+    return createRegaugeDependencyProjectionV1({
+      tenantId: input.tenantId,
+      requestedRepositoryIds,
+      repositories,
+      edges: projectionEdges,
     });
   } finally {
     if (scoped !== input.graph) scoped.raw.close();
