@@ -238,7 +238,7 @@ describe("GitHub production closure authority", () => {
   it("runs per-PR authority from default-branch code and publishes an App-bound verdict", () => {
     const workflow = parse(
       readFileSync(
-        new URL("../.github/workflows/closure-authority.yml", import.meta.url),
+        new URL("../.github/workflows/closure-authority-quiet-sweep.yml", import.meta.url),
         "utf8",
       ),
     ) as {
@@ -449,7 +449,7 @@ describe("GitHub production closure authority", () => {
     const ACTIONS_TOKEN = "${{ secrets.GITHUB_TOKEN }}";
     const workflow = parse(
       readFileSync(
-        new URL("../.github/workflows/closure-authority.yml", import.meta.url),
+        new URL("../.github/workflows/closure-authority-quiet-sweep.yml", import.meta.url),
         "utf8",
       ),
     ) as {

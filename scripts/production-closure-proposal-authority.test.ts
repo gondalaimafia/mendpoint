@@ -809,7 +809,7 @@ describe("production closure proposal authority", () => {
 
   it("accepts a normal product proposal after successor activation removed the predecessor", async () => {
     const client = new FixtureClient();
-    const predecessorPath = ".github/workflows/closure-authority.yml";
+    const predecessorPath = ".github/workflows/closure-authority-quiet-sweep.yml";
     const successorPath = ".github/workflows/closure-authority-v2.yml";
     const workflowBytes = client.blobs.get(client.pathToSha.get(predecessorPath)!)!;
     const activePolicy = policy();
@@ -869,29 +869,27 @@ describe("production closure proposal authority", () => {
 
   it("exempts the newly-active successor from the controller-surface collision while an unrelated extra controller workflow still collides", async () => {
     const client = new FixtureClient();
-    const predecessorPath = ".github/workflows/closure-authority.yml";
-    const successorPath = ".github/workflows/closure-authority-quiet-sweep.yml";
+    const activePath = ".github/workflows/closure-authority-quiet-sweep.yml";
+    const successorPath = ".github/workflows/closure-authority-v3.yml";
     const roguePath = ".github/workflows/closure-authority-rogue.yml";
     // Controller-surface bytes: statuses: write + environment: production-closure-authority.
-    const controllerBytes = client.blobs.get(client.pathToSha.get(predecessorPath)!)!;
-    // Base policy: the predecessor is still the active controller (activation has not
-    // landed on the base yet), so proposedPolicy.workflowPath !== policy.workflowPath and
-    // ONLY the proposedPolicy.workflowPath exemption can spare the newly-active workflow.
+    const controllerBytes = client.blobs.get(client.pathToSha.get(activePath)!)!;
+    // Base policy: the quiet-sweep controller is the active controller on the base; this
+    // proposal activates a further successor, so proposedPolicy.workflowPath !== policy.workflowPath
+    // and ONLY the proposedPolicy.workflowPath exemption can spare the newly-active workflow.
     const basePolicy = policy();
     // Proposed policy: the activate_successor transition flips the active controller to
     // the successor and clears the staged slot.
     const proposedPolicy = policy();
     proposedPolicy.workflowPath = successorPath;
-    proposedPolicy.externalCheckName = "mendpoint-production-closure-authority-quiet-sweep";
-    proposedPolicy.controllerCheckName = "mendpoint-production-closure-controller-quiet-sweep";
+    proposedPolicy.externalCheckName = "mendpoint-production-closure-authority-v3";
+    proposedPolicy.controllerCheckName = "mendpoint-production-closure-controller-v3";
     proposedPolicy.successor = null;
-    delete proposedPolicy.protectedFiles[predecessorPath];
     proposedPolicy.protectedFiles[successorPath] = sha256(controllerBytes);
     const proposedPolicyBytes = Buffer.from(JSON.stringify(proposedPolicy));
-    // Proposed tree: predecessor removed, the newly-active successor present, plus an
-    // unrelated extra controller workflow that is neither the active path nor a staged
-    // successor slot and so must still be treated as a spoof.
-    client.remove(predecessorPath);
+    // Proposed tree: the newly-active successor present, plus an unrelated extra controller
+    // workflow that is neither the active path nor a staged successor slot and so must still
+    // be treated as a spoof.
     client.add(successorPath, controllerBytes, false);
     client.add(roguePath, controllerBytes, false);
     client.replace("config/production-closure-authority.json", proposedPolicyBytes);
