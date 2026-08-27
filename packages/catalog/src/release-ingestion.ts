@@ -89,6 +89,7 @@ export type ReleaseDispatch = Readonly<{
   leaseOwner: string | null;
   leaseExpiresAt: string | null;
   leaseGeneration: number;
+  claimedAt: string | null;
   attemptCount: number;
   maxAttempts: number;
   completedAt: string | null;
@@ -171,6 +172,7 @@ type DispatchRow = {
   lease_owner: string | null;
   lease_expires_at: string | null;
   lease_generation: number;
+  claimed_at: string | null;
   attempt_count: number;
   max_attempts: number;
   completed_at: string | null;
@@ -304,6 +306,7 @@ CREATE TABLE release_ingestion_dispatches (
   lease_owner TEXT,
   lease_expires_at TEXT,
   lease_generation INTEGER NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+  claimed_at TEXT,
   attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
   max_attempts INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_DISPATCH_ATTEMPTS}
     CHECK (max_attempts > 0 AND attempt_count <= max_attempts),
@@ -315,6 +318,11 @@ CREATE TABLE release_ingestion_dispatches (
   created_at TEXT NOT NULL,
   UNIQUE (tenant_id, artifact_id),
   FOREIGN KEY (artifact_id, tenant_id) REFERENCES release_ingestion_artifacts_v2(id, tenant_id)
+);
+
+CREATE TABLE release_ingestion_clock_authority (
+  singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+  watermark_at TEXT NOT NULL
 );
 `;
 
@@ -340,6 +348,8 @@ CREATE TRIGGER release_ingestion_observations_no_update BEFORE UPDATE ON release
 BEGIN SELECT RAISE(ABORT, 'release_ingestion_observations_append_only'); END;
 CREATE TRIGGER release_ingestion_observations_no_delete BEFORE DELETE ON release_ingestion_observations
 BEGIN SELECT RAISE(ABORT, 'release_ingestion_observations_append_only'); END;
+CREATE TRIGGER release_ingestion_clock_authority_no_delete BEFORE DELETE ON release_ingestion_clock_authority
+BEGIN SELECT RAISE(ABORT, 'release_ingestion_clock_authority_required'); END;
 `;
 
 function canonicalize(value: unknown): unknown {
@@ -850,6 +860,7 @@ function dispatchFromRow(row: DispatchRow): ReleaseDispatch {
     leaseOwner: row.lease_owner,
     leaseExpiresAt: row.lease_expires_at,
     leaseGeneration: row.lease_generation,
+    claimedAt: row.claimed_at,
     attemptCount: row.attempt_count,
     maxAttempts: row.max_attempts,
     completedAt: row.completed_at,
@@ -979,19 +990,21 @@ export function ingestReleaseDocument(
   return Object.freeze({ artifacts: Object.freeze(artifacts), inserted });
 }
 
-export function recordReleaseReviewerOverride(
+type ReleaseReviewerOverrideInput = Readonly<{
+  tenantId: string;
+  artifactId: string;
+  expectedRevision: number;
+  reviewerPrincipalId: string;
+  confidence: number;
+  excerpt: string;
+  excerptLocation: string;
+  reason: string;
+  reviewedAt: string;
+}>;
+
+export function recordReleaseReviewerOverrideCas(
   store: ReleaseIngestionStore,
-  input: Readonly<{
-    tenantId: string;
-    artifactId: string;
-    expectedRevision: number;
-    reviewerPrincipalId: string;
-    confidence: number;
-    excerpt: string;
-    excerptLocation: string;
-    reason: string;
-    reviewedAt: string;
-  }>,
+  input: ReleaseReviewerOverrideInput,
 ): ReleaseReviewerOverrideResult {
   const tenantId = required("release_tenant_id", input.tenantId, 256);
   const artifactId = required("release_artifact_id", input.artifactId, 128);
@@ -1002,8 +1015,8 @@ export function recordReleaseReviewerOverride(
   const excerptLocation = required("release_override_excerpt_location", input.excerptLocation, 512);
   const reason = required("release_override_reason", input.reason, 4000);
   const reviewedAt = timestamp("release_reviewed_at", input.reviewedAt);
-  if (store.raw.isTransaction) throw new Error("release_override_transaction_active");
-  store.raw.exec("BEGIN IMMEDIATE");
+  const ownsTransaction = !store.raw.isTransaction;
+  if (ownsTransaction) store.raw.exec("BEGIN IMMEDIATE");
   try {
     const artifact = one<ArtifactRow>(store,
       "SELECT * FROM release_ingestion_artifacts WHERE tenant_id = ? AND id = ?", [tenantId, artifactId]);
@@ -1012,7 +1025,7 @@ export function recordReleaseReviewerOverride(
       FROM release_ingestion_overrides WHERE tenant_id = ? AND artifact_id = ?`, [tenantId, artifactId]);
     const revision = Number(current?.revision ?? 0);
     if (revision !== input.expectedRevision) {
-      store.raw.exec("COMMIT");
+      if (ownsTransaction) store.raw.exec("COMMIT");
       return Object.freeze({
         status: "revision_conflict" as const,
         expectedRevision: input.expectedRevision,
@@ -1026,12 +1039,21 @@ export function recordReleaseReviewerOverride(
       .run(`rov_${sha256(`${tenantId}:${artifactId}:${next}`).slice(0, 32)}`, tenantId, artifactId, next,
         reviewerPrincipalId, input.confidence, excerpt, excerptLocation, reason, reviewedAt);
     const applied = fromRow(store, artifact);
-    store.raw.exec("COMMIT");
+    if (ownsTransaction) store.raw.exec("COMMIT");
     return Object.freeze({ status: "applied" as const, artifact: applied });
   } catch (error) {
-    if (store.raw.isTransaction) store.raw.exec("ROLLBACK");
+    if (ownsTransaction && store.raw.isTransaction) store.raw.exec("ROLLBACK");
     throw error;
   }
+}
+
+export function recordReleaseReviewerOverride(
+  store: ReleaseIngestionStore,
+  input: ReleaseReviewerOverrideInput,
+): ReleaseArtifact {
+  const result = recordReleaseReviewerOverrideCas(store, input);
+  if (result.status === "revision_conflict") throw new Error("release_override_revision_conflict");
+  return result.artifact;
 }
 
 function contentDigest(value: unknown): string {
@@ -1043,6 +1065,23 @@ function contentDigest(value: unknown): string {
 function leaseGeneration(value: unknown): number {
   if (!Number.isSafeInteger(value) || Number(value) < 1) throw new Error("release_dispatch_lease_generation_invalid");
   return Number(value);
+}
+
+function advanceReleaseClock(store: ReleaseIngestionStore): string {
+  if (!store.raw.isTransaction) throw new Error("release_store_clock_transaction_required");
+  const now = store.trustedNow();
+  const authority = one<{ watermark_at: string }>(store,
+    "SELECT watermark_at FROM release_ingestion_clock_authority WHERE singleton_id = 1");
+  if (authority && now < authority.watermark_at) throw new Error("release_store_clock_rollback");
+  if (!authority) {
+    store.raw.prepare(`INSERT INTO release_ingestion_clock_authority (singleton_id, watermark_at)
+      VALUES (1, ?)`).run(now);
+  } else if (now > authority.watermark_at) {
+    const changed = store.raw.prepare(`UPDATE release_ingestion_clock_authority SET watermark_at = ?
+      WHERE singleton_id = 1 AND watermark_at = ?`).run(now, authority.watermark_at);
+    if (Number(changed.changes) !== 1) throw new Error("release_store_clock_write_failed");
+  }
+  return now;
 }
 
 export function rehydrateReleaseArtifact(
@@ -1071,7 +1110,7 @@ export function claimReleaseDispatch(
   if (store.raw.isTransaction) throw new Error("release_dispatch_transaction_active");
   store.raw.exec("BEGIN IMMEDIATE");
   try {
-    const now = store.trustedNow();
+    const now = advanceReleaseClock(store);
     const leaseExpiresAt = new Date(Date.parse(now) + input.leaseDurationMs).toISOString();
     store.raw.prepare(`UPDATE release_ingestion_dispatches
       SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
@@ -1091,10 +1130,10 @@ export function claimReleaseDispatch(
     }
     const changed = store.raw.prepare(`UPDATE release_ingestion_dispatches
       SET status = 'claimed', lease_owner = ?, lease_expires_at = ?,
-          lease_generation = lease_generation + 1, attempt_count = attempt_count + 1
+          lease_generation = lease_generation + 1, claimed_at = ?, attempt_count = attempt_count + 1
       WHERE tenant_id = ? AND id = ? AND available_at <= ? AND attempt_count < max_attempts
         AND (status = 'pending' OR (status = 'claimed' AND lease_expires_at <= ?))`)
-      .run(workerId, leaseExpiresAt, tenantId, candidate.id, now, now);
+      .run(workerId, leaseExpiresAt, now, tenantId, candidate.id, now, now);
     if (Number(changed.changes) !== 1) throw new Error("release_dispatch_claim_conflict");
     const claimed = one<DispatchRow>(store,
       "SELECT * FROM release_ingestion_dispatches WHERE tenant_id = ? AND id = ?", [tenantId, candidate.id]);
@@ -1134,14 +1173,17 @@ function finishReleaseDispatch(
   if (store.raw.isTransaction) throw new Error("release_dispatch_transaction_active");
   store.raw.exec("BEGIN IMMEDIATE");
   try {
-    const finishedAt = store.trustedNow();
+    const finishedAt = advanceReleaseClock(store);
     const current = one<DispatchRow>(store,
       "SELECT * FROM release_ingestion_dispatches WHERE tenant_id = ? AND id = ?", [tenantId, dispatchId]);
     if (
       !current || current.status !== "claimed" || current.lease_owner !== workerId ||
-      current.lease_generation !== generation || !current.lease_expires_at ||
-      current.lease_expires_at <= finishedAt
-    ) throw new Error("release_dispatch_lease_lost");
+      current.lease_generation !== generation || !current.claimed_at || !current.lease_expires_at ||
+      finishedAt < current.claimed_at || current.lease_expires_at <= finishedAt
+    ) {
+      store.raw.exec("COMMIT");
+      throw new Error("release_dispatch_lease_lost");
+    }
     const retrying = input.status === "failed" && input.retryable && current.attempt_count < current.max_attempts;
     const nextStatus: ReleaseDispatchStatus = retrying ? "pending" : input.status;
     const availableAt = retrying
@@ -1152,13 +1194,13 @@ function finishReleaseDispatch(
           completed_at = ?, failed_at = ?, failure_code = ?,
           last_failure_at = ?, last_failure_code = ?
       WHERE tenant_id = ? AND id = ? AND status = 'claimed' AND lease_owner = ?
-        AND lease_generation = ? AND lease_expires_at > ?`)
+        AND lease_generation = ? AND claimed_at <= ? AND lease_expires_at > ?`)
       .run(nextStatus, availableAt, input.status === "completed" ? finishedAt : null,
         input.status === "failed" && !retrying ? finishedAt : null,
         input.status === "failed" && !retrying ? failureCode : null,
         input.status === "failed" ? finishedAt : current.last_failure_at,
         input.status === "failed" ? failureCode : current.last_failure_code,
-        tenantId, dispatchId, workerId, generation, finishedAt);
+        tenantId, dispatchId, workerId, generation, finishedAt, finishedAt);
     if (Number(changed.changes) !== 1) throw new Error("release_dispatch_lease_lost");
     const dispatch = one<DispatchRow>(store,
       "SELECT * FROM release_ingestion_dispatches WHERE tenant_id = ? AND id = ?", [tenantId, dispatchId]);

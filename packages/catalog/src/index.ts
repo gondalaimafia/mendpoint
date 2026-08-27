@@ -62,6 +62,7 @@ export {
   listReleaseObservations,
   openReleaseIngestionStore,
   recordReleaseReviewerOverride,
+  recordReleaseReviewerOverrideCas,
   rehydrateReleaseArtifact,
   type ReleaseAdapter,
   type ReleaseArtifact,
