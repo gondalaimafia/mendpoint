@@ -2058,15 +2058,15 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
     "observedMainRevision": "7f74e609ca0c9f05fa1deaaded76c9d7b2d2fbd6",
-    "observationDigest": "sha256:9859e554d96d74f31ba782ee5b487d2ef98b42a888b8487ff310e7dbc39c341f",
+    "observationDigest": "sha256:5a2efdb180455f3612f42108a9f9e093f3d43daef71aca7615945a4ec5d13fb6",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 490,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/490",
-      "title": "authority: scope open-PR head reachability to API oracles",
+      "number": 492,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/492",
+      "title": "Activate fresh authority observation scope",
       "baseBranch": "main",
-      "headBranch": "ci-storm-fix-app",
+      "headBranch": "codex/closure-authority-verifier-bootstrap",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2079,14 +2079,16 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
+      "remediatesPullRequests": [
+        487
+      ],
       "authorityRotation": {
-        "rotationId": "rotation-20260826-002",
+        "rotationId": "runtime-authority-observation-scope-20260827",
         "kind": "runtime",
-        "issuedAt": "2026-08-26T22:18:36.924Z",
-        "expiresAt": "2026-08-27T22:18:36.924Z",
-        "basePolicySha256": "sha256:572d299979e55ed409ae21c8f0a720b1c4e8b7f7a6fcb7f217ea12bf4aed03cb",
-        "proposedPolicySha256": "sha256:3bdfe57b1822cbccd434cef8b874f404cea60fcbf52848ba52899ca7068c4884"
+        "issuedAt": "2026-08-27T00:07:23.304Z",
+        "expiresAt": "2026-08-28T00:07:23.304Z",
+        "basePolicySha256": "sha256:3bdfe57b1822cbccd434cef8b874f404cea60fcbf52848ba52899ca7068c4884",
+        "proposedPolicySha256": "sha256:4005720195e1bbe0a1081000e8c368c0c467928758c5e9fc6e0f5e98d06acf37"
       }
     },
     "pullRequests": [
