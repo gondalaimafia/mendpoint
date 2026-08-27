@@ -1280,7 +1280,8 @@
         438
       ],
       "pullRequests": [
-        358
+        358,
+        498
       ],
       "testEvidenceIds": [
         "ME-ENT-007-AC01-EV01"
@@ -2057,16 +2058,16 @@
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
-    "observedMainRevision": "4fbf32605cff364bff8d4fc14600137cdaa98180",
-    "observationDigest": "sha256:d1ed4abbfd583837aeceaff9aeee510afc5dbdbd15938f33e1602dcf407d3289",
+    "observedMainRevision": "2257f98961184044aab63982d89aa9b391aa3fbd",
+    "observationDigest": "sha256:d6621cb765bea5dfd2ffb814397dfe4d2514ebb9314e7321e37222411445c46f",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 449,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/449",
-      "title": "worker: consult MissionGraphProjection when a live endpoint key exists",
+      "number": 498,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/498",
+      "title": "Restore fail-closed customer backup authority",
       "baseBranch": "main",
-      "headBranch": "cursor/mission-graph-endpoint-key-f457",
+      "headBranch": "codex/replace-backup-authority",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2077,7 +2078,9 @@
         "pullRequests": [],
         "branches": []
       },
-      "requirementIds": [],
+      "requirementIds": [
+        "ME-ENT-007"
+      ],
       "blockers": [],
       "remediatesPullRequests": []
     },
