@@ -149,7 +149,7 @@
       "basePolicySha256": "sha256:809f79e92cd7be5ce58c6f7920d44f0640c24138f553656911842d74c76d8a67",
       "proposedPolicySha256": "sha256:1c38c0ecb65fb8d1abcc3205c9d6331e6763723995066d8aac110b4ffcafc36c",
       "previousRotationId": "rotation-20260827-003",
-      "baseRevision": "aff4e7925bf0db23b318142db7888fe3df08315a",
+      "baseRevision": "2257f98961184044aab63982d89aa9b391aa3fbd",
       "baseLedgerSha256": "sha256:a08226358359c37befbe0a5c58b7d691a918acbf1d0b467aa4f49f0cc047cb9c",
       "successor": null,
       "changes": [
@@ -169,8 +169,8 @@
         },
         {
           "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
-          "fromSha256": "sha256:6464ae38222dfbda25dbb4dda61fae97400746862b1a00daab02858d8e45d23c",
-          "toSha256": "sha256:ee8537d49287227afa47faf7e9c467407373a0c210369c9c418afd33530b21a4",
+          "fromSha256": "sha256:bcc36c11779ee88e9208ce08a8bb685e14eba35be2d95a6ff3b8bbcedf89205d",
+          "toSha256": "sha256:dd9735ab5ee18739e08bc173f5a4ae54bca3d365768e46d24c0babd042199ce0",
           "fromMode": "100644",
           "toMode": "100644"
         },
