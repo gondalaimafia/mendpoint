@@ -454,6 +454,119 @@ describe("feed schedule runner", () => {
     });
   });
 
+  it("seeds and executes one release-only schedule without a global tenant pin", async () => {
+    const db = fixture();
+    const store = releaseStore();
+    const config = releaseConfiguration("tenant_default", "release-unpinned");
+    const calls: string[] = [];
+
+    const result = await runFeedSchedules({
+      db,
+      at: "2026-08-02T12:00:30.000Z",
+      defaultIntervalMs: 60_000,
+      defaultStaleAfterMs: 120_000,
+      feeds: [],
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: async (_store, canonical) => {
+        calls.push(`${canonical.tenantId}/${canonical.provider.slug}`);
+        return persistedRelease(store, canonical, "unchanged");
+      },
+    });
+
+    expect(calls).toEqual(["tenant_default/release-unpinned"]);
+    expect(result).toMatchObject({
+      status: "healthy",
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      alreadyClaimed: 0,
+      executions: [{
+        providerSlug: "release-unpinned",
+        status: "succeeded",
+        openApiOutcome: { status: "not_configured" },
+        releaseOutcome: {
+          status: "succeeded",
+          result: { tenantId: "tenant_default", providerSlug: "release-unpinned" },
+        },
+      }],
+    });
+  });
+
+  it("seeds every unpinned tenant release schedule once and replays the claimed window", async () => {
+    const db = fixture();
+    const store = releaseStore();
+    for (const tenantId of ["tenant-a", "tenant-b"]) {
+      db.raw.prepare(
+        `INSERT INTO tenants
+           (id, slug, name, plan, billing_status, seat_limit, created_at)
+         VALUES (?, ?, ?, 'pilot', 'active', 5, ?)`,
+      ).run(tenantId, tenantId, tenantId, "2026-08-02T12:00:00.000Z");
+    }
+    const configurations = [
+      releaseConfiguration("tenant-a", "release-a"),
+      releaseConfiguration("tenant-b", "release-b"),
+    ];
+    const calls: string[] = [];
+    const releaseExecute = async (
+      _store: ReleaseIngestionStore,
+      canonical: ReleasePollConfigurationV1,
+    ) => {
+      calls.push(`${canonical.tenantId}/${canonical.provider.slug}`);
+      return persistedRelease(store, canonical, "unchanged");
+    };
+
+    const first = await runFeedSchedules({
+      db,
+      at: "2026-08-02T12:00:30.000Z",
+      defaultIntervalMs: 60_000,
+      defaultStaleAfterMs: 120_000,
+      feeds: [],
+      releaseStore: store,
+      releaseFeeds: configurations,
+      releaseExecute,
+    });
+
+    expect(calls.sort()).toEqual(["tenant-a/release-a", "tenant-b/release-b"]);
+    expect(first).toMatchObject({
+      status: "healthy",
+      claimed: 2,
+      succeeded: 2,
+      failed: 0,
+      alreadyClaimed: 0,
+    });
+    expect(first.executions.map((execution) => ({
+      providerSlug: execution.providerSlug,
+      tenantId: execution.releaseOutcome?.status === "succeeded" &&
+        execution.releaseOutcome.result.status !== "invalid_configuration"
+        ? execution.releaseOutcome.result.tenantId
+        : undefined,
+    }))).toEqual([
+      { providerSlug: "release-a", tenantId: "tenant-a" },
+      { providerSlug: "release-b", tenantId: "tenant-b" },
+    ]);
+
+    const replay = await runFeedSchedules({
+      db,
+      at: "2026-08-02T12:00:59.000Z",
+      defaultIntervalMs: 60_000,
+      defaultStaleAfterMs: 120_000,
+      feeds: [],
+      releaseStore: store,
+      releaseFeeds: configurations,
+      releaseExecute,
+    });
+
+    expect(replay).toMatchObject({
+      status: "healthy",
+      claimed: 0,
+      succeeded: 0,
+      failed: 0,
+      alreadyClaimed: 2,
+    });
+    expect(calls).toHaveLength(2);
+  });
+
   it.each([
     ["unsupported contract version", { contractVersion: "release-poll.v2" }, "release_poll_contract_version_unsupported"],
     ["unsupported adapter", { adapter: "webhook" }, "release_poll_adapter_unsupported"],
