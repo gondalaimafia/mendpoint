@@ -383,14 +383,19 @@ export async function fetchFeedDocument(
     const resolveHostname = opts?.resolveHostname ?? defaultResolveHostname;
     const maxBytes = opts?.maxBytes ?? DEFAULT_FEED_MAX_BYTES;
     let current = new URL(resolved);
-    for (let redirects = 0; redirects <= 5; redirects++) {
-      const ctrl = new AbortController();
-      const t = setTimeout(
-        () => ctrl.abort(new DOMException("feed request timed out", "TimeoutError")),
-        opts?.timeoutMs ?? 30_000,
-      );
-      let res: Response;
-      try {
+    const ctrl = new AbortController();
+    const deadlineAt = performance.now() + (opts?.timeoutMs ?? 30_000);
+    const abortForTimeout = () => {
+      if (!ctrl.signal.aborted) {
+        ctrl.abort(new DOMException("feed request timed out", "TimeoutError"));
+      }
+    };
+    const timeout = setTimeout(abortForTimeout, Math.max(0, deadlineAt - performance.now()));
+    try {
+      for (let redirects = 0; redirects <= 5; redirects++) {
+        if (performance.now() >= deadlineAt) abortForTimeout();
+        if (ctrl.signal.aborted) throw ctrl.signal.reason;
+        let res: Response;
         const approvedAddress = production
           ? await waitForAbortable(
               validateProductionRemoteUrl(current, resolveHostname),
@@ -410,6 +415,11 @@ export async function fetchFeedDocument(
             ? await opts.trustedTestOnlyPinnedFetchImpl(current, approvedAddress, init)
             : await pinnedRemoteRequest(current, approvedAddress, init)
           : await fetchImpl(current, init);
+        if (performance.now() >= deadlineAt) abortForTimeout();
+        if (ctrl.signal.aborted) {
+          await res.body?.cancel().catch(() => undefined);
+          throw ctrl.signal.reason;
+        }
         const contentEncoding = res.headers.get("content-encoding")?.trim().toLowerCase();
         if (contentEncoding && contentEncoding !== "identity") {
           await res.body?.cancel().catch(() => undefined);
@@ -446,6 +456,8 @@ export async function fetchFeedDocument(
         }
         const providerLabel = opts?.provider ?? current.hostname;
         const body = await boundedResponseText(res, maxBytes, ctrl, providerLabel);
+        if (performance.now() >= deadlineAt) abortForTimeout();
+        if (ctrl.signal.aborted) throw ctrl.signal.reason;
         if (!res.ok) {
           return {
             ok: false,
@@ -456,9 +468,9 @@ export async function fetchFeedDocument(
           };
         }
         return { ok: true, url: current.href, status: res.status, body };
-      } finally {
-        clearTimeout(t);
       }
+    } finally {
+      clearTimeout(timeout);
     }
     return {
       ok: false,

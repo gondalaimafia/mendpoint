@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   RELEASE_POLL_CONTRACT_VERSION,
   RELEASE_POLL_ERROR_CODES,
+  RELEASE_POLL_MAX_REFERENCES,
   detectVendors,
   findVendorByPackage,
   listCatalog,
@@ -56,6 +57,7 @@ describe("vendor catalog", () => {
     expect(RELEASE_POLL_CONTRACT_VERSION).toBe("release-poll.v1");
     expect(pollReleaseSource).toBeTypeOf("function");
     expect(RELEASE_POLL_ERROR_CODES).toContain("release_poll_executor_failed");
+    expect(RELEASE_POLL_MAX_REFERENCES).toBe(4_096);
     expect(isReleasePollErrorCode("release_poll_fetch_failed")).toBe(true);
     expect(isReleasePollErrorCode("password=secret")).toBe(false);
   });

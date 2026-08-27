@@ -362,6 +362,45 @@ describe("poll", () => {
     expect(result.error).toBe("feed request timed out");
   });
 
+  it("shares one overall timeout across multiple delayed redirects", async () => {
+    const timeoutMs = 130;
+    let calls = 0;
+    const startedAt = performance.now();
+    const result = await fetchOpenApiDocument("https://feed.example/spec.json", {
+      production: true,
+      timeoutMs,
+      resolveHostname: async () => ["203.0.113.10"],
+      trustedTestOnlyPinnedFetchImpl: async (input, _address, init) => {
+        calls++;
+        await new Promise<void>((resolve, reject) => {
+          const signal = init?.signal;
+          let settled = false;
+          const finish = (complete: () => void) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+            complete();
+          };
+          const onAbort = () => finish(() => reject(signal?.reason));
+          const timer = setTimeout(() => finish(resolve), 55);
+          if (signal?.aborted) onAbort();
+          else signal?.addEventListener("abort", onAbort, { once: true });
+        });
+        return calls < 3
+          ? new Response(null, { status: 302, headers: { Location: new URL(`/hop-${calls}`, input).href } })
+          : new Response(JSON.stringify({ openapi: "3.1.0", info: {}, paths: {} }));
+      },
+    });
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("feed request timed out");
+    expect(calls).toBe(3);
+    expect(elapsedMs).toBeGreaterThanOrEqual(timeoutMs - 30);
+    expect(elapsedMs).toBeLessThan(timeoutMs + 90);
+  });
+
   it.each(["gzip", "br"])("requests identity encoding and rejects %s responses", async (encoding) => {
     let acceptEncoding: string | null = null;
     const result = await fetchOpenApiDocument("https://feed.example/spec.json", {
