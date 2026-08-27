@@ -308,13 +308,13 @@
       "expiresAt": "2026-08-29T08:29:00.000Z",
       "baseLedgerSha256": "sha256:83b33316c3dd7ae113bc110b84c2d95ead95af9f5a1fa3775c87969075d0d208",
       "basePolicySha256": "sha256:fbd31a0cf495e903c9e633962ceb2e2023cc00d17d4f38952916e963f84a99f1",
-      "proposedPolicySha256": "sha256:1128cced8cef5b9aac3c993403e02c1129b4cc45751e51ac9f9c11b9466e0f0e",
+      "proposedPolicySha256": "sha256:8786be374ac7ae3a992f49f6887337108e961841ac5c66c78c18f994e8e68bee",
       "successor": null,
       "changes": [
         {
           "path": "config/production-closure-authority.json",
           "fromSha256": "sha256:fbd31a0cf495e903c9e633962ceb2e2023cc00d17d4f38952916e963f84a99f1",
-          "toSha256": "sha256:1128cced8cef5b9aac3c993403e02c1129b4cc45751e51ac9f9c11b9466e0f0e",
+          "toSha256": "sha256:8786be374ac7ae3a992f49f6887337108e961841ac5c66c78c18f994e8e68bee",
           "fromMode": "100644",
           "toMode": "100644"
         },
@@ -328,14 +328,14 @@
         {
           "path": "scripts/production-closure-authority-rotation.test.ts",
           "fromSha256": "sha256:26c614bcb1ecb8ea55781fe23ac0dcf45b6d0321068e511a8c181a61d82cbcbc",
-          "toSha256": "sha256:e7e4a2d379758cb9817eb3b9a974830dc356ed165294e94928b0fdfca78caee2",
+          "toSha256": "sha256:b730b748092a4a52823e7244dca3c1ff0f1910f44408f4b908abb68b847a51c7",
           "fromMode": "100644",
           "toMode": "100644"
         },
         {
           "path": "scripts/production-closure-authority-rotation.ts",
           "fromSha256": "sha256:a028ddc9accff22771211afba38573cf7482856e1539b81535d711b8b1f8271f",
-          "toSha256": "sha256:cd97add46eb8839e494d2e3e47462d3f3f754971960ab184d4e40ce6830cdb5d",
+          "toSha256": "sha256:9665fba2b58a8cef8026f3b3087ea153fc0e505b84c99db0164e0ffb78a3acfb",
           "fromMode": "100644",
           "toMode": "100644"
         }

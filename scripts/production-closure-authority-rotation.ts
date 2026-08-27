@@ -5,6 +5,24 @@ const SHA = /^[a-f0-9]{40}$/;
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const ROTATION_ID = /^[a-z0-9][a-z0-9._-]{7,127}$/;
 const MAX_ROTATION_VALIDITY_MS = 7 * 24 * 60 * 60 * 1000;
+const SUCCESSOR_TUPLE_KEYS = [
+  "activationDeadline",
+  "controllerCheckAppId",
+  "controllerCheckName",
+  "controllerStatusCreatorLogin",
+  "controllerStatusCreatorUserId",
+  "externalCheckAppId",
+  "externalCheckName",
+  "templatePath",
+  "workflowPath",
+  "workflowSha256",
+] as const;
+const SUCCESSOR_STATE_KEYS = [
+  ...SUCCESSOR_TUPLE_KEYS,
+  "activatedByRotationId",
+  "phase",
+  "stagedByRotationId",
+].sort();
 
 export interface AuthorityReviewerIdentity {
   login: string;
@@ -188,6 +206,7 @@ function validSuccessorTuple(
 ): successor is AuthoritySuccessorTuple {
   return Boolean(
     successor &&
+    JSON.stringify(Object.keys(successor).sort()) === JSON.stringify(SUCCESSOR_TUPLE_KEYS) &&
     normalizedPath(successor.templatePath) === successor.templatePath &&
     /^config\/production-closure-successors\/closure-authority-[a-z0-9-]+\.yml$/.test(successor.templatePath) &&
     normalizedPath(successor.workflowPath) === successor.workflowPath &&
@@ -210,6 +229,37 @@ function validSuccessorTuple(
     successor.controllerStatusCreatorUserId > 0 &&
     canonicalTime(successor.activationDeadline)
   );
+}
+
+function validSuccessorState(
+  successor: AuthoritySuccessorState | null | undefined,
+): successor is AuthoritySuccessorState {
+  if (
+    !successor ||
+    JSON.stringify(Object.keys(successor).sort()) !== JSON.stringify(SUCCESSOR_STATE_KEYS)
+  ) return false;
+  const {
+    phase,
+    stagedByRotationId,
+    activatedByRotationId,
+    ...tuple
+  } = successor;
+  return phase === "staged" &&
+    ROTATION_ID.test(stagedByRotationId) &&
+    activatedByRotationId === null &&
+    validSuccessorTuple(tuple);
+}
+
+function exactSuccessorState(
+  left: AuthoritySuccessorState | null | undefined,
+  right: AuthoritySuccessorState | null | undefined,
+): boolean {
+  return validSuccessorState(left) &&
+    validSuccessorState(right) &&
+    left.phase === right.phase &&
+    left.stagedByRotationId === right.stagedByRotationId &&
+    left.activatedByRotationId === right.activatedByRotationId &&
+    exactSuccessorTuple(left, right);
 }
 
 function activeIdentity(policy: ClosureAuthorityPolicy): unknown {
@@ -400,14 +450,14 @@ export function verifyAuthorityRotation(
       ? baseRotations.find((candidate) => candidate.rotationId === staged.stagedByRotationId) ?? null
       : null;
     const expectedState: AuthoritySuccessorState = {
+      ...successor,
       phase: "staged",
       stagedByRotationId: receipt.rotationId,
       activatedByRotationId: null,
-      ...successor,
     };
     const deadline = Date.parse(successor.activationDeadline);
     if (
-      JSON.stringify(input.proposedPolicy.successor) !== JSON.stringify(expectedState)
+      !exactSuccessorState(input.proposedPolicy.successor, expectedState)
     ) {
       add(
         issues,
@@ -418,9 +468,7 @@ export function verifyAuthorityRotation(
     }
     if (
       staged === undefined || (isRestage && (
-        !validSuccessorTuple(staged) ||
-        staged.phase !== "staged" ||
-        staged.activatedByRotationId !== null ||
+        !validSuccessorState(staged) ||
         stagedByReceipt?.kind !== "stage_successor" ||
         !exactSuccessorTuple(stagedByReceipt.successor, staged)
       ))
@@ -513,9 +561,7 @@ export function verifyAuthorityRotation(
     const successor = receipt.successor;
     const staged = input.basePolicy.successor;
     if (
-      !staged ||
-      staged.phase !== "staged" ||
-      staged.activatedByRotationId !== null ||
+      !validSuccessorState(staged) ||
       baseReceipt?.kind !== "stage_successor" ||
       baseReceipt.rotationId !== staged.stagedByRotationId ||
       !exactSuccessorTuple(baseReceipt.successor, successor) ||

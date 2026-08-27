@@ -279,6 +279,32 @@ describe("production closure authority rotation", () => {
   });
 
   it.each([
+    ["activated state", { activatedByRotationId: "rotation-attacker-activate" }],
+    ["staging authority", { stagedByRotationId: "rotation-attacker-stage" }],
+    ["phase", { phase: "activated" }],
+    ["unknown state", { attackerControlledState: "wedge" }],
+  ] as const)("rejects a successor receipt with injected %s keys", (_field, injected) => {
+    const { input } = stagedSuccessorFixture();
+    const receipt = input.proposedLedger.rotations.at(-1)!;
+    receipt.successor = { ...receipt.successor!, ...injected };
+    input.proposedPolicy.successor = {
+      ...input.proposedPolicy.successor!,
+      ...injected,
+    } as never;
+    input.proposedPolicyBytes = Buffer.from(JSON.stringify(input.proposedPolicy));
+    receipt.proposedPolicySha256 = digest(input.proposedPolicyBytes);
+    input.changedFiles[0] = {
+      ...input.changedFiles[0],
+      toSha256: digest(input.proposedPolicyBytes),
+    };
+    receipt.changes = input.changedFiles.map((change) => ({ ...change }));
+
+    expect(verifyAuthorityRotation(input).map((issue) => issue.code)).toContain(
+      "AUTHORITY_SUCCESSOR_TUPLE_INVALID",
+    );
+  });
+
+  it.each([
     ["workflow paths", {
       templatePath: "config/production-closure-successors/closure-authority-v3.yml",
       workflowPath: ".github/workflows/closure-authority-v3.yml",
