@@ -48,6 +48,21 @@ function releaseConfiguration(
   };
 }
 
+function unchangedRelease(config: ReleasePollConfigurationV1): ReleasePollResult {
+  return {
+    contractVersion: config.contractVersion,
+    tenantId: config.tenantId,
+    providerSlug: config.provider.slug,
+    adapter: config.adapter,
+    sourceUrl: config.source.url,
+    sourceMaxBytes: config.source.maxBytes ?? null,
+    status: "unchanged",
+    inserted: 0,
+    artifacts: [],
+    dispatches: [],
+  };
+}
+
 function releaseStore(): ReleaseIngestionStore {
   const store = openReleaseIngestionStore(":memory:", {
     clock: () => "2026-08-02T12:00:30.000Z",
@@ -535,6 +550,129 @@ describe("feed schedule runner", () => {
         error: "release_poll_adapter_unsupported",
         result: { status: "invalid_configuration", identity: null },
       },
+    });
+  });
+
+  it("turns three same-tenant duplicate bindings into one scoped failure and runs unrelated work", async () => {
+    const db = fixture();
+    const store = releaseStore();
+    const duplicates = ["duplicate-a-secret", "duplicate-b-secret", "duplicate-c-secret"].map(
+      (path) => ({
+        ...releaseConfiguration("tenant_default", "provider-1"),
+        source: { url: `https://docs.example.com/private/${path}` },
+      } satisfies ReleasePollConfigurationV1),
+    );
+    const unrelated = releaseConfiguration("tenant_default", "provider-2");
+    let openApiCalls = 0;
+    const releaseCalls: string[] = [];
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(2),
+      execute: async (feed) => {
+        openApiCalls++;
+        return { slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const };
+      },
+      releaseStore: store,
+      releaseFeeds: [...duplicates, unrelated],
+      releaseExecute: async (_store, config) => {
+        releaseCalls.push(config.provider.slug);
+        return unchangedRelease(config);
+      },
+    });
+
+    expect(openApiCalls).toBe(2);
+    expect(releaseCalls).toEqual(["provider-2"]);
+    expect(result).toMatchObject({ claimed: 2, succeeded: 1, failed: 1 });
+    const duplicateExecution = result.executions.find(
+      (execution) => execution.providerSlug === "provider-1",
+    );
+    expect(duplicateExecution).toMatchObject({
+      status: "failed",
+      openApiOutcome: { status: "succeeded", result: { status: "unchanged" } },
+      releaseOutcome: {
+        status: "failed",
+        error: "release_poll_configuration_duplicate",
+        result: {
+          status: "invalid_configuration",
+          error: "release_poll_configuration_duplicate",
+          identity: null,
+          configurationBinding: { tenantId: "tenant_default", providerSlug: "provider-1" },
+          sourceReference: null,
+        },
+      },
+    });
+    const serialized = JSON.stringify(duplicateExecution);
+    for (const secret of ["duplicate-a-secret", "duplicate-b-secret", "duplicate-c-secret"]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(result.executions.find((execution) => execution.providerSlug === "provider-2")).toMatchObject({
+      status: "succeeded",
+      openApiOutcome: { status: "succeeded" },
+      releaseOutcome: { status: "succeeded", result: { status: "unchanged" } },
+    });
+  });
+
+  it("scopes duplicate provider bindings by tenant and preserves the other tenant release", async () => {
+    const db = fixture();
+    const store = releaseStore();
+    for (const tenantId of ["tenant-a", "tenant-b"]) {
+      db.raw.prepare(
+        `INSERT INTO tenants
+           (id, slug, name, plan, billing_status, seat_limit, created_at)
+         VALUES (?, ?, ?, 'pilot', 'active', 5, ?)`,
+      ).run(tenantId, tenantId, tenantId, "2026-08-02T12:00:00.000Z");
+      upsertFeedSchedule(db, {
+        id: `duplicate-scope-${tenantId}`,
+        tenantId,
+        providerSlug: "provider-1",
+        intervalMs: 60_000,
+        staleAfterMs: 120_000,
+        createdAt: "2026-08-02T12:00:00.000Z",
+      });
+    }
+    const tenantADuplicates = ["first-secret", "second-secret"].map((path) => ({
+      ...releaseConfiguration("tenant-a", "provider-1"),
+      source: { url: `https://docs.example.com/private/${path}` },
+    } satisfies ReleasePollConfigurationV1));
+    const tenantB = releaseConfiguration("tenant-b", "provider-1");
+    const openApiTenants: string[] = [];
+    const releaseTenants: string[] = [];
+
+    const result = await runFeedSchedules({
+      db,
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed, schedule) => {
+        openApiTenants.push(schedule.tenant_id);
+        return { slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const };
+      },
+      releaseStore: store,
+      releaseFeeds: [...tenantADuplicates, tenantB],
+      releaseExecute: async (_store, config) => {
+        releaseTenants.push(config.tenantId);
+        return unchangedRelease(config);
+      },
+    });
+
+    expect(openApiTenants.sort()).toEqual(["tenant-a", "tenant-b"]);
+    expect(releaseTenants).toEqual(["tenant-b"]);
+    expect(result).toMatchObject({ claimed: 2, succeeded: 1, failed: 1 });
+    expect(result.executions.find((execution) => execution.scheduleId === "duplicate-scope-tenant-a")).toMatchObject({
+      status: "failed",
+      openApiOutcome: { status: "succeeded" },
+      releaseOutcome: {
+        status: "failed",
+        error: "release_poll_configuration_duplicate",
+        result: { status: "invalid_configuration", identity: null, sourceReference: null },
+      },
+    });
+    expect(result.executions.find((execution) => execution.scheduleId === "duplicate-scope-tenant-b")).toMatchObject({
+      status: "succeeded",
+      openApiOutcome: { status: "succeeded" },
+      releaseOutcome: { status: "succeeded", result: { tenantId: "tenant-b" } },
     });
   });
 

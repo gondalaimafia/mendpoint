@@ -75,7 +75,7 @@ export type InvalidReleasePollConfigurationResult = Readonly<{
   error: string;
   identity: null;
   configurationBinding: ReleasePollConfigurationBinding | null;
-  sourceReference: ReleasePollSourceReference;
+  sourceReference: ReleasePollSourceReference | null;
   inserted: 0;
   artifacts: readonly ReleaseArtifactReference[];
   dispatches: readonly ReleaseDispatchReference[];
@@ -243,6 +243,21 @@ function invalidConfiguration(
     identity: null,
     configurationBinding: configurationBinding(raw),
     sourceReference: sourceReference(raw.sourceUrl),
+    inserted: 0 as const,
+    artifacts: Object.freeze([]),
+    dispatches: Object.freeze([]),
+  });
+}
+
+export function duplicateReleasePollConfigurationResult(
+  binding: ReleasePollConfigurationBinding,
+): InvalidReleasePollConfigurationResult {
+  return Object.freeze({
+    status: "invalid_configuration" as const,
+    error: "release_poll_configuration_duplicate",
+    identity: null,
+    configurationBinding: Object.freeze({ ...binding }),
+    sourceReference: null,
     inserted: 0 as const,
     artifacts: Object.freeze([]),
     dispatches: Object.freeze([]),

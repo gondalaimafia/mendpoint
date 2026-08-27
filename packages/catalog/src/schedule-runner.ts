@@ -18,6 +18,7 @@ import {
   type PollOneResult,
 } from "./run-poll.js";
 import {
+  duplicateReleasePollConfigurationResult,
   parseReleasePollConfiguration,
   pollReleaseSource,
   type CanonicalReleasePollConfigurationV1,
@@ -156,8 +157,12 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
       : parsed.result.configurationBinding;
     if (!binding) continue;
     const scope = releaseScope(binding.tenantId, binding.providerSlug);
-    if (releaseByScope.has(scope)) throw new Error("release_poll_configuration_duplicate");
-    releaseByScope.set(scope, parsed);
+    releaseByScope.set(scope, releaseByScope.has(scope)
+      ? Object.freeze({
+          status: "invalid" as const,
+          result: duplicateReleasePollConfigurationResult(binding),
+        })
+      : parsed);
   }
   if (options.tenantId) {
     const providerSlugs = new Set(feeds.map((feed) => feed.slug));
