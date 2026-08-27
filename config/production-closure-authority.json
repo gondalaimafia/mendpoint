@@ -58,7 +58,7 @@
     "scripts/tsconfig.json": "sha256:8607a9e57b531b9c941819da05b1ba70c991389a5d1b3d13be06d109d49b22e5",
     "scripts/production-closure-proposal-authority.ts": "sha256:51d86e5498cc588b7cae5cd59266e005eafb6e04b9f83c1877517a536cccf209",
     "scripts/production-closure-github-authority.ts": "sha256:da77bc9a1a8b1f336e2002c0284753c038880d51845360e1b856e2314f1cef59",
-    "scripts/production-closure-authority-rotation.ts": "sha256:9665fba2b58a8cef8026f3b3087ea153fc0e505b84c99db0164e0ffb78a3acfb",
+    "scripts/production-closure-authority-rotation.ts": "sha256:a3410ee502254562b568fe265ebdf67fbc5c59085241261511643f423231f315",
     "scripts/production-closure-matrix.ts": "sha256:3a11f017b1f29d89a3c9234a8fa708c00d997ae63de8576fb6295175b7cbb1e2",
     "scripts/public-claims-check.ts": "sha256:31ce71d0cc998a4b534714bf8fd17f577876b235ca1255a2a76c8e38815ea248",
     "packages/contract/src/product-requirements.ts": "sha256:a0ee9719e472bee1a73f44c44df9626f5f91d881608c628d5b2eb4c9fb7f4e98",

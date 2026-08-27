@@ -226,6 +226,43 @@ describe("production closure authority rotation", () => {
     expect(verifyAuthorityRotation(input)).toEqual([]);
   });
 
+  it.each([
+    ["activated state", { activatedByRotationId: "rotation-attacker-activate" }],
+    ["staging authority", { stagedByRotationId: "rotation-attacker-stage" }],
+    ["phase", { phase: "activated" }],
+    ["unknown state", { attackerControlledState: "wedge" }],
+  ] as const)("rejects a runtime rotation with injected successor %s", (_field, injected) => {
+    const { input } = stagedSuccessorFixture();
+    input.proposedPolicy = structuredClone(input.basePolicy);
+    input.proposedPolicy.successor = {
+      ...input.proposedPolicy.successor!,
+      ...injected,
+    } as never;
+    input.proposedPolicyBytes = Buffer.from(JSON.stringify(input.proposedPolicy));
+    input.changedFiles = [{
+      path: "config/production-closure-authority.json",
+      fromSha256: digest(input.basePolicyBytes),
+      toSha256: digest(input.proposedPolicyBytes),
+      fromMode: "100644",
+      toMode: "100644",
+    }];
+    const receipt = input.proposedLedger.rotations.at(-1)!;
+    receipt.kind = "runtime";
+    receipt.successor = null;
+    receipt.proposedPolicySha256 = digest(input.proposedPolicyBytes);
+    receipt.changes = input.changedFiles.map((change) => ({ ...change }));
+    const stagedBytes = Buffer.from("name: staged-successor\nversion: 1\n");
+    input.proposedFileContents.set(input.basePolicy.successor!.templatePath, stagedBytes);
+    input.proposedFileContents.set(input.basePolicy.successor!.workflowPath, stagedBytes);
+    input.proposedFileDigests = new Map(
+      [...input.proposedFileContents].map(([path, bytes]) => [path, digest(bytes)]),
+    );
+
+    expect(verifyAuthorityRotation(input).map((issue) => issue.code)).toContain(
+      "AUTHORITY_SUCCESSOR_TRANSITION_INVALID",
+    );
+  });
+
   it("rejects re-stage when the immutable ledger cannot authenticate the staged tuple", () => {
     const { input } = stagedSuccessorFixture();
     input.baseLedger.rotations = input.baseLedger.rotations.slice(1);

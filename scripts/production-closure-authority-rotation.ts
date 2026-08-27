@@ -262,6 +262,16 @@ function exactSuccessorState(
     exactSuccessorTuple(left, right);
 }
 
+function exactOptionalSuccessorState(
+  left: AuthoritySuccessorState | null | undefined,
+  right: AuthoritySuccessorState | null | undefined,
+): boolean {
+  if (left === null || left === undefined || right === null || right === undefined) {
+    return left === right;
+  }
+  return exactSuccessorState(left, right);
+}
+
 function activeIdentity(policy: ClosureAuthorityPolicy): unknown {
   return {
     workflowPath: policy.workflowPath,
@@ -427,7 +437,10 @@ export function verifyAuthorityRotation(
   }
 
   if (transitionKind === "runtime") {
-    if (receipt.successor !== null || !exactSuccessorTuple(input.basePolicy.successor, input.proposedPolicy.successor)) {
+    if (
+      receipt.successor !== null ||
+      !exactOptionalSuccessorState(input.basePolicy.successor, input.proposedPolicy.successor)
+    ) {
       add(
         issues,
         "AUTHORITY_SUCCESSOR_TRANSITION_INVALID",
