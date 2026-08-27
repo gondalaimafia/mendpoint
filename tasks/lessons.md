@@ -172,3 +172,18 @@
 **Mistake:** I started a manual Cursor PR review after finding that the installed review skill pointed to a missing workflow.
 **Correction:** Talal required the necessary skills to be fetched and used, and required findings to be fixed before merge.
 **Rule:** When an applicable review skill is incomplete, fetch its current authoritative runtime before continuing. For agent-authored PRs, use the fetched adversarial review and fixer workflow, then re-review the exact fixed head and require current-base CI before merge.
+
+### 2026-08-27 — Test unpinned multi-tenant scheduler entry points
+**Mistake:** I proved release-only scheduling only with a global tenant pin, while the production worker intentionally permits canonical configurations for multiple tenants without that pin.
+**Correction:** Spec review found that a fresh unpinned database could report a healthy scheduler run while silently executing zero configured releases.
+**Rule:** When a runtime accepts tenant-bound configuration independently of a global tenant selector, test the production call shape with that selector unset, multiple tenants, a fresh durable store, and replay before claiming the configuration is reachable.
+
+### 2026-08-27 — Separate release plumbing from product progress
+**Mistake:** I treated shipping gates, plumbing, and documentation as significant Mendpoint 101 engineering progress without closing a live product capability.
+**Correction:** Talal required infrastructure motion to be reported separately from end-to-end production capability progress.
+**Rule:** Report release plumbing separately and prioritize closing an end-to-end production capability; never inflate infrastructure motion as requirement progress.
+
+### 2026-08-27 — Execute the authoritative plan directly
+**Mistake:** I proposed creating or importing another GSD roadmap even though an authoritative plan already existed.
+**Correction:** Talal required GSD execution, verification, and shipping mechanics to apply directly to the existing plan.
+**Rule:** Do not duplicate an authoritative plan; planning duplication is delay, not progress.

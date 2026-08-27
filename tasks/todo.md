@@ -3434,3 +3434,20 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Operational evidence: scheduler readiness requires healthy top-level and legacy status plus zero legacy and configuration failures; heartbeat and web output expose bounded booleans, counts, and enums only; configured but not-started and degraded release polling cannot set `feedPollOk` true. The customer profile strips the protected JSON from every role and restores it only to the worker.
 - Remaining activation gates: release ingestion backup and restore coverage with operator approval; dispatch outbox drain activation and proof.
 - Requirement status: unchanged. ME-ING-003 and ME-ING-004 remain partial and internal only.
+
+## 2026-08-27 Unpinned release schedule seeding P1
+
+- [x] Verify exact head `06688c05` and reproduce the fresh-database unpinned scheduling premise.
+- [x] RED: prove one valid unpinned release configuration creates, claims, and executes one release-only schedule window on a fresh database.
+- [x] RED: prove multiple tenant-bound configurations each create and execute exactly one isolated schedule, then replay without re-execution.
+- [x] GREEN: seed unique release schedule bindings independently of the optional global tenant pin while preserving existing OpenAPI scheduling behavior.
+- [x] Run focused scheduler and worker tests, full catalog and worker suites, workspace typecheck, production audit, secret scan, and `git diff --check`.
+- [x] Self-review the complete delta, explicitly stage only scoped files, and create a new commit without remote changes.
+
+### Review
+
+- RED evidence: the fresh-database scheduler suite failed exactly two new regressions while 51 existing tests passed. Both unpinned cases observed an empty executor call list, proving configured single-tenant and multi-tenant releases were silently skipped before schedule creation.
+- GREEN evidence: the focused scheduler suite passes 53 tests and the combined scheduler/worker files pass 141 tests. The complete catalog suite passes 154 tests across eight files; the complete worker suite passes 608 tests with one intentional skip across 66 files. Full-workspace typecheck passes, `npm audit --omit=dev` reports zero vulnerabilities, the production source secret scan is clean, and `git diff --check` is clean.
+- Behavior evidence: the scheduler derives one safe binding per deduplicated release scope. A pinned invocation retains its existing tenant-local OpenAPI and release seeding behavior; an unpinned invocation seeds only the configured release tenant/provider pairs, then uses the existing schedule claim, concurrency, completion, health, and replay paths unchanged. Same-window replay reports two already-claimed schedules and makes no additional executor calls.
+- Tenant evidence: no global `MENDPOINT_TENANT_ID` is required. Each canonical configuration remains bound to its own tenant and provider; duplicate and invalid configurations retain their existing isolated outcomes.
+- Remaining activation gates are unchanged: release-ingestion backup and restore coverage with operator approval, plus dispatch outbox drain activation and proof. ME-ING-003 and ME-ING-004 remain partial and internal only.

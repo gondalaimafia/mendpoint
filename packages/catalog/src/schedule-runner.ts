@@ -362,13 +362,16 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
         })
       : parsed);
   }
+  const releaseScheduleBindings = [...releaseByScope.values()].flatMap((parsed) => {
+    const binding = parsed.status === "valid"
+      ? { tenantId: parsed.config.tenantId, providerSlug: parsed.config.provider.slug }
+      : parsed.result.configurationBinding;
+    return binding ? [binding] : [];
+  });
   if (options.tenantId) {
     const providerSlugs = new Set(feeds.map((feed) => feed.slug));
-    for (const parsed of releaseByScope.values()) {
-      const binding = parsed.status === "valid"
-        ? { tenantId: parsed.config.tenantId, providerSlug: parsed.config.provider.slug }
-        : parsed.result.configurationBinding;
-      if (binding?.tenantId === options.tenantId) providerSlugs.add(binding.providerSlug);
+    for (const binding of releaseScheduleBindings) {
+      if (binding.tenantId === options.tenantId) providerSlugs.add(binding.providerSlug);
     }
     ensureSchedules(
       options.db,
@@ -378,6 +381,17 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
       intervalMs,
       staleAfterMs,
     );
+  } else {
+    for (const binding of releaseScheduleBindings) {
+      ensureSchedules(
+        options.db,
+        binding.tenantId,
+        [{ slug: binding.providerSlug }],
+        at,
+        intervalMs,
+        staleAfterMs,
+      );
+    }
   }
   getFeedScheduleHealth(options.db, at, options.tenantId);
 
