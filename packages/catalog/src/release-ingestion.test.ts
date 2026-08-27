@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,7 @@ import {
 } from "./release-ingestion.js";
 
 const NOW = "2026-08-02T12:00:00.000Z";
+const RELEASE_DOCUMENT_MAX_BYTES = 1024 * 1024;
 const fixture = (name: string) =>
   readFileSync(new URL(`../fixtures/releases/${name}`, import.meta.url), "utf8");
 const stores: ReleaseIngestionStore[] = [];
@@ -325,6 +327,23 @@ describe("release ingestion", () => {
     expect(rss.artifacts[0]?.changeHints.replacements).toContainEqual({ from: "amount_cents", to: "amount" });
     expect(atom.artifacts[0]?.sourceItemId).toBe("urn:openai:release:responses-2026-08-01");
     expect(atom.artifacts[0]?.changeHints.replacements).toContainEqual({ from: "max_tokens", to: "max_output_tokens" });
+  });
+
+  it("replaces query and fragment bearing item URLs with origin plus digest identity", () => {
+    const ledger = store();
+    const secretUrl = "https://docs.example.com/release?channel=token-secret#fragment-secret";
+    const document = `<?xml version="1.0"?><rss><channel><item>
+      <guid>secret-item</guid><title>Secret URL release</title>
+      <link>${secretUrl}</link><pubDate>Sat, 02 Aug 2026 12:00:00 GMT</pubDate>
+      <description>Changed one field.</description>
+    </item></channel></rss>`;
+    const result = ingestReleaseDocument(ledger, input("rss", document));
+    const stored = result.artifacts[0]?.sourceUrl;
+    expect(stored).toBe(
+      `https://docs.example.com/.well-known/mendpoint/release-item-source/${createHash("sha256").update(secretUrl).digest("hex")}`,
+    );
+    expect(stored).not.toContain("token-secret");
+    expect(stored).not.toContain("fragment-secret");
   });
 
   it("normalizes GitHub releases and a constrained provider page fixture", () => {
@@ -1052,6 +1071,14 @@ describe("release ingestion", () => {
     const ledger = store();
     expect(() => ingestReleaseDocument(ledger, input("rss", "x".repeat(1_048_577))))
       .toThrow("release_document_too_large");
+    expect(() => ingestReleaseDocument(ledger, {
+      ...input("rss", fixture("stripe-rss.xml")),
+      maxBytes: RELEASE_DOCUMENT_MAX_BYTES + 1,
+    })).toThrow("release_document_max_bytes_invalid");
+    expect(() => ingestReleaseDocument(ledger, {
+      ...input("rss", fixture("stripe-rss.xml")),
+      maxBytes: Number.POSITIVE_INFINITY,
+    })).toThrow("release_document_max_bytes_invalid");
     expect(() => ingestReleaseDocument(ledger, {
       ...input("rss", fixture("stripe-rss.xml")),
       observedAt: "2026-07-30T12:00:00.000Z",

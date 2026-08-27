@@ -193,7 +193,7 @@ type OverrideRow = {
   reviewed_at: string;
 };
 
-const DEFAULT_MAX_BYTES = 1024 * 1024;
+export const RELEASE_DOCUMENT_MAX_BYTES = 1024 * 1024;
 const DEFAULT_MAX_OBSERVATION_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_DISPATCH_ATTEMPTS = 5;
@@ -563,6 +563,13 @@ function safeUrl(name: string, value: unknown): string {
   return parsed.toString();
 }
 
+function safeStoredItemUrl(value: unknown): string {
+  const canonical = safeUrl("release_item_source_url", value);
+  const parsed = new URL(canonical);
+  if (!parsed.search && !parsed.hash) return canonical;
+  return `${parsed.origin}/.well-known/mendpoint/release-item-source/${sha256(canonical)}`;
+}
+
 function decodeXml(value: string): string {
   return value
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
@@ -599,7 +606,7 @@ function makeItem(input: {
 }): NormalizedItem {
   const excerpt = required("release_excerpt", input.excerpt, 20_000);
   return Object.freeze({
-    sourceUrl: safeUrl("release_item_source_url", input.sourceUrl),
+    sourceUrl: safeStoredItemUrl(input.sourceUrl),
     sourceItemId: required("release_source_item_id", input.sourceItemId, 512),
     title: required("release_title", input.title, 512),
     version: input.version ? required("release_version", input.version, 128) : null,
@@ -926,7 +933,11 @@ export function ingestReleaseDocument(
   const sourceUrl = safeUrl("release_source_url", input.sourceUrl);
   if (typeof input.body !== "string" || !input.body.trim()) throw new Error("release_document_required");
   const body = input.body;
-  if (Buffer.byteLength(body, "utf8") > (input.maxBytes ?? DEFAULT_MAX_BYTES)) throw new Error("release_document_too_large");
+  const maxBytes = input.maxBytes ?? RELEASE_DOCUMENT_MAX_BYTES;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > RELEASE_DOCUMENT_MAX_BYTES) {
+    throw new Error("release_document_max_bytes_invalid");
+  }
+  if (Buffer.byteLength(body, "utf8") > maxBytes) throw new Error("release_document_too_large");
   const observedAt = timestamp("release_observed_at", input.observedAt);
   const now = timestamp("release_now", input.now ?? new Date().toISOString());
   const age = Date.parse(now) - Date.parse(observedAt);

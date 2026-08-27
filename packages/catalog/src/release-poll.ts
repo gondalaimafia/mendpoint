@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   ingestReleaseDocument,
   listReleaseDispatches,
+  RELEASE_DOCUMENT_MAX_BYTES,
   type ReleaseAdapter,
   type ReleaseIngestionStore,
 } from "./release-ingestion.js";
@@ -99,7 +100,8 @@ const RELEASE_ADAPTERS = new Set<ReleaseAdapter>([
   "provider_page",
   "sdk_registry",
 ]);
-const SENSITIVE_SOURCE_QUERY = /^(?:access_?token|api_?key|authorization|credential|password|private_?key|secret|signature|token)$/i;
+export const RELEASE_POLL_MAX_BYTES = RELEASE_DOCUMENT_MAX_BYTES;
+const SAFE_SCOPE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 
 type RawReleasePollConfiguration = Readonly<{
   contractVersion: unknown;
@@ -135,6 +137,13 @@ function canonicalText(name: string, value: unknown, max: number): string {
   return canonical;
 }
 
+function canonicalScopeId(name: string, value: unknown, max: number): string {
+  if (typeof value !== "string" || value !== value.trim()) throw new Error(`${name}_invalid`);
+  const canonical = canonicalText(name, value, max);
+  if (!SAFE_SCOPE_ID.test(canonical)) throw new Error(`${name}_invalid`);
+  return canonical;
+}
+
 function canonicalSourceUrl(value: unknown): string {
   const text = canonicalText("release_poll_source_url", value, 2048);
   let parsed: URL;
@@ -145,8 +154,7 @@ function canonicalSourceUrl(value: unknown): string {
   }
   if (
     parsed.protocol !== "https:" || parsed.username || parsed.password ||
-    parsed.hash ||
-    [...parsed.searchParams.keys()].some((key) => SENSITIVE_SOURCE_QUERY.test(key))
+    parsed.hash || parsed.search || text.includes("?") || text.includes("#")
   ) {
     throw new Error("release_poll_source_url_unsafe");
   }
@@ -155,7 +163,10 @@ function canonicalSourceUrl(value: unknown): string {
 
 function canonicalMaxBytes(value: unknown): number | undefined {
   if (value === undefined) return undefined;
-  if (!Number.isSafeInteger(value) || Number(value) < 1) {
+  if (
+    !Number.isSafeInteger(value) || Number(value) < 1 ||
+    Number(value) > RELEASE_POLL_MAX_BYTES
+  ) {
     throw new Error("release_poll_source_max_bytes_invalid");
   }
   return Number(value);
@@ -172,9 +183,9 @@ function canonicalizeRawConfiguration(
   const maxBytes = canonicalMaxBytes(raw.sourceMaxBytes);
   return Object.freeze({
     contractVersion: RELEASE_POLL_CONTRACT_VERSION,
-    tenantId: canonicalText("release_poll_tenant_id", raw.tenantId, 256),
+    tenantId: canonicalScopeId("release_poll_tenant_id", raw.tenantId, 256),
     provider: Object.freeze({
-      slug: canonicalText("release_poll_provider_slug", raw.providerSlug, 128),
+      slug: canonicalScopeId("release_poll_provider_slug", raw.providerSlug, 128),
     }),
     adapter,
     source: Object.freeze({
@@ -193,12 +204,15 @@ export function canonicalizeReleasePollConfiguration(
 }
 
 function identity(config: CanonicalReleasePollConfigurationV1): ReleasePollIdentity {
+  const canonicalUrl = config.source.url;
+  const parsed = new URL(canonicalUrl);
+  const sourceDigest = createHash("sha256").update(canonicalUrl).digest("hex");
   return Object.freeze({
     contractVersion: RELEASE_POLL_CONTRACT_VERSION,
     tenantId: config.tenantId,
     providerSlug: config.provider.slug,
     adapter: config.adapter,
-    sourceUrl: config.source.url,
+    sourceUrl: `${parsed.origin}/.well-known/mendpoint/release-source/${sourceDigest}`,
     sourceMaxBytes: config.source.maxBytes ?? null,
   });
 }
@@ -208,8 +222,8 @@ function configurationBinding(
 ): ReleasePollConfigurationBinding | null {
   try {
     return Object.freeze({
-      tenantId: canonicalText("release_poll_tenant_id", raw.tenantId, 256),
-      providerSlug: canonicalText("release_poll_provider_slug", raw.providerSlug, 128),
+      tenantId: canonicalScopeId("release_poll_tenant_id", raw.tenantId, 256),
+      providerSlug: canonicalScopeId("release_poll_provider_slug", raw.providerSlug, 128),
     });
   } catch {
     return null;
@@ -252,9 +266,22 @@ function invalidConfiguration(
 export function duplicateReleasePollConfigurationResult(
   binding: ReleasePollConfigurationBinding,
 ): InvalidReleasePollConfigurationResult {
+  return scopedInvalidReleasePollResult(binding, "release_poll_configuration_duplicate");
+}
+
+export function invalidReleasePollExecutorResult(
+  binding: ReleasePollConfigurationBinding,
+): InvalidReleasePollConfigurationResult {
+  return scopedInvalidReleasePollResult(binding, "release_poll_executor_result_invalid");
+}
+
+function scopedInvalidReleasePollResult(
+  binding: ReleasePollConfigurationBinding,
+  error: string,
+): InvalidReleasePollConfigurationResult {
   return Object.freeze({
     status: "invalid_configuration" as const,
-    error: "release_poll_configuration_duplicate",
+    error,
     identity: null,
     configurationBinding: Object.freeze({ ...binding }),
     sourceReference: null,
@@ -305,9 +332,13 @@ export async function pollReleaseSource(
   const snapshot = parsed.config;
   const pollIdentity = identity(snapshot);
   const at = options.at ?? new Date().toISOString();
+  const requestedFetchMax = options.fetchOptions?.maxBytes;
+  const fetchMax = Number.isSafeInteger(requestedFetchMax) && Number(requestedFetchMax) > 0
+    ? Math.min(Number(requestedFetchMax), snapshot.source.maxBytes ?? RELEASE_POLL_MAX_BYTES)
+    : snapshot.source.maxBytes ?? RELEASE_POLL_MAX_BYTES;
   const fetched = await fetchFeedDocument(snapshot.source.url, {
     ...options.fetchOptions,
-    maxBytes: snapshot.source.maxBytes ?? options.fetchOptions?.maxBytes,
+    maxBytes: fetchMax,
     provider: snapshot.provider.slug,
   });
   if (!fetched.ok || fetched.body === undefined) {
@@ -318,11 +349,11 @@ export async function pollReleaseSource(
       tenantId: snapshot.tenantId,
       providerSlug: snapshot.provider.slug,
       adapter: snapshot.adapter,
-      sourceUrl: snapshot.source.url,
+      sourceUrl: pollIdentity.sourceUrl,
       body: fetched.body,
       observedAt: at,
       now: at,
-      maxBytes: snapshot.source.maxBytes,
+      maxBytes: fetchMax,
     });
     const artifacts = Object.freeze(ingested.artifacts.map((artifact) => Object.freeze({
       artifactId: artifact.id,
