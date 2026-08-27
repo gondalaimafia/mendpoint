@@ -18,11 +18,13 @@ import {
   type PollOneResult,
 } from "./run-poll.js";
 import {
-  canonicalizeReleasePollConfiguration,
+  parseReleasePollConfiguration,
   pollReleaseSource,
   type CanonicalReleasePollConfigurationV1,
+  type ParsedReleasePollConfiguration,
   type ReleasePollConfigurationV1,
   type ReleasePollResult,
+  type ValidReleasePollResult,
 } from "./release-poll.js";
 import type { ReleaseIngestionStore } from "./release-ingestion.js";
 import type { FetchFeedOptions, FetchOpenApiResult, PollableFeed } from "./poll.js";
@@ -127,7 +129,7 @@ function releaseScope(tenantId: string, providerSlug: string): string {
 }
 
 function releaseResultMatchesConfiguration(
-  result: ReleasePollResult,
+  result: ValidReleasePollResult,
   config: CanonicalReleasePollConfigurationV1,
 ): boolean {
   return (
@@ -146,17 +148,24 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
   const staleAfterMs = options.defaultStaleAfterMs ?? intervalMs * 2;
   if (staleAfterMs < intervalMs) throw new Error("feed_schedule_stale_window_invalid");
   const feeds = [...(options.feeds ?? listPollableFeeds(options.db))];
-  const releaseByScope = new Map<string, CanonicalReleasePollConfigurationV1>();
+  const releaseByScope = new Map<string, ParsedReleasePollConfiguration>();
   for (const config of options.releaseFeeds ?? []) {
-    const snapshot = canonicalizeReleasePollConfiguration(config);
-    const scope = releaseScope(snapshot.tenantId, snapshot.provider.slug);
+    const parsed = parseReleasePollConfiguration(config);
+    const binding = parsed.status === "valid"
+      ? { tenantId: parsed.config.tenantId, providerSlug: parsed.config.provider.slug }
+      : parsed.result.configurationBinding;
+    if (!binding) continue;
+    const scope = releaseScope(binding.tenantId, binding.providerSlug);
     if (releaseByScope.has(scope)) throw new Error("release_poll_configuration_duplicate");
-    releaseByScope.set(scope, snapshot);
+    releaseByScope.set(scope, parsed);
   }
   if (options.tenantId) {
     const providerSlugs = new Set(feeds.map((feed) => feed.slug));
-    for (const config of releaseByScope.values()) {
-      if (config.tenantId === options.tenantId) providerSlugs.add(config.provider.slug);
+    for (const parsed of releaseByScope.values()) {
+      const binding = parsed.status === "valid"
+        ? { tenantId: parsed.config.tenantId, providerSlug: parsed.config.provider.slug }
+        : parsed.result.configurationBinding;
+      if (binding?.tenantId === options.tenantId) providerSlugs.add(binding.providerSlug);
     }
     ensureSchedules(
       options.db,
@@ -196,14 +205,14 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
         };
       }
       const feed = feedBySlug.get(schedule.provider_slug);
-      const releaseConfig = releaseByScope.get(releaseScope(
+      const releaseConfiguration = releaseByScope.get(releaseScope(
         schedule.tenant_id,
         schedule.provider_slug,
       ));
       let poll: PollOneResult | undefined;
       let openApiOutcome: FeedScheduleSourceOutcome<PollOneResult>;
       try {
-        if (!feed && releaseConfig) {
+        if (!feed && releaseConfiguration) {
           openApiOutcome = Object.freeze({ status: "not_configured" as const });
         } else if (!feed) {
           throw new Error("scheduled feed source is not configured");
@@ -237,7 +246,14 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
       let releaseOutcome: FeedScheduleSourceOutcome<ReleasePollResult> = Object.freeze({
         status: "not_configured" as const,
       });
-      if (releaseConfig) {
+      if (releaseConfiguration?.status === "invalid") {
+        releaseOutcome = Object.freeze({
+          status: "failed" as const,
+          error: releaseConfiguration.result.error,
+          result: releaseConfiguration.result,
+        });
+      } else if (releaseConfiguration) {
+        const releaseConfig = releaseConfiguration.config;
         if (!options.releaseStore) {
           releaseOutcome = Object.freeze({
             status: "failed" as const,
@@ -251,16 +267,25 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
                   at,
                   fetchOptions: options.releaseFetchOptions,
                 });
-            if (result.status !== "failed" && !releaseResultMatchesConfiguration(result, releaseConfig)) {
-              releaseOutcome = Object.freeze({
-                status: "failed" as const,
-                error: "release_poll_result_identity_mismatch",
-                result,
-              });
-            } else {
-              releaseOutcome = result.status === "failed"
-                ? Object.freeze({ status: "failed" as const, error: result.error, result })
-                : Object.freeze({ status: "succeeded" as const, result });
+            switch (result.status) {
+              case "invalid_configuration":
+              case "failed":
+                releaseOutcome = Object.freeze({
+                  status: "failed" as const,
+                  error: result.error,
+                  result,
+                });
+                break;
+              case "ingested":
+              case "unchanged":
+                releaseOutcome = releaseResultMatchesConfiguration(result, releaseConfig)
+                  ? Object.freeze({ status: "succeeded" as const, result })
+                  : Object.freeze({
+                      status: "failed" as const,
+                      error: "release_poll_result_identity_mismatch",
+                      result,
+                    });
+                break;
             }
           } catch (cause) {
             releaseOutcome = Object.freeze({
@@ -275,7 +300,7 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
       const releaseError = releaseOutcome.status === "failed" ? releaseOutcome.error : undefined;
       const errors = [
         openApiError
-          ? releaseConfig ? `OpenAPI: ${openApiError}` : openApiError
+          ? releaseConfiguration ? `OpenAPI: ${openApiError}` : openApiError
           : undefined,
         releaseError ? `release: ${releaseError}` : undefined,
       ].filter((error): error is string => Boolean(error));
