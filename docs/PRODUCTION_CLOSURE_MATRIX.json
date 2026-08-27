@@ -2057,16 +2057,16 @@
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-27T07:58:19.011Z",
-    "observedMainRevision": "8fefab697568e51524acffda70c27ea09e68e5f2",
-    "observationDigest": "sha256:99a05b1e2dd94dd42c8df90c55ff65bb705e35651228e5384309fd498e3a2c2a",
+    "observedMainRevision": "8e0706425a9cd417b23692cf354615a49602f5f5",
+    "observationDigest": "sha256:e98e22282e87035e330b82de6d0fe06772c90e1c3cce2130ad3b98ec159f6b7a",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 508,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/508",
-      "title": "authority: activate_successor closure-authority-quiet-sweep",
+      "number": 509,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/509",
+      "title": "authority: clear the activate_successor bootstrap to a normal self-declaration",
       "baseBranch": "main",
-      "headBranch": "ceremony-r3-activate",
+      "headBranch": "clear-activate-bootstrap",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2079,27 +2079,7 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "rotation-20260827-008",
-        "kind": "activate_successor",
-        "issuedAt": "2026-08-27T07:58:19.011Z",
-        "expiresAt": "2026-08-28T07:58:19.011Z",
-        "basePolicySha256": "sha256:fbd31a0cf495e903c9e633962ceb2e2023cc00d17d4f38952916e963f84a99f1",
-        "proposedPolicySha256": "sha256:45cafb53dd1d6af6ca8410f024d2191ca64a2b621b79235faaf43174f6824ba8",
-        "successor": {
-          "templatePath": "config/production-closure-successors/closure-authority-quiet-sweep.yml",
-          "workflowPath": ".github/workflows/closure-authority-quiet-sweep.yml",
-          "workflowSha256": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
-          "externalCheckName": "mendpoint-production-closure-authority-quiet-sweep",
-          "externalCheckAppId": 4718395,
-          "controllerCheckName": "mendpoint-production-closure-controller-quiet-sweep",
-          "controllerCheckAppId": 15368,
-          "controllerStatusCreatorLogin": "github-actions[bot]",
-          "controllerStatusCreatorUserId": 41898282,
-          "activationDeadline": "2026-09-02T07:40:40.173Z"
-        }
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
@@ -4362,11 +4342,11 @@
         "blockers": []
       },
       {
-        "number": 507,
+        "number": 504,
         "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/507",
-        "title": "Drain release dispatches through tenant authority",
-        "headBranch": "codex/release-dispatch-drain",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/504",
+        "title": "Permit authenticated staged successor replacement",
+        "headBranch": "codex/successor-restage-protocol",
         "baseBranch": "main",
         "owner": {
           "actor": "Codex",
@@ -4380,42 +4360,7 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "569b8c8ed38de9431218e440e4336045e5d67998",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 506,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/506",
-        "title": "Protect release ingestion recovery authority",
-        "headBranch": "codex/release-ingestion-backup",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Codex",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "5ff21e20c05395bfb3e0da43f527d46b654b22ba",
+        "headRevision": "34643b9590ca350f28ead4a0d241359305a45139",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -4467,11 +4412,11 @@
         "blockers": []
       },
       {
-        "number": 504,
+        "number": 506,
         "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/504",
-        "title": "Permit authenticated staged successor replacement",
-        "headBranch": "codex/successor-restage-protocol",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/506",
+        "title": "Protect release ingestion recovery authority",
+        "headBranch": "codex/release-ingestion-backup",
         "baseBranch": "main",
         "owner": {
           "actor": "Codex",
@@ -4485,7 +4430,42 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "a66864c694fa476fce304f18c7b7905da903040a",
+        "headRevision": "5ff21e20c05395bfb3e0da43f527d46b654b22ba",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 507,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/507",
+        "title": "Drain release dispatches through tenant authority",
+        "headBranch": "codex/release-dispatch-drain",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "569b8c8ed38de9431218e440e4336045e5d67998",
         "mergeRevision": null,
         "checks": [],
         "review": {
