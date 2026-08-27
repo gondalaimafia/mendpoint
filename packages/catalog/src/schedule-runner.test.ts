@@ -872,6 +872,40 @@ describe("feed schedule runner", () => {
     });
   });
 
+  it("rejects an unchanged executor result that omits its artifact's durable dispatch", async () => {
+    const db = fixture();
+    const store = releaseStore();
+    const config = releaseConfiguration();
+    const persisted = persistedRelease(store, config, "unchanged") as ReleasePollResult & {
+      status: "unchanged";
+    };
+    const withoutDispatchAuthority: ReleasePollResult = { ...persisted, dispatches: [] };
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: config.tenantId,
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed) => ({ slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const }),
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: async () => withoutDispatchAuthority,
+    });
+
+    expect(result).toMatchObject({
+      succeeded: 0,
+      failed: 1,
+      executions: [{
+        status: "failed",
+        releaseOutcome: {
+          status: "failed",
+          error: "release_poll_executor_result_invalid",
+          result: { status: "invalid_configuration", identity: null },
+        },
+      }],
+    });
+  });
+
   it("reports unbound redacted configuration failures without suppressing valid schedules", async () => {
     const db = fixture();
     const store = releaseStore();
