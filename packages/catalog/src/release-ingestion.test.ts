@@ -1,3 +1,4 @@
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,8 +33,8 @@ afterEach(() => {
   }
 });
 
-function store(path = ":memory:"): ReleaseIngestionStore {
-  const opened = openReleaseIngestionStore(path);
+function store(path = ":memory:", clock: () => string = () => NOW): ReleaseIngestionStore {
+  const opened = openReleaseIngestionStore(path, { clock });
   stores.push(opened);
   return opened;
 }
@@ -133,6 +134,70 @@ function createV1Database(path: string): void {
     .run("rov_v1", "tenant-v1", "rel_v1", 1, "human:v1", 0.9, "Reviewed legacy claim.",
       "review note, line 1", "Preserve during migration", "2026-08-01T02:00:00.000Z");
   db.close();
+}
+
+function createVersionZeroDatabase(path: string): void {
+  const db = new DatabaseSync(path);
+  db.exec(`
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE release_ingestion_schema_migrations (
+      version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+    );
+  `);
+  db.close();
+}
+
+function nextChildMessage(child: ChildProcess): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const onMessage = (message: unknown) => {
+      cleanup();
+      resolve(message);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onExit = (code: number | null) => {
+      cleanup();
+      reject(new Error(`release_ingestion_child_exited_${String(code)}`));
+    };
+    const cleanup = () => {
+      child.off("message", onMessage);
+      child.off("error", onError);
+      child.off("exit", onExit);
+    };
+    child.once("message", onMessage);
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
+}
+
+function spawnStoreOpener(path: string): ChildProcess {
+  const moduleUrl = new URL("./release-ingestion.ts", import.meta.url).href;
+  const code = `
+    import { openReleaseIngestionStore } from ${JSON.stringify(moduleUrl)};
+    process.send?.("ready");
+    process.once("message", () => {
+      process.send?.("starting");
+      process.once("message", () => {
+        try {
+          const opened = openReleaseIngestionStore(process.argv[1]);
+          opened.close();
+          process.send?.({ status: "ok" }, () => process.disconnect());
+        } catch (error) {
+          process.send?.(
+            { status: "error", error: error instanceof Error ? error.message : String(error) },
+            () => process.disconnect(),
+          );
+        }
+      });
+    });
+  `;
+  return spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code, path], {
+    cwd: process.cwd(),
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+    windowsHide: true,
+  });
 }
 
 describe("release ingestion", () => {
@@ -387,7 +452,8 @@ describe("release ingestion", () => {
   });
 
   it("fences dispatch claims, rehydration, overrides, completion, and failure by tenant and lease", () => {
-    const ledger = store();
+    let clock = NOW;
+    const ledger = store(":memory:", () => clock);
     const tenantA = ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml"))).artifacts[0]!;
     const tenantB = ingestReleaseDocument(ledger, {
       ...input("rss", fixture("stripe-rss.xml")),
@@ -410,43 +476,154 @@ describe("release ingestion", () => {
     })).toThrow("release_artifact_not_found");
 
     const firstClaim = claimReleaseDispatch(ledger, {
-      tenantId: "tenant-a", workerId: "worker-a", now: NOW, leaseDurationMs: 1_000,
+      tenantId: "tenant-a", workerId: "worker-a", leaseDurationMs: 1_000,
     })!;
     expect(firstClaim.tenantId).toBe("tenant-a");
     expect(claimReleaseDispatch(ledger, {
-      tenantId: "tenant-c", workerId: "worker-c", now: NOW, leaseDurationMs: 1_000,
+      tenantId: "tenant-c", workerId: "worker-c", leaseDurationMs: 1_000,
     })).toBeNull();
+    clock = "2026-08-02T12:00:02.000Z";
     const takeover = claimReleaseDispatch(ledger, {
-      tenantId: "tenant-a", workerId: "worker-b", now: "2026-08-02T12:00:02.000Z", leaseDurationMs: 1_000,
+      tenantId: "tenant-a", workerId: "worker-b", leaseDurationMs: 1_000,
     })!;
     expect(takeover.leaseGeneration).toBe(firstClaim.leaseGeneration + 1);
     expect(() => completeReleaseDispatch(ledger, {
       tenantId: "tenant-a", dispatchId: firstClaim.id, workerId: "worker-a",
-      leaseGeneration: firstClaim.leaseGeneration, completedAt: "2026-08-02T12:00:02.100Z",
+      leaseGeneration: firstClaim.leaseGeneration,
     })).toThrow("release_dispatch_lease_lost");
     expect(() => completeReleaseDispatch(ledger, {
       tenantId: "tenant-b", dispatchId: takeover.id, workerId: "worker-b",
-      leaseGeneration: takeover.leaseGeneration, completedAt: "2026-08-02T12:00:02.100Z",
+      leaseGeneration: takeover.leaseGeneration,
     })).toThrow("release_dispatch_lease_lost");
     expect(completeReleaseDispatch(ledger, {
       tenantId: "tenant-a", dispatchId: takeover.id, workerId: "worker-b",
-      leaseGeneration: takeover.leaseGeneration, completedAt: "2026-08-02T12:00:02.100Z",
+      leaseGeneration: takeover.leaseGeneration,
     }).status).toBe("completed");
 
     const failureClaim = claimReleaseDispatch(ledger, {
-      tenantId: "tenant-b", workerId: "worker-b", now: NOW, leaseDurationMs: 1_000,
+      tenantId: "tenant-b", workerId: "worker-b", leaseDurationMs: 1_000,
     })!;
     expect(() => failReleaseDispatch(ledger, {
       tenantId: "tenant-b", dispatchId: failureClaim.id, workerId: "worker-b",
-      leaseGeneration: failureClaim.leaseGeneration + 1, failedAt: "2026-08-02T12:00:00.500Z",
-      failureCode: "provider_unavailable",
+      leaseGeneration: failureClaim.leaseGeneration + 1,
+      failureCode: "provider_unavailable", retryable: false,
     })).toThrow("release_dispatch_lease_lost");
     expect(failReleaseDispatch(ledger, {
       tenantId: "tenant-b", dispatchId: failureClaim.id, workerId: "worker-b",
-      leaseGeneration: failureClaim.leaseGeneration, failedAt: "2026-08-02T12:00:00.500Z",
-      failureCode: "provider_unavailable",
+      leaseGeneration: failureClaim.leaseGeneration,
+      failureCode: "provider_unavailable", retryable: false,
     }).status).toBe("failed");
     expect(tenantB.tenantId).toBe("tenant-b");
+  });
+
+  it("persists bounded retry and backoff state across restart", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-dispatch-retry-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    let clock = NOW;
+    let ledger = store(path, () => clock);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const claim = claimReleaseDispatch(ledger, {
+        tenantId: "tenant-a", workerId: `worker-${attempt}`, leaseDurationMs: 10_000,
+      })!;
+      expect(claim).toMatchObject({ attemptCount: attempt, maxAttempts: 5 });
+      const failed = failReleaseDispatch(ledger, {
+        tenantId: "tenant-a", dispatchId: claim.id, workerId: `worker-${attempt}`,
+        leaseGeneration: claim.leaseGeneration, failureCode: "provider_unavailable", retryable: true,
+      });
+      expect(failed).toMatchObject({
+        status: attempt < 5 ? "pending" : "failed",
+        attemptCount: attempt,
+        lastFailureAt: clock,
+        lastFailureCode: "provider_unavailable",
+      });
+      if (attempt === 1) {
+        ledger.close();
+        stores.splice(stores.indexOf(ledger), 1);
+        ledger = store(path, () => clock);
+        expect(listReleaseDispatches(ledger, "tenant-a")[0]).toMatchObject({
+          status: "pending", attemptCount: 1, availableAt: "2026-08-02T12:00:01.000Z",
+        });
+      }
+      if (attempt < 5) {
+        expect(claimReleaseDispatch(ledger, {
+          tenantId: "tenant-a", workerId: "worker-early", leaseDurationMs: 10_000,
+        })).toBeNull();
+        clock = failed.availableAt;
+      }
+    }
+    clock = "2026-08-03T12:00:00.000Z";
+    expect(claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-after-limit", leaseDurationMs: 10_000,
+    })).toBeNull();
+  });
+
+  it("keeps explicit terminal failures terminal", () => {
+    let clock = NOW;
+    const ledger = store(":memory:", () => clock);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+    const claim = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-a", leaseDurationMs: 10_000,
+    })!;
+    expect(failReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: claim.id, workerId: "worker-a",
+      leaseGeneration: claim.leaseGeneration, failureCode: "invalid_payload", retryable: false,
+    })).toMatchObject({ status: "failed", failedAt: NOW, failureCode: "invalid_payload" });
+    clock = "2026-08-03T12:00:00.000Z";
+    expect(claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-b", leaseDurationMs: 10_000,
+    })).toBeNull();
+  });
+
+  it("terminates an expired final attempt instead of leaving an unclaimable lease", () => {
+    let clock = NOW;
+    const ledger = store(":memory:", () => clock);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      expect(claimReleaseDispatch(ledger, {
+        tenantId: "tenant-a", workerId: `worker-${attempt}`, leaseDurationMs: 1_000,
+      })).toMatchObject({ attemptCount: attempt, status: "claimed" });
+      clock = new Date(Date.parse(clock) + 1_000).toISOString();
+    }
+    expect(claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-after-limit", leaseDurationMs: 1_000,
+    })).toBeNull();
+    expect(listReleaseDispatches(ledger, "tenant-a")[0]).toMatchObject({
+      status: "failed",
+      attemptCount: 5,
+      failedAt: clock,
+      failureCode: "dispatch_attempts_exhausted",
+      lastFailureCode: "dispatch_attempts_exhausted",
+    });
+  });
+
+  it("uses only the store clock for lease takeover and completion authority", () => {
+    let clock = NOW;
+    const ledger = store(":memory:", () => clock);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+    const original = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-a", leaseDurationMs: 1_000,
+    })!;
+    expect(claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-b", leaseDurationMs: 1_000,
+      now: "2099-01-01T00:00:00.000Z",
+    } as Parameters<typeof claimReleaseDispatch>[1])).toBeNull();
+
+    clock = "2026-08-02T12:00:02.000Z";
+    expect(() => completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: original.id, workerId: "worker-a",
+      leaseGeneration: original.leaseGeneration, completedAt: "2020-01-01T00:00:00.000Z",
+    } as Parameters<typeof completeReleaseDispatch>[1])).toThrow("release_dispatch_lease_lost");
+    const takeover = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-b", leaseDurationMs: 1_000,
+    })!;
+    const completed = completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: takeover.id, workerId: "worker-b",
+      leaseGeneration: takeover.leaseGeneration, completedAt: "2020-01-01T00:00:00.000Z",
+    } as Parameters<typeof completeReleaseDispatch>[1]);
+    expect(completed).toMatchObject({ status: "completed", completedAt: clock });
   });
 
   it("migrates v1 artifacts and overrides without loss and converges across restart", () => {
@@ -479,6 +656,66 @@ describe("release ingestion", () => {
     expect(listReleaseObservations(restarted, "tenant-v1", "rel_v1")).toHaveLength(1);
     expect(listReleaseDispatches(restarted, "tenant-v1")).toHaveLength(1);
   });
+
+  it("converges simultaneous first opens of a new database", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-first-open-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    const children = Array.from({ length: 4 }, () => spawnStoreOpener(path));
+    try {
+      expect(await Promise.all(children.map(nextChildMessage))).toEqual(Array(4).fill("ready"));
+      const starting = children.map(nextChildMessage);
+      for (const child of children) child.send("prepare");
+      expect(await Promise.all(starting)).toEqual(Array(4).fill("starting"));
+      const results = children.map(nextChildMessage);
+      for (const child of children) child.send("open");
+      expect(await Promise.all(results)).toEqual(Array(4).fill({ status: "ok" }));
+    } finally {
+      for (const child of children) {
+        if (child.exitCode === null && child.connected) child.disconnect();
+      }
+    }
+    const converged = store(path);
+    expect(converged.raw.prepare(
+      "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
+    ).get()).toEqual({ version: 2 });
+  }, 15_000);
+
+  it.each(["version-zero", "version-one"] as const)(
+    "serializes concurrent %s schema convergence under the SQLite write lock",
+    async (startingVersion) => {
+      const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-upgrade-race-"));
+      directories.push(directory);
+      const path = join(directory, "release.sqlite");
+      if (startingVersion === "version-zero") createVersionZeroDatabase(path);
+      else createV1Database(path);
+      const blocker = new DatabaseSync(path);
+      blocker.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE;");
+      const children = Array.from({ length: 4 }, () => spawnStoreOpener(path));
+      try {
+        expect(await Promise.all(children.map(nextChildMessage))).toEqual(Array(4).fill("ready"));
+        const starting = children.map(nextChildMessage);
+        for (const child of children) child.send("go");
+        expect(await Promise.all(starting)).toEqual(Array(4).fill("starting"));
+        const results = children.map(nextChildMessage);
+        for (const child of children) child.send("open");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        blocker.exec("COMMIT");
+        expect(await Promise.all(results)).toEqual(Array(4).fill({ status: "ok" }));
+      } finally {
+        if (blocker.isTransaction) blocker.exec("ROLLBACK");
+        blocker.close();
+        for (const child of children) {
+          if (child.exitCode === null && child.connected) child.disconnect();
+        }
+      }
+      const converged = store(path);
+      expect(converged.raw.prepare(
+        "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
+      ).get()).toEqual({ version: 2 });
+    },
+    15_000,
+  );
 
   it.each([
     ["malformed RSS", "rss", "<rss><channel><item></rss>", /release_xml_malformed/],

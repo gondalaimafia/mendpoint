@@ -3340,11 +3340,16 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - [x] Migrate the release ingestion ledger forward without changing or losing v1 artifacts and overrides.
 - [x] Implement append-only observations, deterministic transactional dispatch, lease-generation fencing, digest-bound rehydration, and explicit reviewer revision conflicts.
 - [x] Run the focused catalog suite, catalog typecheck, and strict diff checks, then record the exact evidence and remaining live-reachability boundary.
+- [x] Serialize authoritative schema-version reads under the SQLite write lock and prove concurrent v1 upgrade convergence across processes.
+- [x] Add bounded durable retry and backoff state while keeping explicitly terminal dispatch failures terminal.
+- [x] Move claim, expiry, and finish authority to an injected store clock and reject caller timestamp attempts.
+- [x] Re-run the full catalog suite, catalog typecheck, and strict diff checks after the review fixes.
 
 ### Review
 
 - RED: eight focused tests failed against v1 behavior. Separate upgrade regressions then reproduced a repeated-observation v1 startup constraint failure and a deterministic outbox identity collision that committed an artifact without its dispatch.
+- REVIEW RED: a four-process cold-start probe failed in five of ten rounds because schema versions were read before the write lock; retryable failures were terminal; and caller timestamps could steal or backdate leases. The first lock repair exposed a separate WAL negotiation collision, which was fixed before completion.
 - GREEN: schema v2 preserves every v1 artifact, override, and observation; historical duplicate identities remain addressable while one deterministic canonical identity owns replay and dispatch. New ingestion excludes observation time from the normalized claim digest and binds canonical identity to tenant, provider, adapter, collection, source item, and normalized digest.
-- The artifact, observation, and dispatch write in one immediate transaction. Dispatch claims are tenant scoped and lease-generation fenced; exact content digest rehydration, completion, failure, and reviewer CAS fail closed on stale or cross-tenant authority.
-- Catalog typecheck passes. The complete catalog suite passes 56 tests across seven files, and `git diff --check` is clean.
+- The artifact, observation, and dispatch write in one immediate transaction. Schema convergence re-reads authority under the same write lock; dispatch claims are tenant scoped, attempt bounded, lease-generation fenced, store-clock bound, and retain retry/backoff evidence across restart. Exact content digest rehydration, completion, failure, and reviewer CAS fail closed on stale or cross-tenant authority.
+- Catalog typecheck passes. The complete catalog suite passes 63 tests across seven files, the coordinated first-open and v1 upgrade process regressions pass, a separate 40-process stress probe has zero failures, and `git diff --check` is clean.
 - ME-ING-003 and ME-ING-004 remain partial. This increment creates durable catalog contracts only; it does not add or claim a reachable API, worker, polling, or production delivery path.
