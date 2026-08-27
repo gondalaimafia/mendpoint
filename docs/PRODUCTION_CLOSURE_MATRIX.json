@@ -1673,7 +1673,8 @@
       "pullRequests": [
         418,
         419,
-        421
+        421,
+        499
       ],
       "testEvidenceIds": [
         "ME-MSN-002-AC01-EV05",
@@ -1701,7 +1702,8 @@
         417,
         418,
         420,
-        421
+        421,
+        499
       ],
       "testEvidenceIds": [
         "ME-MSN-003-AC01-EV02"
@@ -1728,7 +1730,8 @@
         409,
         410,
         417,
-        419
+        419,
+        499
       ],
       "testEvidenceIds": [
         "ME-MTE-001-AC01-EV04"
@@ -2057,16 +2060,16 @@
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
-    "observedMainRevision": "4fbf32605cff364bff8d4fc14600137cdaa98180",
-    "observationDigest": "sha256:d1ed4abbfd583837aeceaff9aeee510afc5dbdbd15938f33e1602dcf407d3289",
+    "observedMainRevision": "2257f98961184044aab63982d89aa9b391aa3fbd",
+    "observationDigest": "sha256:a7d55de038b256536fab8a89610a696ffa91ede65b4264413b07f1072b3401be",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 449,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/449",
-      "title": "worker: consult MissionGraphProjection when a live endpoint key exists",
+      "number": 499,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/499",
+      "title": "Preserve Mission authority across remote mutations",
       "baseBranch": "main",
-      "headBranch": "cursor/mission-graph-endpoint-key-f457",
+      "headBranch": "codex/replace-mission-handoff-authority",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2077,7 +2080,11 @@
         "pullRequests": [],
         "branches": []
       },
-      "requirementIds": [],
+      "requirementIds": [
+        "ME-MSN-002",
+        "ME-MSN-003",
+        "ME-MTE-001"
+      ],
       "blockers": [],
       "remediatesPullRequests": []
     },
