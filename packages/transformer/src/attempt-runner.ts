@@ -820,6 +820,22 @@ function parseExistingManifest(serialized: string): TransformerCandidateManifest
   return parsed as TransformerCandidateManifest;
 }
 
+function readBoundedCandidateFile(path: string, maxBytes: number, code: string): Buffer {
+  const before = lstatSync(path);
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 ||
+      !Number.isSafeInteger(before.size) || before.size < 1 || before.size > maxBytes) {
+    throw new AttemptRunnerError("candidate_drift", code);
+  }
+  const bytes = readFileSync(path);
+  const after = lstatSync(path);
+  if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1 ||
+      before.dev !== after.dev || before.ino !== after.ino ||
+      before.size !== after.size || bytes.byteLength !== before.size) {
+    throw new AttemptRunnerError("candidate_drift", `${code}_changed`);
+  }
+  return bytes;
+}
+
 function validateExistingCandidate(
   root: string,
   directory: string,
@@ -836,9 +852,17 @@ function validateExistingCandidate(
       throw new AttemptRunnerError("candidate_drift", "transformer_candidate_manifest_missing");
     }
   }
-  const serialized = readFileSync(manifestPath, "utf8");
+  const serialized = readBoundedCandidateFile(
+    manifestPath,
+    REGAUGE_MISSION_EVIDENCE_MAX_BYTES,
+    "transformer_candidate_manifest_too_large",
+  ).toString("utf8");
   const digest = sha256(serialized);
-  if (readFileSync(manifestDigestPath, "utf8") !== `${digest}\n`) {
+  if (readBoundedCandidateFile(
+    manifestDigestPath,
+    80,
+    "transformer_candidate_manifest_digest_invalid",
+  ).toString("utf8") !== `${digest}\n`) {
     throw new AttemptRunnerError("candidate_drift", "transformer_candidate_manifest_conflict");
   }
   const existingManifest = parseExistingManifest(serialized);
@@ -852,8 +876,12 @@ function validateExistingCandidate(
     throw new AttemptRunnerError("candidate_drift", "transformer_candidate_manifest_conflict");
   }
   const persistedExecutionPath = join(dirname(execution.evidence.path), `${existingManifest.executionEvidence.id}.json`);
-  if (!existsSync(persistedExecutionPath) || lstatSync(persistedExecutionPath).isSymbolicLink() ||
-      sha256(readFileSync(persistedExecutionPath)) !== existingManifest.executionEvidence.digest) {
+  if (!existsSync(persistedExecutionPath) ||
+      sha256(readBoundedCandidateFile(
+        persistedExecutionPath,
+        REGAUGE_MISSION_EVIDENCE_MAX_BYTES,
+        "transformer_candidate_execution_evidence_too_large",
+      )) !== existingManifest.executionEvidence.digest) {
     throw new AttemptRunnerError("candidate_drift", "transformer_candidate_execution_evidence_conflict");
   }
   const expectedTree = [
@@ -869,7 +897,11 @@ function validateExistingCandidate(
     if (!existsSync(path) || lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile()) {
       throw new AttemptRunnerError("candidate_drift", `transformer_candidate_file_missing:${file.path}`);
     }
-    const content = readFileSync(path, "utf8");
+    const content = readBoundedCandidateFile(
+      path,
+      file.bytes,
+      `transformer_candidate_file_too_large:${file.path}`,
+    ).toString("utf8");
     if (content !== outputFiles[file.path] || sha256(content) !== file.digest) {
       throw new AttemptRunnerError("candidate_drift", `transformer_candidate_file_conflict:${file.path}`);
     }

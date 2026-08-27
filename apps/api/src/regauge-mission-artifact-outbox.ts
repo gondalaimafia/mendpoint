@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, type Stats } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import {
   getPrincipalBySubject,
@@ -181,8 +181,8 @@ async function publishLegacyRegistration(
     ...scopePath,
     `${candidate.executionArtifactId}.json`,
   ), runtime.legacyDataRoot);
-  const candidateBytes = new Uint8Array(readFileSync(candidatePath));
-  const executionBytes = new Uint8Array(readFileSync(executionPath));
+  const candidateBytes = readLegacyEvidence(candidatePath);
+  const executionBytes = readLegacyEvidence(executionPath);
   const candidateDigest = sha256(candidateBytes);
   const executionDigest = sha256(executionBytes);
   let candidateRecord: Record<string, unknown>;
@@ -318,14 +318,41 @@ function absoluteDirectory(value: string): string {
 }
 
 function safeFile(value: string, root: string): string {
-  const path = realpathSync(resolve(value));
+  const requestedPath = resolve(value);
+  const requestedStat = lstatSync(requestedPath);
+  validateLegacyEvidenceStat(requestedStat);
+  const path = realpathSync(requestedPath);
   const normalizedRoot = `${resolve(root).replaceAll("\\", "/")}/`;
   if (!path.replaceAll("\\", "/").startsWith(normalizedRoot)) {
     throw new Error("regauge_mission_artifact_legacy_path_invalid");
   }
   const stat = lstatSync(path);
-  if (!stat.isFile() || stat.isSymbolicLink()) {
+  validateLegacyEvidenceStat(stat);
+  if (requestedStat.dev !== stat.dev || requestedStat.ino !== stat.ino) {
     throw new Error("regauge_mission_artifact_legacy_path_invalid");
   }
   return path;
+}
+
+function readLegacyEvidence(path: string): Uint8Array {
+  const before = lstatSync(path);
+  validateLegacyEvidenceStat(before);
+  const bytes = new Uint8Array(readFileSync(path));
+  const after = lstatSync(path);
+  validateLegacyEvidenceStat(after);
+  if (before.dev !== after.dev || before.ino !== after.ino ||
+      before.size !== after.size || bytes.byteLength !== after.size) {
+    throw new Error("regauge_mission_artifact_legacy_evidence_changed");
+  }
+  return bytes;
+}
+
+function validateLegacyEvidenceStat(stat: Stats): void {
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+    throw new Error("regauge_mission_artifact_legacy_path_invalid");
+  }
+  if (!Number.isSafeInteger(stat.size) || stat.size < 1 ||
+      stat.size > REGAUGE_MISSION_EVIDENCE_MAX_BYTES) {
+    throw new Error("regauge_mission_artifact_legacy_size_invalid");
+  }
 }

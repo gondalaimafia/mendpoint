@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
+import { REGAUGE_MISSION_EVIDENCE_MAX_BYTES } from "@mendpoint/shared";
 import {
   createDb,
   createMission,
@@ -255,6 +256,54 @@ describe("ReGauge coordinator Mission artifact outbox", () => {
     })).resolves.toEqual({ registered: 0, skipped: 1 });
     expect(completed).toEqual([candidate]);
     expect(reads).toEqual([]);
+    expect(marks).toEqual([]);
+  });
+
+  it("rejects oversized legacy evidence before publishing it to shared storage", async () => {
+    const { root, db, runtime, marks } = fixture();
+    const candidate: TransformerMissionArtifactAdoptionCandidate = Object.freeze({
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      campaignRevision: 4,
+      unitId: "unit-a",
+      terminalEventSequence: 8,
+      terminalEventType: "attempt.completed_with_checkpoint",
+      observedAt,
+      episodeId: "tfepisode_legacy_oversized",
+      attemptId: "tfattempt_legacy_oversized",
+      sourceSnapshotId: "snapshot-a",
+      candidateArtifactId: `tcman_${"a".repeat(64)}`,
+      executionArtifactId: `tre_execution_${"b".repeat(64)}`,
+    });
+    const scope = [
+      segment("tenant", candidate.tenantId),
+      segment("campaign", candidate.campaignId),
+      segment("unit", candidate.unitId),
+      segment("attempt", candidate.attemptId),
+    ];
+    const candidateDirectory = join(root, "transformer-candidates", ...scope);
+    const executionDirectory = join(root, "transformer-evidence", ...scope);
+    mkdirSync(candidateDirectory, { recursive: true });
+    mkdirSync(executionDirectory, { recursive: true });
+    const oversizedCandidate = join(candidateDirectory, "manifest.json");
+    writeFileSync(oversizedCandidate, "x");
+    truncateSync(oversizedCandidate, REGAUGE_MISSION_EVIDENCE_MAX_BYTES + 1);
+    writeFileSync(join(executionDirectory, `${candidate.executionArtifactId}.json`), "{}\n");
+    const store = {
+      listMissionArtifactAdoptionCandidates: () => [candidate],
+      completeMissionArtifactAdoption: () => { throw new Error("must_not_skip_adoption"); },
+      adoptMissionArtifactRegistration: () => { throw new Error("must_not_adopt"); },
+      listPendingMissionArtifactRegistrations: () => [],
+      completeMissionArtifactRegistration: () => { throw new Error("must_not_complete_registration"); },
+    } as unknown as TransformerPilotExecutionStore;
+
+    await expect(drainRegaugeMissionArtifactOutbox({
+      db,
+      store,
+      tenantId: "tenant-a",
+      runtime,
+    })).rejects.toThrow("regauge_mission_artifact_legacy_size_invalid");
     expect(marks).toEqual([]);
   });
 

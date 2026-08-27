@@ -698,17 +698,34 @@ function persistEvidence<T extends RecipeExecutionEvidenceRecord | RecipeRestore
     renameSync(temporary, path);
   } catch (error) {
     rmSync(temporary, { force: true });
-    if (!existsSync(path) || readFileSync(path, "utf8") !== serialized) {
+    if (!existsSync(path) || readBoundedEvidence(path) !== serialized) {
       throw new Error("recipe_execution_evidence_conflict", { cause: error });
     }
   }
   return deepFreeze({ digest: sha256(serialized), path, record });
 }
 
+function readBoundedEvidence(path: string): string {
+  const before = lstatSync(path);
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 ||
+      !Number.isSafeInteger(before.size) || before.size < 1 ||
+      before.size > REGAUGE_MISSION_EVIDENCE_MAX_BYTES) {
+    throw new Error("recipe_execution_evidence_too_large");
+  }
+  const bytes = readFileSync(path);
+  const after = lstatSync(path);
+  if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1 ||
+      before.dev !== after.dev || before.ino !== after.ino ||
+      before.size !== after.size || bytes.byteLength !== before.size) {
+    throw new Error("recipe_execution_evidence_changed");
+  }
+  return bytes.toString("utf8");
+}
+
 function assertExecutionEvidenceIntegrity(execution: RecipeWorkspaceExecutionResult): void {
   assertDigest(execution.evidence.digest, "recipe_execution_evidence_digest");
   if (!existsSync(execution.evidence.path)) throw new Error("recipe_execution_evidence_missing");
-  const serialized = readFileSync(execution.evidence.path, "utf8");
+  const serialized = readBoundedEvidence(execution.evidence.path);
   if (sha256(serialized) !== execution.evidence.digest) {
     throw new Error("recipe_execution_evidence_digest_mismatch");
   }

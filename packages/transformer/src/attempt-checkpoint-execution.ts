@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
+import { REGAUGE_MISSION_EVIDENCE_MAX_BYTES } from "@mendpoint/shared";
 import {
   advanceTransformerAttemptCheckpoint,
   commitTransformerAttemptCheckpointGenesis,
@@ -433,14 +434,30 @@ async function openController(context: Readonly<{
     }
     assertSignal(signal);
   };
+  const readMissionEvidence = (path: string): Uint8Array => {
+    const before = lstatSync(path);
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 ||
+        !Number.isSafeInteger(before.size) || before.size < 1 ||
+        before.size > REGAUGE_MISSION_EVIDENCE_MAX_BYTES) {
+      throw new Error("transformer_mission_artifact_registration_evidence_invalid");
+    }
+    const bytes = readFileSync(path);
+    const after = lstatSync(path);
+    if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1 ||
+        before.dev !== after.dev || before.ino !== after.ino ||
+        before.size !== after.size || bytes.byteLength !== before.size) {
+      throw new Error("transformer_mission_artifact_registration_evidence_changed");
+    }
+    return new Uint8Array(bytes);
+  };
   const publishMissionRegistration = async (
     registration: TransformerMissionArtifactRegistrationBinding,
     localPaths: Readonly<{ candidateManifestPath: string; executionEvidencePath: string }>,
     signal: AbortSignal,
   ): Promise<TransformerMissionArtifactRegistrationBinding> => {
     if (registration.schemaVersion === 2) return registration;
-    const candidateBytes = new Uint8Array(readFileSync(localPaths.candidateManifestPath));
-    const executionBytes = new Uint8Array(readFileSync(localPaths.executionEvidencePath));
+    const candidateBytes = readMissionEvidence(localPaths.candidateManifestPath);
+    const executionBytes = readMissionEvidence(localPaths.executionEvidencePath);
     if (sha256(candidateBytes) !== registration.candidateManifestDigest ||
         sha256(executionBytes) !== registration.executionEvidenceDigest) {
       throw new Error("transformer_mission_artifact_registration_evidence_mismatch");

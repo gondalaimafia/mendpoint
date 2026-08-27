@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +30,7 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
+import { REGAUGE_MISSION_EVIDENCE_MAX_BYTES } from "@mendpoint/shared";
 import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
 import {
   canonicalPolicyEnvelopeJson,
@@ -1143,6 +1145,62 @@ describe("Transformer production pilot lane", () => {
     expect(recovered.infrastructureError).toBeUndefined();
     expect(commandRunner).not.toHaveBeenCalled();
     expect(store.listPendingMissionArtifactRegistrations("tenant-a", 10)).toEqual([]);
+    expect(listArtifactManifests(db, "tenant-a")).toEqual([]);
+  });
+
+  it("fails closed before reading an oversized bound local registration", async () => {
+    const { root, db, store } = setup();
+    const completed = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-bound-local-oversized",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-bound-oversized",
+      commandRunner: async () => ({ exitCode: 0, stdout: "verified", stderr: "" }),
+    });
+    expect(completed).toMatchObject({ attempted: 1, completed: 1, errors: [] });
+    const [registration] = store.listPendingMissionArtifactRegistrations("tenant-a", 10);
+    if (!registration || registration.schemaVersion !== 1) {
+      throw new Error("expected local Mission artifact registration");
+    }
+    seedRegaugeMissionForCampaignA(db);
+    truncateSync(
+      join(root, "candidates", registration.candidateManifestPath),
+      REGAUGE_MISSION_EVIDENCE_MAX_BYTES + 1,
+    );
+    const commandRunner = vi.fn(async () => {
+      throw new Error("completed_recipe_work_replayed");
+    });
+
+    const recovered = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-recovery",
+      regaugeServicePrincipalIdForTenant: () => "regauge-service-a",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-bound-local-oversized-recovery",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-bound-oversized-recovery",
+      commandRunner,
+    });
+
+    expect(recovered).toMatchObject({
+      attempted: 0,
+      completed: 0,
+      infrastructureError: "regauge_artifact_registration_size_invalid",
+    });
+    expect(commandRunner).not.toHaveBeenCalled();
+    expect(store.listPendingMissionArtifactRegistrations("tenant-a", 10)).toHaveLength(1);
     expect(listArtifactManifests(db, "tenant-a")).toEqual([]);
   });
 

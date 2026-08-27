@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import {
   getPrincipal,
@@ -28,7 +28,7 @@ import {
   type TransformerMissionArtifactRegistration,
 } from "@mendpoint/transformer";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
-import { resolveRenamedEnv } from "@mendpoint/shared";
+import { REGAUGE_MISSION_EVIDENCE_MAX_BYTES, resolveRenamedEnv } from "@mendpoint/shared";
 import { assertRegaugePilotMissionPolicy } from "./regauge-pilot-policy.js";
 import {
   assignRegaugeMissionTaskOnClaim,
@@ -392,6 +392,29 @@ function resolveRegistrationPath(root: string, storedPath: string): string {
   return target;
 }
 
+function readBoundedRegistrationPath(target: string): string {
+  const before = lstatSync(target);
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) {
+    throw new Error("regauge_artifact_registration_path_invalid");
+  }
+  if (!Number.isSafeInteger(before.size) || before.size < 1 ||
+      before.size > REGAUGE_MISSION_EVIDENCE_MAX_BYTES) {
+    throw new Error("regauge_artifact_registration_size_invalid");
+  }
+  const bytes = readFileSync(target);
+  const after = lstatSync(target);
+  if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1 ||
+      before.dev !== after.dev || before.ino !== after.ino ||
+      before.size !== after.size || bytes.byteLength !== before.size) {
+    throw new Error("regauge_artifact_registration_path_changed");
+  }
+  return bytes.toString("utf8");
+}
+
+function readBoundedRegistrationFile(root: string, storedPath: string): string {
+  return readBoundedRegistrationPath(resolveRegistrationPath(root, storedPath));
+}
+
 function registerRegaugeArtifacts(
   db: AppDb,
   source: RegaugeArtifactRegistrationSource,
@@ -506,10 +529,10 @@ export function registerRegaugeVerifiedCandidateArtifacts(
     sourceSnapshotId: lease.snapshot.snapshotId,
     candidateArtifactId: `tcman_${artifact.manifestDigest.slice("sha256:".length)}`,
     candidateManifestDigest: artifact.manifestDigest,
-    candidateContent: readFileSync(artifact.manifestPath, "utf8"),
+    candidateContent: readBoundedRegistrationPath(artifact.manifestPath),
     executionArtifactId: execution.evidence.record.evidenceId,
     executionEvidenceDigest: execution.evidence.digest,
-    executionContent: readFileSync(execution.evidence.path, "utf8"),
+    executionContent: readBoundedRegistrationPath(execution.evidence.path),
     executionSchemaVersion: execution.evidence.record.schemaVersion,
     observedAt: input.observedAt,
   }, producerPrincipalId);
@@ -546,14 +569,8 @@ function readLocalRegaugeMissionArtifactOutbox(
     throw new Error("regauge_artifact_registration_shared_reader_required");
   }
   return Object.freeze({
-    candidateContent: readFileSync(
-      resolveRegistrationPath(candidateRoot, registration.candidateManifestPath),
-      "utf8",
-    ),
-    executionContent: readFileSync(
-      resolveRegistrationPath(evidenceRoot, registration.executionEvidencePath),
-      "utf8",
-    ),
+    candidateContent: readBoundedRegistrationFile(candidateRoot, registration.candidateManifestPath),
+    executionContent: readBoundedRegistrationFile(evidenceRoot, registration.executionEvidencePath),
   });
 }
 
