@@ -3344,12 +3344,18 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - [x] Add bounded durable retry and backoff state while keeping explicitly terminal dispatch failures terminal.
 - [x] Move claim, expiry, and finish authority to an injected store clock and reject caller timestamp attempts.
 - [x] Re-run the full catalog suite, catalog typecheck, and strict diff checks after the review fixes.
+- [x] Persist and transactionally advance a singleton clock watermark, bind each lease generation to `claimed_at`, and prove rollback recovery across restart and processes.
+- [x] Restore the original reviewer-override return and conflict contract while exposing concurrent CAS through a separately named API.
+- [x] Re-run focused and full catalog verification, process stress, typecheck, and diff checks for the second review cycle.
 
 ### Review
 
 - RED: eight focused tests failed against v1 behavior. Separate upgrade regressions then reproduced a repeated-observation v1 startup constraint failure and a deterministic outbox identity collision that committed an artifact without its dispatch.
 - REVIEW RED: a four-process cold-start probe failed in five of ten rounds because schema versions were read before the write lock; retryable failures were terminal; and caller timestamps could steal or backdate leases. The first lock repair exposed a separate WAL negotiation collision, which was fixed before completion.
+- SECOND REVIEW RED: an injected store clock could still move backward across calls because no database watermark existed, and the first CAS repair changed the exported legacy reviewer-override return and conflict behavior.
 - GREEN: schema v2 preserves every v1 artifact, override, and observation; historical duplicate identities remain addressable while one deterministic canonical identity owns replay and dispatch. New ingestion excludes observation time from the normalized claim digest and binds canonical identity to tenant, provider, adapter, collection, source item, and normalized digest.
 - The artifact, observation, and dispatch write in one immediate transaction. Schema convergence re-reads authority under the same write lock; dispatch claims are tenant scoped, attempt bounded, lease-generation fenced, store-clock bound, and retain retry/backoff evidence across restart. Exact content digest rehydration, completion, failure, and reviewer CAS fail closed on stale or cross-tenant authority.
 - Catalog typecheck passes. The complete catalog suite passes 63 tests across seven files, the coordinated first-open and v1 upgrade process regressions pass, a separate 40-process stress probe has zero failures, and `git diff --check` is clean.
+- The second review repair leaves the watermark empty until the first lease decision, then serializes its monotonic advance in SQLite, binds `claimed_at` to the lease generation, persists authority across restart, and rejects backward clocks across processes. The legacy reviewer API again returns `ReleaseArtifact` and throws its original conflict error; explicit CAS callers use `recordReleaseReviewerOverrideCas`.
+- Final second-cycle evidence: the focused release-ingestion suite passes 26 tests, the complete catalog suite passes 66 tests across seven files, catalog typecheck passes, the final 40-process first-open stress probe has zero failures, and `git diff --check` is clean.
 - ME-ING-003 and ME-ING-004 remain partial. This increment creates durable catalog contracts only; it does not add or claim a reachable API, worker, polling, or production delivery path.
