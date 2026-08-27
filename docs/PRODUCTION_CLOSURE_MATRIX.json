@@ -2057,16 +2057,16 @@
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
-    "observedMainRevision": "26d8f26b6bf1bfc74422c3959861cbe2aa1db762",
-    "observationDigest": "sha256:72839186305f7ca6bf70a131b7238196d656cfdc03a85fbb79bc09e1a0e70618",
+    "observedMainRevision": "550ddf59645539ce0f40f75ec8edaa11da3e8ead",
+    "observationDigest": "sha256:58d1c86d41531b0023afaccbe7f9bfe6aacd94d47a813b90e269e1f168aaf108",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 493,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/493",
-      "title": "authority: exempt self-promoted bootstrap from removal and active controller from surface collision",
+      "number": 451,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/451",
+      "title": "pipeline: record Mission verification after campaign execute",
       "baseBranch": "main",
-      "headBranch": "r0-gate-exemptions",
+      "headBranch": "cursor/campaign-execute-verification-f457",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2079,15 +2079,7 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "rotation-20260827-003",
-        "kind": "runtime",
-        "issuedAt": "2026-08-27T01:06:55.277Z",
-        "expiresAt": "2026-08-28T01:06:55.277Z",
-        "basePolicySha256": "sha256:3bdfe57b1822cbccd434cef8b874f404cea60fcbf52848ba52899ca7068c4884",
-        "proposedPolicySha256": "sha256:809f79e92cd7be5ce58c6f7920d44f0640c24138f553656911842d74c76d8a67"
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
@@ -3597,56 +3589,6 @@
           {
             "priority": "P1",
             "summary": "Mission graph scope is not bound to the exact repository snapshot"
-          }
-        ]
-      },
-      {
-        "number": 451,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/451",
-        "title": "pipeline: record Mission verification after campaign execute",
-        "headBranch": "cursor/campaign-execute-verification-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "blocked_explicit_dependency",
-        "dependencies": {
-          "pullRequests": [
-            463
-          ],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "behind",
-        "headRevision": "8eee783cdb1e53180db51f941fd4906b64ad3c00",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": [
-          {
-            "priority": "P1",
-            "summary": "post-edit verification evidence is incorrectly reusable for the immutable source snapshot"
-          },
-          {
-            "priority": "P1",
-            "summary": "comparison success can be recorded while constituent checks fail"
-          },
-          {
-            "priority": "P2",
-            "summary": "Mission and compiler visibility is not bound to the exact snapshot"
           }
         ]
       },
