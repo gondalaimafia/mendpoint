@@ -8,6 +8,12 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const BRANCH = /^(?!\/)(?!.*(?:\.\.|\/\/|@\{))[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/;
+const DEFERRED_MISSION_OUTCOME_SETTLEMENT_ERRORS = new Set([
+  "mission_mutation_authority_stale",
+  "mission_mutation_authority_blocked",
+  "mission_mutation_authority_task_missing",
+  "mission_mutation_authority_task_not_accepted",
+]);
 
 export type WardenCandidateDeliveryStatus = "delivery_pending" | "delivered" | "delivery_failed";
 
@@ -136,6 +142,50 @@ function outcomeTransitionAllowed(
       return from === "merged";
     default:
       return false;
+  }
+}
+
+function missionOutcomeSettlementDeferred(error: unknown): boolean {
+  return error instanceof Error && DEFERRED_MISSION_OUTCOME_SETTLEMENT_ERRORS.has(error.message);
+}
+
+function settleMergedMissionOutcome(
+  db: AppDb,
+  tenantId: string,
+  deliveryId: string,
+  authority: MissionMutationAuthorityV1,
+  observedAt: string,
+): void {
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const cycle = db.raw.prepare(`SELECT id, status FROM fettler_ci_cycles
+      WHERE tenant_id = ? AND delivery_id = ?`).get(tenantId, deliveryId) as
+        { id: string; status: string } | undefined;
+    // A CI-backed delivery is accepted only from the exact green state. Other
+    // states remain resumable and retain their lifecycle evidence unchanged.
+    if (cycle && cycle.status !== "awaiting_review") {
+      if (owns) db.raw.exec("COMMIT");
+      return;
+    }
+    completeMissionMutationAuthorityTask(db, tenantId, authority, {
+      correlationId: `delivery-outcome:${deliveryId}`,
+      createdAt: observedAt,
+    });
+    if (cycle) {
+      const changed = db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'succeeded', updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND delivery_id = ? AND status = 'awaiting_review'`).run(
+        observedAt, cycle.id, tenantId, deliveryId,
+      );
+      if (Number(changed.changes) !== 1) throw new Error("warden_ci_cycle_acceptance_conflict");
+    }
+    if (owns) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    // A late blocker or stale task authority changes whether the Mission may
+    // settle, never the already-observed fact that GitHub merged the PR.
+    if (missionOutcomeSettlementDeferred(error)) return;
+    throw error;
   }
 }
 
@@ -386,33 +436,24 @@ export function recordWardenCandidateDeliveryOutcome(db: AppDb, input: {
     if (current.status !== "delivered" || current.draftPrNumber === null) {
       throw new Error("warden_candidate_delivery_outcome_not_delivered");
     }
-    if (current.outcome === input.outcome) {
-      if (owns) db.raw.exec("COMMIT");
-      return current;
-    }
-    if (!outcomeTransitionAllowed(current.outcome, input.outcome)) {
+    if (current.outcome !== input.outcome && !outcomeTransitionAllowed(current.outcome, input.outcome)) {
       throw new Error("warden_candidate_delivery_outcome_transition_invalid");
     }
-    const changed = db.raw.prepare(
-      `UPDATE fettler_candidate_deliveries
-       SET outcome = ?, outcome_at = ?, outcome_source = ?, updated_at = ?
-       WHERE id = ? AND tenant_id = ? AND status = 'delivered' AND outcome IS ?`,
-    ).run(input.outcome, observedAt, source, observedAt, deliveryId, tenantId, current.outcome);
-    if (Number(changed.changes) !== 1) {
-      throw new Error("warden_candidate_delivery_outcome_conflict");
-    }
-    if (input.outcome === "merged" && current.missionAuthority) {
-      completeMissionMutationAuthorityTask(db, tenantId, current.missionAuthority, {
-        correlationId: `delivery-outcome:${deliveryId}`,
-        createdAt: observedAt,
-      });
-      db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'succeeded', updated_at = ?
-        WHERE tenant_id = ? AND delivery_id = ? AND status = 'awaiting_review'`).run(
-        observedAt, tenantId, deliveryId,
-      );
+    if (current.outcome !== input.outcome) {
+      const changed = db.raw.prepare(
+        `UPDATE fettler_candidate_deliveries
+         SET outcome = ?, outcome_at = ?, outcome_source = ?, updated_at = ?
+         WHERE id = ? AND tenant_id = ? AND status = 'delivered' AND outcome IS ?`,
+      ).run(input.outcome, observedAt, source, observedAt, deliveryId, tenantId, current.outcome);
+      if (Number(changed.changes) !== 1) {
+        throw new Error("warden_candidate_delivery_outcome_conflict");
+      }
     }
     const updated = getWardenCandidateDelivery(db, tenantId, deliveryId)!;
     if (owns) db.raw.exec("COMMIT");
+    if (input.outcome === "merged" && updated.missionAuthority) {
+      settleMergedMissionOutcome(db, tenantId, deliveryId, updated.missionAuthority, observedAt);
+    }
     return updated;
   } catch (error) {
     if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");

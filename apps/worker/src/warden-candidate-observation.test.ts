@@ -27,6 +27,7 @@ import {
   listJobs,
   raiseMissionException,
   recordWardenCandidateDeliveryOutcome,
+  transitionMission,
   transitionMissionTask,
   wakeWardenCiReviewObservation,
   type AppDb,
@@ -288,6 +289,119 @@ describe("Warden candidate CI observation", () => {
       status: "agent_working",
       revision: value.task.revision,
     });
+  });
+
+  it("completes the exact Mission task only when a merged PR has verified green CI awaiting review", () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'awaiting_review'
+      WHERE id = ? AND tenant_id = 'tenant-a'`).run(value.cycle.id);
+
+    const outcome = recordWardenCandidateDeliveryOutcome(value.db, {
+      tenantId: "tenant-a", deliveryId: "delivery-a", outcome: "merged",
+      source: "github_webhook", observedAt: "2026-08-13T12:06:00.000Z",
+    });
+
+    expect(outcome.outcome).toBe("merged");
+    expect(getWardenCiCycle(value.db, "tenant-a", value.cycle.id)?.status).toBe("succeeded");
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("complete");
+  });
+
+  it("completes a Mission task for a merged delivery that has no CI cycle", () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`DELETE FROM fettler_ci_cycles
+      WHERE id = ? AND tenant_id = 'tenant-a'`).run(value.cycle.id);
+
+    const outcome = recordWardenCandidateDeliveryOutcome(value.db, {
+      tenantId: "tenant-a", deliveryId: "delivery-a", outcome: "merged",
+      source: "github_webhook", observedAt: "2026-08-13T12:06:00.000Z",
+    });
+
+    expect(outcome.outcome).toBe("merged");
+    expect(getWardenCiCycle(value.db, "tenant-a", value.cycle.id)).toBeUndefined();
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("complete");
+  });
+
+  it.each([
+    "observation_pending", "checks_running", "checks_failed", "repair_pending",
+    "candidate_ready", "update_pending", "paused", "exhausted",
+  ] as const)("records a merged PR without completing its Mission task while CI is %s", (status) => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE fettler_ci_cycles SET status = ?
+      WHERE id = ? AND tenant_id = 'tenant-a'`).run(status, value.cycle.id);
+
+    const outcome = recordWardenCandidateDeliveryOutcome(value.db, {
+      tenantId: "tenant-a", deliveryId: "delivery-a", outcome: "merged",
+      source: "github_webhook", observedAt: "2026-08-13T12:06:00.000Z",
+    });
+
+    expect(outcome.outcome).toBe("merged");
+    expect(getWardenCiCycle(value.db, "tenant-a", value.cycle.id)?.status).toBe(status);
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("agent_working");
+  });
+
+  it("settles an idempotently replayed merged outcome once its exact CI cycle is awaiting review", () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'checks_failed'
+      WHERE id = ? AND tenant_id = 'tenant-a'`).run(value.cycle.id);
+    const input = {
+      tenantId: "tenant-a", deliveryId: "delivery-a", outcome: "merged" as const,
+      source: "github_webhook", observedAt: "2026-08-13T12:06:00.000Z",
+    };
+
+    const first = recordWardenCandidateDeliveryOutcome(value.db, input);
+    expect(first.outcomeAt).toBe(input.observedAt);
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("agent_working");
+    value.db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'awaiting_review'
+      WHERE id = ? AND tenant_id = 'tenant-a'`).run(value.cycle.id);
+
+    const replayed = recordWardenCandidateDeliveryOutcome(value.db, {
+      ...input, observedAt: "2026-08-13T12:07:00.000Z",
+    });
+    expect(replayed.outcomeAt).toBe(input.observedAt);
+    expect(getWardenCiCycle(value.db, "tenant-a", value.cycle.id)?.status).toBe("succeeded");
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("complete");
+  });
+
+  it("retains a factual merged outcome when a late Mission blocker prevents settlement", () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'awaiting_review'
+      WHERE id = ? AND tenant_id = 'tenant-a'`).run(value.cycle.id);
+    raiseMissionException(value.db, {
+      tenantId: "tenant-a", missionId: "mission-a", reason: "Late production hold",
+      impact: "Acceptance must wait", ownerPrincipalId: "principal-owner",
+      resolutionPath: "Resolve the production hold", blocking: true,
+      correlationId: "late-blocker", createdAt: "2026-08-13T12:05:00.000Z",
+    });
+
+    const outcome = recordWardenCandidateDeliveryOutcome(value.db, {
+      tenantId: "tenant-a", deliveryId: "delivery-a", outcome: "merged",
+      source: "github_webhook", observedAt: "2026-08-13T12:06:00.000Z",
+    });
+
+    expect(outcome.outcome).toBe("merged");
+    expect(getWardenCiCycle(value.db, "tenant-a", value.cycle.id)?.status).toBe("awaiting_review");
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("agent_working");
+  });
+
+  it("retains a factual merged outcome when Mission authority is stale before settlement", () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'awaiting_review'
+      WHERE id = ? AND tenant_id = 'tenant-a'`).run(value.cycle.id);
+    transitionMission(value.db, {
+      tenantId: "tenant-a", missionId: "mission-a", expectedRevision: value.authority.missionRevision,
+      to: "discovering", actorPrincipalId: "principal-owner", eventId: "mission-discovering",
+      idempotencyKey: "mission-discovering", correlationId: "stale-authority",
+      createdAt: "2026-08-13T12:05:00.000Z",
+    });
+
+    const outcome = recordWardenCandidateDeliveryOutcome(value.db, {
+      tenantId: "tenant-a", deliveryId: "delivery-a", outcome: "merged",
+      source: "github_webhook", observedAt: "2026-08-13T12:06:00.000Z",
+    });
+
+    expect(outcome.outcome).toBe("merged");
+    expect(getWardenCiCycle(value.db, "tenant-a", value.cycle.id)?.status).toBe("awaiting_review");
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("agent_working");
   });
 
   it("resumes green CI through review repair and completes the Mission task only after acceptance", async () => {
