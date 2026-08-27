@@ -3347,6 +3347,7 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - [x] Persist and transactionally advance a singleton clock watermark, bind each lease generation to `claimed_at`, and prove rollback recovery across restart and processes.
 - [x] Restore the original reviewer-override return and conflict contract while exposing concurrent CAS through a separately named API.
 - [x] Re-run focused and full catalog verification, process stress, typecheck, and diff checks for the second review cycle.
+- [x] Repair the immediate-parent v2 upgrade with a new append-only v3 migration and prove safe active-lease recovery across restart.
 
 ### Review
 
@@ -3358,4 +3359,6 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Catalog typecheck passes. The complete catalog suite passes 63 tests across seven files, the coordinated first-open and v1 upgrade process regressions pass, a separate 40-process stress probe has zero failures, and `git diff --check` is clean.
 - The second review repair leaves the watermark empty until the first lease decision, then serializes its monotonic advance in SQLite, binds `claimed_at` to the lease generation, persists authority across restart, and rejects backward clocks across processes. The legacy reviewer API again returns `ReleaseArtifact` and throws its original conflict error; explicit CAS callers use `recordReleaseReviewerOverrideCas`.
 - Final second-cycle evidence: the focused release-ingestion suite passes 26 tests, the complete catalog suite passes 66 tests across seven files, catalog typecheck passes, the final 40-process first-open stress probe has zero failures, and `git diff --check` is clean.
+- P1 RED: an exact immediate-parent v2 database remained at schema version 2, so the first clock-authorized claim had neither `claimed_at` nor `release_ingestion_clock_authority` available.
+- P1 GREEN: version 3 conditionally adds the missing clock safety objects, accepts databases already expanded by `35245f50`, and binds predecessor active claims to their known lease expiry so the old owner cannot complete while expiry takeover and retry remain available. The focused suite passes 28 tests, the complete catalog suite passes 68 tests across seven files, the 40-process cold-open probe has zero failures, catalog and full-workspace typechecks pass, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
 - ME-ING-003 and ME-ING-004 remain partial. This increment creates durable catalog contracts only; it does not add or claim a reachable API, worker, polling, or production delivery path.
