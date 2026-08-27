@@ -62,6 +62,7 @@ export interface ProposalAuthorityObservation {
   proposalRevision: string;
   observedAt: string;
   fetchedBlobs: ProposalBlobObservation[];
+  providerObservationScope: "changed_records" | "full_release_train";
   providerValidationPullRequests: number[];
   providerValidationIssues: number[];
   authorityRotation: {
@@ -88,6 +89,7 @@ export function writeProposalAuthorityFailureObservation(
     proposalRevision: "unavailable",
     observedAt,
     fetchedBlobs: [],
+    providerObservationScope: "changed_records",
     providerValidationPullRequests: [],
     providerValidationIssues: [],
     authorityRotation: null,
@@ -396,6 +398,7 @@ export async function verifyProductionClosureProposal(
     proposalRevision,
     observedAt,
     fetchedBlobs: [],
+    providerObservationScope: "changed_records",
     providerValidationPullRequests: [],
     providerValidationIssues: [],
     authorityRotation: null,
@@ -661,6 +664,9 @@ export async function verifyProductionClosureProposal(
       matrix.issueAuthority?.issues ?? [],
       "issue",
     );
+    if (mergeBaseMatrix.releaseTrain?.observedAt !== matrix.releaseTrain?.observedAt) {
+      observation.providerObservationScope = "full_release_train";
+    }
     // Identical Git blob sha and mode is identical content, so the proposal did
     // not touch this path; a path absent on both sides is untouched too. This
     // never reads "could not tell" as "unchanged": an unresolvable merge base

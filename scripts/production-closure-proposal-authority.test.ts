@@ -426,6 +426,7 @@ describe("production closure proposal authority", () => {
     );
 
     expect(result.providerValidationPullRequests).toEqual([changedPullRequest.number]);
+    expect(result.providerObservationScope).toBe("changed_records");
     expect(result.providerValidationIssues).toEqual([changedIssue.number]);
   });
 
@@ -554,6 +555,7 @@ describe("production closure proposal authority", () => {
 
     expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
     expect(result.authorityRotation?.rotationId).toBe(rotation.rotationId);
+    expect(result.providerObservationScope).toBe("full_release_train");
     expect(result.providerValidationPullRequests).toEqual([]);
     expect(result.providerValidationIssues).toEqual([]);
 

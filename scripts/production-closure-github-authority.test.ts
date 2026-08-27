@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
+  bindProposalProviderObservation,
   GitHubRestClient,
   githubAuthorityContextFromEvent,
   verifyGitHubClosureAuthority,
@@ -235,6 +236,32 @@ function codes(result: Awaited<ReturnType<typeof verifyGitHubClosureAuthority>>)
 }
 
 describe("GitHub production closure authority", () => {
+  it("promotes timestamp refreshes to full release-train provider observation", () => {
+    const bound = context({ observationScope: "current_pull_request" });
+    bindProposalProviderObservation(bound, {
+      proposalRevision: HEAD,
+      verdict: "pass",
+      providerObservationScope: "full_release_train",
+      providerValidationPullRequests: [],
+      providerValidationIssues: [],
+    });
+
+    expect(bound.observationScope).toBe("full_release_train");
+  });
+
+  it("fails closed on an unrecognized proposal provider-observation scope", () => {
+    const bound = context({ observationScope: "current_pull_request" });
+    expect(() =>
+      bindProposalProviderObservation(bound, {
+        proposalRevision: HEAD,
+        verdict: "pass",
+        providerObservationScope: "partial_refresh",
+        providerValidationPullRequests: [],
+        providerValidationIssues: [],
+      })
+    ).toThrow("proposal provider-observation scope is invalid");
+  });
+
   it("runs per-PR authority from default-branch code and publishes an App-bound verdict", () => {
     const workflow = parse(
       readFileSync(

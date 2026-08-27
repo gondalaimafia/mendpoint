@@ -259,6 +259,53 @@ export interface GitHubAuthorityContext {
   >;
 }
 
+export interface ProposalProviderObservation {
+  proposalRevision?: unknown;
+  verdict?: unknown;
+  providerObservationScope?: unknown;
+  providerValidationPullRequests?: unknown;
+  providerValidationIssues?: unknown;
+}
+
+export function bindProposalProviderObservation(
+  context: GitHubAuthorityContext,
+  proposalObservation: ProposalProviderObservation,
+): void {
+  const exactNumbers = (value: unknown, label: string): number[] => {
+    if (
+      !Array.isArray(value) ||
+      value.some((entry) => !Number.isInteger(entry) || entry <= 0) ||
+      new Set(value).size !== value.length
+    ) {
+      throw new Error(`proposal ${label} provider-validation set is invalid`);
+    }
+    return [...value].sort((left, right) => left - right) as number[];
+  };
+  if (
+    proposalObservation.verdict !== "pass" ||
+    proposalObservation.proposalRevision !== context.pullRequest?.headRevision
+  ) {
+    throw new Error("proposal authority observation is not bound to the exact pull request head");
+  }
+  if (
+    proposalObservation.providerObservationScope !== "changed_records" &&
+    proposalObservation.providerObservationScope !== "full_release_train"
+  ) {
+    throw new Error("proposal provider-observation scope is invalid");
+  }
+  context.providerValidationPullRequests = exactNumbers(
+    proposalObservation.providerValidationPullRequests,
+    "pull request",
+  );
+  context.providerValidationIssues = exactNumbers(
+    proposalObservation.providerValidationIssues,
+    "issue",
+  );
+  if (proposalObservation.providerObservationScope === "full_release_train") {
+    context.observationScope = "full_release_train";
+  }
+}
+
 export interface GitHubAuthorityClient {
   getMainRevision(): Promise<string>;
   listOpenPullRequests(baseBranch: string): Promise<GitHubPullRequest[]>;
@@ -1368,36 +1415,8 @@ async function main(): Promise<void> {
     );
     const proposalObservation = JSON.parse(
       readFileSync(proposalObservationPath, "utf8"),
-    ) as {
-      proposalRevision?: unknown;
-      verdict?: unknown;
-      providerValidationPullRequests?: unknown;
-      providerValidationIssues?: unknown;
-    };
-    const exactNumbers = (value: unknown, label: string): number[] => {
-      if (
-        !Array.isArray(value) ||
-        value.some((entry) => !Number.isInteger(entry) || entry <= 0) ||
-        new Set(value).size !== value.length
-      ) {
-        throw new Error(`proposal ${label} provider-validation set is invalid`);
-      }
-      return [...value].sort((left, right) => left - right) as number[];
-    };
-    if (
-      proposalObservation.verdict !== "pass" ||
-      proposalObservation.proposalRevision !== context.pullRequest?.headRevision
-    ) {
-      throw new Error("proposal authority observation is not bound to the exact pull request head");
-    }
-    context.providerValidationPullRequests = exactNumbers(
-      proposalObservation.providerValidationPullRequests,
-      "pull request",
-    );
-    context.providerValidationIssues = exactNumbers(
-      proposalObservation.providerValidationIssues,
-      "issue",
-    );
+    ) as ProposalProviderObservation;
+    bindProposalProviderObservation(context, proposalObservation);
   }
   if (context.repository !== policy.repository) {
     throw new Error("protected authority repository does not match pinned policy");
