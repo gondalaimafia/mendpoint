@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -63,6 +64,10 @@ type MutableReleasePollConfiguration = {
   source: { url: string; maxBytes?: number };
 };
 
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 describe("release source polling", () => {
   it("binds persisted release and outbox identities to the explicit tenant, provider, adapter, and source", async () => {
     const store = ledger();
@@ -108,7 +113,9 @@ describe("release source polling", () => {
       fetchOptions: publicFetchOptions(),
     });
     expect(result.status).toBe("ingested");
-    if (result.status === "failed") throw new Error(result.error);
+    if (result.status === "failed" || result.status === "invalid_configuration") {
+      throw new Error(result.error);
+    }
     const reference = result.artifacts[0]!;
 
     expect(rehydrateReleaseArtifact(store, {
@@ -173,6 +180,63 @@ describe("release source polling", () => {
       error: "production feed URL resolves to a blocked address",
     });
     expect(fetches).toBe(0);
+    expect(listReleaseArtifacts(store, "tenant-a")).toEqual([]);
+  });
+
+  it.each([
+    ["contract version", { contractVersion: "release-poll.v2" }, "release_poll_contract_version_unsupported"],
+    ["adapter", { adapter: "webhook" }, "release_poll_adapter_unsupported"],
+  ] as const)("represents a rejected %s without fabricating a valid polling identity", async (
+    _field,
+    patch,
+    error,
+  ) => {
+    const store = ledger();
+    const raw = {
+      ...configuration(),
+      ...patch,
+    } as unknown as ReleasePollConfigurationV1;
+
+    const result = await pollReleaseSource(store, raw, { at: NOW });
+
+    expect(result).toMatchObject({
+      status: "invalid_configuration",
+      error,
+      identity: null,
+      configurationBinding: { tenantId: "tenant-a", providerSlug: "stripe" },
+      sourceReference: {
+        origin: "https://docs.stripe.com",
+        suppliedSha256: sha256("https://docs.stripe.com/changelog/feed"),
+      },
+      inserted: 0,
+      artifacts: [],
+      dispatches: [],
+    });
+    expect(result).not.toHaveProperty("contractVersion");
+    expect(result).not.toHaveProperty("adapter");
+    expect(result).not.toHaveProperty("sourceUrl");
+  });
+
+  it.each([
+    ["query token", "https://docs.example.com/releases?token=token-secret", "https://docs.example.com"],
+    ["userinfo credentials", "https://user:password-secret@docs.example.com/releases", "https://docs.example.com"],
+    ["fragment", "https://docs.example.com/releases#fragment-secret", "https://docs.example.com"],
+    ["secret path", "http://docs.example.com/private/path-secret", "http://docs.example.com"],
+    ["malformed URL", "not a URL malformed-secret", null],
+  ] as const)("redacts an invalid source containing a %s", async (_case, supplied, origin) => {
+    const store = ledger();
+    const result = await pollReleaseSource(store, configuration("tenant-a", supplied), { at: NOW });
+    const serialized = JSON.stringify(result);
+
+    expect(result).toMatchObject({
+      status: "invalid_configuration",
+      identity: null,
+      configurationBinding: { tenantId: "tenant-a", providerSlug: "stripe" },
+      sourceReference: { origin, suppliedSha256: sha256(supplied) },
+    });
+    for (const secret of ["token-secret", "password-secret", "fragment-secret", "path-secret", "malformed-secret"]) {
+      expect(serialized).not.toContain(secret);
+    }
     expect(listReleaseArtifacts(store, "tenant-a")).toEqual([]);
   });
 
@@ -250,7 +314,9 @@ describe("release source polling", () => {
       sourceUrl: "https://docs.stripe.com/changelog/feed",
       sourceMaxBytes: null,
     });
-    if (result.status === "failed") throw new Error(result.error);
+    if (result.status === "failed" || result.status === "invalid_configuration") {
+      throw new Error(result.error);
+    }
     const reference = result.artifacts[0]!;
     expect(rehydrateReleaseArtifact(store, {
       tenantId: result.tenantId,

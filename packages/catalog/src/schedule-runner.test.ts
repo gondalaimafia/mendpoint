@@ -409,6 +409,136 @@ describe("feed schedule runner", () => {
   });
 
   it.each([
+    ["unsupported contract version", { contractVersion: "release-poll.v2" }, "release_poll_contract_version_unsupported"],
+    ["unsupported adapter", { adapter: "webhook" }, "release_poll_adapter_unsupported"],
+  ] as const)("isolates an %s as a typed release failure while OpenAPI still runs", async (
+    _case,
+    patch,
+    error,
+  ) => {
+    const db = fixture();
+    const store = releaseStore();
+    const invalid = {
+      ...releaseConfiguration(),
+      ...patch,
+    } as unknown as ReleasePollConfigurationV1;
+    let openApiCalls = 0;
+    let releaseCalls = 0;
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed) => {
+        openApiCalls++;
+        return { slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const };
+      },
+      releaseStore: store,
+      releaseFeeds: [invalid],
+      releaseExecute: async () => {
+        releaseCalls++;
+        throw new Error("invalid release configuration was executed");
+      },
+    });
+
+    expect(openApiCalls).toBe(1);
+    expect(releaseCalls).toBe(0);
+    expect(result).toMatchObject({
+      claimed: 1,
+      succeeded: 0,
+      failed: 1,
+      executions: [{
+        status: "failed",
+        poll: { status: "unchanged" },
+        openApiOutcome: { status: "succeeded", result: { status: "unchanged" } },
+        releaseOutcome: {
+          status: "failed",
+          error,
+          result: {
+            status: "invalid_configuration",
+            error,
+            identity: null,
+            configurationBinding: { tenantId: "tenant_default", providerSlug: "provider-1" },
+          },
+        },
+      }],
+    });
+  });
+
+  it("keeps unrelated tenant schedules and valid releases running beside an invalid configuration", async () => {
+    const db = fixture();
+    const store = releaseStore();
+    for (const [tenantId, providerSlug] of [["tenant-a", "provider-1"], ["tenant-b", "provider-2"]]) {
+      db.raw.prepare(
+        `INSERT INTO tenants
+           (id, slug, name, plan, billing_status, seat_limit, created_at)
+         VALUES (?, ?, ?, 'pilot', 'active', 5, ?)`,
+      ).run(tenantId, tenantId, tenantId, "2026-08-02T12:00:00.000Z");
+      upsertFeedSchedule(db, {
+        id: `release-isolation-${tenantId}`,
+        tenantId,
+        providerSlug,
+        intervalMs: 60_000,
+        staleAfterMs: 120_000,
+        createdAt: "2026-08-02T12:00:00.000Z",
+      });
+    }
+    const valid = releaseConfiguration("tenant-a", "provider-1");
+    const invalid = {
+      ...releaseConfiguration("tenant-b", "provider-2"),
+      adapter: "webhook",
+    } as unknown as ReleasePollConfigurationV1;
+    let openApiCalls = 0;
+    let releaseCalls = 0;
+
+    const result = await runFeedSchedules({
+      db,
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(2),
+      execute: async (feed) => {
+        openApiCalls++;
+        return { slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const };
+      },
+      releaseStore: store,
+      releaseFeeds: [valid, invalid],
+      releaseExecute: async (_store, config) => {
+        releaseCalls++;
+        return {
+          contractVersion: config.contractVersion,
+          tenantId: config.tenantId,
+          providerSlug: config.provider.slug,
+          adapter: config.adapter,
+          sourceUrl: config.source.url,
+          sourceMaxBytes: config.source.maxBytes ?? null,
+          status: "unchanged",
+          inserted: 0,
+          artifacts: [],
+          dispatches: [],
+        };
+      },
+    });
+
+    expect(openApiCalls).toBe(2);
+    expect(releaseCalls).toBe(1);
+    expect(result).toMatchObject({ claimed: 2, succeeded: 1, failed: 1 });
+    expect(result.executions.find((execution) => execution.providerSlug === "provider-1")).toMatchObject({
+      status: "succeeded",
+      openApiOutcome: { status: "succeeded" },
+      releaseOutcome: { status: "succeeded", result: { status: "unchanged" } },
+    });
+    expect(result.executions.find((execution) => execution.providerSlug === "provider-2")).toMatchObject({
+      status: "failed",
+      openApiOutcome: { status: "succeeded" },
+      releaseOutcome: {
+        status: "failed",
+        error: "release_poll_adapter_unsupported",
+        result: { status: "invalid_configuration", identity: null },
+      },
+    });
+  });
+
+  it.each([
     ["contract version", { contractVersion: "release-poll.v2" }],
     ["tenant", { tenantId: "tenant-spoof" }],
     ["provider", { providerSlug: "provider-spoof" }],

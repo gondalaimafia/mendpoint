@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   ingestReleaseDocument,
   listReleaseDispatches,
@@ -44,7 +45,17 @@ type ReleasePollIdentity = Readonly<{
   sourceMaxBytes: number | null;
 }>;
 
-export type ReleasePollResult =
+export type ReleasePollConfigurationBinding = Readonly<{
+  tenantId: string;
+  providerSlug: string;
+}>;
+
+export type ReleasePollSourceReference = Readonly<{
+  origin: string | null;
+  suppliedSha256: string;
+}>;
+
+export type ValidReleasePollResult =
   | Readonly<ReleasePollIdentity & {
       status: "ingested" | "unchanged";
       inserted: number;
@@ -58,6 +69,23 @@ export type ReleasePollResult =
       artifacts: readonly ReleaseArtifactReference[];
       dispatches: readonly ReleaseDispatchReference[];
     }>;
+
+export type InvalidReleasePollConfigurationResult = Readonly<{
+  status: "invalid_configuration";
+  error: string;
+  identity: null;
+  configurationBinding: ReleasePollConfigurationBinding | null;
+  sourceReference: ReleasePollSourceReference;
+  inserted: 0;
+  artifacts: readonly ReleaseArtifactReference[];
+  dispatches: readonly ReleaseDispatchReference[];
+}>;
+
+export type ReleasePollResult = ValidReleasePollResult | InvalidReleasePollConfigurationResult;
+
+export type ParsedReleasePollConfiguration =
+  | Readonly<{ status: "valid"; config: CanonicalReleasePollConfigurationV1 }>
+  | Readonly<{ status: "invalid"; result: InvalidReleasePollConfigurationResult }>;
 
 export type ReleasePollOptions = Readonly<{
   at?: string;
@@ -83,13 +111,20 @@ type RawReleasePollConfiguration = Readonly<{
 }>;
 
 function rawConfiguration(config: ReleasePollConfigurationV1): RawReleasePollConfiguration {
+  const read = (getter: () => unknown): unknown => {
+    try {
+      return getter();
+    } catch {
+      return undefined;
+    }
+  };
   return Object.freeze({
-    contractVersion: config.contractVersion,
-    tenantId: config.tenantId,
-    providerSlug: config.provider.slug,
-    adapter: config.adapter,
-    sourceUrl: config.source.url,
-    sourceMaxBytes: config.source.maxBytes,
+    contractVersion: read(() => config?.contractVersion),
+    tenantId: read(() => config?.tenantId),
+    providerSlug: read(() => config?.provider?.slug),
+    adapter: read(() => config?.adapter),
+    sourceUrl: read(() => config?.source?.url),
+    sourceMaxBytes: read(() => config?.source?.maxBytes),
   });
 }
 
@@ -110,6 +145,7 @@ function canonicalSourceUrl(value: unknown): string {
   }
   if (
     parsed.protocol !== "https:" || parsed.username || parsed.password ||
+    parsed.hash ||
     [...parsed.searchParams.keys()].some((key) => SENSITIVE_SOURCE_QUERY.test(key))
   ) {
     throw new Error("release_poll_source_url_unsafe");
@@ -151,7 +187,9 @@ function canonicalizeRawConfiguration(
 export function canonicalizeReleasePollConfiguration(
   config: ReleasePollConfigurationV1,
 ): CanonicalReleasePollConfigurationV1 {
-  return canonicalizeRawConfiguration(rawConfiguration(config));
+  const parsed = parseReleasePollConfiguration(config);
+  if (parsed.status === "invalid") throw new Error(parsed.result.error);
+  return parsed.config;
 }
 
 function identity(config: CanonicalReleasePollConfigurationV1): ReleasePollIdentity {
@@ -165,21 +203,73 @@ function identity(config: CanonicalReleasePollConfigurationV1): ReleasePollIdent
   });
 }
 
-function failureIdentity(raw: RawReleasePollConfiguration): ReleasePollIdentity {
+function configurationBinding(
+  raw: RawReleasePollConfiguration,
+): ReleasePollConfigurationBinding | null {
+  try {
+    return Object.freeze({
+      tenantId: canonicalText("release_poll_tenant_id", raw.tenantId, 256),
+      providerSlug: canonicalText("release_poll_provider_slug", raw.providerSlug, 128),
+    });
+  } catch {
+    return null;
+  }
+}
+
+function sourceReference(value: unknown): ReleasePollSourceReference {
+  const supplied = typeof value === "string" ? value : `<${value === null ? "null" : typeof value}>`;
+  let origin: string | null = null;
+  if (typeof value === "string") {
+    try {
+      const parsed = new URL(value.trim());
+      origin = parsed.origin === "null" ? null : parsed.origin;
+    } catch {
+      // A digest is the only safe reference for an unparseable value.
+    }
+  }
   return Object.freeze({
-    contractVersion: RELEASE_POLL_CONTRACT_VERSION,
-    tenantId: typeof raw.tenantId === "string" ? raw.tenantId.trim() : "invalid",
-    providerSlug: typeof raw.providerSlug === "string" ? raw.providerSlug.trim() : "invalid",
-    adapter: (typeof raw.adapter === "string" ? raw.adapter.trim() : "rss") as ReleaseAdapter,
-    sourceUrl: typeof raw.sourceUrl === "string" ? raw.sourceUrl.trim() : "invalid",
-    sourceMaxBytes: Number.isSafeInteger(raw.sourceMaxBytes) ? Number(raw.sourceMaxBytes) : null,
+    origin,
+    suppliedSha256: createHash("sha256").update(supplied).digest("hex"),
   });
+}
+
+function invalidConfiguration(
+  raw: RawReleasePollConfiguration,
+  error: string,
+): InvalidReleasePollConfigurationResult {
+  return Object.freeze({
+    status: "invalid_configuration" as const,
+    error,
+    identity: null,
+    configurationBinding: configurationBinding(raw),
+    sourceReference: sourceReference(raw.sourceUrl),
+    inserted: 0 as const,
+    artifacts: Object.freeze([]),
+    dispatches: Object.freeze([]),
+  });
+}
+
+export function parseReleasePollConfiguration(
+  config: ReleasePollConfigurationV1,
+): ParsedReleasePollConfiguration {
+  const raw = rawConfiguration(config);
+  try {
+    return Object.freeze({
+      status: "valid" as const,
+      config: canonicalizeRawConfiguration(raw),
+    });
+  } catch (cause) {
+    return Object.freeze({
+      status: "invalid" as const,
+      result: invalidConfiguration(raw, cause instanceof Error ? cause.message : String(cause)),
+    });
+  }
 }
 
 function failed(
   pollIdentity: ReleasePollIdentity,
   error: string,
-): ReleasePollResult {
+): ValidReleasePollResult {
   return Object.freeze({
     ...pollIdentity,
     status: "failed" as const,
@@ -195,13 +285,9 @@ export async function pollReleaseSource(
   config: ReleasePollConfigurationV1,
   options: ReleasePollOptions = {},
 ): Promise<ReleasePollResult> {
-  const raw = rawConfiguration(config);
-  let snapshot: CanonicalReleasePollConfigurationV1;
-  try {
-    snapshot = canonicalizeRawConfiguration(raw);
-  } catch (cause) {
-    return failed(failureIdentity(raw), cause instanceof Error ? cause.message : String(cause));
-  }
+  const parsed = parseReleasePollConfiguration(config);
+  if (parsed.status === "invalid") return parsed.result;
+  const snapshot = parsed.config;
   const pollIdentity = identity(snapshot);
   const at = options.at ?? new Date().toISOString();
   const fetched = await fetchFeedDocument(snapshot.source.url, {
