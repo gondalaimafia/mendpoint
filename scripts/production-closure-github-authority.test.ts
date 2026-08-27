@@ -271,11 +271,12 @@ describe("GitHub production closure authority", () => {
     expect(workflow.on).not.toHaveProperty("workflow_run");
     expect(workflow.on).not.toHaveProperty("issues");
     expect(workflow.on).not.toHaveProperty("pull_request_review");
-    // Workflow-level concurrency collapses redundant sweeps during merge bursts;
-    // PR-scoped events collapse per PR. Added by #453, deliberately.
+    // Workflow-level concurrency collapses redundant primary sweeps during merge
+    // bursts, while the primary namespace remains disjoint from the required
+    // quiet successor workflow. PR-scoped events collapse per PR.
     expect(workflow.concurrency).toEqual({
       group:
-        "closure-authority-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || 'sweep' }}",
+        "closure-authority-primary-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || 'sweep' }}",
       "cancel-in-progress": true,
     });
     expect(workflow.permissions).toEqual({
@@ -295,7 +296,7 @@ describe("GitHub production closure authority", () => {
       "max-parallel": 4,
     });
     expect(job.concurrency).toEqual({
-      group: "production-closure-authority-${{ matrix.pull_request }}",
+      group: "production-closure-authority-primary-${{ matrix.pull_request }}",
       "cancel-in-progress": false,
     });
     expect(job.steps).toContainEqual(

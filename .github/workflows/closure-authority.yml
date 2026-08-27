@@ -31,7 +31,7 @@ permissions:
 # Collapse bursts: during a merge storm five queued full sweeps all validate the same state,
 # so only the newest matters. PR-triggered runs collapse per PR instead of against the sweep.
 concurrency:
-  group: closure-authority-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || 'sweep' }}
+  group: closure-authority-primary-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || 'sweep' }}
   cancel-in-progress: true
 
 jobs:
@@ -91,7 +91,7 @@ jobs:
       matrix:
         pull_request: ${{ fromJSON(needs.discover.outputs.pull_requests) }}
     concurrency:
-      group: production-closure-authority-invalidation-${{ matrix.pull_request }}
+      group: production-closure-authority-primary-invalidation-${{ matrix.pull_request }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -139,7 +139,7 @@ jobs:
       matrix:
         pull_request: ${{ fromJSON(needs.discover.outputs.pull_requests) }}
     concurrency:
-      group: production-closure-authority-${{ matrix.pull_request }}
+      group: production-closure-authority-primary-${{ matrix.pull_request }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     environment: production-closure-authority

@@ -2056,9 +2056,9 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-27T08:29:00.000Z",
+    "observedAt": "2026-08-27T21:20:14.935Z",
     "observedMainRevision": "8fefab697568e51524acffda70c27ea09e68e5f2",
-    "observationDigest": "sha256:26753e2f275a861375c6a159af9bb1fc6c397087f269b0bb7b4165fc6aae80bf",
+    "observationDigest": "sha256:306a629c7436e8ac52304c0e75ff429bbff2ea1f5b4c7abad2cb6b2ea62b034d",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -2081,12 +2081,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260827-008",
+        "rotationId": "rotation-20260827-009",
         "kind": "runtime",
-        "issuedAt": "2026-08-27T08:29:00.000Z",
-        "expiresAt": "2026-08-29T08:29:00.000Z",
+        "issuedAt": "2026-08-27T21:20:14.935Z",
+        "expiresAt": "2026-08-29T21:20:14.935Z",
         "basePolicySha256": "sha256:fbd31a0cf495e903c9e633962ceb2e2023cc00d17d4f38952916e963f84a99f1",
-        "proposedPolicySha256": "sha256:d1bfe5e2fb594bbbd0df7a09328987ba034a011b7e063f98f5edb951af47d7b2"
+        "proposedPolicySha256": "sha256:e43d44f171dee35933a2dba2cc563e24899fa944a390afaccbe8d152d8e786bf"
       }
     },
     "pullRequests": [
@@ -4383,6 +4383,166 @@
           "attributable": false
         },
         "blockers": []
+      },
+      {
+        "number": 505,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/505",
+        "title": "Add tenant scoped release polling runtime",
+        "headBranch": "codex/live-release-polling",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "86959b64820143554831abbf7ade05a6e4062df5",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 506,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/506",
+        "title": "Protect release ingestion recovery authority",
+        "headBranch": "codex/release-ingestion-backup",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [
+            505
+          ],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stacked_unverified",
+        "headRevision": "5ff21e20c05395bfb3e0da43f527d46b654b22ba",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "Merge PR #505 first, then rebase and rerun protected checks."
+          }
+        ]
+      },
+      {
+        "number": 507,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/507",
+        "title": "Drain release dispatches through tenant authority",
+        "headBranch": "codex/release-dispatch-drain",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [
+            505,
+            506
+          ],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stacked_unverified",
+        "headRevision": "569b8c8ed38de9431218e440e4336045e5d67998",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "Merge PRs #505 and #506 first, then rebase and rerun protected checks."
+          }
+        ]
+      },
+      {
+        "number": 508,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/508",
+        "title": "authority: activate_successor closure-authority-quiet-sweep",
+        "headBranch": "ceremony-r3-activate",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "blocked_explicit_dependency",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stacked_unverified",
+        "headRevision": "9de2715e0ab1fb77b4b544ff3ff8db91ca558ce3",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": [
+          {
+            "priority": "P1",
+            "summary": "Rebase after PR #504 and re-evaluate successor activation against protected check bindings."
+          }
+        ]
       }
     ]
   }
