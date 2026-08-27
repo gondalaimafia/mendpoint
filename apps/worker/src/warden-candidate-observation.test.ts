@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -483,6 +483,74 @@ describe("Warden candidate CI observation", () => {
     expect(replayPendingWardenCandidateDeliveryMergedOutcomes(reopened, {
       tenantId: "tenant-a", observedAt: "2026-08-13T12:07:20.000Z",
     })).toEqual({ examined: 1, settled: 0, deferred: 0, failed: 1 });
+  });
+
+  it("replays a durable merged outcome before artifact storage maintenance can fail", () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'awaiting_review'
+      WHERE id = ? AND tenant_id = 'tenant-a'`).run(value.cycle.id);
+    const blocker = raiseMissionException(value.db, {
+      tenantId: "tenant-a", missionId: "mission-a", reason: "Late production hold",
+      impact: "Acceptance must wait", ownerPrincipalId: "principal-owner",
+      resolutionPath: "Resolve the production hold", blocking: true,
+      correlationId: "artifact-blocker", createdAt: "2026-08-13T12:05:00.000Z",
+    });
+    recordWardenCandidateDeliveryOutcome(value.db, {
+      tenantId: "tenant-a", deliveryId: "delivery-a", outcome: "merged",
+      source: "github_webhook", observedAt: "2026-08-13T12:06:00.000Z",
+    });
+    resolveMissionException(value.db, {
+      tenantId: "tenant-a", priorExceptionId: blocker.id, resolutionNote: "Hold cleared",
+      actorPrincipalId: "principal-owner", correlationId: "artifact-blocker",
+      createdAt: "2026-08-13T12:07:00.000Z",
+    });
+    const notDirectory = join(value.root, "not-a-directory");
+    writeFileSync(notDirectory, "artifact storage unavailable");
+    const maintenanceError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    expect(maintainWardenArtifactsOnce(value.db, { MENDPOINT_DATA_DIR: notDirectory },
+      "2026-08-13T12:07:10.000Z")).toMatchObject({ cleanupPending: 1 });
+
+    maintenanceError.mockRestore();
+    expect(getWardenCiCycle(value.db, "tenant-a", value.cycle.id)?.status).toBe("succeeded");
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("complete");
+  });
+
+  it("classifies malformed authorities in one globally bounded replay order", () => {
+    const value = bindMissionAuthority(fixture());
+    value.db.raw.prepare(`DELETE FROM fettler_ci_cycles
+      WHERE id = ? AND tenant_id = 'tenant-a'`).run(value.cycle.id);
+    value.db.raw.prepare(`UPDATE fettler_candidate_deliveries
+      SET outcome = 'merged', outcome_at = ?, outcome_source = 'github_webhook', updated_at = ?
+      WHERE id = 'delivery-a' AND tenant_id = 'tenant-a'`)
+      .run("2026-08-13T12:03:00.000Z", "2026-08-13T12:03:00.000Z");
+    const insertCorrupt = value.db.raw.prepare(`INSERT INTO fettler_candidate_deliveries
+      (id, tenant_id, run_id, job_id, status, repository_id, snapshot_id, base_branch,
+       expected_base_revision, sealed_path, sealed_sha256, requester_principal_id, rationale,
+       mission_authority_json, intent_digest, branch_name, base_revision, commit_sha, draft_pr,
+       draft_pr_number, draft_pr_url, requested_at, delivered_at, outcome, outcome_at,
+       outcome_source, updated_at)
+      SELECT ?, tenant_id, ?, ?, status, repository_id, snapshot_id, base_branch,
+       expected_base_revision, sealed_path, sealed_sha256, requester_principal_id, rationale,
+       ?, intent_digest, ?, base_revision, commit_sha, draft_pr, ?, ?, requested_at, delivered_at,
+       'merged', ?, 'github_webhook', ?
+      FROM fettler_candidate_deliveries WHERE id = 'delivery-a' AND tenant_id = 'tenant-a'`);
+    insertCorrupt.run("delivery-invalid-json", "run-invalid-json", "job-invalid-json", "{",
+      "mendpoint/invalid-json", 18, "https://github.com/acme/service/pull/18",
+      "2026-08-13T12:01:00.000Z", "2026-08-13T12:01:00.000Z");
+    insertCorrupt.run("delivery-invalid-shape", "run-invalid-shape", "job-invalid-shape", "{}",
+      "mendpoint/invalid-shape", 19, "https://github.com/acme/service/pull/19",
+      "2026-08-13T12:02:00.000Z", "2026-08-13T12:02:00.000Z");
+
+    expect(replayPendingWardenCandidateDeliveryMergedOutcomes(value.db, {
+      tenantId: "tenant-a", observedAt: "2026-08-13T12:10:00.000Z", limit: 2,
+    })).toEqual({ examined: 2, settled: 0, deferred: 0, failed: 2 });
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("agent_working");
+
+    expect(replayPendingWardenCandidateDeliveryMergedOutcomes(value.db, {
+      tenantId: "tenant-a", observedAt: "2026-08-13T12:11:00.000Z", limit: 2,
+    })).toEqual({ examined: 2, settled: 1, deferred: 0, failed: 1 });
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("complete");
   });
 
   it("retains a factual merged outcome when Mission authority is stale before settlement", () => {
