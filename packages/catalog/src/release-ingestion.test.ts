@@ -26,6 +26,10 @@ const durableItemUrl = (value: string) => {
   const canonical = new URL(value).toString();
   return `${new URL(canonical).origin}/.well-known/mendpoint/release-item-source/${createHash("sha256").update(canonical).digest("hex")}`;
 };
+const durableSourceUrl = (value: string) => {
+  const canonical = new URL(value).toString();
+  return `${new URL(canonical).origin}/.well-known/mendpoint/release-source/${createHash("sha256").update(canonical).digest("hex")}`;
+};
 const fixture = (name: string) =>
   readFileSync(new URL(`../fixtures/releases/${name}`, import.meta.url), "utf8");
 const stores: ReleaseIngestionStore[] = [];
@@ -123,7 +127,8 @@ function createV1Database(path: string): void {
     .run("rel_v1", "tenant-v1", "stripe", "rss", "https://docs.stripe.com/changelog/feed",
       "https://docs.stripe.com/changelog/legacy", "legacy", "a".repeat(64), "b".repeat(64),
       "Legacy release", null, "2026-08-01T00:00:00.000Z", "2026-08-01T01:00:00.000Z",
-      "Legacy provider wording.", "rss.channel.item[0].description", 0.8, "{}", null,
+      "Legacy provider wording.", "rss.channel.item[0].description", 0.9,
+      JSON.stringify({ fields: [], replacements: [], summary: "Legacy provider wording." }), null,
       "2026-08-01T01:00:00.000Z");
   db.prepare(`INSERT INTO release_ingestion_artifacts
     (id, tenant_id, provider_slug, adapter, collection_url, source_url, source_item_id,
@@ -133,7 +138,8 @@ function createV1Database(path: string): void {
     .run("rel_v1_replay", "tenant-v1", "stripe", "rss", "https://docs.stripe.com/changelog/feed",
       "https://docs.stripe.com/changelog/legacy", "legacy", "a".repeat(64), "c".repeat(64),
       "Legacy release", null, "2026-08-01T00:00:00.000Z", "2026-08-01T03:00:00.000Z",
-      "Legacy provider wording.", "rss.channel.item[0].description", 0.8, "{}", null,
+      "Legacy provider wording.", "rss.channel.item[0].description", 0.9,
+      JSON.stringify({ fields: [], replacements: [], summary: "Legacy provider wording." }), null,
       "2026-08-01T03:00:00.000Z");
   db.prepare(`INSERT INTO release_ingestion_overrides
     (id, tenant_id, artifact_id, revision, reviewer_principal_id, confidence, excerpt,
@@ -161,6 +167,9 @@ function createImmediateParentV2Database(path: string): void {
 
   const db = new DatabaseSync(path);
   db.exec(`
+    DROP TRIGGER release_ingestion_identity_aliases_no_update;
+    DROP TRIGGER release_ingestion_identity_aliases_no_delete;
+    DROP TABLE release_ingestion_identity_aliases;
     DROP TRIGGER release_ingestion_clock_authority_no_delete;
     DROP TABLE release_ingestion_clock_authority;
     ALTER TABLE release_ingestion_dispatches DROP COLUMN claimed_at;
@@ -1009,13 +1018,30 @@ describe("release ingestion", () => {
     expect(listReleaseObservations(migrated, "tenant-v1", "rel_v1_replay")).toHaveLength(1);
     expect(listReleaseDispatches(migrated, "tenant-v1")).toHaveLength(1);
     expect(migrated.raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations").get())
-      .toEqual({ version: 3 });
+      .toEqual({ version: 4 });
+    const replay = ingestReleaseDocument(migrated, {
+      tenantId: "tenant-v1",
+      providerSlug: "stripe",
+      adapter: "rss",
+      sourceUrl: durableSourceUrl("https://docs.stripe.com/changelog/feed"),
+      body: `<?xml version="1.0"?><rss><channel><item>
+        <guid>legacy</guid><title>Legacy release</title>
+        <link>https://docs.stripe.com/changelog/legacy</link>
+        <pubDate>Sat, 01 Aug 2026 00:00:00 GMT</pubDate>
+        <description>Legacy provider wording.</description></item></channel></rss>`,
+      observedAt: NOW,
+      now: NOW,
+    });
+    expect(replay.inserted).toBe(0);
+    expect(replay.artifacts.map((candidate) => candidate.id)).toEqual(["rel_v1"]);
+    expect(listReleaseArtifacts(migrated, "tenant-v1")).toHaveLength(2);
+    expect(listReleaseDispatches(migrated, "tenant-v1")).toHaveLength(1);
     migrated.close();
     stores.splice(stores.indexOf(migrated), 1);
 
     const restarted = store(path);
     expect(listReleaseArtifacts(restarted, "tenant-v1")).toEqual(artifacts);
-    expect(listReleaseObservations(restarted, "tenant-v1", "rel_v1")).toHaveLength(1);
+    expect(listReleaseObservations(restarted, "tenant-v1", "rel_v1")).toHaveLength(2);
     expect(listReleaseDispatches(restarted, "tenant-v1")).toHaveLength(1);
   });
 
@@ -1029,7 +1055,7 @@ describe("release ingestion", () => {
     let migrated = store(path, () => clock);
     expect(migrated.raw.prepare(
       "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
-    ).get()).toEqual({ version: 3 });
+    ).get()).toEqual({ version: 4 });
     expect(migrated.raw.prepare("PRAGMA table_info(release_ingestion_dispatches)").all())
       .toEqual(expect.arrayContaining([expect.objectContaining({ name: "claimed_at" })]));
     expect(migrated.raw.prepare(
@@ -1088,14 +1114,19 @@ describe("release ingestion", () => {
     const path = join(directory, "release.sqlite");
     const expandedV2 = store(path);
     ingestReleaseDocument(expandedV2, input("rss", fixture("stripe-rss.xml")));
-    expandedV2.raw.prepare("DELETE FROM release_ingestion_schema_migrations WHERE version = 3").run();
+    expandedV2.raw.exec(`
+      DROP TRIGGER release_ingestion_identity_aliases_no_update;
+      DROP TRIGGER release_ingestion_identity_aliases_no_delete;
+      DROP TABLE release_ingestion_identity_aliases;
+      DELETE FROM release_ingestion_schema_migrations WHERE version >= 3;
+    `);
     expandedV2.close();
     stores.splice(stores.indexOf(expandedV2), 1);
 
     const migrated = store(path);
     expect(migrated.raw.prepare(
       "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
-    ).get()).toEqual({ version: 3 });
+    ).get()).toEqual({ version: 4 });
     expect(migrated.raw.prepare("PRAGMA table_info(release_ingestion_dispatches)").all())
       .toEqual(expect.arrayContaining([expect.objectContaining({ name: "claimed_at" })]));
     expect(migrated.raw.prepare(
@@ -1124,7 +1155,7 @@ describe("release ingestion", () => {
     const converged = store(path);
     expect(converged.raw.prepare(
       "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
-    ).get()).toEqual({ version: 3 });
+    ).get()).toEqual({ version: 4 });
   }, 15_000);
 
   it.each(["version-zero", "version-one"] as const)(
@@ -1158,7 +1189,7 @@ describe("release ingestion", () => {
       const converged = store(path);
       expect(converged.raw.prepare(
         "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
-      ).get()).toEqual({ version: 3 });
+      ).get()).toEqual({ version: 4 });
     },
     15_000,
   );

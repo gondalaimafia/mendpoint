@@ -148,6 +148,10 @@ export type FetchFeedOptions = {
   resolveHostname?: HostResolver;
   /** Human-readable provider/feed label, surfaced in size-limit errors. */
   provider?: string;
+  /** Stable nonsecret request identity required by provider APIs such as GitHub. */
+  userAgent?: string;
+  /** Service-drain authority. Aborting cancels DNS, transport, redirects, and body reads. */
+  signal?: AbortSignal;
 };
 
 export type FetchOpenApiOptions = FetchFeedOptions;
@@ -370,6 +374,7 @@ export async function fetchFeedDocument(
   }
   const resolved = resolveFeedUrl(url, opts?.monorepoRoot);
   try {
+    if (opts?.signal?.aborted) throw opts.signal.reason;
     if (resolved.startsWith("file:")) {
       const path = resolved.slice("file:".length);
       if (!existsSync(path)) {
@@ -384,6 +389,10 @@ export async function fetchFeedDocument(
     const maxBytes = opts?.maxBytes ?? DEFAULT_FEED_MAX_BYTES;
     let current = new URL(resolved);
     const ctrl = new AbortController();
+    const abortForCaller = () => {
+      if (!ctrl.signal.aborted) ctrl.abort(opts?.signal?.reason);
+    };
+    opts?.signal?.addEventListener("abort", abortForCaller, { once: true });
     const deadlineAt = performance.now() + (opts?.timeoutMs ?? 30_000);
     const abortForTimeout = () => {
       if (!ctrl.signal.aborted) {
@@ -408,6 +417,7 @@ export async function fetchFeedDocument(
           headers: {
             Accept: "application/json, application/yaml, text/yaml, */*",
             "Accept-Encoding": "identity",
+            ...(opts?.userAgent ? { "User-Agent": opts.userAgent } : {}),
           },
         } satisfies RequestInit;
         res = approvedAddress
@@ -471,6 +481,7 @@ export async function fetchFeedDocument(
       }
     } finally {
       clearTimeout(timeout);
+      opts?.signal?.removeEventListener("abort", abortForCaller);
     }
     return {
       ok: false,

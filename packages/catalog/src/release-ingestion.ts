@@ -354,6 +354,31 @@ BEFORE DELETE ON release_ingestion_clock_authority
 BEGIN SELECT RAISE(ABORT, 'release_ingestion_clock_authority_required'); END;
 `;
 
+const MIGRATION_V4_IDENTITY_ALIAS_SCHEMA = `
+CREATE TABLE release_ingestion_identity_aliases (
+  tenant_id TEXT NOT NULL,
+  provider_slug TEXT NOT NULL,
+  adapter TEXT NOT NULL,
+  collection_url TEXT NOT NULL,
+  source_item_id TEXT NOT NULL,
+  normalized_claim_sha256 TEXT NOT NULL CHECK (length(normalized_claim_sha256) = 64),
+  artifact_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (
+    tenant_id, provider_slug, adapter, collection_url, source_item_id,
+    normalized_claim_sha256
+  ),
+  UNIQUE (artifact_id),
+  FOREIGN KEY (artifact_id, tenant_id) REFERENCES release_ingestion_artifacts(id, tenant_id)
+);
+CREATE TRIGGER release_ingestion_identity_aliases_no_update
+BEFORE UPDATE ON release_ingestion_identity_aliases
+BEGIN SELECT RAISE(ABORT, 'release_ingestion_identity_aliases_append_only'); END;
+CREATE TRIGGER release_ingestion_identity_aliases_no_delete
+BEFORE DELETE ON release_ingestion_identity_aliases
+BEGIN SELECT RAISE(ABORT, 'release_ingestion_identity_aliases_append_only'); END;
+`;
+
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value && typeof value === "object") {
@@ -505,6 +530,51 @@ function migrateReleaseIngestionV3(raw: DatabaseSync, appliedAt: string): void {
     .run(appliedAt);
 }
 
+function durableCollectionUrl(value: string): string {
+  const canonical = safeUrl("release_source_url", value);
+  const parsed = new URL(canonical);
+  return `${parsed.origin}/.well-known/mendpoint/release-source/${sha256(canonical)}`;
+}
+
+function canonicalLegacyClaimSha256(row: ArtifactRow): string {
+  return sha256(canonicalJson({
+    sourceUrl: safeStoredItemUrl(row.source_url),
+    sourceItemId: safeSourceItemId(row.source_item_id),
+    title: row.title,
+    version: row.version,
+    publishedAt: row.published_at,
+    excerpt: row.excerpt,
+    excerptLocation: row.excerpt_location,
+    confidence: row.confidence,
+    changeHints: JSON.parse(row.change_hints_json) as unknown,
+    sdk: row.sdk_json ? JSON.parse(row.sdk_json) as unknown : null,
+  }));
+}
+
+function migrateReleaseIngestionV4(raw: DatabaseSync, appliedAt: string): void {
+  raw.exec(MIGRATION_V4_IDENTITY_ALIAS_SCHEMA);
+  const insertAlias = raw.prepare(`INSERT OR IGNORE INTO release_ingestion_identity_aliases
+    (tenant_id, provider_slug, adapter, collection_url, source_item_id,
+     normalized_claim_sha256, artifact_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  const artifacts = raw.prepare(`SELECT * FROM release_ingestion_artifacts
+    WHERE identity_canonical = 1 ORDER BY tenant_id, created_at, id`).all() as unknown as ArtifactRow[];
+  for (const row of artifacts) {
+    insertAlias.run(
+      row.tenant_id,
+      row.provider_slug,
+      row.adapter,
+      durableCollectionUrl(row.collection_url),
+      safeSourceItemId(row.source_item_id),
+      canonicalLegacyClaimSha256(row),
+      row.id,
+      appliedAt,
+    );
+  }
+  raw.prepare("INSERT INTO release_ingestion_schema_migrations (version, applied_at) VALUES (4, ?)")
+    .run(appliedAt);
+}
+
 function convergeReleaseIngestionSchema(raw: DatabaseSync, appliedAt: string): void {
   raw.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;");
   try {
@@ -514,7 +584,7 @@ function convergeReleaseIngestionSchema(raw: DatabaseSync, appliedAt: string): v
     const current = raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations")
       .get() as { version: number | null };
     const currentVersion = Number(current.version ?? 0);
-    if (currentVersion > 3) throw new Error("release_ingestion_schema_newer_than_runtime");
+    if (currentVersion > 4) throw new Error("release_ingestion_schema_newer_than_runtime");
     if (currentVersion === 0) {
       raw.exec(MIGRATION_V1);
       raw.prepare("INSERT INTO release_ingestion_schema_migrations (version, applied_at) VALUES (1, ?)")
@@ -526,8 +596,11 @@ function convergeReleaseIngestionSchema(raw: DatabaseSync, appliedAt: string): v
     const afterV2 = raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations")
       .get() as { version: number | null };
     if (Number(afterV2.version ?? 0) === 2) migrateReleaseIngestionV3(raw, appliedAt);
+    const afterV3 = raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations")
+      .get() as { version: number | null };
+    if (Number(afterV3.version ?? 0) === 3) migrateReleaseIngestionV4(raw, appliedAt);
     const foreignKeyViolation = raw.prepare("PRAGMA foreign_key_check").get();
-    if (foreignKeyViolation) throw new Error("release_ingestion_v3_foreign_key_check_failed");
+    if (foreignKeyViolation) throw new Error("release_ingestion_v4_foreign_key_check_failed");
     raw.exec("COMMIT");
   } catch (error) {
     if (raw.isTransaction) raw.exec("ROLLBACK");
@@ -1008,7 +1081,16 @@ export function ingestReleaseDocument(
         sourceItemId: item.sourceItemId,
         normalizedClaimSha256,
       });
-      const result = store.raw.prepare(`INSERT OR IGNORE INTO release_ingestion_artifacts
+      const alias = one<{ id: string; content_sha256: string }>(store, `SELECT
+          artifact.id AS id, artifact.content_sha256 AS content_sha256
+        FROM release_ingestion_identity_aliases AS alias
+        JOIN release_ingestion_artifacts AS artifact
+          ON artifact.tenant_id = alias.tenant_id AND artifact.id = alias.artifact_id
+        WHERE alias.tenant_id = ? AND alias.provider_slug = ? AND alias.adapter = ?
+          AND alias.collection_url = ? AND alias.source_item_id = ?
+          AND alias.normalized_claim_sha256 = ?`,
+      [tenantId, providerSlug, input.adapter, sourceUrl, item.sourceItemId, normalizedClaimSha256]);
+      const result = alias ? { changes: 0 } : store.raw.prepare(`INSERT OR IGNORE INTO release_ingestion_artifacts
         (id, tenant_id, provider_slug, adapter, collection_url, source_url, source_item_id, source_body_sha256,
          content_sha256, normalized_claim_sha256, identity_canonical, title, version, published_at,
          observed_at, excerpt, excerpt_location, confidence, change_hints_json, sdk_json, created_at)
@@ -1018,7 +1100,7 @@ export function ingestReleaseDocument(
           item.excerpt, item.excerptLocation, item.confidence, canonicalJson(item.changeHints),
           item.sdk ? canonicalJson(item.sdk) : null, observedAt);
       if (Number(result.changes) === 1) inserted += 1;
-      const row = one<{ id: string; content_sha256: string }>(store, `SELECT id, content_sha256
+      const row = alias ?? one<{ id: string; content_sha256: string }>(store, `SELECT id, content_sha256
         FROM release_ingestion_artifacts
         WHERE tenant_id = ? AND provider_slug = ? AND adapter = ? AND collection_url = ?
           AND source_item_id = ? AND normalized_claim_sha256 = ? AND identity_canonical = 1`,

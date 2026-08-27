@@ -4426,6 +4426,7 @@ async function runService(intervalMs: number) {
             maxConcurrency: Number(process.env.MENDPOINT_FEED_CONCURRENCY ?? 4),
             localOnly: process.env.POLL_LOCAL_ONLY === "1",
             runPipeline: true,
+            signal: shutdown.signal,
             ...(releaseStore ? { releaseFeeds, releaseStore } : {}),
             pipeline: async (slug, database, context) => ({
               jobId: enqueueFeedPipelineJob(database, {

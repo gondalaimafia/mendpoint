@@ -5,6 +5,8 @@ import { join } from "node:path";
 import {
   claimFeedScheduleWindowLease,
   createDb,
+  listFeedSchedules,
+  listFeedScheduleWindows,
   upsertFeedSchedule,
   type AppDb,
 } from "@mendpoint/db";
@@ -138,6 +140,158 @@ afterEach(() => {
 });
 
 describe("feed schedule runner", () => {
+  it("uses the batch time only for window identity and fresh trusted time for claim and completion", async () => {
+    const db = fixture();
+    const times = [
+      "2026-08-27T15:00:00.000Z",
+      "2026-08-27T15:00:02.000Z",
+    ];
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-01T01:23:45.000Z",
+      clock: () => times.shift()!,
+      defaultIntervalMs: 60_000,
+      defaultStaleAfterMs: 120_000,
+      feeds: feeds(1),
+      execute: async (feed) => ({
+        slug: feed.slug,
+        url: feed.openapiUrl,
+        status: "unchanged",
+      }),
+    });
+
+    expect(result.executions[0]).toMatchObject({
+      windowStartedAt: "2026-08-01T01:23:00.000Z",
+      status: "succeeded",
+    });
+    expect(listFeedScheduleWindows(db, result.executions[0]!.scheduleId)[0]).toMatchObject({
+      attempted_at: "2026-08-27T15:00:00.000Z",
+      completed_at: "2026-08-27T15:00:02.000Z",
+    });
+  });
+
+  it("refuses a completion whose fresh clock has crossed the claim lease", async () => {
+    const db = fixture();
+    const times = [
+      "2026-08-27T15:00:00.000Z",
+      "2026-08-27T15:02:00.001Z",
+    ];
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-01T01:23:45.000Z",
+      clock: () => times.shift()!,
+      defaultIntervalMs: 60_000,
+      defaultStaleAfterMs: 120_000,
+      feeds: feeds(1),
+      execute: async (feed) => ({
+        slug: feed.slug,
+        url: feed.openapiUrl,
+        status: "unchanged",
+      }),
+    });
+
+    expect(result.executions[0]).toMatchObject({
+      status: "failed",
+      error: "release_poll_schedule_authority_lost",
+    });
+    expect(listFeedScheduleWindows(db, result.executions[0]!.scheduleId)[0]).toMatchObject({
+      status: "running",
+      completed_at: null,
+    });
+  });
+
+  it("stops queued schedule claims and aborts the in-flight OpenAPI request on drain", async () => {
+    const db = fixture();
+    const controller = new AbortController();
+    let started!: () => void;
+    const requestStarted = new Promise<void>((resolve) => { started = resolve; });
+    let requestSignal: AbortSignal | undefined;
+    const running = runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      clock: () => "2026-08-02T12:00:30.000Z",
+      defaultIntervalMs: 60_000,
+      defaultStaleAfterMs: 120_000,
+      maxConcurrency: 1,
+      feeds: feeds(2),
+      signal: controller.signal,
+      sourceDocumentLoader: async (_url, _root, signal) => {
+        requestSignal = signal;
+        started();
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+        throw new Error("unreachable");
+      },
+    });
+    await requestStarted;
+    controller.abort(new DOMException("service drain", "AbortError"));
+
+    await expect(running).rejects.toMatchObject({ name: "AbortError" });
+    expect(requestSignal?.aborted).toBe(true);
+    const schedules = listFeedSchedules(db, "tenant_default");
+    expect(schedules).toHaveLength(2);
+    expect(schedules.map((schedule) => listFeedScheduleWindows(db, schedule.id).length))
+      .toEqual([1, 0]);
+  });
+
+  it("disables removed durable schedules with audit evidence and re-enables them after restart", async () => {
+    const db = fixture();
+    const openedIndex = opened.findIndex((entry) => entry.db === db);
+    const directory = opened[openedIndex]!.directory;
+    const dbPath = join(directory, "schedules.sqlite");
+    const store = releaseStore();
+    const config = releaseConfiguration("tenant_default", "release-lifecycle");
+    const execute = async (_store: ReleaseIngestionStore, canonical: ReleasePollConfigurationV1) =>
+      persistedRelease(store, canonical, "unchanged");
+
+    await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      clock: () => "2026-08-02T12:00:30.000Z",
+      feeds: [],
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: execute,
+    });
+    db.raw.close();
+    opened.splice(openedIndex, 1);
+
+    const restarted = createDb(dbPath);
+    opened.push({ db: restarted, directory });
+    await runFeedSchedules({
+      db: restarted,
+      tenantId: "tenant_default",
+      at: "2026-08-02T13:00:30.000Z",
+      feeds: [],
+      releaseFeeds: [],
+    });
+    expect(listFeedSchedules(restarted, "tenant_default")[0]?.enabled).toBe(0);
+
+    await runFeedSchedules({
+      db: restarted,
+      tenantId: "tenant_default",
+      at: "2026-08-02T14:00:30.000Z",
+      clock: () => "2026-08-02T14:00:30.000Z",
+      feeds: [],
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: execute,
+    });
+    expect(listFeedSchedules(restarted, "tenant_default")[0]?.enabled).toBe(1);
+    expect(restarted.raw.prepare(
+      `SELECT action FROM audit_events WHERE tenant_id = ?
+       AND resource_type = 'feed_schedule' ORDER BY event_sequence`,
+    ).all("tenant_default")).toEqual([
+      { action: "feed.schedule_disabled" },
+      { action: "feed.schedule_enabled" },
+    ]);
+  });
+
   it("bounds concurrency and replays a claimed time window without executing twice", async () => {
     const db = fixture();
     let active = 0;
@@ -203,6 +357,7 @@ describe("feed schedule runner", () => {
       db,
       tenantId: "tenant_default",
       at: "2026-08-02T12:00:30.000Z",
+      clock: () => "2026-08-02T12:00:30.000Z",
       defaultIntervalMs: 60_000,
       defaultStaleAfterMs: 120_000,
       feeds: configuredFeeds,
@@ -222,6 +377,7 @@ describe("feed schedule runner", () => {
       db,
       tenantId: "tenant_default",
       at: "2026-08-02T12:01:30.000Z",
+      clock: () => "2026-08-02T12:01:30.000Z",
       defaultIntervalMs: 60_000,
       defaultStaleAfterMs: 120_000,
       feeds: configuredFeeds,
@@ -611,6 +767,7 @@ describe("feed schedule runner", () => {
     const unexpired = await runFeedSchedules({
       db: restarted,
       at: "2026-08-02T12:00:20.000Z",
+      clock: () => "2026-08-02T12:00:20.000Z",
       defaultIntervalMs: 60_000,
       defaultStaleAfterMs: 120_000,
       feeds: [],
@@ -636,6 +793,7 @@ describe("feed schedule runner", () => {
     const recovered = await runFeedSchedules({
       db: restarted,
       at: "2026-08-02T12:00:30.001Z",
+      clock: () => "2026-08-02T12:00:30.001Z",
       defaultIntervalMs: 60_000,
       defaultStaleAfterMs: 120_000,
       feeds: [],
@@ -656,6 +814,7 @@ describe("feed schedule runner", () => {
     const replay = await runFeedSchedules({
       db: restarted,
       at: "2026-08-02T12:00:40.000Z",
+      clock: () => "2026-08-02T12:00:40.000Z",
       defaultIntervalMs: 60_000,
       defaultStaleAfterMs: 120_000,
       feeds: [],

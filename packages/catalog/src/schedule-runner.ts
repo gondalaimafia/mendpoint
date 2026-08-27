@@ -4,6 +4,8 @@ import {
   completeFeedScheduleWindow,
   getFeedScheduleHealth,
   listFeedSchedules,
+  recordAudit,
+  setFeedScheduleEnabled,
   upsertFeedSchedule,
   type AppDb,
   type FeedScheduleRow,
@@ -79,11 +81,17 @@ export type FeedScheduleRunOptions = {
     config: ReleasePollConfigurationV1,
     schedule: FeedScheduleRow,
     at: string,
+    signal?: AbortSignal,
   ) => Promise<ReleasePollResult>;
   sourceDocumentLoader?: (
     url: string,
     monorepoRoot: string,
+    signal?: AbortSignal,
   ) => Promise<FetchOpenApiResult>;
+  /** Trusted authority clock used independently for every claim and completion. */
+  clock?: () => string;
+  /** Stops queued claims and aborts in-flight source requests during service drain. */
+  signal?: AbortSignal;
 };
 
 function stableId(prefix: string, ...parts: string[]): string {
@@ -100,27 +108,82 @@ function scheduleWindow(schedule: FeedScheduleRow, at: string) {
   };
 }
 
-function ensureSchedules(
+function reconcileSchedules(
   db: AppDb,
-  tenantId: string,
+  tenantId: string | undefined,
   feeds: readonly Readonly<{ slug: string }>[],
+  releaseBindings: readonly Readonly<{ tenantId: string; providerSlug: string }>[],
   at: string,
   intervalMs: number,
   staleAfterMs: number,
 ) {
-  const existing = new Set(
-    listFeedSchedules(db, tenantId).map((schedule) => schedule.provider_slug),
-  );
-  for (const feed of feeds) {
-    if (existing.has(feed.slug)) continue;
-    upsertFeedSchedule(db, {
-      id: stableId("feed-schedule", tenantId, feed.slug),
-      tenantId,
-      providerSlug: feed.slug,
+  const existing = listFeedSchedules(db, tenantId);
+  const existingByScope = new Map(existing.map((schedule) => [
+    releaseScope(schedule.tenant_id, schedule.provider_slug),
+    schedule,
+  ]));
+  const desired = new Map<string, { tenantId: string; providerSlug: string }>();
+  if (tenantId) {
+    for (const feed of feeds) {
+      desired.set(releaseScope(tenantId, feed.slug), { tenantId, providerSlug: feed.slug });
+    }
+  } else {
+    const feedSlugs = new Set(feeds.map((feed) => feed.slug));
+    for (const schedule of existing) {
+      if (feedSlugs.has(schedule.provider_slug)) {
+        desired.set(releaseScope(schedule.tenant_id, schedule.provider_slug), {
+          tenantId: schedule.tenant_id,
+          providerSlug: schedule.provider_slug,
+        });
+      }
+    }
+  }
+  for (const binding of releaseBindings) {
+    if (!tenantId || binding.tenantId === tenantId) {
+      desired.set(releaseScope(binding.tenantId, binding.providerSlug), { ...binding });
+    }
+  }
+  for (const schedule of existing) {
+    const scope = releaseScope(schedule.tenant_id, schedule.provider_slug);
+    if (desired.has(scope) || schedule.enabled !== 1) continue;
+    if (setFeedScheduleEnabled(db, {
+      tenantId: schedule.tenant_id,
+      providerSlug: schedule.provider_slug,
+      enabled: false,
+      updatedAt: at,
+    })) {
+      recordAudit(db, {
+        id: stableId("feed-schedule-audit", schedule.id, "disabled", at),
+        tenantId: schedule.tenant_id,
+        actor: "worker",
+        action: "feed.schedule_disabled",
+        resourceType: "feed_schedule",
+        resourceId: schedule.id,
+        metadata: { providerSlug: schedule.provider_slug, reason: "configuration_removed" },
+      });
+    }
+  }
+  for (const binding of desired.values()) {
+    const prior = existingByScope.get(releaseScope(binding.tenantId, binding.providerSlug));
+    const schedule = upsertFeedSchedule(db, {
+      id: stableId("feed-schedule", binding.tenantId, binding.providerSlug),
+      tenantId: binding.tenantId,
+      providerSlug: binding.providerSlug,
       intervalMs,
       staleAfterMs,
       createdAt: at,
     });
+    if (prior?.enabled === 0) {
+      recordAudit(db, {
+        id: stableId("feed-schedule-audit", schedule.id, "enabled", at),
+        tenantId: schedule.tenant_id,
+        actor: "worker",
+        action: "feed.schedule_enabled",
+        resourceType: "feed_schedule",
+        resourceId: schedule.id,
+        metadata: { providerSlug: schedule.provider_slug, reason: "configuration_restored" },
+      });
+    }
   }
 }
 
@@ -339,6 +402,8 @@ function releaseReferencesHaveAuthority(
 
 export async function runFeedSchedules(options: FeedScheduleRunOptions) {
   const at = options.at ?? nowIso();
+  const clock = options.clock ?? nowIso;
+  if (options.signal?.aborted) throw options.signal.reason;
   const intervalMs = options.defaultIntervalMs ?? 60 * 60 * 1_000;
   const staleAfterMs = options.defaultStaleAfterMs ?? intervalMs * 2;
   if (staleAfterMs < intervalMs) throw new Error("feed_schedule_stale_window_invalid");
@@ -368,31 +433,15 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
       : parsed.result.configurationBinding;
     return binding ? [binding] : [];
   });
-  if (options.tenantId) {
-    const providerSlugs = new Set(feeds.map((feed) => feed.slug));
-    for (const binding of releaseScheduleBindings) {
-      if (binding.tenantId === options.tenantId) providerSlugs.add(binding.providerSlug);
-    }
-    ensureSchedules(
-      options.db,
-      options.tenantId,
-      [...providerSlugs].map((slug) => ({ slug })),
-      at,
-      intervalMs,
-      staleAfterMs,
-    );
-  } else {
-    for (const binding of releaseScheduleBindings) {
-      ensureSchedules(
-        options.db,
-        binding.tenantId,
-        [{ slug: binding.providerSlug }],
-        at,
-        intervalMs,
-        staleAfterMs,
-      );
-    }
-  }
+  reconcileSchedules(
+    options.db,
+    options.tenantId,
+    feeds,
+    releaseScheduleBindings,
+    at,
+    intervalMs,
+    staleAfterMs,
+  );
   getFeedScheduleHealth(options.db, at, options.tenantId);
 
   const feedBySlug = new Map(feeds.map((feed) => [feed.slug, feed]));
@@ -404,13 +453,15 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
     schedules,
     boundedConcurrency(options.maxConcurrency),
     async (schedule): Promise<FeedScheduleExecution> => {
+      if (options.signal?.aborted) throw options.signal.reason;
       const window = scheduleWindow(schedule, at);
+      const claimedAt = clock();
       const claim = claimFeedScheduleWindowLease(options.db, {
         id: stableId("feed-window", schedule.id, window.startedAt),
         scheduleId: schedule.id,
         windowStartedAt: window.startedAt,
         windowEndsAt: window.endsAt,
-        attemptedAt: at,
+        attemptedAt: claimedAt,
         leaseDurationMs: schedule.stale_after_ms,
       });
       if (!claim) {
@@ -445,7 +496,9 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
                 pipeline: options.pipeline,
                 sourceFetches,
                 sourceDocumentLoader: options.sourceDocumentLoader,
+                signal: options.signal,
               });
+          if (options.signal?.aborted) throw options.signal.reason;
           openApiOutcome = openApiSucceeded(poll)
             ? Object.freeze({ status: "succeeded" as const, result: poll })
             : Object.freeze({
@@ -455,6 +508,7 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
               });
         }
       } catch (cause) {
+        if (options.signal?.aborted) throw options.signal.reason;
         openApiOutcome = Object.freeze({
           status: "failed" as const,
           error: cause instanceof Error ? cause.message : String(cause),
@@ -480,11 +534,21 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
         } else {
           try {
             const untrustedResult: unknown = options.releaseExecute
-              ? await options.releaseExecute(options.releaseStore, releaseConfig, schedule, at)
+              ? await options.releaseExecute(
+                  options.releaseStore,
+                  releaseConfig,
+                  schedule,
+                  at,
+                  options.signal,
+                )
               : await pollReleaseSource(options.releaseStore, releaseConfig, {
                   at,
-                  fetchOptions: options.releaseFetchOptions,
+                  fetchOptions: {
+                    ...options.releaseFetchOptions,
+                    signal: options.signal,
+                  },
                 });
+            if (options.signal?.aborted) throw options.signal.reason;
             const result = validateReleaseExecutorResult(untrustedResult, releaseConfig);
             if (!result || !releaseReferencesHaveAuthority(options.releaseStore, releaseConfig, result)) {
               const invalid = invalidReleasePollExecutorResult({
@@ -512,6 +576,7 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
             }
             }
           } catch (cause) {
+            if (options.signal?.aborted) throw options.signal.reason;
             releaseOutcome = Object.freeze({
               status: "failed" as const,
               error: "release_poll_executor_failed",
@@ -530,6 +595,8 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
       ].filter((error): error is string => Boolean(error));
       const succeeded = errors.length === 0;
       const error = succeeded ? undefined : errors.join("; ");
+      if (options.signal?.aborted) throw options.signal.reason;
+      const completedAt = clock();
       const completed = completeFeedScheduleWindow(options.db, {
         scheduleId: schedule.id,
         windowStartedAt: window.startedAt,
@@ -537,7 +604,7 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
         succeeded,
         releaseSucceeded: releaseOutcome.status === "succeeded",
         error,
-        completedAt: at,
+        completedAt,
       });
       if (!completed) {
         return {
@@ -564,6 +631,7 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
         error,
       };
     },
+    options.signal,
   );
 
   const health = getFeedScheduleHealth(options.db, at, options.tenantId);

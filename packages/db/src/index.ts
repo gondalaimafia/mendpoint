@@ -4940,6 +4940,29 @@ export function listFeedSchedules(db: AppDb, tenantId?: string): FeedScheduleRow
     : all(db, `SELECT * FROM feed_schedules ORDER BY tenant_id, provider_slug`);
 }
 
+export function setFeedScheduleEnabled(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    providerSlug: string;
+    enabled: boolean;
+    updatedAt: string;
+  },
+): boolean {
+  const changed = db.raw.prepare(
+    `UPDATE feed_schedules
+     SET enabled = ?, updated_at = ?
+     WHERE tenant_id = ? AND provider_slug = ? AND enabled <> ?`,
+  ).run(
+    input.enabled ? 1 : 0,
+    input.updatedAt,
+    input.tenantId,
+    input.providerSlug,
+    input.enabled ? 1 : 0,
+  );
+  return Number(changed.changes) === 1;
+}
+
 export function listFeedScheduleWindows(
   db: AppDb,
   scheduleId: string,

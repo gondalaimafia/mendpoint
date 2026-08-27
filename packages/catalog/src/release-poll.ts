@@ -13,6 +13,7 @@ import {
 
 export const RELEASE_POLL_CONTRACT_VERSION = "release-poll.v1" as const;
 export const RELEASE_POLL_MAX_REFERENCES = 4_096;
+export const GITHUB_RELEASES_USER_AGENT = "Mendpoint-Release-Poller/1.0";
 
 export type ReleasePollConfigurationV1 = Readonly<{
   contractVersion: typeof RELEASE_POLL_CONTRACT_VERSION;
@@ -353,6 +354,9 @@ export async function pollReleaseSource(
     ...options.fetchOptions,
     maxBytes: fetchMax,
     provider: snapshot.provider.slug,
+    ...(snapshot.adapter === "github_releases"
+      ? { userAgent: GITHUB_RELEASES_USER_AGENT }
+      : {}),
   });
   if (!fetched.ok || fetched.body === undefined) {
     return failed(pollIdentity, "release_poll_fetch_failed");

@@ -10,6 +10,7 @@ import {
   type ReleaseIngestionStore,
 } from "./release-ingestion.js";
 import {
+  GITHUB_RELEASES_USER_AGENT,
   RELEASE_POLL_CONTRACT_VERSION,
   pollReleaseSource,
   type ReleasePollConfigurationV1,
@@ -75,6 +76,42 @@ function durableSourceUrl(value: string): string {
 }
 
 describe("release source polling", () => {
+  it("sends a stable nonsecret User-Agent on the pinned GitHub Releases path", async () => {
+    const store = ledger();
+    const config: ReleasePollConfigurationV1 = {
+      ...configuration(),
+      adapter: "github_releases",
+      source: { url: "https://api.github.com/repos/acme/payments/releases" },
+    };
+    let observedPath = "";
+    let observedUserAgent = "";
+
+    const result = await pollReleaseSource(store, config, {
+      at: NOW,
+      fetchOptions: {
+        production: true,
+        resolveHostname: async () => ["93.184.216.34"],
+        trustedTestOnlyPinnedFetchImpl: async (url, _address, init) => {
+          observedPath = url.pathname;
+          observedUserAgent = new Headers(init?.headers).get("user-agent") ?? "";
+          return new Response(JSON.stringify([{
+            id: 42,
+            html_url: "https://github.com/acme/payments/releases/tag/v1.0.0",
+            tag_name: "v1.0.0",
+            name: "Payments 1.0.0",
+            body: "Changed payment confirmation behavior.",
+            published_at: "2026-08-02T11:00:00.000Z",
+          }]), { status: 200, headers: { "content-type": "application/json" } });
+        },
+      },
+    });
+
+    expect(result.status).toBe("ingested");
+    expect(observedPath).toBe("/repos/acme/payments/releases");
+    expect(observedUserAgent).toBe(GITHUB_RELEASES_USER_AGENT);
+    expect(observedUserAgent).not.toMatch(/token|secret|key|tenant/i);
+  });
+
   it("binds persisted release and outbox identities to the explicit tenant, provider, adapter, and source", async () => {
     const store = ledger();
     const config = configuration();
