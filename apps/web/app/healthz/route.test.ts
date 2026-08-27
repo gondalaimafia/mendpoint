@@ -86,6 +86,59 @@ describe("public deployment health", () => {
     });
   });
 
+  it.each([
+    ["releasePollingConfigured", "yes"],
+    ["releasePollConfigurationCount", -1],
+    ["feedScheduleStatus", "unknown"],
+    ["releaseConfigurationStatus", "unknown"],
+    ["releaseConfigurationFailed", 1.5],
+    ["feedScheduleCount", "1"],
+  ])("fails closed when present heartbeat field %s is malformed", async (field, value) => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-release-malformed-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "worker-heartbeat.json");
+    writeFileSync(heartbeatPath, JSON.stringify({
+      ok: true,
+      recordedAt: new Date().toISOString(),
+      feedPollingEnabled: false,
+      feedPollOk: true,
+      releasePollingConfigured: false,
+      releasePollConfigurationCount: 0,
+      feedScheduleStatus: "not_started",
+      releaseConfigurationStatus: "not_configured",
+      releaseConfigurationFailed: 0,
+      [field]: value,
+    }));
+    process.env.MENDPOINT_WORKER_HEARTBEAT_PATH = heartbeatPath;
+    process.env.MENDPOINT_API_KEY = `me_${"a".repeat(40)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+
+    const response = await GET();
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      checks: { worker: { ok: false } },
+    });
+  });
+
+  it("accepts a legacy heartbeat when the release scheduler fields are absent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-release-legacy-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "worker-heartbeat.json");
+    writeFileSync(heartbeatPath, JSON.stringify({
+      ok: true,
+      recordedAt: new Date().toISOString(),
+      feedPollingEnabled: false,
+      feedPollOk: true,
+    }));
+    process.env.MENDPOINT_WORKER_HEARTBEAT_PATH = heartbeatPath;
+    process.env.MENDPOINT_API_KEY = `me_${"a".repeat(40)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+
+    const response = await GET();
+    expect(response.status).toBe(200);
+  });
+
   it("fails closed before configured release polling proves its first healthy run", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-release-not-started-"));
     dirs.push(dir);
