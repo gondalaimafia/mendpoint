@@ -1,6 +1,6 @@
 # Mendpoint
 
-**Fettler — the first AI API Engineer** is Mendpoint's API integration teammate, available as a **Private Design Partner Preview** for approved pilot teams. Its companion **ReGauge — the first AI Legacy Engineer** takes on legacy and multi-repo migration campaigns as an experimental planning preview. Mendpoint follows a **graph engineering** approach: specialized loop-nodes (change intel → call-graph expand → generate → verify → human review), not one overloaded agent. **It never auto-merges by default** — every change lands as a reviewable pull request that a person approves and merges.
+**Fettler — the first AI API Engineer** is Mendpoint's API integration teammate, available as a **Private Design Partner Preview** for approved pilot teams. Its companion **ReGauge — the first AI Legacy Engineer** takes on legacy and multi-repo migration campaigns as an experimental planning preview. Mendpoint follows a **graph engineering** approach: specialized loop-nodes (change intel → call-graph expand → generate → verify → human review), not one overloaded agent. **It never auto-merges by default** — any delivered change lands as a reviewable pull request that a person approves and merges.
 
 For submitted OpenAPI changes, Mendpoint can analyze configured repository snapshots and generate evidence-backed migration pull request candidates for supported GitHub repositories. Customers review and merge.
 
