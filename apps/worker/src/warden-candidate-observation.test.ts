@@ -361,7 +361,7 @@ describe("Warden candidate CI observation", () => {
     expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("complete");
     expect(replayPendingWardenCandidateDeliveryMergedOutcomes(value.db, {
       tenantId: "tenant-a", observedAt: "2026-08-13T12:07:00.000Z",
-    })).toEqual({ examined: 0, settled: 0, deferred: 0, failed: 0 });
+    })).toEqual({ examined: 1, settled: 0, deferred: 0, notApplicable: 1, failed: 0, malformed: 0 });
   });
 
   it.each([
@@ -482,7 +482,7 @@ describe("Warden candidate CI observation", () => {
     expect(getMissionTask(reopened, "tenant-a", "task-a")?.status).toBe("complete");
     expect(replayPendingWardenCandidateDeliveryMergedOutcomes(reopened, {
       tenantId: "tenant-a", observedAt: "2026-08-13T12:07:20.000Z",
-    })).toEqual({ examined: 1, settled: 0, deferred: 0, failed: 1 });
+    })).toEqual({ examined: 1, settled: 0, deferred: 0, notApplicable: 0, failed: 1, malformed: 1 });
   });
 
   it("replays a durable merged outcome before artifact storage maintenance can fail", () => {
@@ -544,12 +544,12 @@ describe("Warden candidate CI observation", () => {
 
     expect(replayPendingWardenCandidateDeliveryMergedOutcomes(value.db, {
       tenantId: "tenant-a", observedAt: "2026-08-13T12:10:00.000Z", limit: 2,
-    })).toEqual({ examined: 2, settled: 0, deferred: 0, failed: 2 });
+    })).toEqual({ examined: 2, settled: 0, deferred: 0, notApplicable: 0, failed: 2, malformed: 2 });
     expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("agent_working");
 
     expect(replayPendingWardenCandidateDeliveryMergedOutcomes(value.db, {
       tenantId: "tenant-a", observedAt: "2026-08-13T12:11:00.000Z", limit: 2,
-    })).toEqual({ examined: 2, settled: 1, deferred: 0, failed: 1 });
+    })).toEqual({ examined: 2, settled: 1, deferred: 0, notApplicable: 0, failed: 1, malformed: 1 });
     expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("complete");
   });
 

@@ -251,7 +251,14 @@ export function replayWardenCandidateDeliveryMergedOutcome(
 export function replayPendingWardenCandidateDeliveryMergedOutcomes(
   db: AppDb,
   input: Readonly<{ observedAt: string; tenantId?: string; limit?: number }>,
-): Readonly<{ examined: number; settled: number; deferred: number; failed: number }> {
+): Readonly<{
+  examined: number;
+  settled: number;
+  deferred: number;
+  notApplicable: number;
+  failed: number;
+  malformed: number;
+}> {
   const observedAt = timestamp(input.observedAt, "warden_candidate_delivery_timestamp_invalid");
   const tenantId = input.tenantId === undefined
     ? null
@@ -260,71 +267,77 @@ export function replayPendingWardenCandidateDeliveryMergedOutcomes(
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
     throw new Error("warden_candidate_delivery_outcome_replay_limit_invalid");
   }
-  const rows = db.raw.prepare(`SELECT delivery.tenant_id, delivery.id
+  // Select one global order before classifying. Splitting parseable and malformed
+  // authorities into separate LIMIT queries lets a full parseable batch starve
+  // malformed rows forever. The updated_at write below is the deterministic scan
+  // cursor: every examined row moves behind work not yet examined.
+  const rows = db.raw.prepare(`SELECT delivery.tenant_id, delivery.id,
+      delivery.mission_authority_json, cycle.id AS cycle_id
     FROM fettler_candidate_deliveries delivery
     LEFT JOIN fettler_ci_cycles cycle
       ON cycle.tenant_id = delivery.tenant_id AND cycle.delivery_id = delivery.id
     WHERE delivery.outcome = 'merged' AND delivery.mission_authority_json IS NOT NULL
-      AND json_valid(delivery.mission_authority_json) = 1
-      AND (? IS NULL OR delivery.tenant_id = ?)
-      AND (cycle.status = 'awaiting_review' OR (
-        cycle.id IS NULL
-        AND json_extract(CASE WHEN json_valid(delivery.mission_authority_json) = 1
-          THEN delivery.mission_authority_json ELSE '{}' END, '$.taskId') IS NOT NULL
-        AND EXISTS (
-          SELECT 1 FROM mission_task task
-          WHERE task.tenant_id = delivery.tenant_id
-            AND task.id = json_extract(CASE WHEN json_valid(delivery.mission_authority_json) = 1
-              THEN delivery.mission_authority_json ELSE '{}' END, '$.taskId')
-            AND task.status <> 'complete'
-        )
-      ))
-    ORDER BY delivery.updated_at, delivery.outcome_at, delivery.id
-    LIMIT ?`).all(tenantId, tenantId, limit) as Array<{ tenant_id: string; id: string }>;
-  const remaining = limit - rows.length;
-  const malformedRows = remaining === 0 ? [] : db.raw.prepare(`SELECT delivery.tenant_id, delivery.id
-    FROM fettler_candidate_deliveries delivery
-    LEFT JOIN fettler_ci_cycles cycle
-      ON cycle.tenant_id = delivery.tenant_id AND cycle.delivery_id = delivery.id
-    WHERE delivery.outcome = 'merged' AND delivery.mission_authority_json IS NOT NULL
-      AND json_valid(delivery.mission_authority_json) = 0
       AND (? IS NULL OR delivery.tenant_id = ?)
       AND (cycle.id IS NULL OR cycle.status = 'awaiting_review')
     ORDER BY delivery.updated_at, delivery.outcome_at, delivery.id
-    LIMIT ?`).all(tenantId, tenantId, remaining) as Array<{ tenant_id: string; id: string }>;
+    LIMIT ?`).all(tenantId, tenantId, limit) as Array<{
+      tenant_id: string;
+      id: string;
+      mission_authority_json: string;
+      cycle_id: string | null;
+    }>;
   let settled = 0;
   let deferred = 0;
-  let failed = malformedRows.length;
-  for (const row of malformedRows) {
-    db.raw.prepare(`UPDATE fettler_candidate_deliveries SET updated_at = ?
-      WHERE tenant_id = ? AND id = ? AND outcome = 'merged'`).run(
-      observedAt, row.tenant_id, row.id,
-    );
-  }
+  let notApplicable = 0;
+  let failed = 0;
+  let malformed = 0;
+  const markExamined = db.raw.prepare(`UPDATE fettler_candidate_deliveries SET updated_at = ?
+    WHERE tenant_id = ? AND id = ? AND outcome = 'merged'`);
   for (const row of rows) {
     try {
+      let authority: MissionMutationAuthorityV1;
+      try {
+        authority = parseMissionMutationAuthority(JSON.parse(row.mission_authority_json));
+      } catch {
+        malformed++;
+        failed++;
+        continue;
+      }
+      if (row.cycle_id === null) {
+        if (authority.taskId === null) {
+          notApplicable++;
+          continue;
+        }
+        const task = db.raw.prepare(`SELECT status FROM mission_task
+          WHERE tenant_id = ? AND id = ?`).get(row.tenant_id, authority.taskId) as
+            { status: string } | undefined;
+        if (task?.status === "complete") {
+          notApplicable++;
+          continue;
+        }
+      }
       const replay = replayWardenCandidateDeliveryMergedOutcome(
         db, row.tenant_id, row.id, observedAt,
       );
       if (replay.status === "settled") settled++;
-      else if (replay.status === "deferred") {
-        deferred++;
-        db.raw.prepare(`UPDATE fettler_candidate_deliveries SET updated_at = ?
-          WHERE tenant_id = ? AND id = ? AND outcome = 'merged'`).run(
-          observedAt, row.tenant_id, row.id,
-        );
-      }
+      else if (replay.status === "deferred") deferred++;
+      else notApplicable++;
     } catch {
       // One corrupt authority lane must not starve unrelated durable outcomes.
       // The caller receives the failure count and can surface it operationally.
       failed++;
-      db.raw.prepare(`UPDATE fettler_candidate_deliveries SET updated_at = ?
-        WHERE tenant_id = ? AND id = ? AND outcome = 'merged'`).run(
-        observedAt, row.tenant_id, row.id,
-      );
+    } finally {
+      markExamined.run(observedAt, row.tenant_id, row.id);
     }
   }
-  return Object.freeze({ examined: rows.length + malformedRows.length, settled, deferred, failed });
+  return Object.freeze({
+    examined: rows.length,
+    settled,
+    deferred,
+    notApplicable,
+    failed,
+    malformed,
+  });
 }
 
 function ids(tenantId: string, runId: string) {

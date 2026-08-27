@@ -1309,9 +1309,6 @@ export function maintainWardenArtifactsOnce(
       wardenMaintenanceTenantOffset + tenants.length < tenantCount
     ? wardenMaintenanceTenantOffset + tenants.length
     : 0;
-  const dataRoot = privateWardenDirectory(
-    resolve(env.MENDPOINT_DATA_DIR ?? join(process.cwd(), "data")),
-  );
   const total = { tenants: tenants.length, expired: 0, cleaned: 0, cleanupPending: 0 };
   for (const row of tenants) {
     try {
@@ -1322,9 +1319,26 @@ export function maintainWardenArtifactsOnce(
       });
       if (outcomeReplay.failed > 0) {
         console.error(
-          `  Fettler merged-outcome replay failed tenant=${row.tenant_id} count=${outcomeReplay.failed}`,
+          `  Fettler merged-outcome replay failed tenant=${row.tenant_id} ` +
+          `count=${outcomeReplay.failed} malformed=${outcomeReplay.malformed}`,
         );
       }
+    } catch (error) {
+      total.cleanupPending++;
+      console.error(
+        `  Fettler merged-outcome replay deferred tenant=${row.tenant_id} error=${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    try {
+      // Durable outcome reconciliation is DB-only and intentionally precedes
+      // every artifact filesystem operation. A missing or damaged artifact
+      // mount may defer cleanup, but cannot block an already-observed merge from
+      // settling its exact Mission authority.
+      const dataRoot = privateWardenDirectory(
+        resolve(env.MENDPOINT_DATA_DIR ?? join(process.cwd(), "data")),
+      );
       const key = safeTenantId(row.tenant_id);
       const candidateRoot = privateWardenChildDirectory(
         dataRoot,
