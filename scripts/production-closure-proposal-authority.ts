@@ -103,6 +103,7 @@ export function writeProposalAuthorityFailureObservation(
 
 export interface ProposalAuthorityClient {
   getRepositoryId(): Promise<number>;
+  getOpenPullRequestNumberForHead(revision: string): Promise<number | null>;
   getRecursiveTree(revision: string): Promise<{ truncated: boolean; tree: GitTreeEntry[] }>;
   getBlob(sha: string): Promise<Buffer>;
   revisionExists(revision: string): Promise<boolean>;
@@ -516,43 +517,7 @@ export async function verifyProductionClosureProposal(
     for (const path of referencedPaths(manifest, matrix, claims, policy, proposedPolicy)) {
       await readProposalPath(path);
     }
-    for (const [path, entry] of entries) {
-      if (
-        !/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path) ||
-        path === policy.workflowPath ||
-        // The workflow that IS the proposed active controller cannot be a
-        // "second workflow spoofing the controller surface": it is the surface.
-        // proposedPolicy.workflowPath only differs from policy.workflowPath in an
-        // activate_successor rotation, and that new active path is exactly the
-        // just-activated successor whose digest was pre-authorized by a staged
-        // rotation, proven live, and attested through verifyAuthorityRotation.
-        // Without this exemption the activate PR fails the very gate it executes,
-        // because at activation proposedPolicy.successor is cleared to null while
-        // the successor workflow remains present as the new active controller.
-        // This exemption is not reachable by an ordinary proposal (workflowPath is
-        // immutable outside an activate_successor rotation).
-        path === proposedPolicy.workflowPath ||
-        path === proposedPolicy.successor?.workflowPath
-      ) {
-        continue;
-      }
-      if (entry.type !== "blob") continue;
-      const contents = (await readProposalPath(path))?.toString("utf8");
-      if (
-        contents &&
-        (/\bstatuses\s*:\s*write\b/.test(contents) ||
-          /\bchecks\s*:\s*write\b/.test(contents) ||
-          contents.includes(policy.controllerCheckName) ||
-          /environment\s*:\s*production-closure-authority\b/.test(contents))
-      ) {
-        add(
-          issues,
-          "PROPOSAL_CONTROLLER_SURFACE_COLLISION",
-          path,
-          "only the exact pinned controller workflow may write or host production closure authority",
-        );
-      }
-    }
+    const verifiedControllerPaths = new Set([policy.workflowPath]);
 
     // Authority drift is a property of THIS proposal, not of how far the base
     // has moved since the proposal branched. Anchoring these comparisons to the
@@ -638,6 +603,12 @@ export async function verifyProductionClosureProposal(
       );
       return observation;
     }
+    const judgedPullRequestNumber = await client.getOpenPullRequestNumberForHead(proposalRevision);
+    const bootstrapPullRequestNumber = matrix.releaseTrain?.currentPullRequestBootstrap?.number;
+    const selfPromotedPullRequestNumber =
+      judgedPullRequestNumber !== null && bootstrapPullRequestNumber === judgedPullRequestNumber
+        ? judgedPullRequestNumber
+        : undefined;
     const changedProviderRecords = <T extends { number: number }>(
       baseRecords: readonly T[],
       proposedRecords: readonly T[],
@@ -679,7 +650,7 @@ export async function verifyProductionClosureProposal(
       mergeBaseMatrix.releaseTrain?.pullRequests ?? [],
       matrix.releaseTrain?.pullRequests ?? [],
       "pull request",
-      matrix.releaseTrain?.currentPullRequestBootstrap?.number,
+      selfPromotedPullRequestNumber,
     );
     observation.providerValidationIssues = changedProviderRecords(
       mergeBaseMatrix.issueAuthority?.issues ?? [],
@@ -801,15 +772,19 @@ export async function verifyProductionClosureProposal(
       issues.push(...rotationIssues);
       const receipt = proposedLedger.rotations?.at(-1) ?? null;
       if (receipt?.kind === "stage_successor" && receipt.successor) {
-        issues.push(
-          ...successorWorkflowSafetyIssues(
-            receipt.successor.workflowPath,
-            bytesByPath.get(receipt.successor.workflowPath),
-            bytesByPath.get(receipt.successor.templatePath),
-            receipt.successor,
-            policy,
-          ),
+        const successorIssues = successorWorkflowSafetyIssues(
+          receipt.successor.workflowPath,
+          bytesByPath.get(receipt.successor.workflowPath),
+          bytesByPath.get(receipt.successor.templatePath),
+          receipt.successor,
+          policy,
         );
+        issues.push(...successorIssues);
+        if (rotationIssues.length === 0 && successorIssues.length === 0) {
+          verifiedControllerPaths.add(receipt.successor.workflowPath);
+        }
+      } else if (receipt?.kind === "activate_successor" && rotationIssues.length === 0) {
+        verifiedControllerPaths.add(proposedPolicy.workflowPath);
       }
       try {
         const baseMatrixBytes = await readBasePath("docs/PRODUCTION_CLOSURE_MATRIX.json");
@@ -864,6 +839,30 @@ export async function verifyProductionClosureProposal(
           proposedPolicySha256: receipt.proposedPolicySha256,
           successor: receipt.successor,
         };
+      }
+    }
+    for (const [path, entry] of entries) {
+      if (
+        !/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path) ||
+        verifiedControllerPaths.has(path) ||
+        entry.type !== "blob"
+      ) {
+        continue;
+      }
+      const contents = (await readProposalPath(path))?.toString("utf8");
+      if (
+        contents &&
+        (/\bstatuses\s*:\s*write\b/.test(contents) ||
+          /\bchecks\s*:\s*write\b/.test(contents) ||
+          contents.includes(policy.controllerCheckName) ||
+          /environment\s*:\s*production-closure-authority\b/.test(contents))
+      ) {
+        add(
+          issues,
+          "PROPOSAL_CONTROLLER_SURFACE_COLLISION",
+          path,
+          "only an exact active or verified successor workflow may write or host production closure authority",
+        );
       }
     }
     if (policyChanged && !ledgerChanged && bootstrapRotation === undefined) {
@@ -966,6 +965,20 @@ export class GitHubProposalAuthorityClient implements ProposalAuthorityClient {
     const result = await this.request<{ id?: unknown }>(`/repos/${this.repository}`);
     if (!result || !Number.isInteger(result.id)) throw new Error("repository identity is invalid");
     return result.id as number;
+  }
+  async getOpenPullRequestNumberForHead(revision: string): Promise<number | null> {
+    const result = await this.request<Array<{
+      number?: unknown;
+      state?: unknown;
+      head?: { sha?: unknown };
+    }>>(`/repos/${this.repository}/commits/${revision}/pulls`);
+    if (!Array.isArray(result)) throw new Error("proposal pull request identity is invalid");
+    const matches = result.filter((pullRequest) =>
+      Number.isInteger(pullRequest.number) &&
+      pullRequest.state === "open" &&
+      pullRequest.head?.sha === revision
+    );
+    return matches.length === 1 ? matches[0].number as number : null;
   }
   async getRecursiveTree(revision: string): Promise<{ truncated: boolean; tree: GitTreeEntry[] }> {
     const result = await this.request<{ truncated?: unknown; tree?: unknown }>(

@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
@@ -25,6 +25,7 @@ const MAIN = "a".repeat(40);
 const HEAD = "b".repeat(40);
 const MERGE = "c".repeat(40);
 const MERGED = "d".repeat(40);
+const root = resolve(import.meta.dirname, "..");
 
 function matrix(): GitHubAuthorityMatrix {
   return {
@@ -235,6 +236,17 @@ function codes(result: Awaited<ReturnType<typeof verifyGitHubClosureAuthority>>)
 }
 
 describe("GitHub production closure authority", () => {
+  it("preauthorizes an inert successor template whose PR verdict fails only targeted runs", () => {
+    const templatePath = resolve(root, "config", "production-closure-successors", "closure-authority-v2.yml");
+    const templateBytes = readFileSync(templatePath);
+    const successor = parse(templateBytes.toString("utf8")) as {
+      jobs: Record<string, { steps?: Array<Record<string, unknown>> }>;
+    };
+    const enforcement = successor.jobs["closure-authority"].steps?.find(
+      (step) => step.name === "Enforce protected authority verdict",
+    );
+    expect(enforcement?.if).toBe("always() && github.event_name == 'pull_request_target'");
+  });
   it("runs per-PR authority from default-branch code and publishes an App-bound verdict", () => {
     const workflow = parse(
       readFileSync(

@@ -52,6 +52,7 @@ class FixtureClient implements ProposalAuthorityClient {
   truncated = false;
   mergeBaseRevision: string = BASE;
   mergeBaseUnresolved = false;
+  judgedPullRequestNumber = 999;
   readonly pathToSha = new Map<string, string>();
   readonly basePathToSha = new Map<string, string>();
   readonly mergeBasePathToSha = new Map<string, string>();
@@ -126,6 +127,9 @@ class FixtureClient implements ProposalAuthorityClient {
   }
   async getRepositoryId(): Promise<number> {
     return 1309389373;
+  }
+  async getOpenPullRequestNumberForHead(): Promise<number | null> {
+    return this.judgedPullRequestNumber;
   }
   /**
    * Move the base tip ahead of the branch point, leaving the proposal alone.
@@ -463,6 +467,7 @@ describe("production closure proposal authority", () => {
     // The proposal drops the PR from the tracked list AND claims the bootstrap slot for
     // it: promotion, not removal. Self-bootstrap must be satisfiable.
     const promoted = matrix.releaseTrain.pullRequests.shift()!;
+    client.judgedPullRequestNumber = promoted.number;
     matrix.releaseTrain.currentPullRequestBootstrap!.number = promoted.number;
     matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
     client.replace(matrixPath, matrix);
@@ -486,6 +491,33 @@ describe("production closure proposal authority", () => {
     ).toEqual([]);
   });
 
+  it("rejects a provider-record removal when the bootstrap number is not the judged pull request", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    const removed = matrix.releaseTrain.pullRequests.shift()!;
+    client.judgedPullRequestNumber = removed.number + 1;
+    matrix.releaseTrain.currentPullRequestBootstrap!.number = removed.number;
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    client.replace(matrixPath, matrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED",
+      subject: String(removed.number),
+    }));
+  });
+
   it("still flags a second tracked pull request removed alongside a self-bootstrap promotion", async () => {
     const client = new FixtureClient();
     const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
@@ -496,6 +528,7 @@ describe("production closure proposal authority", () => {
     // removed in the same proposal is still an unverified removal.
     const promoted = matrix.releaseTrain.pullRequests.shift()!;
     const alsoRemoved = matrix.releaseTrain.pullRequests.shift()!;
+    client.judgedPullRequestNumber = promoted.number;
     matrix.releaseTrain.currentPullRequestBootstrap!.number = promoted.number;
     matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
     client.replace(matrixPath, matrix);
@@ -540,6 +573,9 @@ describe("production closure proposal authority", () => {
     const proposedRuntime = Buffer.from("export const rotatedAuthority = true;\n");
     const proposedPolicy = structuredClone(basePolicy);
     proposedPolicy.protectedFiles[runtimePath] = sha256(proposedRuntime);
+    proposedPolicy.protectedFiles["scripts/production-closure-proposal-authority.ts"] = sha256(
+      readFileSync(resolve(root, "scripts", "production-closure-proposal-authority.ts")),
+    );
     const proposedPolicyBytes = Buffer.from(JSON.stringify(proposedPolicy));
     client.replace(runtimePath, proposedRuntime);
     client.replace("config/production-closure-authority.json", proposedPolicyBytes);
@@ -780,7 +816,7 @@ describe("production closure proposal authority", () => {
     expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
   });
 
-  it("exempts the newly-active successor from the controller-surface collision while an unrelated extra controller workflow still collides", async () => {
+  it("does not exempt a proposed active workflow before successor activation is proven valid", async () => {
     const client = new FixtureClient();
     const predecessorPath = ".github/workflows/closure-authority.yml";
     const successorPath = ".github/workflows/closure-authority-quiet-sweep.yml";
@@ -822,7 +858,7 @@ describe("production closure proposal authority", () => {
       .filter((issue) => issue.code === "PROPOSAL_CONTROLLER_SURFACE_COLLISION")
       .map((issue) => issue.subject);
     expect(collisions, JSON.stringify(result.issues, null, 2)).toContain(roguePath);
-    expect(collisions, JSON.stringify(result.issues, null, 2)).not.toContain(successorPath);
+    expect(collisions, JSON.stringify(result.issues, null, 2)).toContain(successorPath);
   });
 
   it("writes a secret-free failure artifact when protected configuration fails early", () => {
