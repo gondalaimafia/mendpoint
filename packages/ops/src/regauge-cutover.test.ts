@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it } from "vitest";
+import { REGAUGE_MISSION_EVIDENCE_MAX_BYTES } from "@mendpoint/shared";
 import {
   REGAUGE_TRANSFER_DATABASES,
   acquireRegaugeCutoverFence,
@@ -365,10 +366,17 @@ describe("ReGauge state transfer", () => {
     linkSync(candidate, execution);
     expect(() => transfer(linked)).toThrow("regauge_transfer_legacy_artifact_aliased");
 
+    const maximum = fixture();
+    truncateSync(
+      join(maximum.sourceRoot, "transformer-candidates", ...LEGACY_SCOPE, "manifest.json"),
+      REGAUGE_MISSION_EVIDENCE_MAX_BYTES,
+    );
+    expect(() => transfer(maximum)).not.toThrow();
+
     const oversized = fixture();
     truncateSync(
       join(oversized.sourceRoot, "transformer-candidates", ...LEGACY_SCOPE, "manifest.json"),
-      64 * 1024 * 1024 + 1,
+      REGAUGE_MISSION_EVIDENCE_MAX_BYTES + 1,
     );
     expect(() => transfer(oversized)).toThrow("regauge_transfer_legacy_artifact_size_invalid");
   });

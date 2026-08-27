@@ -4,6 +4,7 @@ import {
   createHash,
   randomBytes,
 } from "node:crypto";
+import { REGAUGE_MISSION_EVIDENCE_MAX_BYTES } from "@mendpoint/shared";
 import {
   createTransformerAttemptCompletionDigest,
   createTransformerAttemptCompletionPayload,
@@ -541,7 +542,8 @@ export function createTransformerMissionEvidenceArtifact(
   key: Uint8Array,
 ): Readonly<{ artifact: TransformerEncryptedArtifact; bytes: Uint8Array }> {
   if (!ID.test(scope.tenantId) || !ID.test(scope.episodeId) || !ID.test(scope.artifactId) ||
-      !(payload instanceof Uint8Array) || payload.byteLength < 1 || payload.byteLength > MAX_EFFECT_OUTPUT_BYTES) {
+      !(payload instanceof Uint8Array) || payload.byteLength < 1 ||
+      payload.byteLength > REGAUGE_MISSION_EVIDENCE_MAX_BYTES) {
     throw new Error("transformer_mission_evidence_artifact_invalid");
   }
   return encryptArtifact(
@@ -559,6 +561,11 @@ export function openTransformerMissionEvidenceArtifact(
   scope: Readonly<{ tenantId: string; episodeId: string; artifactId: string }>,
 ): Uint8Array {
   if (!ID.test(scope.tenantId) || !ID.test(scope.episodeId) || !ID.test(scope.artifactId)) {
+    throw new Error("transformer_mission_evidence_artifact_invalid");
+  }
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 ||
+      bytes.byteLength > REGAUGE_MISSION_EVIDENCE_MAX_BYTES ||
+      artifact.bytes > REGAUGE_MISSION_EVIDENCE_MAX_BYTES) {
     throw new Error("transformer_mission_evidence_artifact_invalid");
   }
   return decryptArtifact(artifact, bytes, key, { purpose: "mission-evidence", ...scope });

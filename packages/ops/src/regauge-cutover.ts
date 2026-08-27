@@ -23,6 +23,7 @@ import type { BigIntStats } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { REGAUGE_MISSION_EVIDENCE_MAX_BYTES } from "@mendpoint/shared";
 import { REGAUGE_CUTOVER_FENCE_NAME } from "./disaster-recovery.js";
 
 export const REGAUGE_TRANSFER_DATABASES = Object.freeze([
@@ -124,7 +125,6 @@ const WRITERS_DIRECTORY_NAME = "writers";
 const LEGACY_ARTIFACTS_DIRECTORY_NAME = "legacy-artifacts";
 const RESTORE_OWNER_NAME = ".regauge-restore-owner.json";
 const MAX_LEGACY_ARTIFACT_FILES = 10_000;
-const MAX_LEGACY_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_LEGACY_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024;
 const PROCESS_STARTED_AT = new Date().toISOString();
 const LEDGERS = Object.freeze([
@@ -245,7 +245,7 @@ function collectLegacyArtifactFiles(sourceRoot: string, rejectUnexpectedFiles = 
           continue;
         }
         const size = Number(observed.size);
-        if (!Number.isSafeInteger(size) || size < 1 || size > MAX_LEGACY_ARTIFACT_FILE_BYTES) {
+        if (!Number.isSafeInteger(size) || size < 1 || size > REGAUGE_MISSION_EVIDENCE_MAX_BYTES) {
           fail("regauge_transfer_legacy_artifact_size_invalid");
         }
         totalBytes += size;
@@ -711,7 +711,7 @@ function validateManifest(value: unknown): RegaugeTransferManifest {
         !/^[a-f0-9]{64}$/.test(artifact.plaintextSha256) ||
         !/^[a-f0-9]{64}$/.test(artifact.encryptedSha256) ||
         !Number.isSafeInteger(artifact.plaintextSizeBytes) || artifact.plaintextSizeBytes < 1 ||
-        artifact.plaintextSizeBytes > MAX_LEGACY_ARTIFACT_FILE_BYTES ||
+        artifact.plaintextSizeBytes > REGAUGE_MISSION_EVIDENCE_MAX_BYTES ||
         !Number.isSafeInteger(artifact.encryptedSizeBytes) ||
         artifact.encryptedSizeBytes !== artifact.plaintextSizeBytes + 28) {
       fail("regauge_transfer_legacy_artifact_evidence_invalid");

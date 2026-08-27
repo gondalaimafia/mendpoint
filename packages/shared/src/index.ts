@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const REGAUGE_MISSION_EVIDENCE_MAX_BYTES = 64 * 1024 * 1024;
+
 export {
   explainError,
   normalizeErrorCode,

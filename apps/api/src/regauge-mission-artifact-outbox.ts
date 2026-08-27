@@ -25,10 +25,9 @@ import {
 } from "@mendpoint/worker/transformer-shared-artifact-backends";
 import { createSigV4S3ArtifactTransport } from "@mendpoint/worker/transformer-s3-transport";
 import { resolveTransformerS3Config } from "@mendpoint/worker/transformer-production-profile";
-import { resolveRenamedEnv } from "@mendpoint/shared";
+import { REGAUGE_MISSION_EVIDENCE_MAX_BYTES, resolveRenamedEnv } from "@mendpoint/shared";
 
 const BOOTSTRAP_PRINCIPAL_SUBJECT = "service:regauge-production-bootstrap";
-const MAX_STORED_BYTES = 64 * 1024 * 1024;
 
 export type RegaugeMissionArtifactRuntime = Readonly<{
   backend: TransformerCheckpointArtifactBackend;
@@ -58,7 +57,7 @@ export function createRegaugeMissionArtifactRuntime(
         resolveRenamedEnv(env, "MENDPOINT_REGAUGE_S3_PREFIX"),
         "regauge_mission_artifact_s3_prefix_required",
       ),
-      maxStoredBytes: MAX_STORED_BYTES,
+      maxStoredBytes: REGAUGE_MISSION_EVIDENCE_MAX_BYTES,
     }, createSigV4S3ArtifactTransport({
       endpoint: required(s3.endpoint, "regauge_mission_artifact_s3_endpoint_required"),
       region: required(s3.region, "regauge_mission_artifact_s3_region_required"),

@@ -284,6 +284,7 @@ describe("ReGauge coordinator Mission artifact outbox", () => {
       },
       source: { snapshotId: "snapshot-a" },
       executionEvidence: { id: executionArtifactId, digest: executionDigest },
+      historicalPadding: "x".repeat(8 * 1024 * 1024),
     });
     const candidateArtifactId = `tcman_${sha256(Buffer.from(candidateContent)).slice(7)}`;
     const candidate: TransformerMissionArtifactAdoptionCandidate = Object.freeze({
@@ -326,7 +327,8 @@ describe("ReGauge coordinator Mission artifact outbox", () => {
         }
       },
     } satisfies TransformerCheckpointArtifactBackend;
-    const store = {
+    const store = new TransformerPilotExecutionStore();
+    Object.assign(store, {
       listMissionArtifactAdoptionCandidates: () => adopted ? [] : [candidate],
       completeMissionArtifactAdoption: () => { throw new Error("must_not_skip_adoption"); },
       adoptMissionArtifactRegistration: (input: Readonly<{
@@ -345,7 +347,8 @@ describe("ReGauge coordinator Mission artifact outbox", () => {
       },
       listPendingMissionArtifactRegistrations: () => adopted && !acknowledged ? [adopted] : [],
       completeMissionArtifactRegistration: () => { acknowledged = true; },
-    } as unknown as TransformerPilotExecutionStore;
+      getCampaign: () => ({ campaignId: "campaign-a", state: "running" }),
+    });
 
     await expect(drainRegaugeMissionArtifactOutbox({
       db,
@@ -356,14 +359,36 @@ describe("ReGauge coordinator Mission artifact outbox", () => {
     expect(adopted).toBeDefined();
     expect(acknowledged).toBe(false);
 
-    await expect(drainRegaugeMissionArtifactOutbox({
-      db,
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("requestId", "request-legacy-recovery-ready");
+      c.set("principal", { id: "api-key:worker", tenantId: "tenant-a", role: "agent" });
+      c.set("authScopes", ["transformer:worker"]);
+      await next();
+    });
+    app.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+      enabled: true,
       store,
-      tenantId: "tenant-a",
-      runtime: { ...runtime, backend },
-    })).resolves.toEqual({ registered: 1, skipped: 0 });
+      gateConfig: gate,
+      drainPendingMissionArtifacts: async () => {
+        await drainRegaugeMissionArtifactOutbox({
+          db,
+          store,
+          tenantId: "tenant-a",
+          runtime: { ...runtime, backend },
+        });
+      },
+      loadExactSource: () => { throw new Error("must_not_load"); },
+    }));
+    const response = await app.request("/v1/regauge/attempt-coordinator/readyz", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenantId: "tenant-a", campaignId: "campaign-a" }),
+    });
+    expect(response.status).toBe(200);
     expect(acknowledged).toBe(true);
     expect(marks.filter((value) => value.endsWith(":referenced"))).toHaveLength(4);
+    store.close();
   });
 
   it("keeps coordinator readiness healthy when an unbound registration is tampered", async () => {

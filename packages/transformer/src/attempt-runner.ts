@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, posix, relative, resolve } from "node:path";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
+import { REGAUGE_MISSION_EVIDENCE_MAX_BYTES } from "@mendpoint/shared";
 import {
   applyRecipe,
   classifyRecipeReference,
@@ -896,10 +897,6 @@ export function persistTransformerCandidate(
   attemptId: string,
   execution: RecipeWorkspaceExecutionResult,
 ): TransformerCandidateArtifact {
-  const root = ensureRoot(candidateRoot, "transformer_candidate_root");
-  const parent = scopedParent(root, scope, lease.unitId);
-  const directory = resolve(parent, attemptDirectoryName(attemptId));
-  if (!isWithin(root, directory)) throw new AttemptRunnerError("execution_failed", "transformer_candidate_attempt_escape");
   const files = manifestFiles(execution.outputFiles);
   const manifest: TransformerCandidateManifest = Object.freeze({
     schemaVersion: 1,
@@ -930,6 +927,14 @@ export function persistTransformerCandidate(
     }),
     files,
   });
+  const serialized = canonicalJson(manifest);
+  if (Buffer.byteLength(serialized, "utf8") > REGAUGE_MISSION_EVIDENCE_MAX_BYTES) {
+    throw new AttemptRunnerError("candidate_drift", "transformer_candidate_manifest_too_large");
+  }
+  const root = ensureRoot(candidateRoot, "transformer_candidate_root");
+  const parent = scopedParent(root, scope, lease.unitId);
+  const directory = resolve(parent, attemptDirectoryName(attemptId));
+  if (!isWithin(root, directory)) throw new AttemptRunnerError("execution_failed", "transformer_candidate_attempt_escape");
   if (existsSync(directory)) return validateExistingCandidate(root, directory, manifest, execution.outputFiles, execution);
 
   const temporary = mkdtempSync(join(parent, ".candidate-tmp-"));
@@ -940,7 +945,6 @@ export function persistTransformerCandidate(
       ensureCandidateFileParent(filesDirectory, path);
       durableWrite(candidateFilePath(filesDirectory, path), content);
     }
-    const serialized = canonicalJson(manifest);
     const digest = sha256(serialized);
     durableWrite(join(realTemporary, "manifest.json"), serialized);
     durableWrite(join(realTemporary, "manifest.sha256"), `${digest}\n`);

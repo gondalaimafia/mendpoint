@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { REGAUGE_MISSION_EVIDENCE_MAX_BYTES } from "@mendpoint/shared";
 import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
   GOOGLEAPIS_V25_TO_V26_RECIPE,
@@ -683,11 +684,14 @@ function persistEvidence<T extends RecipeExecutionEvidenceRecord | RecipeRestore
   directory: string,
   record: T,
 ): PersistedRecipeEvidence<T> {
+  const serialized = `${stableJson(record, true)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > REGAUGE_MISSION_EVIDENCE_MAX_BYTES) {
+    throw new Error("recipe_execution_evidence_too_large");
+  }
   const requested = resolve(directory);
   mkdirSync(requested, { recursive: true });
   const root = realpathSync(requested);
   const path = join(root, `${record.evidenceId}.json`);
-  const serialized = `${stableJson(record, true)}\n`;
   const temporary = join(root, `.${record.evidenceId}.${randomUUID()}.tmp`);
   writeFileSync(temporary, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
   try {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { REGAUGE_MISSION_EVIDENCE_MAX_BYTES } from "@mendpoint/shared";
 import {
   advanceTransformerAttemptCheckpoint,
   commitTransformerAttemptCheckpointGenesis,
@@ -1733,6 +1734,24 @@ describe("Transformer attempt checkpoint", () => {
     );
     expect(workspace.manifest[0]?.bytes).toBe(content.byteLength);
     expect(workspace.artifact.bytes).toBeGreaterThan(16 * 1024 * 1024);
+  });
+
+  it("accepts the historical Mission evidence ceiling and rejects one byte beyond it", () => {
+    const scope = {
+      tenantId: "tenant-a",
+      episodeId: "episode-a",
+      artifactId: `tcman_${"a".repeat(64)}`,
+    };
+    const formerlyRejected = Buffer.alloc(8 * 1024 * 1024 + 1, "a");
+    expect(() => createTransformerMissionEvidenceArtifact(scope, formerlyRejected, key)).not.toThrow();
+
+    const maximum = Buffer.alloc(REGAUGE_MISSION_EVIDENCE_MAX_BYTES, "b");
+    const artifact = createTransformerMissionEvidenceArtifact(scope, maximum, key);
+    expect(artifact.artifact.bytes).toBe(maximum.byteLength);
+
+    const oversized = Buffer.alloc(REGAUGE_MISSION_EVIDENCE_MAX_BYTES + 1, "c");
+    expect(() => createTransformerMissionEvidenceArtifact(scope, oversized, key))
+      .toThrow("transformer_mission_evidence_artifact_invalid");
   });
 
   it("derives model accounting exactly from the authenticated result", async () => {
