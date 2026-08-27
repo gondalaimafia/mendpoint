@@ -166,6 +166,23 @@ function exactSuccessorTuple(
   return JSON.stringify(tuple(left)) === JSON.stringify(tuple(right));
 }
 
+function exactSuccessorRestageIdentity(
+  left: AuthoritySuccessorTuple | null | undefined,
+  right: AuthoritySuccessorTuple | null | undefined,
+): boolean {
+  const identity = (value: AuthoritySuccessorTuple | null | undefined) => value ? {
+    templatePath: value.templatePath,
+    workflowPath: value.workflowPath,
+    externalCheckName: value.externalCheckName,
+    externalCheckAppId: value.externalCheckAppId,
+    controllerCheckName: value.controllerCheckName,
+    controllerCheckAppId: value.controllerCheckAppId,
+    controllerStatusCreatorLogin: value.controllerStatusCreatorLogin,
+    controllerStatusCreatorUserId: value.controllerStatusCreatorUserId,
+  } : null;
+  return JSON.stringify(identity(left)) === JSON.stringify(identity(right));
+}
+
 function validSuccessorTuple(
   successor: AuthoritySuccessorTuple | null | undefined,
 ): successor is AuthoritySuccessorTuple {
@@ -377,6 +394,11 @@ export function verifyAuthorityRotation(
     );
   } else if (transitionKind === "stage_successor") {
     const successor = receipt.successor;
+    const staged = input.basePolicy.successor;
+    const stagedByReceipt = staged
+      ? baseRotations.find((candidate) => candidate.rotationId === staged.stagedByRotationId) ?? null
+      : null;
+    const isRestage = staged !== null;
     const expectedState: AuthoritySuccessorState = {
       phase: "staged",
       stagedByRotationId: receipt.rotationId,
@@ -385,14 +407,36 @@ export function verifyAuthorityRotation(
     };
     const deadline = Date.parse(successor.activationDeadline);
     if (
-      input.basePolicy.successor !== null ||
       JSON.stringify(input.proposedPolicy.successor) !== JSON.stringify(expectedState)
     ) {
       add(
         issues,
         "AUTHORITY_SUCCESSOR_STAGE_STATE_INVALID",
         receipt.rotationId,
-        "staging must create one exact successor state from an authority with no pending successor",
+        "staging must create one exact successor state bound to the current rotation",
+      );
+    }
+    if (
+      isRestage && (
+        staged.phase !== "staged" ||
+        staged.activatedByRotationId !== null ||
+        stagedByReceipt?.kind !== "stage_successor" ||
+        !exactSuccessorTuple(stagedByReceipt.successor, staged)
+      )
+    ) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_RESTAGE_AUTHORITY_INVALID",
+        staged.stagedByRotationId,
+        "re-staging requires the immutable stage receipt for the exact unactivated successor tuple",
+      );
+    }
+    if (isRestage && !exactSuccessorRestageIdentity(staged, successor)) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_RESTAGE_TUPLE_DRIFT",
+        receipt.rotationId,
+        "re-staging may change only the workflow digest and canonical activation deadline",
       );
     }
     if (
@@ -423,8 +467,10 @@ export function verifyAuthorityRotation(
         "a staged successor must be activated within a canonical seven-day window",
       );
     }
+    const baseSuccessorDigest = staged?.workflowSha256 ?? successor.workflowSha256;
     if (
-      input.basePolicy.protectedFiles[successor.templatePath] !== successor.workflowSha256 ||
+      input.basePolicy.protectedFiles[successor.templatePath] !== baseSuccessorDigest ||
+      (isRestage && input.basePolicy.protectedFiles[successor.workflowPath] !== baseSuccessorDigest) ||
       input.proposedPolicy.protectedFiles[successor.templatePath] !== successor.workflowSha256 ||
       input.proposedPolicy.protectedFiles[successor.workflowPath] !== successor.workflowSha256 ||
       input.proposedFileDigests.get(successor.templatePath) !== successor.workflowSha256 ||

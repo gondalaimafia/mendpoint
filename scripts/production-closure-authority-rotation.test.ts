@@ -104,9 +104,181 @@ function fixture() {
   };
 }
 
+function stagedSuccessorFixture() {
+  const input = fixture();
+  const oldBytes = Buffer.from("name: staged-successor\nversion: 1\n");
+  const newBytes = Buffer.from("name: staged-successor\nversion: 2\n");
+  const stagedSuccessor = {
+    templatePath: "config/production-closure-successors/closure-authority-v2.yml",
+    workflowPath: ".github/workflows/closure-authority-v2.yml",
+    workflowSha256: digest(oldBytes),
+    externalCheckName: "mendpoint-production-closure-authority-v2",
+    externalCheckAppId: 123,
+    controllerCheckName: "mendpoint-production-closure-controller-v2",
+    controllerCheckAppId: 15368,
+    controllerStatusCreatorLogin: "github-actions[bot]",
+    controllerStatusCreatorUserId: 41898282,
+    activationDeadline: "2026-08-26T11:00:00.000Z",
+  };
+  const replacementSuccessor = {
+    ...stagedSuccessor,
+    workflowSha256: digest(newBytes),
+    activationDeadline: "2026-08-27T11:00:00.000Z",
+  };
+  input.basePolicy.successor = {
+    phase: "staged",
+    stagedByRotationId: "rotation-20260824-stage",
+    activatedByRotationId: null,
+    ...stagedSuccessor,
+  };
+  input.basePolicy.protectedFiles[stagedSuccessor.templatePath] = stagedSuccessor.workflowSha256;
+  input.basePolicy.protectedFiles[stagedSuccessor.workflowPath] = stagedSuccessor.workflowSha256;
+  input.basePolicyBytes = Buffer.from(JSON.stringify(input.basePolicy));
+  const priorStage = {
+    ...input.proposedLedger.rotations[0],
+    kind: "stage_successor" as const,
+    rotationId: "rotation-20260824-stage",
+    previousRotationId: null,
+    successor: stagedSuccessor,
+  };
+  const interveningRuntime = {
+    ...input.proposedLedger.rotations[0],
+    kind: "runtime" as const,
+    rotationId: "rotation-20260825-runtime",
+    previousRotationId: priorStage.rotationId,
+    successor: null,
+  };
+  input.baseLedger = {
+    schemaVersion: 1,
+    rotations: [priorStage, interveningRuntime],
+  };
+  input.baseLedgerBytes = Buffer.from(JSON.stringify(input.baseLedger));
+  input.proposedPolicy = structuredClone(input.basePolicy);
+  input.proposedPolicy.successor = {
+    phase: "staged",
+    stagedByRotationId: "rotation-20260825-restage",
+    activatedByRotationId: null,
+    ...replacementSuccessor,
+  };
+  input.proposedPolicy.protectedFiles[replacementSuccessor.templatePath] = replacementSuccessor.workflowSha256;
+  input.proposedPolicy.protectedFiles[replacementSuccessor.workflowPath] = replacementSuccessor.workflowSha256;
+  input.proposedPolicyBytes = Buffer.from(JSON.stringify(input.proposedPolicy));
+  input.changedFiles = [
+    {
+      path: "config/production-closure-authority.json",
+      fromSha256: digest(input.basePolicyBytes),
+      toSha256: digest(input.proposedPolicyBytes),
+      fromMode: "100644",
+      toMode: "100644",
+    },
+    {
+      path: replacementSuccessor.templatePath,
+      fromSha256: stagedSuccessor.workflowSha256,
+      toSha256: replacementSuccessor.workflowSha256,
+      fromMode: "100644",
+      toMode: "100644",
+    },
+    {
+      path: replacementSuccessor.workflowPath,
+      fromSha256: stagedSuccessor.workflowSha256,
+      toSha256: replacementSuccessor.workflowSha256,
+      fromMode: "100644",
+      toMode: "100644",
+    },
+  ];
+  const replacementReceipt = {
+    ...input.proposedLedger.rotations[0],
+    kind: "stage_successor" as const,
+    rotationId: "rotation-20260825-restage",
+    previousRotationId: interveningRuntime.rotationId,
+    baseLedgerSha256: digest(input.baseLedgerBytes),
+    basePolicySha256: digest(input.basePolicyBytes),
+    proposedPolicySha256: digest(input.proposedPolicyBytes),
+    successor: replacementSuccessor,
+    changes: input.changedFiles.map((change) => ({ ...change })),
+  };
+  input.proposedLedger = {
+    schemaVersion: 1,
+    rotations: [...input.baseLedger.rotations, replacementReceipt],
+  };
+  input.proposedFileContents = new Map([
+    [input.basePolicy.workflowPath, Buffer.from("workflow")],
+    ["scripts/a.ts", Buffer.from("base")],
+    [replacementSuccessor.templatePath, newBytes],
+    [replacementSuccessor.workflowPath, newBytes],
+  ]);
+  input.proposedFileDigests = new Map(
+    [...input.proposedFileContents].map(([path, bytes]) => [path, digest(bytes)]),
+  );
+  input.proposedPaths = new Set(input.proposedFileContents.keys());
+
+  return { input, stagedSuccessor, replacementSuccessor, priorStage };
+}
+
 describe("production closure authority rotation", () => {
   it("accepts an exact bounded runtime authority rotation", () => {
     expect(verifyAuthorityRotation(fixture())).toEqual([]);
+  });
+
+  it("re-stages an authenticated unactivated successor after intervening runtime rotations", () => {
+    const { input } = stagedSuccessorFixture();
+
+    expect(verifyAuthorityRotation(input)).toEqual([]);
+  });
+
+  it("rejects re-stage when the immutable ledger cannot authenticate the staged tuple", () => {
+    const { input } = stagedSuccessorFixture();
+    input.baseLedger.rotations = input.baseLedger.rotations.slice(1);
+    input.baseLedger.rotations[0] = {
+      ...input.baseLedger.rotations[0],
+      previousRotationId: null,
+    };
+    input.baseLedgerBytes = Buffer.from(JSON.stringify(input.baseLedger));
+    const receipt = input.proposedLedger.rotations.at(-1)!;
+    receipt.baseLedgerSha256 = digest(input.baseLedgerBytes);
+    input.proposedLedger.rotations = [...input.baseLedger.rotations, receipt];
+
+    expect(verifyAuthorityRotation(input).map((issue) => issue.code)).toContain(
+      "AUTHORITY_SUCCESSOR_RESTAGE_AUTHORITY_INVALID",
+    );
+  });
+
+  it("rejects re-stage after a successor has been activated", () => {
+    const { input } = stagedSuccessorFixture();
+    input.basePolicy.successor!.activatedByRotationId = "rotation-20260825-activate" as never;
+    input.basePolicyBytes = Buffer.from(JSON.stringify(input.basePolicy));
+    const receipt = input.proposedLedger.rotations.at(-1)!;
+    receipt.basePolicySha256 = digest(input.basePolicyBytes);
+    input.changedFiles[0] = {
+      ...input.changedFiles[0],
+      fromSha256: digest(input.basePolicyBytes),
+    };
+    receipt.changes = input.changedFiles.map((change) => ({ ...change }));
+
+    expect(verifyAuthorityRotation(input).map((issue) => issue.code)).toContain(
+      "AUTHORITY_SUCCESSOR_RESTAGE_AUTHORITY_INVALID",
+    );
+  });
+
+  it.each([
+    ["workflow paths", {
+      templatePath: "config/production-closure-successors/closure-authority-v3.yml",
+      workflowPath: ".github/workflows/closure-authority-v3.yml",
+    }],
+    ["external check name", { externalCheckName: "mendpoint-production-closure-authority-v3" }],
+    ["external App ID", { externalCheckAppId: 999 }],
+    ["controller check name", { controllerCheckName: "mendpoint-production-closure-controller-v3" }],
+    ["controller App ID", { controllerCheckAppId: 999 }],
+    ["controller creator login", { controllerStatusCreatorLogin: "another-creator[bot]" }],
+    ["controller creator user ID", { controllerStatusCreatorUserId: 999 }],
+  ] as const)("rejects re-stage that mutates the staged %s", (_field, patch) => {
+    const { input } = stagedSuccessorFixture();
+    const receipt = input.proposedLedger.rotations.at(-1)!;
+    receipt.successor = { ...receipt.successor!, ...patch };
+
+    expect(verifyAuthorityRotation(input).map((issue) => issue.code)).toContain(
+      "AUTHORITY_SUCCESSOR_RESTAGE_TUPLE_DRIFT",
+    );
   });
 
   it("rejects product changes and a non-exhaustive receipt", () => {

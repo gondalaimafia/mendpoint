@@ -3333,3 +3333,16 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 #### Review
 
 Main revision `c8d51caa` merged a reviewer key that the runtime ignores and retained null App IDs. The repair uses the verified, nonsecret identity tuple for `mendpoint-closure-authority[bot]` and the observed GitHub Actions App ID. The bot is temporarily bound under `Claude`, which permits reciprocal review of the current Codex and Cursor queue; a second distinct reviewer identity is still required before Claude-owned pull requests can satisfy the same invariant. The 26 GitHub-authority tests, 30 matrix tests, and 12 proposal-authority tests pass, the scripts TypeScript project passes, and `git diff --check` is clean.
+
+### 2026-08-27 Permit authenticated staged-successor replacement
+
+- [ ] Add red-first rotation tests for an exact re-stage and every forbidden tuple mutation.
+- [ ] Extend `stage_successor` only for an authenticated, still-staged, unactivated successor receipt.
+- [ ] Preserve the active authority, current staged tuple, and both quiet-sweep YAML files in this runtime rotation.
+- [ ] Append an exhaustive runtime rotation receipt and reseal the policy and closure matrix.
+- [ ] Run focused rotation, proposal, matrix, and action checks, scripts typecheck, YAML parsing, and diff integrity.
+- [ ] Inspect the exact diff, commit, push, and open a draft PR without merging.
+
+#### Review
+
+Pending implementation and verification.
