@@ -2057,16 +2057,16 @@
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
-    "observedMainRevision": "2257f98961184044aab63982d89aa9b391aa3fbd",
-    "observationDigest": "sha256:2851976e740a468ea8060264d6fe6dfa50fcec425fa48229b3bf0ce565510b30",
+    "observedMainRevision": "3ee43e2dbfc3d9562c1c68a8feb13081b401a77e",
+    "observationDigest": "sha256:298801e5987aeb219c29a4af315062f2664b2f201e8488fa0bdfcb6a9a2e930b",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 486,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/486",
-      "title": "Use local Git for closure proposal authority",
+      "number": 496,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/496",
+      "title": "docs: lead the public page with the shipped product, demote the demo",
       "baseBranch": "main",
-      "headBranch": "codex/closure-authority-local-git",
+      "headBranch": "readme-refresh",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2079,15 +2079,7 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "rotation-20260827-004",
-        "kind": "runtime",
-        "issuedAt": "2026-08-27T05:34:29.853Z",
-        "expiresAt": "2026-08-28T05:34:29.853Z",
-        "basePolicySha256": "sha256:809f79e92cd7be5ce58c6f7920d44f0640c24138f553656911842d74c76d8a67",
-        "proposedPolicySha256": "sha256:dcb2238abb3933d4316f3caddd7e2af705c2f5c19ce9e84edf86abcade3599be"
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
@@ -4264,41 +4256,6 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "98ecbc55ac6987ca9ed694fb36b6c6f9a0529081",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 496,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/496",
-        "title": "docs: lead the public page with the shipped product, demote the demo",
-        "headBranch": "readme-refresh",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Claude",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "e1be32a7658b669f60c1961c5e8c5028adf3bdd2",
         "mergeRevision": null,
         "checks": [],
         "review": {
