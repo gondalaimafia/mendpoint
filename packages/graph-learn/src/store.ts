@@ -72,6 +72,14 @@ CREATE TABLE IF NOT EXISTS gl_software_heads_v1 (
   PRIMARY KEY(tenant_id, repository_id, provider_id),
   FOREIGN KEY(version_id) REFERENCES gl_software_versions_v1(version_id)
 );
+
+CREATE TABLE IF NOT EXISTS gl_manifest_stream_heads_v1 (
+  tenant_id TEXT NOT NULL,
+  repository_id TEXT NOT NULL,
+  manifest_stream_path TEXT NOT NULL,
+  last_observed_at TEXT NOT NULL,
+  PRIMARY KEY(tenant_id, repository_id, manifest_stream_path)
+);
 `;
 
 const DDL_INDEXES = `

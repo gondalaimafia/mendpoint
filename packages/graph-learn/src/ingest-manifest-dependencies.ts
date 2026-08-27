@@ -308,6 +308,29 @@ function parseManifest(path: string, text: string): ManifestParse {
   return { ok: false, reason: "unparseable" };
 }
 
+function advanceManifestStreamClock(db: GraphLearnDb, input: {
+  tenantId: string;
+  repoId: string;
+  sourcePath: string;
+  observedAt: string;
+}): string | undefined {
+  const row = db.raw.prepare(
+    `SELECT last_observed_at FROM gl_manifest_stream_heads_v1
+     WHERE tenant_id = ? AND repository_id = ? AND manifest_stream_path = ?`,
+  ).get(input.tenantId, input.repoId, input.sourcePath) as { last_observed_at: string } | undefined;
+  if (row && input.observedAt < row.last_observed_at) {
+    throw new Error("manifest_ingest_observed_at_non_monotonic");
+  }
+  db.raw.prepare(
+    `INSERT INTO gl_manifest_stream_heads_v1
+       (tenant_id, repository_id, manifest_stream_path, last_observed_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(tenant_id, repository_id, manifest_stream_path)
+     DO UPDATE SET last_observed_at = excluded.last_observed_at`,
+  ).run(input.tenantId, input.repoId, input.sourcePath, input.observedAt);
+  return row?.last_observed_at;
+}
+
 function writeDependencies(
   db: GraphLearnDb,
   input: {
@@ -342,6 +365,18 @@ function writeDependencies(
   const ownsTransaction = !db.raw.isTransaction;
   if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
   try {
+  const previousInventoryObservation = advanceManifestStreamClock(db, {
+    tenantId: tenantKey,
+    repoId: input.repoId,
+    sourcePath: "__inventory__",
+    observedAt: input.observedAt,
+  });
+  const previousStreamObservation = advanceManifestStreamClock(db, {
+    tenantId: tenantKey,
+    repoId: input.repoId,
+    sourcePath: input.sourcePath,
+    observedAt: input.observedAt,
+  });
   const roots = listNodesByKind(db, "Service")
     .filter((node) =>
       node.repo_id === input.repoId &&
@@ -355,14 +390,14 @@ function writeDependencies(
     node.props?.manifest_content_digest === input.contentDigest &&
     node.props?.manifest_semantic_digest === input.semanticDigest &&
     typeof node.props?.manifest_version_id === "string");
-  const latest = roots.map((node) => String(node.props?.manifest_valid_from ?? "")).sort(compareCodeUnits).at(-1);
-  if (latest && input.observedAt < latest) throw new Error("manifest_ingest_observed_at_non_monotonic");
   if (replayRoot) {
     const active = edgesFrom(db, replayRoot.id, ["DEPENDS_ON"], { at: input.observedAt });
     if (ownsTransaction) db.raw.exec("COMMIT");
     return { dependencies: active.length, skipped, versionId: String(replayRoot.props!.manifest_version_id) };
   }
-  if (latest && input.observedAt === latest) throw new Error("manifest_ingest_observed_at_non_monotonic");
+  if (previousInventoryObservation === input.observedAt || previousStreamObservation === input.observedAt) {
+    throw new Error("manifest_ingest_observed_at_non_monotonic");
+  }
   const predecessors = roots.map((node) =>
     String(node.props?.manifest_version_id ?? node.props?.manifest_content_digest ?? node.id));
   const versionId = sha256(
@@ -496,13 +531,24 @@ function writeManifestTombstone(db: GraphLearnDb, input: {
   const ownsTransaction = !db.raw.isTransaction;
   if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
   try {
+    const streamPath = input.manifest ?? "__root__";
+    const previousInventoryObservation = advanceManifestStreamClock(db, {
+      tenantId: tenantKey,
+      repoId: input.repoId,
+      sourcePath: "__inventory__",
+      observedAt: input.observedAt,
+    });
+    const previousStreamObservation = advanceManifestStreamClock(db, {
+      tenantId: tenantKey,
+      repoId: input.repoId,
+      sourcePath: streamPath,
+      observedAt: input.observedAt,
+    });
     const roots = listNodesByKind(db, "Service").filter((node) =>
       node.repo_id === input.repoId && String(node.props?.tenant_id ?? "") === tenantKey &&
       node.props?.declared !== true &&
       (node.props?.manifest_valid_to === null || node.props?.manifest_valid_to === undefined) &&
       typeof node.props?.manifest_version_id === "string");
-    const latest = roots.map((node) => String(node.props?.manifest_valid_from ?? "")).sort(compareCodeUnits).at(-1);
-    if (latest && input.observedAt < latest) throw new Error("manifest_ingest_observed_at_non_monotonic");
     const semanticDigest = sha256("manifest-tombstone-v2", input.reason, input.manifest ?? "");
     const replay = roots.find((node) =>
       node.props?.manifest_ingest_status === "tombstone" &&
@@ -512,7 +558,9 @@ function writeManifestTombstone(db: GraphLearnDb, input: {
       if (ownsTransaction) db.raw.exec("COMMIT");
       return String(replay.props!.manifest_version_id);
     }
-    if (latest && input.observedAt === latest) throw new Error("manifest_ingest_observed_at_non_monotonic");
+    if (previousInventoryObservation === input.observedAt || previousStreamObservation === input.observedAt) {
+      throw new Error("manifest_ingest_observed_at_non_monotonic");
+    }
     const versionId = sha256(
       "manifest-version-v2", tenantKey, input.repoId, input.manifest ?? "__root__",
       input.reason, input.contentDigest ?? "", semanticDigest,
@@ -633,6 +681,17 @@ export function ingestManifestDependencies(
   const canonicalText = canonicalManifestText(rawText);
   const parsed = parseManifest(chosen.path, canonicalText);
   if (!parsed.ok) return notIngested(parsed.reason, chosen.path, rawText);
+  const supportedManifestPaths = (opts.files
+    ? opts.files.map((file) => file.path)
+    : candidates.filter((path) => existsSync(join(opts.repoPath, path))))
+    .map((path) => path.replace(/\\/g, "/").replace(/^\.\//, ""))
+    .filter((path) => ["package.json", "pyproject.toml", "go.mod"].includes(path.split("/").at(-1) ?? ""))
+    .sort(compareCodeUnits);
+  const inventoryReasons = supportedManifestPaths
+    .filter((path) => path !== chosen!.path)
+    .map((path) => `supported_manifest_not_ingested:${path}`);
+  const coverageReasons = [...new Set([...parsed.coverageReasons, ...inventoryReasons])]
+    .sort(compareCodeUnits);
   const rawContentDigest = `sha256:${createHash("sha256").update(rawText, "utf8").digest("hex")}`;
   const contentDigest = `sha256:${createHash("sha256").update(canonicalText, "utf8").digest("hex")}`;
   const semanticDigest = sha256(JSON.stringify({
@@ -641,7 +700,7 @@ export function ingestManifestDependencies(
     packageName: parsed.name,
     dependencies: [...parsed.deps].sort((left, right) =>
       compareCodeUnits(`${left.name}\u0000${left.block}\u0000${left.specifier}`, `${right.name}\u0000${right.block}\u0000${right.specifier}`)),
-    coverageReasons: parsed.coverageReasons,
+    coverageReasons,
   }));
   const evidenceRefs = [`manifest-ingest:${contentDigest}`];
   const written = writeDependencies(db, {
@@ -651,7 +710,7 @@ export function ingestManifestDependencies(
     packageName: parsed.name,
     deps: parsed.deps,
     ecosystem: parsed.ecosystem,
-    coverageReasons: parsed.coverageReasons,
+    coverageReasons,
     contentDigest,
     rawContentDigest,
     semanticDigest,
@@ -666,8 +725,8 @@ export function ingestManifestDependencies(
     packageName: parsed.name,
     dependencies: written.dependencies,
     skipped: written.skipped,
-    coverage: parsed.coverageReasons.length ? "unknown" : "complete",
-    coverageReasons: parsed.coverageReasons,
+    coverage: coverageReasons.length ? "unknown" : "complete",
+    coverageReasons,
     contentDigest,
     rawContentDigest,
     semanticDigest,

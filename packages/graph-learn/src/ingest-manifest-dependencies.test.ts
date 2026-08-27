@@ -1,12 +1,13 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { ingestManifestDependencies } from "./ingest-manifest-dependencies.js";
 import { ingestControlPlane } from "./ingest.js";
 import { ingestLspSymbols } from "./lsp-ingest.js";
 import { runGraphQuery } from "./query.js";
-import { edgesFrom, getNode, listNodesByKind, openGraphLearnMemory, upsertEdge, upsertNode, type GraphLearnDb } from "./store.js";
+import { edgesFrom, getNode, listNodesByKind, openGraphLearnDb, openGraphLearnMemory, upsertEdge, upsertNode, type GraphLearnDb } from "./store.js";
 
 const opened: GraphLearnDb[] = [];
 
@@ -156,6 +157,69 @@ describe("ingestManifestDependencies", () => {
     expect(history.filter((edge) => edge.valid_to === null)).toHaveLength(1);
   });
 
+  it("persists the manifest stream clock across normal and tombstone replay", () => {
+    const db = openGraphLearnMemory();
+    opened.push(db);
+    const observe = (text: string, observedAt: string) => ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-clock", tenantId: "tenant-a", observedAt,
+      files: [{ path: "package.json", text }],
+    });
+    const normal = JSON.stringify({ name: "shop", dependencies: { stripe: "1" } });
+    const first = observe(normal, "2026-08-27T10:00:00.000Z");
+    expect(observe(normal, "2026-08-27T12:00:00.000Z").versionId).toBe(first.versionId);
+    expect(() => observe(JSON.stringify({ name: "shop" }), "2026-08-27T12:00:00.000Z"))
+      .toThrow("manifest_ingest_observed_at_non_monotonic");
+    expect(() => observe(JSON.stringify({ name: "shop" }), "2026-08-27T11:00:00.000Z"))
+      .toThrow("manifest_ingest_observed_at_non_monotonic");
+
+    const malformed = observe("{", "2026-08-27T13:00:00.000Z");
+    expect(observe("{", "2026-08-27T15:00:00.000Z").versionId).toBe(malformed.versionId);
+    expect(() => observe("{bad", "2026-08-27T15:00:00.000Z"))
+      .toThrow("manifest_ingest_observed_at_non_monotonic");
+    expect(() => observe("{bad", "2026-08-27T14:00:00.000Z"))
+      .toThrow("manifest_ingest_observed_at_non_monotonic");
+  });
+
+  it("fences cross-manifest replacement ordering with the repository inventory clock", () => {
+    const db = openGraphLearnMemory();
+    opened.push(db);
+    ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-polyglot-clock", tenantId: "tenant-a",
+      observedAt: "2026-08-27T12:00:00.000Z",
+      files: [{ path: "package.json", text: JSON.stringify({ name: "app" }) }],
+    });
+    expect(() => ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-polyglot-clock", tenantId: "tenant-a",
+      observedAt: "2026-08-27T11:00:00.000Z",
+      files: [{ path: "pyproject.toml", text: '[project]\nname="app"\n' }],
+    })).toThrow("manifest_ingest_observed_at_non_monotonic");
+  });
+
+  it("adds the durable manifest stream clock when opening an existing graph database", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-graph-upgrade-"));
+    const path = join(dir, "graph.sqlite");
+    let db: GraphLearnDb | undefined;
+    try {
+      const old = new DatabaseSync(path);
+      old.exec("CREATE TABLE existing_volume_marker (id TEXT PRIMARY KEY)");
+      old.close();
+      db = openGraphLearnDb(path);
+      const columns = db.raw.prepare("PRAGMA table_info(gl_manifest_stream_heads_v1)")
+        .all() as Array<{ name: string }>;
+      expect(columns.map((column) => column.name)).toEqual([
+        "tenant_id", "repository_id", "manifest_stream_path", "last_observed_at",
+      ]);
+      expect(ingestManifestDependencies(db, {
+        repoPath: "/unused", repoId: "repo-upgrade", tenantId: "tenant-a",
+        observedAt: "2026-08-27T10:00:00.000Z",
+        files: [{ path: "package.json", text: JSON.stringify({ name: "app" }) }],
+      }).status).toBe("ingested");
+    } finally {
+      db?.raw.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("skips unparseable manifests rather than inventing edges", () => {
     const db = openGraphLearnMemory();
     opened.push(db);
@@ -246,6 +310,46 @@ describe("ingestManifestDependencies", () => {
       repoPath: "/unused", repoId: "repo-go", tenantId: "tenant-a",
       files: [{ path: "go.mod", text: "module example.com/app\nrequire example.com/lib v1.0.0\nreplace example.com/lib => ../lib\n" }],
     })).toMatchObject({ coverage: "unknown", coverageReasons: ["go_replace_topology_not_expanded"] });
+  });
+
+  it("marks every additional supported manifest as explicitly unexpanded", () => {
+    const db = openGraphLearnMemory();
+    opened.push(db);
+    const withWorkspaceManifest = ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-polyglot", tenantId: "tenant-a",
+      files: [
+        { path: "package.json", text: JSON.stringify({ name: "app" }) },
+        { path: "packages/worker/pyproject.toml", text: '[project]\nname="worker"\n' },
+        { path: "tools/go.mod", text: "module example.com/tools\n" },
+      ],
+    });
+    expect(withWorkspaceManifest).toMatchObject({
+      coverage: "unknown",
+      coverageReasons: [
+        "supported_manifest_not_ingested:packages/worker/pyproject.toml",
+        "supported_manifest_not_ingested:tools/go.mod",
+      ],
+    });
+    const onlyRoot = ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-root-only", tenantId: "tenant-a",
+      files: [{ path: "package.json", text: JSON.stringify({ name: "app" }) }],
+    });
+    expect(onlyRoot).toMatchObject({ coverage: "complete", coverageReasons: [] });
+
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-manifest-inventory-"));
+    try {
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "app" }));
+      writeFileSync(join(dir, "go.mod"), "module example.com/tools\n");
+      const onDisk = ingestManifestDependencies(db, {
+        repoPath: dir, repoId: "repo-on-disk", tenantId: "tenant-a",
+      });
+      expect(onDisk).toMatchObject({
+        coverage: "unknown",
+        coverageReasons: ["supported_manifest_not_ingested:go.mod"],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("matches repository canonical text digests while retaining raw BOM and CRLF provenance", () => {

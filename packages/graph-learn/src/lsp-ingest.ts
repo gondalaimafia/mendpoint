@@ -87,6 +87,7 @@ export function ingestLspSymbols(
     repoPath: string;
     repoId?: string;
     tenantId?: string;
+    observedAt?: string;
     files?: Array<{ path: string; text: string }>;
     backends?: LspBackend[];
   },
@@ -128,7 +129,12 @@ export function ingestLspSymbols(
       repoId,
       maxFiles: 200,
     });
-    ingestManifestDependencies(db, { repoPath: opts.repoPath, repoId, tenantId: opts.tenantId });
+    ingestManifestDependencies(db, {
+      repoPath: opts.repoPath,
+      repoId,
+      tenantId: opts.tenantId,
+      observedAt: opts.observedAt,
+    });
     ingestInvariantAnnotations(db, { repoPath: opts.repoPath, repoId });
     return {
       repoId,
@@ -209,6 +215,7 @@ export function ingestLspSymbols(
     repoPath: opts.repoPath,
     repoId,
     tenantId: opts.tenantId,
+    observedAt: opts.observedAt,
     files: files.map((file) => ({ path: file.path, text: file.text })),
   });
   ingestInvariantAnnotations(db, {
