@@ -74,9 +74,14 @@ import {
 } from "@mendpoint/db";
 import {
   listCatalogFeeds,
+  openReleaseIngestionStore,
+  parseReleasePollConfiguration,
   pollAllFeeds,
   probeKnownSdks,
   runFeedSchedules,
+  type ParsedReleasePollConfiguration,
+  type ReleaseIngestionStore,
+  type ReleasePollConfigurationV1,
 } from "@mendpoint/catalog";
 import { assessFeedFreshness, nowIso, resolveRenamedEnv } from "@mendpoint/shared";
 import { resolveVerifierRuntimeConfig } from "@mendpoint/verifier";
@@ -245,6 +250,77 @@ import {
   type WardenCiRepositoryConfig,
 } from "./warden-ci-runtime.js";
 
+type ClosableWorkerStore = Readonly<{ close: () => void }>;
+
+export function initializeWorkerServiceDurableState<
+  TDb,
+  TTransformerStore extends ClosableWorkerStore,
+  TReleaseStore extends ClosableWorkerStore,
+>(
+  options: Readonly<{
+    jobConcurrency: number;
+    releaseConfigurationCount: number;
+    openFeedDb: () => TDb;
+    openHeartbeatDb: () => TDb;
+    openTransformerDb: () => TDb;
+    openTransformerStore: () => TTransformerStore;
+    openJobDb: (lane: number) => TDb;
+    openReleaseStore: () => TReleaseStore;
+    closeDb: (db: TDb) => void;
+  }>,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+) {
+  return initializeWorkerDurableState(() => {
+    const pendingClosures: Array<() => void> = [];
+    const track = <T>(value: T, close: (value: T) => void): T => {
+      pendingClosures.push(() => close(value));
+      return value;
+    };
+    const closeAll = (reportFailure: boolean): void => {
+      let firstFailure: unknown;
+      while (pendingClosures.length) {
+        try {
+          pendingClosures.pop()!();
+        } catch (error) {
+          firstFailure ??= error;
+        }
+      }
+      if (reportFailure && firstFailure) throw firstFailure;
+    };
+    try {
+      const feedDb = track(options.openFeedDb(), options.closeDb);
+      const heartbeatDb = track(options.openHeartbeatDb(), options.closeDb);
+      const transformerDb = track(options.openTransformerDb(), options.closeDb);
+      const transformerStore = track(
+        options.openTransformerStore(),
+        (store) => store.close(),
+      );
+      const jobDbs = Array.from({ length: options.jobConcurrency }, (_, lane) =>
+        track(options.openJobDb(lane), options.closeDb));
+      const releaseStore = options.releaseConfigurationCount > 0
+        ? track(options.openReleaseStore(), (store) => store.close())
+        : undefined;
+      let closed = false;
+      return Object.freeze({
+        feedDb,
+        heartbeatDb,
+        transformerDb,
+        transformerStore,
+        jobDbs: Object.freeze(jobDbs),
+        releaseStore,
+        close: () => {
+          if (closed) return;
+          closed = true;
+          closeAll(true);
+        },
+      });
+    } catch (error) {
+      closeAll(false);
+      throw error;
+    }
+  }, env);
+}
+
 const WORKER_ID =
   process.env.MENDPOINT_WORKER_ID ?? `worker:${process.pid}:${randomUUID()}`;
 const wardenMaintenanceRowOffsets = new Map<string, number>();
@@ -309,7 +385,97 @@ export type WorkerHeartbeat = {
   feedLastSuccessAt?: string;
   feedStaleAfterMs?: number;
   feedPollStartedAt?: string;
+  releasePollingConfigured: boolean;
+  releasePollConfigurationCount: number;
+  feedScheduleStatus: "not_started" | "healthy" | "degraded";
+  releaseConfigurationStatus: "not_started" | "not_configured" | "healthy" | "degraded";
+  releaseConfigurationFailed: number;
 };
+
+const RELEASE_POLL_CONFIGURATIONS_ERROR =
+  "MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON is invalid";
+const RELEASE_POLL_CONFIGURATION_LIMIT = 500;
+const RELEASE_POLL_DATA_DIR_ERROR =
+  "MENDPOINT_DATA_DIR must be absolute when release polling is configured";
+
+export function parseReleasePollConfigurationsFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): readonly ReleasePollConfigurationV1[] {
+  const encoded = env.MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON;
+  if (!encoded?.trim()) return Object.freeze([]);
+  try {
+    const raw: unknown = JSON.parse(encoded);
+    if (!Array.isArray(raw) || raw.length > RELEASE_POLL_CONFIGURATION_LIMIT) {
+      throw new Error(RELEASE_POLL_CONFIGURATIONS_ERROR);
+    }
+    const configuredTenantId = env.MENDPOINT_TENANT_ID?.trim() || undefined;
+    const bindings = new Set<string>();
+    const configurations = raw.map((candidate): ReleasePollConfigurationV1 => {
+      const parsed: ParsedReleasePollConfiguration = parseReleasePollConfiguration(
+        candidate as ReleasePollConfigurationV1,
+      );
+      if (parsed.status !== "valid") throw new Error(RELEASE_POLL_CONFIGURATIONS_ERROR);
+      const configuration = parsed.config;
+      if (configuredTenantId && configuration.tenantId !== configuredTenantId) {
+        throw new Error(RELEASE_POLL_CONFIGURATIONS_ERROR);
+      }
+      const binding = JSON.stringify([
+        configuration.tenantId,
+        configuration.provider.slug,
+      ]);
+      if (bindings.has(binding)) throw new Error(RELEASE_POLL_CONFIGURATIONS_ERROR);
+      bindings.add(binding);
+      return configuration;
+    });
+    return Object.freeze(configurations);
+  } catch {
+    throw new Error(RELEASE_POLL_CONFIGURATIONS_ERROR);
+  }
+}
+
+export function releaseIngestionWorkerPath(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  cwd = process.cwd(),
+): string {
+  const configuredRoot = env.MENDPOINT_DATA_DIR?.trim();
+  if (env.NODE_ENV === "production" && (!configuredRoot || !isAbsolute(configuredRoot))) {
+    throw new Error(RELEASE_POLL_DATA_DIR_ERROR);
+  }
+  return resolve(configuredRoot || join(cwd, "data"), "release-ingestion.sqlite");
+}
+
+type WorkerFeedScheduleRunResult = Readonly<{
+  status: "healthy" | "degraded";
+  failed: number;
+  health: Readonly<{ ok: boolean; status: string }>;
+  configurationFailed: number;
+  configurationHealth: Readonly<{
+    ok: boolean;
+    status: "healthy" | "degraded";
+    failed: number;
+    failures: readonly unknown[];
+  }>;
+}>;
+
+export function summarizeWorkerFeedScheduleRun(
+  result: WorkerFeedScheduleRunResult,
+  configuredCount: number,
+) {
+  return Object.freeze({
+    ok:
+      result.status === "healthy" &&
+      result.health.ok === true &&
+      result.configurationHealth.ok === true &&
+      result.configurationFailed === 0 &&
+      result.configurationHealth.failed === 0 &&
+      result.failed === 0,
+    feedScheduleStatus: result.status,
+    releaseConfigurationStatus: configuredCount === 0
+      ? "not_configured" as const
+      : result.configurationHealth.status,
+    releaseConfigurationFailed: result.configurationFailed,
+  });
+}
 
 export function summarizeCustomerFeedEvidence(
   rows: readonly FeedScheduleRow[],
@@ -1705,6 +1871,22 @@ export function validateWorkerProductionEnv(
 ): string[] {
   if (env.NODE_ENV !== "production") return [];
   const errors: string[] = [];
+  if (env.MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON?.trim()) {
+    let releaseConfigurationsValid = false;
+    try {
+      parseReleasePollConfigurationsFromEnv(env);
+      releaseConfigurationsValid = true;
+    } catch {
+      errors.push(RELEASE_POLL_CONFIGURATIONS_ERROR);
+    }
+    if (releaseConfigurationsValid) {
+      try {
+        releaseIngestionWorkerPath(env);
+      } catch {
+        errors.push(RELEASE_POLL_DATA_DIR_ERROR);
+      }
+    }
+  }
   const profile = deploymentProfile(env);
   if (!env.MENDPOINT_DEPLOYMENT_PROFILE) {
     errors.push("MENDPOINT_DEPLOYMENT_PROFILE must be explicitly set to demo, pilot, or customer");
@@ -4033,20 +4215,38 @@ async function runJobWorker(intervalMs: number) {
 
 async function runService(intervalMs: number) {
   const jobConcurrency = parseJobConcurrency(process.env.MENDPOINT_JOB_CONCURRENCY);
-  const durableState = initializeWorkerDurableState(() => ({
-    feedDb: createDb(),
-    heartbeatDb: createDb(),
-    transformerDb: createDb(),
-    transformerStore: new TransformerPilotExecutionStore(
-      transformerPilotWorkerPath(),
-    ),
-    jobDbs: Array.from({ length: jobConcurrency }, () => createDb()),
-  }));
-  const { feedDb, heartbeatDb, transformerDb, transformerStore, jobDbs } = durableState;
-  const heartbeatPath = process.env.MENDPOINT_WORKER_HEARTBEAT_PATH;
+  const releaseFeeds = parseReleasePollConfigurationsFromEnv(process.env);
+  const heartbeatPath = process.env.MENDPOINT_WORKER_HEARTBEAT_PATH?.trim();
   if (!heartbeatPath) {
     throw new Error("MENDPOINT_WORKER_HEARTBEAT_PATH is required for run-service");
   }
+  if (!isAbsolute(heartbeatPath)) {
+    throw new Error("MENDPOINT_WORKER_HEARTBEAT_PATH must be absolute for run-service");
+  }
+  const releasePath = releaseFeeds.length > 0
+    ? releaseIngestionWorkerPath(process.env)
+    : undefined;
+  const durableState = initializeWorkerServiceDurableState({
+    jobConcurrency,
+    releaseConfigurationCount: releaseFeeds.length,
+    openFeedDb: () => createDb(),
+    openHeartbeatDb: () => createDb(),
+    openTransformerDb: () => createDb(),
+    openTransformerStore: () => new TransformerPilotExecutionStore(
+      transformerPilotWorkerPath(),
+    ),
+    openJobDb: () => createDb(),
+    openReleaseStore: (): ReleaseIngestionStore => openReleaseIngestionStore(releasePath!),
+    closeDb: (db) => db.raw.close(),
+  });
+  const {
+    feedDb,
+    heartbeatDb,
+    transformerDb,
+    transformerStore,
+    jobDbs,
+    releaseStore,
+  } = durableState;
   const configuredTenantId = process.env.MENDPOINT_TENANT_ID?.trim() || undefined;
   const customerProfile = deploymentProfile(process.env) === "customer";
   const mutationFenceEnabled = customerProfile ||
@@ -4059,8 +4259,13 @@ async function runService(intervalMs: number) {
       nowMs,
     );
   let feedEvidence = readFeedEvidence();
-  let feedPollOk = !customerProfile || feedEvidence.fresh;
+  let feedPollOk = releaseFeeds.length === 0 &&
+    (!customerProfile || feedEvidence.fresh);
   let feedPollStartedAt: string | undefined;
+  let feedScheduleStatus: WorkerHeartbeat["feedScheduleStatus"] = "not_started";
+  let releaseConfigurationStatus: WorkerHeartbeat["releaseConfigurationStatus"] =
+    releaseFeeds.length > 0 ? "not_started" : "not_configured";
+  let releaseConfigurationFailed = 0;
   let jobs: JobDrainResult = {
     claimed: 0,
     succeeded: 0,
@@ -4118,6 +4323,11 @@ async function runService(intervalMs: number) {
         feedPollingEnabled,
         feedPollOk: heartbeatFeedOk,
         feedScheduleCount: feedEvidence.scheduleCount,
+        releasePollingConfigured: releaseFeeds.length > 0,
+        releasePollConfigurationCount: releaseFeeds.length,
+        feedScheduleStatus,
+        releaseConfigurationStatus,
+        releaseConfigurationFailed,
         ...(feedEvidence.lastSuccessAt
           ? { feedLastSuccessAt: feedEvidence.lastSuccessAt }
           : {}),
@@ -4186,7 +4396,7 @@ async function runService(intervalMs: number) {
     let failures = 0;
     while (!shutdown.signal.aborted) {
       feedPollingEnabled = process.env.MENDPOINT_FEED_POLLING_ENABLED !== "0";
-      if (!customerProfile) feedPollOk = true;
+      if (!customerProfile && releaseFeeds.length === 0) feedPollOk = true;
       if (feedPollingEnabled) {
         const mutationLease = mutationFenceEnabled
           ? tryAcquireMutationLease(mutationFenceRoot)
@@ -4196,6 +4406,7 @@ async function runService(intervalMs: number) {
           continue;
         }
         feedPollStartedAt = nowIso();
+        if (releaseFeeds.length > 0) feedPollOk = false;
         try {
           const scheduled = await runFeedSchedules({
             db: feedDb,
@@ -4205,6 +4416,7 @@ async function runService(intervalMs: number) {
             maxConcurrency: Number(process.env.MENDPOINT_FEED_CONCURRENCY ?? 4),
             localOnly: process.env.POLL_LOCAL_ONLY === "1",
             runPipeline: true,
+            ...(releaseStore ? { releaseFeeds, releaseStore } : {}),
             pipeline: async (slug, database, context) => ({
               jobId: enqueueFeedPipelineJob(database, {
                 tenantId: context.tenantId,
@@ -4215,21 +4427,36 @@ async function runService(intervalMs: number) {
             }),
           });
           feedEvidence = readFeedEvidence();
-          feedPollOk = scheduled.failed === 0 && scheduled.health.ok && (
+          const scheduleSummary = summarizeWorkerFeedScheduleRun(
+            scheduled,
+            releaseFeeds.length,
+          );
+          feedScheduleStatus = scheduleSummary.feedScheduleStatus;
+          releaseConfigurationStatus = scheduleSummary.releaseConfigurationStatus;
+          releaseConfigurationFailed = scheduleSummary.releaseConfigurationFailed;
+          feedPollOk = scheduleSummary.ok && (
             !customerProfile || feedEvidence.fresh
           );
           console.log(
-            `Feed schedules: claimed=${scheduled.claimed} succeeded=${scheduled.succeeded} failed=${scheduled.failed} replayed=${scheduled.alreadyClaimed} health=${scheduled.health.status}`,
+            `Feed schedules: claimed=${scheduled.claimed} succeeded=${scheduled.succeeded} failed=${scheduled.failed} replayed=${scheduled.alreadyClaimed} status=${scheduleSummary.feedScheduleStatus} releaseConfigured=${releaseFeeds.length} releaseConfigurationStatus=${scheduleSummary.releaseConfigurationStatus} releaseConfigurationFailed=${scheduleSummary.releaseConfigurationFailed}`,
           );
-        } catch (error) {
+        } catch {
           feedPollOk = false;
-          console.error(error);
+          feedScheduleStatus = "degraded";
+          if (releaseFeeds.length > 0) releaseConfigurationStatus = "degraded";
+          console.error("Feed schedules: status=degraded");
         } finally {
           feedPollStartedAt = undefined;
           mutationLease?.release();
         }
       } else {
         feedPollStartedAt = undefined;
+        if (releaseFeeds.length > 0) {
+          feedPollOk = false;
+          feedScheduleStatus = "not_started";
+          releaseConfigurationStatus = "not_started";
+          releaseConfigurationFailed = 0;
+        }
       }
       failures = feedPollOk ? 0 : failures + 1;
       emitHeartbeat();
@@ -4350,16 +4577,15 @@ async function runService(intervalMs: number) {
     clearInterval(heartbeatTimer);
     if (telemetryFlushTimer) clearInterval(telemetryFlushTimer);
     clearInterval(auditIntegrityTimer);
-    // Final drain of whatever telemetry accumulated since the last cadence tick.
-    // Safe when disabled (resets buffers, never throws, never hangs).
-    await flushTelemetry();
     process.off("SIGTERM", requestShutdown);
     process.off("SIGINT", requestShutdown);
-    feedDb.raw.close();
-    transformerStore.close();
-    transformerDb.raw.close();
-    for (const jobDb of jobDbs) jobDb.raw.close();
-    heartbeatDb.raw.close();
+    try {
+      // Final drain of whatever telemetry accumulated since the last cadence tick.
+      // Safe when disabled (resets buffers, never throws, never hangs).
+      await flushTelemetry();
+    } finally {
+      durableState.close();
+    }
   }
 }
 

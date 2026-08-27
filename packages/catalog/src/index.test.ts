@@ -10,6 +10,7 @@ import {
   findVendorByPackage,
   listCatalog,
   pollReleaseSource,
+  parseReleasePollConfiguration,
   isReleasePollErrorCode,
 } from "./index.js";
 
@@ -60,5 +61,6 @@ describe("vendor catalog", () => {
     expect(RELEASE_POLL_MAX_REFERENCES).toBe(4_096);
     expect(isReleasePollErrorCode("release_poll_fetch_failed")).toBe(true);
     expect(isReleasePollErrorCode("password=secret")).toBe(false);
+    expect(parseReleasePollConfiguration).toBeTypeOf("function");
   });
 });

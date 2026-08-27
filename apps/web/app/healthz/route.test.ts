@@ -26,6 +26,11 @@ describe("public deployment health", () => {
         recordedAt: new Date().toISOString(),
         feedPollingEnabled: false,
         feedPollOk: true,
+        releasePollingConfigured: false,
+        releasePollConfigurationCount: 0,
+        feedScheduleStatus: "not_started",
+        releaseConfigurationStatus: "not_configured",
+        releaseConfigurationFailed: 0,
         jobs: { failed: 0 },
       }),
     );
@@ -35,7 +40,82 @@ describe("public deployment health", () => {
 
     const response = await GET();
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ ok: true });
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      checks: { worker: {
+        releasePollingConfigured: false,
+        releasePollConfigurationCount: 0,
+        feedScheduleStatus: "not_started",
+        releaseConfigurationStatus: "not_configured",
+        releaseConfigurationFailed: 0,
+      } },
+    });
+  });
+
+  it("exposes release scheduler degradation while feedPollOk remains the readiness gate", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-release-poll-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "worker-heartbeat.json");
+    writeFileSync(heartbeatPath, JSON.stringify({
+      ok: true,
+      recordedAt: new Date().toISOString(),
+      feedPollingEnabled: true,
+      feedPollOk: false,
+      releasePollingConfigured: true,
+      releasePollConfigurationCount: 2,
+      feedScheduleStatus: "degraded",
+      releaseConfigurationStatus: "degraded",
+      releaseConfigurationFailed: 1,
+      jobs: { failed: 0 },
+    }));
+    process.env.MENDPOINT_WORKER_HEARTBEAT_PATH = heartbeatPath;
+    process.env.MENDPOINT_API_KEY = `me_${"a".repeat(40)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+
+    const response = await GET();
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      checks: { worker: {
+        ok: false,
+        releasePollingConfigured: true,
+        releasePollConfigurationCount: 2,
+        feedScheduleStatus: "degraded",
+        releaseConfigurationStatus: "degraded",
+        releaseConfigurationFailed: 1,
+      } },
+    });
+  });
+
+  it("fails closed before configured release polling proves its first healthy run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-release-not-started-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "worker-heartbeat.json");
+    writeFileSync(heartbeatPath, JSON.stringify({
+      ok: true,
+      recordedAt: new Date().toISOString(),
+      feedPollingEnabled: true,
+      feedPollOk: true,
+      releasePollingConfigured: true,
+      releasePollConfigurationCount: 1,
+      feedScheduleStatus: "not_started",
+      releaseConfigurationStatus: "not_started",
+      releaseConfigurationFailed: 0,
+      jobs: { failed: 0 },
+    }));
+    process.env.MENDPOINT_WORKER_HEARTBEAT_PATH = heartbeatPath;
+    process.env.MENDPOINT_API_KEY = `me_${"a".repeat(40)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+
+    const response = await GET();
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      checks: { worker: {
+        ok: false,
+        releasePollingConfigured: true,
+        feedScheduleStatus: "not_started",
+        releaseConfigurationStatus: "not_started",
+      } },
+    });
   });
 
   it("fails when the worker heartbeat is stale", async () => {
