@@ -1,6 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  insertArtifactManifest,
   listRepositorySnapshots,
   recordAdaptiveCandidate,
   recordExecutionCostFromRoutingLedger,
@@ -356,41 +358,82 @@ function requireAdaptiveRetention(value: number | undefined): number {
 }
 
 /**
- * Register already-persisted `artifact_manifests` rows named in the complete
- * attempt's evidence refs. Missing manifests and unbound Missions skip — this
- * never invents a manifest and never fails the completed attempt.
+ * Bridge the attempt runner's authenticated filesystem artifacts into the
+ * tenant artifact store, then register those exact objects on the bound
+ * Mission. The runner invokes this after both legacy and checkpoint completion.
  */
-export function registerRegaugeCompleteAttemptArtifacts(
+export function registerRegaugeVerifiedCandidateArtifacts(
   db: AppDb,
-  input: {
-    tenantId: string;
-    campaignId: string;
-    unitId: string;
-    evidenceRefs: readonly string[];
-    createdAt: string;
-    sourceSnapshot?: string | null;
-    producerPrincipalId?: string | null;
-  },
+  input: TransformerVerifiedCandidateCompletion,
 ) {
-  const artifacts = [...new Set(input.evidenceRefs.map((id) => id.trim()).filter(Boolean))]
-    .filter((artifactId) => {
-      const row = db.raw.prepare(
-        `SELECT id FROM artifact_manifests WHERE id = ? AND tenant_id = ?`,
-      ).get(artifactId, input.tenantId) as { id: string } | undefined;
-      return Boolean(row);
-    })
-    .map((artifactId) => ({
-      role: "candidate_patch" as const,
-      artifactId,
-      label: `regauge candidate ${input.unitId}`,
-    }));
+  const { lease, artifact, execution } = input;
+  const mission = resolveMissionForRegaugeCampaign(db, lease.tenantId, lease.campaignId);
+  if (!mission) return { status: "skipped_unbound" } as const;
+
+  const candidateContent = readFileSync(artifact.manifestPath, "utf8");
+  const candidateSha256 = sha256(candidateContent);
+  const candidateArtifactId = `tcman_${candidateSha256}`;
+  if (
+    artifact.manifestDigest !== `sha256:${candidateSha256}` ||
+    !artifact.evidenceRefs.includes(candidateArtifactId)
+  ) {
+    throw new Error("regauge_candidate_manifest_evidence_mismatch");
+  }
+  const executionContent = readFileSync(execution.evidence.path, "utf8");
+  const executionSha256 = sha256(executionContent);
+  const executionArtifactId = execution.evidence.record.evidenceId;
+  if (
+    execution.evidence.digest !== `sha256:${executionSha256}` ||
+    !artifact.evidenceRefs.includes(executionArtifactId)
+  ) {
+    throw new Error("regauge_execution_evidence_mismatch");
+  }
+
+  insertArtifactManifest(db, {
+    id: candidateArtifactId,
+    tenantId: lease.tenantId,
+    kind: "regauge_candidate_manifest",
+    schemaVersion: 1,
+    sha256: candidateSha256,
+    mediaType: "application/vnd.mendpoint.regauge-candidate-manifest+json",
+    sizeBytes: Buffer.byteLength(candidateContent, "utf8"),
+    storageRef: `sqlite://artifact_manifests/${candidateArtifactId}#content_text`,
+    content: candidateContent,
+    producerPrincipalId: mission.ownerPrincipalId,
+    createdAt: input.observedAt,
+  });
+  insertArtifactManifest(db, {
+    id: executionArtifactId,
+    tenantId: lease.tenantId,
+    kind: "regauge_recipe_execution",
+    schemaVersion: execution.evidence.record.schemaVersion,
+    sha256: executionSha256,
+    mediaType: "application/vnd.mendpoint.regauge-recipe-execution+json",
+    sizeBytes: Buffer.byteLength(executionContent, "utf8"),
+    storageRef: `sqlite://artifact_manifests/${executionArtifactId}#content_text`,
+    content: executionContent,
+    producerPrincipalId: mission.ownerPrincipalId,
+    createdAt: input.observedAt,
+  });
   return tryRegisterRegaugeCampaignMissionArtifacts(db, {
-    tenantId: input.tenantId,
-    campaignId: input.campaignId,
-    producerPrincipalId: input.producerPrincipalId?.trim() || "regauge-pilot-lane",
-    createdAt: input.createdAt,
-    sourceSnapshot: input.sourceSnapshot,
-    artifacts,
+    tenantId: lease.tenantId,
+    campaignId: lease.campaignId,
+    producerPrincipalId: mission.ownerPrincipalId,
+    createdAt: input.observedAt,
+    sourceSnapshot: lease.snapshot.snapshotId,
+    artifacts: [
+      {
+        role: "candidate_patch",
+        artifactId: candidateArtifactId,
+        label: `regauge candidate ${lease.unitId}`,
+      },
+      {
+        role: "verification_report",
+        artifactId: executionArtifactId,
+        label: `regauge verification ${lease.unitId}`,
+        parentArtifactId: candidateArtifactId,
+      },
+    ],
   });
 }
 
@@ -449,25 +492,6 @@ function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): Transformer
         // handoff is not indistinguishable from a silent no-op.
         console.error(
           `  regauge mission-task review handoff failed campaign=${input.campaignId} unit=${input.unitId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-      try {
-        registerRegaugeCompleteAttemptArtifacts(db, {
-          tenantId: input.tenantId,
-          campaignId: input.campaignId,
-          unitId: input.unitId,
-          evidenceRefs: input.evidenceRefs,
-          createdAt: input.observedAt,
-          sourceSnapshot: unit?.snapshot.snapshotId ?? null,
-          producerPrincipalId: resolveMissionForRegaugeCampaign(
-            db, input.tenantId, input.campaignId,
-          )?.ownerPrincipalId ?? null,
-        });
-      } catch (error) {
-        console.error(
-          `  regauge mission artifact register failed campaign=${input.campaignId} unit=${input.unitId}: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -1154,9 +1178,23 @@ export async function runTransformerPilotLaneOnce(
               throw error;
             }
           },
-          ...(input.onVerifiedCandidateCompleted
-            ? { onVerifiedCandidateCompleted: input.onVerifiedCandidateCompleted }
-            : {}),
+          onVerifiedCandidateCompleted: async (completion) => {
+            try {
+              const result = registerRegaugeVerifiedCandidateArtifacts(input.db, completion);
+              if (result.status === "failed") {
+                console.error(
+                  `  regauge mission artifact register failed campaign=${completion.lease.campaignId} unit=${completion.lease.unitId}: ${result.reason}`,
+                );
+              }
+            } catch (error) {
+              console.error(
+                `  regauge mission artifact register failed campaign=${completion.lease.campaignId} unit=${completion.lease.unitId}: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            }
+            await input.onVerifiedCandidateCompleted?.(completion);
+          },
         }),
     });
     if (routed.status === "handoff") {

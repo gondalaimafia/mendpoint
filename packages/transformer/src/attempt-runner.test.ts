@@ -287,10 +287,14 @@ describe("Transformer production attempt runner", () => {
       complete: checkpointComplete,
     }));
     const { input, spies } = harness({ commandRunner });
+    const observer = vi.fn(async () => {
+      expect(checkpointComplete).toHaveBeenCalledTimes(1);
+    });
 
     const result = await runTransformerAttempt({
       ...input,
       checkpoint: { open: checkpointOpen },
+      onVerifiedCandidateCompleted: observer,
     });
 
     expect(result.status).toBe("completed");
@@ -301,6 +305,10 @@ describe("Transformer production attempt runner", () => {
       artifact: expect.objectContaining({ outputDigest: APPLICATION.outputDigest }),
       actualCostUsd: 0.12,
       accounting: expect.objectContaining({ actualCostUsd: 0.12 }),
+    }));
+    expect(observer).toHaveBeenCalledWith(expect.objectContaining({
+      lease: expect.objectContaining({ campaignId: "campaign-a" }),
+      artifact: expect.objectContaining({ outputDigest: APPLICATION.outputDigest }),
     }));
     expect(spies.completeAttempt).not.toHaveBeenCalled();
     expect(spies.recordAttemptFailure).not.toHaveBeenCalled();

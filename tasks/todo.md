@@ -3295,7 +3295,6 @@ GREEN: a single preparation step now writes only run metadata to a retained arti
 RED: `npm run docs:check` reported exactly `model-router.html`, `model-router.md`, `billing-usage.html`, and `billing-usage.md` as stale.
 
 GREEN: the canonical generator changed only those four artifacts. It removed references to the absent billing and router-runtime test files and aligned the router upload copy with the immutable decision record in the source catalog. `docs:check`, `names:check`, `claims:check`, and the production build pass; strict diff review found no source-catalog rewrite.
-
 ### 2026-08-25 ReGauge authenticated state transfer
 
 - [x] Define a versioned, authenticated, encrypted transfer manifest for the exact four live SQLite stores and immutable authority bindings.
@@ -3333,3 +3332,20 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 #### Review
 
 Main revision `c8d51caa` merged a reviewer key that the runtime ignores and retained null App IDs. The repair uses the verified, nonsecret identity tuple for `mendpoint-closure-authority[bot]` and the observed GitHub Actions App ID. The bot is temporarily bound under `Claude`, which permits reciprocal review of the current Codex and Cursor queue; a second distinct reviewer identity is still required before Claude-owned pull requests can satisfy the same invariant. The 26 GitHub-authority tests, 30 matrix tests, and 12 proposal-authority tests pass, the scripts TypeScript project passes, and `git diff --check` is clean.
+
+### 2026-08-25 PR #448 review remediation
+
+- [x] Trace the exact live ReGauge completion evidence from filesystem persistence to the Mission registry seam.
+- [x] Persist the authenticated candidate manifest and recipe execution evidence as tenant-scoped artifact manifests.
+- [x] Register both artifacts on the bound Mission from the post-completion observer for legacy and checkpoint paths.
+- [x] Make multi-artifact Mission registration atomic and replay-safe.
+- [x] Add live-shape, replay, checkpoint-compatible, tenant, and failure regressions.
+- [x] Run focused tests, affected typechecks, and diff integrity.
+- [ ] Obtain exact-head reciprocal review.
+
+#### Review
+
+- Confirmed blocker: live completions emit `tcman_*` and `tre_execution_*` filesystem evidence references, while the reviewed code only registers IDs that already exist in `artifact_manifests`; production therefore always returns `skipped_no_artifacts` without an independent bridge.
+- The post-completion observer now authenticates both persisted files against the completion digests, stores their exact bytes as tenant-scoped manifests attributed to the Mission owner, and registers candidate plus verification roles with lineage. The same observer is proven to run after checkpoint completion.
+- Registration uses an internal SQLite savepoint, so a later invalid artifact rolls back earlier Mission metadata even inside an outer transaction. Exact replay leaves two rows and one lineage edge.
+- Verification: 13 focused artifact tests, 25 live ReGauge lane tests, and 39 attempt-runner tests pass. Worker and pipeline typechecks pass, dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
