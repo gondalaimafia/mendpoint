@@ -53,15 +53,25 @@ export {
 } from "./changelog-parse.js";
 
 export {
+  claimReleaseDispatch,
+  completeReleaseDispatch,
+  failReleaseDispatch,
   ingestReleaseDocument,
   listReleaseArtifacts,
+  listReleaseDispatches,
+  listReleaseObservations,
   openReleaseIngestionStore,
   recordReleaseReviewerOverride,
+  rehydrateReleaseArtifact,
   type ReleaseAdapter,
   type ReleaseArtifact,
+  type ReleaseDispatch,
+  type ReleaseDispatchStatus,
   type ReleaseDocumentInput,
   type ReleaseIngestionStore,
+  type ReleaseObservation,
   type ReleaseReviewerOverride,
+  type ReleaseReviewerOverrideResult,
   type SdkReleaseChange,
   type SdkReleaseEvidence,
 } from "./release-ingestion.js";

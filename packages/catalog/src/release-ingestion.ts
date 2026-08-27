@@ -53,6 +53,8 @@ export type ReleaseArtifact = Readonly<{
   sourceItemId: string;
   sourceBodySha256: string;
   contentSha256: string;
+  normalizedClaimSha256: string;
+  identityCanonical: boolean;
   title: string;
   version: string | null;
   publishedAt: string;
@@ -65,6 +67,37 @@ export type ReleaseArtifact = Readonly<{
   reviewerOverride: ReleaseReviewerOverride | null;
   createdAt: string;
 }>;
+
+export type ReleaseObservation = Readonly<{
+  id: string;
+  tenantId: string;
+  artifactId: string;
+  observedAt: string;
+  sourceBodySha256: string;
+  createdAt: string;
+}>;
+
+export type ReleaseDispatchStatus = "pending" | "claimed" | "completed" | "failed";
+
+export type ReleaseDispatch = Readonly<{
+  id: string;
+  tenantId: string;
+  artifactId: string;
+  artifactContentSha256: string;
+  status: ReleaseDispatchStatus;
+  availableAt: string;
+  leaseOwner: string | null;
+  leaseExpiresAt: string | null;
+  leaseGeneration: number;
+  completedAt: string | null;
+  failedAt: string | null;
+  failureCode: string | null;
+  createdAt: string;
+}>;
+
+export type ReleaseReviewerOverrideResult =
+  | Readonly<{ status: "applied"; artifact: ReleaseArtifact }>
+  | Readonly<{ status: "revision_conflict"; expectedRevision: number; actualRevision: number }>;
 
 export type ReleaseIngestionStore = Readonly<{
   raw: DatabaseSync;
@@ -84,7 +117,7 @@ export type ReleaseDocumentInput = Readonly<{
   maxObservationAgeMs?: number;
 }>;
 
-type NormalizedItem = Omit<ReleaseArtifact, "id" | "tenantId" | "providerSlug" | "adapter" | "collectionUrl" | "sourceBodySha256" | "contentSha256" | "reviewerOverride" | "createdAt">;
+type NormalizedItem = Omit<ReleaseArtifact, "id" | "tenantId" | "providerSlug" | "adapter" | "collectionUrl" | "sourceBodySha256" | "contentSha256" | "normalizedClaimSha256" | "identityCanonical" | "reviewerOverride" | "createdAt">;
 
 type ArtifactRow = {
   id: string;
@@ -96,6 +129,8 @@ type ArtifactRow = {
   source_item_id: string;
   source_body_sha256: string;
   content_sha256: string;
+  normalized_claim_sha256: string;
+  identity_canonical: number;
   title: string;
   version: string | null;
   published_at: string;
@@ -105,6 +140,31 @@ type ArtifactRow = {
   confidence: number;
   change_hints_json: string;
   sdk_json: string | null;
+  created_at: string;
+};
+
+type ObservationRow = {
+  id: string;
+  tenant_id: string;
+  artifact_id: string;
+  observed_at: string;
+  source_body_sha256: string;
+  created_at: string;
+};
+
+type DispatchRow = {
+  id: string;
+  tenant_id: string;
+  artifact_id: string;
+  artifact_content_sha256: string;
+  status: ReleaseDispatchStatus;
+  available_at: string;
+  lease_owner: string | null;
+  lease_expires_at: string | null;
+  lease_generation: number;
+  completed_at: string | null;
+  failed_at: string | null;
+  failure_code: string | null;
   created_at: string;
 };
 
@@ -124,7 +184,7 @@ const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const BLOCKED_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1|10(?:\.\d{1,3}){3}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2}|169\.254(?:\.\d{1,3}){2})$/i;
 const SENSITIVE_QUERY = /^(?:access_?token|api_?key|authorization|credential|password|private_?key|secret|signature|token)$/i;
 
-const MIGRATION = `
+const MIGRATION_V1 = `
 CREATE TABLE release_ingestion_artifacts (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
@@ -176,6 +236,89 @@ CREATE TRIGGER release_ingestion_overrides_no_delete BEFORE DELETE ON release_in
 BEGIN SELECT RAISE(ABORT, 'release_ingestion_overrides_append_only'); END;
 `;
 
+const MIGRATION_V2_SCHEMA = `
+DROP TRIGGER release_ingestion_artifacts_no_update;
+DROP TRIGGER release_ingestion_artifacts_no_delete;
+
+CREATE TABLE release_ingestion_artifacts_v2 (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  provider_slug TEXT NOT NULL,
+  adapter TEXT NOT NULL CHECK (adapter IN ('rss', 'atom', 'github_releases', 'provider_page', 'sdk_registry')),
+  collection_url TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  source_item_id TEXT NOT NULL,
+  source_body_sha256 TEXT NOT NULL CHECK (length(source_body_sha256) = 64),
+  content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  normalized_claim_sha256 TEXT NOT NULL CHECK (length(normalized_claim_sha256) = 64),
+  identity_canonical INTEGER NOT NULL CHECK (identity_canonical IN (0, 1)),
+  title TEXT NOT NULL,
+  version TEXT,
+  published_at TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  excerpt TEXT NOT NULL,
+  excerpt_location TEXT NOT NULL,
+  confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+  change_hints_json TEXT NOT NULL,
+  sdk_json TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (id, tenant_id)
+);
+
+CREATE TABLE release_ingestion_observations (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  artifact_id TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  source_body_sha256 TEXT NOT NULL CHECK (length(source_body_sha256) = 64),
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, artifact_id, observed_at, source_body_sha256),
+  FOREIGN KEY (artifact_id, tenant_id) REFERENCES release_ingestion_artifacts_v2(id, tenant_id)
+);
+
+CREATE TABLE release_ingestion_dispatches (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  artifact_id TEXT NOT NULL,
+  artifact_content_sha256 TEXT NOT NULL CHECK (length(artifact_content_sha256) = 64),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'completed', 'failed')),
+  available_at TEXT NOT NULL,
+  lease_owner TEXT,
+  lease_expires_at TEXT,
+  lease_generation INTEGER NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+  completed_at TEXT,
+  failed_at TEXT,
+  failure_code TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, artifact_id),
+  FOREIGN KEY (artifact_id, tenant_id) REFERENCES release_ingestion_artifacts_v2(id, tenant_id)
+);
+`;
+
+const MIGRATION_V2_FINALIZE = `
+DROP TABLE release_ingestion_artifacts;
+ALTER TABLE release_ingestion_artifacts_v2 RENAME TO release_ingestion_artifacts;
+CREATE INDEX release_ingestion_artifacts_tenant_idx
+  ON release_ingestion_artifacts(tenant_id, published_at DESC, id);
+CREATE UNIQUE INDEX release_ingestion_artifacts_canonical_identity_idx
+  ON release_ingestion_artifacts(
+    tenant_id, provider_slug, adapter, collection_url, source_item_id, normalized_claim_sha256
+  ) WHERE identity_canonical = 1;
+CREATE INDEX release_ingestion_observations_tenant_idx
+  ON release_ingestion_observations(tenant_id, artifact_id, observed_at, id);
+CREATE INDEX release_ingestion_dispatches_claim_idx
+  ON release_ingestion_dispatches(tenant_id, status, available_at, lease_expires_at, id);
+
+CREATE TRIGGER release_ingestion_artifacts_no_update BEFORE UPDATE ON release_ingestion_artifacts
+BEGIN SELECT RAISE(ABORT, 'release_ingestion_artifacts_append_only'); END;
+CREATE TRIGGER release_ingestion_artifacts_no_delete BEFORE DELETE ON release_ingestion_artifacts
+BEGIN SELECT RAISE(ABORT, 'release_ingestion_artifacts_append_only'); END;
+CREATE TRIGGER release_ingestion_observations_no_update BEFORE UPDATE ON release_ingestion_observations
+BEGIN SELECT RAISE(ABORT, 'release_ingestion_observations_append_only'); END;
+CREATE TRIGGER release_ingestion_observations_no_delete BEFORE DELETE ON release_ingestion_observations
+BEGIN SELECT RAISE(ABORT, 'release_ingestion_observations_append_only'); END;
+`;
+
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value && typeof value === "object") {
@@ -193,6 +336,109 @@ function canonicalJson(value: unknown): string {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function normalizedClaim(item: NormalizedItem): Omit<NormalizedItem, "observedAt"> {
+  const { observedAt: _observedAt, ...claim } = item;
+  return claim;
+}
+
+function normalizedClaimSha256FromRow(row: Omit<ArtifactRow, "normalized_claim_sha256" | "identity_canonical">): string {
+  return sha256(canonicalJson({
+    sourceUrl: row.source_url,
+    sourceItemId: row.source_item_id,
+    title: row.title,
+    version: row.version,
+    publishedAt: row.published_at,
+    excerpt: row.excerpt,
+    excerptLocation: row.excerpt_location,
+    confidence: row.confidence,
+    changeHints: JSON.parse(row.change_hints_json) as unknown,
+    sdk: row.sdk_json ? JSON.parse(row.sdk_json) as unknown : null,
+  }));
+}
+
+function releaseArtifactId(identity: Readonly<{
+  tenantId: string;
+  providerSlug: string;
+  adapter: ReleaseAdapter;
+  collectionUrl: string;
+  sourceItemId: string;
+  normalizedClaimSha256: string;
+}>): string {
+  return `rel_${sha256(canonicalJson(identity)).slice(0, 32)}`;
+}
+
+function releaseObservationId(input: Readonly<{
+  tenantId: string;
+  artifactId: string;
+  observedAt: string;
+  sourceBodySha256: string;
+}>): string {
+  return `rob_${sha256(canonicalJson(input)).slice(0, 32)}`;
+}
+
+function releaseDispatchId(tenantId: string, artifactId: string, contentSha256: string): string {
+  return `rdi_${sha256(canonicalJson({ tenantId, artifactId, contentSha256 })).slice(0, 32)}`;
+}
+
+function migrateReleaseIngestionV2(raw: DatabaseSync, appliedAt: string): void {
+  raw.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;");
+  try {
+    raw.exec(MIGRATION_V2_SCHEMA);
+    const legacyRows = raw.prepare("SELECT * FROM release_ingestion_artifacts ORDER BY tenant_id, observed_at, id").all() as unknown as Array<Omit<ArtifactRow, "normalized_claim_sha256" | "identity_canonical">>;
+    const insertArtifact = raw.prepare(`INSERT INTO release_ingestion_artifacts_v2
+      (id, tenant_id, provider_slug, adapter, collection_url, source_url, source_item_id,
+       source_body_sha256, content_sha256, normalized_claim_sha256, identity_canonical, title, version,
+       published_at, observed_at, excerpt, excerpt_location, confidence, change_hints_json, sdk_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const insertObservation = raw.prepare(`INSERT INTO release_ingestion_observations
+      (id, tenant_id, artifact_id, observed_at, source_body_sha256, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)`);
+    const insertDispatch = raw.prepare(`INSERT INTO release_ingestion_dispatches
+      (id, tenant_id, artifact_id, artifact_content_sha256, status, available_at, lease_generation, created_at)
+      VALUES (?, ?, ?, ?, 'pending', ?, 0, ?)`);
+    const canonicalIdentities = new Set<string>();
+    for (const row of legacyRows) {
+      const normalizedClaimSha256 = normalizedClaimSha256FromRow(row);
+      const identity = canonicalJson({
+        tenantId: row.tenant_id,
+        providerSlug: row.provider_slug,
+        adapter: row.adapter,
+        collectionUrl: row.collection_url,
+        sourceItemId: row.source_item_id,
+        normalizedClaimSha256,
+      });
+      const identityCanonical = canonicalIdentities.has(identity) ? 0 : 1;
+      canonicalIdentities.add(identity);
+      insertArtifact.run(row.id, row.tenant_id, row.provider_slug, row.adapter, row.collection_url,
+        row.source_url, row.source_item_id, row.source_body_sha256, row.content_sha256,
+        normalizedClaimSha256, identityCanonical, row.title, row.version, row.published_at, row.observed_at,
+        row.excerpt, row.excerpt_location, row.confidence, row.change_hints_json, row.sdk_json,
+        row.created_at);
+      insertObservation.run(releaseObservationId({
+        tenantId: row.tenant_id,
+        artifactId: row.id,
+        observedAt: row.observed_at,
+        sourceBodySha256: row.source_body_sha256,
+      }), row.tenant_id, row.id, row.observed_at, row.source_body_sha256, row.created_at);
+      if (identityCanonical === 1) {
+        insertDispatch.run(releaseDispatchId(row.tenant_id, row.id, row.content_sha256), row.tenant_id,
+          row.id, row.content_sha256, row.created_at, row.created_at);
+      }
+    }
+    raw.exec(MIGRATION_V2_FINALIZE);
+    raw.prepare("INSERT INTO release_ingestion_schema_migrations (version, applied_at) VALUES (2, ?)")
+      .run(appliedAt);
+    raw.exec("COMMIT");
+  } catch (error) {
+    if (raw.isTransaction) raw.exec("ROLLBACK");
+    throw error;
+  } finally {
+    raw.exec("PRAGMA foreign_keys = ON;");
+  }
+  const foreignKeyViolation = raw.prepare("PRAGMA foreign_key_check").get();
+  if (foreignKeyViolation) throw new Error("release_ingestion_v2_foreign_key_check_failed");
 }
 
 function required(name: string, value: unknown, max = 4096): string {
@@ -440,7 +686,7 @@ function parseSdkRegistry(input: ReleaseDocumentInput, sourceUrl: string, observ
 function assertNoAmbiguity(items: readonly NormalizedItem[]): void {
   const seen = new Map<string, string>();
   for (const item of items) {
-    const digest = sha256(canonicalJson(item));
+    const digest = sha256(canonicalJson(normalizedClaim(item)));
     const previous = seen.get(item.sourceItemId);
     if (previous && previous !== digest) throw new Error("release_source_item_ambiguous");
     if (previous) throw new Error("release_source_item_duplicate");
@@ -465,16 +711,25 @@ export function openReleaseIngestionStore(dbPath = ":memory:"): ReleaseIngestion
     version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
   )`);
   const current = raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations").get() as { version: number | null };
-  if (Number(current.version ?? 0) > 1) throw new Error("release_ingestion_schema_newer_than_runtime");
+  if (Number(current.version ?? 0) > 2) throw new Error("release_ingestion_schema_newer_than_runtime");
   if (Number(current.version ?? 0) === 0) {
     raw.exec("BEGIN IMMEDIATE");
     try {
-      raw.exec(MIGRATION);
+      raw.exec(MIGRATION_V1);
       raw.prepare("INSERT INTO release_ingestion_schema_migrations (version, applied_at) VALUES (1, ?)")
         .run(new Date().toISOString());
       raw.exec("COMMIT");
     } catch (error) {
       raw.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  const afterV1 = raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations").get() as { version: number | null };
+  if (Number(afterV1.version ?? 0) === 1) {
+    try {
+      migrateReleaseIngestionV2(raw, new Date().toISOString());
+    } catch (error) {
+      raw.close();
       throw error;
     }
   }
@@ -507,6 +762,8 @@ function fromRow(store: ReleaseIngestionStore, row: ArtifactRow): ReleaseArtifac
     sourceItemId: row.source_item_id,
     sourceBodySha256: row.source_body_sha256,
     contentSha256: row.content_sha256,
+    normalizedClaimSha256: row.normalized_claim_sha256,
+    identityCanonical: row.identity_canonical === 1,
     title: row.title,
     version: row.version,
     publishedAt: row.published_at,
@@ -525,6 +782,53 @@ export function listReleaseArtifacts(store: ReleaseIngestionStore, tenantId: str
   const tenant = required("release_tenant_id", tenantId, 256);
   return all<ArtifactRow>(store, `SELECT * FROM release_ingestion_artifacts
     WHERE tenant_id = ? ORDER BY published_at DESC, id`, [tenant]).map((row) => fromRow(store, row));
+}
+
+function observationFromRow(row: ObservationRow): ReleaseObservation {
+  return Object.freeze({
+    id: row.id,
+    tenantId: row.tenant_id,
+    artifactId: row.artifact_id,
+    observedAt: row.observed_at,
+    sourceBodySha256: row.source_body_sha256,
+    createdAt: row.created_at,
+  });
+}
+
+function dispatchFromRow(row: DispatchRow): ReleaseDispatch {
+  return Object.freeze({
+    id: row.id,
+    tenantId: row.tenant_id,
+    artifactId: row.artifact_id,
+    artifactContentSha256: row.artifact_content_sha256,
+    status: row.status,
+    availableAt: row.available_at,
+    leaseOwner: row.lease_owner,
+    leaseExpiresAt: row.lease_expires_at,
+    leaseGeneration: row.lease_generation,
+    completedAt: row.completed_at,
+    failedAt: row.failed_at,
+    failureCode: row.failure_code,
+    createdAt: row.created_at,
+  });
+}
+
+export function listReleaseObservations(
+  store: ReleaseIngestionStore,
+  tenantId: string,
+  artifactId: string,
+): ReleaseObservation[] {
+  const tenant = required("release_tenant_id", tenantId, 256);
+  const artifact = required("release_artifact_id", artifactId, 128);
+  return all<ObservationRow>(store, `SELECT * FROM release_ingestion_observations
+    WHERE tenant_id = ? AND artifact_id = ? ORDER BY observed_at, id`, [tenant, artifact])
+    .map(observationFromRow);
+}
+
+export function listReleaseDispatches(store: ReleaseIngestionStore, tenantId: string): ReleaseDispatch[] {
+  const tenant = required("release_tenant_id", tenantId, 256);
+  return all<DispatchRow>(store, `SELECT * FROM release_ingestion_dispatches
+    WHERE tenant_id = ? ORDER BY created_at, id`, [tenant]).map(dispatchFromRow);
 }
 
 export function ingestReleaseDocument(
@@ -561,22 +865,60 @@ export function ingestReleaseDocument(
   store.raw.exec("BEGIN IMMEDIATE");
   try {
     for (const item of items) {
-      const contentSha256 = sha256(canonicalJson(item));
-      const id = `rel_${sha256(canonicalJson({ tenantId, adapter: input.adapter, sourceUrl: item.sourceUrl, sourceItemId: item.sourceItemId, contentSha256 })).slice(0, 32)}`;
+      const normalizedClaimSha256 = sha256(canonicalJson(normalizedClaim(item)));
+      const contentSha256 = normalizedClaimSha256;
+      const id = releaseArtifactId({
+        tenantId,
+        providerSlug,
+        adapter: input.adapter,
+        collectionUrl: sourceUrl,
+        sourceItemId: item.sourceItemId,
+        normalizedClaimSha256,
+      });
       const result = store.raw.prepare(`INSERT OR IGNORE INTO release_ingestion_artifacts
         (id, tenant_id, provider_slug, adapter, collection_url, source_url, source_item_id, source_body_sha256,
-         content_sha256, title, version, published_at, observed_at, excerpt, excerpt_location,
-         confidence, change_hints_json, sdk_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+         content_sha256, normalized_claim_sha256, identity_canonical, title, version, published_at,
+         observed_at, excerpt, excerpt_location, confidence, change_hints_json, sdk_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(id, tenantId, providerSlug, input.adapter, sourceUrl, item.sourceUrl, item.sourceItemId,
-          sourceBodySha256, contentSha256, item.title, item.version, item.publishedAt, observedAt,
+          sourceBodySha256, contentSha256, normalizedClaimSha256, item.title, item.version, item.publishedAt, observedAt,
           item.excerpt, item.excerptLocation, item.confidence, canonicalJson(item.changeHints),
           item.sdk ? canonicalJson(item.sdk) : null, observedAt);
       if (Number(result.changes) === 1) inserted += 1;
-      const row = one<{ id: string }>(store, `SELECT id FROM release_ingestion_artifacts
-        WHERE tenant_id = ? AND adapter = ? AND collection_url = ? AND source_item_id = ? AND content_sha256 = ?`,
-      [tenantId, input.adapter, sourceUrl, item.sourceItemId, contentSha256]);
+      const row = one<{ id: string; content_sha256: string }>(store, `SELECT id, content_sha256
+        FROM release_ingestion_artifacts
+        WHERE tenant_id = ? AND provider_slug = ? AND adapter = ? AND collection_url = ?
+          AND source_item_id = ? AND normalized_claim_sha256 = ? AND identity_canonical = 1`,
+      [tenantId, providerSlug, input.adapter, sourceUrl, item.sourceItemId, normalizedClaimSha256]);
       if (!row) throw new Error("release_ingestion_write_failed");
+      const observationId = releaseObservationId({
+        tenantId,
+        artifactId: row.id,
+        observedAt,
+        sourceBodySha256,
+      });
+      store.raw.prepare(`INSERT OR IGNORE INTO release_ingestion_observations
+        (id, tenant_id, artifact_id, observed_at, source_body_sha256, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(observationId, tenantId, row.id, observedAt, sourceBodySha256, now);
+      const observation = one<ObservationRow>(store,
+        "SELECT * FROM release_ingestion_observations WHERE id = ?", [observationId]);
+      if (
+        !observation || observation.tenant_id !== tenantId || observation.artifact_id !== row.id ||
+        observation.observed_at !== observedAt || observation.source_body_sha256 !== sourceBodySha256
+      ) throw new Error("release_observation_write_failed");
+      const dispatchId = releaseDispatchId(tenantId, row.id, row.content_sha256);
+      store.raw.prepare(`INSERT OR IGNORE INTO release_ingestion_dispatches
+        (id, tenant_id, artifact_id, artifact_content_sha256, status, available_at,
+         lease_generation, created_at)
+        VALUES (?, ?, ?, ?, 'pending', ?, 0, ?)`)
+        .run(dispatchId, tenantId, row.id, row.content_sha256, observedAt, now);
+      const dispatch = one<DispatchRow>(store,
+        "SELECT * FROM release_ingestion_dispatches WHERE id = ?", [dispatchId]);
+      if (
+        !dispatch || dispatch.tenant_id !== tenantId || dispatch.artifact_id !== row.id ||
+        dispatch.artifact_content_sha256 !== row.content_sha256
+      ) throw new Error("release_dispatch_write_failed");
       ids.push(row.id);
     }
     store.raw.exec("COMMIT");
@@ -602,26 +944,181 @@ export function recordReleaseReviewerOverride(
     reason: string;
     reviewedAt: string;
   }>,
+): ReleaseReviewerOverrideResult {
+  const tenantId = required("release_tenant_id", input.tenantId, 256);
+  const artifactId = required("release_artifact_id", input.artifactId, 128);
+  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 0) throw new Error("release_override_revision_invalid");
+  if (!Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1) throw new Error("release_override_confidence_invalid");
+  const reviewerPrincipalId = required("release_reviewer_principal", input.reviewerPrincipalId, 256);
+  const excerpt = required("release_override_excerpt", input.excerpt, 20_000);
+  const excerptLocation = required("release_override_excerpt_location", input.excerptLocation, 512);
+  const reason = required("release_override_reason", input.reason, 4000);
+  const reviewedAt = timestamp("release_reviewed_at", input.reviewedAt);
+  if (store.raw.isTransaction) throw new Error("release_override_transaction_active");
+  store.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const artifact = one<ArtifactRow>(store,
+      "SELECT * FROM release_ingestion_artifacts WHERE tenant_id = ? AND id = ?", [tenantId, artifactId]);
+    if (!artifact) throw new Error("release_artifact_not_found");
+    const current = one<{ revision: number | null }>(store, `SELECT MAX(revision) AS revision
+      FROM release_ingestion_overrides WHERE tenant_id = ? AND artifact_id = ?`, [tenantId, artifactId]);
+    const revision = Number(current?.revision ?? 0);
+    if (revision !== input.expectedRevision) {
+      store.raw.exec("COMMIT");
+      return Object.freeze({
+        status: "revision_conflict" as const,
+        expectedRevision: input.expectedRevision,
+        actualRevision: revision,
+      });
+    }
+    const next = revision + 1;
+    store.raw.prepare(`INSERT INTO release_ingestion_overrides
+      (id, tenant_id, artifact_id, revision, reviewer_principal_id, confidence, excerpt,
+       excerpt_location, reason, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(`rov_${sha256(`${tenantId}:${artifactId}:${next}`).slice(0, 32)}`, tenantId, artifactId, next,
+        reviewerPrincipalId, input.confidence, excerpt, excerptLocation, reason, reviewedAt);
+    const applied = fromRow(store, artifact);
+    store.raw.exec("COMMIT");
+    return Object.freeze({ status: "applied" as const, artifact: applied });
+  } catch (error) {
+    if (store.raw.isTransaction) store.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function contentDigest(value: unknown): string {
+  const digest = required("release_content_sha256", value, 64).toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error("release_content_sha256_invalid");
+  return digest;
+}
+
+function leaseGeneration(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 1) throw new Error("release_dispatch_lease_generation_invalid");
+  return Number(value);
+}
+
+export function rehydrateReleaseArtifact(
+  store: ReleaseIngestionStore,
+  input: Readonly<{ tenantId: string; artifactId: string; expectedContentSha256: string }>,
 ): ReleaseArtifact {
   const tenantId = required("release_tenant_id", input.tenantId, 256);
   const artifactId = required("release_artifact_id", input.artifactId, 128);
-  const artifact = one<ArtifactRow>(store, "SELECT * FROM release_ingestion_artifacts WHERE tenant_id = ? AND id = ?", [tenantId, artifactId]);
+  const expectedContentSha256 = contentDigest(input.expectedContentSha256);
+  const artifact = one<ArtifactRow>(store,
+    "SELECT * FROM release_ingestion_artifacts WHERE tenant_id = ? AND id = ?", [tenantId, artifactId]);
   if (!artifact) throw new Error("release_artifact_not_found");
-  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 0) throw new Error("release_override_revision_invalid");
-  if (!Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1) throw new Error("release_override_confidence_invalid");
-  const current = one<{ revision: number | null }>(store, `SELECT MAX(revision) AS revision
-    FROM release_ingestion_overrides WHERE tenant_id = ? AND artifact_id = ?`, [tenantId, artifactId]);
-  const revision = Number(current?.revision ?? 0);
-  if (revision !== input.expectedRevision) throw new Error("release_override_revision_conflict");
-  const next = revision + 1;
-  store.raw.prepare(`INSERT INTO release_ingestion_overrides
-    (id, tenant_id, artifact_id, revision, reviewer_principal_id, confidence, excerpt,
-     excerpt_location, reason, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(`rov_${sha256(`${tenantId}:${artifactId}:${next}`).slice(0, 32)}`, tenantId, artifactId, next,
-      required("release_reviewer_principal", input.reviewerPrincipalId, 256), input.confidence,
-      required("release_override_excerpt", input.excerpt, 20_000),
-      required("release_override_excerpt_location", input.excerptLocation, 512),
-      required("release_override_reason", input.reason, 4000),
-      timestamp("release_reviewed_at", input.reviewedAt));
+  if (artifact.content_sha256 !== expectedContentSha256) throw new Error("release_artifact_digest_mismatch");
   return fromRow(store, artifact);
+}
+
+export function claimReleaseDispatch(
+  store: ReleaseIngestionStore,
+  input: Readonly<{ tenantId: string; workerId: string; now: string; leaseDurationMs: number }>,
+): ReleaseDispatch | null {
+  const tenantId = required("release_tenant_id", input.tenantId, 256);
+  const workerId = required("release_dispatch_worker_id", input.workerId, 256);
+  const now = timestamp("release_dispatch_claimed_at", input.now);
+  if (!Number.isSafeInteger(input.leaseDurationMs) || input.leaseDurationMs < 1 || input.leaseDurationMs > 86_400_000) {
+    throw new Error("release_dispatch_lease_duration_invalid");
+  }
+  const leaseExpiresAt = new Date(Date.parse(now) + input.leaseDurationMs).toISOString();
+  if (store.raw.isTransaction) throw new Error("release_dispatch_transaction_active");
+  store.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const candidate = one<{ id: string }>(store, `SELECT id FROM release_ingestion_dispatches
+      WHERE tenant_id = ? AND available_at <= ?
+        AND (status = 'pending' OR (status = 'claimed' AND lease_expires_at <= ?))
+      ORDER BY available_at, id LIMIT 1`, [tenantId, now, now]);
+    if (!candidate) {
+      store.raw.exec("COMMIT");
+      return null;
+    }
+    const changed = store.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'claimed', lease_owner = ?, lease_expires_at = ?,
+          lease_generation = lease_generation + 1
+      WHERE tenant_id = ? AND id = ? AND available_at <= ?
+        AND (status = 'pending' OR (status = 'claimed' AND lease_expires_at <= ?))`)
+      .run(workerId, leaseExpiresAt, tenantId, candidate.id, now, now);
+    if (Number(changed.changes) !== 1) throw new Error("release_dispatch_claim_conflict");
+    const claimed = one<DispatchRow>(store,
+      "SELECT * FROM release_ingestion_dispatches WHERE tenant_id = ? AND id = ?", [tenantId, candidate.id]);
+    if (!claimed) throw new Error("release_dispatch_claim_failed");
+    store.raw.exec("COMMIT");
+    return dispatchFromRow(claimed);
+  } catch (error) {
+    if (store.raw.isTransaction) store.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function finishReleaseDispatch(
+  store: ReleaseIngestionStore,
+  input: Readonly<{
+    tenantId: string;
+    dispatchId: string;
+    workerId: string;
+    leaseGeneration: number;
+    finishedAt: string;
+    status: "completed" | "failed";
+    failureCode: string | null;
+  }>,
+): ReleaseDispatch {
+  const tenantId = required("release_tenant_id", input.tenantId, 256);
+  const dispatchId = required("release_dispatch_id", input.dispatchId, 128);
+  const workerId = required("release_dispatch_worker_id", input.workerId, 256);
+  const generation = leaseGeneration(input.leaseGeneration);
+  const finishedAt = timestamp("release_dispatch_finished_at", input.finishedAt);
+  const failureCode = input.failureCode === null
+    ? null
+    : required("release_dispatch_failure_code", input.failureCode, 256);
+  const changed = store.raw.prepare(`UPDATE release_ingestion_dispatches
+    SET status = ?, lease_owner = NULL, lease_expires_at = NULL,
+        completed_at = ?, failed_at = ?, failure_code = ?
+    WHERE tenant_id = ? AND id = ? AND status = 'claimed' AND lease_owner = ?
+      AND lease_generation = ? AND lease_expires_at > ?`)
+    .run(input.status, input.status === "completed" ? finishedAt : null,
+      input.status === "failed" ? finishedAt : null, failureCode, tenantId, dispatchId,
+      workerId, generation, finishedAt);
+  if (Number(changed.changes) !== 1) throw new Error("release_dispatch_lease_lost");
+  const dispatch = one<DispatchRow>(store,
+    "SELECT * FROM release_ingestion_dispatches WHERE tenant_id = ? AND id = ?", [tenantId, dispatchId]);
+  if (!dispatch) throw new Error("release_dispatch_not_found");
+  return dispatchFromRow(dispatch);
+}
+
+export function completeReleaseDispatch(
+  store: ReleaseIngestionStore,
+  input: Readonly<{
+    tenantId: string;
+    dispatchId: string;
+    workerId: string;
+    leaseGeneration: number;
+    completedAt: string;
+  }>,
+): ReleaseDispatch {
+  return finishReleaseDispatch(store, {
+    ...input,
+    finishedAt: input.completedAt,
+    status: "completed",
+    failureCode: null,
+  });
+}
+
+export function failReleaseDispatch(
+  store: ReleaseIngestionStore,
+  input: Readonly<{
+    tenantId: string;
+    dispatchId: string;
+    workerId: string;
+    leaseGeneration: number;
+    failedAt: string;
+    failureCode: string;
+  }>,
+): ReleaseDispatch {
+  return finishReleaseDispatch(store, {
+    ...input,
+    finishedAt: input.failedAt,
+    status: "failed",
+    failureCode: input.failureCode,
+  });
 }
