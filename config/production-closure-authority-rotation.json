@@ -252,6 +252,52 @@
           "toMode": "100644"
         }
       ]
+    },
+    {
+      "rotationId": "rotation-20260827-007",
+      "kind": "stage_successor",
+      "issuedAt": "2026-08-27T07:40:40.173Z",
+      "expiresAt": "2026-08-28T07:40:40.173Z",
+      "basePolicySha256": "sha256:03ae8e73980fe826944162e4b9e27fc69621eafb4ef3332b1003e9f67997e089",
+      "proposedPolicySha256": "sha256:fbd31a0cf495e903c9e633962ceb2e2023cc00d17d4f38952916e963f84a99f1",
+      "previousRotationId": "rotation-20260827-006",
+      "baseRevision": "fb4509286e77c332be2974872e6bb6daf6b19c9a",
+      "baseLedgerSha256": "sha256:234d849c44c8091273f6515cf182e0bf15344052d5a8f6acc5a406f7e7900f8c",
+      "successor": {
+        "templatePath": "config/production-closure-successors/closure-authority-quiet-sweep.yml",
+        "workflowPath": ".github/workflows/closure-authority-quiet-sweep.yml",
+        "workflowSha256": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
+        "externalCheckName": "mendpoint-production-closure-authority-quiet-sweep",
+        "externalCheckAppId": 4718395,
+        "controllerCheckName": "mendpoint-production-closure-controller-quiet-sweep",
+        "controllerCheckAppId": 15368,
+        "controllerStatusCreatorLogin": "github-actions[bot]",
+        "controllerStatusCreatorUserId": 41898282,
+        "activationDeadline": "2026-09-02T07:40:40.173Z"
+      },
+      "changes": [
+        {
+          "path": ".github/workflows/closure-authority-quiet-sweep.yml",
+          "fromSha256": null,
+          "toSha256": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
+          "fromMode": null,
+          "toMode": "100644"
+        },
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:03ae8e73980fe826944162e4b9e27fc69621eafb4ef3332b1003e9f67997e089",
+          "toSha256": "sha256:fbd31a0cf495e903c9e633962ceb2e2023cc00d17d4f38952916e963f84a99f1",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:767adf5781051712fa6b5c262f82ad702f0cb374433205a8a5b2870f2ae0a8bb",
+          "toSha256": "sha256:edf111a4369030611a1768012fa62a4cac397599f44f60b029b480c2d403dee3",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
     }
   ]
 }
