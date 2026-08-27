@@ -384,6 +384,105 @@ describe("production closure proposal authority", () => {
     expect(codes.filter((code) => code.startsWith("AUTHORITY_ROTATION_"))).toEqual([]);
   });
 
+  it("does not charge an ordinary proposal for an inherited rotation bootstrap", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const matrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    matrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = {
+      rotationId: "rotation-20260827-008",
+      kind: "runtime",
+      issuedAt: "2026-08-27T08:29:00.000Z",
+      expiresAt: "2026-08-29T08:29:00.000Z",
+      basePolicySha256: `sha256:${"1".repeat(64)}`,
+      proposedPolicySha256: `sha256:${"2".repeat(64)}`,
+    };
+    matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
+    const inheritedBytes = Buffer.from(JSON.stringify(matrix));
+    const inheritedSha = sha(inheritedBytes);
+    client.blobs.set(inheritedSha, inheritedBytes);
+    client.pathToSha.set(matrixPath, inheritedSha);
+    client.basePathToSha.set(matrixPath, inheritedSha);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    const rotationIssues = result.issues.filter((issue) =>
+      issue.code.startsWith("AUTHORITY_ROTATION_"),
+    );
+    expect(rotationIssues, JSON.stringify(result.issues, null, 2)).toEqual([]);
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+  });
+
+  it("does not let an inherited bootstrap hide provider record removal", async () => {
+    const client = new FixtureClient();
+    const matrixPath = "docs/PRODUCTION_CLOSURE_MATRIX.json";
+    const baseMatrix = JSON.parse(
+      client.blobs.get(client.pathToSha.get(matrixPath)!)!.toString("utf8"),
+    ) as ProductionClosureMatrix;
+    const removed = baseMatrix.releaseTrain.pullRequests[0]!;
+    baseMatrix.releaseTrain.currentPullRequestBootstrap!.number = removed.number;
+    baseMatrix.releaseTrain.currentPullRequestBootstrap!.authorityRotation = {
+      rotationId: "rotation-20260827-008",
+      kind: "runtime",
+      issuedAt: "2026-08-27T08:29:00.000Z",
+      expiresAt: "2026-08-29T08:29:00.000Z",
+      basePolicySha256: `sha256:${"1".repeat(64)}`,
+      proposedPolicySha256: `sha256:${"2".repeat(64)}`,
+    };
+    baseMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(baseMatrix);
+    const baseBytes = Buffer.from(JSON.stringify(baseMatrix));
+    const baseSha = sha(baseBytes);
+    client.blobs.set(baseSha, baseBytes);
+    client.basePathToSha.set(matrixPath, baseSha);
+
+    const proposedMatrix = structuredClone(baseMatrix);
+    proposedMatrix.releaseTrain.pullRequests = proposedMatrix.releaseTrain.pullRequests
+      .filter((record) => record.number !== removed.number);
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    client.replace(matrixPath, proposedMatrix);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED",
+      subject: String(removed.number),
+    }));
+
+    proposedMatrix.releaseTrain.currentPullRequestBootstrap!.title += " amended";
+    proposedMatrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(proposedMatrix);
+    client.replace(matrixPath, proposedMatrix);
+    const changedBootstrap = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+    expect(changedBootstrap.issues).toContainEqual(expect.objectContaining({
+      code: "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED",
+      subject: String(removed.number),
+    }));
+    expect(changedBootstrap.issues).toContainEqual(expect.objectContaining({
+      code: "AUTHORITY_ROTATION_RECEIPT_INVALID",
+    }));
+  });
+
   it("still demands a rotation when the proposal itself edits the policy on a stale base", async () => {
     // The reprieve above is for untouched bytes only. A proposal that edits the
     // policy owes the full rotation whether or not the base has moved.

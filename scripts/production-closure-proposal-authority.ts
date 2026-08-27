@@ -657,6 +657,12 @@ export async function verifyProductionClosureProposal(
       );
       return observation;
     }
+    const mergeBaseBootstrap = mergeBaseMatrix.releaseTrain?.currentPullRequestBootstrap;
+    const proposedBootstrap = matrix.releaseTrain?.currentPullRequestBootstrap;
+    const bootstrapChanged =
+      JSON.stringify(mergeBaseBootstrap ?? null) !== JSON.stringify(proposedBootstrap ?? null);
+    const bootstrapIdentityChanged =
+      proposedBootstrap?.number !== mergeBaseBootstrap?.number;
     const changedProviderRecords = <T extends { number: number }>(
       baseRecords: readonly T[],
       proposedRecords: readonly T[],
@@ -698,7 +704,7 @@ export async function verifyProductionClosureProposal(
       mergeBaseMatrix.releaseTrain?.pullRequests ?? [],
       matrix.releaseTrain?.pullRequests ?? [],
       "pull request",
-      matrix.releaseTrain?.currentPullRequestBootstrap?.number,
+      bootstrapIdentityChanged ? proposedBootstrap?.number : undefined,
     );
     observation.providerValidationIssues = changedProviderRecords(
       mergeBaseMatrix.issueAuthority?.issues ?? [],
@@ -726,10 +732,16 @@ export async function verifyProductionClosureProposal(
       );
       return observation;
     }
-    const bootstrapRotation = matrix.releaseTrain?.currentPullRequestBootstrap?.authorityRotation;
+    const bootstrapRotation = proposedBootstrap?.authorityRotation;
     const policyChanged = proposalTouched(policyLocator);
     const ledgerChanged = proposalTouched(ledgerLocator);
-    const rotationRequested = policyChanged || ledgerChanged || bootstrapRotation !== undefined;
+    // A bootstrap rotation inherited unchanged from the merge base belongs to
+    // an earlier proposal. Treating its mere presence as a new request makes
+    // every later product PR owe another receipt. Only a bootstrap introduced
+    // or changed by this proposal can request rotation; direct policy or ledger
+    // edits always remain rotation requests regardless of bootstrap state.
+    const rotationRequested =
+      policyChanged || ledgerChanged || (bootstrapChanged && bootstrapRotation !== undefined);
     if (!rotationRequested) {
       for (const [path, expectedDigest] of Object.entries(policy.protectedFiles)) {
         const locator = normalizedPath(path) ?? "";

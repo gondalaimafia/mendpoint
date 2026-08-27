@@ -252,6 +252,7 @@ describe("GitHub production closure authority", () => {
         strategy?: { "fail-fast"?: boolean; "max-parallel"?: number };
         steps?: Array<{
           name?: string;
+          "continue-on-error"?: boolean;
           run?: string;
           env?: Record<string, string>;
           with?: Record<string, string | number>;
@@ -264,19 +265,36 @@ describe("GitHub production closure authority", () => {
     expect(workflow.on).toHaveProperty("push");
     expect(workflow.on).toHaveProperty("pull_request_target");
     expect(workflow.on).toHaveProperty("schedule");
-    // Trigger economics (#453): workflow_run, issues, and pull_request_review were
-    // removed deliberately — each fired a full per-PR authority sweep on events that
-    // change no validated input, exhausting the installation API budget. Assert they
-    // stay removed so a future edit cannot quietly reintroduce the self-DoS.
-    expect(workflow.on).not.toHaveProperty("workflow_run");
-    expect(workflow.on).not.toHaveProperty("issues");
-    expect(workflow.on).not.toHaveProperty("pull_request_review");
-    // Workflow-level concurrency collapses redundant sweeps during merge bursts;
-    // PR-scoped events collapse per PR. Added by #453, deliberately.
+    expect(workflow.on).toMatchObject({
+      workflow_run: { workflows: ["CI"], types: ["completed"] },
+      pull_request_review: { types: ["submitted", "edited", "dismissed"] },
+      issues: {
+        types: [
+          "opened",
+          "edited",
+          "deleted",
+          "transferred",
+          "closed",
+          "reopened",
+          "assigned",
+          "unassigned",
+          "labeled",
+          "unlabeled",
+        ],
+      },
+      issue_comment: { types: ["created", "edited", "deleted"] },
+      branch_protection_rule: { types: ["created", "edited", "deleted"] },
+      pull_request_target: {
+        branches: ["main"],
+        types: ["opened", "synchronize", "reopened", "edited", "labeled", "unlabeled"],
+      },
+    });
+    // Push observations are immutable production evidence and cannot be cancelled
+    // by a later cron. Reactive PR events are scoped instead of becoming full sweeps.
     expect(workflow.concurrency).toEqual({
       group:
-        "closure-authority-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || 'sweep' }}",
-      "cancel-in-progress": true,
+        "closure-authority-${{ github.event_name == 'push' && format('push-{0}', github.sha) || (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && format('pr-head-{0}', github.event.pull_request.head.sha) || github.event_name == 'workflow_run' && format('pr-head-{0}', github.event.workflow_run.head_sha) || (github.event_name == 'issues' || github.event_name == 'issue_comment') && format('issue-{0}', github.event.issue.number) || github.event_name == 'branch_protection_rule' && 'branch-protection' || 'sweep' }}",
+      "cancel-in-progress": "${{ github.event_name != 'push' }}",
     });
     expect(workflow.permissions).toEqual({
       actions: "read",
@@ -298,6 +316,43 @@ describe("GitHub production closure authority", () => {
       group: "production-closure-authority-${{ matrix.pull_request }}",
       "cancel-in-progress": false,
     });
+    const discoverRun = workflow.jobs.discover.steps?.find(
+      (step) => step.name === "Discover the current protected release set",
+    )?.run;
+    expect(discoverRun).toEqual(expect.stringContaining("installation API budget exhausted"));
+    expect(discoverRun).toEqual(expect.stringContaining(
+      '.workflow_run.path == ".github/workflows/ci.yml"',
+    ));
+    expect(discoverRun).toEqual(expect.stringContaining(
+      '.workflow_run.event == "pull_request"',
+    ));
+    expect(discoverRun).toEqual(expect.stringContaining("commits/${workflow_head}/pulls"));
+    expect(discoverRun).toEqual(expect.stringContaining("issue_is_tracked"));
+    expect(discoverRun).toEqual(expect.stringContaining(".issue.pull_request != null"));
+    expect(job.steps).toContainEqual(
+      expect.objectContaining({
+        name: "Verify live GitHub release authority",
+        env: expect.objectContaining({
+          MENDPOINT_CLOSURE_OBSERVATION_SCOPE:
+            "${{ needs.discover.outputs.observation_scope }}",
+          MENDPOINT_CLOSURE_PROVIDER_VALIDATION_ISSUES:
+            "${{ needs.discover.outputs.provider_validation_issues }}",
+        }),
+      }),
+    );
+    const successorWait = job.steps?.find(
+      (step) => step.name === "Wait for declared successor activation result",
+    );
+    expect(successorWait).toMatchObject({
+      "continue-on-error": true,
+      env: expect.objectContaining({
+        CURRENT_CHECK_NAME: "${{ steps.external-check.outputs.check_name }}",
+      }),
+    });
+    expect(successorWait?.run).toEqual(expect.stringContaining("for attempt in $(seq 1 24)"));
+    expect(successorWait?.run).toEqual(expect.stringContaining("CURRENT_CHECK_NAME"));
+    expect(successorWait?.run).toEqual(expect.stringContaining("controllerStatusCreatorUserId"));
+    expect(successorWait?.run).toEqual(expect.stringContaining("within 120 seconds"));
     expect(job.steps).toContainEqual(
       expect.objectContaining({
         name: "Checkout exact immutable main authority",
@@ -342,7 +397,10 @@ describe("GitHub production closure authority", () => {
       job.steps!.findIndex((step) => step.name === "Checkout exact immutable main authority"),
     );
     expect(job.steps).toContainEqual(
-      expect.objectContaining({ name: "Publish dedicated authority App verdict" }),
+      expect.objectContaining({
+        name: "Publish dedicated authority App verdict",
+        run: expect.stringContaining("SUCCESSOR_READINESS_OUTCOME"),
+      }),
     );
     expect(job.steps).toContainEqual(
       expect.objectContaining({ name: "Verify dedicated authority App identity" }),
@@ -354,7 +412,10 @@ describe("GitHub production closure authority", () => {
       }),
     );
     expect(job.steps).toContainEqual(
-      expect.objectContaining({ name: "Publish controller authority verdict" }),
+      expect.objectContaining({
+        name: "Publish controller authority verdict",
+        run: expect.stringContaining("SUCCESSOR_READINESS_OUTCOME"),
+      }),
     );
     expect(job.steps).toContainEqual(
       expect.objectContaining({
@@ -373,6 +434,20 @@ describe("GitHub production closure authority", () => {
     );
     expect(mainObservationJob.if).toBe(
       "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+    );
+    expect(
+      readFileSync(
+        new URL(
+          "../config/production-closure-successors/closure-authority-quiet-sweep.yml",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ).toBe(
+      readFileSync(
+        new URL("../.github/workflows/closure-authority-quiet-sweep.yml", import.meta.url),
+        "utf8",
+      ),
     );
   });
 
@@ -618,7 +693,7 @@ describe("GitHub production closure authority", () => {
       event: "pull_request_target",
       status: "completed",
       conclusion: "success",
-      head_sha: MAIN,
+      head_sha: HEAD,
       html_url: "https://github.com/gondalaimafia/mendpoint/actions/runs/202",
     });
 
@@ -635,6 +710,138 @@ describe("GitHub production closure authority", () => {
     client.trackedStatuses[0].creator = { login: "untrusted-bot", id: 999 };
     const wrongControllerProducer = await verifyGitHubClosureAuthority(configured, context(), client);
     expect(codes(wrongControllerProducer)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+
+    client.trackedStatuses[0].creator = { login: "github-actions[bot]", id: 41898282 };
+    client.trackedWorkflowRuns.at(-1)!.head_sha = MAIN;
+    const wrongActivationHead = await verifyGitHubClosureAuthority(configured, context(), client);
+    expect(codes(wrongActivationHead)).toContain("AUTHORITY_SUCCESSOR_WORKFLOW_PROVENANCE_INVALID");
+  });
+
+  it("permits only the exact authenticated successor run to self-bootstrap in progress", async () => {
+    const configured = matrix();
+    configured.releaseTrain.currentPullRequestBootstrap.authorityRotation = {
+      rotationId: "rotation-20260825-002",
+      kind: "activate_successor",
+      issuedAt: "2026-08-25T11:00:00.000Z",
+      expiresAt: "2026-08-26T11:00:00.000Z",
+      basePolicySha256: `sha256:${"1".repeat(64)}`,
+      proposedPolicySha256: `sha256:${"2".repeat(64)}`,
+      successor: {
+        templatePath: "config/production-closure-successors/closure-authority-v2.yml",
+        workflowPath: ".github/workflows/closure-authority-v2.yml",
+        workflowSha256: `sha256:${"3".repeat(64)}`,
+        externalCheckName: "mendpoint-production-closure-authority-v2",
+        externalCheckAppId: 123,
+        controllerCheckName: "mendpoint-production-closure-controller-v2",
+        controllerCheckAppId: 15368,
+        controllerStatusCreatorLogin: "github-actions[bot]",
+        controllerStatusCreatorUserId: 41898282,
+        activationDeadline: "2026-08-26T11:00:00.000Z",
+      },
+    };
+    const client = new FixtureClient();
+    client.trackedReviews = reviews({
+      body: [
+        "## Authority rotation attestation",
+        "",
+        "- Rotation ID: rotation-20260825-002",
+        "- Transition: activate_successor",
+        `- Base policy: sha256:${"1".repeat(64)}`,
+        `- Proposed policy: sha256:${"2".repeat(64)}`,
+      ].join("\n"),
+    });
+    client.trackedChecks.push({
+      id: 202,
+      name: "mendpoint-production-closure-authority-v2",
+      status: "in_progress",
+      conclusion: null,
+      head_sha: HEAD,
+      html_url: "https://github.com/gondalaimafia/mendpoint/runs/202",
+      details_url: "https://github.com/gondalaimafia/mendpoint/actions/runs/1234",
+      app: { id: 123 },
+    });
+    client.trackedStatuses = [{
+      id: 303,
+      context: "mendpoint-production-closure-controller-v2",
+      state: "pending",
+      target_url: "https://github.com/gondalaimafia/mendpoint/actions/runs/1234",
+      creator: { login: "github-actions[bot]", id: 41898282 },
+    }];
+    client.trackedWorkflowRuns.push({
+      id: 1234,
+      path: ".github/workflows/closure-authority-v2.yml@refs/heads/main",
+      event: "pull_request_target",
+      status: "in_progress",
+      conclusion: null,
+      head_sha: HEAD,
+      html_url: "https://github.com/gondalaimafia/mendpoint/actions/runs/1234",
+    });
+
+    const exact = await verifyGitHubClosureAuthority(configured, context(), client);
+    expect(exact.verdict, JSON.stringify(exact.issues, null, 2)).toBe("pass");
+    expect(exact.checkRunIds).toContain(202);
+    expect(exact.workflowRunIds).toContain(1234);
+
+    client.trackedWorkflowRuns.at(-1)!.path = ".github/workflows/predecessor.yml@refs/heads/main";
+    const wrongPath = await verifyGitHubClosureAuthority(configured, context(), client);
+    expect(codes(wrongPath)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+
+    client.trackedWorkflowRuns.at(-1)!.path =
+      ".github/workflows/closure-authority-v2.yml@refs/heads/main";
+    client.trackedChecks.at(-1)!.app = { id: 999 };
+    const wrongApp = await verifyGitHubClosureAuthority(configured, context(), client);
+    expect(codes(wrongApp)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+
+    client.trackedChecks.at(-1)!.app = { id: 123 };
+    client.trackedChecks.at(-1)!.details_url =
+      "https://github.com/gondalaimafia/mendpoint/actions/runs/9999";
+    const wrongCheckRun = await verifyGitHubClosureAuthority(configured, context(), client);
+    expect(codes(wrongCheckRun)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+
+    client.trackedChecks.at(-1)!.details_url =
+      "https://github.com/gondalaimafia/mendpoint/actions/runs/1234";
+    client.trackedStatuses[0].target_url =
+      "https://github.com/gondalaimafia/mendpoint/actions/runs/9999";
+    const wrongStatusRun = await verifyGitHubClosureAuthority(configured, context(), client);
+    expect(codes(wrongStatusRun)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+
+    client.trackedStatuses[0].target_url =
+      "https://github.com/gondalaimafia/mendpoint/actions/runs/1234";
+    client.trackedStatuses[0].creator = { login: "untrusted-bot", id: 999 };
+    const wrongController = await verifyGitHubClosureAuthority(configured, context(), client);
+    expect(codes(wrongController)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+
+    client.trackedStatuses[0].creator = { login: "github-actions[bot]", id: 41898282 };
+    client.trackedWorkflowRuns.at(-1)!.event = "workflow_dispatch";
+    const wrongEvent = await verifyGitHubClosureAuthority(configured, context(), client);
+    expect(codes(wrongEvent)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+
+    client.trackedWorkflowRuns.at(-1)!.event = "pull_request_target";
+    client.trackedWorkflowRuns.at(-1)!.status = "completed";
+    client.trackedWorkflowRuns.at(-1)!.conclusion = "failure";
+    const failedRun = await verifyGitHubClosureAuthority(configured, context(), client);
+    expect(codes(failedRun)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+
+    client.trackedWorkflowRuns.at(-1)!.status = "in_progress";
+    client.trackedWorkflowRuns.at(-1)!.conclusion = null;
+    client.trackedWorkflowRuns.at(-1)!.head_sha = MAIN;
+    const wrongHead = await verifyGitHubClosureAuthority(configured, context(), client);
+    expect(codes(wrongHead)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+
+    client.trackedWorkflowRuns.at(-1)!.head_sha = HEAD;
+    const wrongContextRun = await verifyGitHubClosureAuthority(
+      configured,
+      context({ workflowRunId: "9999" }),
+      client,
+    );
+    expect(codes(wrongContextRun)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
+
+    const pushObserver = await verifyGitHubClosureAuthority(
+      configured,
+      context({ eventName: "push" }),
+      client,
+    );
+    expect(codes(pushObserver)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
   });
 
   it("fails closed when the live open PR set is incomplete", async () => {
@@ -1242,10 +1449,12 @@ describe("GitHub production closure authority", () => {
     ]);
   });
 
-  it("uses the explicitly checked-out base authority SHA for review-triggered reevaluation", () => {
+  it.each(["pull_request_review", "workflow_run"])(
+    "uses exact base authority and current-PR scope for %s reevaluation",
+    (workflowEventName) => {
     const built = githubAuthorityContextFromEvent(
       {
-        GITHUB_EVENT_NAME: "pull_request_review",
+        GITHUB_EVENT_NAME: workflowEventName,
         MENDPOINT_CLOSURE_EVENT_NAME: "pull_request",
         MENDPOINT_CLOSURE_AUTHORITY_SHA: MAIN,
         GITHUB_REPOSITORY: "gondalaimafia/mendpoint",
@@ -1265,7 +1474,57 @@ describe("GitHub production closure authority", () => {
     );
 
     expect(built.githubSha).toBe(MAIN);
+    expect(built.observationScope).toBe("current_pull_request");
+    },
+  );
+
+  it("rejects an event scope downgrade and validates scoped issue subjects", () => {
+    expect(() =>
+      githubAuthorityContextFromEvent(
+        {
+          GITHUB_EVENT_NAME: "workflow_run",
+          MENDPOINT_CLOSURE_EVENT_NAME: "pull_request",
+          MENDPOINT_CLOSURE_OBSERVATION_SCOPE: "full_release_train",
+          GITHUB_REPOSITORY: "gondalaimafia/mendpoint",
+          GITHUB_SHA: MAIN,
+          GITHUB_RUN_ID: "1234",
+          MENDPOINT_CLOSURE_TRUSTED_REVIEWERS_JSON: JSON.stringify({
+            Claude: [{ login: "claude-reviewer[bot]", userId: 71 }],
+          }),
+          MENDPOINT_CLOSURE_PR_NUMBER: "440",
+          MENDPOINT_CLOSURE_PR_BASE_REF: "main",
+          MENDPOINT_CLOSURE_PR_BASE_SHA: MAIN,
+          MENDPOINT_CLOSURE_PR_HEAD_REF: "codex/production-closure-authority-hardening",
+          MENDPOINT_CLOSURE_PR_HEAD_SHA: HEAD,
+        },
+        {},
+        { headRevision: MAIN, parentRevisions: [] },
+      )
+    ).toThrow(/scope does not match/);
+
+    const built = githubAuthorityContextFromEvent(
+      {
+        GITHUB_EVENT_NAME: "issues",
+        MENDPOINT_CLOSURE_EVENT_NAME: "pull_request",
+        MENDPOINT_CLOSURE_OBSERVATION_SCOPE: "full_release_train",
+        MENDPOINT_CLOSURE_PROVIDER_VALIDATION_ISSUES: "[430]",
+        GITHUB_REPOSITORY: "gondalaimafia/mendpoint",
+        GITHUB_SHA: MAIN,
+        GITHUB_RUN_ID: "1234",
+        MENDPOINT_CLOSURE_TRUSTED_REVIEWERS_JSON: JSON.stringify({
+          Claude: [{ login: "claude-reviewer[bot]", userId: 71 }],
+        }),
+        MENDPOINT_CLOSURE_PR_NUMBER: "440",
+        MENDPOINT_CLOSURE_PR_BASE_REF: "main",
+        MENDPOINT_CLOSURE_PR_BASE_SHA: MAIN,
+        MENDPOINT_CLOSURE_PR_HEAD_REF: "codex/production-closure-authority-hardening",
+        MENDPOINT_CLOSURE_PR_HEAD_SHA: HEAD,
+      },
+      {},
+      { headRevision: MAIN, parentRevisions: [] },
+    );
     expect(built.observationScope).toBe("full_release_train");
+    expect(built.providerValidationIssues).toEqual([430]);
   });
 
   it("rejects a reviewer login bound to multiple agent identities", () => {

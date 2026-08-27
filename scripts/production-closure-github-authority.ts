@@ -812,6 +812,20 @@ export async function verifyGitHubClosureAuthority(
           "successor activation requires the exact staged workflow and check identity tuple",
         );
       } else {
+        const runIdFromUrl = (value: string | null | undefined): number | null => {
+          const raw = /\/actions\/runs\/(\d+)(?:\/|$)/.exec(value ?? "")?.[1];
+          const parsed = Number(raw);
+          return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+        };
+        const successorStatuses = (await client.listCommitStatuses(liveBootstrap.head.sha))
+          .filter(
+            (status) =>
+              status.context === successor.controllerCheckName &&
+              status.creator.login.toLowerCase() ===
+                successor.controllerStatusCreatorLogin.toLowerCase() &&
+              status.creator.id === successor.controllerStatusCreatorUserId,
+          )
+          .sort((left, right) => right.id - left.id);
         const successorCheck = bootstrapCheckRuns
           .filter(
             (check) =>
@@ -822,49 +836,90 @@ export async function verifyGitHubClosureAuthority(
               check.app?.id === successor.externalCheckAppId,
           )
           .sort((left, right) => right.id - left.id)[0];
-        const successorStatus = (await client.listCommitStatuses(liveBootstrap.head.sha))
-          .filter(
-            (status) =>
-              status.context === successor.controllerCheckName &&
-              status.state === "success" &&
-              status.creator.login.toLowerCase() ===
-                successor.controllerStatusCreatorLogin.toLowerCase() &&
-              status.creator.id === successor.controllerStatusCreatorUserId,
-          )
-          .sort((left, right) => right.id - left.id)[0];
-        const checkRunId = /\/actions\/runs\/(\d+)(?:\/|$)/.exec(
-          successorCheck?.details_url ?? "",
-        )?.[1];
-        const statusRunId = /\/actions\/runs\/(\d+)(?:\/|$)/.exec(
-          successorStatus?.target_url ?? "",
-        )?.[1];
-        if (!successorCheck || !successorStatus || !checkRunId || checkRunId !== statusRunId) {
-          add(
-            issues,
-            "AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED",
-            successor.workflowPath,
-            "successor external and controller results must be successful, exact-head, App-bound, and linked to one workflow run",
-          );
-        } else {
-          const run = await client.getWorkflowRun(Number(checkRunId));
+        const successorStatus = successorStatuses.find((status) => status.state === "success");
+        const checkRunId = runIdFromUrl(successorCheck?.details_url);
+        const statusRunId = runIdFromUrl(successorStatus?.target_url);
+        let successorProven = false;
+        if (successorCheck && successorStatus && checkRunId && checkRunId === statusRunId) {
+          const run = await client.getWorkflowRun(checkRunId);
           if (
-            run.id !== Number(checkRunId) ||
+            run.id !== checkRunId ||
             run.path.split("@", 1)[0] !== successor.workflowPath ||
             run.event !== "pull_request_target" ||
             run.status !== "completed" ||
             run.conclusion !== "success" ||
-            run.head_sha !== observation.mainRevisionStart
+            run.head_sha !== liveBootstrap.head.sha
           ) {
             add(
               issues,
               "AUTHORITY_SUCCESSOR_WORKFLOW_PROVENANCE_INVALID",
               successor.workflowPath,
-              "successor proof must come from the exact staged default-branch workflow and current base revision",
+              "successor proof must come from the exact staged default-branch workflow and activation head",
             );
           } else {
             observation.checkRunIds.push(successorCheck.id);
             observation.workflowRunIds.push(run.id);
+            successorProven = true;
           }
+        }
+        if (!successorProven && !issues.some((issue) =>
+          issue.code === "AUTHORITY_SUCCESSOR_WORKFLOW_PROVENANCE_INVALID"
+        )) {
+          const currentRunId = Number(context.workflowRunId);
+          const currentCheck = bootstrapCheckRuns
+            .filter(
+              (check) =>
+                check.name === successor.externalCheckName &&
+                check.status === "in_progress" &&
+                check.conclusion === null &&
+                check.head_sha === liveBootstrap.head.sha &&
+                check.app?.id === successor.externalCheckAppId &&
+                runIdFromUrl(check.details_url) === currentRunId,
+            )
+            .sort((left, right) => right.id - left.id)[0];
+          const currentStatus = successorStatuses.find(
+            (status) =>
+              status.state === "pending" &&
+              runIdFromUrl(status.target_url) === currentRunId,
+          );
+          const currentPullRequestMatches =
+            context.eventName === "pull_request" &&
+            context.pullRequest?.number === bootstrap.number &&
+            context.pullRequest.baseRef === liveBootstrap.base.ref &&
+            context.pullRequest.baseRevision === liveBootstrap.base.sha &&
+            context.pullRequest.headRef === liveBootstrap.head.ref &&
+            context.pullRequest.headRevision === liveBootstrap.head.sha;
+          if (
+            Number.isSafeInteger(currentRunId) &&
+            currentRunId > 0 &&
+            currentCheck &&
+            currentStatus &&
+            currentPullRequestMatches
+          ) {
+            const currentRun = await client.getWorkflowRun(currentRunId);
+            if (
+              currentRun.id === currentRunId &&
+              currentRun.path.split("@", 1)[0] === successor.workflowPath &&
+              currentRun.event === "pull_request_target" &&
+              currentRun.status === "in_progress" &&
+              currentRun.conclusion === null &&
+              currentRun.head_sha === liveBootstrap.head.sha
+            ) {
+              observation.checkRunIds.push(currentCheck.id);
+              observation.workflowRunIds.push(currentRun.id);
+              successorProven = true;
+            }
+          }
+        }
+        if (!successorProven && !issues.some((issue) =>
+          issue.code === "AUTHORITY_SUCCESSOR_WORKFLOW_PROVENANCE_INVALID"
+        )) {
+          add(
+            issues,
+            "AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED",
+            successor.workflowPath,
+            "successor proof requires either completed successful results or the exact authenticated in-progress activation run",
+          );
         }
       }
     }
@@ -1188,13 +1243,47 @@ export function githubAuthorityContextFromEvent(
   if (eventName !== "pull_request" && eventName !== "push") {
     throw new Error("GITHUB_EVENT_NAME must be pull_request or push");
   }
-  // Only a pull_request_target run is discovered as a single-PR observation.
-  // Scheduled and manually dispatched runs fan out across every open PR and
-  // must retain their full historical provider-drift backstop even though each
-  // matrix job uses the normalized pull_request execution contract.
-  const observationScope = workflowEventName === "pull_request_target"
+  // PR target, review, and CI completion events are discovered against one
+  // exact PR head. Push, issue, branch-protection, schedule, and manual events
+  // retain the full release-train provider-drift backstop.
+  const derivedObservationScope = [
+      "pull_request_target",
+      "pull_request_review",
+      "workflow_run",
+    ].includes(workflowEventName)
     ? "current_pull_request"
     : "full_release_train";
+  const configuredObservationScope =
+    environment.MENDPOINT_CLOSURE_OBSERVATION_SCOPE?.trim();
+  if (
+    configuredObservationScope !== undefined &&
+    configuredObservationScope !== "current_pull_request" &&
+    configuredObservationScope !== "full_release_train"
+  ) {
+    throw new Error("MENDPOINT_CLOSURE_OBSERVATION_SCOPE is invalid");
+  }
+  if (
+    configuredObservationScope !== undefined &&
+    configuredObservationScope !== derivedObservationScope
+  ) {
+    throw new Error("configured observation scope does not match the workflow event");
+  }
+  const observationScope = configuredObservationScope ?? derivedObservationScope;
+  const eventProviderIssuesRaw =
+    environment.MENDPOINT_CLOSURE_PROVIDER_VALIDATION_ISSUES?.trim() || "[]";
+  let eventProviderIssues: unknown;
+  try {
+    eventProviderIssues = JSON.parse(eventProviderIssuesRaw);
+  } catch {
+    throw new Error("event issue provider-validation set must be valid JSON");
+  }
+  if (
+    !Array.isArray(eventProviderIssues) ||
+    eventProviderIssues.some((entry) => !Number.isInteger(entry) || entry <= 0) ||
+    new Set(eventProviderIssues).size !== eventProviderIssues.length
+  ) {
+    throw new Error("event issue provider-validation set is invalid");
+  }
   const reviewerBindings = configuredReviewerBindings ?? JSON.parse(
     requiredEnvironment(environment, "MENDPOINT_CLOSURE_TRUSTED_REVIEWERS_JSON"),
   ) as unknown;
@@ -1241,7 +1330,7 @@ export function githubAuthorityContextFromEvent(
     eventName,
     observationScope,
     providerValidationPullRequests: [],
-    providerValidationIssues: [],
+    providerValidationIssues: sorted(eventProviderIssues as number[]),
     repository: requiredEnvironment(environment, "GITHUB_REPOSITORY"),
     githubSha: environment.MENDPOINT_CLOSURE_AUTHORITY_SHA?.trim() ||
       requiredEnvironment(environment, "GITHUB_SHA"),
@@ -1394,10 +1483,12 @@ async function main(): Promise<void> {
       proposalObservation.providerValidationPullRequests,
       "pull request",
     );
-    context.providerValidationIssues = exactNumbers(
-      proposalObservation.providerValidationIssues,
-      "issue",
-    );
+    context.providerValidationIssues = sorted([
+      ...new Set([
+        ...context.providerValidationIssues,
+        ...exactNumbers(proposalObservation.providerValidationIssues, "issue"),
+      ]),
+    ]);
   }
   if (context.repository !== policy.repository) {
     throw new Error("protected authority repository does not match pinned policy");
