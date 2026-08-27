@@ -22,6 +22,10 @@ import {
 
 const NOW = "2026-08-02T12:00:00.000Z";
 const RELEASE_DOCUMENT_MAX_BYTES = 1024 * 1024;
+const durableItemUrl = (value: string) => {
+  const canonical = new URL(value).toString();
+  return `${new URL(canonical).origin}/.well-known/mendpoint/release-item-source/${createHash("sha256").update(canonical).digest("hex")}`;
+};
 const fixture = (name: string) =>
   readFileSync(new URL(`../fixtures/releases/${name}`, import.meta.url), "utf8");
 const stores: ReleaseIngestionStore[] = [];
@@ -317,7 +321,7 @@ describe("release ingestion", () => {
       tenantId: "tenant-a",
       adapter: "rss",
       collectionUrl: "https://docs.stripe.com/changelog/feed",
-      sourceUrl: "https://docs.stripe.com/changelog/charges-2026-08-01",
+      sourceUrl: durableItemUrl("https://docs.stripe.com/changelog/charges-2026-08-01"),
       sourceItemId: "charges-2026-08-01",
       excerptLocation: "rss.channel.item[0].description",
       confidence: 0.9,
@@ -329,21 +333,56 @@ describe("release ingestion", () => {
     expect(atom.artifacts[0]?.changeHints.replacements).toContainEqual({ from: "max_tokens", to: "max_output_tokens" });
   });
 
-  it("replaces query and fragment bearing item URLs with origin plus digest identity", () => {
+  it.each(["rss", "atom"] as const)(
+  "digest-binds %s items without IDs and retains no URL secrets across replay",
+  (adapter) => {
     const ledger = store();
-    const secretUrl = "https://docs.example.com/release?channel=token-secret#fragment-secret";
-    const document = `<?xml version="1.0"?><rss><channel><item>
-      <guid>secret-item</guid><title>Secret URL release</title>
-      <link>${secretUrl}</link><pubDate>Sat, 02 Aug 2026 12:00:00 GMT</pubDate>
-      <description>Changed one field.</description>
-    </item></channel></rss>`;
-    const result = ingestReleaseDocument(ledger, input("rss", document));
-    const stored = result.artifacts[0]?.sourceUrl;
-    expect(stored).toBe(
-      `https://docs.example.com/.well-known/mendpoint/release-item-source/${createHash("sha256").update(secretUrl).digest("hex")}`,
-    );
-    expect(stored).not.toContain("token-secret");
-    expect(stored).not.toContain("fragment-secret");
+    const urls = [
+      `https://alice:rss-password@docs.example.com/private-${adapter}-path-a?channel=query-secret-a#fragment-secret-a`,
+      `https://bob:atom-password@docs.example.com/private-${adapter}-path-b?channel=query-secret-b#fragment-secret-b`,
+    ];
+    const entries = urls.map((url, index) => adapter === "rss"
+      ? `<item><title>Release ${index}</title><link>${url}</link>
+          <pubDate>Sat, 02 Aug 2026 12:00:00 GMT</pubDate>
+          <description>Changed field ${index}.</description></item>`
+      : `<entry><title>Release ${index}</title><link href="${url}" />
+          <updated>2026-08-02T12:00:00.000Z</updated>
+          <summary>Changed field ${index}.</summary></entry>`).join("");
+    const document = adapter === "rss"
+      ? `<?xml version="1.0"?><rss><channel>${entries}</channel></rss>`
+      : `<?xml version="1.0"?><feed>${entries}</feed>`;
+    const first = ingestReleaseDocument(ledger, input(adapter, document));
+    const replay = ingestReleaseDocument(ledger, input(adapter, document));
+
+    expect(first.inserted).toBe(2);
+    expect(replay.inserted).toBe(0);
+    expect(new Set(first.artifacts.map((artifact) => artifact.sourceItemId)).size).toBe(2);
+    for (const [index, artifact] of first.artifacts.entries()) {
+      const canonical = new URL(urls[index]!).toString();
+      expect(artifact.sourceUrl).toBe(durableItemUrl(canonical));
+      expect(artifact.sourceItemId).toBe(
+        `release-item-url-sha256:${createHash("sha256").update(canonical).digest("hex")}`,
+      );
+      expect(rehydrateReleaseArtifact(
+        ledger,
+        {
+          tenantId: artifact.tenantId,
+          artifactId: artifact.id,
+          expectedContentSha256: artifact.contentSha256,
+        },
+      )).toEqual(artifact);
+    }
+    const tables = ledger.raw.prepare(`SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name LIKE 'release_ingestion_%' ORDER BY name`)
+      .all() as Array<{ name: string }>;
+    const durableRows = tables.flatMap(({ name }) =>
+      ledger.raw.prepare(`SELECT * FROM "${name}"`).all());
+    const visible = JSON.stringify({ first, replay, durableRows, dispatches: listReleaseDispatches(ledger, "tenant-a") });
+    for (const secret of [
+      "alice", "rss-password", "bob", "atom-password", `private-${adapter}-path-a`,
+      `private-${adapter}-path-b`, "query-secret-a", "query-secret-b",
+      "fragment-secret-a", "fragment-secret-b",
+    ]) expect(visible).not.toContain(secret);
   });
 
   it("normalizes GitHub releases and a constrained provider page fixture", () => {
@@ -353,12 +392,12 @@ describe("release ingestion", () => {
 
     expect(github.artifacts[0]).toMatchObject({
       version: "v3.2.0",
-      sourceUrl: "https://github.com/acme/payments/releases/tag/v3.2.0",
+      sourceUrl: durableItemUrl("https://github.com/acme/payments/releases/tag/v3.2.0"),
       excerptLocation: "github.release[0].body",
     });
     expect(page.artifacts[0]).toMatchObject({
       sourceItemId: "charges-v2",
-      sourceUrl: "https://docs.stripe.com/changelog/charges-v2",
+      sourceUrl: durableItemUrl("https://docs.stripe.com/changelog/charges-v2"),
       excerptLocation: "provider_page.article[0]",
     });
   });
