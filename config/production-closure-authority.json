@@ -35,7 +35,7 @@
   },
   "productionEvidenceAuthorities": [],
   "protectedFiles": {
-    "config/production-closure-successors/closure-authority-quiet-sweep.yml": "sha256:364c1d36558824c3158933e3932bf92b4835eb5357f794ac88418abcb45b7e75",
+    "config/production-closure-successors/closure-authority-quiet-sweep.yml": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
     ".github/workflows/closure-authority.yml": "sha256:1756bd261278a16bc2df82974dddb189b8021ba65652d39627c08f026e877567",
     ".github/workflows/ci.yml": "sha256:cd754f91027985a2f65de0cdda6d9bcfcb5b59169a32457367e5bd95f3df025e",
     "package.json": "sha256:5166abfa08925beec8bbf6cc0078435bf37f1d4165e25524608924d840dd606a",

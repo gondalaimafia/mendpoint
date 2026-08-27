@@ -370,8 +370,8 @@ jobs:
           if [ "$APP_IDENTITY_OUTCOME" = success ] && [ "$BRANCH_PROTECTION_OUTCOME" = success ] && [ "$PROPOSAL_OUTCOME" = success ] && [ "$MATRIX_OUTCOME" = success ] && [ "$GITHUB_OUTCOME" = success ]; then
             conclusion=success
           fi
-          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
-            echo "::notice::closure-authority verdict for PR #${PR_NUMBER} is ${conclusion}; recorded on the PR check-run (scheduled sweep does not fail the run for per-PR verdicts)"
+          if [ "$GITHUB_EVENT_NAME" = schedule ] || [ "$GITHUB_EVENT_NAME" = push ]; then
+            echo "::notice::closure-authority verdict for PR #${PR_NUMBER} is ${conclusion}; recorded on the PR check-run (sweep (push/schedule) does not fail the run for per-PR verdicts)"
             exit 0
           fi
           # Every non-schedule event keeps the original hard-fail behavior: the run

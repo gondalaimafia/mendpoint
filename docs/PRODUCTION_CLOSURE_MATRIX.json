@@ -2056,17 +2056,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-27T06:25:53.291Z",
-    "observedMainRevision": "30c34dc805d5d1890fbd1e35d0c34f71d1776635",
-    "observationDigest": "sha256:83735bfbf7ce2a2518f5204ba43609cba6d0e89e2098f1e146c123520e279bea",
+    "observedAt": "2026-08-27T07:23:59.036Z",
+    "observedMainRevision": "808cb1740a5fa2ae9b5ba07d265b652a4ca14822",
+    "observationDigest": "sha256:4742c1585ca1956c8ea045cf70fb79964e24b96c80735760f8ba6de03ab8b0d9",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 497,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/497",
-      "title": "Correct README production availability claims",
+      "number": 502,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/502",
+      "title": "authority: runtime closure-authority-quiet-sweep",
       "baseBranch": "main",
-      "headBranch": "codex/pr496-review-fixes",
+      "headBranch": "ceremony-r1b-preauth-fix",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2079,7 +2079,15 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": []
+      "remediatesPullRequests": [],
+      "authorityRotation": {
+        "rotationId": "rotation-20260827-006",
+        "kind": "runtime",
+        "issuedAt": "2026-08-27T07:23:59.036Z",
+        "expiresAt": "2026-08-28T07:23:59.172Z",
+        "basePolicySha256": "sha256:ac80ee9fe864a8c35d34095393792847610d6c606a6a6dccdce946c4c9f9122e",
+        "proposedPolicySha256": "sha256:03ae8e73980fe826944162e4b9e27fc69621eafb4ef3332b1003e9f67997e089"
+      }
     },
     "pullRequests": [
       {
