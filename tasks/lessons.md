@@ -191,3 +191,8 @@
 **Mistake:** I reported all repository merges as my own shipping output even when Claude or Cursor authored them and another process merged them.
 **Correction:** Talal required attribution of Codex work separately from Claude/Cursor work.
 **Rule:** Report authored, reviewed, merged, and deployed as separate facts; count a PR as Codex-shipped only when Codex performed the material repair/review-to-merge path and has evidence.
+
+### 2026-08-26 — Resolve ambiguous authority references against immediate context
+**Mistake:** I interpreted "extend the authority timeline until Friday" as changing the protected production-closure receipt instead of extending the just-granted Codex self-deploy waiver.
+**Correction:** Talal clarified it was about Codex-owned work without Claude review.
+**Rule:** When "authority" could mean a protected technical artifact or conversational action authorization, bind it to the immediately preceding topic; do not mutate protected authority unless the user names that artifact or operation explicitly.
