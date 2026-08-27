@@ -563,11 +563,37 @@ function safeUrl(name: string, value: unknown): string {
   return parsed.toString();
 }
 
+function canonicalItemUrl(value: unknown): string {
+  const text = required("release_item_source_url", value, 2048);
+  let parsed: URL;
+  try { parsed = new URL(text); } catch { throw new Error("release_item_source_url_unsafe"); }
+  if (parsed.protocol !== "https:" || BLOCKED_HOST.test(parsed.hostname)) {
+    throw new Error("release_item_source_url_unsafe");
+  }
+  return parsed.toString();
+}
+
 function safeStoredItemUrl(value: unknown): string {
-  const canonical = safeUrl("release_item_source_url", value);
+  const canonical = canonicalItemUrl(value);
   const parsed = new URL(canonical);
-  if (!parsed.search && !parsed.hash) return canonical;
   return `${parsed.origin}/.well-known/mendpoint/release-item-source/${sha256(canonical)}`;
+}
+
+function safeSourceItemId(value: unknown): string {
+  const itemId = required("release_source_item_id", value, 512);
+  if (/[\u0000-\u001f\u007f]/.test(itemId)) throw new Error("release_source_item_id_invalid");
+  try {
+    const parsed = new URL(itemId);
+    if (parsed.protocol === "https:") {
+      return `release-item-id-sha256:${sha256(parsed.toString())}`;
+    }
+  } catch {
+    // Non-URL provider identifiers remain valid, subject to the control-character check.
+  }
+  if (itemId.includes("?") || itemId.includes("#")) {
+    return `release-item-id-sha256:${sha256(itemId)}`;
+  }
+  return itemId;
 }
 
 function decodeXml(value: string): string {
@@ -607,7 +633,7 @@ function makeItem(input: {
   const excerpt = required("release_excerpt", input.excerpt, 20_000);
   return Object.freeze({
     sourceUrl: safeStoredItemUrl(input.sourceUrl),
-    sourceItemId: required("release_source_item_id", input.sourceItemId, 512),
+    sourceItemId: safeSourceItemId(input.sourceItemId),
     title: required("release_title", input.title, 512),
     version: input.version ? required("release_version", input.version, 128) : null,
     publishedAt: timestamp("release_published_at", input.publishedAt),
@@ -640,8 +666,9 @@ function parseXml(input: ReleaseDocumentInput, sourceUrl: string, observedAt: st
   if (blocks.length === 0 || blocks.length > 100) throw new Error("release_xml_items_invalid");
   return blocks.map((match, index) => {
     const block = match[1]!;
-    const itemUrl = safeUrl("release_item_source_url", xmlLink(block, atom) ?? sourceUrl);
-    const id = xmlTag(block, atom ? "id" : "guid") ?? itemUrl;
+    const itemUrl = canonicalItemUrl(xmlLink(block, atom) ?? sourceUrl);
+    const id = xmlTag(block, atom ? "id" : "guid") ??
+      `release-item-url-sha256:${sha256(itemUrl)}`;
     const excerpt = xmlTag(block, atom ? "summary" : "description") ?? xmlTag(block, "content");
     return makeItem({
       sourceUrl: itemUrl,
@@ -672,9 +699,15 @@ function parseGitHub(input: ReleaseDocumentInput, observedAt: string): Normalize
   }
   return document.map((value, index) => {
     const item = object(value, "github_release_invalid");
+    const githubId = typeof item.id === "number" && Number.isSafeInteger(item.id)
+      ? String(item.id)
+      : typeof item.id === "string" && /^\d+$/.test(item.id)
+        ? item.id
+        : undefined;
+    if (!githubId) throw new Error("github_release_id_invalid");
     return makeItem({
-      sourceUrl: safeUrl("release_item_source_url", item.html_url),
-      sourceItemId: String(item.id ?? ""),
+      sourceUrl: canonicalItemUrl(item.html_url),
+      sourceItemId: githubId,
       title: item.name ?? item.tag_name,
       version: typeof item.tag_name === "string" ? item.tag_name : null,
       publishedAt: item.published_at,
