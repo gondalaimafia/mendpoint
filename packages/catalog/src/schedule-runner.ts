@@ -19,6 +19,7 @@ import {
 } from "./run-poll.js";
 import {
   duplicateReleasePollConfigurationResult,
+  invalidReleasePollExecutorResult,
   parseReleasePollConfiguration,
   pollReleaseSource,
   type CanonicalReleasePollConfigurationV1,
@@ -126,21 +127,146 @@ function openApiSucceeded(poll: PollOneResult): boolean {
 }
 
 function releaseScope(tenantId: string, providerSlug: string): string {
-  return `${tenantId}\n${providerSlug}`;
+  return JSON.stringify([tenantId, providerSlug]);
 }
 
-function releaseResultMatchesConfiguration(
-  result: ValidReleasePollResult,
+function expectedReleaseSourceUrl(config: CanonicalReleasePollConfigurationV1): string {
+  const canonical = config.source.url;
+  const digest = createHash("sha256").update(canonical).digest("hex");
+  return `${new URL(canonical).origin}/.well-known/mendpoint/release-source/${digest}`;
+}
+
+function exactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  return actual.length === keys.length && actual.every((key, index) => key === [...keys].sort()[index]);
+}
+
+function parseArtifactReferences(value: unknown) {
+  if (!Array.isArray(value)) return null;
+  const parsed = [];
+  for (const reference of value) {
+    const snapshot = Object.freeze({
+      artifactId: reference?.artifactId,
+      contentSha256: reference?.contentSha256,
+    });
+    if (
+      !exactRecord(reference, ["artifactId", "contentSha256"]) ||
+      typeof snapshot.artifactId !== "string" ||
+      !/^rel_[a-f0-9]{32}$/.test(snapshot.artifactId) ||
+      typeof snapshot.contentSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(snapshot.contentSha256)
+    ) return null;
+    parsed.push(snapshot as { artifactId: string; contentSha256: string });
+  }
+  return Object.freeze(parsed);
+}
+
+function parseDispatchReferences(value: unknown) {
+  if (!Array.isArray(value)) return null;
+  const parsed = [];
+  for (const reference of value) {
+    const snapshot = Object.freeze({
+      dispatchId: reference?.dispatchId,
+      artifactId: reference?.artifactId,
+      artifactContentSha256: reference?.artifactContentSha256,
+    });
+    if (
+      !exactRecord(reference, ["artifactContentSha256", "artifactId", "dispatchId"]) ||
+      typeof snapshot.dispatchId !== "string" ||
+      !/^rdi_[a-f0-9]{32}$/.test(snapshot.dispatchId) ||
+      typeof snapshot.artifactId !== "string" ||
+      !/^rel_[a-f0-9]{32}$/.test(snapshot.artifactId) ||
+      typeof snapshot.artifactContentSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(snapshot.artifactContentSha256)
+    ) return null;
+    parsed.push(snapshot as {
+      dispatchId: string;
+      artifactId: string;
+      artifactContentSha256: string;
+    });
+  }
+  return Object.freeze(parsed);
+}
+
+function validateReleaseExecutorResult(
+  value: unknown,
   config: CanonicalReleasePollConfigurationV1,
-): boolean {
-  return (
-    result.contractVersion === config.contractVersion &&
-    result.tenantId === config.tenantId &&
-    result.providerSlug === config.provider.slug &&
-    result.adapter === config.adapter &&
-    result.sourceUrl === config.source.url &&
-    result.sourceMaxBytes === (config.source.maxBytes ?? null)
-  );
+): ValidReleasePollResult | null {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const candidate = value as Record<string, unknown>;
+    const status = candidate.status;
+    if (status !== "ingested" && status !== "unchanged" && status !== "failed") return null;
+    const keys = [
+      "adapter", "artifacts", "contractVersion", "dispatches", "inserted", "providerSlug",
+      "sourceMaxBytes", "sourceUrl", "status", "tenantId",
+      ...(status === "failed" ? ["error"] : []),
+    ];
+    if (!exactRecord(candidate, keys)) return null;
+    const artifacts = parseArtifactReferences(candidate.artifacts);
+    const dispatches = parseDispatchReferences(candidate.dispatches);
+    const snapshot = Object.freeze({
+      status,
+      contractVersion: candidate.contractVersion,
+      tenantId: candidate.tenantId,
+      providerSlug: candidate.providerSlug,
+      adapter: candidate.adapter,
+      sourceUrl: candidate.sourceUrl,
+      sourceMaxBytes: candidate.sourceMaxBytes,
+      inserted: candidate.inserted,
+      artifacts,
+      dispatches,
+      error: status === "failed" ? candidate.error : undefined,
+    });
+    if (
+      snapshot.contractVersion !== config.contractVersion ||
+      snapshot.tenantId !== config.tenantId ||
+      snapshot.providerSlug !== config.provider.slug ||
+      snapshot.adapter !== config.adapter ||
+      snapshot.sourceUrl !== expectedReleaseSourceUrl(config) ||
+      snapshot.sourceMaxBytes !== (config.source.maxBytes ?? null) ||
+      !Number.isSafeInteger(snapshot.inserted) || Number(snapshot.inserted) < 0 ||
+      !artifacts || !dispatches
+    ) return null;
+    if (status === "failed") {
+      if (
+        snapshot.inserted !== 0 || typeof snapshot.error !== "string" ||
+        !snapshot.error.trim() || snapshot.error.length > 1024
+      ) return null;
+      return Object.freeze({
+        status,
+        contractVersion: snapshot.contractVersion,
+        tenantId: snapshot.tenantId,
+        providerSlug: snapshot.providerSlug,
+        adapter: snapshot.adapter,
+        sourceUrl: snapshot.sourceUrl,
+        sourceMaxBytes: snapshot.sourceMaxBytes,
+        inserted: 0,
+        artifacts,
+        dispatches,
+        error: snapshot.error,
+      }) as ValidReleasePollResult;
+    } else if (status === "unchanged" && snapshot.inserted !== 0) {
+      return null;
+    } else if (status === "ingested" && Number(snapshot.inserted) < 1) {
+      return null;
+    }
+    return Object.freeze({
+      status,
+      contractVersion: snapshot.contractVersion,
+      tenantId: snapshot.tenantId,
+      providerSlug: snapshot.providerSlug,
+      adapter: snapshot.adapter,
+      sourceUrl: snapshot.sourceUrl,
+      sourceMaxBytes: snapshot.sourceMaxBytes,
+      inserted: snapshot.inserted,
+      artifacts,
+      dispatches,
+    }) as ValidReleasePollResult;
+  } catch {
+    return null;
+  }
 }
 
 export async function runFeedSchedules(options: FeedScheduleRunOptions) {
@@ -150,12 +276,16 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
   if (staleAfterMs < intervalMs) throw new Error("feed_schedule_stale_window_invalid");
   const feeds = [...(options.feeds ?? listPollableFeeds(options.db))];
   const releaseByScope = new Map<string, ParsedReleasePollConfiguration>();
+  const releaseConfigurationFailures: ReleasePollResult[] = [];
   for (const config of options.releaseFeeds ?? []) {
     const parsed = parseReleasePollConfiguration(config);
     const binding = parsed.status === "valid"
       ? { tenantId: parsed.config.tenantId, providerSlug: parsed.config.provider.slug }
       : parsed.result.configurationBinding;
-    if (!binding) continue;
+    if (!binding) {
+      if (parsed.status === "invalid") releaseConfigurationFailures.push(parsed.result);
+      continue;
+    }
     const scope = releaseScope(binding.tenantId, binding.providerSlug);
     releaseByScope.set(scope, releaseByScope.has(scope)
       ? Object.freeze({
@@ -266,14 +396,25 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
           });
         } else {
           try {
-            const result = options.releaseExecute
+            const untrustedResult: unknown = options.releaseExecute
               ? await options.releaseExecute(options.releaseStore, releaseConfig, schedule, at)
               : await pollReleaseSource(options.releaseStore, releaseConfig, {
                   at,
                   fetchOptions: options.releaseFetchOptions,
                 });
+            const result = validateReleaseExecutorResult(untrustedResult, releaseConfig);
+            if (!result) {
+              const invalid = invalidReleasePollExecutorResult({
+                tenantId: releaseConfig.tenantId,
+                providerSlug: releaseConfig.provider.slug,
+              });
+              releaseOutcome = Object.freeze({
+                status: "failed" as const,
+                error: invalid.error,
+                result: invalid,
+              });
+            } else {
             switch (result.status) {
-              case "invalid_configuration":
               case "failed":
                 releaseOutcome = Object.freeze({
                   status: "failed" as const,
@@ -283,14 +424,9 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
                 break;
               case "ingested":
               case "unchanged":
-                releaseOutcome = releaseResultMatchesConfiguration(result, releaseConfig)
-                  ? Object.freeze({ status: "succeeded" as const, result })
-                  : Object.freeze({
-                      status: "failed" as const,
-                      error: "release_poll_result_identity_mismatch",
-                      result,
-                    });
+                releaseOutcome = Object.freeze({ status: "succeeded" as const, result });
                 break;
+            }
             }
           } catch (cause) {
             releaseOutcome = Object.freeze({
@@ -311,13 +447,26 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
       ].filter((error): error is string => Boolean(error));
       const succeeded = errors.length === 0;
       const error = succeeded ? undefined : errors.join("; ");
-      completeFeedScheduleWindow(options.db, {
+      const completed = completeFeedScheduleWindow(options.db, {
         scheduleId: schedule.id,
         windowStartedAt: window.startedAt,
         succeeded,
         error,
         completedAt: at,
       });
+      if (!completed) {
+        return {
+          scheduleId: schedule.id,
+          providerSlug: schedule.provider_slug,
+          windowStartedAt: window.startedAt,
+          windowEndsAt: window.endsAt,
+          status: "failed",
+          poll,
+          openApiOutcome,
+          releaseOutcome,
+          error: "release_poll_schedule_authority_lost",
+        };
+      }
       return {
         scheduleId: schedule.id,
         providerSlug: schedule.provider_slug,
@@ -332,15 +481,28 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
     },
   );
 
-  const health = getFeedScheduleHealth(options.db, at, options.tenantId);
+  const durableHealth = getFeedScheduleHealth(options.db, at, options.tenantId);
+  const health = releaseConfigurationFailures.length === 0
+    ? durableHealth
+    : {
+        ...durableHealth,
+        status: "degraded" as const,
+        counts: {
+          ...durableHealth.counts,
+          failed: durableHealth.counts.failed + releaseConfigurationFailures.length,
+        },
+        configurationFailures: Object.freeze([...releaseConfigurationFailures]),
+      };
   return {
     at,
     maxConcurrency: boundedConcurrency(options.maxConcurrency),
     claimed: executions.filter((execution) => execution.status !== "already_claimed").length,
     succeeded: executions.filter((execution) => execution.status === "succeeded").length,
-    failed: executions.filter((execution) => execution.status === "failed").length,
+    failed: executions.filter((execution) => execution.status === "failed").length +
+      releaseConfigurationFailures.length,
     alreadyClaimed: executions.filter((execution) => execution.status === "already_claimed").length,
     executions,
+    releaseConfigurationFailures: Object.freeze([...releaseConfigurationFailures]),
     health,
   };
 }

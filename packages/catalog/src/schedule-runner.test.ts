@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,16 +49,24 @@ function releaseConfiguration(
   };
 }
 
-function unchangedRelease(config: ReleasePollConfigurationV1): ReleasePollResult {
+function durableSourceUrl(value: string): string {
+  const canonical = new URL(value).toString();
+  const digest = createHash("sha256").update(canonical).digest("hex");
+  return `${new URL(canonical).origin}/.well-known/mendpoint/release-source/${digest}`;
+}
+
+function unchangedRelease(
+  config: ReleasePollConfigurationV1,
+): ReleasePollResult & { status: "unchanged"; inserted: 0 } {
   return {
     contractVersion: config.contractVersion,
     tenantId: config.tenantId,
     providerSlug: config.provider.slug,
     adapter: config.adapter,
-    sourceUrl: config.source.url,
+    sourceUrl: durableSourceUrl(config.source.url),
     sourceMaxBytes: config.source.maxBytes ?? null,
     status: "unchanged",
-    inserted: 0,
+    inserted: 0 as const,
     artifacts: [],
     dispatches: [],
   };
@@ -281,7 +290,7 @@ describe("feed schedule runner", () => {
       releaseFetchOptions: {
         production: true,
         resolveHostname: async () => ["93.184.216.34"],
-        fetchImpl: async () => new Response(`<?xml version="1.0"?><rss><channel><item>
+        trustedTestOnlyPinnedFetchImpl: async () => new Response(`<?xml version="1.0"?><rss><channel><item>
           <guid>release-1</guid><title>Release 1</title>
           <link>https://docs.example.com/releases/1</link>
           <pubDate>Sat, 02 Aug 2026 12:00:00 GMT</pubDate>
@@ -313,7 +322,7 @@ describe("feed schedule runner", () => {
       tenantId: "tenant_default",
       providerSlug: "provider-1",
       adapter: "rss",
-      sourceUrl: "https://docs.example.com/releases.xml",
+      sourceUrl: durableSourceUrl("https://docs.example.com/releases.xml"),
       sourceMaxBytes: null,
       status: "failed",
       error: "release HTTP 503",
@@ -353,7 +362,7 @@ describe("feed schedule runner", () => {
       tenantId: "tenant_default",
       providerSlug: "provider-1",
       adapter: "rss",
-      sourceUrl: "https://docs.example.com/releases.xml",
+      sourceUrl: durableSourceUrl("https://docs.example.com/releases.xml"),
       sourceMaxBytes: null,
       status: "unchanged",
       inserted: 0,
@@ -392,7 +401,7 @@ describe("feed schedule runner", () => {
       tenantId: "tenant_default",
       providerSlug: "release-only",
       adapter: "rss",
-      sourceUrl: config.source.url,
+      sourceUrl: durableSourceUrl(config.source.url),
       sourceMaxBytes: null,
       status: "unchanged",
       inserted: 0,
@@ -524,7 +533,7 @@ describe("feed schedule runner", () => {
           tenantId: config.tenantId,
           providerSlug: config.provider.slug,
           adapter: config.adapter,
-          sourceUrl: config.source.url,
+          sourceUrl: durableSourceUrl(config.source.url),
           sourceMaxBytes: config.source.maxBytes ?? null,
           status: "unchanged",
           inserted: 0,
@@ -677,6 +686,178 @@ describe("feed schedule runner", () => {
   });
 
   it.each([
+    ["unknown status", { status: "mystery-status" }],
+    ["missing status", { status: undefined }],
+    ["missing failure error", { status: "failed", error: undefined }],
+    ["foreign failure tenant", { status: "failed", error: "safe failure", tenantId: "foreign" }],
+    ["foreign failure provider", { status: "failed", error: "safe failure", providerSlug: "foreign" }],
+    ["foreign failure adapter", { status: "failed", error: "safe failure", adapter: "atom" }],
+    ["foreign failure source", { status: "failed", error: "safe failure", sourceUrl: "https://foreign.invalid/source" }],
+    ["foreign failure version", { status: "failed", error: "safe failure", contractVersion: "release-poll.v2" }],
+    ["malformed source reference", { sourceReference: { origin: "https://private.example/path-secret" } }],
+    ["private body payload", { body: "executor-body-secret" }],
+  ] as const)("rejects an executor result with %s without echoing its content", async (_case, patch) => {
+    const db = fixture();
+    const store = releaseStore();
+    const config = releaseConfiguration();
+    const untrusted = { ...unchangedRelease(config), ...patch } as unknown as ReleasePollResult;
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed) => ({
+        slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const,
+      }),
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: async () => untrusted,
+    });
+
+    expect(result).toMatchObject({
+      succeeded: 0,
+      failed: 1,
+      executions: [{
+        status: "failed",
+        openApiOutcome: { status: "succeeded" },
+        releaseOutcome: {
+          status: "failed",
+          error: "release_poll_executor_result_invalid",
+          result: {
+            status: "invalid_configuration",
+            error: "release_poll_executor_result_invalid",
+            identity: null,
+            configurationBinding: { tenantId: "tenant_default", providerSlug: "provider-1" },
+            sourceReference: null,
+          },
+        },
+      }],
+    });
+    const serialized = JSON.stringify(result.executions[0]?.releaseOutcome);
+    expect(serialized).not.toContain("executor-body-secret");
+    expect(serialized).not.toContain("path-secret");
+    expect(serialized).not.toContain("foreign");
+    expect(serialized).not.toContain("mystery-status");
+  });
+
+  it("reports unbound redacted configuration failures without suppressing valid schedules", async () => {
+    const db = fixture();
+    const store = releaseStore();
+    const collisionInputs = [
+      {
+        ...releaseConfiguration("tenant-a\nprovider-b", "provider-c"),
+        source: { url: "https://docs.example.com/private/first-unbound-secret" },
+      },
+      {
+        ...releaseConfiguration("tenant-a", "provider-b\nprovider-c"),
+        source: { url: "https://docs.example.com/private/second-unbound-secret" },
+      },
+    ] as unknown as ReleasePollConfigurationV1[];
+    let openApiCalls = 0;
+    let releaseCalls = 0;
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed) => {
+        openApiCalls++;
+        return { slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const };
+      },
+      releaseStore: store,
+      releaseFeeds: [releaseConfiguration(), ...collisionInputs],
+      releaseExecute: async (_store, config) => {
+        releaseCalls++;
+        return unchangedRelease(config);
+      },
+    });
+
+    expect(openApiCalls).toBe(1);
+    expect(releaseCalls).toBe(1);
+    expect(result).toMatchObject({
+      succeeded: 1,
+      failed: 2,
+      releaseConfigurationFailures: [
+        { status: "invalid_configuration", identity: null, configurationBinding: null },
+        { status: "invalid_configuration", identity: null, configurationBinding: null },
+      ],
+      executions: [{ status: "succeeded" }],
+      health: { status: "degraded", counts: { healthy: 1, stale: 0, failed: 2 } },
+    });
+    expect(result.executions).toHaveLength(1);
+    const serialized = JSON.stringify(result.releaseConfigurationFailures);
+    expect(serialized).not.toContain("first-unbound-secret");
+    expect(serialized).not.toContain("second-unbound-secret");
+    expect(serialized).not.toContain("tenant-a\\nprovider-b");
+  });
+
+  it.each([
+    ["unchanged release and successful OpenAPI", "unchanged", false],
+    ["ingested release and successful OpenAPI", "ingested", false],
+    ["failed release and failed OpenAPI", "failed", true],
+  ] as const)("reports lost terminal authority for %s", async (_case, releaseStatus, openApiFails) => {
+    const db = fixture();
+    const store = releaseStore();
+    const config = releaseConfiguration();
+    const digest = "a".repeat(64);
+    const releaseResult = releaseStatus === "failed"
+      ? { ...unchangedRelease(config), status: "failed" as const, error: "release failure" }
+      : releaseStatus === "ingested"
+        ? {
+            ...unchangedRelease(config),
+            status: "ingested" as const,
+            inserted: 1,
+            artifacts: [{ artifactId: "rel_11111111111111111111111111111111", contentSha256: digest }],
+            dispatches: [{
+              dispatchId: "rdi_11111111111111111111111111111111",
+              artifactId: "rel_11111111111111111111111111111111",
+              artifactContentSha256: digest,
+            }],
+          }
+        : unchangedRelease(config);
+
+    const result = await runFeedSchedules({
+      db,
+      tenantId: "tenant_default",
+      at: "2026-08-02T12:00:30.000Z",
+      feeds: feeds(1),
+      execute: async (feed) => openApiFails
+        ? { slug: feed.slug, url: feed.openapiUrl, status: "error" as const, error: "OpenAPI failure" }
+        : { slug: feed.slug, url: feed.openapiUrl, status: "unchanged" as const },
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute: async (_store, _config, schedule) => {
+        db.raw.prepare(`UPDATE feed_schedule_windows
+          SET status = 'failed', error = 'durable concurrent winner', completed_at = ?
+          WHERE schedule_id = ? AND window_started_at = ? AND status = 'running'`)
+          .run("2026-08-02T12:00:29.000Z", schedule.id, "2026-08-02T12:00:00.000Z");
+        db.raw.prepare(`UPDATE feed_schedules
+          SET alert_state = 'failed', consecutive_failures = consecutive_failures + 1,
+              last_error = 'durable concurrent winner', updated_at = ? WHERE id = ?`)
+          .run("2026-08-02T12:00:29.000Z", schedule.id);
+        return releaseResult;
+      },
+    });
+
+    expect(result).toMatchObject({
+      succeeded: 0,
+      failed: 1,
+      executions: [{
+        status: "failed",
+        error: "release_poll_schedule_authority_lost",
+        openApiOutcome: { status: openApiFails ? "failed" : "succeeded" },
+        releaseOutcome: { status: releaseStatus === "failed" ? "failed" : "succeeded" },
+      }],
+      health: {
+        status: "degraded",
+        schedules: [{ lastError: "durable concurrent winner", consecutiveFailures: 1 }],
+      },
+    });
+  });
+
+  it.each([
     ["contract version", { contractVersion: "release-poll.v2" }],
     ["tenant", { tenantId: "tenant-spoof" }],
     ["provider", { providerSlug: "provider-spoof" }],
@@ -692,7 +873,7 @@ describe("feed schedule runner", () => {
       tenantId: config.tenantId,
       providerSlug: config.provider.slug,
       adapter: config.adapter,
-      sourceUrl: config.source.url,
+      sourceUrl: durableSourceUrl(config.source.url),
       sourceMaxBytes: null,
       status: "unchanged",
       inserted: 0,
@@ -721,12 +902,18 @@ describe("feed schedule runner", () => {
       executions: [{
         status: "failed",
         poll: { status: "unchanged" },
-        error: "release: release_poll_result_identity_mismatch",
+        error: "release: release_poll_executor_result_invalid",
         openApiOutcome: { status: "succeeded", result: { status: "unchanged" } },
         releaseOutcome: {
           status: "failed",
-          error: "release_poll_result_identity_mismatch",
-          result: spoofed,
+          error: "release_poll_executor_result_invalid",
+          result: {
+            status: "invalid_configuration",
+            error: "release_poll_executor_result_invalid",
+            identity: null,
+            configurationBinding: { tenantId: "tenant_default", providerSlug: "provider-1" },
+            sourceReference: null,
+          },
         },
       }],
     });
@@ -741,7 +928,7 @@ describe("feed schedule runner", () => {
       tenantId: config.tenantId,
       providerSlug: config.provider.slug,
       adapter: config.adapter,
-      sourceUrl: config.source.url,
+      sourceUrl: durableSourceUrl(config.source.url),
       sourceMaxBytes: null,
       status: "failed",
       error: "release HTTP 502",

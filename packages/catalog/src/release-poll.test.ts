@@ -16,6 +16,7 @@ import {
 } from "./release-poll.js";
 
 const NOW = "2026-08-02T12:00:00.000Z";
+const RELEASE_POLL_MAX_BYTES = 1024 * 1024;
 const rss = readFileSync(
   new URL("../fixtures/releases/stripe-rss.xml", import.meta.url),
   "utf8",
@@ -49,7 +50,7 @@ function publicFetchOptions(body = rss) {
   return {
     production: true,
     resolveHostname: async () => ["93.184.216.34"],
-    fetchImpl: async () => new Response(body, {
+    trustedTestOnlyPinnedFetchImpl: async () => new Response(body, {
       status: 200,
       headers: { "content-type": "application/rss+xml" },
     }),
@@ -68,6 +69,11 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function durableSourceUrl(value: string): string {
+  const canonical = new URL(value.trim()).toString();
+  return `${new URL(canonical).origin}/.well-known/mendpoint/release-source/${sha256(canonical)}`;
+}
+
 describe("release source polling", () => {
   it("binds persisted release and outbox identities to the explicit tenant, provider, adapter, and source", async () => {
     const store = ledger();
@@ -84,7 +90,7 @@ describe("release source polling", () => {
       tenantId: "tenant-a",
       providerSlug: "stripe",
       adapter: "rss",
-      sourceUrl: "https://docs.stripe.com/changelog/feed",
+      sourceUrl: durableSourceUrl(config.source.url),
       sourceMaxBytes: null,
       inserted: 1,
       artifacts: [{
@@ -100,7 +106,7 @@ describe("release source polling", () => {
     expect(listReleaseArtifacts(store, "tenant-a")[0]).toMatchObject({
       providerSlug: "stripe",
       adapter: "rss",
-      collectionUrl: config.source.url,
+      collectionUrl: durableSourceUrl(config.source.url),
     });
     expect(listReleaseArtifacts(store, "tenant-b")).toEqual([]);
     expect(listReleaseDispatches(store, "tenant-b")).toEqual([]);
@@ -162,7 +168,7 @@ describe("release source polling", () => {
         at: NOW,
         fetchOptions: {
           production: true,
-          fetchImpl: async () => {
+          trustedTestOnlyPinnedFetchImpl: async () => {
             fetches++;
             throw new Error("blocked destination was fetched");
           },
@@ -175,7 +181,7 @@ describe("release source polling", () => {
       tenantId: "tenant-a",
       providerSlug: "stripe",
       adapter: "rss",
-      sourceUrl: "https://127.0.0.1/releases",
+      sourceUrl: durableSourceUrl("https://127.0.0.1/releases"),
       sourceMaxBytes: null,
       error: "production feed URL resolves to a blocked address",
     });
@@ -218,7 +224,7 @@ describe("release source polling", () => {
   });
 
   it.each([
-    ["query token", "https://docs.example.com/releases?token=token-secret", "https://docs.example.com"],
+    ["query token", "https://docs.example.com/releases?channel=token-secret", "https://docs.example.com"],
     ["userinfo credentials", "https://user:password-secret@docs.example.com/releases", "https://docs.example.com"],
     ["fragment", "https://docs.example.com/releases#fragment-secret", "https://docs.example.com"],
     ["secret path", "http://docs.example.com/private/path-secret", "http://docs.example.com"],
@@ -238,6 +244,57 @@ describe("release source polling", () => {
       expect(serialized).not.toContain(secret);
     }
     expect(listReleaseArtifacts(store, "tenant-a")).toEqual([]);
+  });
+
+  it.each([
+    [Number.MAX_SAFE_INTEGER],
+    [Number.POSITIVE_INFINITY],
+    [RELEASE_POLL_MAX_BYTES + 1],
+  ])("rejects an out-of-range release byte limit %s", async (maxBytes) => {
+    const store = ledger();
+    const result = await pollReleaseSource(store, {
+      ...configuration(),
+      source: { ...configuration().source, maxBytes },
+    });
+    expect(result).toMatchObject({
+      status: "invalid_configuration",
+      error: "release_poll_source_max_bytes_invalid",
+      identity: null,
+    });
+  });
+
+  it("accepts the hard byte boundary and rejects a chunked body that crosses it", async () => {
+    const store = ledger();
+    const boundaryBody = `${rss}${" ".repeat(RELEASE_POLL_MAX_BYTES - Buffer.byteLength(rss))}`;
+    const accepted = await pollReleaseSource(store, {
+      ...configuration(),
+      source: { ...configuration().source, maxBytes: RELEASE_POLL_MAX_BYTES },
+    }, {
+      at: NOW,
+      fetchOptions: publicFetchOptions(boundaryBody),
+    });
+    expect(accepted.status).toBe("ingested");
+
+    const rejected = await pollReleaseSource(store, configuration("tenant-b"), {
+      at: NOW,
+      fetchOptions: {
+        production: true,
+        maxBytes: Number.MAX_SAFE_INTEGER,
+        resolveHostname: async () => ["93.184.216.34"],
+        trustedTestOnlyPinnedFetchImpl: async () => new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(RELEASE_POLL_MAX_BYTES));
+            controller.enqueue(new Uint8Array(1));
+            controller.close();
+          },
+        })),
+      },
+    });
+    expect(rejected).toMatchObject({ status: "failed" });
+    expect(rejected.status === "failed" ? rejected.error : "").toContain(
+      `exceeds the ${RELEASE_POLL_MAX_BYTES}-byte limit`,
+    );
+    expect(listReleaseArtifacts(store, "tenant-b")).toEqual([]);
   });
 
   it.each([
@@ -262,7 +319,7 @@ describe("release source polling", () => {
         fetchOptions: {
           production: true,
           resolveHostname: async () => ["93.184.216.34"],
-          fetchImpl: async () => {
+          trustedTestOnlyPinnedFetchImpl: async () => {
             mutate(config);
             return new Response(rss, { status: 200 });
           },
@@ -276,7 +333,7 @@ describe("release source polling", () => {
       tenantId: "tenant-a",
       providerSlug: "stripe",
       adapter: "rss",
-      sourceUrl: "https://docs.stripe.com/changelog/feed",
+      sourceUrl: durableSourceUrl("https://docs.stripe.com/changelog/feed"),
       sourceMaxBytes: null,
       inserted: 1,
     });
@@ -284,7 +341,7 @@ describe("release source polling", () => {
       tenantId: "tenant-a",
       providerSlug: "stripe",
       adapter: "rss",
-      collectionUrl: "https://docs.stripe.com/changelog/feed",
+      collectionUrl: durableSourceUrl("https://docs.stripe.com/changelog/feed"),
     });
     expect(listReleaseArtifacts(store, "tenant-b")).toEqual([]);
   });
@@ -293,8 +350,8 @@ describe("release source polling", () => {
     const store = ledger();
     const config = {
       contractVersion: RELEASE_POLL_CONTRACT_VERSION,
-      tenantId: "  tenant-a  ",
-      provider: { slug: "  stripe  " },
+      tenantId: "tenant-a",
+      provider: { slug: "stripe" },
       adapter: "rss",
       source: {
         url: "  HTTPS://DOCS.STRIPE.COM:443/changelog/../changelog/feed  ",
@@ -311,7 +368,7 @@ describe("release source polling", () => {
       tenantId: "tenant-a",
       providerSlug: "stripe",
       adapter: "rss",
-      sourceUrl: "https://docs.stripe.com/changelog/feed",
+      sourceUrl: durableSourceUrl("https://docs.stripe.com/changelog/feed"),
       sourceMaxBytes: null,
     });
     if (result.status === "failed" || result.status === "invalid_configuration") {

@@ -5,8 +5,11 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { existsSync, readFileSync } from "node:fs";
-import { BlockList, isIP } from "node:net";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { BlockList, isIP, type LookupFunction } from "node:net";
 import { join, resolve } from "node:path";
+import { Readable } from "node:stream";
 import { VENDOR_CATALOG, type VendorEntry } from "./vendors.js";
 
 export type FetchFeedResult = {
@@ -127,13 +130,21 @@ export function resolveFeedUrl(url: string, monorepoRoot?: string): string {
 }
 
 type HostResolver = (hostname: string) => Promise<string[]>;
+export type PinnedFetch = (
+  input: URL,
+  approvedAddress: string,
+  init?: RequestInit,
+) => Promise<Response>;
 
 export type FetchFeedOptions = {
   monorepoRoot?: string;
   timeoutMs?: number;
   maxBytes?: number;
   production?: boolean;
+  /** Non-production fetch seam. Production mode never delegates DNS to it. */
   fetchImpl?: typeof fetch;
+  /** Trusted test-only seam that must connect only to the supplied approved address. */
+  trustedTestOnlyPinnedFetchImpl?: PinnedFetch;
   resolveHostname?: HostResolver;
   /** Human-readable provider/feed label, surfaced in size-limit errors. */
   provider?: string;
@@ -180,6 +191,7 @@ for (const [network, prefix] of [
 }
 
 function blockedRemoteAddress(address: string): boolean {
+  if (address.includes("%")) return true;
   const normalized = address.toLowerCase().split("%", 1)[0]!;
   if (normalized.startsWith("::ffff:")) return true;
   const family = isIP(normalized);
@@ -197,7 +209,7 @@ async function defaultResolveHostname(hostname: string): Promise<string[]> {
 async function validateProductionRemoteUrl(
   input: URL,
   resolveHostname: HostResolver,
-): Promise<void> {
+): Promise<string> {
   if (input.protocol !== "https:") {
     throw new Error("production feed URLs must use https");
   }
@@ -220,6 +232,86 @@ async function validateProductionRemoteUrl(
   if (!addresses.length || addresses.some(blockedRemoteAddress)) {
     throw new Error("production feed URL resolves to a blocked address");
   }
+  return addresses[0]!;
+}
+
+export async function pinnedRemoteRequest(
+  input: URL,
+  approvedAddress: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const family = isIP(approvedAddress);
+  if (family !== 4 && family !== 6) throw new Error("pinned feed address is invalid");
+  const pinnedLookup = ((
+    _hostname: string,
+    options: { all?: boolean },
+    callback: (
+      error: NodeJS.ErrnoException | null,
+      address: string | Array<{ address: string; family: 4 | 6 }>,
+      family?: 4 | 6,
+    ) => void,
+  ) => options.all
+    ? callback(null, [{ address: approvedAddress, family }])
+    : callback(null, approvedAddress, family)) as LookupFunction;
+  const requestHeaders = new Headers(init.headers);
+  requestHeaders.set("Accept-Encoding", "identity");
+  const headers = Object.fromEntries(requestHeaders.entries());
+  const requester = input.protocol === "https:" ? httpsRequest : httpRequest;
+  if (input.protocol !== "https:" && input.protocol !== "http:") {
+    throw new Error("pinned feed transport protocol is unsupported");
+  }
+  return new Promise<Response>((resolveResponse, rejectResponse) => {
+    const request = requester(input, {
+      agent: false,
+      family,
+      lookup: pinnedLookup,
+      signal: init.signal ?? undefined,
+      headers,
+      method: init.method ?? "GET",
+    }, (incoming) => {
+      try {
+        const responseHeaders = new Headers();
+        for (let index = 0; index < incoming.rawHeaders.length; index += 2) {
+          responseHeaders.append(incoming.rawHeaders[index]!, incoming.rawHeaders[index + 1]!);
+        }
+        const status = incoming.statusCode ?? 500;
+        const nullBody = status === 204 || status === 205 || status === 304;
+        if (nullBody) incoming.resume();
+        resolveResponse(new Response(
+          nullBody ? null : Readable.toWeb(incoming) as ReadableStream,
+          {
+            status,
+            statusText: incoming.statusMessage,
+            headers: responseHeaders,
+          },
+        ));
+      } catch (cause) {
+        incoming.destroy();
+        rejectResponse(cause);
+      }
+    });
+    request.once("error", rejectResponse);
+    request.end();
+  });
+}
+
+async function waitForAbortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw signal.reason;
+  return new Promise<T>((resolvePromise, rejectPromise) => {
+    let settled = false;
+    const finish = (complete: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      complete();
+    };
+    const onAbort = () => finish(() => rejectPromise(signal.reason));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => finish(() => resolvePromise(value)),
+      (cause) => finish(() => rejectPromise(cause)),
+    );
+  });
 }
 
 async function boundedResponseText(
@@ -231,6 +323,7 @@ async function boundedResponseText(
   // Reject early on the declared size, before buffering any of the body.
   const declared = Number(response.headers.get("content-length") ?? 0);
   if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
     controller.abort();
     throw new Error(
       `OpenAPI feed for ${provider} is ${declared} bytes, over the ${maxBytes}-byte limit`,
@@ -291,23 +384,46 @@ export async function fetchFeedDocument(
     const maxBytes = opts?.maxBytes ?? DEFAULT_FEED_MAX_BYTES;
     let current = new URL(resolved);
     for (let redirects = 0; redirects <= 5; redirects++) {
-      if (production) {
-        await validateProductionRemoteUrl(current, resolveHostname);
-      }
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), opts?.timeoutMs ?? 30_000);
+      const t = setTimeout(
+        () => ctrl.abort(new DOMException("feed request timed out", "TimeoutError")),
+        opts?.timeoutMs ?? 30_000,
+      );
       let res: Response;
       try {
-        res = await fetchImpl(current, {
+        const approvedAddress = production
+          ? await waitForAbortable(
+              validateProductionRemoteUrl(current, resolveHostname),
+              ctrl.signal,
+            )
+          : undefined;
+        const init = {
           signal: ctrl.signal,
           redirect: "manual",
           headers: {
             Accept: "application/json, application/yaml, text/yaml, */*",
+            "Accept-Encoding": "identity",
           },
-        });
-        if (res.status >= 300 && res.status < 400) {
+        } satisfies RequestInit;
+        res = approvedAddress
+          ? opts?.trustedTestOnlyPinnedFetchImpl
+            ? await opts.trustedTestOnlyPinnedFetchImpl(current, approvedAddress, init)
+            : await pinnedRemoteRequest(current, approvedAddress, init)
+          : await fetchImpl(current, init);
+        const contentEncoding = res.headers.get("content-encoding")?.trim().toLowerCase();
+        if (contentEncoding && contentEncoding !== "identity") {
+          await res.body?.cancel().catch(() => undefined);
+          return {
+            ok: false,
+            url: current.href,
+            status: res.status,
+            error: "feed response content encoding is unsupported",
+          };
+        }
+        if (new Set([301, 302, 303, 307, 308]).has(res.status)) {
           const location = res.headers.get("location");
           if (!location) {
+            await res.body?.cancel().catch(() => undefined);
             return {
               ok: false,
               url: current.href,
@@ -316,6 +432,7 @@ export async function fetchFeedDocument(
             };
           }
           if (redirects === 5) {
+            await res.body?.cancel().catch(() => undefined);
             return {
               ok: false,
               url: current.href,
