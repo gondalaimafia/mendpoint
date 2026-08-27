@@ -29,16 +29,23 @@ function dependencyProjection(
     reason?: string;
   }> = [{ repositoryId: "repo-a" }],
 ) {
+  const manifestContentDigest = sha256(files["package.json"]);
+  const manifestEvidenceRef = `manifest-ingest:${manifestContentDigest}`;
   return createRegaugeDependencyProjectionV1({
     tenantId: "tenant-a",
     requestedRepositoryIds: repositories.map((repository) => repository.repositoryId),
     repositories: repositories.map((repository) => ({
       repositoryId: repository.repositoryId,
       serviceId: `service:${repository.repositoryId}:service`,
+      manifestPath: "package.json",
+      manifestContentDigest,
+      manifestVersionId: sha256(`manifest-version:${repository.repositoryId}`),
+      snapshotRevision: revision("b"),
+      snapshotDigest: recipeFilesDigest(files),
       coverage: repository.coverage ?? "complete",
       reason: repository.reason ?? "manifest_ingest_complete",
       dependsOnRepositoryIds: repository.dependsOnRepositoryIds ?? [],
-      evidenceRefs: [`evidence:manifest:${repository.repositoryId}`],
+      evidenceRefs: [manifestEvidenceRef],
     })),
     edges: repositories.flatMap((repository) =>
       (repository.dependsOnRepositoryIds ?? []).map((targetRepositoryId) => ({
@@ -47,7 +54,7 @@ function dependencyProjection(
         graphEdgeId: `DEPENDS_ON:${repository.repositoryId}:${targetRepositoryId}`,
         sourceSystem: "manifest",
         confidence: 1,
-        evidenceRefs: [`evidence:manifest:${repository.repositoryId}`],
+        evidenceRefs: [manifestEvidenceRef],
       }))),
   });
 }
@@ -168,7 +175,10 @@ describe("self serving Transformer mission planner", () => {
     expect(planTransformerMission({
       ...candidate,
       repositories: [{ ...candidate.repositories[0]!, snapshotDigest: sha256("wrong") }],
-    })).toMatchObject({ decision: "abstained", reasons: ["repository_snapshot_digest_mismatch:repo-a"] });
+    })).toMatchObject({
+      decision: "abstained",
+      reasons: ["dependency_projection_snapshot_mismatch:repo-a"],
+    });
     expect(planTransformerMission({
       ...candidate,
       repositories: [{

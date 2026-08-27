@@ -5,8 +5,10 @@ import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   NODE_RUNTIME_18_TO_20_RECIPE,
+  createRegaugeDependencyProjectionV1,
   createOrganizationConstraintContract,
   recipeFilesDigest,
+  type TransformerBlueprint,
 } from "@mendpoint/transformer";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
 import { ingestManifestDependencies, openGraphLearnMemory } from "@mendpoint/graph-learn";
@@ -32,6 +34,27 @@ const files = {
 };
 const digest = (content: string) =>
   `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
+
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, stableValue(entry)]));
+  }
+  return value;
+}
+
+function resignBlueprint(value: TransformerBlueprint): TransformerBlueprint {
+  const candidate = structuredClone(value);
+  const { id: _id, digest: _digest, ...body } = candidate;
+  const nextDigest = digest(JSON.stringify(stableValue(body)));
+  return {
+    ...candidate,
+    id: `tfb_${nextDigest.slice("sha256:".length, "sha256:".length + 24)}`,
+    digest: nextDigest,
+  };
+}
 
 function request(actorId: string, key: string) {
   return {
@@ -64,20 +87,22 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
     environment: "test",
   });
   services.push(control, executions);
-  const snapshotDigest = recipeFilesDigest(files);
+  let activeFiles: Readonly<Record<string, string>> = { ...files };
+  let activeRevision = revision("b");
   const repositories: TransformerMissionRepositoryAuthority = {
     load(tenantId, repositoryId) {
       if (tenantId !== "tenant-a" || repositoryId !== "repo-a") throw new Error("repository_not_found");
+      const snapshotDigest = recipeFilesDigest(activeFiles);
       return {
         planning: {
           id: "repo-a",
           organizationId: "organization-a",
-          revision: revision("b"),
+          revision: activeRevision,
           snapshotDigest,
           observedAt: new Date(Date.now() - 60_000).toISOString(),
           evidenceRefs: ["evidence:snapshot:a"],
-          files,
-          fileEvidence: Object.entries(files).map(([path, content]) => ({
+          files: activeFiles,
+          fileEvidence: Object.entries(activeFiles).map(([path, content]) => ({
             path,
             digest: digest(content),
             ownerIds: ["owner-a"],
@@ -88,12 +113,12 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
           snapshot: {
             snapshotId: "snapshot-a",
             repositoryId: "repo-a",
-            revision: revision("b"),
+            revision: activeRevision,
             manifestSha256: "b".repeat(64),
             digest: snapshotDigest,
             evidenceRefs: ["evidence:snapshot:a"],
           },
-          files,
+          files: activeFiles,
         },
       };
     },
@@ -158,7 +183,7 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
       repoPath: "/unused",
       repoId: "repo-a",
       tenantId: "tenant-a",
-      files: [{ path: "package.json", text: JSON.stringify({ name: "service", dependencies: {} }) }],
+      files: [{ path: "package.json", text: files["package.json"] }],
     });
     services.push({ close: () => graph.raw.close() });
   }
@@ -177,7 +202,44 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
     executions,
     service,
     replaceConstraints(value: typeof constraints) { activeConstraints = value; },
+    replaceRepositorySnapshot(
+      nextFiles: Readonly<Record<string, string>>,
+      nextRevision = activeRevision,
+    ) {
+      activeFiles = { ...nextFiles };
+      activeRevision = nextRevision;
+    },
   };
+}
+
+function planForLaunch(service: TransformerMissionService, campaignId: string, key: string) {
+  return service.plan(request("planner-a", key), {
+    campaignId,
+    environment: "test",
+    evaluatedAt: new Date(Date.now() - 30_000).toISOString(),
+    maxEvidenceAgeMs: 10 * 60_000,
+    constraints: { maxUnits: 4, maxRepositories: 2, maxPathsPerUnit: 8 },
+    repositoryIds: ["repo-a"],
+    objective: {
+      id: `upgrade-node-${campaignId}`,
+      statement: "Upgrade the service from Node 18 to Node 20.",
+      sourceSystem: "node@18",
+      targetSystem: "node@20",
+      evidenceRefs: [`evidence:objective:${campaignId}`],
+      assumptions: [{
+        id: `snapshot-stability-${campaignId}`,
+        statement: "The reviewed snapshot remains immutable.",
+        evidenceRefs: [`evidence:assumption:${campaignId}`],
+      }],
+      risks: [{
+        id: `runtime-compatibility-${campaignId}`,
+        statement: "Runtime behavior can change.",
+        severity: "high",
+        ownerId: "owner-a",
+        evidenceRefs: [`evidence:risk:${campaignId}`],
+      }],
+    },
+  });
 }
 
 describe("Transformer mission application service", () => {
@@ -411,5 +473,112 @@ describe("Transformer mission application service", () => {
     });
     expect(() => service.launch(request("reviewer-a", "launch-tamper"), "campaign-tamper"))
       .toThrow("transformer_blueprint_integrity_invalid");
+  });
+
+  it("revalidates the complete manifest projection against the current repository snapshot at launch", () => {
+    const { control, service, replaceRepositorySnapshot } = fixture();
+    const planned = planForLaunch(service, "campaign-snapshot-drift", "plan-snapshot-drift");
+    expect(planned.decision).toBe("planned");
+    if (planned.decision !== "planned") throw new Error(planned.reasons.join(","));
+    control.reviewToReady(request("reviewer-a", "review-snapshot-drift"), "campaign-snapshot-drift", {
+      campaign: 1,
+      blueprint: 1,
+      bsg: 1,
+    });
+    replaceRepositorySnapshot({
+      ...files,
+      "package.json": '{"name":"service","engines":{"node":"20.x"}}\n',
+    });
+
+    expect(() => service.launch(
+      request("reviewer-a", "launch-snapshot-drift"),
+      "campaign-snapshot-drift",
+    )).toThrow("transformer_mission_dependency_replan_required:current_snapshot_drift");
+  });
+
+  it("rejects launch when a reviewed canonical projection no longer proves complete coverage", () => {
+    const { control, service } = fixture();
+    const planned = planForLaunch(service, "campaign-incomplete", "plan-incomplete");
+    expect(planned.decision).toBe("planned");
+    if (planned.decision !== "planned") throw new Error(planned.reasons.join(","));
+    const stored = control.store.getBlueprint("tenant-a", planned.blueprint.id)!;
+    const changed = structuredClone(stored.content) as unknown as TransformerBlueprint;
+    const dependencies = changed.evidence.dependencies!;
+    const incompleteDependencies = createRegaugeDependencyProjectionV1({
+      tenantId: dependencies.tenantId,
+      requestedRepositoryIds: dependencies.requestedRepositoryIds,
+      repositories: dependencies.repositories.map((repository) => ({
+        ...repository,
+        coverage: "unknown" as const,
+        reason: "manifest_ingest_incomplete",
+        dependsOnRepositoryIds: [],
+        evidenceRefs: [],
+        manifestPath: null,
+        manifestContentDigest: null,
+        manifestVersionId: null,
+        snapshotRevision: null,
+        snapshotDigest: null,
+      })),
+      edges: [],
+    });
+    const revised = resignBlueprint({
+      ...changed,
+      evidence: { ...changed.evidence, dependencies: incompleteDependencies },
+    });
+    control.store.reviseBlueprint(
+      "tenant-a",
+      planned.blueprint.id,
+      { content: revised, policy: stored.policy },
+      1,
+      {
+        actorId: "planner-a",
+        correlationId: "request-incomplete",
+        causationId: "request-incomplete",
+        evidenceRefs: ["evidence:incomplete-test"],
+        idempotencyKey: "revise-incomplete-blueprint",
+      },
+    );
+    control.reviewToReady(request("reviewer-a", "review-incomplete"), "campaign-incomplete", {
+      campaign: 1,
+      blueprint: 2,
+      bsg: 1,
+    });
+
+    expect(() => service.launch(request("reviewer-a", "launch-incomplete"), "campaign-incomplete"))
+      .toThrow("transformer_mission_dependency_replan_required:incomplete_projection");
+  });
+
+  it("rejects legacy reviewed blueprints with an explicit replan requirement", () => {
+    const { control, service } = fixture();
+    const planned = planForLaunch(service, "campaign-legacy", "plan-legacy");
+    expect(planned.decision).toBe("planned");
+    if (planned.decision !== "planned") throw new Error(planned.reasons.join(","));
+    const stored = control.store.getBlueprint("tenant-a", planned.blueprint.id)!;
+    const legacy = structuredClone(stored.content) as TransformerBlueprint & {
+      evidence: Omit<TransformerBlueprint["evidence"], "dependencies"> & { dependencies?: never };
+    };
+    delete legacy.evidence.dependencies;
+    const revised = resignBlueprint(legacy as TransformerBlueprint);
+    control.store.reviseBlueprint(
+      "tenant-a",
+      planned.blueprint.id,
+      { content: revised, policy: stored.policy },
+      1,
+      {
+        actorId: "planner-a",
+        correlationId: "request-legacy",
+        causationId: "request-legacy",
+        evidenceRefs: ["evidence:legacy-test"],
+        idempotencyKey: "revise-legacy-blueprint",
+      },
+    );
+    control.reviewToReady(request("reviewer-a", "review-legacy"), "campaign-legacy", {
+      campaign: 1,
+      blueprint: 2,
+      bsg: 1,
+    });
+
+    expect(() => service.launch(request("reviewer-a", "launch-legacy"), "campaign-legacy"))
+      .toThrow("transformer_mission_dependency_replan_required:legacy_blueprint");
   });
 });

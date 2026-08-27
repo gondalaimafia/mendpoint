@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import {
   ingestManifestDependencies,
   openGraphLearnMemory,
@@ -11,6 +12,21 @@ import {
 } from "./regauge-plan-consult.js";
 
 describe("consultRegaugeGraphDependencies", () => {
+  const manifestText = (packageName: string, dependencies: Record<string, string> = {}) =>
+    JSON.stringify({ name: packageName, dependencies });
+  const snapshot = (
+    repositoryId: string,
+    packageName: string,
+    dependencies: Record<string, string> = {},
+  ) => {
+    const text = manifestText(packageName, dependencies);
+    return {
+      id: repositoryId,
+      revision: createHash("sha1").update(repositoryId).digest("hex"),
+      snapshotDigest: `sha256:${createHash("sha256").update(`snapshot:${repositoryId}:${text}`).digest("hex")}`,
+      files: { "package.json": text },
+    };
+  };
   const ingest = (
     db: ReturnType<typeof openGraphLearnMemory>,
     tenantId: string,
@@ -21,7 +37,7 @@ describe("consultRegaugeGraphDependencies", () => {
     repoPath: "/unused",
     repoId: repositoryId,
     tenantId,
-    files: [{ path: "package.json", text: JSON.stringify({ name: packageName, dependencies }) }],
+    files: [{ path: "package.json", text: manifestText(packageName, dependencies) }],
   });
 
   it("binds not_consulted coverage to every requested repository when no graph is supplied", () => {
@@ -50,6 +66,7 @@ describe("consultRegaugeGraphDependencies", () => {
       graph: db,
       tenantId: "tenant-a",
       repositoryIds: ["shop"],
+      repositorySnapshots: [snapshot("shop", "shop")],
     });
     expect(result.repositories).toEqual([expect.objectContaining({
       repositoryId: "shop",
@@ -69,6 +86,10 @@ describe("consultRegaugeGraphDependencies", () => {
       graph: db,
       tenantId: "tenant-a",
       repositoryIds: ["repo-a", "repo-b"],
+      repositorySnapshots: [
+        snapshot("repo-a", "shop", { billing: "workspace:*" }),
+        snapshot("repo-b", "billing"),
+      ],
     });
     expect(result.repositories).toEqual([
       expect.objectContaining({ repositoryId: "repo-a", coverage: "complete", dependsOnRepositoryIds: ["repo-b"] }),
@@ -87,20 +108,42 @@ describe("consultRegaugeGraphDependencies", () => {
     const db = openGraphLearnMemory();
     ingest(db, "tenant-a", "repo-a", "shop", { billing: "workspace:*" });
     ingest(db, "tenant-a", "repo-b", "billing");
-    const first = consultRegaugeGraphDependencies({ graph: db, tenantId: "tenant-a", repositoryIds: ["repo-b", "repo-a"] });
-    const second = consultRegaugeGraphDependencies({ graph: db, tenantId: "tenant-a", repositoryIds: ["repo-a", "repo-b"] });
+    const repositorySnapshots = [
+      snapshot("repo-a", "shop", { billing: "workspace:*" }),
+      snapshot("repo-b", "billing"),
+    ];
+    const first = consultRegaugeGraphDependencies({
+      graph: db,
+      tenantId: "tenant-a",
+      repositoryIds: ["repo-b", "repo-a"],
+      repositorySnapshots,
+    });
+    const second = consultRegaugeGraphDependencies({
+      graph: db,
+      tenantId: "tenant-a",
+      repositoryIds: ["repo-a", "repo-b"],
+      repositorySnapshots: [...repositorySnapshots].reverse(),
+    });
     expect(second).toEqual(first);
     db.raw.close();
   });
 
-  it("marks missing and ambiguous manifest roots unknown instead of empty", () => {
+  it("marks missing evidence unknown and reconciles a renamed manifest root", () => {
     const db = openGraphLearnMemory();
     expect(consultRegaugeGraphDependencies({ graph: db, tenantId: "tenant-a", repositoryIds: ["repo-missing"] }).repositories[0])
       .toMatchObject({ repositoryId: "repo-missing", coverage: "unknown", reason: "manifest_ingest_evidence_missing" });
     ingest(db, "tenant-a", "repo-a", "shop");
     ingest(db, "tenant-a", "repo-a", "storefront");
-    expect(consultRegaugeGraphDependencies({ graph: db, tenantId: "tenant-a", repositoryIds: ["repo-a"] }).repositories[0])
-      .toMatchObject({ repositoryId: "repo-a", coverage: "unknown", reason: "manifest_root_ambiguous" });
+    expect(consultRegaugeGraphDependencies({
+      graph: db,
+      tenantId: "tenant-a",
+      repositoryIds: ["repo-a"],
+      repositorySnapshots: [snapshot("repo-a", "storefront")],
+    }).repositories[0]).toMatchObject({
+      repositoryId: "repo-a",
+      serviceId: "service:repo-a:storefront",
+      coverage: "complete",
+    });
     db.raw.close();
   });
 
@@ -116,7 +159,12 @@ describe("consultRegaugeGraphDependencies", () => {
       target: "service:provider-b",
       source_system: "provider",
     });
-    const result = consultRegaugeGraphDependencies({ graph: db, tenantId: "tenant-a", repositoryIds: ["repo-a"] });
+    const result = consultRegaugeGraphDependencies({
+      graph: db,
+      tenantId: "tenant-a",
+      repositoryIds: ["repo-a"],
+      repositorySnapshots: [snapshot("repo-a", "shop", { unknown_internal: "workspace:*" })],
+    });
     expect(result.repositories[0]).toMatchObject({
       repositoryId: "repo-a",
       coverage: "unknown",
@@ -124,6 +172,40 @@ describe("consultRegaugeGraphDependencies", () => {
       dependsOnRepositoryIds: [],
     });
     expect(result.edges).toEqual([]);
+    db.raw.close();
+  });
+
+  it("retains registry dependencies as provenance without inventing repository ordering", () => {
+    const db = openGraphLearnMemory();
+    ingest(db, "tenant-a", "repo-a", "shop", { stripe: "^18.0.0" });
+    const result = consultRegaugeGraphDependencies({
+      graph: db,
+      tenantId: "tenant-a",
+      repositoryIds: ["repo-a"],
+      repositorySnapshots: [snapshot("repo-a", "shop", { stripe: "^18.0.0" })],
+    });
+    expect(result.repositories[0]).toMatchObject({
+      repositoryId: "repo-a",
+      coverage: "complete",
+      dependsOnRepositoryIds: [],
+    });
+    expect(result.edges).toEqual([]);
+    db.raw.close();
+  });
+
+  it("marks graph evidence from a different immutable snapshot unknown", () => {
+    const db = openGraphLearnMemory();
+    ingest(db, "tenant-a", "repo-a", "shop");
+    const result = consultRegaugeGraphDependencies({
+      graph: db,
+      tenantId: "tenant-a",
+      repositoryIds: ["repo-a"],
+      repositorySnapshots: [snapshot("repo-a", "shop", { stripe: "^18.0.0" })],
+    });
+    expect(result.repositories[0]).toMatchObject({
+      coverage: "unknown",
+      reason: "manifest_snapshot_digest_mismatch",
+    });
     db.raw.close();
   });
 

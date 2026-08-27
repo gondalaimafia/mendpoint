@@ -26,7 +26,11 @@ import {
   type GitHubTransportRequest,
   type GitHubTransportResponse,
 } from "@mendpoint/platform";
-import { NODE_RUNTIME_20_TO_22_RECIPE, type TransformerBlueprint } from "@mendpoint/transformer";
+import {
+  NODE_RUNTIME_20_TO_22_RECIPE,
+  recipeFilesDigest,
+  type TransformerBlueprint,
+} from "@mendpoint/transformer";
 import { bootstrapRegaugeProductionCampaign } from "./regauge-production-bootstrap.js";
 import {
   createRegaugeProductionBootstrapRuntime,
@@ -333,6 +337,11 @@ describe("Regauge production bootstrap runtime", () => {
         reason: "manifest_ingest_complete",
         dependsOnRepositoryIds: [],
         evidenceRefs: [expect.stringMatching(/^manifest-ingest:sha256:/)],
+        manifestPath: "package.json",
+        manifestContentDigest: `sha256:${createHash("sha256").update(files["package.json"], "utf8").digest("hex")}`,
+        manifestVersionId: expect.stringMatching(/^sha256:/),
+        snapshotRevision: REVISION,
+        snapshotDigest: recipeFilesDigest(files),
       }],
       contentDigest: expect.stringMatching(/^sha256:/),
     });

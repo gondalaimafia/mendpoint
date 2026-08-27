@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 describe("ingestManifestDependencies", () => {
-  it("writes Service DEPENDS_ON Service from package.json and skips self/malformed names", () => {
+  it("writes Service DEPENDS_ON Service from package.json and skips self references", () => {
     const db = openGraphLearnMemory();
     opened.push(db);
     const result = ingestManifestDependencies(db, {
@@ -26,7 +26,7 @@ describe("ingestManifestDependencies", () => {
         path: "package.json",
         text: JSON.stringify({
           name: "@acme/payments",
-          dependencies: { stripe: "^18.0.0", "@acme/payments": "1.0.0", "../escape": "1.0.0" },
+          dependencies: { stripe: "^18.0.0", "@acme/payments": "1.0.0" },
           peerDependencies: { react: "^18" },
         }),
       }],
@@ -70,6 +70,87 @@ describe("ingestManifestDependencies", () => {
         evidence_refs: result.evidenceRefs,
       });
     }
+  });
+
+  it("does not certify ignored or truncated dependency declarations as complete", () => {
+    const db = openGraphLearnMemory();
+    opened.push(db);
+    const ignored = ingestManifestDependencies(db, {
+      repoPath: "/unused",
+      repoId: "repo-a",
+      tenantId: "tenant-a",
+      files: [{
+        path: "package.json",
+        text: JSON.stringify({ name: "shop", dependencies: { "../billing": "workspace:*" } }),
+      }],
+    });
+    expect(ignored).toMatchObject({
+      status: "ingested",
+      coverage: "unknown",
+      coverageReasons: ["dependency_declaration_unrepresented:dependencies"],
+      dependencies: 0,
+    });
+    expect(getNode(db, "service:repo-a:shop")?.props).toMatchObject({
+      manifest_ingest_status: "incomplete",
+    });
+
+    const tooMany = Object.fromEntries(
+      Array.from({ length: 501 }, (_, index) => [`package-${index}`, "1.0.0"]),
+    );
+    const truncated = ingestManifestDependencies(db, {
+      repoPath: "/unused",
+      repoId: "repo-b",
+      tenantId: "tenant-a",
+      files: [{ path: "package.json", text: JSON.stringify({ name: "large", dependencies: tooMany }) }],
+    });
+    expect(truncated).toMatchObject({
+      coverage: "unknown",
+      coverageReasons: ["manifest_dependency_limit_exceeded"],
+      dependencies: 500,
+    });
+  });
+
+  it("versions removals and rollback without replaying or losing temporal evidence", () => {
+    const db = openGraphLearnMemory();
+    opened.push(db);
+    const manifest = (dependencies: Record<string, string>) => ({
+      repoPath: "/unused",
+      repoId: "repo-a",
+      tenantId: "tenant-a",
+      files: [{ path: "package.json", text: JSON.stringify({ name: "shop", dependencies }) }],
+    });
+    const first = ingestManifestDependencies(db, {
+      ...manifest({ billing: "workspace:*" }),
+      observedAt: "2026-08-27T10:00:00.000Z",
+    });
+    const removed = ingestManifestDependencies(db, {
+      ...manifest({}),
+      observedAt: "2026-08-27T11:00:00.000Z",
+    });
+    const replay = ingestManifestDependencies(db, {
+      ...manifest({}),
+      observedAt: "2026-08-27T11:30:00.000Z",
+    });
+    const restored = ingestManifestDependencies(db, {
+      ...manifest({ billing: "workspace:*" }),
+      observedAt: "2026-08-27T12:00:00.000Z",
+    });
+    expect(replay.versionId).toBe(removed.versionId);
+    expect(new Set([first.versionId, removed.versionId, restored.versionId]).size).toBe(3);
+    expect(edgesFrom(db, "service:repo-a:shop", ["DEPENDS_ON"], {
+      at: "2026-08-27T10:30:00.000Z",
+    })).toHaveLength(1);
+    expect(edgesFrom(db, "service:repo-a:shop", ["DEPENDS_ON"], {
+      at: "2026-08-27T11:30:00.000Z",
+    })).toHaveLength(0);
+    expect(edgesFrom(db, "service:repo-a:shop", ["DEPENDS_ON"], {
+      at: "2026-08-27T12:30:00.000Z",
+    })).toHaveLength(1);
+    const history = edgesFrom(db, "service:repo-a:shop", ["DEPENDS_ON"], {
+      includeInvalidated: true,
+    });
+    expect(history).toHaveLength(2);
+    expect(history.filter((edge) => edge.valid_to === null)).toHaveLength(1);
   });
 
   it("skips unparseable manifests rather than inventing edges", () => {

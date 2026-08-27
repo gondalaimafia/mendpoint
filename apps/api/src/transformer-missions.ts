@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   compileApprovedTransformerMission,
   planTransformerMission,
@@ -111,10 +112,13 @@ export class TransformerMissionService {
     if (repositoryIds.length !== input.repositoryIds.length || repositoryIds.length === 0) {
       throw new Error("transformer_mission_repository_invalid");
     }
+    const repositories = repositoryIds.map((repositoryId) =>
+      this.repositories.load(request.tenantId, repositoryId, input.evaluatedAt).planning);
     const graphPlan = consultRegaugeGraphDependencies({
       graph: this.consults.graph ?? null,
       tenantId: request.tenantId,
       repositoryIds,
+      repositorySnapshots: repositories,
     });
     const incompleteDependencies = graphPlan.repositories
       .filter((repository) => repository.coverage !== "complete")
@@ -129,8 +133,6 @@ export class TransformerMissionService {
         graphPlan,
       });
     }
-    const repositories = repositoryIds.map((repositoryId) =>
-      this.repositories.load(request.tenantId, repositoryId, input.evaluatedAt).planning);
     const authority = this.organizations.load(
       request.tenantId,
       repositoryIds,
@@ -219,10 +221,58 @@ export class TransformerMissionService {
     if (!stored || stored.state !== "reviewed") throw new Error("transformer_mission_review_required");
     const blueprint = verifyTransformerBlueprint(stored.content as unknown as TransformerBlueprint);
     const dependencyProjection = blueprint.evidence.dependencies;
-    if (!dependencyProjection) throw new Error("transformer_mission_dependency_evidence_missing");
+    if (!dependencyProjection) {
+      throw new Error("transformer_mission_dependency_replan_required:legacy_blueprint");
+    }
     const approvedDependencies = verifyRegaugeDependencyProjectionV1(dependencyProjection);
     if (approvedDependencies.tenantId !== request.tenantId) {
       throw new Error("transformer_mission_dependency_authority_drift");
+    }
+    if (approvedDependencies.repositories.some((repository) => repository.coverage !== "complete")) {
+      throw new Error("transformer_mission_dependency_replan_required:incomplete_projection");
+    }
+    for (const repository of approvedDependencies.repositories) {
+      const blueprintEvidence = blueprint.evidence.repositories.find((entry) =>
+        entry.id === repository.repositoryId);
+      const scopeEvidence = blueprint.scope.repositories.find((entry) =>
+        entry.id === repository.repositoryId);
+      const manifestEvidence = scopeEvidence?.paths.find((entry) =>
+        entry.path === repository.manifestPath);
+      if (!blueprintEvidence) {
+        throw new Error("transformer_mission_dependency_replan_required:repository_evidence_missing");
+      }
+      if (blueprintEvidence.revision !== repository.snapshotRevision) {
+        throw new Error("transformer_mission_dependency_replan_required:snapshot_revision_drift");
+      }
+      if (manifestEvidence !== undefined &&
+          manifestEvidence.digest !== repository.manifestContentDigest) {
+        throw new Error("transformer_mission_dependency_replan_required:manifest_scope_drift");
+      }
+      if (
+        repository.manifestContentDigest === null ||
+        !repository.evidenceRefs.includes(`manifest-ingest:${repository.manifestContentDigest}`)
+      ) {
+        throw new Error("transformer_mission_dependency_replan_required:manifest_provenance_invalid");
+      }
+      const current = this.repositories.load(
+        request.tenantId,
+        repository.repositoryId,
+        this.now(),
+      ).planning;
+      const currentManifest = repository.manifestPath === null
+        ? undefined
+        : current.files[repository.manifestPath];
+      const currentManifestDigest = typeof currentManifest === "string"
+        ? `sha256:${createHash("sha256").update(currentManifest, "utf8").digest("hex")}`
+        : null;
+      if (
+        current.id !== repository.repositoryId ||
+        current.revision !== repository.snapshotRevision ||
+        current.snapshotDigest !== repository.snapshotDigest ||
+        currentManifestDigest !== repository.manifestContentDigest
+      ) {
+        throw new Error("transformer_mission_dependency_replan_required:current_snapshot_drift");
+      }
     }
     const approvals = blueprint.review.reviewerIds.flatMap((reviewerId) => {
       const approval = this.control.store.getApproval(

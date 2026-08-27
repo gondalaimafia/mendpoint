@@ -5,6 +5,7 @@
  * policy. Missing graph or empty relation is declared, never treated as "no
  * dependencies" / "no conventions".
  */
+import { createHash } from "node:crypto";
 import {
   createTenantGraphView,
   listNodesByKind,
@@ -58,20 +59,37 @@ function manifestRootEvidence(
   node: ReturnType<typeof listNodesByKind>[number],
   tenantId: string,
   repositoryId: string,
-): { evidenceRefs: string[]; contentDigest: string } | null {
+): {
+  evidenceRefs: string[];
+  contentDigest: string;
+  manifestPath: string;
+  versionId: string;
+  coverage: "complete" | "unknown";
+} | null {
   const props = node.props;
   const contentDigest = props?.manifest_content_digest;
   const evidenceRefs = strings(props?.manifest_evidence_refs);
+  const manifestPath = props?.manifest;
+  const versionId = props?.manifest_version_id;
+  const status = props?.manifest_ingest_status;
   if (
     node.repo_id !== repositoryId ||
     props?.tenant_id !== tenantId ||
-    props?.manifest_ingest_status !== "complete" ||
+    !["complete", "incomplete"].includes(String(status ?? "")) ||
+    props?.manifest_valid_to !== null ||
     props?.declared === true ||
-    typeof props?.manifest !== "string" || !props.manifest.trim() ||
+    typeof manifestPath !== "string" || !["package.json", "pyproject.toml", "go.mod"].includes(manifestPath) ||
     typeof contentDigest !== "string" || !DIGEST.test(contentDigest) ||
+    typeof versionId !== "string" || !DIGEST.test(versionId) ||
     !evidenceRefs || !evidenceRefs.includes(`manifest-ingest:${contentDigest}`)
   ) return null;
-  return { evidenceRefs, contentDigest };
+  return {
+    evidenceRefs,
+    contentDigest,
+    manifestPath,
+    versionId,
+    coverage: status === "complete" ? "complete" : "unknown",
+  };
 }
 
 function compareCodeUnits(left: string, right: string): number {
@@ -82,6 +100,12 @@ export function consultRegaugeGraphDependencies(input: {
   graph: GraphLearnDb | null;
   tenantId: string;
   repositoryIds: readonly string[];
+  repositorySnapshots?: readonly Readonly<{
+    id: string;
+    revision: string;
+    snapshotDigest: string;
+    files: Readonly<Record<string, string>>;
+  }>[];
 }): RegaugeGraphPlanConsult {
   const requestedRepositoryIds = [...new Set(input.repositoryIds)].sort(compareCodeUnits);
   if (!input.graph) {
@@ -91,6 +115,11 @@ export function consultRegaugeGraphDependencies(input: {
       repositories: requestedRepositoryIds.map((repositoryId) => ({
         repositoryId,
         serviceId: null,
+        manifestPath: null,
+        manifestContentDigest: null,
+        manifestVersionId: null,
+        snapshotRevision: null,
+        snapshotDigest: null,
         coverage: "not_consulted" as const,
         reason: "graph_not_supplied",
         dependsOnRepositoryIds: [],
@@ -104,7 +133,7 @@ export function consultRegaugeGraphDependencies(input: {
     const services = listNodesByKind(scoped, "Service").sort((left, right) => compareCodeUnits(left.id, right.id));
     const roots = new Map<string, Array<{
       node: (typeof services)[number];
-      evidence: { evidenceRefs: string[]; contentDigest: string };
+      evidence: NonNullable<ReturnType<typeof manifestRootEvidence>>;
     }>>();
     for (const repositoryId of requestedRepositoryIds) {
       roots.set(repositoryId, services.flatMap((node) => {
@@ -123,12 +152,20 @@ export function consultRegaugeGraphDependencies(input: {
     }
     const repositories: RegaugeDependencyProjectionRepositoryV1[] = [];
     const projectionEdges: RegaugeDependencyProjectionEdgeV1[] = [];
+    const snapshotByRepository = new Map(
+      (input.repositorySnapshots ?? []).map((snapshot) => [snapshot.id, snapshot]),
+    );
     for (const repositoryId of requestedRepositoryIds) {
       const candidates = roots.get(repositoryId) ?? [];
       if (candidates.length === 0) {
         repositories.push({
           repositoryId,
           serviceId: null,
+          manifestPath: null,
+          manifestContentDigest: null,
+          manifestVersionId: null,
+          snapshotRevision: null,
+          snapshotDigest: null,
           coverage: "unknown",
           reason: "manifest_ingest_evidence_missing",
           dependsOnRepositoryIds: [],
@@ -140,6 +177,11 @@ export function consultRegaugeGraphDependencies(input: {
         repositories.push({
           repositoryId,
           serviceId: null,
+          manifestPath: null,
+          manifestContentDigest: null,
+          manifestVersionId: null,
+          snapshotRevision: null,
+          snapshotDigest: null,
           coverage: "unknown",
           reason: "manifest_root_ambiguous",
           dependsOnRepositoryIds: [],
@@ -148,6 +190,31 @@ export function consultRegaugeGraphDependencies(input: {
         continue;
       }
       const { node: source, evidence } = candidates[0]!;
+      const snapshot = snapshotByRepository.get(repositoryId);
+      if (
+        evidence.coverage !== "complete" ||
+        !snapshot ||
+        typeof snapshot.files[evidence.manifestPath] !== "string" ||
+        `sha256:${createHash("sha256").update(snapshot.files[evidence.manifestPath]!, "utf8").digest("hex")}` !==
+          evidence.contentDigest
+      ) {
+        repositories.push({
+          repositoryId,
+          serviceId: source.id,
+          manifestPath: evidence.manifestPath,
+          manifestContentDigest: evidence.contentDigest,
+          manifestVersionId: evidence.versionId,
+          snapshotRevision: snapshot?.revision ?? null,
+          snapshotDigest: snapshot?.snapshotDigest ?? null,
+          coverage: "unknown",
+          reason: evidence.coverage !== "complete"
+            ? "manifest_ingest_incomplete"
+            : "manifest_snapshot_digest_mismatch",
+          dependsOnRepositoryIds: [],
+          evidenceRefs: evidence.evidenceRefs,
+        });
+        continue;
+      }
       const repositoryEdges: RegaugeDependencyProjectionEdgeV1[] = [];
       let reason: string | null = null;
       for (const edge of edgesFrom(scoped, source.id, ["DEPENDS_ON"])
@@ -157,9 +224,15 @@ export function consultRegaugeGraphDependencies(input: {
         const target = services.find((node) => node.id === edge.target);
         if (
           !target || edge.props?.manifest_content_digest !== evidence.contentDigest ||
+          edge.props?.manifest_version_id !== evidence.versionId ||
           !edgeEvidenceRefs || !evidence.evidenceRefs.every((ref) => edgeEvidenceRefs.includes(ref))
         ) {
           reason = "dependency_edge_evidence_invalid";
+          break;
+        }
+        if (edge.props?.dependency_scope === "external_registry") continue;
+        if (edge.props?.dependency_scope !== "repository_local") {
+          reason = "dependency_edge_scope_invalid";
           break;
         }
         const matches = (rootByLabel.get(target.label) ?? [])
@@ -185,6 +258,11 @@ export function consultRegaugeGraphDependencies(input: {
         repositories.push({
           repositoryId,
           serviceId: source.id,
+          manifestPath: evidence.manifestPath,
+          manifestContentDigest: evidence.contentDigest,
+          manifestVersionId: evidence.versionId,
+          snapshotRevision: snapshot.revision,
+          snapshotDigest: snapshot.snapshotDigest,
           coverage: "unknown",
           reason,
           dependsOnRepositoryIds: [],
@@ -196,6 +274,11 @@ export function consultRegaugeGraphDependencies(input: {
       repositories.push({
         repositoryId,
         serviceId: source.id,
+        manifestPath: evidence.manifestPath,
+        manifestContentDigest: evidence.contentDigest,
+        manifestVersionId: evidence.versionId,
+        snapshotRevision: snapshot.revision,
+        snapshotDigest: snapshot.snapshotDigest,
         coverage: "complete",
         reason: "manifest_ingest_complete",
         dependsOnRepositoryIds: [...new Set(repositoryEdges.map((edge) => edge.targetRepositoryId))]

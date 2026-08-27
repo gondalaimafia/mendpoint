@@ -23,6 +23,11 @@ export type RegaugeDependencyCoverage = "complete" | "unknown" | "not_consulted"
 export type RegaugeDependencyProjectionRepositoryV1 = Readonly<{
   repositoryId: string;
   serviceId: string | null;
+  manifestPath: string | null;
+  manifestContentDigest: string | null;
+  manifestVersionId: string | null;
+  snapshotRevision: string | null;
+  snapshotDigest: string | null;
   coverage: RegaugeDependencyCoverage;
   reason: string;
   dependsOnRepositoryIds: readonly string[];
@@ -141,6 +146,11 @@ export function createRegaugeDependencyProjectionV1(
   const repositories = input.repositories.map((repository) => ({
     repositoryId: repository.repositoryId,
     serviceId: repository.serviceId,
+    manifestPath: repository.manifestPath,
+    manifestContentDigest: repository.manifestContentDigest,
+    manifestVersionId: repository.manifestVersionId,
+    snapshotRevision: repository.snapshotRevision,
+    snapshotDigest: repository.snapshotDigest,
     coverage: repository.coverage,
     reason: repository.reason,
     dependsOnRepositoryIds: sortedUnique(repository.dependsOnRepositoryIds),
@@ -152,12 +162,24 @@ export function createRegaugeDependencyProjectionV1(
       repository.repositoryId !== requestedRepositoryIds[index] ||
       !requiredProjectionText(repository.repositoryId) ||
       (repository.serviceId !== null && !requiredProjectionText(repository.serviceId)) ||
+      (repository.manifestPath !== null && !["package.json", "pyproject.toml", "go.mod"].includes(repository.manifestPath)) ||
+      (repository.manifestContentDigest !== null && !/^sha256:[a-f0-9]{64}$/.test(repository.manifestContentDigest)) ||
+      (repository.manifestVersionId !== null && !/^sha256:[a-f0-9]{64}$/.test(repository.manifestVersionId)) ||
+      (repository.snapshotRevision !== null && !/^[a-f0-9]{40}$/.test(repository.snapshotRevision)) ||
+      (repository.snapshotDigest !== null && !/^sha256:[a-f0-9]{64}$/.test(repository.snapshotDigest)) ||
       !["complete", "unknown", "not_consulted"].includes(repository.coverage) ||
       !requiredProjectionText(repository.reason) ||
       repository.dependsOnRepositoryIds.some((id) => !requested.has(id) || id === repository.repositoryId) ||
       repository.evidenceRefs.some((ref) => !requiredProjectionText(ref)) ||
       (repository.coverage === "complete"
-        ? repository.serviceId === null || repository.evidenceRefs.length === 0
+        ? repository.serviceId === null ||
+          repository.manifestPath === null ||
+          repository.manifestContentDigest === null ||
+          repository.manifestVersionId === null ||
+          repository.snapshotRevision === null ||
+          repository.snapshotDigest === null ||
+          repository.reason !== "manifest_ingest_complete" ||
+          !repository.evidenceRefs.includes(`manifest-ingest:${repository.manifestContentDigest}`)
         : repository.dependsOnRepositoryIds.length > 0)
     )
   ) {
@@ -181,9 +203,10 @@ export function createRegaugeDependencyProjectionV1(
       !source || !requested.has(edge.targetRepositoryId) || edge.sourceRepositoryId === edge.targetRepositoryId ||
       !source.dependsOnRepositoryIds.includes(edge.targetRepositoryId) ||
       !requiredProjectionText(edge.graphEdgeId) || edgeIds.has(edge.graphEdgeId) ||
-      !requiredProjectionText(edge.sourceSystem) || !Number.isFinite(edge.confidence) ||
+      edge.sourceSystem !== "manifest" || !Number.isFinite(edge.confidence) ||
       edge.confidence < 0 || edge.confidence > 1 || edge.evidenceRefs.length === 0 ||
-      edge.evidenceRefs.some((ref) => !requiredProjectionText(ref))
+      edge.evidenceRefs.some((ref) => !requiredProjectionText(ref)) ||
+      !source.evidenceRefs.every((ref) => edge.evidenceRefs.includes(ref))
     ) {
       throw new Error("regauge_dependency_projection_invalid");
     }
@@ -267,6 +290,23 @@ export function planTransformerMission(
     .filter((repository) => repository.coverage !== "complete")
     .map((repository) => `dependency_projection_incomplete:${repository.repositoryId}:${repository.reason}`);
   if (incomplete.length) return abstained(incomplete);
+  const snapshotBindingFailures = dependencyProjection.repositories.flatMap((binding) => {
+    const repository = input.repositories.find((candidate) => candidate.id === binding.repositoryId);
+    if (
+      !repository ||
+      binding.coverage !== "complete" ||
+      binding.manifestPath === null ||
+      binding.manifestContentDigest === null ||
+      binding.snapshotRevision !== repository.revision ||
+      binding.snapshotDigest !== repository.snapshotDigest ||
+      typeof repository.files[binding.manifestPath] !== "string" ||
+      digest(repository.files[binding.manifestPath]!) !== binding.manifestContentDigest
+    ) {
+      return [`dependency_projection_snapshot_mismatch:${binding.repositoryId}`];
+    }
+    return [];
+  });
+  if (snapshotBindingFailures.length) return abstained(snapshotBindingFailures);
   if (!Array.isArray(input.recipeCatalog) || input.recipeCatalog.length === 0 ||
       input.recipeCatalog.length > MAX_RECIPE_CATALOG) {
     return abstained(["recipe_catalog_invalid"]);

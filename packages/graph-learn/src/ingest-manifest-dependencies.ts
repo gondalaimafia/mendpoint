@@ -11,7 +11,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { upsertEdge, upsertNode, type GraphLearnDb } from "./store.js";
+import {
+  edgesFrom,
+  listNodesByKind,
+  upsertEdge,
+  upsertNode,
+  type GraphLearnDb,
+} from "./store.js";
 
 const PACKAGE_NAME = /^(?:@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+$/;
 const GO_MODULE = /^[A-Za-z0-9._~+/-]+$/;
@@ -21,8 +27,9 @@ export type ManifestDependency = Readonly<{
   name: string;
   specifier: string;
   ecosystem: "npm" | "pypi" | "go";
+  scope: "repository_local" | "external_registry";
   /** Manifest block the edge came from; a peer/optional dep is a weaker claim than a runtime one. */
-  block: "dependencies" | "peerDependencies" | "require";
+  block: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies" | "require";
 }>;
 
 /** Why a manifest was not ingested; `null` on the ingested path. */
@@ -37,8 +44,11 @@ export type ManifestIngestResult = Readonly<{
   packageName: string | null;
   dependencies: number;
   skipped: number;
+  coverage: "complete" | "unknown";
+  coverageReasons: readonly string[];
   contentDigest: string | null;
   evidenceRefs: readonly string[];
+  versionId: string | null;
 }>;
 
 /**
@@ -46,8 +56,33 @@ export type ManifestIngestResult = Readonly<{
  * conflated with genuinely unparseable text (both once collapsed to `null`).
  */
 type ParseOutcome =
-  | { readonly ok: true; readonly name: string; readonly deps: ManifestDependency[] }
+  | {
+      readonly ok: true;
+      readonly name: string;
+      readonly deps: ManifestDependency[];
+      readonly coverageReasons: readonly string[];
+    }
   | { readonly ok: false; readonly reason: Exclude<ManifestSkipReason, "no-manifest"> };
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function sha256(...values: readonly string[]): string {
+  return `sha256:${createHash("sha256").update(values.join("\u0000"), "utf8").digest("hex")}`;
+}
+
+function npmDependencyScope(specifier: string): ManifestDependency["scope"] {
+  return /^(?:workspace:|file:|link:|portal:|\.\.?[\\/])/i.test(specifier)
+    ? "repository_local"
+    : "external_registry";
+}
+
+function pythonDependencyScope(specifier: string): ManifestDependency["scope"] {
+  return /(?:^|\s)@\s*(?:file:|\.\.?[\\/])|^(?:file:|\.\.?[\\/])/i.test(specifier)
+    ? "repository_local"
+    : "external_registry";
+}
 
 // Manifest-derived Services are namespaced by repo (mirroring `symbol:${repoId}:...`)
 // so a declared dependency can never collide with a provider Service (`service:${slug}`)
@@ -79,20 +114,43 @@ function parsePackageJson(text: string): ParseOutcome {
   const name = typeof record.name === "string" ? safePackageName(record.name) : null;
   if (!name) return { ok: false, reason: "no-package-name" };
   const deps: ManifestDependency[] = [];
+  const coverageReasons = new Set<string>();
   const blocks: ReadonlyArray<readonly [ManifestDependency["block"], unknown]> = [
     ["dependencies", record.dependencies],
+    ["devDependencies", record.devDependencies],
+    ["optionalDependencies", record.optionalDependencies],
     ["peerDependencies", record.peerDependencies],
   ];
   for (const [block, value] of blocks) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    if (value === undefined) continue;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      coverageReasons.add(`manifest_block_unrepresented:${block}`);
+      continue;
+    }
     for (const [rawName, rawSpec] of Object.entries(value as Record<string, unknown>)) {
       const depName = safePackageName(rawName);
-      if (!depName) continue;
-      const specifier = typeof rawSpec === "string" ? rawSpec.trim().slice(0, 80) : "*";
-      deps.push({ name: depName, specifier: specifier || "*", ecosystem: "npm", block });
+      if (!depName || typeof rawSpec !== "string" || !rawSpec.trim()) {
+        coverageReasons.add(`dependency_declaration_unrepresented:${block}`);
+        continue;
+      }
+      const specifier = rawSpec.trim().slice(0, 80);
+      deps.push({
+        name: depName,
+        specifier,
+        ecosystem: "npm",
+        block,
+        scope: npmDependencyScope(specifier),
+      });
     }
   }
-  return { ok: true, name, deps: deps.slice(0, MAX_DEPENDENCIES) };
+  if (record.workspaces !== undefined) coverageReasons.add("workspace_manifest_not_expanded");
+  if (deps.length > MAX_DEPENDENCIES) coverageReasons.add("manifest_dependency_limit_exceeded");
+  return {
+    ok: true,
+    name,
+    deps: deps.slice(0, MAX_DEPENDENCIES),
+    coverageReasons: [...coverageReasons].sort(compareCodeUnits),
+  };
 }
 
 function parsePyproject(text: string): ParseOutcome {
@@ -100,16 +158,35 @@ function parsePyproject(text: string): ParseOutcome {
   const name = nameMatch ? safePackageName(nameMatch[1] ?? "") : null;
   if (!name) return { ok: false, reason: "no-package-name" };
   const deps: ManifestDependency[] = [];
+  const coverageReasons = new Set<string>();
   const block = text.match(/\[project\][\s\S]*?dependencies\s*=\s*\[([\s\S]*?)\]/);
   if (block) {
     for (const raw of block[1]?.matchAll(/["']([^"']+)["']/g) ?? []) {
       const token = (raw[1] ?? "").trim();
       const depName = safePackageName(token.split(/[\s<>=!~\[]/)[0] ?? "");
-      if (!depName) continue;
-      deps.push({ name: depName, specifier: token.slice(0, 80), ecosystem: "pypi", block: "dependencies" });
+      if (!depName) {
+        coverageReasons.add("dependency_declaration_unrepresented:dependencies");
+        continue;
+      }
+      deps.push({
+        name: depName,
+        specifier: token.slice(0, 80),
+        ecosystem: "pypi",
+        block: "dependencies",
+        scope: pythonDependencyScope(token),
+      });
     }
   }
-  return { ok: true, name, deps: deps.slice(0, MAX_DEPENDENCIES) };
+  if (/\[tool\.(?:poetry|uv|pdm)\b/i.test(text)) {
+    coverageReasons.add("pyproject_dependency_table_not_expanded");
+  }
+  if (deps.length > MAX_DEPENDENCIES) coverageReasons.add("manifest_dependency_limit_exceeded");
+  return {
+    ok: true,
+    name,
+    deps: deps.slice(0, MAX_DEPENDENCIES),
+    coverageReasons: [...coverageReasons].sort(compareCodeUnits),
+  };
 }
 
 function parseGoMod(text: string): ParseOutcome {
@@ -117,6 +194,7 @@ function parseGoMod(text: string): ParseOutcome {
   const name = moduleMatch ? safePackageName(moduleMatch[1] ?? "") : null;
   if (!name) return { ok: false, reason: "no-package-name" };
   const deps: ManifestDependency[] = [];
+  const coverageReasons = new Set<string>();
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("module ") || trimmed.startsWith("go ") || trimmed === "require (" || trimmed === ")") {
@@ -125,19 +203,41 @@ function parseGoMod(text: string): ParseOutcome {
     const requireLine = trimmed.replace(/^require\s+/, "");
     const parts = requireLine.split(/\s+/);
     const depName = safePackageName(parts[0] ?? "");
-    if (!depName || depName === name) continue;
+    if (!depName) {
+      if (requireLine && !requireLine.startsWith("//")) {
+        coverageReasons.add("dependency_declaration_unrepresented:require");
+      }
+      continue;
+    }
+    if (depName === name) continue;
     deps.push({
       name: depName,
       specifier: (parts[1] ?? "*").slice(0, 80),
       ecosystem: "go",
       block: "require",
+      scope: "external_registry",
     });
   }
-  return { ok: true, name, deps: deps.slice(0, MAX_DEPENDENCIES) };
+  if (/^replace\s+/m.test(text) || /^\s*replace\s*\(/m.test(text)) {
+    coverageReasons.add("go_replace_topology_not_expanded");
+  }
+  if (deps.length > MAX_DEPENDENCIES) coverageReasons.add("manifest_dependency_limit_exceeded");
+  return {
+    ok: true,
+    name,
+    deps: deps.slice(0, MAX_DEPENDENCIES),
+    coverageReasons: [...coverageReasons].sort(compareCodeUnits),
+  };
 }
 
 type ManifestParse =
-  | { readonly ok: true; readonly name: string; readonly deps: ManifestDependency[]; readonly ecosystem: "npm" | "pypi" | "go" }
+  | {
+      readonly ok: true;
+      readonly name: string;
+      readonly deps: ManifestDependency[];
+      readonly ecosystem: "npm" | "pypi" | "go";
+      readonly coverageReasons: readonly string[];
+    }
   | { readonly ok: false; readonly reason: Exclude<ManifestSkipReason, "no-manifest"> };
 
 function withEcosystem(outcome: ParseOutcome, ecosystem: "npm" | "pypi" | "go"): ManifestParse {
@@ -160,62 +260,151 @@ function writeDependencies(
     sourcePath: string;
     packageName: string;
     deps: readonly ManifestDependency[];
+    ecosystem: "npm" | "pypi" | "go";
+    coverageReasons: readonly string[];
     contentDigest: string;
     evidenceRefs: readonly string[];
+    observedAt: string;
   },
-): { dependencies: number; skipped: number } {
+): { dependencies: number; skipped: number; versionId: string } {
   const tenantProps = input.tenantId ? { tenant_id: input.tenantId } : {};
   const sourceId = serviceId(input.repoId, input.packageName);
-  upsertNode(db, {
-    id: sourceId,
-    kind: "Service",
-    label: input.packageName,
-    repo_id: input.repoId,
-    props: {
-      ...tenantProps,
-      ecosystem: input.deps[0]?.ecosystem ?? "npm",
-      manifest: input.sourcePath,
-      manifest_ingest_status: "complete",
-      manifest_content_digest: input.contentDigest,
-      manifest_evidence_refs: [...input.evidenceRefs],
-    },
-  });
   let dependencies = 0;
   let skipped = 0;
   const seen = new Set<string>();
+  const normalizedDependencies: ManifestDependency[] = [];
   for (const dep of input.deps) {
     if (dep.name === input.packageName || seen.has(dep.name)) {
       skipped++;
       continue;
     }
     seen.add(dep.name);
+    normalizedDependencies.push(dep);
+  }
+  const tenantKey = input.tenantId ?? "";
+  const roots = listNodesByKind(db, "Service")
+    .filter((node) =>
+      node.repo_id === input.repoId &&
+      String(node.props?.tenant_id ?? "") === tenantKey &&
+      node.props?.declared !== true &&
+      node.props?.manifest === input.sourcePath &&
+      ["complete", "incomplete"].includes(String(node.props?.manifest_ingest_status ?? "")))
+    .sort((left, right) => compareCodeUnits(left.id, right.id));
+  const replayRoot = roots.find((node) =>
+    node.id === sourceId &&
+    node.props?.manifest_content_digest === input.contentDigest &&
+    typeof node.props?.manifest_version_id === "string");
+  const predecessors = roots.map((node) =>
+    String(node.props?.manifest_version_id ?? node.props?.manifest_content_digest ?? node.id));
+  const versionId = replayRoot
+    ? String(replayRoot.props!.manifest_version_id)
+    : sha256(
+        "manifest-version-v1",
+        tenantKey,
+        input.repoId,
+        input.sourcePath,
+        input.packageName,
+        input.contentDigest,
+        ...predecessors,
+      );
+  const desired = normalizedDependencies.map((dep) => {
     const targetId = serviceId(input.repoId, dep.name);
+    return {
+      dep,
+      targetId,
+      edgeId: `DEPENDS_ON:manifest:${sha256(
+        tenantKey,
+        input.repoId,
+        versionId,
+        sourceId,
+        targetId,
+      ).slice("sha256:".length)}`,
+    };
+  });
+  const desiredEdgeIds = new Set(desired.map((entry) => entry.edgeId));
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    for (const root of roots) {
+      if (root.id !== sourceId || root.props?.manifest_content_digest !== input.contentDigest) {
+        upsertNode(db, {
+          ...root,
+          props: {
+            ...root.props,
+            manifest_ingest_status: "superseded",
+            manifest_valid_to: input.observedAt,
+          },
+        });
+      }
+      for (const edge of edgesFrom(db, root.id, ["DEPENDS_ON"], { includeInvalidated: true })) {
+        if (
+          edge.source_system === "manifest" &&
+          edge.valid_to === null &&
+          edge.props?.manifest === input.sourcePath &&
+          !desiredEdgeIds.has(edge.id)
+        ) {
+          upsertEdge(db, { ...edge, valid_to: input.observedAt });
+        }
+      }
+    }
     upsertNode(db, {
-      id: targetId,
+      id: sourceId,
       kind: "Service",
-      label: dep.name,
+      label: input.packageName,
       repo_id: input.repoId,
-      props: { ...tenantProps, ecosystem: dep.ecosystem, declared: true },
-    });
-    upsertEdge(db, {
-      id: `DEPENDS_ON:${sourceId}:${targetId}`,
-      kind: "DEPENDS_ON",
-      source: sourceId,
-      target: targetId,
-      source_system: "manifest",
-      confidence: 1,
       props: {
-        specifier: dep.specifier,
-        ecosystem: dep.ecosystem,
-        block: dep.block,
+        ...tenantProps,
+        ecosystem: input.ecosystem,
         manifest: input.sourcePath,
+        manifest_ingest_status: input.coverageReasons.length ? "incomplete" : "complete",
+        manifest_coverage_reasons: [...input.coverageReasons],
         manifest_content_digest: input.contentDigest,
-        evidence_refs: [...input.evidenceRefs],
+        manifest_evidence_refs: [...input.evidenceRefs],
+        manifest_version_id: versionId,
+        manifest_valid_from: replayRoot?.props?.manifest_valid_from ?? input.observedAt,
+        manifest_valid_to: null,
       },
     });
-    dependencies++;
+    for (const entry of desired) {
+      upsertNode(db, {
+        id: entry.targetId,
+        kind: "Service",
+        label: entry.dep.name,
+        repo_id: input.repoId,
+        props: { ...tenantProps, ecosystem: entry.dep.ecosystem, declared: true },
+      });
+      const activeReplay = edgesFrom(db, sourceId, ["DEPENDS_ON"], { includeInvalidated: true })
+        .find((edge) => edge.id === entry.edgeId && edge.valid_to === null);
+      if (!activeReplay) {
+        upsertEdge(db, {
+          id: entry.edgeId,
+          kind: "DEPENDS_ON",
+          source: sourceId,
+          target: entry.targetId,
+          valid_from: input.observedAt,
+          valid_to: null,
+          source_system: "manifest",
+          confidence: 1,
+          props: {
+            specifier: entry.dep.specifier,
+            ecosystem: entry.dep.ecosystem,
+            block: entry.dep.block,
+            dependency_scope: entry.dep.scope,
+            manifest: input.sourcePath,
+            manifest_version_id: versionId,
+            manifest_content_digest: input.contentDigest,
+            evidence_refs: [...input.evidenceRefs],
+          },
+        });
+      }
+      dependencies++;
+    }
+    if (ownsTransaction) db.raw.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
   }
-  return { dependencies, skipped };
+  return { dependencies, skipped, versionId };
 }
 
 /**
@@ -231,6 +420,7 @@ export function ingestManifestDependencies(
     tenantId?: string;
     /** Optional in-memory files (tests); otherwise read from repoPath. */
     files?: ReadonlyArray<{ path: string; text: string }>;
+    observedAt?: string;
   },
 ): ManifestIngestResult {
   const notIngested = (
@@ -244,14 +434,20 @@ export function ingestManifestDependencies(
     packageName: null,
     dependencies: 0,
     skipped: 0,
+    coverage: "unknown",
+    coverageReasons: [`manifest_${reason}`],
     contentDigest: null,
     evidenceRefs: [],
+    versionId: null,
   });
+  const observedAt = opts.observedAt ?? new Date().toISOString();
+  if (Number.isNaN(Date.parse(observedAt))) throw new Error("manifest_ingest_observed_at_invalid");
   const candidates = ["package.json", "pyproject.toml", "go.mod"] as const;
   let chosen: { path: string; text: string } | undefined;
   if (opts.files) {
     for (const name of candidates) {
-      const match = opts.files.find((file) => file.path.replace(/\\/g, "/").endsWith(name));
+      const match = opts.files.find((file) =>
+        file.path.replace(/\\/g, "/").replace(/^\.\//, "") === name);
       if (match) {
         chosen = match;
         break;
@@ -259,9 +455,9 @@ export function ingestManifestDependencies(
     }
   } else if (existsSync(opts.repoPath)) {
     for (const name of candidates) {
-      const path = join(opts.repoPath, name);
-      if (!existsSync(path)) continue;
-      chosen = { path, text: readFileSync(path, "utf8") };
+      const absolutePath = join(opts.repoPath, name);
+      if (!existsSync(absolutePath)) continue;
+      chosen = { path: name, text: readFileSync(absolutePath, "utf8") };
       break;
     }
   }
@@ -276,8 +472,11 @@ export function ingestManifestDependencies(
     sourcePath: chosen.path,
     packageName: parsed.name,
     deps: parsed.deps,
+    ecosystem: parsed.ecosystem,
+    coverageReasons: parsed.coverageReasons,
     contentDigest,
     evidenceRefs,
+    observedAt,
   });
   return {
     status: "ingested",
@@ -287,7 +486,10 @@ export function ingestManifestDependencies(
     packageName: parsed.name,
     dependencies: written.dependencies,
     skipped: written.skipped,
+    coverage: parsed.coverageReasons.length ? "unknown" : "complete",
+    coverageReasons: parsed.coverageReasons,
     contentDigest,
     evidenceRefs,
+    versionId: written.versionId,
   };
 }
