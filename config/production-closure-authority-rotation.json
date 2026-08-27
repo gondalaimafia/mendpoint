@@ -182,6 +182,41 @@
           "toMode": "100644"
         }
       ]
+    },
+    {
+      "rotationId": "rotation-20260827-005",
+      "kind": "runtime",
+      "issuedAt": "2026-08-27T06:07:04.527Z",
+      "expiresAt": "2026-08-28T06:07:04.675Z",
+      "basePolicySha256": "sha256:dcb2238abb3933d4316f3caddd7e2af705c2f5c19ce9e84edf86abcade3599be",
+      "proposedPolicySha256": "sha256:ac80ee9fe864a8c35d34095393792847610d6c606a6a6dccdce946c4c9f9122e",
+      "previousRotationId": "rotation-20260827-004",
+      "baseRevision": "ca2580f1bf99ace4807e41bd51d3171398825ca1",
+      "baseLedgerSha256": "sha256:6f89e4abf71581e92734e0bc8963ca7346eb24b11529e495c5039a2981ad8bfa",
+      "successor": null,
+      "changes": [
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:dcb2238abb3933d4316f3caddd7e2af705c2f5c19ce9e84edf86abcade3599be",
+          "toSha256": "sha256:ac80ee9fe864a8c35d34095393792847610d6c606a6a6dccdce946c4c9f9122e",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "config/production-closure-successors/closure-authority-quiet-sweep.yml",
+          "fromSha256": null,
+          "toSha256": "sha256:364c1d36558824c3158933e3932bf92b4835eb5357f794ac88418abcb45b7e75",
+          "fromMode": null,
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:21ba900d23119410874a3e67ddbaef1214d4a95f6e7ea0d1a41abd42641f9688",
+          "toSha256": "sha256:2866d0d571caed3c2d7de2d2b976c81dc6fa3c0613b711e36030469ea827e447",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
     }
   ]
 }

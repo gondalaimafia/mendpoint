@@ -2056,17 +2056,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-26T04:06:40.824Z",
-    "observedMainRevision": "3ee43e2dbfc3d9562c1c68a8feb13081b401a77e",
-    "observationDigest": "sha256:298801e5987aeb219c29a4af315062f2664b2f201e8488fa0bdfcb6a9a2e930b",
+    "observedAt": "2026-08-27T06:07:04.527Z",
+    "observedMainRevision": "ca2580f1bf99ace4807e41bd51d3171398825ca1",
+    "observationDigest": "sha256:19c9602add47a68bc888d42b6ba92f7c447e8690d46b93e2419156ca43089d1a",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 496,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/496",
-      "title": "docs: lead the public page with the shipped product, demote the demo",
+      "number": 500,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/500",
+      "title": "authority: runtime closure-authority-quiet-sweep",
       "baseBranch": "main",
-      "headBranch": "readme-refresh",
+      "headBranch": "ceremony-r1-preauth",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2079,7 +2079,15 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": []
+      "remediatesPullRequests": [],
+      "authorityRotation": {
+        "rotationId": "rotation-20260827-005",
+        "kind": "runtime",
+        "issuedAt": "2026-08-27T06:07:04.527Z",
+        "expiresAt": "2026-08-28T06:07:04.675Z",
+        "basePolicySha256": "sha256:dcb2238abb3933d4316f3caddd7e2af705c2f5c19ce9e84edf86abcade3599be",
+        "proposedPolicySha256": "sha256:ac80ee9fe864a8c35d34095393792847610d6c606a6a6dccdce946c4c9f9122e"
+      }
     },
     "pullRequests": [
       {
