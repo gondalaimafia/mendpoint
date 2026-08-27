@@ -22,6 +22,7 @@ describe("consultRegaugeGraphDependencies", () => {
     const text = manifestText(packageName, dependencies);
     return {
       id: repositoryId,
+      snapshotId: `snapshot-${repositoryId}`,
       revision: createHash("sha1").update(repositoryId).digest("hex"),
       snapshotDigest: `sha256:${createHash("sha256").update(`snapshot:${repositoryId}:${text}`).digest("hex")}`,
       files: { "package.json": text },
@@ -47,7 +48,8 @@ describe("consultRegaugeGraphDependencies", () => {
       repositoryIds: ["shop", "billing"],
     });
     expect(result).toMatchObject({
-      schemaVersion: "2026-08-27.v1",
+      schemaVersion: "mendpoint.mission-graph-projection.topology.v1",
+      projectionKind: "dependency_topology",
       tenantId: "tenant-a",
       requestedRepositoryIds: ["billing", "shop"],
       repositories: [
@@ -132,8 +134,16 @@ describe("consultRegaugeGraphDependencies", () => {
     const db = openGraphLearnMemory();
     expect(consultRegaugeGraphDependencies({ graph: db, tenantId: "tenant-a", repositoryIds: ["repo-missing"] }).repositories[0])
       .toMatchObject({ repositoryId: "repo-missing", coverage: "unknown", reason: "manifest_ingest_evidence_missing" });
-    ingest(db, "tenant-a", "repo-a", "shop");
-    ingest(db, "tenant-a", "repo-a", "storefront");
+    ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-a", tenantId: "tenant-a",
+      observedAt: "2026-08-27T10:00:00.000Z",
+      files: [{ path: "package.json", text: manifestText("shop") }],
+    });
+    ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-a", tenantId: "tenant-a",
+      observedAt: "2026-08-27T11:00:00.000Z",
+      files: [{ path: "package.json", text: manifestText("storefront") }],
+    });
     expect(consultRegaugeGraphDependencies({
       graph: db,
       tenantId: "tenant-a",
@@ -141,7 +151,7 @@ describe("consultRegaugeGraphDependencies", () => {
       repositorySnapshots: [snapshot("repo-a", "storefront")],
     }).repositories[0]).toMatchObject({
       repositoryId: "repo-a",
-      serviceId: "service:repo-a:storefront",
+      serviceId: expect.stringMatching(/^manifest-service:v2:/),
       coverage: "complete",
     });
     db.raw.close();

@@ -22,6 +22,15 @@ import {
 const PACKAGE_NAME = /^(?:@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+$/;
 const GO_MODULE = /^[A-Za-z0-9._~+/-]+$/;
 const MAX_DEPENDENCIES = 500;
+export const MANIFEST_DEPENDENCY_EXTRACTOR = Object.freeze({
+  id: "mendpoint.manifest-dependencies",
+  version: "2",
+  supported: Object.freeze({
+    npm: Object.freeze(["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]),
+    pypi: Object.freeze(["project.dependencies"]),
+    go: Object.freeze(["require"]),
+  }),
+});
 
 export type ManifestDependency = Readonly<{
   name: string;
@@ -47,6 +56,8 @@ export type ManifestIngestResult = Readonly<{
   coverage: "complete" | "unknown";
   coverageReasons: readonly string[];
   contentDigest: string | null;
+  rawContentDigest: string | null;
+  semanticDigest: string | null;
   evidenceRefs: readonly string[];
   versionId: string | null;
 }>;
@@ -72,6 +83,10 @@ function sha256(...values: readonly string[]): string {
   return `sha256:${createHash("sha256").update(values.join("\u0000"), "utf8").digest("hex")}`;
 }
 
+function canonicalManifestText(value: string): string {
+  return value.replace(/^\uFEFF/u, "").replace(/\r\n?/g, "\n");
+}
+
 function npmDependencyScope(specifier: string): ManifestDependency["scope"] {
   return /^(?:workspace:|file:|link:|portal:|\.\.?[\\/])/i.test(specifier)
     ? "repository_local"
@@ -87,8 +102,16 @@ function pythonDependencyScope(specifier: string): ManifestDependency["scope"] {
 // Manifest-derived Services are namespaced by repo (mirroring `symbol:${repoId}:...`)
 // so a declared dependency can never collide with a provider Service (`service:${slug}`)
 // or with another tenant/repo that depends on a package of the same name.
-function serviceId(repoId: string, name: string): string {
-  return `service:${repoId}:${name}`;
+function logicalServiceId(repoId: string, name: string, tenantId?: string): string {
+  return tenantId
+    ? `service:v2:${sha256(tenantId, repoId, name).slice("sha256:".length)}`
+    : `service:${repoId}:${name}`;
+}
+
+function manifestVersionRootId(repoId: string, path: string, versionId: string, tenantId?: string): string {
+  return tenantId
+    ? `manifest-service:v2:${sha256(tenantId, repoId, path, versionId).slice("sha256:".length)}`
+    : `manifest-service:v1:${sha256(repoId, path, versionId).slice("sha256:".length)}`;
 }
 
 function safePackageName(value: string): string | null {
@@ -134,6 +157,7 @@ function parsePackageJson(text: string): ParseOutcome {
         continue;
       }
       const specifier = rawSpec.trim().slice(0, 80);
+      if (rawSpec.trim().length > 80) coverageReasons.add(`dependency_specifier_truncated:${block}`);
       deps.push({
         name: depName,
         specifier,
@@ -144,6 +168,20 @@ function parsePackageJson(text: string): ParseOutcome {
     }
   }
   if (record.workspaces !== undefined) coverageReasons.add("workspace_manifest_not_expanded");
+  if (record.bundledDependencies !== undefined || record.bundleDependencies !== undefined) {
+    coverageReasons.add("bundled_dependencies_not_expanded");
+  }
+  if (record.overrides !== undefined || record.resolutions !== undefined || record.pnpm !== undefined) {
+    coverageReasons.add("package_manager_topology_not_expanded");
+  }
+  const byName = new Map<string, ManifestDependency>();
+  for (const dependency of deps) {
+    const previous = byName.get(dependency.name);
+    if (previous && (previous.specifier !== dependency.specifier || previous.scope !== dependency.scope)) {
+      coverageReasons.add(`dependency_declaration_conflict:${dependency.name}`);
+    }
+    byName.set(dependency.name, dependency);
+  }
   if (deps.length > MAX_DEPENDENCIES) coverageReasons.add("manifest_dependency_limit_exceeded");
   return {
     ok: true,
@@ -175,10 +213,17 @@ function parsePyproject(text: string): ParseOutcome {
         block: "dependencies",
         scope: pythonDependencyScope(token),
       });
+      if (token.length > 80) coverageReasons.add("dependency_specifier_truncated:dependencies");
     }
   }
   if (/\[tool\.(?:poetry|uv|pdm)\b/i.test(text)) {
     coverageReasons.add("pyproject_dependency_table_not_expanded");
+  }
+  if (/\[project\.optional-dependencies\]/i.test(text) || /\[dependency-groups\]/i.test(text)) {
+    coverageReasons.add("pyproject_dependency_group_not_expanded");
+  }
+  if (/^dynamic\s*=\s*\[[^\]]*["']dependencies["']/mi.test(text)) {
+    coverageReasons.add("pyproject_dynamic_dependencies_not_expanded");
   }
   if (deps.length > MAX_DEPENDENCIES) coverageReasons.add("manifest_dependency_limit_exceeded");
   return {
@@ -195,9 +240,23 @@ function parseGoMod(text: string): ParseOutcome {
   if (!name) return { ok: false, reason: "no-package-name" };
   const deps: ManifestDependency[] = [];
   const coverageReasons = new Set<string>();
+  let requireBlock = false;
+  let unsupportedBlock = false;
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("module ") || trimmed.startsWith("go ") || trimmed === "require (" || trimmed === ")") {
+    if (!trimmed || trimmed.startsWith("//") || trimmed.startsWith("module ") || trimmed.startsWith("go ")) {
+      continue;
+    }
+    if (/^(?:replace|exclude|retract|tool)(?:\s|\()/u.test(trimmed)) {
+      coverageReasons.add(`go_${trimmed.split(/[\s(]/u)[0]}_topology_not_expanded`);
+      unsupportedBlock = trimmed.endsWith("(");
+      continue;
+    }
+    if (trimmed === "require (") { requireBlock = true; continue; }
+    if (trimmed === ")") { requireBlock = false; unsupportedBlock = false; continue; }
+    if (unsupportedBlock) continue;
+    if (!requireBlock && !trimmed.startsWith("require ")) {
+      coverageReasons.add("go_directive_not_expanded");
       continue;
     }
     const requireLine = trimmed.replace(/^require\s+/, "");
@@ -217,9 +276,6 @@ function parseGoMod(text: string): ParseOutcome {
       block: "require",
       scope: "external_registry",
     });
-  }
-  if (/^replace\s+/m.test(text) || /^\s*replace\s*\(/m.test(text)) {
-    coverageReasons.add("go_replace_topology_not_expanded");
   }
   if (deps.length > MAX_DEPENDENCIES) coverageReasons.add("manifest_dependency_limit_exceeded");
   return {
@@ -263,12 +319,13 @@ function writeDependencies(
     ecosystem: "npm" | "pypi" | "go";
     coverageReasons: readonly string[];
     contentDigest: string;
+    rawContentDigest: string;
+    semanticDigest: string;
     evidenceRefs: readonly string[];
     observedAt: string;
   },
 ): { dependencies: number; skipped: number; versionId: string } {
   const tenantProps = input.tenantId ? { tenant_id: input.tenantId } : {};
-  const sourceId = serviceId(input.repoId, input.packageName);
   let dependencies = 0;
   let skipped = 0;
   const seen = new Set<string>();
@@ -282,33 +339,46 @@ function writeDependencies(
     normalizedDependencies.push(dep);
   }
   const tenantKey = input.tenantId ?? "";
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
   const roots = listNodesByKind(db, "Service")
     .filter((node) =>
       node.repo_id === input.repoId &&
       String(node.props?.tenant_id ?? "") === tenantKey &&
       node.props?.declared !== true &&
-      node.props?.manifest === input.sourcePath &&
-      ["complete", "incomplete"].includes(String(node.props?.manifest_ingest_status ?? "")))
+      (node.props?.manifest_valid_to === null || node.props?.manifest_valid_to === undefined) &&
+      ["complete", "incomplete", "tombstone"].includes(String(node.props?.manifest_ingest_status ?? "")))
     .sort((left, right) => compareCodeUnits(left.id, right.id));
   const replayRoot = roots.find((node) =>
-    node.id === sourceId &&
+    node.props?.manifest_stream_path === input.sourcePath &&
     node.props?.manifest_content_digest === input.contentDigest &&
+    node.props?.manifest_semantic_digest === input.semanticDigest &&
     typeof node.props?.manifest_version_id === "string");
+  const latest = roots.map((node) => String(node.props?.manifest_valid_from ?? "")).sort(compareCodeUnits).at(-1);
+  if (latest && input.observedAt < latest) throw new Error("manifest_ingest_observed_at_non_monotonic");
+  if (replayRoot) {
+    const active = edgesFrom(db, replayRoot.id, ["DEPENDS_ON"], { at: input.observedAt });
+    if (ownsTransaction) db.raw.exec("COMMIT");
+    return { dependencies: active.length, skipped, versionId: String(replayRoot.props!.manifest_version_id) };
+  }
+  if (latest && input.observedAt === latest) throw new Error("manifest_ingest_observed_at_non_monotonic");
   const predecessors = roots.map((node) =>
     String(node.props?.manifest_version_id ?? node.props?.manifest_content_digest ?? node.id));
-  const versionId = replayRoot
-    ? String(replayRoot.props!.manifest_version_id)
-    : sha256(
+  const versionId = sha256(
         "manifest-version-v1",
         tenantKey,
         input.repoId,
         input.sourcePath,
         input.packageName,
         input.contentDigest,
+        input.semanticDigest,
         ...predecessors,
       );
+  const sourceId = manifestVersionRootId(input.repoId, input.sourcePath, versionId, input.tenantId);
+  const logicalSourceId = logicalServiceId(input.repoId, input.packageName, input.tenantId);
   const desired = normalizedDependencies.map((dep) => {
-    const targetId = serviceId(input.repoId, dep.name);
+    const targetId = logicalServiceId(input.repoId, dep.name, input.tenantId);
     return {
       dep,
       targetId,
@@ -322,20 +392,8 @@ function writeDependencies(
     };
   });
   const desiredEdgeIds = new Set(desired.map((entry) => entry.edgeId));
-  const ownsTransaction = !db.raw.isTransaction;
-  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
-  try {
     for (const root of roots) {
-      if (root.id !== sourceId || root.props?.manifest_content_digest !== input.contentDigest) {
-        upsertNode(db, {
-          ...root,
-          props: {
-            ...root.props,
-            manifest_ingest_status: "superseded",
-            manifest_valid_to: input.observedAt,
-          },
-        });
-      }
+      upsertNode(db, { ...root, props: { ...root.props, manifest_valid_to: input.observedAt } });
       for (const edge of edgesFrom(db, root.id, ["DEPENDS_ON"], { includeInvalidated: true })) {
         if (
           edge.source_system === "manifest" &&
@@ -356,12 +414,20 @@ function writeDependencies(
         ...tenantProps,
         ecosystem: input.ecosystem,
         manifest: input.sourcePath,
+        manifest_stream_path: input.sourcePath,
         manifest_ingest_status: input.coverageReasons.length ? "incomplete" : "complete",
         manifest_coverage_reasons: [...input.coverageReasons],
         manifest_content_digest: input.contentDigest,
+        manifest_raw_content_digest: input.rawContentDigest,
+        manifest_semantic_digest: input.semanticDigest,
         manifest_evidence_refs: [...input.evidenceRefs],
         manifest_version_id: versionId,
-        manifest_valid_from: replayRoot?.props?.manifest_valid_from ?? input.observedAt,
+        manifest_extractor_id: MANIFEST_DEPENDENCY_EXTRACTOR.id,
+        manifest_extractor_version: MANIFEST_DEPENDENCY_EXTRACTOR.version,
+        logical_service_id: logicalSourceId,
+        identity_version: input.tenantId ? 2 : 1,
+        legacy_logical_id: `service:${input.repoId}:${input.packageName}`,
+        manifest_valid_from: input.observedAt,
         manifest_valid_to: null,
       },
     });
@@ -371,7 +437,13 @@ function writeDependencies(
         kind: "Service",
         label: entry.dep.name,
         repo_id: input.repoId,
-        props: { ...tenantProps, ecosystem: entry.dep.ecosystem, declared: true },
+        props: {
+          ...tenantProps,
+          ecosystem: entry.dep.ecosystem,
+          declared: true,
+          identity_version: input.tenantId ? 2 : 1,
+          legacy_logical_id: `service:${input.repoId}:${entry.dep.name}`,
+        },
       });
       const activeReplay = edgesFrom(db, sourceId, ["DEPENDS_ON"], { includeInvalidated: true })
         .find((edge) => edge.id === entry.edgeId && edge.valid_to === null);
@@ -393,6 +465,10 @@ function writeDependencies(
             manifest: input.sourcePath,
             manifest_version_id: versionId,
             manifest_content_digest: input.contentDigest,
+            manifest_raw_content_digest: input.rawContentDigest,
+            manifest_semantic_digest: input.semanticDigest,
+            manifest_extractor_id: MANIFEST_DEPENDENCY_EXTRACTOR.id,
+            manifest_extractor_version: MANIFEST_DEPENDENCY_EXTRACTOR.version,
             evidence_refs: [...input.evidenceRefs],
           },
         });
@@ -400,11 +476,85 @@ function writeDependencies(
       dependencies++;
     }
     if (ownsTransaction) db.raw.exec("COMMIT");
+    return { dependencies, skipped, versionId };
   } catch (error) {
     if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
     throw error;
   }
-  return { dependencies, skipped, versionId };
+}
+
+function writeManifestTombstone(db: GraphLearnDb, input: {
+  repoId: string;
+  tenantId?: string;
+  manifest: string | null;
+  reason: ManifestSkipReason;
+  contentDigest: string | null;
+  rawContentDigest: string | null;
+  observedAt: string;
+}): string {
+  const tenantKey = input.tenantId ?? "";
+  const ownsTransaction = !db.raw.isTransaction;
+  if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const roots = listNodesByKind(db, "Service").filter((node) =>
+      node.repo_id === input.repoId && String(node.props?.tenant_id ?? "") === tenantKey &&
+      node.props?.declared !== true &&
+      (node.props?.manifest_valid_to === null || node.props?.manifest_valid_to === undefined) &&
+      typeof node.props?.manifest_version_id === "string");
+    const latest = roots.map((node) => String(node.props?.manifest_valid_from ?? "")).sort(compareCodeUnits).at(-1);
+    if (latest && input.observedAt < latest) throw new Error("manifest_ingest_observed_at_non_monotonic");
+    const semanticDigest = sha256("manifest-tombstone-v2", input.reason, input.manifest ?? "");
+    const replay = roots.find((node) =>
+      node.props?.manifest_ingest_status === "tombstone" &&
+      node.props?.manifest_semantic_digest === semanticDigest &&
+      node.props?.manifest_content_digest === input.contentDigest);
+    if (replay) {
+      if (ownsTransaction) db.raw.exec("COMMIT");
+      return String(replay.props!.manifest_version_id);
+    }
+    if (latest && input.observedAt === latest) throw new Error("manifest_ingest_observed_at_non_monotonic");
+    const versionId = sha256(
+      "manifest-version-v2", tenantKey, input.repoId, input.manifest ?? "__root__",
+      input.reason, input.contentDigest ?? "", semanticDigest,
+      ...roots.map((root) => String(root.props?.manifest_version_id ?? root.id)).sort(compareCodeUnits),
+    );
+    for (const root of roots) {
+      upsertNode(db, { ...root, props: { ...root.props, manifest_valid_to: input.observedAt } });
+      for (const edge of edgesFrom(db, root.id, ["DEPENDS_ON"], { includeInvalidated: true })) {
+        if (edge.source_system === "manifest" && edge.valid_to === null) {
+          upsertEdge(db, { ...edge, valid_to: input.observedAt });
+        }
+      }
+    }
+    upsertNode(db, {
+      id: manifestVersionRootId(input.repoId, input.manifest ?? "__root__", versionId, input.tenantId),
+      kind: "Service",
+      label: "manifest unavailable",
+      repo_id: input.repoId,
+      props: {
+        ...(input.tenantId ? { tenant_id: input.tenantId } : {}),
+        manifest: input.manifest,
+        manifest_stream_path: input.manifest ?? "__root__",
+        manifest_ingest_status: "tombstone",
+        manifest_coverage_reasons: [`manifest_${input.reason}`],
+        manifest_content_digest: input.contentDigest,
+        manifest_raw_content_digest: input.rawContentDigest,
+        manifest_semantic_digest: semanticDigest,
+        manifest_evidence_refs: input.contentDigest ? [`manifest-ingest:${input.contentDigest}`] : [],
+        manifest_version_id: versionId,
+        manifest_extractor_id: MANIFEST_DEPENDENCY_EXTRACTOR.id,
+        manifest_extractor_version: MANIFEST_DEPENDENCY_EXTRACTOR.version,
+        identity_version: input.tenantId ? 2 : 1,
+        manifest_valid_from: input.observedAt,
+        manifest_valid_to: null,
+      },
+    });
+    if (ownsTransaction) db.raw.exec("COMMIT");
+    return versionId;
+  } catch (error) {
+    if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 /**
@@ -426,7 +576,21 @@ export function ingestManifestDependencies(
   const notIngested = (
     reason: ManifestSkipReason,
     manifest: string | null,
-  ): ManifestIngestResult => ({
+    rawText?: string,
+  ): ManifestIngestResult => {
+    const canonicalText = rawText === undefined ? null : canonicalManifestText(rawText);
+    const rawContentDigest = rawText === undefined ? null : sha256(rawText);
+    const contentDigest = canonicalText === null ? null : sha256(canonicalText);
+    const versionId = writeManifestTombstone(db, {
+      repoId: opts.repoId,
+      tenantId: opts.tenantId,
+      manifest,
+      reason,
+      contentDigest,
+      rawContentDigest,
+      observedAt,
+    });
+    return ({
     status: "skipped",
     reason,
     manifest,
@@ -436,12 +600,15 @@ export function ingestManifestDependencies(
     skipped: 0,
     coverage: "unknown",
     coverageReasons: [`manifest_${reason}`],
-    contentDigest: null,
-    evidenceRefs: [],
-    versionId: null,
-  });
-  const observedAt = opts.observedAt ?? new Date().toISOString();
-  if (Number.isNaN(Date.parse(observedAt))) throw new Error("manifest_ingest_observed_at_invalid");
+    contentDigest,
+    rawContentDigest,
+    semanticDigest: sha256("manifest-tombstone-v2", reason, manifest ?? ""),
+    evidenceRefs: contentDigest ? [`manifest-ingest:${contentDigest}`] : [],
+    versionId,
+  }); };
+  const observedValue = opts.observedAt ?? new Date().toISOString();
+  if (Number.isNaN(Date.parse(observedValue))) throw new Error("manifest_ingest_observed_at_invalid");
+  const observedAt = new Date(observedValue).toISOString();
   const candidates = ["package.json", "pyproject.toml", "go.mod"] as const;
   let chosen: { path: string; text: string } | undefined;
   if (opts.files) {
@@ -462,9 +629,20 @@ export function ingestManifestDependencies(
     }
   }
   if (!chosen) return notIngested("no-manifest", null);
-  const parsed = parseManifest(chosen.path, chosen.text);
-  if (!parsed.ok) return notIngested(parsed.reason, chosen.path);
-  const contentDigest = `sha256:${createHash("sha256").update(chosen.text, "utf8").digest("hex")}`;
+  const rawText = chosen.text;
+  const canonicalText = canonicalManifestText(rawText);
+  const parsed = parseManifest(chosen.path, canonicalText);
+  if (!parsed.ok) return notIngested(parsed.reason, chosen.path, rawText);
+  const rawContentDigest = `sha256:${createHash("sha256").update(rawText, "utf8").digest("hex")}`;
+  const contentDigest = `sha256:${createHash("sha256").update(canonicalText, "utf8").digest("hex")}`;
+  const semanticDigest = sha256(JSON.stringify({
+    extractor: MANIFEST_DEPENDENCY_EXTRACTOR,
+    ecosystem: parsed.ecosystem,
+    packageName: parsed.name,
+    dependencies: [...parsed.deps].sort((left, right) =>
+      compareCodeUnits(`${left.name}\u0000${left.block}\u0000${left.specifier}`, `${right.name}\u0000${right.block}\u0000${right.specifier}`)),
+    coverageReasons: parsed.coverageReasons,
+  }));
   const evidenceRefs = [`manifest-ingest:${contentDigest}`];
   const written = writeDependencies(db, {
     repoId: opts.repoId,
@@ -475,6 +653,8 @@ export function ingestManifestDependencies(
     ecosystem: parsed.ecosystem,
     coverageReasons: parsed.coverageReasons,
     contentDigest,
+    rawContentDigest,
+    semanticDigest,
     evidenceRefs,
     observedAt,
   });
@@ -489,6 +669,8 @@ export function ingestManifestDependencies(
     coverage: parsed.coverageReasons.length ? "unknown" : "complete",
     coverageReasons: parsed.coverageReasons,
     contentDigest,
+    rawContentDigest,
+    semanticDigest,
     evidenceRefs,
     versionId: written.versionId,
   };

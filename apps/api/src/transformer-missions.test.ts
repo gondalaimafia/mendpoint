@@ -11,7 +11,7 @@ import {
   type TransformerBlueprint,
 } from "@mendpoint/transformer";
 import { TRANSFORMER_GATE_SCHEMA_VERSION } from "@mendpoint/ops";
-import { ingestManifestDependencies, openGraphLearnMemory } from "@mendpoint/graph-learn";
+import { ingestLspSymbols, openGraphLearnMemory } from "@mendpoint/graph-learn";
 import { TransformerCampaignService } from "./transformer-control-plane.js";
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
 import {
@@ -89,13 +89,16 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
   services.push(control, executions);
   let activeFiles: Readonly<Record<string, string>> = { ...files };
   let activeRevision = revision("b");
+  const repositoryLoads: Array<{ allowedPaths?: readonly string[]; snapshotId?: string }> = [];
   const repositories: TransformerMissionRepositoryAuthority = {
-    load(tenantId, repositoryId) {
+    load(tenantId, repositoryId, _observedAt, allowedPaths, snapshotId) {
       if (tenantId !== "tenant-a" || repositoryId !== "repo-a") throw new Error("repository_not_found");
+      repositoryLoads.push({ allowedPaths, snapshotId });
       const snapshotDigest = recipeFilesDigest(activeFiles);
       return {
         planning: {
           id: "repo-a",
+          snapshotId: "snapshot-a",
           organizationId: "organization-a",
           revision: activeRevision,
           snapshotDigest,
@@ -179,7 +182,7 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
   };
   const graph = graphMode === "complete" ? openGraphLearnMemory() : null;
   if (graph) {
-    ingestManifestDependencies(graph, {
+    ingestLspSymbols(graph, {
       repoPath: "/unused",
       repoId: "repo-a",
       tenantId: "tenant-a",
@@ -201,6 +204,7 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
     control,
     executions,
     service,
+    repositoryLoads,
     replaceConstraints(value: typeof constraints) { activeConstraints = value; },
     replaceRepositorySnapshot(
       nextFiles: Readonly<Record<string, string>>,
@@ -494,6 +498,19 @@ describe("Transformer mission application service", () => {
       request("reviewer-a", "launch-snapshot-drift"),
       "campaign-snapshot-drift",
     )).toThrow("transformer_mission_dependency_replan_required:current_snapshot_drift");
+  });
+
+  it("loads the approved snapshot once at launch and derives execution scope from that authority", () => {
+    const { control, service, repositoryLoads } = fixture();
+    const planned = planForLaunch(service, "campaign-exact-snapshot", "plan-exact-snapshot");
+    expect(planned.decision).toBe("planned");
+    if (planned.decision !== "planned") throw new Error(planned.reasons.join(","));
+    control.reviewToReady(request("reviewer-a", "review-exact-snapshot"), "campaign-exact-snapshot", {
+      campaign: 1, blueprint: 1, bsg: 1,
+    });
+    repositoryLoads.length = 0;
+    service.launch(request("reviewer-a", "launch-exact-snapshot"), "campaign-exact-snapshot");
+    expect(repositoryLoads).toEqual([{ allowedPaths: undefined, snapshotId: "snapshot-a" }]);
   });
 
   it("rejects launch when a reviewed canonical projection no longer proves complete coverage", () => {

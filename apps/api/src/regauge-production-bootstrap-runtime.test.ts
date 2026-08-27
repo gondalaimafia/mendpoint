@@ -340,6 +340,7 @@ describe("Regauge production bootstrap runtime", () => {
         manifestPath: "package.json",
         manifestContentDigest: `sha256:${createHash("sha256").update(files["package.json"], "utf8").digest("hex")}`,
         manifestVersionId: expect.stringMatching(/^sha256:/),
+        snapshotId: first.snapshotId,
         snapshotRevision: REVISION,
         snapshotDigest: recipeFilesDigest(files),
       }],

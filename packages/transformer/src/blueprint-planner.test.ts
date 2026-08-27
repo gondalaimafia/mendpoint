@@ -38,6 +38,7 @@ function input(): TransformerBlueprintPlanningInput {
     repositories: [
       {
         id: "repo-web",
+        snapshotId: "snapshot-repo-web",
         organizationId: "organization-a",
         revision: REVISION("c"),
         snapshotDigest: SHA("c"),
@@ -55,6 +56,7 @@ function input(): TransformerBlueprintPlanningInput {
       },
       {
         id: "repo-api",
+        snapshotId: "snapshot-repo-api",
         organizationId: "organization-a",
         revision: REVISION("b"),
         snapshotDigest: SHA("b"),

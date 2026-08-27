@@ -617,7 +617,7 @@ export function compileFettlerImpactContext(result: FettlerEndpointImpactResult,
  * Wraps `compileFettlerImpactContext` so callers receive one typed object
  * rather than an unbounded dump or an anonymous `{ content, byteLength }`.
  */
-export type MissionGraphProjection = Readonly<{
+export type MissionGraphImpactProjection = Readonly<{
   schemaVersion: "mendpoint.mission-graph-projection.v1";
   missionId: string | null;
   tenantId: string;
@@ -630,11 +630,138 @@ export type MissionGraphProjection = Readonly<{
   compiled: Readonly<{ content: string; byteLength: number; contentDigest: string }>;
 }>;
 
+export type MissionGraphTopologyCoverage = "complete" | "unknown" | "not_consulted";
+export type MissionGraphTopologyRepository = Readonly<{
+  repositoryId: string;
+  serviceId: string | null;
+  manifestPath: string | null;
+  manifestContentDigest: string | null;
+  manifestVersionId: string | null;
+  snapshotId: string | null;
+  snapshotRevision: string | null;
+  snapshotDigest: string | null;
+  coverage: MissionGraphTopologyCoverage;
+  reason: string;
+  dependsOnRepositoryIds: readonly string[];
+  evidenceRefs: readonly string[];
+}>;
+export type MissionGraphTopologyEdge = Readonly<{
+  sourceRepositoryId: string;
+  targetRepositoryId: string;
+  graphEdgeId: string;
+  sourceSystem: "manifest";
+  confidence: number;
+  evidenceRefs: readonly string[];
+}>;
+export type MissionGraphTopologyProjection = Readonly<{
+  schemaVersion: "mendpoint.mission-graph-projection.topology.v1";
+  projectionKind: "dependency_topology";
+  missionId: string | null;
+  tenantId: string;
+  requestedRepositoryIds: readonly string[];
+  repositories: readonly MissionGraphTopologyRepository[];
+  edges: readonly MissionGraphTopologyEdge[];
+  contentDigest: string;
+}>;
+export type MissionGraphProjection = MissionGraphImpactProjection | MissionGraphTopologyProjection;
+
+export function compileMissionGraphTopologyProjection(input: Omit<
+  MissionGraphTopologyProjection,
+  "schemaVersion" | "projectionKind" | "contentDigest"
+>): MissionGraphTopologyProjection {
+  boundedString(input.tenantId, "mission_graph_topology_invalid", 1_000);
+  if (input.missionId !== null) boundedString(input.missionId, "mission_graph_topology_invalid", 1_000);
+  const requestedRepositoryIds = [...new Set(input.requestedRepositoryIds)].sort(compareCodeUnits);
+  if (!requestedRepositoryIds.length || requestedRepositoryIds.length !== input.requestedRepositoryIds.length) {
+    throw new Error("mission_graph_topology_invalid");
+  }
+  const requested = new Set(requestedRepositoryIds);
+  for (const repositoryId of requestedRepositoryIds) {
+    boundedString(repositoryId, "mission_graph_topology_invalid", 1_000);
+  }
+  const repositories = input.repositories.map((repository) => ({
+    ...repository,
+    dependsOnRepositoryIds: [...new Set(repository.dependsOnRepositoryIds)].sort(compareCodeUnits),
+    evidenceRefs: [...new Set(repository.evidenceRefs)].sort(compareCodeUnits),
+  })).sort((left, right) => compareCodeUnits(left.repositoryId, right.repositoryId));
+  if (repositories.length !== requestedRepositoryIds.length || repositories.some((repository, index) =>
+    repository.repositoryId !== requestedRepositoryIds[index] ||
+    (repository.serviceId !== null && (typeof repository.serviceId !== "string" || !repository.serviceId)) ||
+    (repository.manifestPath !== null && !["package.json", "pyproject.toml", "go.mod"].includes(repository.manifestPath)) ||
+    (repository.manifestContentDigest !== null && !/^sha256:[a-f0-9]{64}$/.test(repository.manifestContentDigest)) ||
+    (repository.manifestVersionId !== null && !/^sha256:[a-f0-9]{64}$/.test(repository.manifestVersionId)) ||
+    (repository.snapshotId !== null && (typeof repository.snapshotId !== "string" || !repository.snapshotId)) ||
+    (repository.snapshotRevision !== null && !/^[a-f0-9]{40}$/.test(repository.snapshotRevision)) ||
+    (repository.snapshotDigest !== null && !/^sha256:[a-f0-9]{64}$/.test(repository.snapshotDigest)) ||
+    typeof repository.reason !== "string" || !repository.reason ||
+    repository.evidenceRefs.some((ref) => typeof ref !== "string" || !ref) ||
+    !["complete", "unknown", "not_consulted"].includes(repository.coverage) ||
+    (repository.coverage === "complete" && (
+      !repository.serviceId || !repository.manifestPath || !repository.manifestContentDigest ||
+      !repository.manifestVersionId || !repository.snapshotId || !repository.snapshotRevision ||
+      !repository.snapshotDigest || repository.reason !== "manifest_ingest_complete" ||
+      !repository.evidenceRefs.includes("manifest-ingest:" + repository.manifestContentDigest))) ||
+    (repository.coverage !== "complete" && repository.dependsOnRepositoryIds.length > 0) ||
+    repository.dependsOnRepositoryIds.some((id) => !requested.has(id) || id === repository.repositoryId)
+  )) throw new Error("mission_graph_topology_invalid");
+  const edges = input.edges.map((edge) => ({
+    ...edge,
+    evidenceRefs: [...new Set(edge.evidenceRefs)].sort(compareCodeUnits),
+  })).sort((left, right) => compareCodeUnits(
+    [left.sourceRepositoryId, left.targetRepositoryId, left.graphEdgeId].join("|"),
+    [right.sourceRepositoryId, right.targetRepositoryId, right.graphEdgeId].join("|"),
+  ));
+  const edgeIds = new Set<string>();
+  for (const edge of edges) {
+    const source = repositories.find((repository) => repository.repositoryId === edge.sourceRepositoryId);
+    if (!source || edge.sourceSystem !== "manifest" || edgeIds.has(edge.graphEdgeId) ||
+        typeof edge.graphEdgeId !== "string" || !edge.graphEdgeId ||
+        !source.dependsOnRepositoryIds.includes(edge.targetRepositoryId) ||
+        !requested.has(edge.targetRepositoryId) || edge.confidence < 0 || edge.confidence > 1 ||
+        !Number.isFinite(edge.confidence) || !edge.evidenceRefs.length ||
+        !source.evidenceRefs.every((ref) => edge.evidenceRefs.includes(ref))) {
+      throw new Error("mission_graph_topology_invalid");
+    }
+    edgeIds.add(edge.graphEdgeId);
+  }
+  for (const repository of repositories) {
+    for (const target of repository.dependsOnRepositoryIds) {
+      if (!edges.some((edge) => edge.sourceRepositoryId === repository.repositoryId && edge.targetRepositoryId === target)) {
+        throw new Error("mission_graph_topology_invalid");
+      }
+    }
+  }
+  const body = {
+    schemaVersion: "mendpoint.mission-graph-projection.topology.v1" as const,
+    projectionKind: "dependency_topology" as const,
+    missionId: input.missionId,
+    tenantId: input.tenantId,
+    requestedRepositoryIds,
+    repositories,
+    edges,
+  };
+  return Object.freeze({ ...body, contentDigest: sha256(canonicalJson(body)) });
+}
+
+export function verifyMissionGraphTopologyProjection(value: MissionGraphTopologyProjection): MissionGraphTopologyProjection {
+  try {
+    const { schemaVersion, projectionKind, contentDigest, ...input } = structuredClone(value);
+    if (schemaVersion !== "mendpoint.mission-graph-projection.topology.v1" || projectionKind !== "dependency_topology") {
+      throw new Error("schema");
+    }
+    const expected = compileMissionGraphTopologyProjection(input);
+    if (expected.contentDigest !== contentDigest || canonicalJson(expected) !== canonicalJson(value)) throw new Error("digest");
+    return expected;
+  } catch {
+    throw new Error("mission_graph_topology_integrity_invalid");
+  }
+}
+
 export function compileMissionGraphProjection(input: {
   impact: FettlerEndpointImpactResult;
   missionId?: string | null;
   maxBytes: number;
-}): MissionGraphProjection {
+}): MissionGraphImpactProjection {
   const compiled = compileFettlerImpactContext(input.impact, { maxBytes: input.maxBytes });
   return Object.freeze({
     schemaVersion: "mendpoint.mission-graph-projection.v1",

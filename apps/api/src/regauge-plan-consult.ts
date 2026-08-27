@@ -102,12 +102,14 @@ export function consultRegaugeGraphDependencies(input: {
   repositoryIds: readonly string[];
   repositorySnapshots?: readonly Readonly<{
     id: string;
+    snapshotId: string;
     revision: string;
     snapshotDigest: string;
     files: Readonly<Record<string, string>>;
   }>[];
 }): RegaugeGraphPlanConsult {
   const requestedRepositoryIds = [...new Set(input.repositoryIds)].sort(compareCodeUnits);
+  const evaluatedAt = new Date().toISOString();
   if (!input.graph) {
     return createRegaugeDependencyProjectionV1({
       tenantId: input.tenantId,
@@ -118,6 +120,7 @@ export function consultRegaugeGraphDependencies(input: {
         manifestPath: null,
         manifestContentDigest: null,
         manifestVersionId: null,
+        snapshotId: null,
         snapshotRevision: null,
         snapshotDigest: null,
         coverage: "not_consulted" as const,
@@ -130,7 +133,15 @@ export function consultRegaugeGraphDependencies(input: {
   }
   const scoped = createTenantGraphView(input.graph, { tenantId: input.tenantId });
   try {
-    const services = listNodesByKind(scoped, "Service").sort((left, right) => compareCodeUnits(left.id, right.id));
+    const services = listNodesByKind(scoped, "Service")
+      .filter((node) => {
+        if (node.props?.declared === true || node.props?.manifest_version_id === undefined) return true;
+        const validFrom = node.props?.manifest_valid_from;
+        const validTo = node.props?.manifest_valid_to;
+        return typeof validFrom === "string" && validFrom <= evaluatedAt &&
+          (validTo === null || (typeof validTo === "string" && validTo > evaluatedAt));
+      })
+      .sort((left, right) => compareCodeUnits(left.id, right.id));
     const roots = new Map<string, Array<{
       node: (typeof services)[number];
       evidence: NonNullable<ReturnType<typeof manifestRootEvidence>>;
@@ -164,6 +175,7 @@ export function consultRegaugeGraphDependencies(input: {
           manifestPath: null,
           manifestContentDigest: null,
           manifestVersionId: null,
+          snapshotId: null,
           snapshotRevision: null,
           snapshotDigest: null,
           coverage: "unknown",
@@ -180,6 +192,7 @@ export function consultRegaugeGraphDependencies(input: {
           manifestPath: null,
           manifestContentDigest: null,
           manifestVersionId: null,
+          snapshotId: null,
           snapshotRevision: null,
           snapshotDigest: null,
           coverage: "unknown",
@@ -204,6 +217,7 @@ export function consultRegaugeGraphDependencies(input: {
           manifestPath: evidence.manifestPath,
           manifestContentDigest: evidence.contentDigest,
           manifestVersionId: evidence.versionId,
+          snapshotId: snapshot?.snapshotId ?? null,
           snapshotRevision: snapshot?.revision ?? null,
           snapshotDigest: snapshot?.snapshotDigest ?? null,
           coverage: "unknown",
@@ -217,7 +231,7 @@ export function consultRegaugeGraphDependencies(input: {
       }
       const repositoryEdges: RegaugeDependencyProjectionEdgeV1[] = [];
       let reason: string | null = null;
-      for (const edge of edgesFrom(scoped, source.id, ["DEPENDS_ON"])
+      for (const edge of edgesFrom(scoped, source.id, ["DEPENDS_ON"], { at: evaluatedAt })
         .filter((candidate) => candidate.source_system === "manifest")
         .sort((left, right) => compareCodeUnits(left.id, right.id))) {
         const edgeEvidenceRefs = strings(edge.props?.evidence_refs);
@@ -261,6 +275,7 @@ export function consultRegaugeGraphDependencies(input: {
           manifestPath: evidence.manifestPath,
           manifestContentDigest: evidence.contentDigest,
           manifestVersionId: evidence.versionId,
+          snapshotId: snapshot.snapshotId,
           snapshotRevision: snapshot.revision,
           snapshotDigest: snapshot.snapshotDigest,
           coverage: "unknown",
@@ -277,6 +292,7 @@ export function consultRegaugeGraphDependencies(input: {
         manifestPath: evidence.manifestPath,
         manifestContentDigest: evidence.contentDigest,
         manifestVersionId: evidence.versionId,
+        snapshotId: snapshot.snapshotId,
         snapshotRevision: snapshot.revision,
         snapshotDigest: snapshot.snapshotDigest,
         coverage: "complete",

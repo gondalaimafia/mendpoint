@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   compileApprovedTransformerMission,
   planTransformerMission,
+  recipeFilesDigest,
   resolveRecipe,
   verifyRegaugeDependencyProjectionV1,
   verifyTransformerBlueprint,
@@ -231,6 +232,7 @@ export class TransformerMissionService {
     if (approvedDependencies.repositories.some((repository) => repository.coverage !== "complete")) {
       throw new Error("transformer_mission_dependency_replan_required:incomplete_projection");
     }
+    const exactRepositoryAuthorities = new Map<string, ReturnType<TransformerMissionRepositoryAuthority["load"]>>();
     for (const repository of approvedDependencies.repositories) {
       const blueprintEvidence = blueprint.evidence.repositories.find((entry) =>
         entry.id === repository.repositoryId);
@@ -254,11 +256,15 @@ export class TransformerMissionService {
       ) {
         throw new Error("transformer_mission_dependency_replan_required:manifest_provenance_invalid");
       }
-      const current = this.repositories.load(
+      const exactAuthority = this.repositories.load(
         request.tenantId,
         repository.repositoryId,
         this.now(),
-      ).planning;
+        undefined,
+        repository.snapshotId ?? undefined,
+      );
+      exactRepositoryAuthorities.set(repository.repositoryId, exactAuthority);
+      const current = exactAuthority.planning;
       const currentManifest = repository.manifestPath === null
         ? undefined
         : current.files[repository.manifestPath];
@@ -267,6 +273,7 @@ export class TransformerMissionService {
         : null;
       if (
         current.id !== repository.repositoryId ||
+        current.snapshotId !== repository.snapshotId ||
         current.revision !== repository.snapshotRevision ||
         current.snapshotDigest !== repository.snapshotDigest ||
         currentManifestDigest !== repository.manifestContentDigest
@@ -314,12 +321,16 @@ export class TransformerMissionService {
     }
     const executionRepositories = repositoryIds.map((repositoryId) => {
       const unit = blueprint.units.find((candidate) => candidate.repositoryId === repositoryId)!;
-      return this.repositories.load(
-        request.tenantId,
-        repositoryId,
-        this.now(),
-        resolveRecipe(unit.recipe).allowedPaths,
-      ).execution;
+      const full = exactRepositoryAuthorities.get(repositoryId);
+      if (!full) throw new Error("transformer_mission_dependency_authority_drift");
+      const allowed = new Set(resolveRecipe(unit.recipe).allowedPaths);
+      const files = Object.freeze(Object.fromEntries(
+        Object.entries(full.execution.files).filter(([path]) => allowed.has(path)),
+      ));
+      return Object.freeze({
+        snapshot: Object.freeze({ ...full.execution.snapshot, digest: recipeFilesDigest(files) }),
+        files,
+      });
     });
     const compiled = compileApprovedTransformerMission({
       tenantId: request.tenantId,

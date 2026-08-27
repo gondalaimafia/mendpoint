@@ -40,6 +40,7 @@ function dependencyProjection(
       manifestPath: "package.json",
       manifestContentDigest,
       manifestVersionId: sha256(`manifest-version:${repository.repositoryId}`),
+      snapshotId: `snapshot-${repository.repositoryId}`,
       snapshotRevision: revision("b"),
       snapshotDigest: recipeFilesDigest(files),
       coverage: repository.coverage ?? "complete",
@@ -83,6 +84,7 @@ function input(): TransformerMissionPlanningInput {
     },
     repositories: [{
       id: "repo-a",
+      snapshotId: "snapshot-repo-a",
       organizationId: "organization-a",
       revision: revision("b"),
       snapshotDigest: recipeFilesDigest(files),
@@ -193,6 +195,7 @@ describe("self serving Transformer mission planner", () => {
     const repoB = {
       ...candidate.repositories[0]!,
       id: "repo-b",
+      snapshotId: "snapshot-repo-b",
       evidenceRefs: ["evidence:snapshot:b"],
     };
     const result = planTransformerMission({
@@ -222,6 +225,14 @@ describe("self serving Transformer mission planner", () => {
         { repositoryId: "repo-b" },
       ]),
     );
+    expect(result.blueprint.evidence.dependencies).toMatchObject({
+      schemaVersion: "mendpoint.mission-graph-projection.topology.v1",
+      projectionKind: "dependency_topology",
+      repositories: expect.arrayContaining([
+        expect.objectContaining({ repositoryId: "repo-a", snapshotId: "snapshot-repo-a" }),
+        expect.objectContaining({ repositoryId: "repo-b", snapshotId: "snapshot-repo-b" }),
+      ]),
+    });
   });
 
   it("abstains when dependency evidence is missing, incomplete, tenant-mismatched, or tampered", () => {

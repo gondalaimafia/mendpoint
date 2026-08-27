@@ -4,6 +4,8 @@ import { openGraphLearnMemory } from "./store.js";
 import {
   compileFettlerImpactContext,
   compileMissionGraphProjection,
+  compileMissionGraphTopologyProjection,
+  verifyMissionGraphTopologyProjection,
   classifyChangeGraphFailure,
   diffSoftwareGraphVersions,
   getSoftwareGraphHead,
@@ -633,6 +635,36 @@ describe("foundational software intelligence graph", () => {
     expect(projection.graphVersionId).toBe(result.graphVersionId);
     expect(projection.compiled).toEqual(compileFettlerImpactContext(result, { maxBytes: 8_192 }));
     expect(projection.compiled.content).not.toContain("props_json");
+  });
+
+  it("compiles ReGauge dependency topology through the named MissionGraphProjection authority", () => {
+    const manifestDigest = `sha256:${"a".repeat(64)}`;
+    const projection = compileMissionGraphTopologyProjection({
+      missionId: null,
+      tenantId: "tenant-a",
+      requestedRepositoryIds: ["repo-a"],
+      repositories: [{
+        repositoryId: "repo-a",
+        serviceId: "manifest-service:v2:root",
+        manifestPath: "package.json",
+        manifestContentDigest: manifestDigest,
+        manifestVersionId: `sha256:${"b".repeat(64)}`,
+        snapshotId: "snapshot-a",
+        snapshotRevision: "c".repeat(40),
+        snapshotDigest: `sha256:${"d".repeat(64)}`,
+        coverage: "complete",
+        reason: "manifest_ingest_complete",
+        dependsOnRepositoryIds: [],
+        evidenceRefs: [`manifest-ingest:${manifestDigest}`],
+      }],
+      edges: [],
+    });
+    expect(projection).toMatchObject({
+      schemaVersion: "mendpoint.mission-graph-projection.topology.v1",
+      projectionKind: "dependency_topology",
+      tenantId: "tenant-a",
+    });
+    expect(verifyMissionGraphTopologyProjection(projection)).toEqual(projection);
   });
 
   it("routes representation failures away from model weight training", () => {

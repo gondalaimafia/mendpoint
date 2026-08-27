@@ -1354,6 +1354,7 @@ app.post("/graph-learn/lsp-ingest", async (c) => {
       ingestLspSymbols(graphDb, {
         repoPath: repo.local_path,
         repoId: `${tenantId}:${consumer.id}`,
+        tenantId,
       }),
     { allowEmpty: true },
   );

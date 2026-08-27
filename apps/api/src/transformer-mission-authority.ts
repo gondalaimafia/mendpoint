@@ -242,6 +242,7 @@ function loadRepository(
   return Object.freeze({
     planning: Object.freeze({
       id: repositoryId,
+      snapshotId: snapshot.id,
       organizationId: tenantId,
       revision: snapshot.resolved_sha,
       snapshotDigest,

@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import {
+  compileMissionGraphTopologyProjection,
+  verifyMissionGraphTopologyProjection,
+} from "@mendpoint/graph-learn";
+import {
   planTransformerBlueprint,
   type TransformerBlueprintOrganizationEvidence,
   type TransformerBlueprintPlanningResult,
@@ -16,7 +20,7 @@ import {
 } from "./recipe.js";
 
 const MAX_RECIPE_CATALOG = 128;
-export const REGAUGE_DEPENDENCY_PROJECTION_SCHEMA_VERSION = "2026-08-27.v1" as const;
+export const REGAUGE_DEPENDENCY_PROJECTION_SCHEMA_VERSION = "mendpoint.mission-graph-projection.topology.v1" as const;
 
 export type RegaugeDependencyCoverage = "complete" | "unknown" | "not_consulted";
 
@@ -26,6 +30,7 @@ export type RegaugeDependencyProjectionRepositoryV1 = Readonly<{
   manifestPath: string | null;
   manifestContentDigest: string | null;
   manifestVersionId: string | null;
+  snapshotId: string | null;
   snapshotRevision: string | null;
   snapshotDigest: string | null;
   coverage: RegaugeDependencyCoverage;
@@ -38,13 +43,15 @@ export type RegaugeDependencyProjectionEdgeV1 = Readonly<{
   sourceRepositoryId: string;
   targetRepositoryId: string;
   graphEdgeId: string;
-  sourceSystem: string;
+  sourceSystem: "manifest";
   confidence: number;
   evidenceRefs: readonly string[];
 }>;
 
 export type RegaugeDependencyProjectionV1 = Readonly<{
   schemaVersion: typeof REGAUGE_DEPENDENCY_PROJECTION_SCHEMA_VERSION;
+  projectionKind: "dependency_topology";
+  missionId: string | null;
   tenantId: string;
   requestedRepositoryIds: readonly string[];
   repositories: readonly RegaugeDependencyProjectionRepositoryV1[];
@@ -61,6 +68,7 @@ export type RegaugeDependencyProjectionInputV1 = Readonly<{
 
 export type TransformerMissionPlanningRepository = Readonly<{
   id: string;
+  snapshotId: string;
   organizationId: string;
   revision: string;
   snapshotDigest: string;
@@ -114,131 +122,27 @@ function stableJson(value: unknown): string {
   return JSON.stringify(stableValue(value));
 }
 
-function projectionDigest(value: unknown): string {
-  return `sha256:${createHash("sha256").update(stableJson(value), "utf8").digest("hex")}`;
-}
-
 function deepFreeze<T>(value: T): T {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
   for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
   return Object.freeze(value);
 }
 
-function requiredProjectionText(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value === value.trim() && value.length <= 1_000;
-}
-
-function sortedUnique(values: readonly string[]): string[] {
-  return [...new Set(values)].sort(compareCodeUnits);
-}
-
 export function createRegaugeDependencyProjectionV1(
   rawInput: RegaugeDependencyProjectionInputV1,
 ): RegaugeDependencyProjectionV1 {
-  const input = structuredClone(rawInput);
-  if (!requiredProjectionText(input.tenantId)) throw new Error("regauge_dependency_projection_invalid");
-  const requestedRepositoryIds = sortedUnique(input.requestedRepositoryIds);
-  if (!requestedRepositoryIds.length || requestedRepositoryIds.length !== input.requestedRepositoryIds.length ||
-      requestedRepositoryIds.some((id) => !requiredProjectionText(id))) {
-    throw new Error("regauge_dependency_projection_invalid");
-  }
-  const requested = new Set(requestedRepositoryIds);
-  const repositories = input.repositories.map((repository) => ({
-    repositoryId: repository.repositoryId,
-    serviceId: repository.serviceId,
-    manifestPath: repository.manifestPath,
-    manifestContentDigest: repository.manifestContentDigest,
-    manifestVersionId: repository.manifestVersionId,
-    snapshotRevision: repository.snapshotRevision,
-    snapshotDigest: repository.snapshotDigest,
-    coverage: repository.coverage,
-    reason: repository.reason,
-    dependsOnRepositoryIds: sortedUnique(repository.dependsOnRepositoryIds),
-    evidenceRefs: sortedUnique(repository.evidenceRefs),
-  })).sort((left, right) => compareCodeUnits(left.repositoryId, right.repositoryId));
-  if (
-    repositories.length !== requestedRepositoryIds.length ||
-    repositories.some((repository, index) =>
-      repository.repositoryId !== requestedRepositoryIds[index] ||
-      !requiredProjectionText(repository.repositoryId) ||
-      (repository.serviceId !== null && !requiredProjectionText(repository.serviceId)) ||
-      (repository.manifestPath !== null && !["package.json", "pyproject.toml", "go.mod"].includes(repository.manifestPath)) ||
-      (repository.manifestContentDigest !== null && !/^sha256:[a-f0-9]{64}$/.test(repository.manifestContentDigest)) ||
-      (repository.manifestVersionId !== null && !/^sha256:[a-f0-9]{64}$/.test(repository.manifestVersionId)) ||
-      (repository.snapshotRevision !== null && !/^[a-f0-9]{40}$/.test(repository.snapshotRevision)) ||
-      (repository.snapshotDigest !== null && !/^sha256:[a-f0-9]{64}$/.test(repository.snapshotDigest)) ||
-      !["complete", "unknown", "not_consulted"].includes(repository.coverage) ||
-      !requiredProjectionText(repository.reason) ||
-      repository.dependsOnRepositoryIds.some((id) => !requested.has(id) || id === repository.repositoryId) ||
-      repository.evidenceRefs.some((ref) => !requiredProjectionText(ref)) ||
-      (repository.coverage === "complete"
-        ? repository.serviceId === null ||
-          repository.manifestPath === null ||
-          repository.manifestContentDigest === null ||
-          repository.manifestVersionId === null ||
-          repository.snapshotRevision === null ||
-          repository.snapshotDigest === null ||
-          repository.reason !== "manifest_ingest_complete" ||
-          !repository.evidenceRefs.includes(`manifest-ingest:${repository.manifestContentDigest}`)
-        : repository.dependsOnRepositoryIds.length > 0)
-    )
-  ) {
-    throw new Error("regauge_dependency_projection_invalid");
-  }
-  const edges = input.edges.map((edge) => ({
-    sourceRepositoryId: edge.sourceRepositoryId,
-    targetRepositoryId: edge.targetRepositoryId,
-    graphEdgeId: edge.graphEdgeId,
-    sourceSystem: edge.sourceSystem,
-    confidence: edge.confidence,
-    evidenceRefs: sortedUnique(edge.evidenceRefs),
-  })).sort((left, right) => compareCodeUnits(
-    `${left.sourceRepositoryId}\u0000${left.targetRepositoryId}\u0000${left.graphEdgeId}`,
-    `${right.sourceRepositoryId}\u0000${right.targetRepositoryId}\u0000${right.graphEdgeId}`,
-  ));
-  const edgeIds = new Set<string>();
-  for (const edge of edges) {
-    const source = repositories.find((repository) => repository.repositoryId === edge.sourceRepositoryId);
-    if (
-      !source || !requested.has(edge.targetRepositoryId) || edge.sourceRepositoryId === edge.targetRepositoryId ||
-      !source.dependsOnRepositoryIds.includes(edge.targetRepositoryId) ||
-      !requiredProjectionText(edge.graphEdgeId) || edgeIds.has(edge.graphEdgeId) ||
-      edge.sourceSystem !== "manifest" || !Number.isFinite(edge.confidence) ||
-      edge.confidence < 0 || edge.confidence > 1 || edge.evidenceRefs.length === 0 ||
-      edge.evidenceRefs.some((ref) => !requiredProjectionText(ref)) ||
-      !source.evidenceRefs.every((ref) => edge.evidenceRefs.includes(ref))
-    ) {
-      throw new Error("regauge_dependency_projection_invalid");
-    }
-    edgeIds.add(edge.graphEdgeId);
-  }
-  for (const repository of repositories) {
-    for (const dependency of repository.dependsOnRepositoryIds) {
-      if (!edges.some((edge) =>
-        edge.sourceRepositoryId === repository.repositoryId && edge.targetRepositoryId === dependency)) {
-        throw new Error("regauge_dependency_projection_invalid");
-      }
-    }
-  }
-  const body = {
-    schemaVersion: REGAUGE_DEPENDENCY_PROJECTION_SCHEMA_VERSION,
-    tenantId: input.tenantId,
-    requestedRepositoryIds,
-    repositories,
-    edges,
-  };
-  return deepFreeze({ ...body, contentDigest: projectionDigest(body) });
+  return compileMissionGraphTopologyProjection({
+    missionId: null,
+    ...rawInput,
+    edges: rawInput.edges.map((edge) => ({ ...edge, sourceSystem: "manifest" as const })),
+  });
 }
 
 export function verifyRegaugeDependencyProjectionV1(
   value: RegaugeDependencyProjectionV1,
 ): RegaugeDependencyProjectionV1 {
   try {
-    const { contentDigest, schemaVersion, ...input } = structuredClone(value);
-    if (schemaVersion !== REGAUGE_DEPENDENCY_PROJECTION_SCHEMA_VERSION) throw new Error("schema");
-    const expected = createRegaugeDependencyProjectionV1(input);
-    if (contentDigest !== expected.contentDigest || stableJson(value) !== stableJson(expected)) throw new Error("digest");
-    return expected;
+    return verifyMissionGraphTopologyProjection(value);
   } catch {
     throw new Error("regauge_dependency_projection_integrity_invalid");
   }
@@ -297,6 +201,7 @@ export function planTransformerMission(
       binding.coverage !== "complete" ||
       binding.manifestPath === null ||
       binding.manifestContentDigest === null ||
+      binding.snapshotId !== repository.snapshotId ||
       binding.snapshotRevision !== repository.revision ||
       binding.snapshotDigest !== repository.snapshotDigest ||
       typeof repository.files[binding.manifestPath] !== "string" ||
@@ -390,6 +295,7 @@ export function planTransformerMission(
     }
     blueprintRepositories.push({
       id: repository.id,
+      snapshotId: repository.snapshotId,
       organizationId: repository.organizationId,
       revision: repository.revision,
       snapshotDigest: recipeFilesDigest(selectedFiles),

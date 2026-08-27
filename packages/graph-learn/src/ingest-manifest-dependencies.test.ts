@@ -10,6 +10,20 @@ import { edgesFrom, getNode, listNodesByKind, openGraphLearnMemory, upsertEdge, 
 
 const opened: GraphLearnDb[] = [];
 
+function manifestRoots(db: GraphLearnDb, tenantId: string, repoId: string) {
+  return listNodesByKind(db, "Service").filter((node) =>
+    node.repo_id === repoId && String(node.props?.tenant_id ?? "") === tenantId && node.props?.declared !== true);
+}
+
+function currentManifestRoot(db: GraphLearnDb, tenantId: string, repoId: string) {
+  return manifestRoots(db, tenantId, repoId).find((node) => node.props?.manifest_valid_to === null);
+}
+
+function manifestEdgesAt(db: GraphLearnDb, tenantId: string, repoId: string, at: string) {
+  return manifestRoots(db, tenantId, repoId).flatMap((node) =>
+    edgesFrom(db, node.id, ["DEPENDS_ON"], { at }));
+}
+
 afterEach(() => {
   for (const db of opened.splice(0)) db.raw.close();
 });
@@ -40,23 +54,19 @@ describe("ingestManifestDependencies", () => {
       contentDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       evidenceRefs: [expect.stringMatching(/^manifest-ingest:sha256:/)],
     });
-    const source = "service:tenant-x:@acme/payments";
+    const source = currentManifestRoot(db, "tenant-x", "tenant-x")!.id;
     const depEdges = edgesFrom(db, source, ["DEPENDS_ON"]);
-    const deps = depEdges.map((edge) => edge.target).sort();
-    expect(deps).toEqual(["service:tenant-x:react", "service:tenant-x:stripe"]);
-    expect(listNodesByKind(db, "Service").map((node) => node.id).sort()).toEqual([
-      "service:tenant-x:@acme/payments",
-      "service:tenant-x:react",
-      "service:tenant-x:stripe",
-    ]);
+    const deps = depEdges.map((edge) => getNode(db, edge.target)?.label).sort();
+    expect(deps).toEqual(["react", "stripe"]);
+    expect(listNodesByKind(db, "Service")).toHaveLength(3);
     // The edge records which manifest block declared it: react is a peer dep,
     // stripe a runtime dep, and that weaker/stronger claim must survive.
     const blocks = Object.fromEntries(
-      depEdges.map((edge) => [edge.target, (edge.props as { block?: string })?.block]),
+      depEdges.map((edge) => [getNode(db, edge.target)?.label, (edge.props as { block?: string })?.block]),
     );
     expect(blocks).toEqual({
-      "service:tenant-x:react": "peerDependencies",
-      "service:tenant-x:stripe": "dependencies",
+      react: "peerDependencies",
+      stripe: "dependencies",
     });
     expect(getNode(db, source)?.props).toMatchObject({
       tenant_id: "tenant-x",
@@ -90,7 +100,7 @@ describe("ingestManifestDependencies", () => {
       coverageReasons: ["dependency_declaration_unrepresented:dependencies"],
       dependencies: 0,
     });
-    expect(getNode(db, "service:repo-a:shop")?.props).toMatchObject({
+    expect(currentManifestRoot(db, "tenant-a", "repo-a")?.props).toMatchObject({
       manifest_ingest_status: "incomplete",
     });
 
@@ -137,18 +147,11 @@ describe("ingestManifestDependencies", () => {
     });
     expect(replay.versionId).toBe(removed.versionId);
     expect(new Set([first.versionId, removed.versionId, restored.versionId]).size).toBe(3);
-    expect(edgesFrom(db, "service:repo-a:shop", ["DEPENDS_ON"], {
-      at: "2026-08-27T10:30:00.000Z",
-    })).toHaveLength(1);
-    expect(edgesFrom(db, "service:repo-a:shop", ["DEPENDS_ON"], {
-      at: "2026-08-27T11:30:00.000Z",
-    })).toHaveLength(0);
-    expect(edgesFrom(db, "service:repo-a:shop", ["DEPENDS_ON"], {
-      at: "2026-08-27T12:30:00.000Z",
-    })).toHaveLength(1);
-    const history = edgesFrom(db, "service:repo-a:shop", ["DEPENDS_ON"], {
-      includeInvalidated: true,
-    });
+    expect(manifestEdgesAt(db, "tenant-a", "repo-a", "2026-08-27T10:30:00.000Z")).toHaveLength(1);
+    expect(manifestEdgesAt(db, "tenant-a", "repo-a", "2026-08-27T11:30:00.000Z")).toHaveLength(0);
+    expect(manifestEdgesAt(db, "tenant-a", "repo-a", "2026-08-27T12:30:00.000Z")).toHaveLength(1);
+    const history = manifestRoots(db, "tenant-a", "repo-a").flatMap((node) =>
+      edgesFrom(db, node.id, ["DEPENDS_ON"], { includeInvalidated: true }));
     expect(history).toHaveLength(2);
     expect(history.filter((edge) => edge.valid_to === null)).toHaveLength(1);
   });
@@ -162,11 +165,17 @@ describe("ingestManifestDependencies", () => {
       files: [{ path: "package.json", text: "{not json" }],
     });
     expect(result.dependencies).toBe(0);
-    expect(listNodesByKind(db, "Service")).toEqual([]);
+    expect(currentManifestRoot(db, "", "tenant-x")?.props).toMatchObject({
+      manifest_ingest_status: "tombstone",
+      manifest_extractor_id: "mendpoint.manifest-dependencies",
+    });
     // A present-but-broken manifest is distinguishable from an absent one and
     // from one whose package name is unusable.
     expect(result).toMatchObject({ status: "skipped", reason: "unparseable", manifest: "package.json" });
-    expect(result).toMatchObject({ contentDigest: null, evidenceRefs: [] });
+    expect(result).toMatchObject({
+      contentDigest: expect.stringMatching(/^sha256:/),
+      evidenceRefs: [expect.stringMatching(/^manifest-ingest:sha256:/)],
+    });
   });
 
   it("distinguishes a missing manifest and a missing/path-like package name from unparseable text", () => {
@@ -175,16 +184,143 @@ describe("ingestManifestDependencies", () => {
     const absent = ingestManifestDependencies(db, {
       repoPath: "/unused",
       repoId: "tenant-x",
+      observedAt: "2026-08-27T10:00:00.000Z",
       files: [{ path: "README.md", text: "# no manifest here" }],
     });
     expect(absent).toMatchObject({ status: "skipped", reason: "no-manifest", manifest: null });
     const noName = ingestManifestDependencies(db, {
       repoPath: "/unused",
       repoId: "tenant-x",
+      observedAt: "2026-08-27T11:00:00.000Z",
       files: [{ path: "package.json", text: JSON.stringify({ name: "../escape", dependencies: { stripe: "1" } }) }],
     });
     expect(noName).toMatchObject({ status: "skipped", reason: "no-package-name", manifest: "package.json" });
-    expect(listNodesByKind(db, "Service")).toEqual([]);
+    expect(manifestRoots(db, "", "tenant-x")).toHaveLength(2);
+    expect(currentManifestRoot(db, "", "tenant-x")?.props).toMatchObject({ manifest_ingest_status: "tombstone" });
+  });
+
+  it("uses an explicit declaration inventory and fails closed on unsupported, conflicting, or truncated topology", () => {
+    const cases = [
+      { name: "workspace", value: { name: "app", workspaces: ["packages/*"] }, reason: "workspace_manifest_not_expanded" },
+      { name: "bundled", value: { name: "app", bundledDependencies: ["local"] }, reason: "bundled_dependencies_not_expanded" },
+      { name: "override", value: { name: "app", overrides: { local: "file:../local" } }, reason: "package_manager_topology_not_expanded" },
+      { name: "conflict", value: { name: "app", dependencies: { local: "1" }, devDependencies: { local: "file:../local" } }, reason: "dependency_declaration_conflict:local" },
+      { name: "truncated", value: { name: "app", dependencies: { local: "x".repeat(81) } }, reason: "dependency_specifier_truncated:dependencies" },
+    ];
+    for (const entry of cases) {
+      const db = openGraphLearnMemory();
+      opened.push(db);
+      const result = ingestManifestDependencies(db, {
+        repoPath: "/unused", repoId: `repo-${entry.name}`, tenantId: "tenant-a",
+        files: [{ path: "package.json", text: JSON.stringify(entry.value) }],
+      });
+      expect(result.coverage).toBe("unknown");
+      expect(result.coverageReasons).toContain(entry.reason);
+      expect(currentManifestRoot(db, "tenant-a", `repo-${entry.name}`)?.props)
+        .toMatchObject({ manifest_ingest_status: "incomplete" });
+    }
+    const supported = openGraphLearnMemory();
+    opened.push(supported);
+    expect(ingestManifestDependencies(supported, {
+      repoPath: "/unused", repoId: "repo-supported", tenantId: "tenant-a",
+      files: [{ path: "package.json", text: JSON.stringify({
+        name: "app", optionalDependencies: { registry: "1" }, peerDependencies: { react: "18" },
+      }) }],
+    })).toMatchObject({ coverage: "complete", dependencies: 2 });
+
+    const pyproject = openGraphLearnMemory();
+    opened.push(pyproject);
+    expect(ingestManifestDependencies(pyproject, {
+      repoPath: "/unused", repoId: "repo-python", tenantId: "tenant-a",
+      files: [{ path: "pyproject.toml", text: '[project]\nname="app"\ndynamic=["dependencies"]\n[project.optional-dependencies]\ntest=["pytest"]\n' }],
+    })).toMatchObject({
+      coverage: "unknown",
+      coverageReasons: expect.arrayContaining([
+        "pyproject_dependency_group_not_expanded",
+        "pyproject_dynamic_dependencies_not_expanded",
+      ]),
+    });
+    const go = openGraphLearnMemory();
+    opened.push(go);
+    expect(ingestManifestDependencies(go, {
+      repoPath: "/unused", repoId: "repo-go", tenantId: "tenant-a",
+      files: [{ path: "go.mod", text: "module example.com/app\nrequire example.com/lib v1.0.0\nreplace example.com/lib => ../lib\n" }],
+    })).toMatchObject({ coverage: "unknown", coverageReasons: ["go_replace_topology_not_expanded"] });
+  });
+
+  it("matches repository canonical text digests while retaining raw BOM and CRLF provenance", () => {
+    const db = openGraphLearnMemory();
+    opened.push(db);
+    const lf = '{\n  "name": "app",\n  "dependencies": {"stripe": "1"}\n}\n';
+    const crlfBom = `\uFEFF${lf.replace(/\n/g, "\r\n")}`;
+    const first = ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-lf", tenantId: "tenant-a",
+      files: [{ path: "package.json", text: lf }],
+    });
+    const second = ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-crlf", tenantId: "tenant-a",
+      files: [{ path: "package.json", text: crlfBom }],
+    });
+    expect(second.contentDigest).toBe(first.contentDigest);
+    expect(second.semanticDigest).toBe(first.semanticDigest);
+    expect(second.rawContentDigest).not.toBe(first.rawContentDigest);
+    expect(second.evidenceRefs).toEqual([`manifest-ingest:${second.contentDigest}`]);
+  });
+
+  it("tombstones malformed observations, closes stale edges, and rejects non-monotonic replacement", () => {
+    const db = openGraphLearnMemory();
+    opened.push(db);
+    ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-a", tenantId: "tenant-a",
+      observedAt: "2026-08-27T10:00:00.000Z",
+      files: [{ path: "package.json", text: JSON.stringify({ name: "app", dependencies: { local: "workspace:*" } }) }],
+    });
+    const malformed = ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-a", tenantId: "tenant-a",
+      observedAt: "2026-08-27T11:00:00.000Z",
+      files: [{ path: "package.json", text: "{" }],
+    });
+    expect(malformed).toMatchObject({ status: "skipped", coverage: "unknown", versionId: expect.stringMatching(/^sha256:/) });
+    expect(manifestEdgesAt(db, "tenant-a", "repo-a", "2026-08-27T10:30:00.000Z")).toHaveLength(1);
+    expect(manifestEdgesAt(db, "tenant-a", "repo-a", "2026-08-27T11:30:00.000Z")).toHaveLength(0);
+    expect(currentManifestRoot(db, "tenant-a", "repo-a")?.props).toMatchObject({ manifest_ingest_status: "tombstone" });
+    expect(() => ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-a", tenantId: "tenant-a",
+      observedAt: "2026-08-27T09:30:00-01:00",
+      files: [{ path: "package.json", text: JSON.stringify({ name: "app" }) }],
+    })).toThrow("manifest_ingest_observed_at_non_monotonic");
+  });
+
+  it("keeps identical repository and package identities isolated by tenant", () => {
+    const db = openGraphLearnMemory();
+    opened.push(db);
+    upsertNode(db, {
+      id: "service:repo-shared:app",
+      kind: "Service",
+      label: "app",
+      repo_id: "repo-shared",
+      props: {
+        tenant_id: "tenant-a",
+        manifest: "package.json",
+        manifest_ingest_status: "complete",
+        manifest_version_id: `sha256:${"1".repeat(64)}`,
+        manifest_content_digest: `sha256:${"2".repeat(64)}`,
+        manifest_valid_from: "2026-08-27T09:00:00.000Z",
+      },
+    });
+    for (const tenantId of ["tenant-a", "tenant-b"]) ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-shared", tenantId,
+      observedAt: "2026-08-27T10:00:00.000Z",
+      files: [{ path: "package.json", text: JSON.stringify({ name: "app", dependencies: { stripe: "1" } }) }],
+    });
+    const left = currentManifestRoot(db, "tenant-a", "repo-shared")!;
+    const right = currentManifestRoot(db, "tenant-b", "repo-shared")!;
+    expect(left.id).not.toBe(right.id);
+    expect(edgesFrom(db, left.id, ["DEPENDS_ON"])).toHaveLength(1);
+    expect(edgesFrom(db, right.id, ["DEPENDS_ON"])).toHaveLength(1);
+    expect(getNode(db, "service:repo-shared:app")?.props).toMatchObject({
+      manifest_valid_to: "2026-08-27T10:00:00.000Z",
+    });
   });
 
   it("runs on the lsp ingest live path from a workspace package.json", () => {
@@ -197,10 +333,9 @@ describe("ingestManifestDependencies", () => {
       writeFileSync(join(dir, "index.ts"), "export function ping() { return 1; }\n");
       const db = openGraphLearnMemory();
       opened.push(db);
-      ingestLspSymbols(db, { repoPath: dir, repoId: "tenant-x" });
-      expect(edgesFrom(db, "service:tenant-x:shop", ["DEPENDS_ON"]).map((edge) => edge.target)).toEqual([
-        "service:tenant-x:stripe",
-      ]);
+      ingestLspSymbols(db, { repoPath: dir, repoId: "tenant-x", tenantId: "tenant-x" });
+      expect(edgesFrom(db, currentManifestRoot(db, "tenant-x", "tenant-x")!.id, ["DEPENDS_ON"]))
+        .toHaveLength(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -278,7 +413,8 @@ describe("migration_ready_units with a DEPENDS_ON producer", () => {
       tenantId: "tenant-x",
       files: [{ path: "package.json", text: JSON.stringify({ name: "shop", dependencies: { stripe: "1" } }) }],
     });
-    expect(edgesFrom(db, "service:tenant-x:shop", ["DEPENDS_ON"]).length).toBeGreaterThan(0);
+    expect(edgesFrom(db, currentManifestRoot(db, "tenant-x", "tenant-x")!.id, ["DEPENDS_ON"]).length)
+      .toBeGreaterThan(0);
     upsertNode(db, {
       id: "migration-unit:checkout",
       kind: "MigrationUnit",
@@ -323,7 +459,9 @@ describe("manifest Service ids do not collide with provider Service nodes", () =
     // re-tenanted, not re-homed to repo-a.
     expect(getNode(db, "service:stripe")).toEqual(before);
     // The manifest dependency lives at its own namespaced id.
-    expect(getNode(db, "service:repo-a:stripe")).toMatchObject({
+    const declared = listNodesByKind(db, "Service").find((node) =>
+      node.repo_id === "repo-a" && node.label === "stripe" && node.props?.declared === true);
+    expect(declared).toMatchObject({
       kind: "Service",
       props: expect.objectContaining({ tenant_id: "tenant-a" }),
     });

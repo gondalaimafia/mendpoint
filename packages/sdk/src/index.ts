@@ -299,7 +299,7 @@ export function createPlatform(
       return graph((graphDb) => ingestAstRepo(graphDb, { repoPath, repoId, maxFiles: 200 }), true);
     },
     ingestLsp(repoPath, repoId) {
-      return graph((graphDb) => ingestLspSymbols(graphDb, { repoPath, repoId }), true);
+      return graph((graphDb) => ingestLspSymbols(graphDb, { repoPath, repoId, tenantId: scope.tenantId }), true);
     },
     incremental(repoPath, repoId) {
       return graph((graphDb) => incrementalReingest(graphDb, {

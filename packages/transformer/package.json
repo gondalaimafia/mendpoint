@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@mendpoint/agent": "*",
+    "@mendpoint/graph-learn": "*",
     "@mendpoint/ops": "*",
     "@mendpoint/orchestrator": "*",
     "@mendpoint/platform": "*",

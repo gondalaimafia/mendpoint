@@ -46,6 +46,7 @@ function planned() {
     },
     repositories: [{
       id: "repo-a",
+      snapshotId: "snapshot-repo-a",
       organizationId: "organization-a",
       revision: revision("b"),
       snapshotDigest,

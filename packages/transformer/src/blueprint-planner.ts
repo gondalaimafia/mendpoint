@@ -24,6 +24,7 @@ export type TransformerBlueprintFileEvidence = {
 
 export type TransformerBlueprintRepositoryEvidence = {
   id: string;
+  snapshotId: string;
   organizationId: string;
   revision: string;
   snapshotDigest: string;
@@ -117,6 +118,7 @@ export type TransformerBlueprint = Readonly<{
     }>;
     repositories: readonly Readonly<{
       id: string;
+      snapshotId: string;
       revision: string;
       snapshotDigest: string;
       observedAt: string;
@@ -127,6 +129,7 @@ export type TransformerBlueprint = Readonly<{
   scope: Readonly<{
     repositories: readonly Readonly<{
       id: string;
+      snapshotId: string;
       revision: string;
       snapshotDigest: string;
       paths: readonly Readonly<{
@@ -434,6 +437,7 @@ export function planTransformerBlueprint(
       add(reasons, `repository_organization_conflict:${repository.id}`);
     }
     if (!REVISION.test(repository.revision)) add(reasons, `repository_revision_invalid:${repository.id}`);
+    text(repository.snapshotId, `repository_snapshot_id_invalid:${repository.id}`, reasons);
     if (!DIGEST.test(repository.snapshotDigest)) add(reasons, `repository_digest_invalid:${repository.id}`);
     checkFreshness(
       repository.observedAt,
@@ -600,6 +604,7 @@ export function planTransformerBlueprint(
       )].sort();
       return {
         id: repository.id,
+        snapshotId: repository.snapshotId,
         revision: repository.revision,
         snapshotDigest: repository.snapshotDigest,
         paths: paths.map((path) => {
@@ -636,6 +641,7 @@ export function planTransformerBlueprint(
         const repository = repositoryById.get(repositoryId)!;
         return {
           id: repository.id,
+          snapshotId: repository.snapshotId,
           revision: repository.revision,
           snapshotDigest: repository.snapshotDigest,
           observedAt: repository.observedAt,
