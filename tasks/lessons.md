@@ -202,3 +202,8 @@
 **Mistake:** A CRLF source file became mixed-EOL after localized edits.
 **Correction:** Quality review required the worker entrypoint restored to its baseline CRLF convention without broad formatting.
 **Rule:** For line-ending-sensitive files, inspect index and working-tree EOL before and after edits, normalize only the target file, and review the semantic diff separately.
+
+### 2026-08-27 — Preserve durable identity formulas during redaction
+**Mistake:** Expanding URI redaction also changed the established HTTPS digest formula, so an upgrade could create duplicate artifacts and dispatches for the same release.
+**Correction:** Quality re-review required exact legacy HTTPS identity compatibility while applying the new domain-separated digest only to other hierarchical URI schemes.
+**Rule:** Treat persisted identity formulas as versioned compatibility contracts; extend safety behavior around them without changing existing canonical inputs or digests.

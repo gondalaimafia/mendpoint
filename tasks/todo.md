@@ -3471,3 +3471,19 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Verification evidence: full Catalog passes 156 of 156, DB passes 432 of 432 across 56 files including schema upgrade divergence, Worker passes 608 with one intentional skip across 66 files, and the public health route passes 11 of 11. Full-workspace typecheck passes after one test fixture was updated for the additive nullable field. `npm audit --omit=dev` reports zero vulnerabilities, the production source secret scan is clean, and the CRLF-aware diff check is clean.
 - EOL evidence: `apps/worker/src/cli.ts` is normalized to 4,745 CRLF lines with zero bare LF; its semantic diff is limited to configured release readiness.
 - Remaining activation gates and requirement status are unchanged. This quality repair does not count release plumbing as additional Mendpoint 101 product progress.
+
+## 2026-08-27 HTTPS release item identity compatibility
+
+- [x] RED: seed an artifact with the legacy canonical HTTPS GUID digest, ingest the same release through current code, and prove the changed formula duplicates the artifact and dispatch.
+- [x] GREEN: preserve the exact legacy HTTPS identity formula while retaining the domain-separated digest for other hierarchical `scheme://` identifiers.
+- [x] Cover legacy URL canonicalization, non-HTTPS secret redaction, opaque IDs, and URNs.
+- [x] Run focused ingestion, full Catalog, workspace typecheck, production audit, secret scan, diff check, and EOL check.
+- [x] Self-review the exact four-file delta and prepare explicit staging without remote changes.
+
+### Review
+
+- RED evidence: both upgrade cases failed at `replay.inserted`, returning one new insertion instead of zero. The changed HTTPS digest therefore produced a second artifact and dispatch for the same canonical release identity.
+- Compatibility evidence: HTTPS item IDs again use the exact legacy digest of `new URL(itemId).toString()`. The regressions cover scheme and host case folding, default-port removal, and dot-segment normalization; each seeds the old digest, then proves current ingestion returns `inserted: 0`, one artifact, the same artifact ID, and one dispatch.
+- Safety evidence: only HTTPS uses the legacy formula. FTP, file, and custom hierarchical identifiers retain the domain-separated literal digest, while opaque IDs and URNs remain unchanged; the complete ingestion suite re-proves returned and durable secret redaction.
+- Verification evidence: the focused upgrade regression passes 2 of 2, the complete ingestion file passes 33 of 33, and the full Catalog suite passes 158 of 158 across eight files. Full-workspace typecheck passes, `npm audit --omit=dev` reports zero vulnerabilities, the changed production source secret scan has no matches, and the CRLF-aware diff check is clean.
+- EOL and scope evidence: the two Catalog files remain LF, the worker CLI remains `i/crlf w/crlf`, and only the two Catalog files plus `tasks/todo.md` and `tasks/lessons.md` changed. No remote mutation occurred.
