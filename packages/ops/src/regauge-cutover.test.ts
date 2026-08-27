@@ -1,4 +1,7 @@
 import {
+  createHmac,
+} from "node:crypto";
+import {
   existsSync,
   linkSync,
   mkdtempSync,
@@ -156,6 +159,36 @@ function transfer(
   });
 }
 
+function canonicalFixture(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "string" || typeof value === "number") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalFixture).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalFixture(record[key])}`).join(",")}}`;
+}
+
+function rewriteBundleAsAuthenticatedV1(fx: ReturnType<typeof fixture>): void {
+  const manifest = JSON.parse(readFileSync(join(fx.bundleRoot, "manifest.json"), "utf8")) as
+    Record<string, unknown>;
+  const { legacyArtifacts: _legacyArtifacts, authentication: _authentication, ...currentBody } = manifest;
+  const body = { ...currentBody, schemaVersion: 1 };
+  const authenticationKey = createHmac("sha256", KEY)
+    .update("mendpoint:regauge-state-transfer:v1:authentication")
+    .digest();
+  const authentication = {
+    algorithm: "hmac-sha256",
+    keyId: BINDINGS.transferKeyId,
+    value: createHmac("sha256", authenticationKey).update(canonicalFixture(body)).digest("hex"),
+  };
+  rmSync(join(fx.bundleRoot, "legacy-artifacts"), { recursive: true });
+  writeFileSync(
+    join(fx.bundleRoot, "manifest.json"),
+    `${canonicalFixture({ ...body, authentication })}\n`,
+  );
+}
+
 describe("ReGauge state transfer", () => {
   it("creates a canonical authenticated manifest with exact database evidence", () => {
     const fx = fixture();
@@ -203,6 +236,30 @@ describe("ReGauge state transfer", () => {
         table: "tf_pilot_events", rowCount: 1, sequence: 1,
         eventType: "attempt.completed_with_checkpoint",
       })]);
+  });
+
+  it("verifies and restores an authenticated schema-1 bundle from current main", () => {
+    const fx = fixture();
+    transfer(fx);
+    rewriteBundleAsAuthenticatedV1(fx);
+
+    const verified = verifyRegaugeStateTransfer({ bundleRoot: fx.bundleRoot, transferKey: KEY });
+    expect(verified.schemaVersion).toBe(1);
+    const restored = restoreRegaugeStateTransfer({
+      bundleRoot: fx.bundleRoot,
+      targetRoot: fx.targetRoot,
+      transferKey: KEY,
+    });
+    expect(restored.schemaVersion).toBe(1);
+    expect(verifyRestoredRegaugeState({
+      targetRoot: fx.targetRoot,
+      importManifest: restored,
+      transferKey: KEY,
+    })).toEqual(restored);
+    expect(readFileSync(join(fx.targetRoot, "mendpoint.sqlite"))).not.toHaveLength(0);
+    expect(readFileSync(join(fx.targetRoot, "transformer-pilot.sqlite"))).not.toHaveLength(0);
+    expect(existsSync(join(fx.targetRoot, "transformer-candidates"))).toBe(true);
+    expect(existsSync(join(fx.targetRoot, "transformer-evidence"))).toBe(true);
   });
 
   it("requires an exact authenticated persistent cutover fence", () => {

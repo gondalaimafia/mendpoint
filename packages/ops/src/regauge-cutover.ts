@@ -87,21 +87,33 @@ export type RegaugeLegacyArtifactEvidence = Readonly<{
   encryptedSizeBytes: number;
 }>;
 
-export type RegaugeTransferManifest = Readonly<{
-  schemaVersion: 2;
+type RegaugeTransferManifestBase = Readonly<{
   kind: "mendpoint.regauge.state-transfer";
   transferId: string;
   createdAt: string;
   bindings: RegaugeTransferBindings;
   fence: Readonly<{ id: string; markerSha256: string; held: true }>;
   resources: readonly RegaugeDatabaseEvidence[];
-  legacyArtifacts: readonly RegaugeLegacyArtifactEvidence[];
   authentication: Readonly<{
     algorithm: "hmac-sha256";
     keyId: string;
     value: string;
   }>;
 }>;
+
+export type RegaugeTransferManifestV1 = RegaugeTransferManifestBase & Readonly<{
+  schemaVersion: 1;
+}>;
+
+export type RegaugeTransferManifestV2 = RegaugeTransferManifestBase & Readonly<{
+  schemaVersion: 2;
+  legacyArtifacts: readonly RegaugeLegacyArtifactEvidence[];
+}>;
+
+export type RegaugeTransferManifest = RegaugeTransferManifestV1 | RegaugeTransferManifestV2;
+type UnsignedRegaugeTransferManifest =
+  | Omit<RegaugeTransferManifestV1, "authentication">
+  | Omit<RegaugeTransferManifestV2, "authentication">;
 
 export type RegaugeCutoverFence = Readonly<{
   schemaVersion: 1;
@@ -292,7 +304,7 @@ function expectedLegacyArtifactTree(
   root: RegaugeTransferLegacyArtifactRoot,
 ): string[] {
   const paths = new Set<string>();
-  for (const artifact of manifest.legacyArtifacts.filter((candidate) => candidate.root === root)) {
+  for (const artifact of manifestLegacyArtifacts(manifest).filter((candidate) => candidate.root === root)) {
     const segments = artifact.relativePath.split("/");
     for (let index = 1; index < segments.length; index += 1) {
       paths.add(`${segments.slice(0, index).join("/")}/`);
@@ -300,6 +312,12 @@ function expectedLegacyArtifactTree(
     paths.add(artifact.relativePath);
   }
   return [...paths].sort();
+}
+
+function manifestLegacyArtifacts(
+  manifest: RegaugeTransferManifest,
+): readonly RegaugeLegacyArtifactEvidence[] {
+  return manifest.schemaVersion === 2 ? manifest.legacyArtifacts : [];
 }
 
 function tableNames(db: DatabaseSync): string[] {
@@ -633,12 +651,12 @@ function decrypt(ciphertext: Buffer, key: Buffer, associatedData: Buffer): Buffe
   } catch { return fail("regauge_transfer_decryption_failed"); }
 }
 
-function unsigned(manifest: RegaugeTransferManifest): Omit<RegaugeTransferManifest, "authentication"> {
+function unsigned(manifest: RegaugeTransferManifest): UnsignedRegaugeTransferManifest {
   const { authentication: _authentication, ...body } = manifest;
-  return body;
+  return body as UnsignedRegaugeTransferManifest;
 }
 
-function authenticate(body: Omit<RegaugeTransferManifest, "authentication">, key: Buffer): string {
+function authenticate(body: UnsignedRegaugeTransferManifest, key: Buffer): string {
   return createHmac("sha256", deriveKey(key, "authentication")).update(canonical(body)).digest("hex");
 }
 
@@ -648,12 +666,18 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[], 
 
 function validateManifest(value: unknown): RegaugeTransferManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("regauge_transfer_manifest_invalid");
-  const manifest = value as unknown as RegaugeTransferManifest;
-  exactKeys(value as Record<string, unknown>, [
+  const record = value as Record<string, unknown>;
+  if (record.schemaVersion !== 1 && record.schemaVersion !== 2) {
+    fail("regauge_transfer_manifest_version_invalid");
+  }
+  exactKeys(record, record.schemaVersion === 2 ? [
     "schemaVersion", "kind", "transferId", "createdAt", "bindings", "fence", "resources",
     "legacyArtifacts", "authentication",
+  ] : [
+    "schemaVersion", "kind", "transferId", "createdAt", "bindings", "fence", "resources", "authentication",
   ], "regauge_transfer_manifest_extra_or_missing");
-  if (manifest.schemaVersion !== 2 || manifest.kind !== "mendpoint.regauge.state-transfer") {
+  const manifest = value as unknown as RegaugeTransferManifest;
+  if (manifest.kind !== "mendpoint.regauge.state-transfer") {
     fail("regauge_transfer_manifest_version_invalid");
   }
   requiredText(manifest.transferId, "regauge_transfer_id_invalid");
@@ -691,12 +715,14 @@ function validateManifest(value: unknown): RegaugeTransferManifest {
       fail("regauge_transfer_resource_evidence_invalid");
     }
   }
-  if (!Array.isArray(manifest.legacyArtifacts) || manifest.legacyArtifacts.length > MAX_LEGACY_ARTIFACT_FILES) {
-    fail("regauge_transfer_legacy_artifacts_invalid");
-  }
   let legacyBytes = 0;
   let previousLegacyKey = "";
-  for (const artifact of manifest.legacyArtifacts) {
+  const legacyArtifacts = manifestLegacyArtifacts(manifest);
+  if (manifest.schemaVersion === 2 && (!Array.isArray(manifest.legacyArtifacts) ||
+      manifest.legacyArtifacts.length > MAX_LEGACY_ARTIFACT_FILES)) {
+    fail("regauge_transfer_legacy_artifacts_invalid");
+  }
+  for (const artifact of legacyArtifacts) {
     exactKeys(artifact as unknown as Record<string, unknown>, [
       "root", "relativePath", "ciphertextPath", "plaintextSha256", "encryptedSha256",
       "plaintextSizeBytes", "encryptedSizeBytes",
@@ -737,12 +763,16 @@ function validateManifest(value: unknown): RegaugeTransferManifest {
 
 function assertBundleFiles(bundleRoot: string, manifest: RegaugeTransferManifest): void {
   const rootEntries = readdirSync(bundleRoot, { withFileTypes: true });
+  const expectedRootEntries = manifest.schemaVersion === 2
+    ? [MANIFEST_NAME, "resources", LEGACY_ARTIFACTS_DIRECTORY_NAME]
+    : [MANIFEST_NAME, "resources"];
   if (rootEntries.some((entry) => entry.isSymbolicLink()) ||
       canonical(rootEntries.map((entry) => entry.name).sort()) !==
-        canonical([MANIFEST_NAME, "resources", LEGACY_ARTIFACTS_DIRECTORY_NAME].sort()) ||
+        canonical(expectedRootEntries.sort()) ||
       !rootEntries.find((entry) => entry.name === MANIFEST_NAME)?.isFile() ||
       !rootEntries.find((entry) => entry.name === "resources")?.isDirectory() ||
-      !rootEntries.find((entry) => entry.name === LEGACY_ARTIFACTS_DIRECTORY_NAME)?.isDirectory()) {
+      (manifest.schemaVersion === 2 &&
+        !rootEntries.find((entry) => entry.name === LEGACY_ARTIFACTS_DIRECTORY_NAME)?.isDirectory())) {
     fail("regauge_transfer_bundle_extra_or_missing_resource");
   }
   const actual = [MANIFEST_NAME];
@@ -756,11 +786,13 @@ function assertBundleFiles(bundleRoot: string, manifest: RegaugeTransferManifest
     }
   };
   visit(join(bundleRoot, "resources"), "resources");
-  visit(join(bundleRoot, LEGACY_ARTIFACTS_DIRECTORY_NAME), LEGACY_ARTIFACTS_DIRECTORY_NAME);
+  if (manifest.schemaVersion === 2) {
+    visit(join(bundleRoot, LEGACY_ARTIFACTS_DIRECTORY_NAME), LEGACY_ARTIFACTS_DIRECTORY_NAME);
+  }
   actual.sort();
   const expected = [MANIFEST_NAME,
     ...manifest.resources.map((resource) => resource.ciphertextPath),
-    ...manifest.legacyArtifacts.map((artifact) => artifact.ciphertextPath),
+    ...manifestLegacyArtifacts(manifest).map((artifact) => artifact.ciphertextPath),
   ].sort();
   if (canonical(actual) !== canonical(expected)) fail("regauge_transfer_bundle_extra_or_missing_resource");
 }
@@ -847,7 +879,7 @@ export function createRegaugeStateTransfer(input: Readonly<{
   transferKey: Buffer;
   fenceRoot: string;
   fenceId: string;
-}>): RegaugeTransferManifest {
+}>): RegaugeTransferManifestV2 {
   assertKey(input.transferKey);
   requiredText(input.transferId, "regauge_transfer_id_invalid");
   assertIso(input.createdAt);
@@ -940,7 +972,7 @@ export function createRegaugeStateTransfer(input: Readonly<{
       resources: Object.freeze(resources),
       legacyArtifacts: Object.freeze(legacyArtifacts),
     };
-    const manifest: RegaugeTransferManifest = Object.freeze({
+    const manifest: RegaugeTransferManifestV2 = Object.freeze({
       ...body,
       authentication: Object.freeze({
         algorithm: "hmac-sha256" as const,
@@ -980,7 +1012,7 @@ export function verifyRegaugeStateTransfer(input: Readonly<{
     for (const resource of manifest.resources) {
       decryptAndVerifyResource(bundleRoot, join(verificationRoot, resource.name), manifest, resource, input.transferKey);
     }
-    for (const artifact of manifest.legacyArtifacts) {
+    for (const artifact of manifestLegacyArtifacts(manifest)) {
       decryptAndVerifyLegacyArtifact(bundleRoot, verificationRoot, manifest, artifact, input.transferKey);
     }
   } finally { rmSync(verificationRoot, { recursive: true, force: true }); }
@@ -1034,7 +1066,7 @@ export function restoreRegaugeStateTransfer(input: Readonly<{
       mkdirSync(join(targetRoot, root), { recursive: true, mode: 0o700 });
       assertOwnership();
     }
-    for (const artifact of manifest.legacyArtifacts) {
+    for (const artifact of manifestLegacyArtifacts(manifest)) {
       assertOwnership();
       decryptAndVerifyLegacyArtifact(resolve(input.bundleRoot), targetRoot, manifest, artifact, input.transferKey);
       assertOwnership();
@@ -1092,7 +1124,7 @@ export function verifyRestoredRegaugeState(input: Readonly<{
     plaintextSha256: sha256(readFileSync(path)),
     plaintextSizeBytes: size,
   }));
-  const expectedLegacy = manifest.legacyArtifacts.map((artifact) => ({
+  const expectedLegacy = manifestLegacyArtifacts(manifest).map((artifact) => ({
     root: artifact.root,
     relativePath: artifact.relativePath,
     plaintextSha256: artifact.plaintextSha256,

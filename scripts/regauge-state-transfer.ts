@@ -132,6 +132,10 @@ function assertExpectedBindings(
   }
 }
 
+function legacyArtifactCount(manifest: RegaugeTransferManifest): number {
+  return manifest.schemaVersion === 2 ? manifest.legacyArtifacts.length : 0;
+}
+
 async function downloadTransfer(
   runtime: RegaugeStateTransferRuntime,
   transport: CustomerObjectStoreTransport,
@@ -199,7 +203,7 @@ export async function freezeAndExportRegaugeState(
     return Object.freeze({
       transferId: manifest.transferId,
       manifestSchemaVersion: manifest.schemaVersion,
-      legacyArtifactCount: manifest.legacyArtifacts.length,
+      legacyArtifactCount: legacyArtifactCount(manifest),
       createdAt: manifest.createdAt,
       manifestAuthentication: manifest.authentication.value,
       fenceId: manifest.fence.id,
@@ -222,7 +226,7 @@ export async function verifyPublishedRegaugeState(
     return Object.freeze({
       transferId: downloaded.manifest.transferId,
       manifestSchemaVersion: downloaded.manifest.schemaVersion,
-      legacyArtifactCount: downloaded.manifest.legacyArtifacts.length,
+      legacyArtifactCount: legacyArtifactCount(downloaded.manifest),
       manifestAuthentication: downloaded.manifest.authentication.value,
       resources: downloaded.manifest.resources.map(({ name, plaintextSha256, schemaSha256 }) => ({
         name, plaintextSha256, schemaSha256,
@@ -261,7 +265,7 @@ export async function restorePublishedRegaugeState(
     return Object.freeze({
       transferId: manifest.transferId,
       manifestSchemaVersion: manifest.schemaVersion,
-      legacyArtifactCount: manifest.legacyArtifacts.length,
+      legacyArtifactCount: legacyArtifactCount(manifest),
       targetRoot: runtime.targetRoot,
       manifestAuthentication: manifest.authentication.value,
       recoveryReceiptDigest: receipt.integrity.digest,
@@ -293,7 +297,7 @@ export async function verifyRegaugeRestoreReceipt(
     return Object.freeze({
       transferId: runtime.transferId,
       manifestSchemaVersion: downloaded.manifest.schemaVersion,
-      legacyArtifactCount: downloaded.manifest.legacyArtifacts.length,
+      legacyArtifactCount: legacyArtifactCount(downloaded.manifest),
       verifiedAt: receipt.verifiedAt,
       manifestAuthentication: receipt.manifestAuthentication,
       recoveryReceiptDigest: receipt.integrity.digest,
@@ -337,7 +341,7 @@ export async function attestRestoredRegaugeState(
     return Object.freeze({
       transferId: runtime.transferId,
       manifestSchemaVersion: manifest.schemaVersion,
-      legacyArtifactCount: manifest.legacyArtifacts.length,
+      legacyArtifactCount: legacyArtifactCount(manifest),
       targetRoot: runtime.targetRoot,
       manifestAuthentication: manifest.authentication.value,
       recoveryReceiptDigest: receipt.integrity.digest,

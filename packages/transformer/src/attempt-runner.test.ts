@@ -833,6 +833,41 @@ describe("Transformer production attempt runner", () => {
     expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
   });
 
+  it("persists and replays a candidate containing an empty output file", async () => {
+    const files = Object.freeze({ ...FILES, ".gitkeep": "" });
+    const fileModes = Object.freeze({ ...FILE_MODES, ".gitkeep": "100644" as const });
+    const application = applyRecipe(RECIPE, files);
+    const sourceDigest = recipeFilesDigest(files);
+    const baseLease = lease();
+    const emptyFileLease = lease({
+      snapshot: { ...baseLease.snapshot, digest: sourceDigest },
+      candidateDigest: application.outputDigest,
+    });
+    const { input, spies } = harness({
+      lease: emptyFileLease,
+      source: {
+        repositoryId: "repo-a",
+        revision: SOURCE_REVISION,
+        digest: sourceDigest,
+        files,
+        fileModes,
+      },
+    });
+
+    const first = await runTransformerAttempt(input);
+    expect(first).toMatchObject({ status: "completed" });
+    expect(readFileSync(join(first.artifacts[0]!.filesDirectory, ".gitkeep"))).toHaveLength(0);
+
+    const replay = await runTransformerAttempt(input);
+    expect(replay).toMatchObject({ status: "completed" });
+    expect(replay.artifacts[0]).toMatchObject({
+      directory: first.artifacts[0]!.directory,
+      reused: true,
+    });
+    expect(spies.completeAttempt).toHaveBeenCalledTimes(2);
+    expect(spies.recordAttemptFailure).not.toHaveBeenCalled();
+  });
+
   it("fails closed when a replay finds candidate artifact tampering", async () => {
     const { input, spies } = harness();
     const first = await runTransformerAttempt(input);

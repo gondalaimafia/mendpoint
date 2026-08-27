@@ -820,10 +820,15 @@ function parseExistingManifest(serialized: string): TransformerCandidateManifest
   return parsed as TransformerCandidateManifest;
 }
 
-function readBoundedCandidateFile(path: string, maxBytes: number, code: string): Buffer {
+function readBoundedCandidateFile(
+  path: string,
+  maxBytes: number,
+  code: string,
+  allowEmpty = false,
+): Buffer {
   const before = lstatSync(path);
   if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 ||
-      !Number.isSafeInteger(before.size) || before.size < 1 || before.size > maxBytes) {
+      !Number.isSafeInteger(before.size) || before.size < (allowEmpty ? 0 : 1) || before.size > maxBytes) {
     throw new AttemptRunnerError("candidate_drift", code);
   }
   const bytes = readFileSync(path);
@@ -901,6 +906,7 @@ function validateExistingCandidate(
       path,
       file.bytes,
       `transformer_candidate_file_too_large:${file.path}`,
+      true,
     ).toString("utf8");
     if (content !== outputFiles[file.path] || sha256(content) !== file.digest) {
       throw new AttemptRunnerError("candidate_drift", `transformer_candidate_file_conflict:${file.path}`);
