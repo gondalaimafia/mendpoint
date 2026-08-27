@@ -118,6 +118,39 @@ describe("public deployment health", () => {
     });
   });
 
+  it("returns 503 after configured release polling attempts work without a durable success", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-release-first-success-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "worker-heartbeat.json");
+    writeFileSync(heartbeatPath, JSON.stringify({
+      ok: true,
+      recordedAt: new Date().toISOString(),
+      feedPollingEnabled: true,
+      feedPollOk: false,
+      releasePollingConfigured: true,
+      releasePollConfigurationCount: 1,
+      feedScheduleStatus: "degraded",
+      releaseConfigurationStatus: "degraded",
+      releaseConfigurationFailed: 0,
+      jobs: { failed: 0 },
+    }));
+    process.env.MENDPOINT_WORKER_HEARTBEAT_PATH = heartbeatPath;
+    process.env.MENDPOINT_API_KEY = `me_${"a".repeat(40)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+
+    const response = await GET();
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      checks: { worker: {
+        ok: false,
+        releasePollingConfigured: true,
+        feedScheduleStatus: "degraded",
+        releaseConfigurationStatus: "degraded",
+        releaseConfigurationFailed: 0,
+      } },
+    });
+  });
+
   it("fails when the worker heartbeat is stale", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-stale-"));
     dirs.push(dir);

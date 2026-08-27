@@ -765,6 +765,20 @@ describe("worker runtime", () => {
       health: { ok: true, status: "healthy" },
       configurationFailed: 0,
       configurationHealth: { ok: true, status: "healthy", failed: 0, failures: [] },
+      releaseReadiness: { ok: false, required: 1, succeeded: 0, missing: [] },
+    }, 1)).toEqual({
+      ok: false,
+      feedScheduleStatus: "healthy",
+      releaseConfigurationStatus: "degraded",
+      releaseConfigurationFailed: 0,
+    });
+    expect(summarizeWorkerFeedScheduleRun({
+      status: "healthy",
+      failed: 0,
+      health: { ok: true, status: "healthy" },
+      configurationFailed: 0,
+      configurationHealth: { ok: true, status: "healthy", failed: 0, failures: [] },
+      releaseReadiness: { ok: true, required: 0, succeeded: 0, missing: [] },
     }, 0)).toEqual({
       ok: true,
       feedScheduleStatus: "healthy",
@@ -868,6 +882,7 @@ describe("worker runtime", () => {
         enabled: 1,
         last_attempt_at: "2026-08-07T15:59:00.000Z",
         last_success_at: "2026-08-07T15:58:00.000Z",
+        release_last_success_at: null,
         consecutive_failures: 1,
         alert_state: "failed",
         last_error: "provider_unavailable",

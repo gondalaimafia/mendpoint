@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDb, upsertFeedSchedule, type AppDb } from "@mendpoint/db";
+import {
+  claimFeedScheduleWindowLease,
+  createDb,
+  upsertFeedSchedule,
+  type AppDb,
+} from "@mendpoint/db";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ingestReleaseDocument,
@@ -565,6 +570,108 @@ describe("feed schedule runner", () => {
       alreadyClaimed: 2,
     });
     expect(calls).toHaveLength(2);
+  });
+
+  it("fails readiness after a crash, reclaims the expired window, and recovers durably", async () => {
+    const db = fixture();
+    const openedIndex = opened.findIndex((entry) => entry.db === db);
+    const directory = opened[openedIndex]!.directory;
+    const dbPath = join(directory, "schedules.sqlite");
+    const config = releaseConfiguration("tenant_default", "release-crash-recovery");
+    const store = releaseStore();
+    const schedule = upsertFeedSchedule(db, {
+      id: "release-crash-recovery",
+      tenantId: config.tenantId,
+      providerSlug: config.provider.slug,
+      intervalMs: 60_000,
+      staleAfterMs: 120_000,
+      createdAt: "2026-08-02T12:00:00.000Z",
+    });
+    expect(claimFeedScheduleWindowLease(db, {
+      id: "release-crashed-window",
+      scheduleId: schedule.id,
+      windowStartedAt: "2026-08-02T12:00:00.000Z",
+      windowEndsAt: "2026-08-02T12:01:00.000Z",
+      attemptedAt: "2026-08-02T12:00:10.000Z",
+      leaseDurationMs: 20_000,
+    })).toMatchObject({ leaseGeneration: 1 });
+    db.raw.close();
+    opened.splice(openedIndex, 1);
+    const restarted = createDb(dbPath);
+    opened.push({ db: restarted, directory });
+    let calls = 0;
+    const releaseExecute = async (
+      _store: ReleaseIngestionStore,
+      canonical: ReleasePollConfigurationV1,
+    ) => {
+      calls++;
+      return persistedRelease(store, canonical, "unchanged");
+    };
+
+    const unexpired = await runFeedSchedules({
+      db: restarted,
+      at: "2026-08-02T12:00:20.000Z",
+      defaultIntervalMs: 60_000,
+      defaultStaleAfterMs: 120_000,
+      feeds: [],
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute,
+    });
+    expect(unexpired).toMatchObject({
+      status: "degraded",
+      claimed: 0,
+      succeeded: 0,
+      failed: 0,
+      alreadyClaimed: 1,
+      releaseReadiness: {
+        ok: false,
+        required: 1,
+        succeeded: 0,
+        missing: [{ tenantId: "tenant_default", providerSlug: "release-crash-recovery" }],
+      },
+    });
+    expect(calls).toBe(0);
+
+    const recovered = await runFeedSchedules({
+      db: restarted,
+      at: "2026-08-02T12:00:30.001Z",
+      defaultIntervalMs: 60_000,
+      defaultStaleAfterMs: 120_000,
+      feeds: [],
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute,
+    });
+    expect(recovered).toMatchObject({
+      status: "healthy",
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      alreadyClaimed: 0,
+      releaseReadiness: { ok: true, required: 1, succeeded: 1, missing: [] },
+    });
+    expect(calls).toBe(1);
+
+    const replay = await runFeedSchedules({
+      db: restarted,
+      at: "2026-08-02T12:00:40.000Z",
+      defaultIntervalMs: 60_000,
+      defaultStaleAfterMs: 120_000,
+      feeds: [],
+      releaseStore: store,
+      releaseFeeds: [config],
+      releaseExecute,
+    });
+    expect(replay).toMatchObject({
+      status: "healthy",
+      claimed: 0,
+      succeeded: 0,
+      failed: 0,
+      alreadyClaimed: 1,
+      releaseReadiness: { ok: true, required: 1, succeeded: 1, missing: [] },
+    });
+    expect(calls).toBe(1);
   });
 
   it.each([

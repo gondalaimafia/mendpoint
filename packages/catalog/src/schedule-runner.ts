@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import {
-  claimFeedScheduleWindow,
+  claimFeedScheduleWindowLease,
   completeFeedScheduleWindow,
   getFeedScheduleHealth,
   listFeedSchedules,
@@ -405,14 +405,15 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
     boundedConcurrency(options.maxConcurrency),
     async (schedule): Promise<FeedScheduleExecution> => {
       const window = scheduleWindow(schedule, at);
-      const claimed = claimFeedScheduleWindow(options.db, {
+      const claim = claimFeedScheduleWindowLease(options.db, {
         id: stableId("feed-window", schedule.id, window.startedAt),
         scheduleId: schedule.id,
         windowStartedAt: window.startedAt,
         windowEndsAt: window.endsAt,
         attemptedAt: at,
+        leaseDurationMs: schedule.stale_after_ms,
       });
-      if (!claimed) {
+      if (!claim) {
         return {
           scheduleId: schedule.id,
           providerSlug: schedule.provider_slug,
@@ -532,7 +533,9 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
       const completed = completeFeedScheduleWindow(options.db, {
         scheduleId: schedule.id,
         windowStartedAt: window.startedAt,
+        leaseGeneration: claim.leaseGeneration,
         succeeded,
+        releaseSucceeded: releaseOutcome.status === "succeeded",
         error,
         completedAt: at,
       });
@@ -571,9 +574,26 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
     failed: configurationFailed,
     failures: Object.freeze([...releaseConfigurationFailures]),
   });
+  const schedulesAfterRun = listFeedSchedules(options.db, options.tenantId);
+  const scheduleByScope = new Map(schedulesAfterRun.map((schedule) => [
+    releaseScope(schedule.tenant_id, schedule.provider_slug),
+    schedule,
+  ]));
+  const missingReleaseSchedules = releaseScheduleBindings.filter((binding) =>
+    !scheduleByScope.get(releaseScope(binding.tenantId, binding.providerSlug))
+      ?.release_last_success_at
+  );
+  const releaseReadiness = Object.freeze({
+    ok: missingReleaseSchedules.length === 0,
+    required: releaseScheduleBindings.length,
+    succeeded: releaseScheduleBindings.length - missingReleaseSchedules.length,
+    missing: Object.freeze(missingReleaseSchedules.map((binding) => Object.freeze({ ...binding }))),
+  });
   return {
     at,
-    status: health.ok && configurationHealth.ok ? "healthy" as const : "degraded" as const,
+    status: health.ok && configurationHealth.ok && releaseReadiness.ok
+      ? "healthy" as const
+      : "degraded" as const,
     maxConcurrency: boundedConcurrency(options.maxConcurrency),
     claimed: executions.filter((execution) => execution.status !== "already_claimed").length,
     succeeded: executions.filter((execution) => execution.status === "succeeded").length,
@@ -583,6 +603,7 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
     releaseConfigurationFailures: Object.freeze([...releaseConfigurationFailures]),
     configurationFailed,
     configurationHealth,
+    releaseReadiness,
     health,
   };
 }

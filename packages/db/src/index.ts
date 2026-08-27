@@ -437,6 +437,7 @@ CREATE TABLE IF NOT EXISTS feed_schedules (
   enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
   last_attempt_at TEXT,
   last_success_at TEXT,
+  release_last_success_at TEXT,
   consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
   alert_state TEXT NOT NULL DEFAULT 'healthy' CHECK (alert_state IN ('healthy', 'stale', 'failed')),
   last_error TEXT,
@@ -455,6 +456,8 @@ CREATE TABLE IF NOT EXISTS feed_schedule_windows (
   status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
   error TEXT,
   attempted_at TEXT NOT NULL,
+  lease_expires_at TEXT,
+  lease_generation INTEGER NOT NULL DEFAULT 0,
   completed_at TEXT,
   UNIQUE (schedule_id, window_started_at)
 );
@@ -2541,6 +2544,9 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "audit_events", name: "request_id", sql: "TEXT" },
     { table: "suppressed_patterns", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
     { table: "feed_polls", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "feed_schedules", name: "release_last_success_at", sql: "TEXT" },
+    { table: "feed_schedule_windows", name: "lease_expires_at", sql: "TEXT" },
+    { table: "feed_schedule_windows", name: "lease_generation", sql: "INTEGER NOT NULL DEFAULT 0" },
     { table: "feed_tenant_dispatches", name: "lease_generation", sql: "INTEGER NOT NULL DEFAULT 1" },
     { table: "github_webhook_deliveries", name: "status", sql: "TEXT NOT NULL DEFAULT 'completed'" },
     { table: "github_webhook_deliveries", name: "updated_at", sql: "TEXT" },
@@ -2742,6 +2748,14 @@ function migrateProvidersFeedColumns(db: AppDb) {
       addedColumns.add(`${column.table}.${column.name}`);
     }
   }
+  run(
+    db,
+    `UPDATE feed_schedule_windows
+     SET lease_generation = 1,
+         lease_expires_at = COALESCE(lease_expires_at, window_ends_at)
+     WHERE status = 'running'
+       AND (lease_generation = 0 OR lease_expires_at IS NULL)`,
+  );
   db.raw.exec(`
     CREATE TRIGGER IF NOT EXISTS migration_prs_delivery_identity_immutable
     BEFORE UPDATE OF github_pr_number, github_repository_id,
@@ -4945,16 +4959,47 @@ export function claimFeedScheduleWindow(
     windowStartedAt: string;
     windowEndsAt: string;
     attemptedAt: string;
+    leaseDurationMs?: number;
   },
 ): boolean {
+  return claimFeedScheduleWindowLease(db, input) !== null;
+}
+
+export type FeedScheduleWindowClaim = Readonly<{
+  leaseGeneration: number;
+  leaseExpiresAt: string;
+}>;
+
+export function claimFeedScheduleWindowLease(
+  db: AppDb,
+  input: {
+    id: string;
+    scheduleId: string;
+    windowStartedAt: string;
+    windowEndsAt: string;
+    attemptedAt: string;
+    leaseDurationMs?: number;
+  },
+): FeedScheduleWindowClaim | null {
+  const attemptedAtMs = Date.parse(input.attemptedAt);
+  const windowEndsAtMs = Date.parse(input.windowEndsAt);
+  const leaseDurationMs = input.leaseDurationMs ?? windowEndsAtMs - attemptedAtMs;
+  if (!Number.isFinite(attemptedAtMs) || !Number.isFinite(windowEndsAtMs)) {
+    throw new Error("feed_schedule_claim_time_invalid");
+  }
+  if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs < 1) {
+    throw new Error("feed_schedule_claim_lease_invalid");
+  }
+  const leaseExpiresAt = new Date(attemptedAtMs + leaseDurationMs).toISOString();
   const ownsTransaction = !db.raw.isTransaction;
   if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const inserted = db.raw
       .prepare(
         `INSERT INTO feed_schedule_windows
-         (id, schedule_id, window_started_at, window_ends_at, status, attempted_at)
-         VALUES (?, ?, ?, ?, 'running', ?)
+         (id, schedule_id, window_started_at, window_ends_at, status, attempted_at,
+          lease_expires_at, lease_generation)
+         VALUES (?, ?, ?, ?, 'running', ?, ?, 1)
          ON CONFLICT (schedule_id, window_started_at) DO NOTHING`,
       )
       .run(
@@ -4963,15 +5008,48 @@ export function claimFeedScheduleWindow(
         input.windowStartedAt,
         input.windowEndsAt,
         input.attemptedAt,
+        leaseExpiresAt,
       );
-    const claimed = Number(inserted.changes) === 1;
+    let claimed = Number(inserted.changes) === 1;
+    if (!claimed) {
+      const reclaimed = db.raw.prepare(
+        `UPDATE feed_schedule_windows
+         SET attempted_at = ?, lease_expires_at = ?, lease_generation = lease_generation + 1,
+             error = NULL, completed_at = NULL
+         WHERE schedule_id = ? AND window_started_at = ? AND status = 'running'
+           AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`,
+      ).run(
+        input.attemptedAt,
+        leaseExpiresAt,
+        input.scheduleId,
+        input.windowStartedAt,
+        input.attemptedAt,
+      );
+      claimed = Number(reclaimed.changes) === 1;
+    }
     if (claimed) {
       db.raw
         .prepare(`UPDATE feed_schedules SET last_attempt_at = ?, updated_at = ? WHERE id = ?`)
         .run(input.attemptedAt, input.attemptedAt, input.scheduleId);
     }
+    const claimAuthority = claimed
+      ? get<Pick<FeedScheduleWindowRow, "lease_generation" | "lease_expires_at">>(
+          db,
+          `SELECT lease_generation, lease_expires_at FROM feed_schedule_windows
+           WHERE schedule_id = ? AND window_started_at = ?`,
+          [input.scheduleId, input.windowStartedAt],
+        )
+      : undefined;
+    if (claimed && !claimAuthority?.lease_expires_at) {
+      throw new Error("feed_schedule_claim_authority_missing");
+    }
     if (ownsTransaction) db.raw.exec("COMMIT");
-    return claimed;
+    return claimAuthority?.lease_expires_at
+      ? Object.freeze({
+          leaseGeneration: claimAuthority.lease_generation,
+          leaseExpiresAt: claimAuthority.lease_expires_at,
+        })
+      : null;
   } catch (error) {
     if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
     throw error;
@@ -4986,8 +5064,14 @@ export function completeFeedScheduleWindow(
     succeeded: boolean;
     completedAt: string;
     error?: string | null;
+    leaseGeneration?: number;
+    releaseSucceeded?: boolean;
   },
 ): boolean {
+  const leaseGeneration = input.leaseGeneration ?? 1;
+  if (!Number.isSafeInteger(leaseGeneration) || leaseGeneration < 1) {
+    throw new Error("feed_schedule_completion_generation_invalid");
+  }
   const ownsTransaction = !db.raw.isTransaction;
   if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
   try {
@@ -4995,7 +5079,8 @@ export function completeFeedScheduleWindow(
       .prepare(
         `UPDATE feed_schedule_windows
          SET status = ?, error = ?, completed_at = ?
-         WHERE schedule_id = ? AND window_started_at = ? AND status = 'running'`,
+         WHERE schedule_id = ? AND window_started_at = ? AND status = 'running'
+           AND lease_generation = ? AND attempted_at <= ? AND lease_expires_at > ?`,
       )
       .run(
         input.succeeded ? "succeeded" : "failed",
@@ -5003,6 +5088,9 @@ export function completeFeedScheduleWindow(
         input.completedAt,
         input.scheduleId,
         input.windowStartedAt,
+        leaseGeneration,
+        input.completedAt,
+        input.completedAt,
       );
     if (Number(updated.changes) !== 1) {
       if (ownsTransaction) db.raw.exec("COMMIT");
@@ -5013,19 +5101,33 @@ export function completeFeedScheduleWindow(
         .prepare(
           `UPDATE feed_schedules
            SET last_success_at = ?, consecutive_failures = 0, alert_state = 'healthy',
+               release_last_success_at = CASE WHEN ? THEN ? ELSE release_last_success_at END,
                last_error = NULL, updated_at = ?
            WHERE id = ?`,
         )
-        .run(input.completedAt, input.completedAt, input.scheduleId);
+        .run(
+          input.completedAt,
+          input.releaseSucceeded === true ? 1 : 0,
+          input.completedAt,
+          input.completedAt,
+          input.scheduleId,
+        );
     } else {
       db.raw
         .prepare(
           `UPDATE feed_schedules
            SET consecutive_failures = consecutive_failures + 1, alert_state = 'failed',
+               release_last_success_at = CASE WHEN ? THEN ? ELSE release_last_success_at END,
                last_error = ?, updated_at = ?
            WHERE id = ?`,
         )
-        .run(input.error ?? "feed_schedule_failed", input.completedAt, input.scheduleId);
+        .run(
+          input.releaseSucceeded === true ? 1 : 0,
+          input.completedAt,
+          input.error ?? "feed_schedule_failed",
+          input.completedAt,
+          input.scheduleId,
+        );
     }
     if (ownsTransaction) db.raw.exec("COMMIT");
     return true;
@@ -5072,6 +5174,7 @@ export function getFeedScheduleHealth(db: AppDb, at: string, tenantId?: string) 
       alertState: schedule.alert_state,
       lastAttemptAt: schedule.last_attempt_at,
       lastSuccessAt: schedule.last_success_at,
+      releaseLastSuccessAt: schedule.release_last_success_at,
       consecutiveFailures: schedule.consecutive_failures,
       lastError: schedule.last_error,
       updatedAt: schedule.updated_at,
