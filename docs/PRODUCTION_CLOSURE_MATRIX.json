@@ -2057,16 +2057,16 @@
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-26T04:06:40.824Z",
-    "observedMainRevision": "7f74e609ca0c9f05fa1deaaded76c9d7b2d2fbd6",
-    "observationDigest": "sha256:9859e554d96d74f31ba782ee5b487d2ef98b42a888b8487ff310e7dbc39c341f",
+    "observedMainRevision": "aff4e7925bf0db23b318142db7888fe3df08315a",
+    "observationDigest": "sha256:7d5f03d5ec79e92f588c17ef43abcaa69f27d95c003d0b8394317a6d0189991f",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 490,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/490",
-      "title": "authority: scope open-PR head reachability to API oracles",
+      "number": 454,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/454",
+      "title": "api: resolve Fettler review handoffs onto agent_resume",
       "baseBranch": "main",
-      "headBranch": "ci-storm-fix-app",
+      "headBranch": "cursor/fettler-resolve-task-handoff-f457",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2079,15 +2079,7 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "rotation-20260826-002",
-        "kind": "runtime",
-        "issuedAt": "2026-08-26T22:18:36.924Z",
-        "expiresAt": "2026-08-27T22:18:36.924Z",
-        "basePolicySha256": "sha256:572d299979e55ed409ae21c8f0a720b1c4e8b7f7a6fcb7f217ea12bf4aed03cb",
-        "proposedPolicySha256": "sha256:3bdfe57b1822cbccd434cef8b874f404cea60fcbf52848ba52899ca7068c4884"
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
@@ -3571,7 +3563,7 @@
         },
         "requirementIds": [],
         "checkState": "conflicting",
-        "headRevision": "1839a9a5ca4c073c3306d2a78b794eed15d9fedc",
+        "headRevision": "1a74a1e5596719f81444bc059029fbc8618e0bc4",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -3599,91 +3591,6 @@
             "summary": "Mission graph scope is not bound to the exact repository snapshot"
           }
         ]
-      },
-      {
-        "number": 451,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/451",
-        "title": "pipeline: record Mission verification after campaign execute",
-        "headBranch": "cursor/campaign-execute-verification-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "blocked_explicit_dependency",
-        "dependencies": {
-          "pullRequests": [
-            463
-          ],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "behind",
-        "headRevision": "6c0c096abd69dd61cdb9543bdde30a2480c144f0",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": [
-          {
-            "priority": "P1",
-            "summary": "post-edit verification evidence is incorrectly reusable for the immutable source snapshot"
-          },
-          {
-            "priority": "P1",
-            "summary": "comparison success can be recorded while constituent checks fail"
-          },
-          {
-            "priority": "P2",
-            "summary": "Mission and compiler visibility is not bound to the exact snapshot"
-          }
-        ]
-      },
-      {
-        "number": 454,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/454",
-        "title": "api: resolve Fettler review handoffs onto agent_resume",
-        "headBranch": "cursor/fettler-resolve-task-handoff-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "conflicting",
-        "headRevision": "006e544217c11fb2ce209ced65dac468f5b4bce6",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
       },
       {
         "number": 455,
@@ -4362,6 +4269,76 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "88d46636f3f88403d4522be080359ce46ec9ca08",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 492,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/492",
+        "title": "Activate fresh authority observation scope",
+        "headBranch": "codex/closure-authority-verifier-bootstrap",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "585b9c43a9f5b31d034bdc3a3d7229627069142b",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 495,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/495",
+        "title": "Separate authority sweep health from PR eligibility",
+        "headBranch": "codex/494-authority-sweep-semantics",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "3e300352cf0b85347c31b63895f74caba3f69cd3",
         "mergeRevision": null,
         "checks": [],
         "review": {
