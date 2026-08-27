@@ -14,12 +14,15 @@ export {
 export {
   contentHash,
   resolveFeedUrl,
+  fetchFeedDocument,
   fetchOpenApiDocument,
   buildOpenApiValidationEvidence,
   extractVersionLabel,
   listCatalogFeeds,
   catalogFeedForSlug,
   type FetchOpenApiResult,
+  type FetchFeedOptions,
+  type FetchFeedResult,
   type OpenApiValidationEvidence,
   type PollableFeed,
 } from "./poll.js";
@@ -38,7 +41,18 @@ export {
   runFeedSchedules,
   type FeedScheduleExecution,
   type FeedScheduleRunOptions,
+  type FeedScheduleSourceOutcome,
 } from "./schedule-runner.js";
+
+export {
+  RELEASE_POLL_CONTRACT_VERSION,
+  pollReleaseSource,
+  type ReleaseArtifactReference,
+  type ReleaseDispatchReference,
+  type ReleasePollConfigurationV1,
+  type ReleasePollOptions,
+  type ReleasePollResult,
+} from "./release-poll.js";
 
 export {
   probeNpmPackage,

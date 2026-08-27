@@ -3349,6 +3349,14 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - [x] Re-run focused and full catalog verification, process stress, typecheck, and diff checks for the second review cycle.
 - [x] Repair the immediate-parent v2 upgrade with a new append-only v3 migration and prove safe active-lease recovery across restart.
 
+### Live release polling increment
+
+- [x] Add a versioned tenant, provider, adapter, and source polling contract over the existing safe feed fetch boundary.
+- [x] Persist fetched releases through the existing ingestion ledger and identifier-and-digest dispatch outbox.
+- [x] Preserve OpenAPI compatibility while exposing independent typed OpenAPI and release scheduler outcomes.
+- [x] Prove tenant scope, identity binding, protected URL rejection, rehydration, replay, and mixed source outcomes.
+- [x] Run focused and full catalog tests, typechecks, dependency audit, and strict diff review.
+
 ### Review
 
 - RED: eight focused tests failed against v1 behavior. Separate upgrade regressions then reproduced a repeated-observation v1 startup constraint failure and a deterministic outbox identity collision that committed an artifact without its dispatch.
@@ -3361,4 +3369,6 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Final second-cycle evidence: the focused release-ingestion suite passes 26 tests, the complete catalog suite passes 66 tests across seven files, catalog typecheck passes, the final 40-process first-open stress probe has zero failures, and `git diff --check` is clean.
 - P1 RED: an exact immediate-parent v2 database remained at schema version 2, so the first clock-authorized claim had neither `claimed_at` nor `release_ingestion_clock_authority` available.
 - P1 GREEN: version 3 conditionally adds the missing clock safety objects, accepts databases already expanded by `35245f50`, and binds predecessor active claims to their known lease expiry so the old owner cannot complete while expiry takeover and retry remain available. The focused suite passes 28 tests, the complete catalog suite passes 68 tests across seven files, the 40-process cold-open probe has zero failures, catalog and full-workspace typechecks pass, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
-- ME-ING-003 and ME-ING-004 remain partial. This increment creates durable catalog contracts only; it does not add or claim a reachable API, worker, polling, or production delivery path.
+- LIVE POLL RED: the release poll module and index export were absent, three mixed-source scheduler cases discarded the release outcome, and a release-only provider produced no claimed schedule window.
+- LIVE POLL GREEN: `release-poll.v1` binds tenant, provider, adapter, and source identity, reuses the existing protected feed fetch boundary, and writes through the existing release ledger and identifier-and-digest dispatch outbox. Scheduler windows now retain independent typed OpenAPI and release outcomes, including release-only providers, while legacy aggregate fields and OpenAPI behavior remain compatible. The complete catalog suite passes 77 tests across eight files, catalog and full-workspace typechecks pass, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
+- ME-ING-003 and ME-ING-004 remain partial. This increment adds catalog-level polling and scheduler contracts only; it does not wire worker or API runtime, drain the outbox, add governance routes, or claim production reachability.
