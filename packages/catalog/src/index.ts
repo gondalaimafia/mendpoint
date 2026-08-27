@@ -69,6 +69,7 @@ export {
   type ReleaseDispatchStatus,
   type ReleaseDocumentInput,
   type ReleaseIngestionStore,
+  type ReleaseIngestionStoreOptions,
   type ReleaseObservation,
   type ReleaseReviewerOverride,
   type ReleaseReviewerOverrideResult,
