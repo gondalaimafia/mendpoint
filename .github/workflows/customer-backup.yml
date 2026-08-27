@@ -35,8 +35,8 @@ jobs:
           CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
         run: |
           set -euo pipefail
-          mkdir -p test-results/customer-backup-preflight
-          evidence="test-results/customer-backup-preflight/preflight-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          mkdir -p "$RUNNER_TEMP/customer-backup-preflight"
+          evidence="$RUNNER_TEMP/customer-backup-preflight/preflight-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
           jq -n \
             --arg app "$CUSTOMER_APP" \
             --arg workflowRevision "$GITHUB_SHA" \
@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          evidence="test-results/customer-backup-preflight/preflight-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          evidence="$RUNNER_TEMP/customer-backup-preflight/preflight-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
           active=false
           result="authority_unavailable"
           reason="preflight_not_completed"
@@ -239,7 +239,7 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: customer-production-backup-preflight-${{ github.run_id }}-${{ github.run_attempt }}
-          path: test-results/customer-backup-preflight/
+          path: ${{ runner.temp }}/customer-backup-preflight/
           if-no-files-found: error
           retention-days: 90
 
@@ -255,6 +255,17 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Initialize backup evidence
+        shell: bash
+        env:
+          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/customer-backup"
+          evidence="$RUNNER_TEMP/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          printf 'run=%s attempt=%s app=%s workflow_revision=%s result=authority_unavailable backupTaken=false\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$CUSTOMER_APP" "$GITHUB_SHA" > "$evidence"
+
       - name: Check out verifier
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -262,17 +273,6 @@ jobs:
 
       - name: Install Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
-
-      - name: Initialize backup evidence
-        shell: bash
-        env:
-          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
-        run: |
-          set -euo pipefail
-          mkdir -p test-results/customer-backup
-          evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
-          printf 'run=%s attempt=%s app=%s workflow_revision=%s\n' \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$CUSTOMER_APP" "$GITHUB_SHA" > "$evidence"
 
       - name: Validate app-scoped backup authority
         shell: bash
@@ -311,7 +311,7 @@ jobs:
           EXPECTED_RELEASE: ${{ needs.profile-gate.outputs.release }}
         run: |
           set -euo pipefail
-          evidence="test-results/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          evidence="$RUNNER_TEMP/customer-backup/backup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
           flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
             --command "node --import tsx scripts/customer-backup.ts --expected-release $EXPECTED_RELEASE" 2>&1 | tee -a "$evidence"
           bash scripts/verify-customer-backup-result.sh "$evidence" "$EXPECTED_RELEASE" >/dev/null
@@ -322,7 +322,7 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: customer-production-backup-${{ github.run_id }}-${{ github.run_attempt }}
-          path: test-results/customer-backup/
+          path: ${{ runner.temp }}/customer-backup/
           if-no-files-found: error
           retention-days: 90
 

@@ -1,24 +1,44 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PURE_MACAROON = /^(?:FlyV1 )?fm2_[A-Za-z0-9+/]+={0,2}$/;
 const APP_ID = /^[1-9][0-9]*$/;
 const PERMISSION_LOCATION = "https://api.fly.io/v1";
+const SCHEMES = new Set(["flyv1", "bearer"]);
 
 function fail(code) {
   throw new Error(code);
 }
 
-function containsWrapper(value) {
-  if (Array.isArray(value)) return value.some(containsWrapper);
+function containsAppCaveat(value) {
+  if (Array.isArray(value)) return value.some(containsAppCaveat);
   if (value === null || typeof value !== "object") return false;
-  if (value.type === "IfPresent") return true;
-  return Object.values(value).some(containsWrapper);
+  if (value.type === "Apps") return true;
+  return Object.values(value).some(containsAppCaveat);
+}
+
+function isCanonicalStandardBase64(value) {
+  if (value.length === 0 || value.length % 4 !== 0) return false;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
+  try {
+    return Buffer.from(value, "base64").toString("base64") === value;
+  } catch {
+    return false;
+  }
 }
 
 export function verifyPureFlyMacaroonCredential(rawValue) {
   const rawCredential = rawValue?.trim() ?? "";
-  if (!PURE_MACAROON.test(rawCredential)) {
+  if (rawCredential.length === 0 || rawCredential.includes(",")) {
+    fail("customer_backup_fly_credential_not_pure_macaroon");
+  }
+  const components = rawCredential.split(/\s+/);
+  while (components.length > 1 && SCHEMES.has(components[0].toLowerCase())) {
+    components.shift();
+  }
+  if (components.length !== 1 || !components[0].startsWith("fm2_")) {
+    fail("customer_backup_fly_credential_not_pure_macaroon");
+  }
+  if (!isCanonicalStandardBase64(components[0].slice(4))) {
     fail("customer_backup_fly_credential_not_pure_macaroon");
   }
 }
@@ -46,8 +66,7 @@ export function verifyFlyAppTokenScope(input) {
     permission === null ||
     typeof permission !== "object" ||
     permission.location !== PERMISSION_LOCATION ||
-    !Array.isArray(permission.caveats) ||
-    containsWrapper(permission.caveats)
+    !Array.isArray(permission.caveats)
   ) {
     fail("customer_backup_token_not_app_scoped");
   }
@@ -56,6 +75,10 @@ export function verifyFlyAppTokenScope(input) {
     caveat !== null && typeof caveat === "object" && caveat.type === "Apps"
   );
   if (appCaveats.length !== 1) {
+    fail("customer_backup_token_not_app_scoped");
+  }
+  const nonAppCaveats = permission.caveats.filter((caveat) => caveat !== appCaveats[0]);
+  if (containsAppCaveat(nonAppCaveats)) {
     fail("customer_backup_token_not_app_scoped");
   }
 

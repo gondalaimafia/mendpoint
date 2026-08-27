@@ -46,12 +46,30 @@ describe("Fly app token scope verifier", () => {
   });
 
   it.each([
+    "fm2_YQ==",
+    "flyv1 fm2_YQ==",
+    "BEARER fm2_YQ==",
+    "Bearer FlyV1 fm2_YQ==",
+    "flyv1 bearer FLYV1 fm2_YQ==",
+  ])("accepts the valid case-insensitive recursive Fly credential grammar: %s", async (rawCredential) => {
+    const { verifyFlyAppTokenScope } = await verifier();
+    expect(() => verifyFlyAppTokenScope({
+      rawCredential,
+      debugJson: JSON.stringify([permissionToken()]),
+      expectedAppId: "123",
+    })).not.toThrow();
+  });
+
+  it.each([
     ["personal token", "fo1_personal"],
     ["Bearer personal token", "Bearer fo1_personal"],
     ["mixed personal and macaroon", `${pureCredential},fo1_personal`],
     ["multiple macaroons", `${pureCredential},fm2_Yg==`],
-    ["nested authorization schemes", `Bearer ${pureCredential}`],
     ["unknown token type", "FlyV1 future_token"],
+    ["unknown scheme", "Basic fm2_YQ=="],
+    ["URL-safe payload", "FlyV1 fm2_YQ-_"],
+    ["missing payload", "Bearer FlyV1"],
+    ["comma-bundled macaroons", "Bearer fm2_YQ==,fm2_Yg=="],
   ])("rejects a %s before decoding", async (_name, rawCredential) => {
     const { verifyFlyAppTokenScope } = await verifier();
     expect(() => verifyFlyAppTokenScope({
@@ -79,6 +97,37 @@ describe("Fly app token scope verifier", () => {
     expect(() => verifyFlyAppTokenScope({
       rawCredential: pureCredential,
       debugJson: JSON.stringify([token]),
+      expectedAppId: "123",
+    })).toThrow("customer_backup_token_not_app_scoped");
+  });
+
+  it("accepts official machine-exec Commands narrowing inside IfPresent", async () => {
+    const { verifyFlyAppTokenScope } = await verifier();
+    const machineExec = permissionToken({ "123": "rw" }, [{
+      type: "IfPresent",
+      body: {
+        caveats: [{
+          type: "Commands",
+          body: { commands: { "fly ssh console": "r" } },
+        }],
+      },
+    }]);
+    expect(() => verifyFlyAppTokenScope({
+      rawCredential: "Bearer FlyV1 fm2_YQ==",
+      debugJson: JSON.stringify([machineExec]),
+      expectedAppId: "123",
+    })).not.toThrow();
+  });
+
+  it("rejects a nested Apps caveat even when an exact top-level Apps caveat exists", async () => {
+    const { verifyFlyAppTokenScope } = await verifier();
+    const ambiguous = permissionToken({ "123": "rw" }, [{
+      type: "IfPresent",
+      body: { caveats: [{ type: "Apps", body: { apps: { "123": "rw" } } }] },
+    }]);
+    expect(() => verifyFlyAppTokenScope({
+      rawCredential: pureCredential,
+      debugJson: JSON.stringify([ambiguous]),
       expectedAppId: "123",
     })).toThrow("customer_backup_token_not_app_scoped");
   });

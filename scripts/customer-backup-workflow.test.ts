@@ -194,7 +194,7 @@ function runProfileGate(input: ProfileGateInput): {
     resolve(root, "scripts/verify-fly-app-token-scope.mjs"),
     join(directory, "scripts/verify-fly-app-token-scope.mjs"),
   );
-  mkdirSync(join(directory, "test-results/customer-backup-preflight"), { recursive: true });
+  mkdirSync(join(directory, "customer-backup-preflight"), { recursive: true });
   const output = join(directory, "github-output.txt");
   const summary = join(directory, "github-summary.md");
   const sha = input.workflowRevision ?? "d".repeat(40);
@@ -231,10 +231,11 @@ function runProfileGate(input: ProfileGateInput): {
       GITHUB_OUTPUT: output,
       GITHUB_STEP_SUMMARY: summary,
       GITHUB_WORKSPACE: directory,
+      RUNNER_TEMP: ".",
     },
   });
   const evidence = JSON.parse(readFileSync(
-    join(directory, "test-results/customer-backup-preflight/preflight-123-2.json"),
+    join(directory, "customer-backup-preflight/preflight-123-2.json"),
     "utf8",
   )) as Record<string, unknown>;
   return {
@@ -381,6 +382,27 @@ describe("customer backup workflow", () => {
     expect(upload.if).toBe("${{ always() }}");
     expect(upload["with"]["retention-days"]).toBe(90);
     expect(upload["with"]["if-no-files-found"]).toBe("error");
+  });
+
+  it("initializes durable failure evidence before checkout and runtime setup in both jobs", () => {
+    for (const [jobName, initializeName, checkoutName, uploadName, artifactDirectory] of [
+      ["profile-gate", "Initialize backup preflight evidence", "Check out authority verifier", "Retain backup preflight evidence", "customer-backup-preflight"],
+      ["backup", "Initialize backup evidence", "Check out verifier", "Retain backup evidence", "customer-backup"],
+    ] as const) {
+      const targetJob = workflow.jobs[jobName] as Record<string, any>;
+      const targetSteps = targetJob.steps as Record<string, any>[];
+      const initializeIndex = targetSteps.findIndex((candidate) => candidate.name === initializeName);
+      const checkoutIndex = targetSteps.findIndex((candidate) => candidate.name === checkoutName);
+      const setupIndex = targetSteps.findIndex((candidate) => candidate.name === "Install Fly CLI");
+      const upload = targetSteps.find((candidate) => candidate.name === uploadName) as Record<string, any>;
+      expect(initializeIndex).toBe(0);
+      expect(initializeIndex).toBeLessThan(checkoutIndex);
+      expect(initializeIndex).toBeLessThan(setupIndex);
+      expect(targetSteps[initializeIndex]?.run).toContain("$RUNNER_TEMP");
+      expect(upload.if).toBe("${{ always() }}");
+      expect(upload.with.path).toBe(`\${{ runner.temp }}/${artifactDirectory}/`);
+      expect(upload.with["if-no-files-found"]).toBe("error");
+    }
   });
 
   it("opens one deduplicated GitHub issue on failure and closes it after recovery", () => {
@@ -545,6 +567,26 @@ describe("customer backup workflow", () => {
       operatorActionRequired: false,
       backupTaken: false,
     });
+  });
+
+  it("accepts provider-real machine-exec narrowing and recursive credential schemes", () => {
+    const tokenDebug = [flyPermissionToken({ "123": "rw" }, [{
+      type: "IfPresent",
+      body: {
+        caveats: [{
+          type: "Commands",
+          body: { commands: { "fly ssh console": "r" } },
+        }],
+      },
+    }])];
+    const gate = runProfileGate({
+      intent: "true",
+      liveProfile: "customer",
+      flyToken: "bearer FlyV1 fm2_YQ==",
+      tokenDebugJson: JSON.stringify(tokenDebug),
+    });
+    expect(gate.status, gate.stderr).toBe(0);
+    expect(gate.outputs).toMatchObject({ active: "true", result: "eligible" });
   });
 
   it.each([
