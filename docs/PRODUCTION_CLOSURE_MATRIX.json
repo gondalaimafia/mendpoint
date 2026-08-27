@@ -2056,9 +2056,9 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-27T22:48:26.133Z",
+    "observedAt": "2026-08-27T22:15:57.236Z",
     "observedMainRevision": "cf02b747d1661cc84c0a84d2cdb1c2f62ef9e7a4",
-    "observationDigest": "sha256:5f8b610cae2e0de10398691856418705eea73e6059f3767ab4e1cbe0c53794b7",
+    "observationDigest": "sha256:c526340da4dd2807cc5ece0a4d87c560665e018a25127ab2022b5b4bac8b7d42",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
