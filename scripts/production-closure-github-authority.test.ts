@@ -255,6 +255,7 @@ describe("GitHub production closure authority", () => {
         strategy?: { "fail-fast"?: boolean; "max-parallel"?: number };
         steps?: Array<{
           name?: string;
+          if?: string;
           "continue-on-error"?: boolean;
           run?: string;
           env?: Record<string, string>;
@@ -318,10 +319,19 @@ describe("GitHub production closure authority", () => {
       "fail-fast": false,
       "max-parallel": 4,
     });
+    expect(workflow.jobs["invalidate-authority"].concurrency).toEqual({
+      group: "production-closure-authority-${{ matrix.pull_request }}",
+      "cancel-in-progress": false,
+    });
     expect(job.concurrency).toEqual({
       group: "production-closure-authority-${{ matrix.pull_request }}",
       "cancel-in-progress": false,
     });
+    // Deterministic interleaving fence: if invalidate B wins the shared lock after
+    // invalidate A, closure A sees B's pending generation and abstains. If closure
+    // A wins first, B cannot invalidate until A has finished publishing.
+    expect(workflow.jobs["invalidate-authority"].concurrency?.group)
+      .toBe(job.concurrency?.group);
     const discoverRun = workflow.jobs.discover.steps?.find(
       (step) => step.name === "Discover the current protected release set",
     )?.run;
@@ -408,6 +418,62 @@ describe("GitHub production closure authority", () => {
         run: expect.stringContaining("SUCCESSOR_READINESS_OUTCOME"),
       }),
     );
+    const publicationGeneration = job.steps?.find(
+      (step) => step.name === "Verify publication generation ownership",
+    );
+    const closeSuperseded = job.steps?.find(
+      (step) => step.name === "Close superseded dedicated authority App check",
+    );
+    const publishExternal = job.steps?.find(
+      (step) => step.name === "Publish dedicated authority App verdict",
+    );
+    const publishController = job.steps?.find(
+      (step) => step.name === "Publish controller authority verdict",
+    );
+    expect(publicationGeneration).toMatchObject({
+      "continue-on-error": true,
+      env: expect.objectContaining({
+        CHECK_ID: "${{ steps.external-check.outputs.check_id }}",
+        CHECK_NAME: "${{ steps.external-check.outputs.check_name }}",
+        CONTROLLER_CREATOR_LOGIN: "github-actions[bot]",
+        CONTROLLER_CREATOR_USER_ID: 41898282,
+        PR_HEAD_SHA: "${{ steps.pull-request.outputs.head_sha }}",
+        PR_NUMBER: "${{ matrix.pull_request }}",
+      }),
+    });
+    expect(publicationGeneration?.run).toEqual(expect.stringContaining(
+      'test "$latest_check_id" = "$CHECK_ID"',
+    ));
+    expect(publicationGeneration?.run).toEqual(expect.stringContaining(
+      '.state == "pending" and .target_url == $run_url',
+    ));
+    expect(publicationGeneration?.run).toEqual(expect.stringContaining(
+      '.status == "in_progress" and .conclusion == null and .details_url == $run_url',
+    ));
+    expect(publicationGeneration?.run).toEqual(expect.stringContaining(
+      'repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}',
+    ));
+    expect(publicationGeneration?.run).toEqual(expect.stringContaining(
+      'test "$live_head" = "$PR_HEAD_SHA"',
+    ));
+    expect(closeSuperseded).toMatchObject({
+      if: "always() && steps.external-check.outputs.check_id != '' && steps.publication-generation.outcome != 'success'",
+      run: expect.stringContaining("-f conclusion=failure"),
+      env: expect.objectContaining({
+        CHECK_ID: "${{ steps.external-check.outputs.check_id }}",
+      }),
+    });
+    const generationIndex = job.steps!.findIndex(
+      (step) => step.name === "Verify publication generation ownership",
+    );
+    expect(generationIndex + 1).toBe(job.steps!.findIndex(
+      (step) => step.name === "Close superseded dedicated authority App check",
+    ));
+    expect(generationIndex + 2).toBe(job.steps!.findIndex(
+      (step) => step.name === "Publish dedicated authority App verdict",
+    ));
+    expect(publishExternal?.if).toContain("steps.publication-generation.outcome == 'success'");
+    expect(publishController?.if).toContain("steps.publication-generation.outcome == 'success'");
     expect(job.steps).toContainEqual(
       expect.objectContaining({ name: "Verify dedicated authority App identity" }),
     );
@@ -434,7 +500,22 @@ describe("GitHub production closure authority", () => {
         name: "Verify merged main authority",
         run: "npm run closure:github:check",
         env: expect.objectContaining({
+          MENDPOINT_CLOSURE_AUTHORITY_SHA: "${{ github.sha }}",
           MENDPOINT_CLOSURE_EVENT_NAME: "push",
+        }),
+      }),
+    );
+    expect(mainObservationJob.steps).toContainEqual(
+      expect.objectContaining({
+        name: "Checkout exact pushed main revision",
+        with: expect.objectContaining({ ref: "${{ github.sha }}" }),
+      }),
+    );
+    expect(mainObservationJob.steps).toContainEqual(
+      expect.objectContaining({
+        name: "Upload secret-free merged authority evidence",
+        with: expect.objectContaining({
+          name: "production-closure-main-authority-${{ github.sha }}",
         }),
       }),
     );
@@ -1109,6 +1190,32 @@ describe("GitHub production closure authority", () => {
         "CHECKOUT_REVISION_MISMATCH",
       ]),
     );
+  });
+
+  it("fails closed when live main advances beyond the immutable push revision", async () => {
+    const advancedMain = "e".repeat(40);
+    const client = new FixtureClient();
+    client.trackedPullRequest = pullRequest({
+      state: "closed",
+      merged: true,
+      merge_commit_sha: MERGED,
+    });
+    client.openPullRequests = [];
+    client.mainRevisions = [advancedMain, advancedMain];
+
+    const result = await verifyGitHubClosureAuthority(
+      matrix(),
+      context({
+        eventName: "push",
+        githubSha: MERGED,
+        checkout: { headRevision: MERGED, parentRevisions: [MAIN] },
+        pullRequest: undefined,
+      }),
+      client,
+    );
+
+    expect(codes(result)).toContain("PUSH_MAIN_REVISION_MISMATCH");
+    expect(codes(result)).not.toContain("CHECKOUT_REVISION_MISMATCH");
   });
 
   it("rejects a merged bootstrap without the exact pushed merge revision", async () => {

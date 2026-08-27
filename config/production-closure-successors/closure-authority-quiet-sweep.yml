@@ -149,7 +149,9 @@ jobs:
       matrix:
         pull_request: ${{ fromJSON(needs.discover.outputs.pull_requests) }}
     concurrency:
-      group: production-closure-authority-invalidation-${{ matrix.pull_request }}
+      # Invalidation and evaluation share one generation lock. A newer run cannot
+      # invalidate this PR while an older run is verifying or publishing.
+      group: production-closure-authority-${{ matrix.pull_request }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -405,9 +407,75 @@ jobs:
             ${{ runner.temp }}/production-closure-github-authority.json
           if-no-files-found: warn
           retention-days: 30
+      - name: Verify publication generation ownership
+        id: publication-generation
+        if: always() && steps.external-check.outputs.check_id != ''
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          live_head="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')"
+          test "$live_head" = "$PR_HEAD_SHA"
+
+          expected_path="$(jq -er '.workflowPath' "$RUNNER_TEMP/proposed-closure-authority-policy.json")"
+          expected_app_id="$(jq -er '.externalCheckAppId | select(type == "number" and . > 0)' "$RUNNER_TEMP/proposed-closure-authority-policy.json")"
+          expected_controller="$(jq -er '.controllerCheckName' "$RUNNER_TEMP/proposed-closure-authority-policy.json")"
+
+          gh api "repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_ID}" > "$RUNNER_TEMP/publication-check.json"
+          jq -e \
+            --argjson check_id "$CHECK_ID" \
+            --arg name "$CHECK_NAME" \
+            --arg head "$PR_HEAD_SHA" \
+            --argjson app_id "$expected_app_id" \
+            --arg run_url "$run_url" \
+            '.id == $check_id and .name == $name and .head_sha == $head and .app.id == $app_id and .status == "in_progress" and .conclusion == null and .details_url == $run_url' \
+            "$RUNNER_TEMP/publication-check.json"
+
+          latest_check_id="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/check-runs?filter=latest&per_page=100" \
+            | jq -er --arg name "$CHECK_NAME" --argjson app_id "$expected_app_id" \
+              '[.check_runs[] | select(.name == $name and .app.id == $app_id)] | sort_by(.id) | last | .id')"
+          test "$latest_check_id" = "$CHECK_ID"
+
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/statuses?per_page=100" \
+            | jq --slurp --arg context "$expected_controller" --arg login "$CONTROLLER_CREATOR_LOGIN" --argjson user_id "$CONTROLLER_CREATOR_USER_ID" \
+              'map(.[]) | map(select(.context == $context and (.creator.login | ascii_downcase) == ($login | ascii_downcase) and .creator.id == $user_id)) | sort_by(.id) | last' \
+            > "$RUNNER_TEMP/publication-controller-status.json"
+          jq -e --arg run_url "$run_url" \
+            '.state == "pending" and .target_url == $run_url' \
+            "$RUNNER_TEMP/publication-controller-status.json"
+
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            > "$RUNNER_TEMP/publication-workflow-run.json"
+          jq -e \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --arg path "$expected_path" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            '.id == $run_id and (.path | split("@")[0]) == $path and .event == $event and .status == "in_progress" and .conclusion == null' \
+            "$RUNNER_TEMP/publication-workflow-run.json"
+        env:
+          CHECK_ID: ${{ steps.external-check.outputs.check_id }}
+          CHECK_NAME: ${{ steps.external-check.outputs.check_name }}
+          CONTROLLER_CREATOR_LOGIN: github-actions[bot]
+          CONTROLLER_CREATOR_USER_ID: 41898282
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
+          PR_NUMBER: ${{ matrix.pull_request }}
+      - name: Close superseded dedicated authority App check
+        if: always() && steps.external-check.outputs.check_id != '' && steps.publication-generation.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_ID}" \
+            -f status=completed \
+            -f conclusion=failure \
+            -f details_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        env:
+          CHECK_ID: ${{ steps.external-check.outputs.check_id }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
       - name: Publish dedicated authority App verdict
         id: publish-external
-        if: always() && steps.external-check.outputs.check_id != ''
+        if: always() && steps.external-check.outputs.check_id != '' && steps.publication-generation.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -430,7 +498,7 @@ jobs:
           SUCCESSOR_READINESS_OUTCOME: ${{ steps.successor-readiness.outcome }}
       - name: Publish controller authority verdict
         id: publish-controller
-        if: always()
+        if: always() && steps.publication-generation.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -513,7 +581,7 @@ jobs:
       - name: Checkout exact pushed main revision
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: ${{ needs.discover.outputs.main_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
@@ -527,6 +595,7 @@ jobs:
           # closure:github:check performs only reads, so it rides the closure App pool
           # (5,000/hr) instead of the 1,000/hr Actions GITHUB_TOKEN pool.
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          MENDPOINT_CLOSURE_AUTHORITY_SHA: ${{ github.sha }}
           MENDPOINT_CLOSURE_EVENT_NAME: push
           MENDPOINT_CLOSURE_OBSERVATION_PATH: ${{ runner.temp }}/production-closure-main-authority.json
       - name: Upload secret-free merged authority evidence
