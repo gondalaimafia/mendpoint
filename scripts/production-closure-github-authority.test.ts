@@ -320,18 +320,76 @@ describe("GitHub production closure authority", () => {
       "max-parallel": 4,
     });
     expect(workflow.jobs["invalidate-authority"].concurrency).toEqual({
-      group: "production-closure-authority-${{ matrix.pull_request }}",
+      group: "production-closure-authority-invalidation-${{ matrix.pull_request }}",
       "cancel-in-progress": false,
     });
     expect(job.concurrency).toEqual({
       group: "production-closure-authority-${{ matrix.pull_request }}",
       "cancel-in-progress": false,
     });
-    // Deterministic interleaving fence: if invalidate B wins the shared lock after
-    // invalidate A, closure A sees B's pending generation and abstains. If closure
-    // A wins first, B cannot invalidate until A has finished publishing.
     expect(workflow.jobs["invalidate-authority"].concurrency?.group)
-      .toBe(job.concurrency?.group);
+      .not.toBe(job.concurrency?.group);
+
+    // Model GitHub's one-running/one-pending concurrency rule, including replacement
+    // of an older pending invalidation by a newer event. Closure A is already past
+    // authority verification. A distinct invalidation group lets the newest B post
+    // pending before A publishes; a shared group would leave B queued behind A and
+    // this regression would incorrectly observe A as still owning the generation.
+    const modelCrossEventInterleaving = (
+      invalidationGroup: string,
+      closureGroup: string,
+    ) => {
+      const running = new Map<string, string>([[closureGroup, "closure-A"]]);
+      const pending = new Map<string, string>();
+      let latestControllerRun = "run-A";
+      const appChecks = new Map([["check-A", "in_progress"]]);
+
+      const startInvalidation = (run: string) => {
+        running.set(invalidationGroup, run);
+        latestControllerRun = run;
+        running.delete(invalidationGroup);
+        const next = pending.get(invalidationGroup);
+        if (next) {
+          pending.delete(invalidationGroup);
+          startInvalidation(next);
+        }
+      };
+      const queueInvalidation = (run: string) => {
+        if (running.has(invalidationGroup)) {
+          pending.set(invalidationGroup, run);
+        } else {
+          startInvalidation(run);
+        }
+      };
+
+      // X occupies the short invalidation group while two newer events arrive.
+      // GitHub replaces pending B-old with B, then B runs as soon as X completes.
+      if (!running.has(invalidationGroup)) running.set(invalidationGroup, "run-X");
+      queueInvalidation("run-B-old");
+      queueInvalidation("run-B");
+      if (running.get(invalidationGroup) === "run-X") {
+        running.delete(invalidationGroup);
+        const newest = pending.get(invalidationGroup);
+        if (newest) {
+          pending.delete(invalidationGroup);
+          startInvalidation(newest);
+        }
+      }
+
+      const aOwnsGeneration = latestControllerRun === "run-A";
+      if (!aOwnsGeneration) appChecks.set("check-A", "failure");
+      const controllerPublishedByA = aOwnsGeneration;
+      if (controllerPublishedByA) latestControllerRun = "run-A-success";
+      return { appCheckA: appChecks.get("check-A"), controllerPublishedByA, latestControllerRun };
+    };
+    expect(modelCrossEventInterleaving(
+      workflow.jobs["invalidate-authority"].concurrency!.group!,
+      job.concurrency!.group!,
+    )).toEqual({
+      appCheckA: "failure",
+      controllerPublishedByA: false,
+      latestControllerRun: "run-B",
+    });
     const discoverRun = workflow.jobs.discover.steps?.find(
       (step) => step.name === "Discover the current protected release set",
     )?.run;

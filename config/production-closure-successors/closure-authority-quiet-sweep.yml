@@ -149,9 +149,9 @@ jobs:
       matrix:
         pull_request: ${{ fromJSON(needs.discover.outputs.pull_requests) }}
     concurrency:
-      # Invalidation and evaluation share one generation lock. A newer run cannot
-      # invalidate this PR while an older run is verifying or publishing.
-      group: production-closure-authority-${{ matrix.pull_request }}
+      # Invalidation must remain independent from the longer evaluation lock so a
+      # newer event can revoke an older generation before it publishes.
+      group: production-closure-authority-invalidation-${{ matrix.pull_request }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
