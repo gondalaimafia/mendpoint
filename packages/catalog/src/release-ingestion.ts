@@ -306,7 +306,6 @@ CREATE TABLE release_ingestion_dispatches (
   lease_owner TEXT,
   lease_expires_at TEXT,
   lease_generation INTEGER NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
-  claimed_at TEXT,
   attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
   max_attempts INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_DISPATCH_ATTEMPTS}
     CHECK (max_attempts > 0 AND attempt_count <= max_attempts),
@@ -318,11 +317,6 @@ CREATE TABLE release_ingestion_dispatches (
   created_at TEXT NOT NULL,
   UNIQUE (tenant_id, artifact_id),
   FOREIGN KEY (artifact_id, tenant_id) REFERENCES release_ingestion_artifacts_v2(id, tenant_id)
-);
-
-CREATE TABLE release_ingestion_clock_authority (
-  singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-  watermark_at TEXT NOT NULL
 );
 `;
 
@@ -348,7 +342,15 @@ CREATE TRIGGER release_ingestion_observations_no_update BEFORE UPDATE ON release
 BEGIN SELECT RAISE(ABORT, 'release_ingestion_observations_append_only'); END;
 CREATE TRIGGER release_ingestion_observations_no_delete BEFORE DELETE ON release_ingestion_observations
 BEGIN SELECT RAISE(ABORT, 'release_ingestion_observations_append_only'); END;
-CREATE TRIGGER release_ingestion_clock_authority_no_delete BEFORE DELETE ON release_ingestion_clock_authority
+`;
+
+const MIGRATION_V3_CLOCK_SCHEMA = `
+CREATE TABLE IF NOT EXISTS release_ingestion_clock_authority (
+  singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+  watermark_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS release_ingestion_clock_authority_no_delete
+BEFORE DELETE ON release_ingestion_clock_authority
 BEGIN SELECT RAISE(ABORT, 'release_ingestion_clock_authority_required'); END;
 `;
 
@@ -481,6 +483,28 @@ function migrateReleaseIngestionV2(raw: DatabaseSync, appliedAt: string): void {
     .run(appliedAt);
 }
 
+function migrateReleaseIngestionV3(raw: DatabaseSync, appliedAt: string): void {
+  const dispatchColumns = raw.prepare("PRAGMA table_info(release_ingestion_dispatches)")
+    .all() as unknown as Array<{ name: string }>;
+  if (!dispatchColumns.some((column) => column.name === "claimed_at")) {
+    raw.exec("ALTER TABLE release_ingestion_dispatches ADD COLUMN claimed_at TEXT");
+  }
+  raw.exec(MIGRATION_V3_CLOCK_SCHEMA);
+  // Pre-v3 claims have no trustworthy claim time. Binding them to expiry prevents
+  // old-owner completion while preserving the existing expiry takeover path.
+  raw.exec(`UPDATE release_ingestion_dispatches
+    SET claimed_at = lease_expires_at
+    WHERE status = 'claimed' AND claimed_at IS NULL
+      AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL`);
+  const unboundedActiveClaim = raw.prepare(`SELECT id FROM release_ingestion_dispatches
+    WHERE status = 'claimed'
+      AND (lease_owner IS NULL OR lease_expires_at IS NULL OR claimed_at IS NULL)
+    LIMIT 1`).get();
+  if (unboundedActiveClaim) throw new Error("release_ingestion_v3_active_claim_unbounded");
+  raw.prepare("INSERT INTO release_ingestion_schema_migrations (version, applied_at) VALUES (3, ?)")
+    .run(appliedAt);
+}
+
 function convergeReleaseIngestionSchema(raw: DatabaseSync, appliedAt: string): void {
   raw.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;");
   try {
@@ -490,7 +514,7 @@ function convergeReleaseIngestionSchema(raw: DatabaseSync, appliedAt: string): v
     const current = raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations")
       .get() as { version: number | null };
     const currentVersion = Number(current.version ?? 0);
-    if (currentVersion > 2) throw new Error("release_ingestion_schema_newer_than_runtime");
+    if (currentVersion > 3) throw new Error("release_ingestion_schema_newer_than_runtime");
     if (currentVersion === 0) {
       raw.exec(MIGRATION_V1);
       raw.prepare("INSERT INTO release_ingestion_schema_migrations (version, applied_at) VALUES (1, ?)")
@@ -499,8 +523,11 @@ function convergeReleaseIngestionSchema(raw: DatabaseSync, appliedAt: string): v
     const afterV1 = raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations")
       .get() as { version: number | null };
     if (Number(afterV1.version ?? 0) === 1) migrateReleaseIngestionV2(raw, appliedAt);
+    const afterV2 = raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations")
+      .get() as { version: number | null };
+    if (Number(afterV2.version ?? 0) === 2) migrateReleaseIngestionV3(raw, appliedAt);
     const foreignKeyViolation = raw.prepare("PRAGMA foreign_key_check").get();
-    if (foreignKeyViolation) throw new Error("release_ingestion_v2_foreign_key_check_failed");
+    if (foreignKeyViolation) throw new Error("release_ingestion_v3_foreign_key_check_failed");
     raw.exec("COMMIT");
   } catch (error) {
     if (raw.isTransaction) raw.exec("ROLLBACK");

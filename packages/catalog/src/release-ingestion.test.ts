@@ -137,6 +137,40 @@ function createV1Database(path: string): void {
   db.close();
 }
 
+function createImmediateParentV2Database(path: string): void {
+  const seeded = openReleaseIngestionStore(path, { clock: () => NOW });
+  const active = ingestReleaseDocument(seeded, input("rss", fixture("stripe-rss.xml")))
+    .artifacts[0]!;
+  const pending = ingestReleaseDocument(seeded, {
+    ...input("rss", fixture("stripe-rss.xml")),
+    tenantId: "tenant-b",
+  }).artifacts[0]!;
+  seeded.raw.prepare(`UPDATE release_ingestion_dispatches
+    SET status = 'claimed', lease_owner = 'worker-predecessor',
+        lease_expires_at = '2026-08-02T12:00:10.000Z', lease_generation = 1,
+        claimed_at = '2026-08-02T12:00:00.000Z', attempt_count = 1
+    WHERE tenant_id = 'tenant-a' AND artifact_id = ?`).run(active.id);
+  expect(listReleaseDispatches(seeded, "tenant-b")[0]?.artifactId).toBe(pending.id);
+  seeded.close();
+
+  const db = new DatabaseSync(path);
+  db.exec(`
+    DROP TRIGGER release_ingestion_clock_authority_no_delete;
+    DROP TABLE release_ingestion_clock_authority;
+    ALTER TABLE release_ingestion_dispatches DROP COLUMN claimed_at;
+    DELETE FROM release_ingestion_schema_migrations WHERE version > 2;
+  `);
+  expect(db.prepare(
+    "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
+  ).get()).toEqual({ version: 2 });
+  expect(db.prepare("PRAGMA table_info(release_ingestion_dispatches)").all())
+    .not.toEqual(expect.arrayContaining([expect.objectContaining({ name: "claimed_at" })]));
+  expect(db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'release_ingestion_clock_authority'",
+  ).get()).toBeUndefined();
+  db.close();
+}
+
 function createVersionZeroDatabase(path: string): void {
   const db = new DatabaseSync(path);
   db.exec(`
@@ -850,7 +884,7 @@ describe("release ingestion", () => {
     expect(listReleaseObservations(migrated, "tenant-v1", "rel_v1_replay")).toHaveLength(1);
     expect(listReleaseDispatches(migrated, "tenant-v1")).toHaveLength(1);
     expect(migrated.raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations").get())
-      .toEqual({ version: 2 });
+      .toEqual({ version: 3 });
     migrated.close();
     stores.splice(stores.indexOf(migrated), 1);
 
@@ -858,6 +892,90 @@ describe("release ingestion", () => {
     expect(listReleaseArtifacts(restarted, "tenant-v1")).toEqual(artifacts);
     expect(listReleaseObservations(restarted, "tenant-v1", "rel_v1")).toHaveLength(1);
     expect(listReleaseDispatches(restarted, "tenant-v1")).toHaveLength(1);
+  });
+
+  it("upgrades the exact immediate-parent v2 schema and safely recovers active leases", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-parent-v2-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    createImmediateParentV2Database(path);
+
+    let clock = "2026-08-02T12:00:05.000Z";
+    let migrated = store(path, () => clock);
+    expect(migrated.raw.prepare(
+      "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
+    ).get()).toEqual({ version: 3 });
+    expect(migrated.raw.prepare("PRAGMA table_info(release_ingestion_dispatches)").all())
+      .toEqual(expect.arrayContaining([expect.objectContaining({ name: "claimed_at" })]));
+    expect(migrated.raw.prepare(
+      "SELECT COUNT(*) AS count FROM release_ingestion_clock_authority",
+    ).get()).toEqual({ count: 0 });
+    expect(listReleaseDispatches(migrated, "tenant-a")[0]).toMatchObject({
+      status: "claimed",
+      leaseOwner: "worker-predecessor",
+      leaseGeneration: 1,
+      claimedAt: "2026-08-02T12:00:10.000Z",
+    });
+    expect(() => completeReleaseDispatch(migrated, {
+      tenantId: "tenant-a",
+      dispatchId: listReleaseDispatches(migrated, "tenant-a")[0]!.id,
+      workerId: "worker-predecessor",
+      leaseGeneration: 1,
+    })).toThrow("release_dispatch_lease_lost");
+
+    const pendingClaim = claimReleaseDispatch(migrated, {
+      tenantId: "tenant-b", workerId: "worker-pending", leaseDurationMs: 10_000,
+    })!;
+    migrated.close();
+    stores.splice(stores.indexOf(migrated), 1);
+    migrated = store(path, () => clock);
+    expect(completeReleaseDispatch(migrated, {
+      tenantId: "tenant-b", dispatchId: pendingClaim.id, workerId: "worker-pending",
+      leaseGeneration: pendingClaim.leaseGeneration,
+    })).toMatchObject({ status: "completed", completedAt: clock });
+
+    clock = "2026-08-02T12:00:11.000Z";
+    const reclaimed = claimReleaseDispatch(migrated, {
+      tenantId: "tenant-a", workerId: "worker-retry", leaseDurationMs: 10_000,
+    })!;
+    expect(reclaimed).toMatchObject({ leaseGeneration: 2, claimedAt: clock });
+    expect(failReleaseDispatch(migrated, {
+      tenantId: "tenant-a", dispatchId: reclaimed.id, workerId: "worker-retry",
+      leaseGeneration: reclaimed.leaseGeneration, failureCode: "provider_unavailable", retryable: true,
+    })).toMatchObject({ status: "pending", availableAt: "2026-08-02T12:00:13.000Z" });
+    migrated.close();
+    stores.splice(stores.indexOf(migrated), 1);
+
+    clock = "2026-08-02T12:00:13.000Z";
+    migrated = store(path, () => clock);
+    const retry = claimReleaseDispatch(migrated, {
+      tenantId: "tenant-a", workerId: "worker-complete", leaseDurationMs: 10_000,
+    })!;
+    expect(completeReleaseDispatch(migrated, {
+      tenantId: "tenant-a", dispatchId: retry.id, workerId: "worker-complete",
+      leaseGeneration: retry.leaseGeneration,
+    })).toMatchObject({ status: "completed", completedAt: clock, attemptCount: 3 });
+  });
+
+  it("records v3 for a v2 database that already contains the clock safety objects", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-expanded-v2-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    const expandedV2 = store(path);
+    ingestReleaseDocument(expandedV2, input("rss", fixture("stripe-rss.xml")));
+    expandedV2.raw.prepare("DELETE FROM release_ingestion_schema_migrations WHERE version = 3").run();
+    expandedV2.close();
+    stores.splice(stores.indexOf(expandedV2), 1);
+
+    const migrated = store(path);
+    expect(migrated.raw.prepare(
+      "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
+    ).get()).toEqual({ version: 3 });
+    expect(migrated.raw.prepare("PRAGMA table_info(release_ingestion_dispatches)").all())
+      .toEqual(expect.arrayContaining([expect.objectContaining({ name: "claimed_at" })]));
+    expect(migrated.raw.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'release_ingestion_clock_authority'",
+    ).get()).toEqual({ name: "release_ingestion_clock_authority" });
   });
 
   it("converges simultaneous first opens of a new database", async () => {
@@ -881,7 +999,7 @@ describe("release ingestion", () => {
     const converged = store(path);
     expect(converged.raw.prepare(
       "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
-    ).get()).toEqual({ version: 2 });
+    ).get()).toEqual({ version: 3 });
   }, 15_000);
 
   it.each(["version-zero", "version-one"] as const)(
@@ -915,7 +1033,7 @@ describe("release ingestion", () => {
       const converged = store(path);
       expect(converged.raw.prepare(
         "SELECT MAX(version) AS version FROM release_ingestion_schema_migrations",
-      ).get()).toEqual({ version: 2 });
+      ).get()).toEqual({ version: 3 });
     },
     15_000,
   );
