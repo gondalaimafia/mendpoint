@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import type { AppDb } from "./index.js";
 import { evaluateMissionExceptions } from "./mission-exceptions.js";
-import { fettlerCampaignMissionTaskId, getMissionTask, type MissionTask } from "./mission-task.js";
+import { fettlerCampaignMissionTaskId, getMissionTask, transitionMissionTask,
+  type MissionTask } from "./mission-task.js";
 import { getMission, type Mission, type MissionState } from "./mission.js";
 
 const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -152,5 +154,39 @@ export function refreshMissionMutationAuthority(
     repositoryId: prior.repositoryId,
     snapshotId: prior.snapshotId,
     resolvedSha: prior.resolvedSha,
+  });
+}
+
+export function completeMissionMutationAuthorityTask(
+  db: AppDb,
+  tenantId: string,
+  value: MissionMutationAuthorityV1,
+  input: Readonly<{ correlationId: string; createdAt: string }>,
+): MissionTask | null {
+  const authority = parseMissionMutationAuthority(value);
+  if (!authority.taskId) return null;
+  const { task } = assertMissionMutationAuthority(db, tenantId, authority, {
+    allowClaimedTask: true,
+    allowSettledTask: true,
+    requireNoBlocking: true,
+  });
+  if (!task) throw new Error("mission_mutation_authority_task_missing");
+  if (task.status === "complete") return task;
+  if (task.status !== "agent_working" || !task.assignedPrincipalId) {
+    throw new Error("mission_mutation_authority_task_not_accepted");
+  }
+  const suffix = createHash("sha256")
+    .update([tenantId, authority.missionId, task.id, input.correlationId, "accepted"].join("\0"), "utf8")
+    .digest("hex").slice(0, 32);
+  return transitionMissionTask(db, {
+    tenantId,
+    taskId: task.id,
+    expectedRevision: task.revision,
+    to: "complete",
+    actorPrincipalId: task.assignedPrincipalId,
+    eventId: `e-mtask-accepted-${suffix}`,
+    idempotencyKey: `mission-task-accepted:${suffix}`,
+    correlationId: input.correlationId,
+    createdAt: input.createdAt,
   });
 }

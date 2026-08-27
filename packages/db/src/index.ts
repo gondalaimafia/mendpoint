@@ -2171,6 +2171,9 @@ function migrateWardenTransformerTableNames(db: AppDb): void {
     },
     { table: "warden_campaign_targets", name: "enrolled_installation_id", sql: "TEXT" },
     { table: "warden_ci_updates", name: "expected_feedback_digest", sql: "TEXT" },
+    { table: "warden_candidate_deliveries", name: "mission_authority_json", sql: "TEXT" },
+    { table: "warden_ci_cycles", name: "mission_authority_json", sql: "TEXT" },
+    { table: "warden_ci_updates", name: "mission_authority_json", sql: "TEXT" },
     {
       table: "transformer_adaptive_candidates",
       name: "base_branch",

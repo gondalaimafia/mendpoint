@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AppDb } from "./index.js";
-import { assertMissionMutationAuthority, parseMissionMutationAuthority,
+import { assertMissionMutationAuthority, completeMissionMutationAuthorityTask, parseMissionMutationAuthority,
   type MissionMutationAuthorityV1 } from "./mission-mutation-authority.js";
 
 const JOB_TYPE = "warden.candidate.deliver";
@@ -400,6 +400,16 @@ export function recordWardenCandidateDeliveryOutcome(db: AppDb, input: {
     ).run(input.outcome, observedAt, source, observedAt, deliveryId, tenantId, current.outcome);
     if (Number(changed.changes) !== 1) {
       throw new Error("warden_candidate_delivery_outcome_conflict");
+    }
+    if (input.outcome === "merged" && current.missionAuthority) {
+      completeMissionMutationAuthorityTask(db, tenantId, current.missionAuthority, {
+        correlationId: `delivery-outcome:${deliveryId}`,
+        createdAt: observedAt,
+      });
+      db.raw.prepare(`UPDATE fettler_ci_cycles SET status = 'succeeded', updated_at = ?
+        WHERE tenant_id = ? AND delivery_id = ? AND status = 'awaiting_review'`).run(
+        observedAt, tenantId, deliveryId,
+      );
     }
     const updated = getWardenCandidateDelivery(db, tenantId, deliveryId)!;
     if (owns) db.raw.exec("COMMIT");

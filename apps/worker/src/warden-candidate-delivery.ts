@@ -35,7 +35,6 @@ import {
 } from "@mendpoint/shared";
 import { admitWardenGovernedLearningEvent } from "./warden-learning-producer.js";
 import type { GovernedLearningAdmissionResult } from "./governed-learning-producer.js";
-import { completeAuthorityBoundMissionTask } from "./mission-task-job-bridge.js";
 
 const JOB_TYPE = "warden.candidate.deliver";
 
@@ -351,9 +350,6 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
         if (payload.missionAuthority) settleMissionMutationDispatch(input.db, {
           tenantId: delivery.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: completedAt,
         });
-        if (payload.missionAuthority && !input.ciReentry) {
-          completeAuthorityBoundMissionTask(input.db, input.job, completedAt);
-        }
         const freshMissionAuthority = payload.missionAuthority
           ? refreshMissionMutationAuthority(input.db, delivery.tenantId, payload.missionAuthority,
             { allowClaimedTask: true, allowSettledTask: true, requireNoBlocking: true })

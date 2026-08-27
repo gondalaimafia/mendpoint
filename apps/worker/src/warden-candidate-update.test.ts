@@ -530,6 +530,49 @@ describe("Warden candidate exact draft update", () => {
     expect(updateExactDraft).not.toHaveBeenCalled();
   });
 
+  it("replays an authorized pre-dispatch crash without remote reconciliation", async () => {
+    const value = bindMissionAuthority(fixture());
+    const firstRemote = vi.fn();
+    await expect(runWardenCandidateUpdate({
+      db: value.db,
+      job: value.job,
+      updateExactDraft: firstRemote,
+      reconcileExactDraftUpdate: vi.fn(),
+      readApprovalArtifact: () => value.artifact,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      beforeRemoteDispatch: () => { throw new Error("process_crashed_before_remote_begin"); },
+      now: () => "2026-08-13T12:05:00.000Z",
+    })).rejects.toThrow("process_crashed_before_remote_begin");
+    expect(firstRemote).not.toHaveBeenCalled();
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "authorized" });
+    expect(value.db.raw.prepare(`SELECT status FROM fettler_ci_updates
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ status: "intent_bound" });
+
+    value.db.raw.prepare(`UPDATE jobs SET lease_owner = 'worker-b', lease_generation = lease_generation + 1,
+      lease_expires_at = '2026-08-13T12:06:00.000Z' WHERE id = ? AND tenant_id = 'tenant-a'`).run(value.job.id);
+    const replayJob = getJob(value.db, value.job.id, "tenant-a")!;
+
+    const reconcileExactDraftUpdate = vi.fn();
+    const updateExactDraft = vi.fn(async () => ({
+      number: 17, url: "https://github.com/acme/service/pull/17", branch: "mendpoint/warden-a",
+      previousHeadSha: sha("d"), commitSha: sha("f"), draft: true as const,
+    }));
+    await expect(runWardenCandidateUpdate({
+      db: value.db,
+      job: replayJob,
+      updateExactDraft,
+      reconcileExactDraftUpdate,
+      readApprovalArtifact: () => value.artifact,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:05:01.000Z",
+    })).resolves.toMatchObject({ status: "updated" });
+    expect(reconcileExactDraftUpdate).not.toHaveBeenCalled();
+    expect(updateExactDraft).toHaveBeenCalledTimes(1);
+    expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+      WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "settled" });
+  });
+
   it("keeps an uncertain Mission mutation non-cancellable and settles it by read-only crash replay", async () => {
     const value = bindMissionAuthority(fixture());
     const updateExactDraft = vi.fn().mockRejectedValueOnce(Object.assign(new Error("socket closed"), {

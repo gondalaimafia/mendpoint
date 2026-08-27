@@ -4,13 +4,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  beginWardenCiRepair,
+  bindWardenCiUpdateIntent,
   claimNextJob,
   bindMissionScope,
+  completeWardenCiUpdate,
   createDb,
   createMission,
   createMissionMutationAuthority,
   createMissionTask,
   enqueueWardenCiCycle,
+  enqueueWardenCiUpdate,
   getJob,
   getMission,
   getMissionTask,
@@ -22,12 +26,15 @@ import {
   listWardenCiObservations,
   listJobs,
   raiseMissionException,
+  recordWardenCandidateDeliveryOutcome,
   transitionMissionTask,
+  wakeWardenCiReviewObservation,
   type AppDb,
 } from "@mendpoint/db";
 import type { ExactDraftObservation } from "@mendpoint/github";
 import { runWardenCandidateObservation } from "./warden-candidate-observation.js";
 import { assertDelegatedPrVerificationApprovalAuthority } from "./delegated-pr-verification-job.js";
+import { bridgeClaimedJobToMissionTask } from "./mission-task-job-bridge.js";
 
 vi.mock("./delegated-pr-verification-job.js", () => ({
   assertDelegatedPrVerificationApprovalAuthority: vi.fn(),
@@ -122,6 +129,7 @@ function bindMissionAuthority(value: ReturnType<typeof fixture>) {
   for (const to of ["agent_assigned", "agent_working"] as const) {
     task = transitionMissionTask(db, { tenantId: "tenant-a", taskId: task.id,
       expectedRevision: task.revision, to, actorPrincipalId: "principal-owner",
+      assignedPrincipalId: "principal-owner",
       eventId: `task-a-${to}`, idempotencyKey: `task-a-${to}`, correlationId: "corr",
       createdAt: "2026-08-13T11:58:00.000Z" });
   }
@@ -257,6 +265,130 @@ describe("Warden candidate CI observation", () => {
       .toEqual([expect.objectContaining({ subject_id: savedObservation.id, artifact_id: "artifact-success-a",
         input_artifact_id: "candidate-artifact-a", producer_principal_id: "candidate-authority",
         tool: "mendpoint-exact-github-observer", tool_version: sha("f"), commit_sha: sha("f"), verdict: "passed" })]);
+  });
+
+  it("keeps a Mission task resumable while green CI awaits the PR's accepted outcome", async () => {
+    const value = bindMissionAuthority(fixture());
+    const persistEvidence = vi.fn(async (bytes: Uint8Array) => ({
+      artifactId: "artifact-mission-green-a",
+      digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+    }));
+
+    await expect(runWardenCandidateObservation({
+      db: value.db,
+      job: value.job,
+      observe: async () => observation("success"),
+      persistEvidence,
+      resolveRepository: () => ({ owner: "acme", repo: "service" }),
+      now: () => "2026-08-13T12:02:00.000Z",
+    })).resolves.toMatchObject({ status: "checks_passed", cycleId: value.cycle.id });
+
+    expect(getWardenCiCycle(value.db, "tenant-a", value.cycle.id)?.status).toBe("awaiting_review");
+    expect(getMissionTask(value.db, "tenant-a", "task-a")).toMatchObject({
+      status: "agent_working",
+      revision: value.task.revision,
+    });
+  });
+
+  it("resumes green CI through review repair and completes the Mission task only after acceptance", async () => {
+    const value = bindMissionAuthority(fixture());
+    const persistEvidence = vi.fn(async (bytes: Uint8Array) => ({
+      artifactId: `artifact-lifecycle-${persistEvidence.mock.calls.length}`,
+      digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+    }));
+    const repository = () => ({ owner: "acme", repo: "service" });
+
+    await runWardenCandidateObservation({
+      db: value.db, job: value.job, observe: async () => observation("success"),
+      persistEvidence, resolveRepository: repository, now: () => "2026-08-13T12:02:00.000Z",
+    });
+    expect(getWardenCiCycle(value.db, "tenant-a", value.cycle.id)?.status).toBe("awaiting_review");
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("agent_working");
+
+    const woken = wakeWardenCiReviewObservation(value.db, {
+      tenantId: "tenant-a", remoteRepositoryId: 101, installationId: 202,
+      pullRequestNumber: 17, headSha: sha("d"), wakeId: "review-request-a",
+      observedAt: "2026-08-13T12:03:00.000Z",
+    });
+    expect(woken.status).toBe("woken");
+    const reviewJob = claimNextJob(value.db, ["warden.candidate.observe"], {
+      tenantId: "tenant-a", workerId: "worker-review", leaseMs: 60_000,
+      now: "2026-08-13T12:03:01.000Z",
+    })!;
+    await runWardenCandidateObservation({
+      db: value.db,
+      job: reviewJob,
+      observe: async () => ({
+        ...observation("success"),
+        conversationsResolved: false,
+        reviewFeedback: {
+          verdict: "changes_requested" as const,
+          changeRequests: [{ id: "review-a", reviewer: "reviewer", commitRevision: sha("d"),
+            body: "Handle the nil response.", submittedAt: "2026-08-13T12:03:02.000Z" }],
+          comments: [],
+        },
+      }),
+      persistEvidence,
+      resolveRepository: repository,
+      now: () => "2026-08-13T12:03:03.000Z",
+    });
+    const failedCycle = getWardenCiCycle(value.db, "tenant-a", value.cycle.id)!;
+    expect(failedCycle.status).toBe("checks_failed");
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("agent_working");
+
+    beginWardenCiRepair(value.db, {
+      tenantId: "tenant-a", cycleId: value.cycle.id,
+      observationDigest: failedCycle.currentObservationDigest!, repairRunId: "repair-run-a",
+      repairJobId: "repair-agent-job-a", observedAt: "2026-08-13T12:04:00.000Z",
+    });
+    const update = enqueueWardenCiUpdate(value.db, {
+      tenantId: "tenant-a", cycleId: value.cycle.id, repairRunId: "repair-run-a",
+      expectedHeadSha: sha("d"), sealedPath: "sealed/repair-approval.json",
+      sealedSha256: digest("f"), reviewerPrincipalId: "principal-owner",
+      rationale: "Approve exact review repair", missionAuthority: value.authority,
+      observedAt: "2026-08-13T12:04:10.000Z",
+    });
+    const updateJob = claimNextJob(value.db, ["warden.candidate.update"], {
+      tenantId: "tenant-a", workerId: "worker-update", leaseMs: 60_000,
+      now: "2026-08-13T12:04:20.000Z",
+    })!;
+    expect(bridgeClaimedJobToMissionTask(value.db, updateJob, "2026-08-13T12:04:20.000Z"))
+      .toMatchObject({ id: "task-a", status: "agent_working" });
+    bindWardenCiUpdateIntent(value.db, {
+      tenantId: "tenant-a", updateId: update.id, intentDigest: digest("1"),
+      workerId: "worker-update", leaseGeneration: updateJob.lease_generation,
+      observedAt: "2026-08-13T12:04:30.000Z",
+    });
+    completeWardenCiUpdate(value.db, {
+      tenantId: "tenant-a", updateId: update.id, expectedHeadSha: sha("d"),
+      commitSha: sha("f"), missionAuthority: value.authority,
+      observedAt: "2026-08-13T12:04:40.000Z",
+    });
+
+    const finalObservationJob = claimNextJob(value.db, ["warden.candidate.observe"], {
+      tenantId: "tenant-a", workerId: "worker-final", leaseMs: 60_000,
+      now: "2026-08-13T12:05:00.000Z",
+    })!;
+    await runWardenCandidateObservation({
+      db: value.db,
+      job: finalObservationJob,
+      observe: async () => ({
+        ...observation("success"), headRevision: sha("f"), checkRevision: sha("f"),
+        approvalRevision: sha("f"), remoteTreeSha: sha("9"),
+      }),
+      persistEvidence,
+      resolveRepository: repository,
+      now: () => "2026-08-13T12:05:10.000Z",
+    });
+    expect(getWardenCiCycle(value.db, "tenant-a", value.cycle.id)?.status).toBe("awaiting_review");
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("agent_working");
+
+    recordWardenCandidateDeliveryOutcome(value.db, {
+      tenantId: "tenant-a", deliveryId: "delivery-a", outcome: "merged",
+      source: "github_webhook", observedAt: "2026-08-13T12:06:00.000Z",
+    });
+    expect(getWardenCiCycle(value.db, "tenant-a", value.cycle.id)?.status).toBe("succeeded");
+    expect(getMissionTask(value.db, "tenant-a", "task-a")?.status).toBe("complete");
   });
 
   it("does not create a cleanup handoff for an ordinary non-delegated draft", async () => {

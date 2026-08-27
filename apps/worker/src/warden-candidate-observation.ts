@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { redactSourceForModel } from "@mendpoint/agent";
 import {
+  assertMissionMutationAuthority,
   completeJob,
   enqueueJob,
   failJob,
@@ -26,7 +27,6 @@ import {
 } from "@mendpoint/github";
 import { assertDelegatedPrVerificationApprovalAuthority,
   type DelegatedPrVerificationApprovalAuthority } from "./delegated-pr-verification-job.js";
-import { completeAuthorityBoundMissionTask } from "./mission-task-job-bridge.js";
 
 const JOB_TYPE = "warden.candidate.observe";
 export const WARDEN_CANDIDATE_CLEANUP_JOB_TYPE = "warden.candidate.cleanup";
@@ -485,6 +485,12 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
       !SHA256.test(persisted.digest)) {
     throw new Error("warden_ci_observation_evidence_mismatch");
   }
+  if (cycle.missionAuthority) {
+    assertMissionMutationAuthority(input.db, cycle.tenantId, cycle.missionAuthority, {
+      allowClaimedTask: true,
+      requireNoBlocking: true,
+    });
+  }
   input.db.raw.exec("BEGIN IMMEDIATE");
   try {
     const saved = recordWardenCiObservation(input.db, {
@@ -510,7 +516,6 @@ export async function runWardenCandidateObservation(input: WardenCandidateObserv
         evidenceBytes: bytes,
         observedAt,
       });
-      completeAuthorityBoundMissionTask(input.db, input.job, observedAt);
     }
     const completed = completeJob(input.db, input.job.id, {
       cycleId: cycle.id,

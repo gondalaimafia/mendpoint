@@ -259,34 +259,45 @@ export async function runWardenCandidateUpdate(input: WardenCandidateUpdateInput
   };
   let remote: ExactDraftUpdateResult;
   if (reconciliationRequired) {
-    if (update.status === "intent_bound") {
-      markWardenCiUpdateUncertain(input.db, { tenantId: cycle.tenantId, updateId: update.id,
-        intentDigest: digest, observedAt: preflightAt });
-      if (parsed.missionAuthority) {
-        const mutation = input.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
-          WHERE tenant_id = ? AND job_id = ?`).get(cycle.tenantId, input.job.id) as { state: string } | undefined;
-        if (mutation?.state === "dispatching") markMissionMutationDispatchUncertain(input.db, {
-          tenantId: cycle.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: preflightAt,
-        });
-      }
-    }
-    let reconciliation: ExactDraftUpdateReconciliation;
-    try { reconciliation = await input.reconcileExactDraftUpdate(intent); }
-    catch (error) { throw markRemoteOutcomeUncertain(error); }
-    if (reconciliation.status === "unknown") {
-      throw markRemoteOutcomeUncertain(null, "warden_ci_update_outcome_uncertain");
-    }
-    if (reconciliation.status === "applied") {
-      remote = reconciliation.result;
-    } else {
-      reconcileWardenCiUpdateNotApplied(input.db, {
-        tenantId: cycle.tenantId,
-        updateId: update.id,
-        jobId: input.job.id,
-        intentDigest: digest,
-        observedAt: now(),
-      });
+    const dispatch = parsed.missionAuthority
+      ? input.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
+          WHERE tenant_id = ? AND job_id = ?`).get(cycle.tenantId, input.job.id) as { state: string } | undefined
+      : undefined;
+    // `intent_bound` is written before the durable remote-begin marker. When a
+    // Mission-bound retry still has an authorized dispatch, the prior worker
+    // provably crashed before GitHub could be called. Re-arm and dispatch the
+    // same exact intent; do not manufacture uncertainty or perform a needless
+    // remote reconciliation for work that never began.
+    if (update.status === "intent_bound" && dispatch?.state === "authorized") {
       remote = await dispatchFreshUpdate();
+    } else {
+      if (update.status === "intent_bound") {
+        markWardenCiUpdateUncertain(input.db, { tenantId: cycle.tenantId, updateId: update.id,
+          intentDigest: digest, observedAt: preflightAt });
+        if (parsed.missionAuthority && dispatch?.state === "dispatching") {
+          markMissionMutationDispatchUncertain(input.db, {
+            tenantId: cycle.tenantId, jobId: input.job.id, intentDigest: digest, observedAt: preflightAt,
+          });
+        }
+      }
+      let reconciliation: ExactDraftUpdateReconciliation;
+      try { reconciliation = await input.reconcileExactDraftUpdate(intent); }
+      catch (error) { throw markRemoteOutcomeUncertain(error); }
+      if (reconciliation.status === "unknown") {
+        throw markRemoteOutcomeUncertain(null, "warden_ci_update_outcome_uncertain");
+      }
+      if (reconciliation.status === "applied") {
+        remote = reconciliation.result;
+      } else {
+        reconcileWardenCiUpdateNotApplied(input.db, {
+          tenantId: cycle.tenantId,
+          updateId: update.id,
+          jobId: input.job.id,
+          intentDigest: digest,
+          observedAt: now(),
+        });
+        remote = await dispatchFreshUpdate();
+      }
     }
   } else {
     remote = await dispatchFreshUpdate();

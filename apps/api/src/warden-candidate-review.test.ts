@@ -26,6 +26,7 @@ import {
   raiseMissionException,
   regaugeLaunchMissionTaskId,
   recordAudit,
+  recordWardenCandidateDeliveryOutcome,
   transitionMissionTask,
   transitionMission,
   verifyAuditIntegrity,
@@ -856,7 +857,10 @@ describe("Warden candidate human review", () => {
 
     expect(response.status).toBe(409);
     expect(getMissionTask(db, "tenant-a", taskId)?.status).toBe("human_review_required");
-    expect(evaluateMissionExceptions(db, "tenant-a", "m1").blocking.map((row) => row.id)).toContain(blocker.id);
+    expect(db.raw.prepare(`SELECT status, supersedes_id FROM mission_exceptions
+      WHERE tenant_id = 'tenant-a' AND id = ?`).get(blocker.id)).toEqual({
+      status: "open", supersedes_id: null,
+    });
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get()).toEqual({ count: 0 });
   });
 
@@ -1195,6 +1199,14 @@ describe("Warden candidate human review", () => {
       wardenCandidateRepositoryResolver: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
     })).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
     expect(deliverExactDraft).toHaveBeenCalledTimes(1);
+    expect(getMissionTask(value.db, "tenant-a", REVIEW_TASK_ID)).toMatchObject({ status: "agent_working" });
+    recordWardenCandidateDeliveryOutcome(value.db, {
+      tenantId: "tenant-a",
+      deliveryId: delivery.id,
+      outcome: "merged",
+      source: "github_webhook",
+      observedAt: "2026-08-06T12:00:02.000Z",
+    });
     expect(getMissionTask(value.db, "tenant-a", REVIEW_TASK_ID)).toMatchObject({ status: "complete" });
   });
 
@@ -1283,15 +1295,17 @@ describe("Warden candidate human review", () => {
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM fettler_candidate_deliveries").get()).toEqual({ count: 0 });
   });
 
-  it("preserves the single current record-only ADR compatibility handoff when the enrollment task is absent", async () => {
+  it("preserves a source-job-bound record-only ADR compatibility handoff when the enrollment task is absent", async () => {
     const { app, db } = fixture();
     seedReviewedSnapshot(db);
     bindMission(db);
-    const blocker = raiseMissionException(db, {
+    const blocker = openTaskHandoff(db, {
       tenantId: "tenant-a", missionId: "m1", reason: "architecture_decision_required",
-      impact: "The record-only ADR blocks mutation until a human resolves it.",
-      resolutionPath: "Human review of the retained ADR compatibility record.", blocking: true,
-      ownerPrincipalId: "trust-human-a", correlationId: "corr", createdAt: NOW,
+      question: "Should job source-job-1 (agent.run) under mission m1 proceed after advisory verification passed?",
+      context: "Review-first job source-job-1 settled successfully. Human approval is required before delivery.",
+      ownerPrincipalId: "trust-human-a",
+      observedAgainst: { snapshotId: "snapshot-1", resolvedSha: "a".repeat(40) },
+      correlationId: "source-job-1", createdAt: NOW,
     });
 
     const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
@@ -1315,6 +1329,33 @@ describe("Warden candidate human review", () => {
         resolvedSha: "a".repeat(40),
       },
     });
+  });
+
+  it("does not treat an unrelated singleton policy blocker as taskless candidate authority", async () => {
+    const { app, db } = fixture();
+    seedReviewedSnapshot(db);
+    bindMission(db);
+    const blocker = raiseMissionException(db, {
+      tenantId: "tenant-a", missionId: "m1", reason: "policy_exception",
+      impact: "Runtime policy requires an independent operator exception.",
+      resolutionPath: "Resolve the runtime policy outside candidate review.", blocking: true,
+      ownerPrincipalId: "trust-human-a",
+      observedAgainst: { snapshotId: "snapshot-1", resolvedSha: "a".repeat(40) },
+      correlationId: "source-job-1", createdAt: NOW,
+    });
+
+    const response = await app.request("/agent/runs/warden-run-1/candidate/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "regenerate", rationale: "Do not consume unrelated policy authority." }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(db.raw.prepare(`SELECT status, supersedes_id FROM mission_exceptions
+      WHERE tenant_id = 'tenant-a' AND id = ?`).get(blocker.id)).toEqual({
+      status: "open", supersedes_id: null,
+    });
+    expect(db.raw.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE tenant_id = 'tenant-a'
+      AND id LIKE 'warden-regenerate-job-%'`).get()).toEqual({ count: 0 });
   });
 
   it("fails closed when task-bound and record-only handoff authority are mixed", async () => {

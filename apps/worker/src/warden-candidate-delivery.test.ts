@@ -296,10 +296,10 @@ describe("Warden exact candidate draft delivery", () => {
     expect(value.db.raw.prepare(`SELECT state FROM mission_mutation_dispatches
       WHERE tenant_id = 'tenant-a' AND job_id = ?`).get(value.job.id)).toEqual({ state: "settled" });
     expect(getMissionTask(value.db, "tenant-a", "task-1")).toMatchObject({
-      status: "complete", revision: value.authority.taskRevision! + 2,
+      status: "agent_working", revision: value.authority.taskRevision! + 1,
     });
     expect(getWardenCandidateDeliveryByRun(value.db, "tenant-a", "warden-run-1")?.missionAuthority)
-      .toMatchObject({ missionId: "mission-1", taskId: "task-1", taskStatus: "complete" });
+      .toMatchObject({ missionId: "mission-1", taskId: "task-1", taskStatus: "agent_working" });
   });
 
   it("reverifies the seal and creates a draft from the exact approved bytes", async () => {

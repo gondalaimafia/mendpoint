@@ -195,6 +195,29 @@ export function tryResolveBoundReviewHandoff(
       return Object.freeze({ kind: "blocked", reason: blocking.length === 0 ? "task_missing" : "exception_ambiguous" });
     }
     const match = recordOnly[0]!;
+    const sourceRun = getAgentRun(db, input.runId, input.tenantId);
+    const sourceJobId = sourceRun?.job_id ?? null;
+    const raised = db.raw.prepare(`SELECT correlation_id FROM domain_events
+      WHERE tenant_id = ? AND aggregate_type = 'mission' AND aggregate_id = ?
+        AND event_type = 'mission.exception_raised'
+        AND json_valid(payload_json) = 1
+        AND json_extract(payload_json, '$.exceptionId') = ?
+      ORDER BY event_sequence DESC LIMIT 1`).get(
+      input.tenantId, input.missionId, match.id,
+    ) as { correlation_id: string } | undefined;
+    const candidateSpecific = Boolean(
+      sourceJobId &&
+      match.category === "architecture_decision_required" &&
+      match.resolutionPath === "await_human_resolution" &&
+      match.observedSnapshotId === input.current.snapshotId &&
+      match.observedResolvedSha === input.current.resolvedSha &&
+      raised?.correlation_id === sourceJobId &&
+      match.reason.includes(`job ${sourceJobId} `) &&
+      match.impact.includes(`Review-first job ${sourceJobId} `),
+    );
+    if (!candidateSpecific) {
+      return Object.freeze({ kind: "blocked", reason: "exception_missing" });
+    }
     resolveTaskHandoff(db, {
       tenantId: input.tenantId,
       priorExceptionId: match.id,
