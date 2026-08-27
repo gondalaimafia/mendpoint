@@ -3333,3 +3333,18 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 #### Review
 
 Main revision `c8d51caa` merged a reviewer key that the runtime ignores and retained null App IDs. The repair uses the verified, nonsecret identity tuple for `mendpoint-closure-authority[bot]` and the observed GitHub Actions App ID. The bot is temporarily bound under `Claude`, which permits reciprocal review of the current Codex and Cursor queue; a second distinct reviewer identity is still required before Claude-owned pull requests can satisfy the same invariant. The 26 GitHub-authority tests, 30 matrix tests, and 12 proposal-authority tests pass, the scripts TypeScript project passes, and `git diff --check` is clean.
+
+## 2026-08-27 Release ingestion integrity v2
+
+- [x] Add red regressions for observation-time-independent claim identity, exact provider and collection binding, deterministic dispatch replay, fenced tenant-scoped delivery, reviewer CAS, v1 upgrade, and restart retention.
+- [x] Migrate the release ingestion ledger forward without changing or losing v1 artifacts and overrides.
+- [x] Implement append-only observations, deterministic transactional dispatch, lease-generation fencing, digest-bound rehydration, and explicit reviewer revision conflicts.
+- [x] Run the focused catalog suite, catalog typecheck, and strict diff checks, then record the exact evidence and remaining live-reachability boundary.
+
+### Review
+
+- RED: eight focused tests failed against v1 behavior. Separate upgrade regressions then reproduced a repeated-observation v1 startup constraint failure and a deterministic outbox identity collision that committed an artifact without its dispatch.
+- GREEN: schema v2 preserves every v1 artifact, override, and observation; historical duplicate identities remain addressable while one deterministic canonical identity owns replay and dispatch. New ingestion excludes observation time from the normalized claim digest and binds canonical identity to tenant, provider, adapter, collection, source item, and normalized digest.
+- The artifact, observation, and dispatch write in one immediate transaction. Dispatch claims are tenant scoped and lease-generation fenced; exact content digest rehydration, completion, failure, and reviewer CAS fail closed on stale or cross-tenant authority.
+- Catalog typecheck passes. The complete catalog suite passes 56 tests across seven files, and `git diff --check` is clean.
+- ME-ING-003 and ME-ING-004 remain partial. This increment creates durable catalog contracts only; it does not add or claim a reachable API, worker, polling, or production delivery path.
