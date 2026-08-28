@@ -951,6 +951,58 @@ describe("pipeline", () => {
     }
   });
 
+  it("records authority-bound index materialization in audit and domain events", async () => {
+    const dir = join(tmpdir(), `mendpoint-pipe-index-authority-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    dirs.push(dir);
+    const repoDir = join(dir, "shop");
+    cpSync(shop, repoDir, { recursive: true });
+    rmSync(join(repoDir, ".mendpoint"), { recursive: true, force: true });
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    const consumerId = addMonitoredConsumer(db, provider.id, {
+      name: "Indexed Shop",
+      repo: "indexed-shop",
+      localPath: repoDir,
+    });
+    const repositoryId = getConsumerRepo(db, consumerId, "tenant_default")!.id;
+
+    const report = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb: testGraphDb(),
+      github: new MockGitHubDelivery(join(dir, "delivery")),
+      contractCases: [{
+        id: "fixture",
+        name: "fixture",
+        requiredKeys: ["id"],
+        responseBody: { id: "ok" },
+      }],
+      securityScanAttested: true,
+    });
+
+    const audit = listAudit(db, "tenant_default")
+      .find((entry) => entry.action === "codebase_index.materialized");
+    expect(audit).toBeDefined();
+    expect(JSON.parse(audit!.metadata_json!)).toMatchObject({
+      classification: "rebuilt",
+      tenantId: "tenant_default",
+      repositoryId,
+      rejectedReason: "missing",
+    });
+    const event = listDomainEvents(db, "tenant_default", "api_change", report.changeId)
+      .find((entry) => entry.event_type === "codebase_index.materialized");
+    expect(event).toBeDefined();
+    expect(JSON.parse(event!.payload_json)).toMatchObject({
+      consumerId,
+      classification: "rebuilt",
+      repositoryId,
+    });
+  }, 15_000);
+
   it("persists delivery failure and does not duplicate completed consumers on rerun", async () => {
     const dir = join(tmpdir(), `mendpoint-pipe-resume-${Date.now()}`);
     mkdirSync(dir, { recursive: true });

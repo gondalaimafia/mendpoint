@@ -6,9 +6,22 @@
  * in the spirit of tree-sitter; plug in tree-sitter / LSP / CodeQL later without
  * changing the Impact pipeline contract.
  */
-import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, lstatSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, relative, dirname, basename, extname } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { join, relative, dirname, basename, extname, resolve } from "node:path";
 import {
   buildCallGraph,
   buildCallGraphIncremental,
@@ -159,7 +172,14 @@ export type CodebaseIndexSafetyCode =
   | "codebase_index_total_bytes_limit"
   | "codebase_index_file_bytes_limit"
   | "codebase_index_traversal_depth_limit"
-  | "codebase_index_file_changed_during_index";
+  | "codebase_index_file_changed_during_index"
+  | "codebase_index_persisted_path_invalid"
+  | "codebase_index_persisted_file_invalid"
+  | "codebase_index_persisted_file_bytes_limit"
+  | "codebase_index_persisted_schema_unsupported"
+  | "codebase_index_persisted_shape_invalid"
+  | "codebase_index_persisted_authority_mismatch"
+  | "codebase_index_persisted_digest_mismatch";
 
 export class CodebaseIndexSafetyError extends Error {
   readonly code: CodebaseIndexSafetyCode;
@@ -207,6 +227,7 @@ type DiscoveryUsage = { files: number; totalBytes: number };
  * cannot drift apart again; only the reason-string format is local.
  */
 function ignoredDirectoryReason(name: string, absPath: string): string | null {
+  if (name === ".mendpoint") return "mendpoint_state";
   const decision = classifyDependencyDirectory(name, (marker) =>
     existsSync(join(absPath, marker)),
   );
@@ -909,14 +930,355 @@ function buildIndexFromDiscovered(
 
 
 
-export function writeIndex(index: CodebaseIndex, outPath: string): void {
-  mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(outPath, JSON.stringify(index, null, 2), "utf8");
+export const CODEBASE_INDEX_ENVELOPE_SCHEMA_VERSION = 1 as const;
+export const CODEBASE_INDEX_EXTRACTOR_VERSION = "1" as const;
+export const MAX_PERSISTED_CODEBASE_INDEX_BYTES = 268_435_456;
+
+export type CodebaseIndexAuthority = Readonly<{
+  tenantId: string;
+  repositoryId: string;
+}>;
+
+export type CodebaseIndexReuseClassification = "exact" | "incremental" | "rebuilt";
+
+export type CodebaseIndexReuseEvidence = Readonly<{
+  schemaVersion: typeof CODEBASE_INDEX_ENVELOPE_SCHEMA_VERSION;
+  extractorVersion: typeof CODEBASE_INDEX_EXTRACTOR_VERSION;
+  classification: CodebaseIndexReuseClassification;
+  tenantId: string;
+  repositoryId: string;
+  canonicalRepoRootDigest: string;
+  sdkContextDigest: string;
+  indexContentDigest: string;
+  previousIndexContentDigest?: string;
+  rejectedReason?: CodebaseIndexSafetyCode | "missing" | "persistence_disabled";
+}>;
+
+type PersistedCodebaseIndexEnvelope = Readonly<{
+  schemaVersion: typeof CODEBASE_INDEX_ENVELOPE_SCHEMA_VERSION;
+  extractor: Readonly<{ id: "mendpoint-codebase-index"; version: string }>;
+  authority: Readonly<{
+    tenantId: string;
+    repositoryId: string;
+    canonicalRepoRoot: string;
+    sdkContextDigest: string;
+  }>;
+  indexContentDigest: string;
+  index: CodebaseIndex;
+}>;
+
+export type MaterializeCodebaseIndexOptions = Readonly<{
+  authority: CodebaseIndexAuthority;
+  sdkContext?: SdkDetectionContext;
+  limits?: Partial<CodebaseIndexLimits>;
+  persist?: boolean;
+}>;
+
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const out: Record<string, unknown> = Object.create(null);
+    for (const key of Object.keys(record).sort()) out[key] = canonicalValue(record[key]);
+    return out;
+  }
+  return value;
 }
 
+function canonicalDigest(value: unknown): string {
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalValue(value)), "utf8")
+    .digest("hex");
+}
+
+function canonicalSdkContext(context?: SdkDetectionContext): SdkDetectionContext {
+  const values = (items: readonly string[] | undefined) =>
+    [...new Set((items ?? []).map((item) => item.trim().toLowerCase()).filter(Boolean))].sort();
+  return {
+    receivers: values(context?.receivers),
+    methodPaths: values(context?.methodPaths),
+    methods: values(context?.methods),
+    fields: values(context?.fields),
+    importHints: values(context?.importHints),
+  };
+}
+
+function canonicalRepositoryRoot(repoRoot: string): string {
+  const stat = lstatSync(repoRoot);
+  if (stat.isSymbolicLink()) fail("codebase_index_symlink_not_allowed", repoRoot, repoRoot);
+  if (!stat.isDirectory()) fail("codebase_index_file_changed_during_index", repoRoot, repoRoot);
+  return realpathSync(repoRoot);
+}
+
+function samePath(left: string, right: string): boolean {
+  const a = resolve(left);
+  const b = resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function persistedAuthority(
+  repoRoot: string,
+  authority: CodebaseIndexAuthority,
+  sdkContext?: SdkDetectionContext,
+) {
+  const tenantId = authority.tenantId.trim();
+  const repositoryId = authority.repositoryId.trim();
+  const canonicalRepoRoot = canonicalRepositoryRoot(repoRoot);
+  if (!tenantId || tenantId.length > 256 || !repositoryId || repositoryId.length > 256) {
+    fail("codebase_index_persisted_authority_mismatch", canonicalRepoRoot,
+      defaultIndexPath(canonicalRepoRoot));
+  }
+  return {
+    tenantId,
+    repositoryId,
+    canonicalRepoRoot,
+    sdkContextDigest: canonicalDigest(canonicalSdkContext(sdkContext)),
+  } as const;
+}
+
+function validatePersistedPath(repoRoot: string, path: string, forWrite = false): string {
+  const canonicalRoot = canonicalRepositoryRoot(repoRoot);
+  const expected = defaultIndexPath(canonicalRoot);
+  if (!samePath(path, expected)) fail("codebase_index_persisted_path_invalid", canonicalRoot, path);
+  const parent = dirname(expected);
+  if (forWrite) mkdirSync(parent, { recursive: true });
+  if (existsSync(parent)) {
+    const stat = lstatSync(parent);
+    if (stat.isSymbolicLink()) fail("codebase_index_symlink_not_allowed", canonicalRoot, parent);
+    if (!stat.isDirectory() || !samePath(realpathSync(parent), parent)) {
+      fail("codebase_index_persisted_path_invalid", canonicalRoot, parent);
+    }
+  }
+  return expected;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function validRelativePath(value: unknown): value is string {
+  if (typeof value !== "string" || !value || value.length > 4_096 || value.includes("\0")) {
+    return false;
+  }
+  const normalized = value.replace(/\\/g, "/");
+  return !normalized.startsWith("/") && !/^[A-Za-z]:\//.test(normalized) &&
+    !normalized.split("/").some((part) => !part || part === "." || part === "..");
+}
+
+function validStringArray(value: unknown, max: number): value is string[] {
+  return Array.isArray(value) && value.length <= max &&
+    value.every((item) => typeof item === "string" && item.length <= 16_384);
+}
+
+function validStringMap(value: unknown, maxKeys: number, maxValues: number): boolean {
+  if (!isRecord(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length <= maxKeys &&
+    entries.every(([key, items]) => key.length <= 4_096 && validStringArray(items, maxValues));
+}
+
+function validateIndexShape(
+  value: unknown,
+  canonicalRoot: string,
+  limits: CodebaseIndexLimits,
+): asserts value is CodebaseIndex {
+  const invalid = (): never => fail("codebase_index_persisted_shape_invalid", canonicalRoot,
+    defaultIndexPath(canonicalRoot));
+  if (!isRecord(value)) invalid();
+  const record = value as Record<string, unknown>;
+  if (typeof record.repoRoot !== "string" || !samePath(record.repoRoot, canonicalRoot) ||
+      typeof record.builtAt !== "string" || !Number.isFinite(Date.parse(record.builtAt))) invalid();
+  const files = record.files;
+  const structured = record.structuredFiles ?? [];
+  const functions = record.functions;
+  const usages = record.apiUsages;
+  const skipped = record.skippedDirectories;
+  if (!Array.isArray(files) || files.length > limits.maxFiles ||
+      !Array.isArray(structured) || structured.length > limits.maxFiles ||
+      !Array.isArray(functions) || functions.length > limits.maxFiles * 20 ||
+      !Array.isArray(usages) || usages.length > limits.maxFiles * 40 ||
+      !Array.isArray(skipped) || skipped.length > limits.maxFiles) invalid();
+  const fileItems = files as unknown[];
+  const structuredItems = structured as unknown[];
+  const functionItems = functions as unknown[];
+  const usageItems = usages as unknown[];
+  const skippedItems = skipped as unknown[];
+  if (!fileItems.every((file) => isRecord(file) && validRelativePath(file.path) &&
+      typeof file.language === "string" && typeof file.isTest === "boolean" &&
+      validStringArray(file.imports, 10_000) && typeof file.contentHash === "string" &&
+      /^[a-f0-9]{16}$/.test(file.contentHash) && Number.isSafeInteger(file.lineCount))) invalid();
+  if (!structuredItems.every((file) => isRecord(file) && validRelativePath(file.path) &&
+      file.format === "json" && typeof file.isTest === "boolean" &&
+      typeof file.contentHash === "string" && /^[a-f0-9]{16}$/.test(file.contentHash) &&
+      Number.isSafeInteger(file.lineCount))) invalid();
+  if (!functionItems.every((fn) => isRecord(fn) && typeof fn.name === "string" &&
+      fn.name.length <= 4_096 && validRelativePath(fn.filePath) &&
+      Number.isSafeInteger(fn.lineStart) && Number.isSafeInteger(fn.lineEnd) &&
+      validStringArray(fn.callees, 100_000))) invalid();
+  if (!usageItems.every((usage) => isRecord(usage) && validRelativePath(usage.filePath) &&
+      Number.isSafeInteger(usage.line) && typeof usage.kind === "string" &&
+      typeof usage.value === "string" && usage.value.length <= 65_536)) invalid();
+  if (!skippedItems.every((item) => isRecord(item) && validRelativePath(item.path) &&
+      typeof item.reason === "string" && item.reason.length <= 1_024)) invalid();
+  if (!validStringMap(record.callersOf, limits.maxFiles * 20, limits.maxFiles * 20) ||
+      !validStringMap(record.calleesOf, limits.maxFiles * 20, limits.maxFiles * 20) ||
+      !validStringArray(record.packageImports, limits.maxFiles * 10)) invalid();
+  const graph = record.callGraph;
+  if (!isRecord(graph) || typeof graph.repoRoot !== "string" ||
+      !samePath(graph.repoRoot, canonicalRoot) || !isRecord(graph.nodes) ||
+      Object.keys(graph.nodes).length > limits.maxFiles * 20 || !Array.isArray(graph.edges) ||
+      graph.edges.length > limits.maxFiles * 100 ||
+      !validStringMap(graph.outEdges, limits.maxFiles * 20, limits.maxFiles * 100) ||
+      !validStringMap(graph.inEdges, limits.maxFiles * 20, limits.maxFiles * 100) ||
+      !validStringMap(graph.byName, limits.maxFiles * 20, limits.maxFiles * 20) ||
+      !isRecord(graph.hierarchy) || !isRecord(graph.stats)) invalid();
+}
+
+function readPersisted(
+  repoRoot: string,
+  path: string,
+  limits: CodebaseIndexLimits,
+): PersistedCodebaseIndexEnvelope | CodebaseIndex {
+  const safePath = validatePersistedPath(repoRoot, path);
+  const stat = lstatSync(safePath);
+  if (stat.isSymbolicLink()) fail("codebase_index_symlink_not_allowed", repoRoot, safePath);
+  if (!stat.isFile()) fail("codebase_index_persisted_file_invalid", repoRoot, safePath);
+  if (stat.size > MAX_PERSISTED_CODEBASE_INDEX_BYTES) {
+    fail("codebase_index_persisted_file_bytes_limit", repoRoot, safePath,
+      MAX_PERSISTED_CODEBASE_INDEX_BYTES, stat.size);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(safePath, "utf8").replace(/^\uFEFF/, ""));
+  } catch {
+    fail("codebase_index_persisted_shape_invalid", repoRoot, safePath);
+  }
+  if (isRecord(parsed) && "schemaVersion" in parsed) {
+    if (parsed.schemaVersion !== CODEBASE_INDEX_ENVELOPE_SCHEMA_VERSION) {
+      fail("codebase_index_persisted_schema_unsupported", repoRoot, safePath);
+    }
+    if (!isRecord(parsed.extractor) || parsed.extractor.id !== "mendpoint-codebase-index" ||
+        parsed.extractor.version !== CODEBASE_INDEX_EXTRACTOR_VERSION ||
+        !isRecord(parsed.authority) || typeof parsed.indexContentDigest !== "string") {
+      fail("codebase_index_persisted_shape_invalid", repoRoot, safePath);
+    }
+    validateIndexShape(parsed.index, canonicalRepositoryRoot(repoRoot), limits);
+    if (canonicalDigest(parsed.index) !== parsed.indexContentDigest) {
+      fail("codebase_index_persisted_digest_mismatch", repoRoot, safePath);
+    }
+    return parsed as unknown as PersistedCodebaseIndexEnvelope;
+  }
+  validateIndexShape(parsed, canonicalRepositoryRoot(repoRoot), limits);
+  return parsed;
+}
+
+export function writeIndex(
+  index: CodebaseIndex,
+  outPath: string,
+  options: MaterializeCodebaseIndexOptions,
+): void {
+  const limits = normalizedLimits(options.limits);
+  const authority = persistedAuthority(index.repoRoot, options.authority, options.sdkContext);
+  validateIndexShape(index, authority.canonicalRepoRoot, limits);
+  const safePath = validatePersistedPath(authority.canonicalRepoRoot, outPath, true);
+  if (existsSync(safePath) && lstatSync(safePath).isSymbolicLink()) {
+    fail("codebase_index_symlink_not_allowed", authority.canonicalRepoRoot, safePath);
+  }
+  const envelope: PersistedCodebaseIndexEnvelope = {
+    schemaVersion: CODEBASE_INDEX_ENVELOPE_SCHEMA_VERSION,
+    extractor: { id: "mendpoint-codebase-index", version: CODEBASE_INDEX_EXTRACTOR_VERSION },
+    authority,
+    indexContentDigest: canonicalDigest(index),
+    index,
+  };
+  const temporary = join(dirname(safePath),
+    `.${basename(safePath)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`);
+  let fd: number | undefined;
+  try {
+    fd = openSync(temporary, "wx", 0o600);
+    writeFileSync(fd, JSON.stringify(envelope, null, 2), "utf8");
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temporary, safePath);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    if (existsSync(temporary)) unlinkSync(temporary);
+  }
+}
+
+/** Compatibility reader for the graph read path; validates envelopes and legacy indexes. */
 export function loadIndex(path: string): CodebaseIndex {
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as CodebaseIndex;
-  return { ...parsed, structuredFiles: parsed.structuredFiles ?? [] };
+  const repoRoot = dirname(dirname(path));
+  const parsed = readPersisted(repoRoot, path, normalizedLimits());
+  const index = isRecord(parsed) && "schemaVersion" in parsed
+    ? (parsed as unknown as PersistedCodebaseIndexEnvelope).index
+    : parsed as CodebaseIndex;
+  return { ...index, structuredFiles: index.structuredFiles ?? [] };
+}
+
+export function materializeCodebaseIndex(
+  repoRoot: string,
+  options: MaterializeCodebaseIndexOptions,
+): { index: CodebaseIndex; evidence: CodebaseIndexReuseEvidence } {
+  const limits = normalizedLimits(options.limits);
+  const authority = persistedAuthority(repoRoot, options.authority, options.sdkContext);
+  const path = defaultIndexPath(authority.canonicalRepoRoot);
+  const persist = options.persist !== false;
+  let previous: CodebaseIndex | null = null;
+  let previousDigest: string | undefined;
+  let rejectedReason: CodebaseIndexReuseEvidence["rejectedReason"] =
+    persist ? "missing" : "persistence_disabled";
+  if (persist && existsSync(path)) {
+    try {
+      const loaded = readPersisted(authority.canonicalRepoRoot, path, limits);
+      if (!isRecord(loaded) || !("schemaVersion" in loaded)) {
+        throw new CodebaseIndexSafetyError("codebase_index_persisted_authority_mismatch", {
+          path: relativePath(authority.canonicalRepoRoot, path),
+        });
+      }
+      const envelope = loaded as unknown as PersistedCodebaseIndexEnvelope;
+      if (envelope.authority.tenantId !== authority.tenantId ||
+          envelope.authority.repositoryId !== authority.repositoryId ||
+          !samePath(envelope.authority.canonicalRepoRoot, authority.canonicalRepoRoot) ||
+          envelope.authority.sdkContextDigest !== authority.sdkContextDigest) {
+        throw new CodebaseIndexSafetyError("codebase_index_persisted_authority_mismatch", {
+          path: relativePath(authority.canonicalRepoRoot, path),
+        });
+      }
+      previous = envelope.index;
+      previousDigest = envelope.indexContentDigest;
+      rejectedReason = undefined;
+    } catch (error) {
+      if (!(error instanceof CodebaseIndexSafetyError)) throw error;
+      rejectedReason = error.code;
+    }
+  }
+  const index = buildIndexIncremental(authority.canonicalRepoRoot, previous, {
+    limits,
+    sdkContext: canonicalSdkContext(options.sdkContext),
+  });
+  const classification: CodebaseIndexReuseClassification =
+    previous && index === previous ? "exact" : previous ? "incremental" : "rebuilt";
+  const indexContentDigest = canonicalDigest(index);
+  if (persist && classification !== "exact") {
+    writeIndex(index, path, { ...options, authority: options.authority, persist: true });
+  }
+  return {
+    index,
+    evidence: {
+      schemaVersion: CODEBASE_INDEX_ENVELOPE_SCHEMA_VERSION,
+      extractorVersion: CODEBASE_INDEX_EXTRACTOR_VERSION,
+      classification,
+      tenantId: authority.tenantId,
+      repositoryId: authority.repositoryId,
+      canonicalRepoRootDigest: canonicalDigest(authority.canonicalRepoRoot),
+      sdkContextDigest: authority.sdkContextDigest,
+      indexContentDigest,
+      ...(previousDigest ? { previousIndexContentDigest: previousDigest } : {}),
+      ...(rejectedReason ? { rejectedReason } : {}),
+    },
+  };
 }
 
 /**

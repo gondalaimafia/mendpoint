@@ -117,6 +117,10 @@ import {
   type StructuralDiff,
 } from "@mendpoint/shared";
 
+type IndexMaterializationEvidence = NonNullable<
+  Awaited<ReturnType<typeof analyzeImpactWithSoftwareGraph>>["indexReuse"]
+>;
+
 function trustId(prefix: string, ...parts: string[]): string {
   return `${prefix}_${createHash("sha256").update(parts.join("\0")).digest("hex")}`;
 }
@@ -935,6 +939,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     let graphContextArtifactId: string | undefined;
     let graphContextContent: string | undefined;
     let impactReport: ImpactReport;
+    let indexMaterialization: IndexMaterializationEvidence | undefined;
     let rawRetrievalFallback = false;
     const endpointSurface = surfaces.find((surface) => surface.path);
     if (endpointSurface && gldb) {
@@ -955,6 +960,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           impact: { persistIndex: input.persistIndex ?? true },
         });
         impactReport = graphAnalysis.impactReport;
+        indexMaterialization = graphAnalysis.indexReuse;
         graphVersionId = graphAnalysis.graphVersion.versionId;
         graphContextContent = graphAnalysis.context.content;
         // Spec §11.10: pin the published version on any single-repo Fettler
@@ -1078,8 +1084,52 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       // stamp that fact rather than inventing a second retriever.
       impactReport = await analyzeImpact(repo.local_path, surfaces, {
         persistIndex: input.persistIndex ?? true,
+        indexAuthority: {
+          tenantId: input.tenantId,
+          repositoryId: repo.connected_repository_id ?? repo.id,
+        },
+        onIndexMaterialized: (evidence) => {
+          indexMaterialization = evidence;
+        },
       });
       rawRetrievalFallback = true;
+    }
+    if (indexMaterialization) {
+      const evidence = indexMaterialization;
+      recordAudit(db, {
+        tenantId: input.tenantId,
+        actor: "pipeline",
+        action: "codebase_index.materialized",
+        resourceType: "consumer",
+        resourceId: consumer.id,
+        metadata: evidence,
+      });
+      appendDomainEvent(db, {
+        id: trustId(
+          "event",
+          input.tenantId,
+          changeId,
+          consumer.id,
+          "codebase-index",
+          evidence.classification,
+          evidence.indexContentDigest,
+        ),
+        tenantId: input.tenantId,
+        schemaVersion: 1,
+        eventType: "codebase_index.materialized",
+        aggregateType: "api_change",
+        aggregateId: changeId,
+        actorPrincipalId: pipelinePrincipal.id,
+        correlationId: changeId,
+        causationId: trustId("event", input.tenantId, changeId, "normalized"),
+        idempotencyKey:
+          `api_change:${changeId}:codebase_index:${consumer.id}:${evidence.classification}:${evidence.indexContentDigest}`,
+        payload: {
+          consumerId: consumer.id,
+          ...evidence,
+        },
+        createdAt: graphObservedAt,
+      });
     }
     assertActive();
 

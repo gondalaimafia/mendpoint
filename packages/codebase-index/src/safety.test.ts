@@ -1,6 +1,14 @@
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const tracking = vi.hoisted(() => ({
@@ -48,6 +56,8 @@ import {
   CodebaseIndexSafetyError,
   buildIndex,
   buildIndexIncremental,
+  defaultIndexPath,
+  materializeCodebaseIndex,
 } from "./index.js";
 
 const roots: string[] = [];
@@ -142,5 +152,81 @@ describe("codebase index traversal safety", () => {
     expect(next.files.find((file) => file.path === "changed.ts")?.contentHash)
       .not.toBe(previous.files.find((file) => file.path === "changed.ts")?.contentHash);
     expect(tracking.reads.get(resolve(unchanged))).toBe(1);
+  });
+
+  it("persists one authority-bound envelope and classifies exact, incremental, and rebuilt reuse", () => {
+    const repository = root("persisted-authority");
+    const source = join(repository, "source.ts");
+    writeFileSync(source, "export function value() { return 1; }\n", "utf8");
+    const options = {
+      authority: { tenantId: "tenant-a", repositoryId: "repo-a" },
+      sdkContext: {
+        receivers: ["Example"],
+        methodPaths: ["values.get"],
+        methods: ["get"],
+        fields: ["value"],
+        importHints: ["Example"],
+      },
+    };
+
+    const rebuilt = materializeCodebaseIndex(repository, options);
+    const exact = materializeCodebaseIndex(repository, {
+      ...options,
+      sdkContext: {
+        ...options.sdkContext,
+        receivers: ["example"],
+        importHints: ["example", "EXAMPLE"],
+      },
+    });
+    writeFileSync(source, "export function value() { return 2; }\n", "utf8");
+    const incremental = materializeCodebaseIndex(repository, options);
+
+    expect(rebuilt.evidence).toMatchObject({ classification: "rebuilt", rejectedReason: "missing" });
+    expect(exact.evidence.classification).toBe("exact");
+    expect(exact.evidence.indexContentDigest).toBe(rebuilt.evidence.indexContentDigest);
+    expect(incremental.evidence.classification).toBe("incremental");
+    expect(incremental.evidence.previousIndexContentDigest).toBe(exact.evidence.indexContentDigest);
+    expect(incremental.evidence.indexContentDigest).not.toBe(exact.evidence.indexContentDigest);
+    expect(incremental.index.files.some((file) => file.path.startsWith(".mendpoint/"))).toBe(false);
+    expect(readdirSync(dirname(defaultIndexPath(repository))).filter((name) => name.endsWith(".tmp")))
+      .toEqual([]);
+  });
+
+  it("rejects foreign, corrupt, malformed, and symlinked persisted authority before reuse", () => {
+    const repository = root("persisted-rejection");
+    writeFileSync(join(repository, "source.ts"), "export const value = 1;\n", "utf8");
+    const authority = { tenantId: "tenant-a", repositoryId: "repo-a" };
+    materializeCodebaseIndex(repository, { authority });
+    const path = defaultIndexPath(repository);
+
+    const foreign = materializeCodebaseIndex(repository, {
+      authority: { tenantId: "tenant-b", repositoryId: "repo-a" },
+    });
+    expect(foreign.evidence).toMatchObject({
+      classification: "rebuilt",
+      rejectedReason: "codebase_index_persisted_authority_mismatch",
+    });
+
+    const envelope = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    envelope.indexContentDigest = "0".repeat(64);
+    writeFileSync(path, `\uFEFF${JSON.stringify(envelope, null, 2).replace(/\n/g, "\r\n")}`, "utf8");
+    const corrupt = materializeCodebaseIndex(repository, {
+      authority: { tenantId: "tenant-b", repositoryId: "repo-a" },
+    });
+    expect(corrupt.evidence.rejectedReason).toBe("codebase_index_persisted_digest_mismatch");
+
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1, index: [] }), "utf8");
+    const malformed = materializeCodebaseIndex(repository, {
+      authority: { tenantId: "tenant-b", repositoryId: "repo-a" },
+    });
+    expect(malformed.evidence.rejectedReason).toBe("codebase_index_persisted_shape_invalid");
+
+    rmSync(dirname(path), { recursive: true, force: true });
+    const outside = root("persisted-symlink-outside");
+    symlinkSync(outside, dirname(path), "junction");
+    expectSafetyError(
+      () => materializeCodebaseIndex(repository, { authority }),
+      "codebase_index_symlink_not_allowed",
+    );
   });
 });
