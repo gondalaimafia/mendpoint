@@ -1,5 +1,10 @@
 /**
- * Production closure execution ledger gate — npm run ledger:check
+ * Production closure execution ledger gate.
+ *
+ * Invoke with `npx tsx scripts/production-closure-execution-ledger.ts`.
+ * Root `test` already runs `scripts/production-closure-execution-ledger.test.ts`,
+ * which is the CI gate. This file is the same check as a standalone process.
+ * Do not add npm scripts for it: `package.json` is a pinned authority surface.
  *
  * The problem this guards against
  * --------------------------------
@@ -13,8 +18,10 @@
  * What this gate establishes
  * --------------------------
  *   1. No drift — the committed artifact is byte-for-byte identical to a fresh
- *      generation. Regenerate with `npm run ledger:generate` after any register
- *      change; this gate fails until the committed file is refreshed.
+ *      generation. Regenerate with
+ *      `npx tsx scripts/generate-production-closure-execution-ledger.ts`
+ *      after any register change; this gate fails until the committed file is
+ *      refreshed.
  *   2. No masquerade — no row's `reachableCodePath` points at a test file. The
  *      test/source distinction is routed through evidence-reachability-check's
  *      `isTestPath` rather than a second, bespoke judge, so "reachable code
@@ -54,7 +61,7 @@ export function evaluateLedgerGate(
       code: "LEDGER_DRIFT",
       subject: "docs/PRODUCTION_CLOSURE_EXECUTION_LEDGER.json",
       message:
-        "committed ledger does not match a fresh generation; run `npm run ledger:generate` and commit the result",
+        "committed ledger does not match a fresh generation; run `npx tsx scripts/generate-production-closure-execution-ledger.ts` and commit the result",
     });
   }
   for (const row of ledger.rows) {
