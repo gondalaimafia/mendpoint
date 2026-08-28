@@ -302,9 +302,11 @@ describe("Fettler PR review dispatch", () => {
     expect(payload).not.toHaveProperty("missionId");
   });
 
-  it("CONTROL: deleting the campaign hint leaves a live PR-review enqueue unbound", async () => {
+  it("CONTROL: a PR-review enqueue with no enrolled campaign stays unbound", async () => {
+    // Real control for "attaches the unambiguous enrolled Fettler campaign":
+    // with the enrollment removed, the review agent.run must carry no hint. If
+    // the dispatch attached a hint unconditionally, this control would fail.
     const { db, job, root } = fixture();
-    enrollSingleRepoCampaign(db, root);
     const result = await runFettlerPrReviewDispatch({
       db,
       job,
@@ -319,6 +321,6 @@ describe("Fettler PR review dispatch", () => {
     });
     if (result.status !== "review_enqueued") throw new Error("unreachable");
     const payload = JSON.parse(getJob(db, result.agentJobId, "tenant-a")!.payload_json) as Record<string, unknown>;
-    expect(payload.fettlerCampaignId).toBe("campaign-a");
+    expect(payload).not.toHaveProperty("fettlerCampaignId");
   });
 });

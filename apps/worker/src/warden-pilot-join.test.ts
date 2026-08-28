@@ -377,9 +377,12 @@ describe("joined Warden pilot intake", () => {
     expect(payload).not.toHaveProperty("fettlerCampaignId");
   });
 
-  it("CONTROL: deleting the campaign hint leaves a live enqueue unbound", () => {
+  it("CONTROL: an enqueue with no enrolled campaign stays unbound", () => {
+    // Real control for "attaches the unambiguous enrolled Fettler campaign":
+    // the treatment's only cause (an enrolled campaign) is removed, so the
+    // hint must be absent. If the enqueue path attached a hint unconditionally,
+    // this control would fail.
     const { db } = fixture();
-    enrollSingleRepoCampaign(db);
     const joined = enqueuePipelineWardenRuns(db, {
       tenantId: "tenant-a",
       pipelineJobId: "pipeline-control",
@@ -389,6 +392,37 @@ describe("joined Warden pilot intake", () => {
       useLlm: false,
     });
     const payload = JSON.parse(getJob(db, joined[0]!.jobId!, "tenant-a")!.payload_json) as Record<string, unknown>;
-    expect(payload.fettlerCampaignId).toBe("campaign-a");
+    expect(payload).not.toHaveProperty("fettlerCampaignId");
+  });
+
+  it("does not replay a campaign-bound job as an unbound one when the campaign is later unenrolled", () => {
+    // One-sided hint case: existing-has-hint / expected-has-none must NOT be
+    // treated as an equivalent replay. A dropped campaign hint is a real
+    // payload divergence, so the second attempt is an idempotency conflict, not
+    // a silent replay of the bound job.
+    const { db } = fixture();
+    enrollSingleRepoCampaign(db);
+    const first = enqueuePipelineWardenRuns(db, {
+      tenantId: "tenant-a",
+      pipelineJobId: "pipeline-job-a",
+      providerSlug: "stripe",
+      report: report(["src/client.ts"]),
+      observedAt,
+      useLlm: false,
+    });
+    const boundPayload = JSON.parse(getJob(db, first[0]!.jobId!, "tenant-a")!.payload_json) as Record<string, unknown>;
+    expect(boundPayload.fettlerCampaignId).toBe("campaign-a");
+
+    // Unenroll the campaign so the next attempt resolves no hint.
+    db.raw.prepare(`DELETE FROM fettler_campaign_targets WHERE tenant_id = 'tenant-a'`).run();
+
+    expect(() => enqueuePipelineWardenRuns(db, {
+      tenantId: "tenant-a",
+      pipelineJobId: "pipeline-job-b",
+      providerSlug: "stripe",
+      report: report(["src/client.ts"]),
+      observedAt,
+      useLlm: false,
+    })).toThrow("warden_pilot_join_idempotency_conflict");
   });
 });

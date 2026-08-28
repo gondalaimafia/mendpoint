@@ -60,7 +60,12 @@ function campaignHint(payload: Record<string, unknown>): string | undefined {
 }
 
 function withoutCampaignHint(payload: Record<string, unknown>): Record<string, unknown> {
-  const { fettlerCampaignId: _campaign, campaignId: _alias, missionId: _mission, ...rest } = payload;
+  // Only the campaign hint is normalized out of the structural comparison; its
+  // divergence is judged separately below. `missionId` is deliberately NOT
+  // stripped: this file never sets it today, so leaving it in the deep-equal
+  // means any future one-sided `missionId` is caught as a real payload
+  // divergence rather than silently ignored.
+  const { fettlerCampaignId: _campaign, campaignId: _alias, ...rest } = payload;
   return rest;
 }
 
@@ -77,7 +82,12 @@ function equivalentReplayPayload(existingPayloadJson: string, expectedPayload: R
     }
     const existingHint = campaignHint(existing);
     const expectedHint = campaignHint(expectedPayload);
-    if (existingHint && expectedHint && existingHint !== expectedHint) return false;
+    // A campaign hint may be ADDED by a later enrollment (existing had none,
+    // expected now does) — a benign late binding that stays an equivalent
+    // replay. But an existing hint must never be silently DROPPED or CHANGED on
+    // replay: existing-has-hint with expected-none, or two differing hints, is
+    // a real payload divergence, not "didn't determine, so it matches".
+    if (existingHint && existingHint !== expectedHint) return false;
     return isDeepStrictEqual(
       {
         ...withoutCampaignHint(existing),
