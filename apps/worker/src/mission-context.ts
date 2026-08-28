@@ -27,6 +27,7 @@ import {
   resolveMissionSnapshotIdentity,
   type AppDb,
   type Mission,
+  type MissionVerificationRecord,
   type MissionVerificationStanding,
 } from "@mendpoint/db";
 import {
@@ -60,6 +61,28 @@ export type BuildMissionContextParams = Readonly<{
    */
   graphDb?: GraphLearnDb | null;
 }>;
+
+const CANDIDATE_SCOPE_SUFFIX = /:candidate:[0-9a-f]{64}$/;
+
+/** Same rule as `selectCurrentVerificationRecords` in @mendpoint/db: only the
+ * newest record in each candidate-scope family is current. Kept local so the
+ * producer does not depend on a db export the workspace install may not have
+ * linked yet; the db suite owns the algorithm tests. */
+function selectCurrentVerificationRecords(
+  records: readonly MissionVerificationRecord[],
+): MissionVerificationRecord[] {
+  const latestByFamily = new Map<string, MissionVerificationRecord>();
+  for (const record of records) {
+    const family = record.scope.replace(CANDIDATE_SCOPE_SUFFIX, "");
+    const prev = latestByFamily.get(family);
+    if (!prev
+      || record.createdAt > prev.createdAt
+      || (record.createdAt === prev.createdAt && record.id > prev.id)) {
+      latestByFamily.set(family, record);
+    }
+  }
+  return [...latestByFamily.values()].sort((a, b) => (a.scope < b.scope ? -1 : a.scope > b.scope ? 1 : 0));
+}
 
 /** Map a per-scope verification standing to the compiler's carried-through input. */
 function verificationInputsForStanding(
@@ -191,15 +214,18 @@ export function buildMissionContext(
     if (!mission.snapshotId) return { consulted: false, reason: "no_mission_bound" as const };
     const current = resolveMissionSnapshotIdentity(db, tenantId, mission.snapshotId);
     const all = listMissionVerifications(db, tenantId, mission.id);
-    const scopes = [...new Set(all.map((record) => record.scope))].sort();
+    // Only the newest record in each scope family is current. An older
+    // candidate's passed row on the same source snapshot must not appear as
+    // current_evidence beside a later attempt.
+    const currentRecords = selectCurrentVerificationRecords(all);
     return {
       consulted: true,
-      records: scopes.map((scope) =>
+      records: currentRecords.map((record) =>
         verificationInputsForStanding(
           tenantId,
-          scope,
+          record.scope,
           classifyMissionVerificationEvidence(
-            all.filter((record) => record.scope === scope),
+            all.filter((row) => row.scope === record.scope),
             current,
           ),
         ),

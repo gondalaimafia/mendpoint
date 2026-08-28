@@ -198,6 +198,54 @@ describe("worker mission-context producer (real stores)", () => {
     expect(kinds.has("exception")).toBe(true);
   });
 
+  // An older candidate's passed row on the same source snapshot must not
+  // survive as current_evidence next to a later attempt. Deleting
+  // selectCurrentVerificationRecords in the producer turns this RED.
+  it("surfaces only the latest candidate-scoped verification as current evidence", () => {
+    const db = fixture();
+    recordMissionVerification(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      verification: "older candidate green",
+      scope: `warden.campaign.execute:c1:t1:candidate:${"a".repeat(64)}`,
+      snapshotId: "snapA",
+      resolvedSha: SHA,
+      manifestSha256: MANIFEST,
+      status: "passed",
+      verifierPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    recordMissionVerification(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      verification: "newer candidate still failing preexisting checks",
+      scope: `warden.campaign.execute:c1:t1:candidate:${"b".repeat(64)}`,
+      snapshotId: "snapA",
+      resolvedSha: SHA,
+      manifestSha256: MANIFEST,
+      status: "inconclusive",
+      verifierPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: "2026-01-02T00:00:00.000Z",
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    });
+    if (compiled.envelope.verificationState.status !== "consulted") throw new Error("unreachable");
+    expect(compiled.envelope.verificationState.entries).toHaveLength(1);
+    expect(compiled.envelope.verificationState.entries[0]).toMatchObject({
+      state: "no_current_evidence",
+      reason: "current_verification_inconclusive",
+    });
+    expect(compiled.envelope.verificationState.entries.some((entry) => entry.state === "current_evidence"))
+      .toBe(false);
+  });
+
   it("renders the mission's inherited Policy Envelope as consulted hard-policy constraints", () => {
     const db = fixture();
     ensureDefaultPolicyEnvelopeBinding(db, {

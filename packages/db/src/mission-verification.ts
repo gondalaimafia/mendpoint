@@ -333,6 +333,33 @@ export function classifyMissionVerificationEvidence(
   return Object.freeze({ standing: "no_current_evidence" as const, reason });
 }
 
+const CANDIDATE_SCOPE_SUFFIX = /:candidate:[0-9a-f]{64}$/;
+
+/** Strip a trailing candidate digest so two execute attempts on the same
+ * (campaign, target) share a family. Non-candidate scopes are their own family. */
+export function verificationScopeFamily(scope: string): string {
+  return scope.replace(CANDIDATE_SCOPE_SUFFIX, "");
+}
+
+/** Keep only the newest record in each scope family. An older candidate's
+ * `passed` row on the same source snapshot must not survive as current
+ * evidence next to a later attempt. */
+export function selectCurrentVerificationRecords(
+  records: readonly MissionVerificationRecord[],
+): MissionVerificationRecord[] {
+  const latestByFamily = new Map<string, MissionVerificationRecord>();
+  for (const record of records) {
+    const family = verificationScopeFamily(record.scope);
+    const prev = latestByFamily.get(family);
+    if (!prev
+      || record.createdAt > prev.createdAt
+      || (record.createdAt === prev.createdAt && record.id > prev.id)) {
+      latestByFamily.set(family, record);
+    }
+  }
+  return [...latestByFamily.values()].sort((a, b) => (a.scope < b.scope ? -1 : a.scope > b.scope ? 1 : 0));
+}
+
 // List verification records for a mission (optionally filtered to one scope),
 // most recent first.
 export function listMissionVerifications(db: AppDb, tenantId: string, missionId: string, scope?: string): MissionVerificationRecord[] {
