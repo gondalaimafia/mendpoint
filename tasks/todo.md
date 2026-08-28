@@ -3333,3 +3333,157 @@ GREEN: the canonical generator changed only those four artifacts. It removed ref
 #### Review
 
 Main revision `c8d51caa` merged a reviewer key that the runtime ignores and retained null App IDs. The repair uses the verified, nonsecret identity tuple for `mendpoint-closure-authority[bot]` and the observed GitHub Actions App ID. The bot is temporarily bound under `Claude`, which permits reciprocal review of the current Codex and Cursor queue; a second distinct reviewer identity is still required before Claude-owned pull requests can satisfy the same invariant. The 26 GitHub-authority tests, 30 matrix tests, and 12 proposal-authority tests pass, the scripts TypeScript project passes, and `git diff --check` is clean.
+
+## 2026-08-27 Release ingestion integrity v2
+
+- [x] Add red regressions for observation-time-independent claim identity, exact provider and collection binding, deterministic dispatch replay, fenced tenant-scoped delivery, reviewer CAS, v1 upgrade, and restart retention.
+- [x] Migrate the release ingestion ledger forward without changing or losing v1 artifacts and overrides.
+- [x] Implement append-only observations, deterministic transactional dispatch, lease-generation fencing, digest-bound rehydration, and explicit reviewer revision conflicts.
+- [x] Run the focused catalog suite, catalog typecheck, and strict diff checks, then record the exact evidence and remaining live-reachability boundary.
+- [x] Serialize authoritative schema-version reads under the SQLite write lock and prove concurrent v1 upgrade convergence across processes.
+- [x] Add bounded durable retry and backoff state while keeping explicitly terminal dispatch failures terminal.
+- [x] Move claim, expiry, and finish authority to an injected store clock and reject caller timestamp attempts.
+- [x] Re-run the full catalog suite, catalog typecheck, and strict diff checks after the review fixes.
+- [x] Persist and transactionally advance a singleton clock watermark, bind each lease generation to `claimed_at`, and prove rollback recovery across restart and processes.
+- [x] Restore the original reviewer-override return and conflict contract while exposing concurrent CAS through a separately named API.
+- [x] Re-run focused and full catalog verification, process stress, typecheck, and diff checks for the second review cycle.
+- [x] Repair the immediate-parent v2 upgrade with a new append-only v3 migration and prove safe active-lease recovery across restart.
+
+### Live release polling increment
+
+- [x] Add a versioned tenant, provider, adapter, and source polling contract over the existing safe feed fetch boundary.
+- [x] Persist fetched releases through the existing ingestion ledger and identifier-and-digest dispatch outbox.
+- [x] Preserve OpenAPI compatibility while exposing independent typed OpenAPI and release scheduler outcomes.
+- [x] Prove tenant scope, identity binding, protected URL rejection, rehydration, replay, and mixed source outcomes.
+- [x] Run focused and full catalog tests, typechecks, dependency audit, and strict diff review.
+- [x] Snapshot and canonicalize the complete release configuration before asynchronous fetch work.
+- [x] Reject scheduler release results whose identity does not exactly match the scheduled configuration.
+- [x] Prove both OpenAPI and release failures survive independently in one aggregate window.
+- [x] Re-run focused and full verification after the spec-review repairs.
+- [x] Isolate malformed release configurations to their safely bound schedule without suppressing OpenAPI or unrelated releases.
+- [x] Redact invalid source diagnostics and represent rejected configuration values without valid identity casts.
+- [x] Re-run focused and full verification after the second spec-review repairs.
+- [x] Convert duplicate tenant/provider release bindings into one scoped invalid outcome without first-wins or last-wins execution.
+- [x] Prove same-tenant and cross-tenant duplicates preserve affected OpenAPI and unrelated release schedules.
+- [x] Re-run focused and full verification after the duplicate-binding repair.
+- [x] Runtime-validate all executor results and replace untrusted or identity-mismatched payloads with one fixed typed failure.
+- [x] Replace external and durable release-source paths with safe origin-plus-digest identity under a strict no-query URL policy.
+- [x] Pin each production connection to its validated DNS address, including redirects, through the shared fetch boundary.
+- [x] Enforce safe tenant/provider identifiers and collision-free tuple scoping.
+- [x] Retain redacted top-level failures for invalid configurations that cannot bind to a schedule.
+- [x] Enforce one non-overridable release document ceiling across configuration, streaming fetch, and ingestion.
+- [x] Require schedule-window completion authority and preserve any concurrent terminal winner in returned outcomes and health.
+- [x] Run focused and full verification, direct adversarial probes, typechecks, audit, and strict diff review.
+- [x] Restrict executor failure output to an allowlisted release error-code contract and redact unknown text everywhere.
+- [x] Verify every successful executor artifact and dispatch reference against the exact tenant-bound ledger before terminal success.
+- [x] Keep legacy schedule counters and health isolated from separately reported unbound configuration failures.
+- [x] Prove secret redaction, absent/forged/cross-tenant references, valid persisted references, and configuration-only failure accounting.
+- [x] Run focused and full verification, workspace typecheck, dependency audit, secret scans, and strict diff review.
+- [x] RED: prove an unchanged executor result cannot omit the exact durable dispatch reference for its artifact.
+- [x] Require exact tenant-bound durable dispatch coverage for every successful release result while preserving unchanged count semantics.
+- [x] Run focused and full catalog tests, workspace typecheck, dependency audit, secret scans, and strict diff review, then commit the regression repair.
+- [x] RED: prove multiple delayed redirects share one overall timeout rather than resetting the deadline per hop.
+- [x] RED: prove failed executor results cannot return fabricated references and oversized success arrays are rejected before iteration.
+- [x] Use one absolute remote-fetch deadline and enforce a distinct versioned 4,096-reference cardinality ceiling before iteration.
+- [x] Run focused polling, scheduler, and network tests plus full catalog, workspace typecheck, audit, secret scan, and strict diff review.
+
+### Review
+
+- RED: eight focused tests failed against v1 behavior. Separate upgrade regressions then reproduced a repeated-observation v1 startup constraint failure and a deterministic outbox identity collision that committed an artifact without its dispatch.
+- REVIEW RED: a four-process cold-start probe failed in five of ten rounds because schema versions were read before the write lock; retryable failures were terminal; and caller timestamps could steal or backdate leases. The first lock repair exposed a separate WAL negotiation collision, which was fixed before completion.
+- SECOND REVIEW RED: an injected store clock could still move backward across calls because no database watermark existed, and the first CAS repair changed the exported legacy reviewer-override return and conflict behavior.
+- GREEN: schema v2 preserves every v1 artifact, override, and observation; historical duplicate identities remain addressable while one deterministic canonical identity owns replay and dispatch. New ingestion excludes observation time from the normalized claim digest and binds canonical identity to tenant, provider, adapter, collection, source item, and normalized digest.
+- The artifact, observation, and dispatch write in one immediate transaction. Schema convergence re-reads authority under the same write lock; dispatch claims are tenant scoped, attempt bounded, lease-generation fenced, store-clock bound, and retain retry/backoff evidence across restart. Exact content digest rehydration, completion, failure, and reviewer CAS fail closed on stale or cross-tenant authority.
+- Catalog typecheck passes. The complete catalog suite passes 63 tests across seven files, the coordinated first-open and v1 upgrade process regressions pass, a separate 40-process stress probe has zero failures, and `git diff --check` is clean.
+- The second review repair leaves the watermark empty until the first lease decision, then serializes its monotonic advance in SQLite, binds `claimed_at` to the lease generation, persists authority across restart, and rejects backward clocks across processes. The legacy reviewer API again returns `ReleaseArtifact` and throws its original conflict error; explicit CAS callers use `recordReleaseReviewerOverrideCas`.
+- Final second-cycle evidence: the focused release-ingestion suite passes 26 tests, the complete catalog suite passes 66 tests across seven files, catalog typecheck passes, the final 40-process first-open stress probe has zero failures, and `git diff --check` is clean.
+- P1 RED: an exact immediate-parent v2 database remained at schema version 2, so the first clock-authorized claim had neither `claimed_at` nor `release_ingestion_clock_authority` available.
+- P1 GREEN: version 3 conditionally adds the missing clock safety objects, accepts databases already expanded by `35245f50`, and binds predecessor active claims to their known lease expiry so the old owner cannot complete while expiry takeover and retry remain available. The focused suite passes 28 tests, the complete catalog suite passes 68 tests across seven files, the 40-process cold-open probe has zero failures, catalog and full-workspace typechecks pass, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
+- LIVE POLL RED: the release poll module and index export were absent, three mixed-source scheduler cases discarded the release outcome, and a release-only provider produced no claimed schedule window.
+- LIVE POLL GREEN: `release-poll.v1` binds tenant, provider, adapter, and source identity, reuses the existing protected feed fetch boundary, and writes through the existing release ledger and identifier-and-digest dispatch outbox. Scheduler windows now retain independent typed OpenAPI and release outcomes, including release-only providers, while legacy aggregate fields and OpenAPI behavior remain compatible. The complete catalog suite passes 77 tests across eight files, catalog and full-workspace typechecks pass, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
+- SPEC REVIEW RED: five adversarial fetch mutations changed post-await tenant, provider, adapter, source, or byte-limit behavior, a separate normalization case diverged, and five spoofed successful executor identities were accepted as release success. The pre-existing aggregate logic already retained the newly added simultaneous OpenAPI and release failure case honestly.
+- SPEC REVIEW GREEN: release polling now copies, validates, canonicalizes, and freezes the complete configuration before its first asynchronous boundary, then uses only that snapshot for fetch, parsing, ledger, outbox, result, and rehydration identity. Scheduler success requires an exact contract, tenant, provider, adapter, canonical source, and byte-limit match; mismatches become typed release failures without overwriting the independent OpenAPI outcome. The focused review suite passes 26 tests, the complete catalog suite passes 91 tests across eight files, catalog and full-workspace typechecks pass, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
+- SECOND SPEC REVIEW RED: seven polling regressions showed that rejected version, adapter, and source inputs still fabricated a valid v1 identity or echoed unsafe source text; three scheduler regressions showed one malformed release configuration aborting OpenAPI and unrelated tenant work before execution.
+- SECOND SPEC REVIEW GREEN: configuration parsing now yields a non-throwing valid/invalid result per tenant/provider scope. Invalid configurations carry no validated version, adapter, or source identity; their diagnostic source reference contains only a safely parsed origin and SHA-256 of the supplied value. Bound invalid configurations become typed release failures inside their own schedule, while independent OpenAPI and unrelated tenant release outcomes complete normally. The focused review suite passes 36 tests, the complete catalog suite passes 101 tests across eight files, catalog and full-workspace typechecks pass, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
+- DUPLICATE REVIEW RED: same-tenant and cross-tenant probes both stopped at the global `release_poll_configuration_duplicate` throw before OpenAPI or unrelated releases could execute.
+- DUPLICATE REVIEW GREEN: every repeated tenant/provider binding now collapses to the same source-free `invalid_configuration` result. No first, last, or later candidate executes; the affected OpenAPI outcome and unrelated tenant/provider releases continue independently. The focused review suite passes 38 tests, the complete catalog suite passes 103 tests across eight files, catalog and full-workspace typechecks pass, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
+- QUALITY REVIEW GREEN: executor results are exact-schema parsed into frozen copies; invalid and unbound configurations retain only redacted diagnostics; release-source identity is origin plus digest; scope keys use safe identifiers and canonical tuples; and the one MiB release ceiling is enforced during configuration, streaming, and ingestion. Production feed requests now validate every DNS answer, pin one approved address into a fresh native socket for each hop while preserving Host, SNI, and certificate hostname checks, cover DNS through body reads with one deadline, request identity encoding, reject compressed bodies, and close unread responses. Every item URL is replaced with origin-plus-digest provenance before persistence, while missing XML IDs use a distinct domain-separated digest; RSS and Atom replay tests prove query, fragment, userinfo, and path secrets are absent from every durable text column and returned artifact. Lost terminal authority returns a typed failure while durable health preserves the concurrent winner. The final focused suite passes 114 tests, the complete catalog suite passes 134 tests across eight files, catalog and full-workspace typechecks pass, the production dependency audit reports zero vulnerabilities, and `git diff --check` is clean.
+- SPEC RE-REVIEW GREEN: release executor failures now cross the scheduler boundary only as bounded allowlisted codes; unknown result text and thrown exceptions map to `release_poll_executor_failed` without reaching results or durable schedule errors. Successful ingested and unchanged results require tenant-fenced digest rehydration of every canonical artifact plus exact tenant-scoped dispatch authority, provider, adapter, collection, digest, uniqueness, coverage, and inserted-count checks before terminal success. Unbound configuration failures remain separately typed under `configurationFailed` and `configurationHealth`; legacy schedule executions, counters, and health remain execution-derived while overall status degrades. The focused four-file suite passes 101 tests, the complete catalog suite passes 145 tests across eight files, full-workspace typecheck passes, the production dependency audit reports zero vulnerabilities, secret scans find no production test marker, and `git diff --check` is clean.
+- FINAL AUTHORITY REVIEW RED/GREEN: a ledger-backed unchanged result with one artifact and no dispatch was incorrectly reported as successful. The regression failed with that exact false success, then passed after every successful result was required to return one exact tenant-bound durable dispatch per artifact; unchanged retains `inserted: 0`. The focused scheduler suite passes 46 tests, the complete catalog suite passes 146 tests across eight files, full-workspace typecheck passes, the production dependency audit reports zero vulnerabilities, the production secret scan is clean, and `git diff --check` is clean.
+- QUALITY FOLLOW-UP RED/GREEN: three delayed remote hops exceeded the configured timeout because each redirect received a fresh deadline; one monotonic deadline and controller now govern DNS, connection, every redirect, and body reading, with post-await fail-closed checks and one timer cleanup. Failed executor results must return empty reference arrays, while successful artifact and dispatch arrays are bounded by the exported versioned `RELEASE_POLL_MAX_REFERENCES` contract before iterator access; 4,096 reaches entry validation and 4,097 does not. Fabricated and cross-tenant failed references become the fixed invalid executor outcome without escaping. Focused polling, network, scheduler, release-poll, and export suites pass 114 tests, the complete catalog suite passes 152 tests across eight files, full-workspace typecheck passes, the production dependency audit reports zero vulnerabilities, secret scans are clean, and `git diff --check` is clean.
+- REQUIRED NEXT TASK: before release polling is enabled in the worker, its scheduler consumer must include top-level `status` and `configurationHealth` in operational readiness and logging. The current production worker reads only the legacy schedule-derived `failed` and `health` fields and does not configure the new release polling path; worker runtime wiring remains intentionally outside this catalog-only increment.
+- ME-ING-003 and ME-ING-004 remain partial. This increment adds catalog-level polling and scheduler contracts only; it does not wire worker or API runtime, drain the outbox, add governance routes, or claim production reachability.
+
+## 2026-08-27 Worker release polling runtime closure
+
+- [x] RED: prove the catalog root does not yet export the canonical release poll parser and parsed contract.
+- [x] RED: cover frozen canonical worker configuration, disabled unset and blank input, bounded array validation, fixed redaction, duplicate binding, tenant mismatch, and stable release ingestion path.
+- [x] RED: cover fail-closed scheduler summarization, explicit heartbeat and web health exposure, and disabled versus healthy release polling.
+- [x] RED: cover protected worker-only configuration isolation across customer warden child roles.
+- [x] RED: cover one release store lifecycle, restart, and partial-open cleanup without opening durable state for static configuration defects.
+- [x] GREEN: wire the canonical catalog parser into worker boot, durable initialization, scheduling, readiness, safe logging, heartbeat serialization, and web health reads.
+- [x] GREEN: document the protected dormant worker configuration without enabling it or changing production manifests.
+- [x] Run focused catalog, worker, web, and customer profile tests; full catalog and worker suites; workspace typecheck; production dependency audit; production secret scan; and `git diff --check`.
+- [x] Self-review the complete delta, stage only owned files, and create a new imperative commit without remote changes.
+
+### Review
+
+- RED evidence: the first focused run failed exactly where the runtime contract was absent: one catalog root-export assertion, two web heartbeat exposure assertions, one customer role-isolation assertion, and the worker helper imports. Two later one-test runs separately failed on the missing production data-root guard in the path helper and production validator before those guards were implemented. Independent review then proved a configured release scheduler could report ready before its first healthy run; the regression returned HTTP 200 instead of 503 before the readiness initialization and web consistency guard were corrected.
+- GREEN evidence: the focused catalog, worker, web, and profile files pass 108 tests in aggregate: catalog 4, worker 88, web 10, profile 6. The complete catalog suite passes 152 tests across eight files. The complete worker suite passes 608 tests with one intentional skip across 66 files. Full-workspace typecheck passes, `npm audit --omit=dev` reports zero vulnerabilities, the changed-runtime production secret scan is clean, and the CRLF-aware `git diff --check` is clean.
+- Runtime evidence: configuration is parsed into frozen catalog-owned canonical objects before any durable open; configured production requires an absolute data root; the composite startup closes every earlier handle in reverse order when the final release-store open fails; its shutdown is idempotent and opens no release store for the frozen empty configuration.
+- Operational evidence: scheduler readiness requires healthy top-level and legacy status plus zero legacy and configuration failures; heartbeat and web output expose bounded booleans, counts, and enums only; configured but not-started and degraded release polling cannot set `feedPollOk` true. The customer profile strips the protected JSON from every role and restores it only to the worker.
+- Remaining activation gates: release ingestion backup and restore coverage with operator approval; dispatch outbox drain activation and proof.
+- Requirement status: unchanged. ME-ING-003 and ME-ING-004 remain partial and internal only.
+
+## 2026-08-27 Unpinned release schedule seeding P1
+
+- [x] Verify exact head `06688c05` and reproduce the fresh-database unpinned scheduling premise.
+- [x] RED: prove one valid unpinned release configuration creates, claims, and executes one release-only schedule window on a fresh database.
+- [x] RED: prove multiple tenant-bound configurations each create and execute exactly one isolated schedule, then replay without re-execution.
+- [x] GREEN: seed unique release schedule bindings independently of the optional global tenant pin while preserving existing OpenAPI scheduling behavior.
+- [x] Run focused scheduler and worker tests, full catalog and worker suites, workspace typecheck, production audit, secret scan, and `git diff --check`.
+- [x] Self-review the complete delta, explicitly stage only scoped files, and create a new commit without remote changes.
+
+### Review
+
+- RED evidence: the fresh-database scheduler suite failed exactly two new regressions while 51 existing tests passed. Both unpinned cases observed an empty executor call list, proving configured single-tenant and multi-tenant releases were silently skipped before schedule creation.
+- GREEN evidence: the focused scheduler suite passes 53 tests and the combined scheduler/worker files pass 141 tests. The complete catalog suite passes 154 tests across eight files; the complete worker suite passes 608 tests with one intentional skip across 66 files. Full-workspace typecheck passes, `npm audit --omit=dev` reports zero vulnerabilities, the production source secret scan is clean, and `git diff --check` is clean.
+- Behavior evidence: the scheduler derives one safe binding per deduplicated release scope. A pinned invocation retains its existing tenant-local OpenAPI and release seeding behavior; an unpinned invocation seeds only the configured release tenant/provider pairs, then uses the existing schedule claim, concurrency, completion, health, and replay paths unchanged. Same-window replay reports two already-claimed schedules and makes no additional executor calls.
+- Tenant evidence: no global `MENDPOINT_TENANT_ID` is required. Each canonical configuration remains bound to its own tenant and provider; duplicate and invalid configurations retain their existing isolated outcomes.
+- Remaining activation gates are unchanged: release-ingestion backup and restore coverage with operator approval, plus dispatch outbox drain activation and proof. ME-ING-003 and ME-ING-004 remain partial and internal only.
+
+## 2026-08-27 Release polling quality review fixes
+
+- [x] RED: reproduce crash-left running schedule health, unexpired replay, expiry takeover, stale completion, configured first-success readiness, and recovery.
+- [x] GREEN: add durable expiring generation-fenced schedule claims through the existing DB schema and APIs.
+- [x] GREEN: require a durable successful completion for every configured release tenant and provider before scheduler and worker readiness can be healthy.
+- [x] RED/GREEN: digest every hierarchical URI-style source item identifier while preserving opaque IDs and URNs.
+- [x] Restore `apps/worker/src/cli.ts` to its baseline CRLF convention without broad formatting.
+- [x] Run focused and full catalog and worker tests, workspace typecheck, production audit, secret scan, diff check, and EOL check.
+- [x] Self-review the complete delta, stage only owned files, and create new commits without remote changes.
+
+### Review
+
+- RED evidence: the durable DB regression failed at expired same-window takeover; the crash/restart scheduler returned `healthy` with one replay, zero calls, and no success; the worker summary returned `ok: true`; and FTP, file, and custom hierarchical item identifiers returned credentials and private paths verbatim.
+- Durable claim evidence: running windows carry an expiry and generation in the existing additive DB migration path. Unexpired replay cannot execute, expiry takeover increments the generation, stale or expired completion cannot mutate terminal state, and the legacy boolean claim API remains compatible. A release-specific durable success timestamp is written only under current completion authority.
+- Readiness evidence: every deduplicated configured release tenant and provider must have a durable release success before scheduler status and worker readiness become healthy. Crash/restart remains 503 with zero executor calls; expiry takeover executes once; successful recovery and same-window replay remain healthy and idempotent.
+- Identifier evidence: every RFC-style `scheme://` item identifier uses a domain-separated SHA-256 digest before return or persistence. Safe opaque IDs and URNs remain unchanged; FTP, file, and custom credentials and paths are absent from returned artifacts and durable rows.
+- Verification evidence: full Catalog passes 156 of 156, DB passes 432 of 432 across 56 files including schema upgrade divergence, Worker passes 608 with one intentional skip across 66 files, and the public health route passes 11 of 11. Full-workspace typecheck passes after one test fixture was updated for the additive nullable field. `npm audit --omit=dev` reports zero vulnerabilities, the production source secret scan is clean, and the CRLF-aware diff check is clean.
+- EOL evidence: `apps/worker/src/cli.ts` is normalized to 4,745 CRLF lines with zero bare LF; its semantic diff is limited to configured release readiness.
+- Remaining activation gates and requirement status are unchanged. This quality repair does not count release plumbing as additional Mendpoint 101 product progress.
+
+## 2026-08-27 HTTPS release item identity compatibility
+
+- [x] RED: seed an artifact with the legacy canonical HTTPS GUID digest, ingest the same release through current code, and prove the changed formula duplicates the artifact and dispatch.
+- [x] GREEN: preserve the exact legacy HTTPS identity formula while retaining the domain-separated digest for other hierarchical `scheme://` identifiers.
+- [x] Cover legacy URL canonicalization, non-HTTPS secret redaction, opaque IDs, and URNs.
+- [x] Run focused ingestion, full Catalog, workspace typecheck, production audit, secret scan, diff check, and EOL check.
+- [x] Self-review the exact four-file delta and prepare explicit staging without remote changes.
+
+### Review
+
+- RED evidence: both upgrade cases failed at `replay.inserted`, returning one new insertion instead of zero. The changed HTTPS digest therefore produced a second artifact and dispatch for the same canonical release identity.
+- Compatibility evidence: HTTPS item IDs again use the exact legacy digest of `new URL(itemId).toString()`. The regressions cover scheme and host case folding, default-port removal, and dot-segment normalization; each seeds the old digest, then proves current ingestion returns `inserted: 0`, one artifact, the same artifact ID, and one dispatch.
+- Safety evidence: only HTTPS uses the legacy formula. FTP, file, and custom hierarchical identifiers retain the domain-separated literal digest, while opaque IDs and URNs remain unchanged; the complete ingestion suite re-proves returned and durable secret redaction.
+- Verification evidence: the focused upgrade regression passes 2 of 2, the complete ingestion file passes 33 of 33, and the full Catalog suite passes 158 of 158 across eight files. Full-workspace typecheck passes, `npm audit --omit=dev` reports zero vulnerabilities, the changed production source secret scan has no matches, and the CRLF-aware diff check is clean.
+- EOL and scope evidence: the two Catalog files remain LF, the worker CLI remains `i/crlf w/crlf`, and only the two Catalog files plus `tasks/todo.md` and `tasks/lessons.md` changed. No remote mutation occurred.

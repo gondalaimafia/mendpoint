@@ -2056,17 +2056,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-27T07:58:19.011Z",
-    "observedMainRevision": "8e0706425a9cd417b23692cf354615a49602f5f5",
-    "observationDigest": "sha256:e98e22282e87035e330b82de6d0fe06772c90e1c3cce2130ad3b98ec159f6b7a",
+    "observedAt": "2026-08-27T23:49:35.952Z",
+    "observedMainRevision": "cf02b747d1661cc84c0a84d2cdb1c2f62ef9e7a4",
+    "observationDigest": "sha256:14e36b3da0e5de4b5639c702eefcaa6e42e8688716fc9e76f306af72571e2919",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 509,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/509",
-      "title": "authority: clear the activate_successor bootstrap to a normal self-declaration",
+      "number": 505,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/505",
+      "title": "Add tenant scoped release polling runtime",
       "baseBranch": "main",
-      "headBranch": "clear-activate-bootstrap",
+      "headBranch": "codex/live-release-polling",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -4377,11 +4377,11 @@
         "blockers": []
       },
       {
-        "number": 505,
+        "number": 511,
         "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/505",
-        "title": "Add tenant scoped release polling runtime",
-        "headBranch": "codex/live-release-polling",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/511",
+        "title": "Preauthorize reactive production authority successor",
+        "headBranch": "codex/510-authority-reactive-gates",
         "baseBranch": "main",
         "owner": {
           "actor": "Codex",
@@ -4395,7 +4395,7 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "86959b64820143554831abbf7ade05a6e4062df5",
+        "headRevision": "3962f028df6aaa9dd03e982c5574d3634594501f",
         "mergeRevision": null,
         "checks": [],
         "review": {

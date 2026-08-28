@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import {
-  claimFeedScheduleWindow,
+  claimFeedScheduleWindowLease,
   completeFeedScheduleWindow,
   getFeedScheduleHealth,
   listFeedSchedules,
+  recordAudit,
+  setFeedScheduleEnabled,
   upsertFeedSchedule,
   type AppDb,
   type FeedScheduleRow,
@@ -17,7 +19,30 @@ import {
   type FeedPipelineContext,
   type PollOneResult,
 } from "./run-poll.js";
-import type { FetchOpenApiResult, PollableFeed } from "./poll.js";
+import {
+  duplicateReleasePollConfigurationResult,
+  invalidReleasePollExecutorResult,
+  isReleasePollErrorCode,
+  parseReleasePollConfiguration,
+  pollReleaseSource,
+  RELEASE_POLL_MAX_REFERENCES,
+  type CanonicalReleasePollConfigurationV1,
+  type ParsedReleasePollConfiguration,
+  type ReleasePollConfigurationV1,
+  type ReleasePollResult,
+  type ValidReleasePollResult,
+} from "./release-poll.js";
+import {
+  listReleaseDispatches,
+  rehydrateReleaseArtifact,
+  type ReleaseIngestionStore,
+} from "./release-ingestion.js";
+import type { FetchFeedOptions, FetchOpenApiResult, PollableFeed } from "./poll.js";
+
+export type FeedScheduleSourceOutcome<T> =
+  | Readonly<{ status: "succeeded"; result: T }>
+  | Readonly<{ status: "failed"; error: string; result?: T }>
+  | Readonly<{ status: "not_configured" }>;
 
 export type FeedScheduleExecution = {
   scheduleId: string;
@@ -26,6 +51,8 @@ export type FeedScheduleExecution = {
   windowEndsAt: string;
   status: "succeeded" | "failed" | "already_claimed";
   poll?: PollOneResult;
+  openApiOutcome?: FeedScheduleSourceOutcome<PollOneResult>;
+  releaseOutcome?: FeedScheduleSourceOutcome<ReleasePollResult>;
   error?: string;
 };
 
@@ -46,10 +73,25 @@ export type FeedScheduleRunOptions = {
   ) => Promise<FeedPipelineDispatchResult>;
   execute?: (feed: PollableFeed, schedule: FeedScheduleRow) => Promise<PollOneResult>;
   feeds?: readonly PollableFeed[];
+  releaseStore?: ReleaseIngestionStore;
+  releaseFeeds?: readonly ReleasePollConfigurationV1[];
+  releaseFetchOptions?: FetchFeedOptions;
+  releaseExecute?: (
+    store: ReleaseIngestionStore,
+    config: ReleasePollConfigurationV1,
+    schedule: FeedScheduleRow,
+    at: string,
+    signal?: AbortSignal,
+  ) => Promise<ReleasePollResult>;
   sourceDocumentLoader?: (
     url: string,
     monorepoRoot: string,
+    signal?: AbortSignal,
   ) => Promise<FetchOpenApiResult>;
+  /** Trusted authority clock used independently for every claim and completion. */
+  clock?: () => string;
+  /** Stops queued claims and aborts in-flight source requests during service drain. */
+  signal?: AbortSignal;
 };
 
 function stableId(prefix: string, ...parts: string[]): string {
@@ -66,39 +108,340 @@ function scheduleWindow(schedule: FeedScheduleRow, at: string) {
   };
 }
 
-function ensureSchedules(
+function reconcileSchedules(
   db: AppDb,
-  tenantId: string,
-  feeds: readonly PollableFeed[],
+  tenantId: string | undefined,
+  feeds: readonly Readonly<{ slug: string }>[],
+  releaseBindings: readonly Readonly<{ tenantId: string; providerSlug: string }>[],
   at: string,
   intervalMs: number,
   staleAfterMs: number,
 ) {
-  const existing = new Set(
-    listFeedSchedules(db, tenantId).map((schedule) => schedule.provider_slug),
-  );
-  for (const feed of feeds) {
-    if (existing.has(feed.slug)) continue;
-    upsertFeedSchedule(db, {
-      id: stableId("feed-schedule", tenantId, feed.slug),
-      tenantId,
-      providerSlug: feed.slug,
+  const existing = listFeedSchedules(db, tenantId);
+  const existingByScope = new Map(existing.map((schedule) => [
+    releaseScope(schedule.tenant_id, schedule.provider_slug),
+    schedule,
+  ]));
+  const desired = new Map<string, { tenantId: string; providerSlug: string }>();
+  if (tenantId) {
+    for (const feed of feeds) {
+      desired.set(releaseScope(tenantId, feed.slug), { tenantId, providerSlug: feed.slug });
+    }
+  } else {
+    const feedSlugs = new Set(feeds.map((feed) => feed.slug));
+    for (const schedule of existing) {
+      if (feedSlugs.has(schedule.provider_slug)) {
+        desired.set(releaseScope(schedule.tenant_id, schedule.provider_slug), {
+          tenantId: schedule.tenant_id,
+          providerSlug: schedule.provider_slug,
+        });
+      }
+    }
+  }
+  for (const binding of releaseBindings) {
+    if (!tenantId || binding.tenantId === tenantId) {
+      desired.set(releaseScope(binding.tenantId, binding.providerSlug), { ...binding });
+    }
+  }
+  for (const schedule of existing) {
+    const scope = releaseScope(schedule.tenant_id, schedule.provider_slug);
+    if (desired.has(scope) || schedule.enabled !== 1) continue;
+    if (setFeedScheduleEnabled(db, {
+      tenantId: schedule.tenant_id,
+      providerSlug: schedule.provider_slug,
+      enabled: false,
+      updatedAt: at,
+    })) {
+      recordAudit(db, {
+        id: stableId("feed-schedule-audit", schedule.id, "disabled", at),
+        tenantId: schedule.tenant_id,
+        actor: "worker",
+        action: "feed.schedule_disabled",
+        resourceType: "feed_schedule",
+        resourceId: schedule.id,
+        metadata: { providerSlug: schedule.provider_slug, reason: "configuration_removed" },
+      });
+    }
+  }
+  for (const binding of desired.values()) {
+    const prior = existingByScope.get(releaseScope(binding.tenantId, binding.providerSlug));
+    const schedule = upsertFeedSchedule(db, {
+      id: stableId("feed-schedule", binding.tenantId, binding.providerSlug),
+      tenantId: binding.tenantId,
+      providerSlug: binding.providerSlug,
       intervalMs,
       staleAfterMs,
       createdAt: at,
     });
+    if (prior?.enabled === 0) {
+      recordAudit(db, {
+        id: stableId("feed-schedule-audit", schedule.id, "enabled", at),
+        tenantId: schedule.tenant_id,
+        actor: "worker",
+        action: "feed.schedule_enabled",
+        resourceType: "feed_schedule",
+        resourceId: schedule.id,
+        metadata: { providerSlug: schedule.provider_slug, reason: "configuration_restored" },
+      });
+    }
+  }
+}
+
+function openApiSucceeded(poll: PollOneResult): boolean {
+  return !new Set<PollOneResult["status"]>([
+    "error",
+    "no_url",
+    "skipped",
+  ]).has(poll.status);
+}
+
+function releaseScope(tenantId: string, providerSlug: string): string {
+  return JSON.stringify([tenantId, providerSlug]);
+}
+
+function expectedReleaseSourceUrl(config: CanonicalReleasePollConfigurationV1): string {
+  const canonical = config.source.url;
+  const digest = createHash("sha256").update(canonical).digest("hex");
+  return `${new URL(canonical).origin}/.well-known/mendpoint/release-source/${digest}`;
+}
+
+function exactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  return actual.length === keys.length && actual.every((key, index) => key === [...keys].sort()[index]);
+}
+
+function parseArtifactReferences(value: unknown) {
+  if (!Array.isArray(value)) return null;
+  const parsed = [];
+  for (const reference of value) {
+    const snapshot = Object.freeze({
+      artifactId: reference?.artifactId,
+      contentSha256: reference?.contentSha256,
+    });
+    if (
+      !exactRecord(reference, ["artifactId", "contentSha256"]) ||
+      typeof snapshot.artifactId !== "string" ||
+      !/^rel_[a-f0-9]{32}$/.test(snapshot.artifactId) ||
+      typeof snapshot.contentSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(snapshot.contentSha256)
+    ) return null;
+    parsed.push(snapshot as { artifactId: string; contentSha256: string });
+  }
+  return Object.freeze(parsed);
+}
+
+function parseDispatchReferences(value: unknown) {
+  if (!Array.isArray(value)) return null;
+  const parsed = [];
+  for (const reference of value) {
+    const snapshot = Object.freeze({
+      dispatchId: reference?.dispatchId,
+      artifactId: reference?.artifactId,
+      artifactContentSha256: reference?.artifactContentSha256,
+    });
+    if (
+      !exactRecord(reference, ["artifactContentSha256", "artifactId", "dispatchId"]) ||
+      typeof snapshot.dispatchId !== "string" ||
+      !/^rdi_[a-f0-9]{32}$/.test(snapshot.dispatchId) ||
+      typeof snapshot.artifactId !== "string" ||
+      !/^rel_[a-f0-9]{32}$/.test(snapshot.artifactId) ||
+      typeof snapshot.artifactContentSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(snapshot.artifactContentSha256)
+    ) return null;
+    parsed.push(snapshot as {
+      dispatchId: string;
+      artifactId: string;
+      artifactContentSha256: string;
+    });
+  }
+  return Object.freeze(parsed);
+}
+
+function validateReleaseExecutorResult(
+  value: unknown,
+  config: CanonicalReleasePollConfigurationV1,
+): ValidReleasePollResult | null {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const candidate = value as Record<string, unknown>;
+    const status = candidate.status;
+    if (status !== "ingested" && status !== "unchanged" && status !== "failed") return null;
+    const keys = [
+      "adapter", "artifacts", "contractVersion", "dispatches", "inserted", "providerSlug",
+      "sourceMaxBytes", "sourceUrl", "status", "tenantId",
+      ...(status === "failed" ? ["error"] : []),
+    ];
+    if (!exactRecord(candidate, keys)) return null;
+    if (
+      !Array.isArray(candidate.artifacts) || !Array.isArray(candidate.dispatches) ||
+      candidate.artifacts.length > RELEASE_POLL_MAX_REFERENCES ||
+      candidate.dispatches.length > RELEASE_POLL_MAX_REFERENCES ||
+      (status === "failed" && (candidate.artifacts.length !== 0 || candidate.dispatches.length !== 0))
+    ) return null;
+    const artifacts = parseArtifactReferences(candidate.artifacts);
+    const dispatches = parseDispatchReferences(candidate.dispatches);
+    const snapshot = Object.freeze({
+      status,
+      contractVersion: candidate.contractVersion,
+      tenantId: candidate.tenantId,
+      providerSlug: candidate.providerSlug,
+      adapter: candidate.adapter,
+      sourceUrl: candidate.sourceUrl,
+      sourceMaxBytes: candidate.sourceMaxBytes,
+      inserted: candidate.inserted,
+      artifacts,
+      dispatches,
+      error: status === "failed" ? candidate.error : undefined,
+    });
+    if (
+      snapshot.contractVersion !== config.contractVersion ||
+      snapshot.tenantId !== config.tenantId ||
+      snapshot.providerSlug !== config.provider.slug ||
+      snapshot.adapter !== config.adapter ||
+      snapshot.sourceUrl !== expectedReleaseSourceUrl(config) ||
+      snapshot.sourceMaxBytes !== (config.source.maxBytes ?? null) ||
+      !Number.isSafeInteger(snapshot.inserted) || Number(snapshot.inserted) < 0 ||
+      !artifacts || !dispatches
+    ) return null;
+    if (status === "failed") {
+      if (
+        snapshot.inserted !== 0 || typeof snapshot.error !== "string" ||
+        !snapshot.error.trim() || snapshot.error.length > 1024
+      ) return null;
+      const error = isReleasePollErrorCode(snapshot.error)
+        ? snapshot.error
+        : "release_poll_executor_failed" as const;
+      return Object.freeze({
+        status,
+        contractVersion: snapshot.contractVersion,
+        tenantId: snapshot.tenantId,
+        providerSlug: snapshot.providerSlug,
+        adapter: snapshot.adapter,
+        sourceUrl: snapshot.sourceUrl,
+        sourceMaxBytes: snapshot.sourceMaxBytes,
+        inserted: 0,
+        artifacts,
+        dispatches,
+        error,
+      }) as ValidReleasePollResult;
+    } else if (status === "unchanged" && snapshot.inserted !== 0) {
+      return null;
+    } else if (status === "ingested" && Number(snapshot.inserted) < 1) {
+      return null;
+    }
+    return Object.freeze({
+      status,
+      contractVersion: snapshot.contractVersion,
+      tenantId: snapshot.tenantId,
+      providerSlug: snapshot.providerSlug,
+      adapter: snapshot.adapter,
+      sourceUrl: snapshot.sourceUrl,
+      sourceMaxBytes: snapshot.sourceMaxBytes,
+      inserted: snapshot.inserted,
+      artifacts,
+      dispatches,
+    }) as ValidReleasePollResult;
+  } catch {
+    return null;
+  }
+}
+
+function releaseReferencesHaveAuthority(
+  store: ReleaseIngestionStore,
+  config: CanonicalReleasePollConfigurationV1,
+  result: ValidReleasePollResult,
+): boolean {
+  if (result.status === "failed") return true;
+  if (result.artifacts.length === 0) return false;
+  if (result.status === "ingested" && result.inserted > result.artifacts.length) return false;
+  try {
+    const expectedCollection = expectedReleaseSourceUrl(config);
+    const artifactById = new Map<string, (typeof result.artifacts)[number]>();
+    for (const reference of result.artifacts) {
+      if (artifactById.has(reference.artifactId)) return false;
+      const artifact = rehydrateReleaseArtifact(store, {
+        tenantId: config.tenantId,
+        artifactId: reference.artifactId,
+        expectedContentSha256: reference.contentSha256,
+      });
+      if (
+        artifact.tenantId !== config.tenantId ||
+        artifact.providerSlug !== config.provider.slug ||
+        artifact.adapter !== config.adapter ||
+        artifact.collectionUrl !== expectedCollection ||
+        artifact.contentSha256 !== reference.contentSha256 ||
+        !artifact.identityCanonical
+      ) return false;
+      artifactById.set(reference.artifactId, reference);
+    }
+    const durableDispatches = new Map(
+      listReleaseDispatches(store, config.tenantId).map((dispatch) => [dispatch.id, dispatch]),
+    );
+    const coveredArtifacts = new Set<string>();
+    const seenDispatches = new Set<string>();
+    for (const reference of result.dispatches) {
+      if (seenDispatches.has(reference.dispatchId)) return false;
+      seenDispatches.add(reference.dispatchId);
+      const artifact = artifactById.get(reference.artifactId);
+      const dispatch = durableDispatches.get(reference.dispatchId);
+      if (
+        !artifact || !dispatch || dispatch.tenantId !== config.tenantId ||
+        dispatch.artifactId !== reference.artifactId ||
+        dispatch.artifactContentSha256 !== reference.artifactContentSha256 ||
+        artifact.contentSha256 !== reference.artifactContentSha256
+      ) return false;
+      coveredArtifacts.add(reference.artifactId);
+    }
+    return result.dispatches.length === result.artifacts.length &&
+      coveredArtifacts.size === result.artifacts.length;
+  } catch {
+    return false;
   }
 }
 
 export async function runFeedSchedules(options: FeedScheduleRunOptions) {
   const at = options.at ?? nowIso();
+  const clock = options.clock ?? nowIso;
+  if (options.signal?.aborted) throw options.signal.reason;
   const intervalMs = options.defaultIntervalMs ?? 60 * 60 * 1_000;
   const staleAfterMs = options.defaultStaleAfterMs ?? intervalMs * 2;
   if (staleAfterMs < intervalMs) throw new Error("feed_schedule_stale_window_invalid");
   const feeds = [...(options.feeds ?? listPollableFeeds(options.db))];
-  if (options.tenantId) {
-    ensureSchedules(options.db, options.tenantId, feeds, at, intervalMs, staleAfterMs);
+  const releaseByScope = new Map<string, ParsedReleasePollConfiguration>();
+  const releaseConfigurationFailures: ReleasePollResult[] = [];
+  for (const config of options.releaseFeeds ?? []) {
+    const parsed = parseReleasePollConfiguration(config);
+    const binding = parsed.status === "valid"
+      ? { tenantId: parsed.config.tenantId, providerSlug: parsed.config.provider.slug }
+      : parsed.result.configurationBinding;
+    if (!binding) {
+      if (parsed.status === "invalid") releaseConfigurationFailures.push(parsed.result);
+      continue;
+    }
+    const scope = releaseScope(binding.tenantId, binding.providerSlug);
+    releaseByScope.set(scope, releaseByScope.has(scope)
+      ? Object.freeze({
+          status: "invalid" as const,
+          result: duplicateReleasePollConfigurationResult(binding),
+        })
+      : parsed);
   }
+  const releaseScheduleBindings = [...releaseByScope.values()].flatMap((parsed) => {
+    const binding = parsed.status === "valid"
+      ? { tenantId: parsed.config.tenantId, providerSlug: parsed.config.provider.slug }
+      : parsed.result.configurationBinding;
+    return binding ? [binding] : [];
+  });
+  reconcileSchedules(
+    options.db,
+    options.tenantId,
+    feeds,
+    releaseScheduleBindings,
+    at,
+    intervalMs,
+    staleAfterMs,
+  );
   getFeedScheduleHealth(options.db, at, options.tenantId);
 
   const feedBySlug = new Map(feeds.map((feed) => [feed.slug, feed]));
@@ -110,15 +453,18 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
     schedules,
     boundedConcurrency(options.maxConcurrency),
     async (schedule): Promise<FeedScheduleExecution> => {
+      if (options.signal?.aborted) throw options.signal.reason;
       const window = scheduleWindow(schedule, at);
-      const claimed = claimFeedScheduleWindow(options.db, {
+      const claimedAt = clock();
+      const claim = claimFeedScheduleWindowLease(options.db, {
         id: stableId("feed-window", schedule.id, window.startedAt),
         scheduleId: schedule.id,
         windowStartedAt: window.startedAt,
         windowEndsAt: window.endsAt,
-        attemptedAt: at,
+        attemptedAt: claimedAt,
+        leaseDurationMs: schedule.stale_after_ms,
       });
-      if (!claimed) {
+      if (!claim) {
         return {
           scheduleId: schedule.id,
           providerSlug: schedule.provider_slug,
@@ -128,88 +474,204 @@ export async function runFeedSchedules(options: FeedScheduleRunOptions) {
         };
       }
       const feed = feedBySlug.get(schedule.provider_slug);
-      if (!feed) {
-        const error = "scheduled feed source is not configured";
-        completeFeedScheduleWindow(options.db, {
-          scheduleId: schedule.id,
-          windowStartedAt: window.startedAt,
-          succeeded: false,
-          error,
-          completedAt: at,
-        });
-        return {
-          scheduleId: schedule.id,
-          providerSlug: schedule.provider_slug,
-          windowStartedAt: window.startedAt,
-          windowEndsAt: window.endsAt,
-          status: "failed",
-          error,
-        };
-      }
+      const releaseConfiguration = releaseByScope.get(releaseScope(
+        schedule.tenant_id,
+        schedule.provider_slug,
+      ));
+      let poll: PollOneResult | undefined;
+      let openApiOutcome: FeedScheduleSourceOutcome<PollOneResult>;
       try {
-        const poll = options.execute
-          ? await options.execute(feed, schedule)
-          : await pollOneFeed(feed, {
-              db: options.db,
-              tenantId: schedule.tenant_id,
-              localOnly: options.localOnly,
-              runPipeline: options.runPipeline,
-              pipeline: options.pipeline,
-              sourceFetches,
-              sourceDocumentLoader: options.sourceDocumentLoader,
-            });
-        const succeeded = !new Set<PollOneResult["status"]>([
-          "error",
-          "no_url",
-          "skipped",
-        ]).has(poll.status);
-        const error = succeeded ? undefined : poll.error ?? `feed poll ${poll.status}`;
-        completeFeedScheduleWindow(options.db, {
-          scheduleId: schedule.id,
-          windowStartedAt: window.startedAt,
-          succeeded,
-          error,
-          completedAt: at,
-        });
-        return {
-          scheduleId: schedule.id,
-          providerSlug: schedule.provider_slug,
-          windowStartedAt: window.startedAt,
-          windowEndsAt: window.endsAt,
-          status: succeeded ? "succeeded" : "failed",
-          poll,
-          error,
-        };
+        if (!feed && releaseConfiguration) {
+          openApiOutcome = Object.freeze({ status: "not_configured" as const });
+        } else if (!feed) {
+          throw new Error("scheduled feed source is not configured");
+        } else {
+          poll = options.execute
+            ? await options.execute(feed, schedule)
+            : await pollOneFeed(feed, {
+                db: options.db,
+                tenantId: schedule.tenant_id,
+                localOnly: options.localOnly,
+                runPipeline: options.runPipeline,
+                pipeline: options.pipeline,
+                sourceFetches,
+                sourceDocumentLoader: options.sourceDocumentLoader,
+                signal: options.signal,
+              });
+          if (options.signal?.aborted) throw options.signal.reason;
+          openApiOutcome = openApiSucceeded(poll)
+            ? Object.freeze({ status: "succeeded" as const, result: poll })
+            : Object.freeze({
+                status: "failed" as const,
+                error: poll.error ?? `feed poll ${poll.status}`,
+                result: poll,
+              });
+        }
       } catch (cause) {
-        const error = cause instanceof Error ? cause.message : String(cause);
-        completeFeedScheduleWindow(options.db, {
-          scheduleId: schedule.id,
-          windowStartedAt: window.startedAt,
-          succeeded: false,
-          error,
-          completedAt: at,
+        if (options.signal?.aborted) throw options.signal.reason;
+        openApiOutcome = Object.freeze({
+          status: "failed" as const,
+          error: cause instanceof Error ? cause.message : String(cause),
         });
+      }
+
+      let releaseOutcome: FeedScheduleSourceOutcome<ReleasePollResult> = Object.freeze({
+        status: "not_configured" as const,
+      });
+      if (releaseConfiguration?.status === "invalid") {
+        releaseOutcome = Object.freeze({
+          status: "failed" as const,
+          error: releaseConfiguration.result.error,
+          result: releaseConfiguration.result,
+        });
+      } else if (releaseConfiguration) {
+        const releaseConfig = releaseConfiguration.config;
+        if (!options.releaseStore) {
+          releaseOutcome = Object.freeze({
+            status: "failed" as const,
+            error: "release ingestion store is not configured",
+          });
+        } else {
+          try {
+            const untrustedResult: unknown = options.releaseExecute
+              ? await options.releaseExecute(
+                  options.releaseStore,
+                  releaseConfig,
+                  schedule,
+                  at,
+                  options.signal,
+                )
+              : await pollReleaseSource(options.releaseStore, releaseConfig, {
+                  at,
+                  fetchOptions: {
+                    ...options.releaseFetchOptions,
+                    signal: options.signal,
+                  },
+                });
+            if (options.signal?.aborted) throw options.signal.reason;
+            const result = validateReleaseExecutorResult(untrustedResult, releaseConfig);
+            if (!result || !releaseReferencesHaveAuthority(options.releaseStore, releaseConfig, result)) {
+              const invalid = invalidReleasePollExecutorResult({
+                tenantId: releaseConfig.tenantId,
+                providerSlug: releaseConfig.provider.slug,
+              });
+              releaseOutcome = Object.freeze({
+                status: "failed" as const,
+                error: invalid.error,
+                result: invalid,
+              });
+            } else {
+            switch (result.status) {
+              case "failed":
+                releaseOutcome = Object.freeze({
+                  status: "failed" as const,
+                  error: result.error,
+                  result,
+                });
+                break;
+              case "ingested":
+              case "unchanged":
+                releaseOutcome = Object.freeze({ status: "succeeded" as const, result });
+                break;
+            }
+            }
+          } catch (cause) {
+            if (options.signal?.aborted) throw options.signal.reason;
+            releaseOutcome = Object.freeze({
+              status: "failed" as const,
+              error: "release_poll_executor_failed",
+            });
+          }
+        }
+      }
+
+      const openApiError = openApiOutcome.status === "failed" ? openApiOutcome.error : undefined;
+      const releaseError = releaseOutcome.status === "failed" ? releaseOutcome.error : undefined;
+      const errors = [
+        openApiError
+          ? releaseConfiguration ? `OpenAPI: ${openApiError}` : openApiError
+          : undefined,
+        releaseError ? `release: ${releaseError}` : undefined,
+      ].filter((error): error is string => Boolean(error));
+      const succeeded = errors.length === 0;
+      const error = succeeded ? undefined : errors.join("; ");
+      if (options.signal?.aborted) throw options.signal.reason;
+      const completedAt = clock();
+      const completed = completeFeedScheduleWindow(options.db, {
+        scheduleId: schedule.id,
+        windowStartedAt: window.startedAt,
+        leaseGeneration: claim.leaseGeneration,
+        succeeded,
+        releaseSucceeded: releaseOutcome.status === "succeeded",
+        error,
+        completedAt,
+      });
+      if (!completed) {
         return {
           scheduleId: schedule.id,
           providerSlug: schedule.provider_slug,
           windowStartedAt: window.startedAt,
           windowEndsAt: window.endsAt,
           status: "failed",
-          error,
+          poll,
+          openApiOutcome,
+          releaseOutcome,
+          error: "release_poll_schedule_authority_lost",
         };
       }
+      return {
+        scheduleId: schedule.id,
+        providerSlug: schedule.provider_slug,
+        windowStartedAt: window.startedAt,
+        windowEndsAt: window.endsAt,
+        status: succeeded ? "succeeded" : "failed",
+        poll,
+        openApiOutcome,
+        releaseOutcome,
+        error,
+      };
     },
+    options.signal,
   );
 
   const health = getFeedScheduleHealth(options.db, at, options.tenantId);
+  const configurationFailed = releaseConfigurationFailures.length;
+  const configurationHealth = Object.freeze({
+    ok: configurationFailed === 0,
+    status: configurationFailed === 0 ? "healthy" as const : "degraded" as const,
+    failed: configurationFailed,
+    failures: Object.freeze([...releaseConfigurationFailures]),
+  });
+  const schedulesAfterRun = listFeedSchedules(options.db, options.tenantId);
+  const scheduleByScope = new Map(schedulesAfterRun.map((schedule) => [
+    releaseScope(schedule.tenant_id, schedule.provider_slug),
+    schedule,
+  ]));
+  const missingReleaseSchedules = releaseScheduleBindings.filter((binding) =>
+    !scheduleByScope.get(releaseScope(binding.tenantId, binding.providerSlug))
+      ?.release_last_success_at
+  );
+  const releaseReadiness = Object.freeze({
+    ok: missingReleaseSchedules.length === 0,
+    required: releaseScheduleBindings.length,
+    succeeded: releaseScheduleBindings.length - missingReleaseSchedules.length,
+    missing: Object.freeze(missingReleaseSchedules.map((binding) => Object.freeze({ ...binding }))),
+  });
   return {
     at,
+    status: health.ok && configurationHealth.ok && releaseReadiness.ok
+      ? "healthy" as const
+      : "degraded" as const,
     maxConcurrency: boundedConcurrency(options.maxConcurrency),
     claimed: executions.filter((execution) => execution.status !== "already_claimed").length,
     succeeded: executions.filter((execution) => execution.status === "succeeded").length,
     failed: executions.filter((execution) => execution.status === "failed").length,
     alreadyClaimed: executions.filter((execution) => execution.status === "already_claimed").length,
     executions,
+    releaseConfigurationFailures: Object.freeze([...releaseConfigurationFailures]),
+    configurationFailed,
+    configurationHealth,
+    releaseReadiness,
     health,
   };
 }

@@ -172,3 +172,38 @@
 **Mistake:** I started a manual Cursor PR review after finding that the installed review skill pointed to a missing workflow.
 **Correction:** Talal required the necessary skills to be fetched and used, and required findings to be fixed before merge.
 **Rule:** When an applicable review skill is incomplete, fetch its current authoritative runtime before continuing. For agent-authored PRs, use the fetched adversarial review and fixer workflow, then re-review the exact fixed head and require current-base CI before merge.
+
+### 2026-08-27 — Test unpinned multi-tenant scheduler entry points
+**Mistake:** I proved release-only scheduling only with a global tenant pin, while the production worker intentionally permits canonical configurations for multiple tenants without that pin.
+**Correction:** Spec review found that a fresh unpinned database could report a healthy scheduler run while silently executing zero configured releases.
+**Rule:** When a runtime accepts tenant-bound configuration independently of a global tenant selector, test the production call shape with that selector unset, multiple tenants, a fresh durable store, and replay before claiming the configuration is reachable.
+
+### 2026-08-27 — Separate release plumbing from product progress
+**Mistake:** I treated shipping gates, plumbing, and documentation as significant Mendpoint 101 engineering progress without closing a live product capability.
+**Correction:** Talal required infrastructure motion to be reported separately from end-to-end production capability progress.
+**Rule:** Report release plumbing separately and prioritize closing an end-to-end production capability; never inflate infrastructure motion as requirement progress.
+
+### 2026-08-27 — Execute the authoritative plan directly
+**Mistake:** I proposed creating or importing another GSD roadmap even though an authoritative plan already existed.
+**Correction:** Talal required GSD execution, verification, and shipping mechanics to apply directly to the existing plan.
+**Rule:** Do not duplicate an authoritative plan; planning duplication is delay, not progress.
+
+### 2026-08-27 — Fence durable scheduler work across crashes
+**Mistake:** A running schedule window had no expiring authority, and readiness treated creation time as evidence of release success.
+**Correction:** Quality review reproduced a crash that left configured release polling permanently unclaimable while the worker reported healthy.
+**Rule:** Long-running durable claims need expiry and generation fencing, and configured readiness must require a distinct durable success fact.
+
+### 2026-08-27 — Redact identifier shape, not an allowed scheme list
+**Mistake:** Source item redaction hashed HTTPS identifiers but returned other hierarchical URI schemes verbatim.
+**Correction:** Quality review showed FTP and custom identifiers could expose credentials and private paths.
+**Rule:** Digest every hierarchical `scheme://` identifier with domain separation; preserve only explicitly safe opaque identifier forms.
+
+### 2026-08-27 — Verify line endings as a file contract
+**Mistake:** A CRLF source file became mixed-EOL after localized edits.
+**Correction:** Quality review required the worker entrypoint restored to its baseline CRLF convention without broad formatting.
+**Rule:** For line-ending-sensitive files, inspect index and working-tree EOL before and after edits, normalize only the target file, and review the semantic diff separately.
+
+### 2026-08-27 — Preserve durable identity formulas during redaction
+**Mistake:** Expanding URI redaction also changed the established HTTPS digest formula, so an upgrade could create duplicate artifacts and dispatches for the same release.
+**Correction:** Quality re-review required exact legacy HTTPS identity compatibility while applying the new domain-separated digest only to other hierarchical URI schemes.
+**Rule:** Treat persisted identity formulas as versioned compatibility contracts; extend safety behavior around them without changing existing canonical inputs or digests.

@@ -25,6 +25,11 @@ type WorkerHeartbeat = {
   feedLastSuccessAt?: string;
   feedStaleAfterMs?: number;
   feedPollStartedAt?: string;
+  releasePollingConfigured?: boolean;
+  releasePollConfigurationCount?: number;
+  feedScheduleStatus?: string;
+  releaseConfigurationStatus?: string;
+  releaseConfigurationFailed?: number;
   activeJob?: { id?: string; type?: string; leaseGeneration?: number } | null;
   recovery?: {
     due?: number;
@@ -35,6 +40,30 @@ type WorkerHeartbeat = {
   };
   transformer?: TransformerHeartbeat;
 };
+
+type FeedScheduleStatus = "not_started" | "healthy" | "degraded";
+type ReleaseConfigurationStatus = "not_started" | "not_configured" | "healthy" | "degraded";
+
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function feedScheduleStatus(value: unknown): FeedScheduleStatus | null {
+  return value === "not_started" || value === "healthy" || value === "degraded"
+    ? value
+    : null;
+}
+
+function releaseConfigurationStatus(value: unknown): ReleaseConfigurationStatus | null {
+  return value === "not_started" || value === "not_configured" ||
+      value === "healthy" || value === "degraded"
+    ? value
+    : null;
+}
+
+function safeCount(value: unknown): number | null {
+  return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : null;
+}
 
 function apiBase(): string {
   return (process.env.MENDPOINT_API_URL ?? "http://127.0.0.1:3001").replace(/\/$/, "");
@@ -63,6 +92,11 @@ export async function workerCheck(operational = true): Promise<{
   feedLastSuccessAt?: string;
   feedStaleAfterMs?: number;
   feedPollStartedAt?: string;
+  releasePollingConfigured?: boolean;
+  releasePollConfigurationCount?: number;
+  feedScheduleStatus?: FeedScheduleStatus;
+  releaseConfigurationStatus?: ReleaseConfigurationStatus;
+  releaseConfigurationFailed?: number;
   activeJob?: WorkerHeartbeat["activeJob"];
   recovery?: WorkerHeartbeat["recovery"];
   transformer?: TransformerHeartbeat & {
@@ -102,7 +136,45 @@ export async function workerCheck(operational = true): Promise<{
         : Number.isFinite(lastSuccessAt) && lastSuccessAgeMs >= 0 && lastSuccessAgeMs <= transformerMaxAgeMs)
     );
     const customerProfile = process.env.MENDPOINT_DEPLOYMENT_PROFILE === "customer";
-    const feedScheduleCount = heartbeat.feedScheduleCount ?? 0;
+    const feedScheduleCount = hasOwn(heartbeat, "feedScheduleCount")
+      ? safeCount(heartbeat.feedScheduleCount)
+      : 0;
+    const releaseConfiguredPresent = hasOwn(heartbeat, "releasePollingConfigured");
+    const releasePollingConfigured = releaseConfiguredPresent
+      ? typeof heartbeat.releasePollingConfigured === "boolean"
+        ? heartbeat.releasePollingConfigured
+        : null
+      : false;
+    const releaseCountPresent = hasOwn(heartbeat, "releasePollConfigurationCount");
+    const releasePollConfigurationCount = releaseCountPresent
+      ? safeCount(heartbeat.releasePollConfigurationCount)
+      : 0;
+    const feedStatusPresent = hasOwn(heartbeat, "feedScheduleStatus");
+    const currentFeedScheduleStatus = feedStatusPresent
+      ? feedScheduleStatus(heartbeat.feedScheduleStatus)
+      : "not_started";
+    const releaseStatusPresent = hasOwn(heartbeat, "releaseConfigurationStatus");
+    const currentReleaseConfigurationStatus = releaseStatusPresent
+      ? releaseConfigurationStatus(heartbeat.releaseConfigurationStatus)
+      : "not_configured";
+    const releaseFailedPresent = hasOwn(heartbeat, "releaseConfigurationFailed");
+    const releaseConfigurationFailed = releaseFailedPresent
+      ? safeCount(heartbeat.releaseConfigurationFailed)
+      : 0;
+    const releaseFieldsValid = typeof releasePollingConfigured === "boolean" &&
+      feedScheduleCount !== null &&
+      releasePollConfigurationCount !== null &&
+      currentFeedScheduleStatus !== null &&
+      currentReleaseConfigurationStatus !== null &&
+      releaseConfigurationFailed !== null;
+    const releasePollingHealthy = releaseFieldsValid && releasePollingConfigured
+      ? releasePollConfigurationCount > 0 &&
+        currentFeedScheduleStatus === "healthy" &&
+        currentReleaseConfigurationStatus === "healthy" &&
+        releaseConfigurationFailed === 0
+      : releaseFieldsValid && releasePollConfigurationCount === 0 &&
+        currentReleaseConfigurationStatus === "not_configured" &&
+        releaseConfigurationFailed === 0;
     const feedLastSuccessAt = Date.parse(heartbeat.feedLastSuccessAt ?? "");
     const feedFreshness = assessFeedFreshness({
       lastSuccessAt: heartbeat.feedLastSuccessAt,
@@ -111,8 +183,7 @@ export async function workerCheck(operational = true): Promise<{
     });
     const customerFeedObserved =
       heartbeat.feedPollingEnabled === true &&
-      Number.isSafeInteger(feedScheduleCount) &&
-      feedScheduleCount > 0 &&
+      feedScheduleCount !== null && feedScheduleCount > 0 &&
       Number.isFinite(feedLastSuccessAt) &&
       feedFreshness.ok;
     const requiredFeedAvailable = !customerProfile || customerFeedObserved;
@@ -120,6 +191,7 @@ export async function workerCheck(operational = true): Promise<{
       live &&
       (!operational ||
         (heartbeat.feedPollOk === true &&
+          releasePollingHealthy &&
           requiredFeedAvailable &&
           (heartbeat.recovery?.expiredLeases ?? 0) === 0 &&
           (heartbeat.recovery?.deadLetter ?? 0) === 0 &&
@@ -128,7 +200,7 @@ export async function workerCheck(operational = true): Promise<{
       ok,
       ageMs,
       feedPollingEnabled: heartbeat.feedPollingEnabled === true,
-      feedScheduleCount,
+      feedScheduleCount: feedScheduleCount ?? 0,
       ...(Number.isFinite(feedLastSuccessAt)
         ? { feedLastSuccessAt: heartbeat.feedLastSuccessAt }
         : {}),
@@ -138,6 +210,11 @@ export async function workerCheck(operational = true): Promise<{
       ...(heartbeat.feedPollStartedAt
         ? { feedPollStartedAt: heartbeat.feedPollStartedAt }
         : {}),
+      releasePollingConfigured: releasePollingConfigured === true,
+      releasePollConfigurationCount: releasePollConfigurationCount ?? 0,
+      feedScheduleStatus: currentFeedScheduleStatus ?? "not_started",
+      releaseConfigurationStatus: currentReleaseConfigurationStatus ?? "not_configured",
+      releaseConfigurationFailed: releaseConfigurationFailed ?? 0,
       activeJob: heartbeat.activeJob ?? null,
       recovery: heartbeat.recovery,
       transformer: transformer ? {
@@ -151,7 +228,7 @@ export async function workerCheck(operational = true): Promise<{
         : customerProfile && heartbeat.feedPollingEnabled !== true
           ? "customer_feed_polling_disabled"
           : customerProfile && (
-              feedScheduleCount < 1 || !Number.isFinite(feedLastSuccessAt)
+              feedScheduleCount === null || feedScheduleCount < 1 || !Number.isFinite(feedLastSuccessAt)
             )
             ? "customer_feed_not_observed"
           : customerProfile && !feedFreshness.ok

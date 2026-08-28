@@ -14,6 +14,7 @@ export async function mapWithConcurrency<T, R>(
   values: readonly T[],
   concurrency: number,
   work: (value: T, index: number) => Promise<R>,
+  signal?: AbortSignal,
 ): Promise<R[]> {
   if (values.length === 0) return [];
   const limit = boundedConcurrency(concurrency);
@@ -22,6 +23,7 @@ export async function mapWithConcurrency<T, R>(
 
   const worker = async () => {
     for (;;) {
+      if (signal?.aborted) throw signal.reason;
       const index = nextIndex++;
       if (index >= values.length) return;
       results[index] = await work(values[index]!, index);
