@@ -207,3 +207,8 @@
 **Mistake:** Expanding URI redaction also changed the established HTTPS digest formula, so an upgrade could create duplicate artifacts and dispatches for the same release.
 **Correction:** Quality re-review required exact legacy HTTPS identity compatibility while applying the new domain-separated digest only to other hierarchical URI schemes.
 **Rule:** Treat persisted identity formulas as versioned compatibility contracts; extend safety behavior around them without changing existing canonical inputs or digests.
+
+### 2026-08-27 — Never serialize engineering behind one release blocker
+**Mistake:** I let the production authority controller serialize the broader 101 requirement program, so independent product engineering slowed while one release train waited on the same external gate.
+**Correction:** Talal required GSD execution and shipping to keep building at full pace while release authority is resolved in parallel, and required this failure pattern never to recur.
+**Rule:** Keep one authority and shipping track plus at least one non-overlapping product build track active whenever unblocked work exists. After a second hidden layer or an evidence-free retry, enumerate the complete failure chain before acting again. Pause only overlapping files or unsafe deployment actions, and report merged production progress separately from open engineering work.
