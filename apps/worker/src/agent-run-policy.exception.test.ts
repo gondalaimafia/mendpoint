@@ -1,16 +1,20 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  bindMissionScope,
   bindMissionToPolicyEnvelope,
   createDb,
   createMission,
   createPolicyEnvelope,
   evaluateMissionExceptions,
+  insertConnectedRepository,
   insertPrincipal,
+  insertRepositorySnapshot,
   listMissionExceptions,
   resolveMissionException,
+  upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
 import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
@@ -94,6 +98,65 @@ function bindRestricted(db: AppDb): void {
   });
 }
 
+function bindMissionSnapshot(db: AppDb, input: {
+  snapshotId?: string;
+  resolvedSha?: string;
+  repositoryId?: string;
+} = {}) {
+  const dir = opened.find((item) => item.db === db)?.dir;
+  if (!dir) throw new Error("test_fixture_dir_missing");
+  const snapshotId = input.snapshotId ?? "snap-1";
+  const resolvedSha = input.resolvedSha ?? "a".repeat(40);
+  const repositoryId = input.repositoryId ?? "repo-a";
+  const storage = join(dir, "snapshot");
+  mkdirSync(storage, { recursive: true });
+  upsertScmConnection(db, {
+    id: "scm-1",
+    tenantId: "t1",
+    provider: "github",
+    credentialRef: "github-app://installation/1",
+    externalAccountId: "1",
+    displayName: "Acme",
+    createdAt: at,
+    updatedAt: at,
+  });
+  insertConnectedRepository(db, {
+    id: repositoryId,
+    tenantId: "t1",
+    connectionId: "scm-1",
+    remoteId: "200",
+    owner: "acme",
+    name: "payments",
+    defaultBranch: "main",
+    status: "ready",
+    createdAt: at,
+    updatedAt: at,
+  });
+  insertRepositorySnapshot(db, {
+    id: snapshotId,
+    tenantId: "t1",
+    repositoryId,
+    requestedRef: "main",
+    resolvedSha,
+    manifestSha256: "b".repeat(64),
+    storagePath: storage,
+    createdAt: at,
+    expiresAt: "2027-01-01T00:00:00.000Z",
+  });
+  bindMissionScope(db, {
+    tenantId: "t1",
+    missionId: "m1",
+    repositoryId,
+    snapshotId,
+    actorPrincipalId: "p1",
+    eventId: "e-scope",
+    idempotencyKey: "scope-1",
+    correlationId: "corr",
+    createdAt: at,
+  });
+  return { snapshotId, resolvedSha } as const;
+}
+
 const claim = {
   tenantId: "t1",
   missionId: "m1",
@@ -119,6 +182,8 @@ describe("assertAgentRunMissionPolicy records policy_exception", () => {
       blocking: true,
       resolutionPath: "adjust_task_or_rebind_policy_envelope",
       createdAt: at,
+      observedSnapshotId: null,
+      observedResolvedSha: null,
     });
     expect(evaluateMissionExceptions(db, "t1", "m1").missionBlocked).toBe(true);
   });
@@ -244,10 +309,37 @@ describe("assertAgentRunMissionPolicy records policy_exception", () => {
     expect(listMissionExceptions(db, "t1", "m1")).toEqual([]);
   });
 
-  it("CONTROL: a live Fettler deny without a Mission exception is a red mutation", () => {
+  it("binds a scoped Mission deny to that snapshot so a later snapshot leaves it stale", () => {
     const db = fixture();
     bindRestricted(db);
-    expect(() => assertAgentRunMissionPolicy(db, { ...claim, observedAt: at })).toThrow();
-    expect(evaluateMissionExceptions(db, "t1", "m1").blocking).toHaveLength(1);
+    const snap = bindMissionSnapshot(db);
+    expect(() => assertAgentRunMissionPolicy(db, { ...claim, observedAt: at }))
+      .toThrow(/mission_policy_denied:repository_out_of_scope:repo-a/);
+    const rows = listMissionExceptions(db, "t1", "m1");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.observedSnapshotId).toBe(snap.snapshotId);
+    expect(rows[0]?.observedResolvedSha).toBe(snap.resolvedSha);
+    const againstBound = evaluateMissionExceptions(db, "t1", "m1", snap);
+    expect(againstBound.missionBlocked).toBe(true);
+    expect(againstBound.blocking).toHaveLength(1);
+    const againstLater = evaluateMissionExceptions(db, "t1", "m1", {
+      snapshotId: "snap-later",
+      resolvedSha: "c".repeat(40),
+    });
+    expect(againstLater.missionBlocked).toBe(false);
+    expect(againstLater.stale).toHaveLength(1);
+    expect(againstLater.blocking).toHaveLength(0);
+  });
+
+  it("does not duplicate a snapshot-bound policy_exception on replay against the same snapshot", () => {
+    const db = fixture();
+    bindMissionSnapshot(db);
+    expect(() => assertAgentRunMissionPolicy(db, { ...claim, observedAt: at }))
+      .toThrow("mission_policy_envelope_missing");
+    expect(() => assertAgentRunMissionPolicy(db, {
+      ...claim,
+      observedAt: "2026-08-28T22:41:00.000Z",
+    })).toThrow("mission_policy_envelope_missing");
+    expect(listMissionExceptions(db, "t1", "m1")).toHaveLength(1);
   });
 });
