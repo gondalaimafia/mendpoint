@@ -246,6 +246,56 @@ describe("worker mission-context producer (real stores)", () => {
       .toBe(false);
   });
 
+  // When two candidate attempts in one family share the caller-supplied
+  // createdAt, the current record cannot be determined. The producer must refuse
+  // rather than credit the older candidate's passed row. Restoring the
+  // content-digest tie-break in selectCurrentVerificationRecords turns this RED.
+  it("refuses to credit a candidate as current when two attempts tie on createdAt", () => {
+    const db = fixture();
+    recordMissionVerification(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      verification: "candidate A green",
+      scope: `warden.campaign.execute:c1:t1:candidate:${"a".repeat(64)}`,
+      snapshotId: "snapA",
+      resolvedSha: SHA,
+      manifestSha256: MANIFEST,
+      status: "passed",
+      verifierPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    recordMissionVerification(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      verification: "candidate B still failing preexisting checks",
+      scope: `warden.campaign.execute:c1:t1:candidate:${"b".repeat(64)}`,
+      snapshotId: "snapA",
+      resolvedSha: SHA,
+      manifestSha256: MANIFEST,
+      status: "inconclusive",
+      verifierPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    });
+    if (compiled.envelope.verificationState.status !== "consulted") throw new Error("unreachable");
+    // The family is refused: exactly one entry, and it never reads as current.
+    expect(compiled.envelope.verificationState.entries).toHaveLength(1);
+    expect(compiled.envelope.verificationState.entries[0]).toMatchObject({
+      state: "no_current_evidence",
+      reason: "ambiguous_current_candidate",
+    });
+    expect(compiled.envelope.verificationState.entries.some((entry) => entry.state === "current_evidence"))
+      .toBe(false);
+  });
+
   it("renders the mission's inherited Policy Envelope as consulted hard-policy constraints", () => {
     const db = fixture();
     ensureDefaultPolicyEnvelopeBinding(db, {

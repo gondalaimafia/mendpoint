@@ -341,23 +341,44 @@ export function verificationScopeFamily(scope: string): string {
   return scope.replace(CANDIDATE_SCOPE_SUFFIX, "");
 }
 
-/** Keep only the newest record in each scope family. An older candidate's
- * `passed` row on the same source snapshot must not survive as current
- * evidence next to a later attempt. */
+// The current record for one scope family, or a refusal when it cannot be
+// determined. `createdAt` is the only monotonic field a caller supplies (one
+// value per execute), and `id` is a content digest — arbitrary order. So two
+// attempts in the same family sharing a `createdAt` cannot be ordered: picking
+// by digest could resurrect an older candidate's `passed` row as current, the
+// exact defect this selection exists to prevent. We refuse instead of guessing —
+// "cannot determine" must never resolve to the reassuring answer.
+export type CurrentVerificationSelection =
+  | Readonly<{ standing: "current"; family: string; record: MissionVerificationRecord }>
+  | Readonly<{ standing: "ambiguous"; family: string; contenders: readonly MissionVerificationRecord[] }>;
+
+/** Keep only the newest record in each scope family, refusing a family whose
+ * newest `createdAt` is shared by more than one distinct record. An older
+ * candidate's `passed` row on the same source snapshot must not survive as
+ * current evidence next to a later attempt, and an unresolvable tie must not be
+ * silently resolved by content-digest order. */
 export function selectCurrentVerificationRecords(
   records: readonly MissionVerificationRecord[],
-): MissionVerificationRecord[] {
-  const latestByFamily = new Map<string, MissionVerificationRecord>();
+): CurrentVerificationSelection[] {
+  const byFamily = new Map<string, MissionVerificationRecord[]>();
   for (const record of records) {
     const family = verificationScopeFamily(record.scope);
-    const prev = latestByFamily.get(family);
-    if (!prev
-      || record.createdAt > prev.createdAt
-      || (record.createdAt === prev.createdAt && record.id > prev.id)) {
-      latestByFamily.set(family, record);
-    }
+    const bucket = byFamily.get(family);
+    if (bucket) bucket.push(record);
+    else byFamily.set(family, [record]);
   }
-  return [...latestByFamily.values()].sort((a, b) => (a.scope < b.scope ? -1 : a.scope > b.scope ? 1 : 0));
+  const selections: CurrentVerificationSelection[] = [];
+  for (const [family, bucket] of byFamily) {
+    let maxCreatedAt = bucket[0].createdAt;
+    for (const record of bucket) {
+      if (record.createdAt > maxCreatedAt) maxCreatedAt = record.createdAt;
+    }
+    const newest = bucket.filter((record) => record.createdAt === maxCreatedAt);
+    selections.push(newest.length === 1
+      ? { standing: "current", family, record: newest[0] }
+      : { standing: "ambiguous", family, contenders: Object.freeze([...newest]) });
+  }
+  return selections.sort((a, b) => (a.family < b.family ? -1 : a.family > b.family ? 1 : 0));
 }
 
 // List verification records for a mission (optionally filtered to one scope),

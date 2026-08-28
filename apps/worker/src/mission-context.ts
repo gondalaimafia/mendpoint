@@ -25,9 +25,9 @@ import {
   listOrganizationMemory,
   listTrajectories,
   resolveMissionSnapshotIdentity,
+  selectCurrentVerificationRecords,
   type AppDb,
   type Mission,
-  type MissionVerificationRecord,
   type MissionVerificationStanding,
 } from "@mendpoint/db";
 import {
@@ -61,28 +61,6 @@ export type BuildMissionContextParams = Readonly<{
    */
   graphDb?: GraphLearnDb | null;
 }>;
-
-const CANDIDATE_SCOPE_SUFFIX = /:candidate:[0-9a-f]{64}$/;
-
-/** Same rule as `selectCurrentVerificationRecords` in @mendpoint/db: only the
- * newest record in each candidate-scope family is current. Kept local so the
- * producer does not depend on a db export the workspace install may not have
- * linked yet; the db suite owns the algorithm tests. */
-function selectCurrentVerificationRecords(
-  records: readonly MissionVerificationRecord[],
-): MissionVerificationRecord[] {
-  const latestByFamily = new Map<string, MissionVerificationRecord>();
-  for (const record of records) {
-    const family = record.scope.replace(CANDIDATE_SCOPE_SUFFIX, "");
-    const prev = latestByFamily.get(family);
-    if (!prev
-      || record.createdAt > prev.createdAt
-      || (record.createdAt === prev.createdAt && record.id > prev.id)) {
-      latestByFamily.set(family, record);
-    }
-  }
-  return [...latestByFamily.values()].sort((a, b) => (a.scope < b.scope ? -1 : a.scope > b.scope ? 1 : 0));
-}
 
 /** Map a per-scope verification standing to the compiler's carried-through input. */
 function verificationInputsForStanding(
@@ -216,20 +194,32 @@ export function buildMissionContext(
     const all = listMissionVerifications(db, tenantId, mission.id);
     // Only the newest record in each scope family is current. An older
     // candidate's passed row on the same source snapshot must not appear as
-    // current_evidence beside a later attempt.
-    const currentRecords = selectCurrentVerificationRecords(all);
+    // current_evidence beside a later attempt. A family whose newest record
+    // cannot be determined (a createdAt tie) is refused, not guessed: it
+    // surfaces as no_current_evidence rather than crediting either contender.
+    const selections = selectCurrentVerificationRecords(all);
     return {
       consulted: true,
-      records: currentRecords.map((record) =>
-        verificationInputsForStanding(
+      records: selections.map((selection) => {
+        if (selection.standing === "ambiguous") {
+          return {
+            tenantId,
+            id: `verification:${selection.family}`,
+            statement: `scope ${selection.family}`,
+            verdict: "none",
+            state: "no_current_evidence",
+            reason: "ambiguous_current_candidate",
+          } satisfies VerificationInput;
+        }
+        return verificationInputsForStanding(
           tenantId,
-          record.scope,
+          selection.record.scope,
           classifyMissionVerificationEvidence(
-            all.filter((row) => row.scope === record.scope),
+            all.filter((row) => row.scope === selection.record.scope),
             current,
           ),
-        ),
-      ),
+        );
+      }),
     };
   })();
 
