@@ -8,6 +8,7 @@ import {
   createMission,
   createPolicyEnvelope,
   insertPrincipal,
+  listMissionPolicyEvaluations,
   type AppDb,
 } from "@mendpoint/db";
 import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
@@ -80,6 +81,24 @@ describe("assertAgentRunMissionPolicy", () => {
       createdAt: at,
     });
     expect(() => assertAgentRunMissionPolicy(db, allowed)).not.toThrow();
+    const evidence = listMissionPolicyEvaluations(db, "t1", "m1");
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]?.status).toBe("enforced");
+    expect(evidence[0]?.allowed).toBe(true);
+    expect(evidence[0]?.envelopeVersion).toBe(1);
+  });
+
+  it("CONTROL: the live Fettler agent.run caller must leave an evaluation row", () => {
+    const db = fixture();
+    ensureDefaultPolicyEnvelopeBinding(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      actorPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: at,
+    });
+    assertAgentRunMissionPolicy(db, allowed);
+    expect(listMissionPolicyEvaluations(db, "t1", "m1")).toHaveLength(1);
   });
 
   it("fails closed when the claimed Mission row is missing", () => {

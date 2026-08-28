@@ -15,9 +15,16 @@
  *    this function does NOT silently allow.
  *  - `{ status: "envelope_invalid" }` — a pinned envelope row failed validation.
  *    Fail closed: a corrupt policy MUST NOT be treated as "allowed".
+ *
+ * Every decision that belongs to a real Mission is also appended as an immutable
+ * evaluation fact (`recordMissionPolicyEvaluation`) so the envelope version used
+ * for the decision is retained as evidence (ME-PEV-001).
  */
 import {
+  getMission,
   getMissionPolicyEnvelope,
+  policyTaskDigest,
+  recordMissionPolicyEvaluation,
   type AppDb,
 } from "@mendpoint/db";
 import {
@@ -39,19 +46,62 @@ export type MissionPolicyEnforcement =
 /**
  * Evaluate a task against the Mission's inherited Policy Envelope. See the module
  * doc for the three-state contract. Performs one tenant-scoped read; the
- * evaluation itself is pure.
+ * evaluation itself is pure. Persistence is append-only and idempotent on the
+ * content digest so a replay of the same decision does not duplicate the fact.
  */
 export function evaluateMissionTaskPolicy(db: AppDb, input: {
   tenantId: string;
   missionId: string;
   task: PolicyTaskRequest;
+  observedAt?: string;
 }): MissionPolicyEnforcement {
+  const observedAt = input.observedAt ?? new Date().toISOString();
+  const taskDigest = policyTaskDigest(input.task);
   const stored = getMissionPolicyEnvelope(db, input.tenantId, input.missionId);
-  if (!stored) return { status: "no_envelope" };
+  if (!stored) {
+    const result = { status: "no_envelope" } as const;
+    if (getMission(db, input.tenantId, input.missionId)) {
+      recordMissionPolicyEvaluation(db, {
+        tenantId: input.tenantId,
+        missionId: input.missionId,
+        envelopeVersion: null,
+        status: "no_envelope",
+        allowed: null,
+        reviewRequired: null,
+        violations: [],
+        taskDigest,
+        createdAt: observedAt,
+      });
+    }
+    return result;
+  }
   try {
     const envelope = parsePolicyEnvelope(JSON.parse(stored.envelopeJson));
-    return { status: "enforced", decision: evaluatePolicyEnvelope(envelope, input.task), version: stored.version };
+    const decision = evaluatePolicyEnvelope(envelope, input.task);
+    recordMissionPolicyEvaluation(db, {
+      tenantId: input.tenantId,
+      missionId: input.missionId,
+      envelopeVersion: stored.version,
+      status: "enforced",
+      allowed: decision.allowed,
+      reviewRequired: decision.reviewRequired,
+      violations: decision.violations,
+      taskDigest,
+      createdAt: observedAt,
+    });
+    return { status: "enforced", decision, version: stored.version };
   } catch {
+    recordMissionPolicyEvaluation(db, {
+      tenantId: input.tenantId,
+      missionId: input.missionId,
+      envelopeVersion: stored.version,
+      status: "envelope_invalid",
+      allowed: null,
+      reviewRequired: null,
+      violations: [],
+      taskDigest,
+      createdAt: observedAt,
+    });
     return { status: "envelope_invalid" };
   }
 }

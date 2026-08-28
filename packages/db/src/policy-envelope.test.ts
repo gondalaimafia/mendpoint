@@ -10,6 +10,8 @@ import {
   getMissionPolicyEnvelope,
   getPolicyEnvelope,
   insertPrincipal,
+  listMissionPolicyEvaluations,
+  recordMissionPolicyEvaluation,
   type AppDb,
 } from "./index.js";
 
@@ -103,5 +105,72 @@ describe("mission policy envelope inheritance", () => {
     const inherited = getMissionPolicyEnvelope(db, "t1", "m1");
     expect(inherited?.version).toBe(1);
     expect(inherited?.envelopeJson).toBe(bodyV1);
+  });
+});
+
+describe("mission policy evaluation evidence", () => {
+  const at = "2026-01-02T00:00:00.000Z";
+  const taskDigest = "a".repeat(64);
+
+  it("appends an evaluation on a pre-change database that lacked the table", () => {
+    const db = fixture();
+    fettlerMission(db);
+    expect(db.raw.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mission_policy_evaluations'`,
+    ).get()).toBeUndefined();
+    const recorded = recordMissionPolicyEvaluation(db, {
+      tenantId: "t1", missionId: "m1", envelopeVersion: null, status: "no_envelope",
+      allowed: null, reviewRequired: null, violations: [], taskDigest, createdAt: at,
+    });
+    expect(recorded.status).toBe("no_envelope");
+    expect(listMissionPolicyEvaluations(db, "t1", "m1")).toEqual([recorded]);
+  });
+
+  it("is idempotent on identical bytes and immutable afterwards", () => {
+    const db = fixture();
+    fettlerMission(db);
+    const first = recordMissionPolicyEvaluation(db, {
+      tenantId: "t1", missionId: "m1", envelopeVersion: 1, status: "enforced",
+      allowed: false, reviewRequired: true,
+      violations: [{ code: "deployment_forbidden", detail: "deployment" }],
+      taskDigest, createdAt: at,
+    });
+    const again = recordMissionPolicyEvaluation(db, {
+      tenantId: "t1", missionId: "m1", envelopeVersion: 1, status: "enforced",
+      allowed: false, reviewRequired: true,
+      violations: [{ code: "deployment_forbidden", detail: "deployment" }],
+      taskDigest, createdAt: at,
+    });
+    expect(again.id).toBe(first.id);
+    expect(listMissionPolicyEvaluations(db, "t1", "m1")).toHaveLength(1);
+    expect(() => db.raw.prepare(`DELETE FROM mission_policy_evaluations WHERE id = ?`).run(first.id))
+      .toThrow("mission_policy_evaluation_immutable");
+  });
+
+  it("is tenant-scoped: t2 cannot list t1 evaluations", () => {
+    const db = fixture();
+    fettlerMission(db);
+    recordMissionPolicyEvaluation(db, {
+      tenantId: "t1", missionId: "m1", envelopeVersion: null, status: "no_envelope",
+      allowed: null, reviewRequired: null, violations: [], taskDigest, createdAt: at,
+    });
+    expect(listMissionPolicyEvaluations(db, "t2", "m1")).toEqual([]);
+  });
+
+  it("fails closed when the mission row is missing", () => {
+    const db = fixture();
+    expect(() => recordMissionPolicyEvaluation(db, {
+      tenantId: "t1", missionId: "missing", envelopeVersion: null, status: "no_envelope",
+      allowed: null, reviewRequired: null, violations: [], taskDigest, createdAt: at,
+    })).toThrow("mission_policy_evaluation_mission_not_found");
+  });
+
+  it("fails closed when an enforced row omits the decision fields", () => {
+    const db = fixture();
+    fettlerMission(db);
+    expect(() => recordMissionPolicyEvaluation(db, {
+      tenantId: "t1", missionId: "m1", envelopeVersion: null, status: "enforced",
+      allowed: null, reviewRequired: null, violations: [], taskDigest, createdAt: at,
+    })).toThrow("mission_policy_evaluation_enforced_fields_required");
   });
 });
