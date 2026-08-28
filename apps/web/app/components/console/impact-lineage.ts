@@ -1,5 +1,6 @@
 /**
- * FET-016 view-model for the live Fettler `/prs/[id]` review console.
+ * FET-016 view-model for the live Fettler review surfaces (`/prs/[id]` and
+ * `/consumer/prs/[id]`).
  *
  * GET /changes/:id already returns findings + graphPath + impactCoverage.
  * The page fetched that body and used it only for a breaking-change alert.
