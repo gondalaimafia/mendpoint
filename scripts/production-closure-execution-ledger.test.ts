@@ -6,6 +6,10 @@ import {
   buildExecutionLedger,
 } from "./generate-production-closure-execution-ledger.js";
 import { isTestPath } from "./evidence-reachability-check.js";
+import {
+  evaluateLedgerGate,
+  serializeLedger,
+} from "./production-closure-execution-ledger.js";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -89,6 +93,19 @@ describe("production closure execution ledger", () => {
   it("assigns the handoff's unimplemented and Mission rows to the declared waves", () => {
     const byId = new Map(ledger.rows.map((row) => [row.requirementId, row]));
     expect(byId.get("ME-FET-015")?.owningWave).toBe(1);
+    expect(byId.get("ME-FET-015")?.implementationStatus).toBe("partial");
+    expect(byId.get("ME-FET-015")?.availability).toBe("internal");
+    expect(byId.get("ME-FET-015")?.claimState).toBe("internal_only");
+    expect(byId.get("ME-FET-015")?.pullRequests).toEqual([514]);
+    expect(byId.get("ME-FET-015")?.implementationStatus).not.toBe("verified");
+    // Register cites packages/codebase-index/src/index.ts#materializeCodebaseIndex.
+    // The #fragment must not collapse this to null (no production path).
+    expect(byId.get("ME-FET-015")?.reachableCodePath).toBe(
+      "packages/codebase-index/src/index.ts",
+    );
+    expect(byId.get("ME-FET-015")?.mutationOrRegressionTest).toBe(
+      "packages/code-impact/src/persisted-index.test.ts",
+    );
     expect(byId.get("ME-FET-018")?.owningWave).toBe(5);
     expect(byId.get("ME-REG-015")?.owningWave).toBe(7);
     expect(byId.get("ME-REG-016")?.owningWave).toBe(7);
@@ -113,9 +130,10 @@ describe("production closure execution ledger", () => {
     expect(committed.rows).toHaveLength(101);
     expect(committed.rows.map((row) => row.requirementId)).toEqual(registerIds);
     expect(committed).toEqual(ledger);
+    expect(evaluateLedgerGate(serializeLedger(committed), ledger)).toEqual([]);
   });
 
-  it("CONTROL: a single-field divergence in the committed artifact breaks the match", () => {
+  it("a single-field divergence in the committed artifact breaks the match", () => {
     // Proves the deep comparison above has teeth and is not tautological. We
     // read the committed artifact, perturb exactly one non-ID field on one row,
     // and require that the perturbed copy no longer equals the generator output.
@@ -137,12 +155,33 @@ describe("production closure execution ledger", () => {
     expect(committed).toEqual(ledger);
   });
 
-  it("CONTROL: dropping a row from the committed artifact breaks the match", () => {
+  it("dropping a row from the committed artifact breaks the match", () => {
     const withoutGraph = {
       ...committed,
       rows: committed.rows.filter((row) => row.requirementId !== "ME-CGR-001"),
     };
     expect(withoutGraph.rows).toHaveLength(100);
     expect(withoutGraph).not.toEqual(ledger);
+  });
+
+  it("evaluateLedgerGate reports drift and rejects a test-file reachableCodePath", () => {
+    const drifted = serializeLedger({
+      ...ledger,
+      observedAt: "not-the-generated-timestamp",
+    });
+    const driftIssues = evaluateLedgerGate(drifted, ledger);
+    expect(driftIssues.map((issue) => issue.code)).toContain("LEDGER_DRIFT");
+
+    const masquerade = {
+      ...ledger,
+      rows: ledger.rows.map((row) =>
+        row.requirementId === "ME-CGR-001"
+          ? { ...row, reachableCodePath: "scripts/production-closure-execution-ledger.test.ts" }
+          : row,
+      ),
+    };
+    const pathIssues = evaluateLedgerGate(serializeLedger(masquerade), masquerade);
+    expect(pathIssues.map((issue) => issue.code)).toContain("LEDGER_REACHABLE_PATH_IS_TEST");
+    expect(pathIssues[0]?.subject).toBe("ME-CGR-001");
   });
 });

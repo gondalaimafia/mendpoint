@@ -2,10 +2,10 @@
 
 This is the Wave 0 exhaustive 101-row ledger. It does not replace the approved eleven-phase plan or change any requirement status.
 
-- Observed main: `5ba70419ef6164b51ba3bfdc38526bf96fa507d3`
-- Observed at: 2026-08-28T21:00:00.000Z
+- Observed main: `96801a319fc3d355cb2b28b4167b83023a192042`
+- Observed at: 2026-08-28T23:50:00.000Z
 - Rows: 101
-- Status mix: 28 verified, 52 partial, 10 documented, 7 unimplemented, 3 scaffold, 1 blocked_external
+- Status mix: 28 verified, 53 partial, 10 documented, 6 unimplemented, 3 scaffold, 1 blocked_external
 
 Machine-readable source: `docs/PRODUCTION_CLOSURE_EXECUTION_LEDGER.json`.
 Regenerate with `npx tsx scripts/generate-production-closure-execution-ledger.ts`.
@@ -21,7 +21,7 @@ Wave 0 control-plane work (not a requirement row): Claude owns the #515 authorit
 | `ME-ENT-006` | partial | SQLite single-node works; #507's fenced multi-worker drain is not deployed. | 438 | Same as #507: fenced leases and shutdown boundaries on the live worker. |
 | `ME-ENT-007` | partial | Backup workflows exist; #513's authenticated release-ingestion restore authority is not merged. Customer backup issue #429 remains open. | 351 | Rebase and deploy #513 after #507; boot against a pre-change database and restore a signed receipt. |
 | `ME-ENT-008` | partial | Router circuit breakers exist; #507's durable dispatch outage/backlog path is not deployed. | 438 | Same as #507: backlog health and retryable provider failure on the live worker. |
-| `ME-FET-015` | unimplemented | Unimplemented on main. #514 persists tenant-authorized Fettler indexes and may move this row to partial only. | 431 | Rebase and deploy #514 after #513; promote unimplemented→partial only. Do not mark verified. |
+| `ME-FET-015` | partial | Partial on main via #514: tenant-authorized Fettler indexes persist. Smallest gap is exact-revision production evidence that materialization is used by a live impact caller. Do not mark verified. | 431 | Deploy the #514 revision; keep this row partial. Do not mark verified. |
 | `ME-REG-017` | unimplemented | #512 binds ReGauge dependency certainty to sealed workspace authority; main still risks empty dependsOn reading as 'no dependency'. After #512, remaining unknown-vs-absent cases stay Wave 7. | 434 | Ship semantic package-lock authority, then rebase and deploy #512. Keep incomplete coverage as unknown. |
 
 ## Wave 3: Dedicated ReGauge and DeepSeek advisory production

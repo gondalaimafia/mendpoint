@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "source": "CURSOR_MENDPOINT_101_PRODUCTION_CLOSURE_HANDOFF.md Wave 0 task 6",
-  "observedMainRevision": "5ba70419ef6164b51ba3bfdc38526bf96fa507d3",
-  "observedAt": "2026-08-28T21:00:00.000Z",
+  "observedMainRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
+  "observedAt": "2026-08-28T23:50:00.000Z",
   "requirementCount": 101,
   "rows": [
     {
@@ -26,7 +26,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -49,7 +49,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -74,7 +74,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -97,7 +97,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -120,7 +120,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -143,7 +143,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -166,7 +166,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -189,7 +189,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -212,7 +212,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -237,7 +237,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -260,7 +260,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/change-intel/src/unified-change-evidence.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-002 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -283,7 +283,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/catalog/src/poll.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-002 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -306,7 +306,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/catalog/src/release-ingestion.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -329,7 +329,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/catalog/src/release-ingestion.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -352,7 +352,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "apps/api/src/change-sources.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -375,7 +375,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "apps/api/src/change-sources.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -398,7 +398,7 @@
       "plannedPullRequest": "Drain and deploy #507 (release-dispatch), then prove a configured customer consumer on mendpoint-talal.",
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/catalog/src/run-poll.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -421,7 +421,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/change-intel/src/unified-change-evidence.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -444,7 +444,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/transformer/src/recipe-catalog.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-004 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -467,7 +467,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/db/src/repository.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -490,7 +490,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/platform/src/repository-source.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -513,7 +513,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/github/src/index.test.ts",
-      "productionEvidenceTarget": "Existing productionEvidenceIds ME-SCM-003-AC01-EV05 must be re-read on the exact deployed revision after the next merge. Current observed main is 5ba70419ef6164b51ba3bfdc38526bf96fa507d3.",
+      "productionEvidenceTarget": "Existing productionEvidenceIds ME-SCM-003-AC01-EV05 must be re-read on the exact deployed revision after the next merge. Current observed main is 96801a319fc3d355cb2b28b4167b83023a192042.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-002 (limited_availability): do not change wording until this row is individually promoted; CLM-006 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": "GitHub App production credentials"
@@ -536,7 +536,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/platform/src/gitlab-fixture.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-008 (roadmap): do not change wording until this row is individually promoted",
       "externalDependency": "approved GitLab credential and disposable private project; live GitLab webhook and recovery drill"
@@ -559,7 +559,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "apps/api/src/repository-connections.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -582,7 +582,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/platform/src/repository-source.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -611,7 +611,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/graph-learn/src/graph-learn.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-003 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -634,7 +634,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/graph-learn/src/graph-learn.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -659,7 +659,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/graph-learn/src/dependency-paths.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-003 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -682,7 +682,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/call-graph/src/index.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-003 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -705,7 +705,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/graph-learn/src/runtime-evidence.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -731,7 +731,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/graph-learn/src/graph-learn.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-003 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -754,7 +754,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/eval/src/coverage-metrics.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -779,7 +779,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/graph-learn/src/impact-benchmark.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -805,7 +805,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/generation/src/index.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-004 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -828,7 +828,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/pipeline/src/index.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-005 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -851,7 +851,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/pipeline/src/index.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-002 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -879,7 +879,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "apps/api/src/reviews.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-006 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": "live authenticated GitHub and GitLab review reconciliation drills"
@@ -904,7 +904,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/policy/src/index.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "CLM-005 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -935,7 +935,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/db/src/warden-campaign.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -958,7 +958,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/db/src/warden-campaign.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -983,7 +983,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/db/src/warden-campaign.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1008,7 +1008,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/eval/src/warden-metrics.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1031,7 +1031,7 @@
       "plannedPullRequest": "Blocked until an approved Fettler design-partner repository and observed acceptance exist.",
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "No production evidence until the named external owner supplies the missing proof. Synthetic or demo evidence must not promote this row. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not satisfy this row.",
+      "productionEvidenceTarget": "No production evidence until the named external owner supplies the missing proof. Synthetic or demo evidence must not promote this row. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not satisfy this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": "consented private customer repository; design partner acceptance and observed outcome"
@@ -1054,7 +1054,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/transformer/src/blueprint-planner.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-007 (preview): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -1077,7 +1077,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/transformer/src/bsg-extractor.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1107,7 +1107,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/transformer/src/control-plane-store.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-007 (preview): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -1130,7 +1130,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/transformer/src/recipe.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1155,7 +1155,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/transformer/src/recipe-workspace-execution.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1178,7 +1178,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/transformer/src/staged-pr-batches.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1204,7 +1204,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "apps/api/src/transformer-pilot-executions.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1227,7 +1227,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/transformer/src/recipe-workspace-execution.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1250,7 +1250,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/platform/src/repository-source.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1273,7 +1273,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "apps/web/app/transformer/workspace-model.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-007 (preview): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -1296,7 +1296,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "apps/web/app/transformer/workspace-model.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1321,7 +1321,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/eval/src/agent-eval.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1346,7 +1346,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "apps/api/src/transformer-control-plane.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1369,7 +1369,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/platform/src/router.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1392,7 +1392,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/platform/src/router.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1415,7 +1415,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/platform/src/router.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1438,7 +1438,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/platform/src/router.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1461,7 +1461,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "apps/api/src/billing-economics.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1487,7 +1487,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/db/src/learning.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1510,7 +1510,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/db/src/learning.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1533,7 +1533,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/platform/src/adapter-lifecycle.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": "consented representative dataset; approved training and serving infrastructure"
@@ -1558,7 +1558,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/eval/src/router-value-proof.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1581,7 +1581,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "apps/api/src/auth.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": "approved identity provider tenant; SAML and SCIM enterprise lifecycle"
@@ -1607,7 +1607,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/db/src/trust.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1632,7 +1632,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/platform/src/credentials.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-014 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -1657,7 +1657,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/db/src/trust.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-014 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -1680,7 +1680,7 @@
       "plannedPullRequest": "Same as #507: tenant-bound dispatch events must appear in production health after deploy.",
       "reachableCodePath": null,
       "mutationOrRegressionTest": "apps/api/src/production.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-013 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -1703,7 +1703,7 @@
       "plannedPullRequest": "Same as #507: fenced leases and shutdown boundaries on the live worker.",
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/db/src/index.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-009 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -1728,7 +1728,7 @@
       "plannedPullRequest": "Rebase and deploy #513 after #507; boot against a pre-change database and restore a signed receipt.",
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/ops/src/disaster-recovery.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": "production backup provider; approved cross region recovery infrastructure; real production regional failover drill"
@@ -1751,7 +1751,7 @@
       "plannedPullRequest": "Same as #507: backlog health and retryable provider failure on the live worker.",
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/platform/src/router.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1774,7 +1774,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/eval/src/performance-contract.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1797,7 +1797,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "tests/e2e/deployment.spec.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-009 (limited_availability): do not change wording until this row is individually promoted; CLM-013 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -1820,7 +1820,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/ops/src/vpc-deployment.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
       "externalDependency": "approved cloud account and region; approved enterprise network"
@@ -1843,7 +1843,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/contract/src/compliance-program.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
       "externalDependency": "legal approved DPA and subprocessors record; operational control evidence from deployed environment; independent penetration test; independent compliance assessor"
@@ -1868,7 +1868,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/platform/src/mcu.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1893,7 +1893,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/db/src/usage.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1916,7 +1916,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/db/src/usage.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-010 (preview): do not change wording until this row is individually promoted",
       "externalDependency": "approved billing processor or invoice export account; finance pricing and tax policy"
@@ -1941,7 +1941,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "apps/api/src/billing-economics.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -1964,7 +1964,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": "apps/web/app/install/pilot-readiness-checklist.tsx",
       "mutationOrRegressionTest": "apps/web/app/install/pilot-readiness-checklist.test.tsx",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-001 (preview): do not change wording until this row is individually promoted; CLM-012 (preview): do not change wording until this row is individually promoted; CLM-014 (limited_availability): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -1987,7 +1987,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "apps/api/src/pilot-success-contracts.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-010 (preview): do not change wording until this row is individually promoted; CLM-012 (preview): do not change wording until this row is individually promoted",
       "externalDependency": null
@@ -2014,7 +2014,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": null,
       "mutationOrRegressionTest": "packages/contract/src/public-claims.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-001 (preview): do not change wording until this row is individually promoted; CLM-011 (illustrative): do not change wording until this row is individually promoted",
       "externalDependency": "observed external customer proof"
@@ -2024,21 +2024,23 @@
       "title": "Relationship materialization",
       "registerSet": "v3-platform",
       "workstream": "FC-03",
-      "implementationStatus": "unimplemented",
-      "availability": "planned",
-      "claimState": "roadmap_only",
+      "implementationStatus": "partial",
+      "availability": "internal",
+      "claimState": "internal_only",
       "acceptanceId": "ME-FET-015-AC01",
       "acceptanceAssertion": "For supported providers and stacks, materialize stable provider to code relationships that are repeatedly useful for impact analysis rather than asking the reasoning model to rediscover them per mission.",
-      "smallestUnmetGap": "Unimplemented on main. #514 persists tenant-authorized Fettler indexes and may move this row to partial only.",
+      "smallestUnmetGap": "Partial on main via #514: tenant-authorized Fettler indexes persist. Smallest gap is exact-revision production evidence that materialization is used by a live impact caller. Do not mark verified.",
       "owningWave": 1,
       "owner": "graph",
       "issue": 431,
-      "pullRequests": [],
-      "plannedPullRequest": "Rebase and deploy #514 after #513; promote unimplemented→partial only. Do not mark verified.",
-      "reachableCodePath": null,
-      "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
-      "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
+      "pullRequests": [
+        514
+      ],
+      "plannedPullRequest": "Deploy the #514 revision; keep this row partial. Do not mark verified.",
+      "reachableCodePath": "packages/codebase-index/src/index.ts",
+      "mutationOrRegressionTest": "packages/code-impact/src/persisted-index.test.ts",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
+      "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
     },
@@ -2060,7 +2062,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": "packages/shared/src/index.ts",
       "mutationOrRegressionTest": "packages/db/src/index.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2086,7 +2088,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": "packages/code-impact/src/index.ts",
       "mutationOrRegressionTest": "apps/web/app/components/console/pr-map.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2113,7 +2115,7 @@
       "plannedPullRequest": "New Fettler Wave 5 PR after Mission foundation: targeted raw retrieval when graph coverage is insufficient.",
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2136,7 +2138,7 @@
       "plannedPullRequest": "New ReGauge Wave 7 PR: hybrid relationship evidence (static/runtime/config/jobs/tests).",
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2159,7 +2161,7 @@
       "plannedPullRequest": "New ReGauge Wave 7 PR: MUST_PRECEDE / BLOCKS provenance distinct from planner hypotheses.",
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2182,7 +2184,7 @@
       "plannedPullRequest": "Ship semantic package-lock authority, then rebase and deploy #512. Keep incomplete coverage as unknown.",
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2205,7 +2207,7 @@
       "plannedPullRequest": "New ReGauge Wave 7 PR: plan from MissionGraphProjection before broad raw exploration.",
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2228,7 +2230,7 @@
       "plannedPullRequest": "New Change Graph Wave 6 PR after Waves 4 and 5 tracer. Do not invent Graphify production.",
       "reachableCodePath": null,
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2255,7 +2257,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": "packages/db/src/mission.ts",
       "mutationOrRegressionTest": "packages/db/src/mission.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2282,7 +2284,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": "packages/db/src/mission-decisions.ts",
       "mutationOrRegressionTest": "apps/api/src/warden-candidate-review.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2315,7 +2317,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": "packages/db/src/mission.ts",
       "mutationOrRegressionTest": "packages/pipeline/src/mission-context-compiler.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2348,7 +2350,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": "packages/db/src/mission-handoff.ts",
       "mutationOrRegressionTest": "apps/worker/src/mission-resume.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2373,7 +2375,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": "packages/db/src/organization-memory.ts",
       "mutationOrRegressionTest": "packages/db/src/organization-memory.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2400,7 +2402,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": "packages/policy/src/policy-envelope.ts",
       "mutationOrRegressionTest": "packages/policy/src/policy-envelope.test.ts",
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2428,7 +2430,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": "packages/pipeline/src/mission-context-compiler.ts",
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null
@@ -2454,7 +2456,7 @@
       "plannedPullRequest": null,
       "reachableCodePath": "packages/structural-graph/src/index.ts",
       "mutationOrRegressionTest": null,
-      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 5ba70419ef6164b51ba3bfdc38526bf96fa507d3 does not prove this row.",
+      "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
       "externalDependency": null

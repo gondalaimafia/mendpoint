@@ -9,8 +9,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const OBSERVED_MAIN = "5ba70419ef6164b51ba3bfdc38526bf96fa507d3";
-const OBSERVED_AT = "2026-08-28T21:00:00.000Z";
+const OBSERVED_MAIN = "96801a319fc3d355cb2b28b4167b83023a192042";
+const OBSERVED_AT = "2026-08-28T23:50:00.000Z";
 
 type Requirement = {
   id: string;
@@ -127,7 +127,7 @@ const PLANNED_PR: Record<string, string> = {
   "ME-ENT-006": "Same as #507: fenced leases and shutdown boundaries on the live worker.",
   "ME-ENT-008": "Same as #507: backlog health and retryable provider failure on the live worker.",
   "ME-ENT-007": "Rebase and deploy #513 after #507; boot against a pre-change database and restore a signed receipt.",
-  "ME-FET-015": "Rebase and deploy #514 after #513; promote unimplemented→partial only. Do not mark verified.",
+  "ME-FET-015": "Deploy the #514 revision; keep this row partial. Do not mark verified.",
   "ME-REG-017": "Ship semantic package-lock authority, then rebase and deploy #512. Keep incomplete coverage as unknown.",
   "ME-FET-018": "New Fettler Wave 5 PR after Mission foundation: targeted raw retrieval when graph coverage is insufficient.",
   "ME-REG-015": "New ReGauge Wave 7 PR: hybrid relationship evidence (static/runtime/config/jobs/tests).",
@@ -153,7 +153,7 @@ const GAPS: Record<string, string> = {
   "ME-ENT-006": "SQLite single-node works; #507's fenced multi-worker drain is not deployed.",
   "ME-ENT-007": "Backup workflows exist; #513's authenticated release-ingestion restore authority is not merged. Customer backup issue #429 remains open.",
   "ME-ENT-008": "Router circuit breakers exist; #507's durable dispatch outage/backlog path is not deployed.",
-  "ME-FET-015": "Unimplemented on main. #514 persists tenant-authorized Fettler indexes and may move this row to partial only.",
+  "ME-FET-015": "Partial on main via #514: tenant-authorized Fettler indexes persist. Smallest gap is exact-revision production evidence that materialization is used by a live impact caller. Do not mark verified.",
   "ME-FET-016": "Impact paths exist in graph-learn/code-impact; the live Fettler UI/review package does not always expose provider→code→verification lineage on a customer campaign.",
   "ME-FET-017": "queryFettlerEndpointImpact distinguishes no_impact vs unknown_impact; some producers still treat store_not_available / missing graph version as absence rather than unknown.",
   "ME-FET-018": "No production raw-retrieval fallback. Do not invent one that writes unverified edges into the current graph version.",
@@ -224,6 +224,11 @@ function defaultGap(req: Requirement): string {
  * cited, the honest value is `null` — "no reachable production code path was
  * determined" — never the row's own test file dressed as production evidence.
  */
+function filePathFromLocator(locator: string): string {
+  const hash = locator.indexOf("#");
+  return hash === -1 ? locator : locator.slice(0, hash);
+}
+
 function firstCodeLocator(req: Requirement): string | null {
   const locators = req.acceptance.flatMap((criterion) =>
     criterion.evidence
@@ -231,7 +236,13 @@ function firstCodeLocator(req: Requirement): string | null {
       .map((item) => item.locator)
       .filter((locator) => !locator.startsWith("planned:") && !locator.startsWith("external:")),
   );
-  const code = locators.find((locator) => /\.(ts|tsx)$/.test(locator) && !locator.includes(".test."));
+  // Strip #symbol fragments before judging the path. A locator such as
+  // `packages/codebase-index/src/index.ts#materializeCodebaseIndex` is a real
+  // production file; treating the fragment as part of the extension would
+  // record null and read as "no production path" when the register cited one.
+  const code = locators
+    .map(filePathFromLocator)
+    .find((path) => /\.(ts|tsx)$/.test(path) && !path.includes(".test."));
   return code ?? null;
 }
 
