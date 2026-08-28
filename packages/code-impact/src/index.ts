@@ -6,10 +6,11 @@
 import {
   buildIndex,
   buildIndexIncremental,
+  materializeCodebaseIndex,
   type CodebaseIndex,
+  type CodebaseIndexAuthority,
+  type CodebaseIndexReuseEvidence,
   type SdkDetectionContext,
-  writeIndex,
-  defaultIndexPath,
 } from "@mendpoint/codebase-index";
 import { createHash } from "node:crypto";
 import {
@@ -84,9 +85,15 @@ export type AnalyzeOptions = {
   minConfidence?: Confidence;
   index?: CodebaseIndex;
   persistIndex?: boolean;
+  /** Mendpoint-owned tenant storage root; required when persisted reuse is enabled. */
+  indexStorageRoot?: string;
   useLlm?: boolean;
   surfaces?: ImpactableSurface[];
   sdkHints?: string[];
+  /** Tenant and stable repository identity required before persisted reuse. */
+  indexAuthority?: CodebaseIndexAuthority;
+  /** Receives digest-only evidence for each persisted index decision. */
+  onIndexMaterialized?: (evidence: CodebaseIndexReuseEvidence) => void;
   /**
    * Observer for each successful live model call made during confirmation.
    * Only fires when `useLlm` is true and the confirm mode resolves to live.
@@ -94,6 +101,31 @@ export type AnalyzeOptions = {
    */
   onLlmCall?: LlmConfirmObserver;
 };
+
+function analysisIndex(
+  repoRoot: string,
+  surfaces: ImpactableSurface[],
+  options: AnalyzeOptions,
+  authorityOverride?: CodebaseIndexAuthority,
+): { index: CodebaseIndex; evidence?: CodebaseIndexReuseEvidence } {
+  if (options.index) return { index: options.index };
+  const sdkContext = sdkContextFromSurfaces(surfaces, options.sdkHints);
+  if (!options.persistIndex) {
+    return { index: buildIndexIncremental(repoRoot, null, { sdkContext }) };
+  }
+  const authority = authorityOverride ?? options.indexAuthority;
+  if (!authority) throw new Error("codebase_index_authority_required");
+  const storageRoot = options.indexStorageRoot?.trim();
+  if (!storageRoot) throw new Error("codebase_index_storage_root_required");
+  const materialized = materializeCodebaseIndex(repoRoot, {
+    authority,
+    storageRoot,
+    sdkContext,
+    persist: true,
+  });
+  options.onIndexMaterialized?.(materialized.evidence);
+  return materialized;
+}
 
 /**
  * Derive provider-driven SDK-detection signals from the change under analysis.
@@ -513,14 +545,7 @@ export async function analyzeImpact(
   surfaces: ImpactableSurface[],
   options: AnalyzeOptions = {},
 ): Promise<ImpactReport> {
-  const index =
-    options.index ??
-    buildIndexIncremental(repoRoot, null, {
-      sdkContext: sdkContextFromSurfaces(surfaces, options.sdkHints),
-    });
-  if (options.persistIndex) {
-    writeIndex(index, defaultIndexPath(repoRoot));
-  }
+  const { index } = analysisIndex(repoRoot, surfaces, options);
 
   const provider: ProviderReachability = computeProviderReachability(index, surfaces);
   const candidates = discoverCandidates(index, surfaces, provider);
@@ -611,8 +636,11 @@ export async function analyzeImpactWithSoftwareGraph(
   const endpointSurface = endpointSurfaces[0];
   if (!endpointSurface?.path) throw new Error("software_graph_endpoint_surface_required");
   const sdkContext = sdkContextFromSurfaces(surfaces, options.impact?.sdkHints);
-  const index = buildIndexIncremental(repoRoot, null, { sdkContext });
-  if (options.impact?.persistIndex) writeIndex(index, defaultIndexPath(repoRoot));
+  const materialized = analysisIndex(repoRoot, surfaces, options.impact ?? {}, {
+    tenantId: options.tenantId,
+    repositoryId: options.repositoryId,
+  });
+  const { index } = materialized;
   const impactReport = await analyzeImpact(repoRoot, surfaces, {
     ...options.impact,
     index,
@@ -663,7 +691,13 @@ export async function analyzeImpactWithSoftwareGraph(
     maxRelationships: 1_000,
   });
   const context = compileFettlerImpactContext(graphImpact, { maxBytes: options.maxContextBytes });
-  return { impactReport, graphVersion, graphImpact, context };
+  return {
+    impactReport,
+    graphVersion,
+    graphImpact,
+    context,
+    ...(materialized.evidence ? { indexReuse: materialized.evidence } : {}),
+  };
 }
 
 export * from "./software-graph-materializer.js";
