@@ -7,17 +7,22 @@ import {
   upsertNode,
 } from "@mendpoint/graph-learn";
 import {
-  consultRegaugeGraphDependencies,
+  consultRegaugeGraphDependencies as consultRegaugeGraphDependenciesAtInstant,
   consultRegaugeOrganizationMemory,
 } from "./regauge-plan-consult.js";
 
 describe("consultRegaugeGraphDependencies", () => {
+  const evaluatedAt = "2026-08-27T12:00:00.000Z";
+  const consultRegaugeGraphDependencies = (
+    input: Omit<Parameters<typeof consultRegaugeGraphDependenciesAtInstant>[0], "evaluatedAt">,
+  ) => consultRegaugeGraphDependenciesAtInstant({ ...input, evaluatedAt });
   const manifestText = (packageName: string, dependencies: Record<string, string> = {}) =>
     JSON.stringify({ name: packageName, dependencies });
   const snapshot = (
     repositoryId: string,
     packageName: string,
     dependencies: Record<string, string> = {},
+    workspace?: Readonly<{ path?: string; members?: readonly string[] }>,
   ) => {
     const text = manifestText(packageName, dependencies);
     return {
@@ -25,6 +30,8 @@ describe("consultRegaugeGraphDependencies", () => {
       snapshotId: `snapshot-${repositoryId}`,
       revision: createHash("sha1").update(repositoryId).digest("hex"),
       snapshotDigest: `sha256:${createHash("sha256").update(`snapshot:${repositoryId}:${text}`).digest("hex")}`,
+      ...(workspace?.path ? { workspacePath: workspace.path } : {}),
+      ...(workspace?.members ? { workspacePaths: workspace.members } : {}),
       files: { "package.json": text },
     };
   };
@@ -38,6 +45,7 @@ describe("consultRegaugeGraphDependencies", () => {
     repoPath: "/unused",
     repoId: repositoryId,
     tenantId,
+    observedAt: "2026-08-27T11:00:00.000Z",
     files: [{ path: "package.json", text: manifestText(packageName, dependencies) }],
   });
 
@@ -83,14 +91,14 @@ describe("consultRegaugeGraphDependencies", () => {
   it("maps a manifest dependency to an exact requested repository with provenance", () => {
     const db = openGraphLearnMemory();
     ingest(db, "tenant-a", "repo-b", "billing");
-    ingest(db, "tenant-a", "repo-a", "shop", { billing: "workspace:*" });
+    ingest(db, "tenant-a", "repo-a", "shop", { billing: "file:../billing" });
     const result = consultRegaugeGraphDependencies({
       graph: db,
       tenantId: "tenant-a",
       repositoryIds: ["repo-a", "repo-b"],
       repositorySnapshots: [
-        snapshot("repo-a", "shop", { billing: "workspace:*" }),
-        snapshot("repo-b", "billing"),
+        snapshot("repo-a", "shop", { billing: "file:../billing" }, { path: "packages/shop" }),
+        snapshot("repo-b", "billing", {}, { path: "packages/billing" }),
       ],
     });
     expect(result.repositories).toEqual([
@@ -101,8 +109,86 @@ describe("consultRegaugeGraphDependencies", () => {
       sourceRepositoryId: "repo-a",
       targetRepositoryId: "repo-b",
       sourceSystem: "manifest",
-      evidenceRefs: [expect.stringMatching(/^manifest-ingest:sha256:/)],
+      evidenceRefs: expect.arrayContaining([expect.stringMatching(/^manifest-ingest:sha256:/)]),
     })]);
+    db.raw.close();
+  });
+
+  it("maps workspace protocol dependencies only with immutable workspace membership", () => {
+    const db = openGraphLearnMemory();
+    ingest(db, "tenant-a", "repo-b", "billing");
+    ingest(db, "tenant-a", "repo-a", "shop", { billing: "workspace:*" });
+    const result = consultRegaugeGraphDependencies({
+      graph: db,
+      tenantId: "tenant-a",
+      repositoryIds: ["repo-a", "repo-b"],
+      repositorySnapshots: [
+        snapshot("repo-a", "shop", { billing: "workspace:*" }, {
+          path: "packages/shop",
+          members: ["packages/billing"],
+        }),
+        snapshot("repo-b", "billing", {}, { path: "packages/billing" }),
+      ],
+    });
+    expect(result.repositories[0]).toMatchObject({
+      repositoryId: "repo-a",
+      coverage: "complete",
+      dependsOnRepositoryIds: ["repo-b"],
+    });
+    db.raw.close();
+  });
+
+  it("resolves every path-bearing local protocol from immutable snapshot paths", () => {
+    for (const specifier of ["file:../billing", "link:../billing", "portal:../billing", "../billing"]) {
+      const db = openGraphLearnMemory();
+      ingest(db, "tenant-a", "repo-b", "billing");
+      ingest(db, "tenant-a", "repo-a", "shop", { billing: specifier });
+      const result = consultRegaugeGraphDependencies({
+        graph: db,
+        tenantId: "tenant-a",
+        repositoryIds: ["repo-a", "repo-b"],
+        repositorySnapshots: [
+          snapshot("repo-a", "shop", { billing: specifier }, { path: "packages/shop" }),
+          snapshot("repo-b", "billing", {}, { path: "packages/billing" }),
+        ],
+      });
+      expect(result.repositories[0]).toMatchObject({
+        repositoryId: "repo-a",
+        coverage: "complete",
+        dependsOnRepositoryIds: ["repo-b"],
+      });
+      expect(result.edges[0]!.evidenceRefs).toContainEqual(expect.stringMatching(/^manifest-resolution:sha256:/));
+      db.raw.close();
+    }
+  });
+
+  it("pins graph authority to the mission instant across later ingest", () => {
+    const db = openGraphLearnMemory();
+    ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-a", tenantId: "tenant-a",
+      observedAt: "2026-08-27T10:00:00.000Z",
+      files: [{ path: "package.json", text: manifestText("shop") }],
+    });
+    const input = {
+      graph: db,
+      tenantId: "tenant-a",
+      evaluatedAt: "2026-08-27T10:30:00.000Z",
+      repositoryIds: ["repo-a"],
+      repositorySnapshots: [snapshot("repo-a", "shop")],
+    };
+    const before = consultRegaugeGraphDependenciesAtInstant(input);
+    ingestManifestDependencies(db, {
+      repoPath: "/unused", repoId: "repo-a", tenantId: "tenant-a",
+      observedAt: "2026-08-27T11:00:00.000Z",
+      files: [{ path: "package.json", text: manifestText("shop", { stripe: "1" }) }],
+    });
+    const after = consultRegaugeGraphDependenciesAtInstant(input);
+    expect(after).toEqual(before);
+    expect(after).toMatchObject({
+      evaluatedAt: input.evaluatedAt,
+      graphVersionId: expect.stringMatching(/^topology-v1:/),
+      graphContentDigest: expect.stringMatching(/^sha256:/),
+    });
     db.raw.close();
   });
 

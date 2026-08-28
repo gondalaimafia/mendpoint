@@ -76,7 +76,6 @@ function manifestRootEvidence(
     node.repo_id !== repositoryId ||
     props?.tenant_id !== tenantId ||
     !["complete", "incomplete"].includes(String(status ?? "")) ||
-    props?.manifest_valid_to !== null ||
     props?.declared === true ||
     typeof manifestPath !== "string" || !["package.json", "pyproject.toml", "go.mod"].includes(manifestPath) ||
     typeof contentDigest !== "string" || !DIGEST.test(contentDigest) ||
@@ -96,23 +95,72 @@ function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+function sha256(value: string): string {
+  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
+function canonicalManifestText(value: string): string {
+  return value.replace(/^\uFEFF/u, "").replace(/\r\n?/g, "\n");
+}
+
+function normalizeSnapshotPath(value: string): string | null {
+  const parts: string[] = [];
+  for (const part of value.replace(/\\/g, "/").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (!parts.length) return null;
+      parts.pop();
+    } else parts.push(part);
+  }
+  return parts.join("/");
+}
+
+function workspacePatterns(files: Readonly<Record<string, string>>, manifestPath: string): string[] {
+  try {
+    const parsed = JSON.parse(files[manifestPath] ?? "") as { workspaces?: unknown };
+    const value = parsed.workspaces;
+    const patterns = Array.isArray(value)
+      ? value
+      : value && typeof value === "object" && Array.isArray((value as { packages?: unknown }).packages)
+        ? (value as { packages: unknown[] }).packages
+        : [];
+    return patterns.filter((entry): entry is string => typeof entry === "string");
+  } catch {
+    return [];
+  }
+}
+
+function workspacePatternMatches(pattern: string, path: string): boolean {
+  const normalized = normalizeSnapshotPath(pattern);
+  if (!normalized) return false;
+  if (!normalized.includes("*")) return normalized === path;
+  const escaped = normalized.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*");
+  return new RegExp(`^${escaped}$`).test(path);
+}
+
 export function consultRegaugeGraphDependencies(input: {
   graph: GraphLearnDb | null;
   tenantId: string;
+  evaluatedAt: string;
   repositoryIds: readonly string[];
   repositorySnapshots?: readonly Readonly<{
     id: string;
     snapshotId: string;
     revision: string;
     snapshotDigest: string;
+    workspacePath?: string;
+    workspacePaths?: readonly string[];
     files: Readonly<Record<string, string>>;
   }>[];
 }): RegaugeGraphPlanConsult {
   const requestedRepositoryIds = [...new Set(input.repositoryIds)].sort(compareCodeUnits);
-  const evaluatedAt = new Date().toISOString();
+  const evaluatedAt = new Date(input.evaluatedAt).toISOString();
   if (!input.graph) {
     return createRegaugeDependencyProjectionV1({
       tenantId: input.tenantId,
+      evaluatedAt,
+      graphVersionId: "not_consulted",
+      graphContentDigest: sha256("not_consulted"),
       requestedRepositoryIds,
       repositories: requestedRepositoryIds.map((repositoryId) => ({
         repositoryId,
@@ -151,15 +199,6 @@ export function consultRegaugeGraphDependencies(input: {
         const evidence = manifestRootEvidence(node, input.tenantId, repositoryId);
         return evidence ? [{ node, evidence }] : [];
       }));
-    }
-    const rootByLabel = new Map<string, Array<{ repositoryId: string; serviceId: string }>>();
-    for (const [repositoryId, candidates] of roots) {
-      if (candidates.length !== 1) continue;
-      const root = candidates[0]!.node;
-      rootByLabel.set(root.label, [
-        ...(rootByLabel.get(root.label) ?? []),
-        { repositoryId, serviceId: root.id },
-      ]);
     }
     const repositories: RegaugeDependencyProjectionRepositoryV1[] = [];
     const projectionEdges: RegaugeDependencyProjectionEdgeV1[] = [];
@@ -208,7 +247,7 @@ export function consultRegaugeGraphDependencies(input: {
         evidence.coverage !== "complete" ||
         !snapshot ||
         typeof snapshot.files[evidence.manifestPath] !== "string" ||
-        `sha256:${createHash("sha256").update(snapshot.files[evidence.manifestPath]!, "utf8").digest("hex")}` !==
+        sha256(canonicalManifestText(snapshot.files[evidence.manifestPath]!)) !==
           evidence.contentDigest
       ) {
         repositories.push({
@@ -249,8 +288,36 @@ export function consultRegaugeGraphDependencies(input: {
           reason = "dependency_edge_scope_invalid";
           break;
         }
-        const matches = (rootByLabel.get(target.label) ?? [])
-          .filter((candidate) => candidate.repositoryId !== repositoryId);
+        const specifier = typeof edge.props?.specifier === "string" ? edge.props.specifier : "";
+        const sourceWorkspacePath = normalizeSnapshotPath(snapshot.workspacePath ?? "");
+        const sourceManifestDirectory = normalizeSnapshotPath(
+          [sourceWorkspacePath, evidence.manifestPath.split("/").slice(0, -1).join("/")]
+            .filter(Boolean).join("/"),
+        ) ?? "";
+        const relative = specifier.replace(/^(?:file:|link:|portal:)/i, "");
+        const resolvedPath = /^(?:file:|link:|portal:|\.\.?[\\/])/i.test(specifier)
+          ? normalizeSnapshotPath(`${sourceManifestDirectory}/${relative}`)
+          : null;
+        const patterns = [
+          ...workspacePatterns(snapshot.files, evidence.manifestPath),
+          ...(snapshot.workspacePaths ?? []),
+        ];
+        const matches = [...roots.entries()].flatMap(([candidateRepositoryId, candidateRoots]) => {
+          if (candidateRepositoryId === repositoryId || candidateRoots.length !== 1) return [];
+          const candidateSnapshot = snapshotByRepository.get(candidateRepositoryId);
+          const candidateWorkspacePath = candidateSnapshot?.workspacePath
+            ? normalizeSnapshotPath(candidateSnapshot.workspacePath)
+            : null;
+          const candidateRoot = candidateRoots[0]!.node;
+          const pathProven = Boolean(candidateWorkspacePath && resolvedPath === candidateWorkspacePath);
+          const workspaceProven = specifier.startsWith("workspace:") && Boolean(
+            candidateWorkspacePath && candidateRoot.label === target.label &&
+            patterns.some((pattern) => workspacePatternMatches(pattern, candidateWorkspacePath)),
+          );
+          return pathProven || workspaceProven
+            ? [{ repositoryId: candidateRepositoryId, serviceId: candidateRoot.id }]
+            : [];
+        });
         if (matches.length === 0) {
           reason = "dependency_target_unmapped";
           break;
@@ -259,13 +326,21 @@ export function consultRegaugeGraphDependencies(input: {
           reason = "dependency_target_ambiguous";
           break;
         }
+        const resolutionEvidence = `manifest-resolution:${sha256(JSON.stringify({
+          sourceSnapshotId: snapshot.snapshotId,
+          sourceWorkspacePath,
+          targetSnapshotId: snapshotByRepository.get(matches[0]!.repositoryId)!.snapshotId,
+          targetWorkspacePath: snapshotByRepository.get(matches[0]!.repositoryId)!.workspacePath,
+          workspaceMembership: [...patterns].sort(compareCodeUnits),
+          specifier,
+        }))}`;
         repositoryEdges.push({
           sourceRepositoryId: repositoryId,
           targetRepositoryId: matches[0]!.repositoryId,
           graphEdgeId: edge.id,
           sourceSystem: "manifest",
           confidence: edge.confidence ?? 1,
-          evidenceRefs: edgeEvidenceRefs,
+          evidenceRefs: [...edgeEvidenceRefs, resolutionEvidence].sort(compareCodeUnits),
         });
       }
       if (reason) {
@@ -302,8 +377,23 @@ export function consultRegaugeGraphDependencies(input: {
         evidenceRefs: evidence.evidenceRefs,
       });
     }
+    const authorityBody = JSON.stringify({
+      tenantId: input.tenantId,
+      evaluatedAt,
+      roots: [...roots.entries()].flatMap(([repositoryId, candidates]) => candidates.map(({ node, evidence }) => ({
+        repositoryId,
+        nodeId: node.id,
+        manifestVersionId: evidence.versionId,
+        manifestContentDigest: evidence.contentDigest,
+      }))).sort((left, right) => compareCodeUnits(left.nodeId, right.nodeId)),
+      edges: [...projectionEdges].sort((left, right) => compareCodeUnits(left.graphEdgeId, right.graphEdgeId)),
+    });
+    const graphContentDigest = sha256(authorityBody);
     return createRegaugeDependencyProjectionV1({
       tenantId: input.tenantId,
+      evaluatedAt,
+      graphVersionId: `topology-v1:${graphContentDigest.slice("sha256:".length)}`,
+      graphContentDigest,
       requestedRepositoryIds,
       repositories,
       edges: projectionEdges,

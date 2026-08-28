@@ -33,6 +33,9 @@ function dependencyProjection(
   const manifestEvidenceRef = `manifest-ingest:${manifestContentDigest}`;
   return createRegaugeDependencyProjectionV1({
     tenantId: "tenant-a",
+    evaluatedAt: "2026-08-13T12:00:00.000Z",
+    graphVersionId: "topology-v1:test",
+    graphContentDigest: sha256("topology-test"),
     requestedRepositoryIds: repositories.map((repository) => repository.repositoryId),
     repositories: repositories.map((repository) => ({
       repositoryId: repository.repositoryId,

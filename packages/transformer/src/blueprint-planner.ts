@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { verifyMissionGraphTopologyProjection } from "@mendpoint/graph-learn";
 import {
   resolveRecipe,
   type RecipeReference,
@@ -703,6 +704,16 @@ export function verifyTransformerBlueprint(value: TransformerBlueprint): Transfo
     id !== `tfb_${expectedDigest.slice("sha256:".length, "sha256:".length + 24)}`
   ) {
     throw new Error("transformer_blueprint_integrity_invalid");
+  }
+  if (candidate.evidence.dependencies) {
+    try {
+      const projection = verifyMissionGraphTopologyProjection(candidate.evidence.dependencies);
+      if (projection.evaluatedAt !== candidate.evaluatedAt) {
+        throw new Error("binding");
+      }
+    } catch {
+      throw new Error("transformer_blueprint_integrity_invalid");
+    }
   }
   return deepFreeze(candidate);
 }

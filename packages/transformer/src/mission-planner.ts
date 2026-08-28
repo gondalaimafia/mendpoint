@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   compileMissionGraphTopologyProjection,
   verifyMissionGraphTopologyProjection,
+  type MissionGraphTopologyProjection,
 } from "@mendpoint/graph-learn";
 import {
   planTransformerBlueprint,
@@ -22,49 +23,14 @@ import {
 const MAX_RECIPE_CATALOG = 128;
 export const REGAUGE_DEPENDENCY_PROJECTION_SCHEMA_VERSION = "mendpoint.mission-graph-projection.topology.v1" as const;
 
-export type RegaugeDependencyCoverage = "complete" | "unknown" | "not_consulted";
-
-export type RegaugeDependencyProjectionRepositoryV1 = Readonly<{
-  repositoryId: string;
-  serviceId: string | null;
-  manifestPath: string | null;
-  manifestContentDigest: string | null;
-  manifestVersionId: string | null;
-  snapshotId: string | null;
-  snapshotRevision: string | null;
-  snapshotDigest: string | null;
-  coverage: RegaugeDependencyCoverage;
-  reason: string;
-  dependsOnRepositoryIds: readonly string[];
-  evidenceRefs: readonly string[];
-}>;
-
-export type RegaugeDependencyProjectionEdgeV1 = Readonly<{
-  sourceRepositoryId: string;
-  targetRepositoryId: string;
-  graphEdgeId: string;
-  sourceSystem: "manifest";
-  confidence: number;
-  evidenceRefs: readonly string[];
-}>;
-
-export type RegaugeDependencyProjectionV1 = Readonly<{
-  schemaVersion: typeof REGAUGE_DEPENDENCY_PROJECTION_SCHEMA_VERSION;
-  projectionKind: "dependency_topology";
-  missionId: string | null;
-  tenantId: string;
-  requestedRepositoryIds: readonly string[];
-  repositories: readonly RegaugeDependencyProjectionRepositoryV1[];
-  edges: readonly RegaugeDependencyProjectionEdgeV1[];
-  contentDigest: string;
-}>;
-
-export type RegaugeDependencyProjectionInputV1 = Readonly<{
-  tenantId: string;
-  requestedRepositoryIds: readonly string[];
-  repositories: readonly RegaugeDependencyProjectionRepositoryV1[];
-  edges: readonly RegaugeDependencyProjectionEdgeV1[];
-}>;
+export type RegaugeDependencyCoverage = MissionGraphTopologyProjection["repositories"][number]["coverage"];
+export type RegaugeDependencyProjectionRepositoryV1 = MissionGraphTopologyProjection["repositories"][number];
+export type RegaugeDependencyProjectionEdgeV1 = MissionGraphTopologyProjection["edges"][number];
+export type RegaugeDependencyProjectionV1 = MissionGraphTopologyProjection;
+export type RegaugeDependencyProjectionInputV1 = Omit<
+  MissionGraphTopologyProjection,
+  "schemaVersion" | "projectionKind" | "missionId" | "contentDigest"
+>;
 
 export type TransformerMissionPlanningRepository = Readonly<{
   id: string;

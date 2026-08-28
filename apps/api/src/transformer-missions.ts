@@ -118,6 +118,7 @@ export class TransformerMissionService {
     const graphPlan = consultRegaugeGraphDependencies({
       graph: this.consults.graph ?? null,
       tenantId: request.tenantId,
+      evaluatedAt: input.evaluatedAt,
       repositoryIds,
       repositorySnapshots: repositories,
     });

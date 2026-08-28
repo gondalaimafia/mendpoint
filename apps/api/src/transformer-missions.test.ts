@@ -186,6 +186,7 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
       repoPath: "/unused",
       repoId: "repo-a",
       tenantId: "tenant-a",
+      observedAt: new Date(Date.now() - 60_000).toISOString(),
       files: [{ path: "package.json", text: files["package.json"] }],
     });
     services.push({ close: () => graph.raw.close() });
@@ -454,13 +455,14 @@ describe("Transformer mission application service", () => {
     const stored = control.store.getBlueprint("tenant-a", planned.blueprint.id)!;
     const tampered = structuredClone(stored.content);
     const dependencyEvidence = tampered.evidence as {
-      dependencies: { repositories: Array<{ evidenceRefs: string[] }> };
+      dependencies: { graphVersionId: string; repositories: Array<{ evidenceRefs: string[] }> };
     };
-    dependencyEvidence.dependencies.repositories[0]!.evidenceRefs.push("evidence:forged");
+    dependencyEvidence.dependencies.graphVersionId = "topology-v1:forged";
+    const resigned = resignBlueprint(tampered as unknown as TransformerBlueprint);
     control.store.reviseBlueprint(
       "tenant-a",
       planned.blueprint.id,
-      { content: tampered, policy: stored.policy },
+      { content: resigned as unknown as Record<string, unknown>, policy: stored.policy },
       1,
       {
         actorId: "planner-a",
@@ -523,6 +525,9 @@ describe("Transformer mission application service", () => {
     const dependencies = changed.evidence.dependencies!;
     const incompleteDependencies = createRegaugeDependencyProjectionV1({
       tenantId: dependencies.tenantId,
+      evaluatedAt: dependencies.evaluatedAt,
+      graphVersionId: dependencies.graphVersionId,
+      graphContentDigest: dependencies.graphContentDigest,
       requestedRepositoryIds: dependencies.requestedRepositoryIds,
       repositories: dependencies.repositories.map((repository) => ({
         ...repository,

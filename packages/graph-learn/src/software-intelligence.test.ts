@@ -642,6 +642,9 @@ describe("foundational software intelligence graph", () => {
     const projection = compileMissionGraphTopologyProjection({
       missionId: null,
       tenantId: "tenant-a",
+      evaluatedAt: "2026-08-27T12:00:00.000Z",
+      graphVersionId: "topology-v1:test",
+      graphContentDigest: `sha256:${"e".repeat(64)}`,
       requestedRepositoryIds: ["repo-a"],
       repositories: [{
         repositoryId: "repo-a",

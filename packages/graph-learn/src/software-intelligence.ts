@@ -658,6 +658,9 @@ export type MissionGraphTopologyProjection = Readonly<{
   projectionKind: "dependency_topology";
   missionId: string | null;
   tenantId: string;
+  evaluatedAt: string;
+  graphVersionId: string;
+  graphContentDigest: string;
   requestedRepositoryIds: readonly string[];
   repositories: readonly MissionGraphTopologyRepository[];
   edges: readonly MissionGraphTopologyEdge[];
@@ -671,6 +674,9 @@ export function compileMissionGraphTopologyProjection(input: Omit<
 >): MissionGraphTopologyProjection {
   boundedString(input.tenantId, "mission_graph_topology_invalid", 1_000);
   if (input.missionId !== null) boundedString(input.missionId, "mission_graph_topology_invalid", 1_000);
+  exactUtc(input.evaluatedAt, "mission_graph_topology_invalid");
+  boundedString(input.graphVersionId, "mission_graph_topology_invalid", 1_000);
+  if (!DIGEST_RE.test(input.graphContentDigest)) throw new Error("mission_graph_topology_invalid");
   const requestedRepositoryIds = [...new Set(input.requestedRepositoryIds)].sort(compareCodeUnits);
   if (!requestedRepositoryIds.length || requestedRepositoryIds.length !== input.requestedRepositoryIds.length) {
     throw new Error("mission_graph_topology_invalid");
@@ -736,6 +742,9 @@ export function compileMissionGraphTopologyProjection(input: Omit<
     projectionKind: "dependency_topology" as const,
     missionId: input.missionId,
     tenantId: input.tenantId,
+    evaluatedAt: input.evaluatedAt,
+    graphVersionId: input.graphVersionId,
+    graphContentDigest: input.graphContentDigest,
     requestedRepositoryIds,
     repositories,
     edges,
