@@ -238,18 +238,25 @@ export async function workerCheck(operational = true): Promise<{
       releaseDispatchClaimed !== null &&
       releaseDispatchFailed !== null &&
       releaseDispatchExpiredClaims !== null;
-    const releaseDispatchHealthy = releaseDispatchFieldsValid && releaseDispatchConfigured
-      ? releaseDispatchConsumerCount > 0 &&
-        currentReleaseDispatchStatus === "healthy" &&
-        releaseDispatchFailed === 0 &&
-        releaseDispatchExpiredClaims === 0
-      : releaseDispatchFieldsValid &&
-        releaseDispatchConsumerCount === 0 &&
-        currentReleaseDispatchStatus === "not_configured" &&
-        releaseDispatchPending === 0 &&
-        releaseDispatchClaimed === 0 &&
-        releaseDispatchFailed === 0 &&
-        releaseDispatchExpiredClaims === 0;
+    const configuredReleaseDispatchHealthy =
+      releaseDispatchFieldsValid &&
+      releaseDispatchAllFieldsPresent &&
+      releaseDispatchConfigured === true &&
+      releaseDispatchConsumerCount !== null && releaseDispatchConsumerCount > 0 &&
+      currentReleaseDispatchStatus === "healthy" &&
+      releaseDispatchFailed === 0 &&
+      releaseDispatchExpiredClaims === 0;
+    const releaseDispatchHealthy = customerProfile
+      ? configuredReleaseDispatchHealthy
+      : releaseDispatchConfigured === true
+        ? configuredReleaseDispatchHealthy
+        : releaseDispatchFieldsValid &&
+          releaseDispatchConsumerCount === 0 &&
+          currentReleaseDispatchStatus === "not_configured" &&
+          releaseDispatchPending === 0 &&
+          releaseDispatchClaimed === 0 &&
+          releaseDispatchFailed === 0 &&
+          releaseDispatchExpiredClaims === 0;
     const feedLastSuccessAt = Date.parse(heartbeat.feedLastSuccessAt ?? "");
     const feedFreshness = assessFeedFreshness({
       lastSuccessAt: heartbeat.feedLastSuccessAt,

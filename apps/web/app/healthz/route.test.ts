@@ -388,6 +388,13 @@ describe("public deployment health", () => {
       feedScheduleCount,
       feedStaleAfterMs: 60_000,
       ...(feedLastSuccessAt ? { feedLastSuccessAt } : {}),
+      releaseDispatchConfigured: true,
+      releaseDispatchConsumerCount: 1,
+      releaseDispatchStatus: "healthy",
+      releaseDispatchPending: 0,
+      releaseDispatchClaimed: 0,
+      releaseDispatchFailed: 0,
+      releaseDispatchExpiredClaims: 0,
       jobs: { failed: 0 },
     });
     process.env.MENDPOINT_DEPLOYMENT_PROFILE = "customer";
@@ -410,7 +417,25 @@ describe("public deployment health", () => {
     });
 
     const observedAt = new Date().toISOString();
-    writeFileSync(heartbeatPath, JSON.stringify(heartbeat(1, observedAt)));
+    const complete = heartbeat(1, observedAt);
+    const legacy = { ...complete } as Record<string, unknown>;
+    for (const field of [
+      "releaseDispatchConfigured",
+      "releaseDispatchConsumerCount",
+      "releaseDispatchStatus",
+      "releaseDispatchPending",
+      "releaseDispatchClaimed",
+      "releaseDispatchFailed",
+      "releaseDispatchExpiredClaims",
+    ]) delete legacy[field];
+    writeFileSync(heartbeatPath, JSON.stringify(legacy));
+    response = await GET();
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      checks: { worker: { reason: "heartbeat_stale_or_unhealthy" } },
+    });
+
+    writeFileSync(heartbeatPath, JSON.stringify(complete));
     response = await GET();
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
