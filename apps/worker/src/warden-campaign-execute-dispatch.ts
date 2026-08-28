@@ -20,13 +20,24 @@
  * (generation planEdits/applyEdits + sandbox verify + draft delivery config),
  * are wired by the caller.
  */
-import type { AppDb } from "@mendpoint/db";
+import {
+  evaluateMissionExceptions,
+  raiseMissionException,
+  resolveMissionForFettlerCampaign,
+  type AppDb,
+  type Mission,
+} from "@mendpoint/db";
 import {
   WardenCampaignExecutionError,
   executeWardenCampaignTarget,
   type WardenCampaignExecutionDependencies,
 } from "@mendpoint/pipeline";
 import type { FieldRename } from "./warden-campaign-recipe.js";
+
+const POLICY_EXCEPTION_CODES = new Set([
+  "warden_policy_envelope_missing",
+  "warden_policy_denied",
+]);
 
 export const WARDEN_CAMPAIGN_EXECUTE_JOB_TYPE = "warden.campaign.execute-target";
 
@@ -138,11 +149,39 @@ function parseRenames(value: unknown): FieldRename[] {
   });
 }
 
+function recordCampaignPolicyException(
+  db: AppDb,
+  mission: Mission,
+  reason: string,
+  createdAt: string,
+): void {
+  const already = evaluateMissionExceptions(db, mission.tenantId, mission.id).blocking
+    .some((item) => item.category === "policy_exception" && item.reason === reason);
+  if (already) return;
+  raiseMissionException(db, {
+    tenantId: mission.tenantId,
+    missionId: mission.id,
+    reason,
+    impact: "Fettler campaign-execute denied by the inherited Policy Envelope",
+    ownerPrincipalId: mission.ownerPrincipalId,
+    resolutionPath: "adjust_task_or_rebind_policy_envelope",
+    blocking: true,
+    correlationId: `campaign-execute-policy:${mission.id}`,
+    createdAt,
+    category: "policy_exception",
+  });
+}
+
 /**
  * Run one `warden.campaign.execute-target` job. Returns a job-status outcome; it
  * does not throw for a known executor error, so the caller maps the outcome onto
  * `completeJob`/`failJob` under the loop fence. An unexpected (non-executor)
  * error is rethrown so the loop's generic failure path handles it.
+ *
+ * Policy denials from the executor (`warden_policy_envelope_missing` /
+ * `warden_policy_denied`) are also raised as Mission `policy_exception` rows so
+ * the same blocker is not rediscovered on the next target (ME-MSN-002 /
+ * ME-WAR-005). Unbound campaigns stay visible as `warden_mission_not_bound`.
  */
 export async function runWardenCampaignExecuteTarget(input: {
   db: AppDb;
@@ -177,6 +216,16 @@ export async function runWardenCampaignExecuteTarget(input: {
     return { status: "executed", stage: result.stage };
   } catch (error) {
     if (error instanceof WardenCampaignExecutionError) {
+      if (POLICY_EXCEPTION_CODES.has(error.code)) {
+        const mission = resolveMissionForFettlerCampaign(
+          input.db,
+          input.job.tenant_id,
+          payload.campaignId,
+        );
+        if (mission) {
+          recordCampaignPolicyException(input.db, mission, error.message, payload.createdAt);
+        }
+      }
       return error.retryable
         ? { status: "retry_scheduled", code: error.code }
         : { status: "failed", code: error.code };
