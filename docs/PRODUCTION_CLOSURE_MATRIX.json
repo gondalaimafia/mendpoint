@@ -1495,15 +1495,18 @@
       "requirementId": "ME-FET-015",
       "registerSet": "v3-platform",
       "status": {
-        "implementationStatus": "unimplemented",
-        "availability": "planned",
-        "claimState": "roadmap_only"
+        "implementationStatus": "partial",
+        "availability": "internal",
+        "claimState": "internal_only"
       },
       "issues": [
         431
       ],
       "pullRequests": [],
-      "testEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-FET-015-AC01-EV02",
+        "ME-FET-015-AC01-EV03"
+      ],
       "productionEvidenceIds": []
     },
     {
