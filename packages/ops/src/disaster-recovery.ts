@@ -31,9 +31,9 @@ import { DatabaseSync } from "node:sqlite";
 import { resolveRenamedEnv } from "@mendpoint/shared";
 
 export const DISASTER_RECOVERY_POLICY_SCHEMA_VERSION = 1 as const;
-export const BACKUP_MANIFEST_SCHEMA_VERSION = 3 as const;
+export const BACKUP_MANIFEST_SCHEMA_VERSION = 4 as const;
 export const RECOVERY_DRILL_REPORT_SCHEMA_VERSION = 1 as const;
-export const LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION = 2 as const;
+export const LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION = 3 as const;
 export const OBJECT_BACKUP_COMMIT_SCHEMA_VERSION = 1 as const;
 export const OBJECT_BACKUP_RECOVERY_RECEIPT_SCHEMA_VERSION = 1 as const;
 export const REGAUGE_CUTOVER_FENCE_NAME = "regauge-cutover-fence.v1.json" as const;
@@ -42,6 +42,7 @@ export type SqliteRecoveryResourceKind =
   | "database"
   | "graph"
   | "changeSources"
+  | "releaseIngestion"
   | "transformerControlPlane"
   | "transformerPilot";
 export type RecoveryResourceKind =
@@ -49,7 +50,7 @@ export type RecoveryResourceKind =
   | "artifacts"
   | "configuration";
 
-const RESOURCE_KINDS: readonly RecoveryResourceKind[] = Object.freeze([
+const LEGACY_V3_RESOURCE_KINDS: readonly RecoveryResourceKind[] = Object.freeze([
   "artifacts",
   "changeSources",
   "configuration",
@@ -59,10 +60,22 @@ const RESOURCE_KINDS: readonly RecoveryResourceKind[] = Object.freeze([
   "transformerPilot",
 ]);
 
+const RESOURCE_KINDS: readonly RecoveryResourceKind[] = Object.freeze([
+  "artifacts",
+  "changeSources",
+  "configuration",
+  "database",
+  "graph",
+  "releaseIngestion",
+  "transformerControlPlane",
+  "transformerPilot",
+]);
+
 const SQLITE_RESOURCE_KINDS = new Set<RecoveryResourceKind>([
   "database",
   "graph",
   "changeSources",
+  "releaseIngestion",
   "transformerControlPlane",
   "transformerPilot",
 ]);
@@ -88,8 +101,8 @@ export interface DisasterRecoveryPolicy {
 export const CORE_DISASTER_RECOVERY_POLICY: Readonly<DisasterRecoveryPolicy> = Object.freeze({
   schemaVersion: DISASTER_RECOVERY_POLICY_SCHEMA_VERSION,
   policyId: "mendpoint-core",
-  version: "2026-08-02",
-  effectiveAt: "2026-08-02T00:00:00.000Z",
+  version: "2026-08-27",
+  effectiveAt: "2026-08-27T00:00:00.000Z",
   rtoSeconds: 900,
   rpoSeconds: 3600,
   drillCadenceDays: 30,
@@ -117,7 +130,7 @@ export interface BackupResourceManifest {
 }
 
 export interface BackupManifest {
-  schemaVersion: typeof BACKUP_MANIFEST_SCHEMA_VERSION;
+  schemaVersion: 3 | typeof BACKUP_MANIFEST_SCHEMA_VERSION;
   backupId: string;
   createdAt: string;
   policy: Readonly<Pick<DisasterRecoveryPolicy, "policyId" | "version" | "rtoSeconds" | "rpoSeconds">>;
@@ -161,13 +174,19 @@ export interface ObjectBackupRecoveryReceipt {
 }
 
 export interface LastVerifiedBackupEvidence {
-  schemaVersion: 1 | typeof LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION;
+  schemaVersion: 1 | 2 | typeof LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION;
   backupId: string;
   backupRoot: string;
   createdAt: string;
   verifiedAt: string;
   keyId: string;
   manifestAuthentication: string;
+  manifest?: Readonly<{
+    schemaVersion: BackupManifest["schemaVersion"];
+    policyId: string;
+    policyVersion: string;
+    resourceKinds: readonly RecoveryResourceKind[];
+  }>;
   publication?: Readonly<ObjectBackupPublication>;
   integrity: Readonly<{ algorithm: "hmac-sha256"; keyId: string; digest: string }>;
 }
@@ -621,12 +640,13 @@ function assertJsonConfiguration(path: string): void {
 function assertResourcePathsDistinct(
   sourceRoot: string,
   resources: Record<RecoveryResourceKind, string>,
+  resourceKinds: readonly RecoveryResourceKind[] = RESOURCE_KINDS,
 ): Record<RecoveryResourceKind, string> {
   const keys = Object.keys(resources).sort();
-  if (JSON.stringify(keys) !== JSON.stringify([...RESOURCE_KINDS].sort())) {
+  if (JSON.stringify(keys) !== JSON.stringify([...resourceKinds].sort())) {
     throw new Error("backup_resources_incomplete");
   }
-  const resolved = Object.fromEntries(RESOURCE_KINDS.map((kind) => {
+  const resolved = Object.fromEntries(resourceKinds.map((kind) => {
     const relativePath = requiredText(resources[kind], `backup_${kind}_path`).replaceAll("\\", "/");
     const path = resolveResourcePath(
       sourceRoot,
@@ -636,7 +656,7 @@ function assertResourcePathsDistinct(
     );
     return [kind, path];
   })) as Record<RecoveryResourceKind, string>;
-  const effectivePaths = RESOURCE_KINDS.flatMap((kind) => kind === "artifacts"
+  const effectivePaths = resourceKinds.flatMap((kind) => kind === "artifacts"
     ? RETAINED_ARTIFACT_ROOTS.map((retainedRoot) => resolve(resolved.artifacts, retainedRoot))
     : [resolved[kind]]);
   for (let index = 0; index < effectivePaths.length; index++) {
@@ -658,10 +678,11 @@ function assertResourcePathsDistinct(
 function assertResourceModel(
   sourceRoot: string,
   resources: Record<RecoveryResourceKind, string>,
+  resourceKinds: readonly RecoveryResourceKind[] = RESOURCE_KINDS,
 ): Record<RecoveryResourceKind, string> {
-  const resolved = assertResourcePathsDistinct(sourceRoot, resources);
+  const resolved = assertResourcePathsDistinct(sourceRoot, resources, resourceKinds);
   const identityPaths: string[] = [];
-  for (const kind of RESOURCE_KINDS) {
+  for (const kind of resourceKinds) {
     const path = resolved[kind];
     if (!existsSync(path)) throw new Error(`backup_${kind}_missing`);
     assertNoFilesystemRedirect(sourceRoot, path);
@@ -1107,6 +1128,10 @@ export function customerBackupInputFromEnv(
       env.MENDPOINT_BACKUP_CHANGE_SOURCES_PATH ?? "",
       "customer_backup_change_sources_path",
     ),
+    releaseIngestion: requiredText(
+      env.MENDPOINT_BACKUP_RELEASE_INGESTION_PATH ?? "",
+      "customer_backup_release_ingestion_path",
+    ),
     transformerControlPlane: requiredText(
       resolveRenamedEnv(env, "MENDPOINT_BACKUP_REGAUGE_CONTROL_PLANE_PATH") ?? "",
       "customer_backup_transformer_control_plane_path",
@@ -1138,6 +1163,7 @@ export function customerBackupInputFromEnv(
     database: resolve(databaseUrlPath || join(runtimeDataRoot, "mendpoint.sqlite")),
     graph: resolve(env.GRAPH_LEARN_DB?.trim() || join(runtimeDataRoot, "graph-learn.sqlite")),
     changeSources: resolve(runtimeDataRoot, "change-sources.sqlite"),
+    releaseIngestion: resolve(runtimeDataRoot, "release-ingestion.sqlite"),
     transformerControlPlane: resolve(runtimeDataRoot, "transformer-control-plane.sqlite"),
     transformerPilot: resolve(runtimeDataRoot, "transformer-pilot.sqlite"),
   };
@@ -1620,13 +1646,22 @@ function decryptBundleToRoot(
   }
 }
 
+function resourceKindsForManifest(
+  schemaVersion: BackupManifest["schemaVersion"],
+): readonly RecoveryResourceKind[] | undefined {
+  if (schemaVersion === 3) return LEGACY_V3_RESOURCE_KINDS;
+  if (schemaVersion === BACKUP_MANIFEST_SCHEMA_VERSION) return RESOURCE_KINDS;
+  return undefined;
+}
+
 export function verifyBackupBundle(
   backupRoot: string,
   manifest: BackupManifest,
   key: Buffer | undefined,
 ): { ok: boolean; issues: string[] } {
   const issues: string[] = [];
-  if (manifest.schemaVersion !== BACKUP_MANIFEST_SCHEMA_VERSION) issues.push("manifest_schema_version_unsupported");
+  const resourceKinds = resourceKindsForManifest(manifest.schemaVersion);
+  if (!resourceKinds) issues.push("manifest_schema_version_unsupported");
   if (!key || key.byteLength !== 32) return { ok: false, issues: ["backup_key_required"] };
   if (
     manifest.integrity?.algorithm !== "hmac-sha256" ||
@@ -1639,8 +1674,9 @@ export function verifyBackupBundle(
   } catch (error) {
     issues.push(`stored_manifest_unreadable:${error instanceof Error ? error.message : String(error)}`);
   }
+  if (!resourceKinds) return { ok: false, issues };
   const kinds = manifest.resources.map((resource) => resource.kind);
-  if (JSON.stringify(kinds) !== JSON.stringify(RESOURCE_KINDS)) issues.push("manifest_resources_incomplete_or_unsorted");
+  if (JSON.stringify(kinds) !== JSON.stringify(resourceKinds)) issues.push("manifest_resources_incomplete_or_unsorted");
   const ciphertextIdentities = new Set<string>();
   for (const resource of manifest.resources) {
     if (resource.kind === "artifacts") {
@@ -1684,7 +1720,7 @@ export function verifyBackupBundle(
     const resources = Object.fromEntries(
       manifest.resources.map((resource) => [resource.kind, resource.sourceRelativePath]),
     ) as Record<RecoveryResourceKind, string>;
-    assertResourceModel(verificationRoot, resources);
+    assertResourceModel(verificationRoot, resources, resourceKinds);
   } catch {
     issues.push("backup_decryption_or_semantic_verification_failed");
   } finally {
@@ -1706,12 +1742,14 @@ export function restoreBackupAtomically(input: RestoreBackupInput): {
 
   const target = resolve(input.targetRoot);
   const stagingRoot = `${target}.staging-${randomUUID()}`;
+  const resourceKinds = resourceKindsForManifest(input.manifest.schemaVersion);
+  if (!resourceKinds) throw new Error("backup_integrity_failed:manifest_schema_version_unsupported");
   try {
     decryptBundleToRoot(input.backupRoot, stagingRoot, input.manifest, input.key);
     const restoredResources = Object.fromEntries(
       input.manifest.resources.map((resource) => [resource.kind, resource.sourceRelativePath]),
     ) as Record<RecoveryResourceKind, string>;
-    assertResourceModel(stagingRoot, restoredResources);
+    assertResourceModel(stagingRoot, restoredResources, resourceKinds);
     const restoredDigest = digestRestoredResources(stagingRoot);
     renameSync(stagingRoot, target);
     return { atomic: true, isolated: true, restoredDigest };
@@ -1736,8 +1774,56 @@ type LastVerifiedBackupEvidenceMaterial = {
   createdAt: string;
   verifiedAt: string;
   manifestAuthentication: string;
+  manifest: Readonly<{
+    schemaVersion: BackupManifest["schemaVersion"];
+    policy: Readonly<Pick<BackupManifest["policy"], "policyId" | "version">>;
+    resources: readonly Readonly<Pick<BackupResourceManifest, "kind">>[];
+  }>;
   publication?: ObjectBackupPublication;
 };
+
+function evidenceManifestSummary(
+  manifest: LastVerifiedBackupEvidenceMaterial["manifest"],
+): NonNullable<LastVerifiedBackupEvidence["manifest"]> {
+  const resourceKinds = manifest.resources.map((resource) => resource.kind);
+  const expectedKinds = resourceKindsForManifest(manifest.schemaVersion);
+  if (!expectedKinds || JSON.stringify(resourceKinds) !== JSON.stringify(expectedKinds)) {
+    throw new Error("backup_evidence_manifest_resources_invalid");
+  }
+  return {
+    schemaVersion: manifest.schemaVersion,
+    policyId: requiredText(manifest.policy.policyId, "backup_evidence_policy_id"),
+    policyVersion: requiredText(manifest.policy.version, "backup_evidence_policy_version"),
+    resourceKinds,
+  };
+}
+
+function evidenceManifestSummaryValid(
+  evidence: LastVerifiedBackupEvidence,
+): boolean {
+  if (evidence.schemaVersion !== LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION) return true;
+  const summary = evidence.manifest;
+  const expectedKinds = summary ? resourceKindsForManifest(summary.schemaVersion) : undefined;
+  return Boolean(
+    summary &&
+      expectedKinds &&
+      summary.policyId.trim() &&
+      summary.policyVersion.trim() &&
+      JSON.stringify(summary.resourceKinds) === JSON.stringify(expectedKinds),
+  );
+}
+
+function evidenceProvesCurrentBackupContract(
+  evidence: LastVerifiedBackupEvidence,
+  policy: DisasterRecoveryPolicy,
+): boolean {
+  const summary = evidence.manifest;
+  return evidence.schemaVersion === LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION &&
+    summary?.schemaVersion === BACKUP_MANIFEST_SCHEMA_VERSION &&
+    summary.policyId === policy.policyId &&
+    summary.policyVersion === policy.version &&
+    JSON.stringify(summary.resourceKinds) === JSON.stringify(RESOURCE_KINDS);
+}
 
 export function createLastVerifiedBackupEvidence(
   input: LastVerifiedBackupEvidenceMaterial,
@@ -1770,6 +1856,7 @@ export function createLastVerifiedBackupEvidence(
     verifiedAt: input.verifiedAt,
     keyId: requiredText(input.keyId, "backup_evidence_key_id"),
     manifestAuthentication: input.manifestAuthentication,
+    manifest: evidenceManifestSummary(input.manifest),
     ...(input.publication ? { publication: input.publication } : {}),
   };
   const evidence = {
@@ -1813,12 +1900,14 @@ export function verifyAuthenticatedLastVerifiedBackupEvidence(
 ): LastVerifiedBackupEvidence {
   if (
     (evidence.schemaVersion !== 1 &&
+      evidence.schemaVersion !== 2 &&
       evidence.schemaVersion !== LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION) ||
     evidence.integrity?.algorithm !== "hmac-sha256" ||
     evidence.integrity.keyId !== keyId ||
     evidence.keyId !== keyId ||
     !safeEqualHex(evidence.integrity.digest, evidenceDigest(evidence, key)) ||
-    !/^[a-f0-9]{64}$/.test(evidence.manifestAuthentication)
+    !/^[a-f0-9]{64}$/.test(evidence.manifestAuthentication) ||
+    !evidenceManifestSummaryValid(evidence)
   ) throw new Error("last_verified_backup_evidence_invalid");
   if (evidence.publication) {
     if (evidence.publication.backupId !== evidence.backupId) {
@@ -1827,7 +1916,8 @@ export function verifyAuthenticatedLastVerifiedBackupEvidence(
     const { backupId: _publicationBackupId, ...publicationIdentity } = evidence.publication;
     validateObjectPublicationIdentity({ backupId: evidence.backupId, ...publicationIdentity });
     if (
-      evidence.schemaVersion !== LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION ||
+      (evidence.schemaVersion !== 2 &&
+        evidence.schemaVersion !== LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION) ||
       !/^[a-f0-9]{64}$/.test(evidence.publication.commitDigest) ||
       !evidence.publication.prefix.endsWith(`/${evidence.backupId}`)
     ) throw new Error("last_verified_backup_publication_invalid");
@@ -1845,12 +1935,15 @@ export function assessCustomerBackupReadiness(
     const evidence = JSON.parse(readFileSync(input.evidencePath!, "utf8")) as LastVerifiedBackupEvidence;
     if (
       (evidence.schemaVersion !== 1 &&
+        evidence.schemaVersion !== 2 &&
         evidence.schemaVersion !== LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION) ||
       evidence.integrity?.algorithm !== "hmac-sha256" ||
       evidence.integrity.keyId !== input.keyId ||
       evidence.keyId !== input.keyId ||
       !safeEqualHex(evidence.integrity.digest, evidenceDigest(evidence, input.key)) ||
-      !/^[a-f0-9]{64}$/.test(evidence.manifestAuthentication)
+      !/^[a-f0-9]{64}$/.test(evidence.manifestAuthentication) ||
+      !evidenceManifestSummaryValid(evidence) ||
+      !evidenceProvesCurrentBackupContract(evidence, input.policy)
     ) return { ok: false, detail: "missing_or_invalid" };
     if (evidence.publication) {
       const { backupId: publicationBackupId, ...publicationIdentity } = evidence.publication;
@@ -1859,7 +1952,8 @@ export function assessCustomerBackupReadiness(
       }
       validateObjectPublicationIdentity({ backupId: evidence.backupId, ...publicationIdentity });
       if (
-        evidence.schemaVersion !== LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION ||
+        (evidence.schemaVersion !== 2 &&
+          evidence.schemaVersion !== LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION) ||
         !/^[a-f0-9]{64}$/.test(evidence.publication.commitDigest) ||
         !evidence.publication.prefix.endsWith(`/${evidence.backupId}`)
       ) return { ok: false, detail: "missing_or_invalid" };
@@ -1871,6 +1965,11 @@ export function assessCustomerBackupReadiness(
       }
       const manifest = loadAuthenticatedBackupManifest(backupRoot, input.key);
       if (
+        manifest.schemaVersion !== BACKUP_MANIFEST_SCHEMA_VERSION ||
+        manifest.policy.policyId !== input.policy.policyId ||
+        manifest.policy.version !== input.policy.version ||
+        JSON.stringify(manifest.resources.map((resource) => resource.kind)) !==
+          JSON.stringify(RESOURCE_KINDS) ||
         manifest.backupId !== evidence.backupId ||
         manifest.createdAt !== evidence.createdAt ||
         manifest.integrity.keyId !== evidence.keyId ||
@@ -1924,11 +2023,14 @@ export function runIsolatedRecoveryDrill(input: RunRecoveryDrillInput): Recovery
   const rollbackDigest = digestRestoredResources(input.targetRoot);
   let restoredSemanticsValid = true;
   try {
+    const resourceKinds = resourceKindsForManifest(input.manifest.schemaVersion);
+    if (!resourceKinds) throw new Error("manifest_schema_version_unsupported");
     assertResourceModel(
       input.targetRoot,
       Object.fromEntries(
         input.manifest.resources.map((resource) => [resource.kind, resource.sourceRelativePath]),
       ) as Record<RecoveryResourceKind, string>,
+      resourceKinds,
     );
   } catch {
     restoredSemanticsValid = false;

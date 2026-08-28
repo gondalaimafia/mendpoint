@@ -52,6 +52,7 @@ async function main(): Promise<void> {
       createdAt: manifest.createdAt,
       verifiedAt: publishedAt,
       manifestAuthentication: manifest.integrity.digest,
+      manifest,
       publication,
     });
     await publishCustomerBackupRecoveryReceipt({
@@ -72,6 +73,7 @@ async function main(): Promise<void> {
       createdAt: manifest.createdAt,
       verifiedAt: publishedAt,
       manifestAuthentication: manifest.integrity.digest,
+      manifest,
       publication,
     });
     console.log(JSON.stringify({

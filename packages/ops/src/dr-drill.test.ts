@@ -30,6 +30,7 @@ const RESOURCES = {
   database: "database.sqlite",
   graph: "graph.sqlite",
   changeSources: "change-sources.sqlite",
+  releaseIngestion: "release-ingestion.sqlite",
   transformerControlPlane: "transformer-control-plane.sqlite",
   transformerPilot: "transformer-pilot.sqlite",
   artifacts: "artifacts",
@@ -58,6 +59,7 @@ function fixture() {
   createSqlite(join(source, "database.sqlite"), "canary", "canary-row-v1");
   createSqlite(join(source, "graph.sqlite"), "graph_state", "graph-v1");
   createSqlite(join(source, "change-sources.sqlite"), "change_state", "change-v1");
+  createSqlite(join(source, "release-ingestion.sqlite"), "release_state", "release-v1");
   createSqlite(join(source, "transformer-control-plane.sqlite"), "control_state", "control-v1");
   createSqlite(join(source, "transformer-pilot.sqlite"), "pilot_state", "pilot-v1");
   writeFileSync(join(source, "artifacts", "warden-evidence", "result.json"), "{\"ok\":true}");

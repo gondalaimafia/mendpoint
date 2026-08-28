@@ -29,6 +29,7 @@ describe("readiness storage boundary", () => {
     const outputRoot = join(root, "backups");
     const evidencePath = join(sourceRoot, ".backup-state", "last-verified.json");
     mkdirSync(sourceRoot, { recursive: true });
+    mkdirSync(outputRoot, { recursive: true });
     for (const name of [
       "warden-candidates",
       "warden-evidence",
@@ -39,6 +40,7 @@ describe("readiness storage boundary", () => {
       ["mendpoint.sqlite", "main_state"],
       ["graph-learn.sqlite", "graph_state"],
       ["change-sources.sqlite", "change_state"],
+      ["release-ingestion.sqlite", "release_state"],
       ["transformer-control-plane.sqlite", "control_state"],
       ["transformer-pilot.sqlite", "pilot_state"],
     ] as const) {
@@ -63,6 +65,7 @@ describe("readiness storage boundary", () => {
       MENDPOINT_BACKUP_DATABASE_PATH: "mendpoint.sqlite",
       MENDPOINT_BACKUP_GRAPH_PATH: "graph-learn.sqlite",
       MENDPOINT_BACKUP_CHANGE_SOURCES_PATH: "change-sources.sqlite",
+      MENDPOINT_BACKUP_RELEASE_INGESTION_PATH: "release-ingestion.sqlite",
       MENDPOINT_BACKUP_REGAUGE_CONTROL_PLANE_PATH: "transformer-control-plane.sqlite",
       MENDPOINT_BACKUP_REGAUGE_PILOT_PATH: "transformer-pilot.sqlite",
       MENDPOINT_BACKUP_ARTIFACTS_PATH: ".",
@@ -71,21 +74,6 @@ describe("readiness storage boundary", () => {
     try {
       expect(readiness({ dbPath: join(sourceRoot, "mendpoint.sqlite"), dbPing: () => true }).status)
         .toBe("fail");
-      mkdirSync(join(outputRoot, "customer-001"), { recursive: true });
-      recordLastVerifiedBackupEvidence({
-        evidencePath,
-        key,
-        keyId: "customer-backup-key-v1",
-        backupId: "customer-001",
-        backupRoot: join(outputRoot, "customer-001"),
-        createdAt: new Date().toISOString(),
-        verifiedAt: new Date().toISOString(),
-        manifestAuthentication: "a".repeat(64),
-      });
-      expect(readiness({ dbPath: join(sourceRoot, "mendpoint.sqlite"), dbPing: () => true }).status)
-        .toBe("fail");
-      rmSync(join(outputRoot, "customer-001"), { recursive: true, force: true });
-
       const createdAt = new Date().toISOString();
       const manifest = createBackupBundle({
         policy: CORE_DISASTER_RECOVERY_POLICY,
@@ -99,6 +87,7 @@ describe("readiness storage boundary", () => {
           database: "mendpoint.sqlite",
           graph: "graph-learn.sqlite",
           changeSources: "change-sources.sqlite",
+          releaseIngestion: "release-ingestion.sqlite",
           transformerControlPlane: "transformer-control-plane.sqlite",
           transformerPilot: "transformer-pilot.sqlite",
           artifacts: ".",
@@ -113,7 +102,41 @@ describe("readiness storage boundary", () => {
         backupRoot: join(outputRoot, "customer-001"),
         createdAt: manifest.createdAt,
         verifiedAt: new Date().toISOString(),
+        manifestAuthentication: "a".repeat(64),
+        manifest,
+      });
+      expect(readiness({ dbPath: join(sourceRoot, "mendpoint.sqlite"), dbPing: () => true }).status)
+        .toBe("fail");
+
+      const legacyManifest = {
+        ...manifest,
+        schemaVersion: 3 as const,
+        resources: manifest.resources.filter((resource) => resource.kind !== "releaseIngestion"),
+      };
+      recordLastVerifiedBackupEvidence({
+        evidencePath,
+        key,
+        keyId: "customer-backup-key-v1",
+        backupId: manifest.backupId,
+        backupRoot: join(outputRoot, "customer-001"),
+        createdAt: manifest.createdAt,
+        verifiedAt: new Date().toISOString(),
         manifestAuthentication: manifest.integrity.digest,
+        manifest: legacyManifest,
+      });
+      expect(readiness({ dbPath: join(sourceRoot, "mendpoint.sqlite"), dbPing: () => true }).status)
+        .toBe("fail");
+
+      recordLastVerifiedBackupEvidence({
+        evidencePath,
+        key,
+        keyId: "customer-backup-key-v1",
+        backupId: manifest.backupId,
+        backupRoot: join(outputRoot, "customer-001"),
+        createdAt: manifest.createdAt,
+        verifiedAt: new Date().toISOString(),
+        manifestAuthentication: manifest.integrity.digest,
+        manifest,
       });
       const report = readiness({ dbPath: join(sourceRoot, "mendpoint.sqlite"), dbPing: () => true });
       expect(report.checks).toContainEqual({ name: "last_verified_backup", ok: true, detail: "current" });
@@ -127,6 +150,15 @@ describe("readiness storage boundary", () => {
         .toBe("fail");
 
       rmSync(join(outputRoot, "customer-001"), { recursive: true, force: true });
+      const publication = {
+        kind: "s3" as const,
+        backupId: manifest.backupId,
+        bucket: "customer-backups",
+        prefix: `backups/${manifest.backupId}`,
+        endpointOrigin: "https://fly.storage.tigris.dev",
+        commitDigest: "b".repeat(64),
+        manifestSha256: "c".repeat(64),
+      };
       recordLastVerifiedBackupEvidence({
         evidencePath,
         key,
@@ -136,15 +168,23 @@ describe("readiness storage boundary", () => {
         createdAt: manifest.createdAt,
         verifiedAt: new Date().toISOString(),
         manifestAuthentication: manifest.integrity.digest,
-        publication: {
-          kind: "s3",
-          backupId: manifest.backupId,
-          bucket: "customer-backups",
-          prefix: `backups/${manifest.backupId}`,
-          endpointOrigin: "https://fly.storage.tigris.dev",
-          commitDigest: "b".repeat(64),
-          manifestSha256: "c".repeat(64),
-        },
+        manifest: legacyManifest,
+        publication,
+      });
+      expect(readiness({ dbPath: join(sourceRoot, "mendpoint.sqlite"), dbPing: () => true }).status)
+        .toBe("fail");
+
+      recordLastVerifiedBackupEvidence({
+        evidencePath,
+        key,
+        keyId: "customer-backup-key-v1",
+        backupId: manifest.backupId,
+        backupRoot: join(outputRoot, "customer-001"),
+        createdAt: manifest.createdAt,
+        verifiedAt: new Date().toISOString(),
+        manifestAuthentication: manifest.integrity.digest,
+        manifest,
+        publication,
       });
       const objectReport = readiness({ dbPath: join(sourceRoot, "mendpoint.sqlite"), dbPing: () => true });
       expect(objectReport.checks).toContainEqual({
