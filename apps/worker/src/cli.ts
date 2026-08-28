@@ -305,7 +305,7 @@ export function initializeWorkerServiceDurableState<
       const jobDbs = Array.from({ length: options.jobConcurrency }, (_, lane) =>
         track(options.openJobDb(lane), options.closeDb));
       const releaseStore = options.releaseConfigurationCount > 0 ||
-        (options.releaseDispatchConsumerCount ?? 0) > 0 || deploymentProfile(env) === "customer"
+        (options.releaseDispatchConsumerCount ?? 0) > 0
         ? track(options.openReleaseStore(), (store) => store.close())
         : undefined;
       let closed = false;
@@ -4382,7 +4382,6 @@ async function runService(intervalMs: number) {
   const jobConcurrency = parseJobConcurrency(process.env.MENDPOINT_JOB_CONCURRENCY);
   const releaseFeeds = parseReleasePollConfigurationsFromEnv(process.env);
   const releaseDispatchConsumers = parseReleaseDispatchConsumersFromEnv(process.env);
-  const customerProfile = deploymentProfile(process.env) === "customer";
   const heartbeatPath = process.env.MENDPOINT_WORKER_HEARTBEAT_PATH?.trim();
   if (!heartbeatPath) {
     throw new Error("MENDPOINT_WORKER_HEARTBEAT_PATH is required for run-service");
@@ -4390,7 +4389,7 @@ async function runService(intervalMs: number) {
   if (!isAbsolute(heartbeatPath)) {
     throw new Error("MENDPOINT_WORKER_HEARTBEAT_PATH must be absolute for run-service");
   }
-  const releasePath = releaseFeeds.length > 0 || releaseDispatchConsumers.length > 0 || customerProfile
+  const releasePath = releaseFeeds.length > 0 || releaseDispatchConsumers.length > 0
     ? releaseIngestionWorkerPath(process.env)
     : undefined;
   const durableState = initializeWorkerServiceDurableState({

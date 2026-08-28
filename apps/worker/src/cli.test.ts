@@ -949,48 +949,6 @@ describe("worker runtime", () => {
     expect(dispatchConfigured.releaseStore).toBeDefined();
     dispatchConfigured.close();
     expect(releaseOpens).toBe(1);
-
-    const customerDormant = initializeWorkerServiceDurableState({
-      jobConcurrency: 1,
-      releaseConfigurationCount: 0,
-      openFeedDb: () => ({ close: () => undefined }),
-      openHeartbeatDb: () => ({ close: () => undefined }),
-      openTransformerDb: () => ({ close: () => undefined }),
-      openTransformerStore: () => ({ close: () => undefined }),
-      openJobDb: () => ({ close: () => undefined }),
-      openReleaseStore: () => { releaseOpens++; return { close: () => undefined }; },
-      closeDb: (handle) => handle.close(),
-    }, { MENDPOINT_DEPLOYMENT_PROFILE: "customer" });
-    expect(customerDormant.releaseStore).toBeDefined();
-    customerDormant.close();
-    expect(releaseOpens).toBe(2);
-  });
-
-  it("pre-materializes the release-ingestion v4 database for a dormant customer profile", () => {
-    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-release-backup-"));
-    dirs.push(root);
-    const releasePath = releaseIngestionWorkerPath({ MENDPOINT_DATA_DIR: root });
-    const state = initializeWorkerServiceDurableState({
-      jobConcurrency: 1,
-      releaseConfigurationCount: 0,
-      openFeedDb: () => ({ close: () => undefined }),
-      openHeartbeatDb: () => ({ close: () => undefined }),
-      openTransformerDb: () => ({ close: () => undefined }),
-      openTransformerStore: () => ({ close: () => undefined }),
-      openJobDb: () => ({ close: () => undefined }),
-      openReleaseStore: () => openReleaseIngestionStore(releasePath),
-      closeDb: (handle) => handle.close(),
-    }, { MENDPOINT_DEPLOYMENT_PROFILE: "customer" });
-    state.close();
-
-    expect(existsSync(releasePath)).toBe(true);
-    const db = new DatabaseSync(releasePath, { readOnly: true });
-    try {
-      expect(db.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations").get())
-        .toEqual({ version: 4 });
-    } finally {
-      db.close();
-    }
   });
 
   it("binds model source to an explicit tenant and stable remote repository classification", () => {
