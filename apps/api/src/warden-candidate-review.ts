@@ -6,15 +6,14 @@ import {
   enqueueJob,
   enqueueWardenCandidateDelivery,
   enqueueWardenCiUpdate,
-  fettlerCampaignMissionTaskId,
   getAgentRun,
   getJob,
   getMission,
   getMissionTask,
   getPrincipal,
   getTenantMembership,
+  missionTaskIdForJob,
   recordReviewerDirective,
-  regaugeLaunchMissionTaskId,
   evaluateMissionExceptions,
   resolveTaskHandoff,
   type SnapshotIdentity,
@@ -135,14 +134,15 @@ const HUMAN_HANDOFF_TASK_STATUSES = new Set([
  * blocking exception. Unbound review skips (never fabricate a Mission).
  * Reject does not call this: that would send the task to `agent_resume`.
  *
- * The reviewed run drives exactly ONE enrollment/launch task, derived the same
- * way the claim modules derive it — `(missionId, repositoryId)` under the
- * product's task-id helper. Resolution binds to that one task: resolving any
- * other task's blocker would answer a sibling task's question with THIS run's
- * rationale and close the wrong blocker. When the reviewed run cannot be matched
- * to a single blocking task-bound exception, we SKIP and log rather than guess.
- * The reviewed run's snapshot is passed to the evaluator so a blocker observed
- * against a superseded snapshot is STALE, never resolved here as current.
+ * The reviewed `agent.run` is bridged onto exactly one MissionTask —
+ * `missionTaskIdForJob(run.job_id)` (ADR D3). That is not the campaign
+ * enrollment/launch task (`fettlerCampaignMissionTaskId` /
+ * `regaugeLaunchMissionTaskId`). Resolving the enrollment blocker with this
+ * run's rationale would answer a different question. When `jobId` is missing
+ * we SKIP (unknown is not "any single blocker"). When the job task is not
+ * among the current blockers we also SKIP — we never fall back to a sibling
+ * or enrollment exception. The reviewed run's snapshot is passed to the
+ * evaluator so a blocker observed against a superseded snapshot is STALE.
  */
 export function tryResolveBoundReviewHandoff(
   db: AppDb,
@@ -150,6 +150,7 @@ export function tryResolveBoundReviewHandoff(
     tenantId: string;
     missionId: string | null;
     repositoryId: string | null;
+    jobId: string | null;
     current?: SnapshotIdentity;
     runId: string;
     rationale: string;
@@ -162,17 +163,21 @@ export function tryResolveBoundReviewHandoff(
   if (!input.missionId) return undefined;
   const mission = getMission(db, input.tenantId, input.missionId);
   if (!mission) return undefined;
-  const expectedTaskId = input.repositoryId
-    ? mission.product === "fettler"
-      ? fettlerCampaignMissionTaskId(input.missionId, input.repositoryId)
-      : mission.product === "regauge"
-        ? regaugeLaunchMissionTaskId(input.missionId, input.repositoryId)
-        : null
-    : null;
+  const jobId = typeof input.jobId === "string" && input.jobId.trim() ? input.jobId : null;
+  if (!jobId) {
+    console.warn(JSON.stringify({
+      event: "warden_review_handoff_resolution_skipped",
+      reason: "reviewed_run_job_unknown",
+      tenantId: input.tenantId,
+      missionId: input.missionId,
+      runId: input.runId,
+    }));
+    return undefined;
+  }
+  const expectedTaskId = missionTaskIdForJob(jobId);
   const blocking = evaluateMissionExceptions(db, input.tenantId, input.missionId, input.current).blocking;
   const candidates = blocking.filter((exception) => {
-    if (!exception.taskId) return false;
-    if (expectedTaskId !== null && exception.taskId !== expectedTaskId) return false;
+    if (exception.taskId !== expectedTaskId) return false;
     const task = getMissionTask(db, input.tenantId, exception.taskId);
     return Boolean(task && HUMAN_HANDOFF_TASK_STATUSES.has(task.status));
   });
@@ -183,6 +188,7 @@ export function tryResolveBoundReviewHandoff(
         tenantId: input.tenantId,
         missionId: input.missionId,
         runId: input.runId,
+        jobId,
         expectedTaskId,
         blockingCount: blocking.length,
         candidateCount: candidates.length,
@@ -401,8 +407,9 @@ export function registerWardenCandidateReviewRoutes(
     const reviewedAt = clock();
     // The reviewed run's source binding, read directly from its recorded result
     // (available on both regenerate and approve, unlike `binding` which is only
-    // computed for approve/CI). Used to bind handoff resolution to the one task
-    // this run drives and to pass the run's snapshot to the exception evaluator.
+    // computed for approve/CI). Used to pass the run's snapshot to the
+    // exception evaluator. Handoff resolution binds to missionTaskIdForJob
+    // (run.job_id), not the enrollment/launch task for this repository.
     const reviewedSource = result.source && typeof result.source === "object"
       ? result.source as Record<string, unknown>
       : null;
@@ -538,6 +545,7 @@ export function registerWardenCandidateReviewRoutes(
             tenantId,
             missionId: regenerateMissionId,
             repositoryId: reviewedRepositoryId,
+            jobId: run.job_id,
             ...(reviewedSnapshot ? { current: reviewedSnapshot } : {}),
             runId: run.id,
             rationale: body.rationale,
@@ -591,6 +599,7 @@ export function registerWardenCandidateReviewRoutes(
             tenantId,
             missionId: approveMissionId,
             repositoryId: reviewedRepositoryId,
+            jobId: run.job_id,
             ...(reviewedSnapshot ? { current: reviewedSnapshot } : {}),
             runId: run.id,
             rationale: body.rationale,
