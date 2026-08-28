@@ -7,8 +7,10 @@ import {
   createDb,
   createMission,
   createPolicyEnvelope,
+  evaluateMissionExceptions,
   insertPrincipal,
   linkRegaugeCampaignToMission,
+  listMissionExceptions,
   type AppDb,
 } from "@mendpoint/db";
 import {
@@ -117,5 +119,60 @@ describe("assertRegaugePilotMissionPolicy", () => {
     expect(() => assertRegaugePilotMissionPolicy(db, {
       ...claim, tenantId: "t2",
     })).not.toThrow();
+    expect(listMissionExceptions(db, "t1", "m1")).toEqual([]);
+  });
+
+  it("raises a blocking policy_exception when the inherited envelope denies the claim", () => {
+    const db = fixture();
+    bind(db, {
+      ...defaultPolicyEnvelope({
+        tenantId: "t1", policyEnvelopeId: "pe-1", createdAt: at, version: 1,
+      }),
+      repositoryScope: Object.freeze(["repo-other"]),
+    });
+    expect(() => assertRegaugePilotMissionPolicy(db, { ...claim, observedAt: at }))
+      .toThrow(/mission_policy_denied:repository_out_of_scope:repo-a/);
+    const rows = listMissionExceptions(db, "t1", "m1");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.category).toBe("policy_exception");
+    expect(rows[0]?.blocking).toBe(true);
+    expect(rows[0]?.reason).toContain("repository_out_of_scope:repo-a");
+    expect(evaluateMissionExceptions(db, "t1", "m1").missionBlocked).toBe(true);
+
+    expect(() => assertRegaugePilotMissionPolicy(db, {
+      ...claim, observedAt: "2026-08-25T00:00:01.000Z",
+    })).toThrow(/mission_policy_denied/);
+    expect(listMissionExceptions(db, "t1", "m1")).toHaveLength(1);
+  });
+
+  it("raises a policy_exception when a bound Mission has no envelope", () => {
+    const db = fixture();
+    expect(() => assertRegaugePilotMissionPolicy(db, { ...claim, observedAt: at }))
+      .toThrow("mission_policy_envelope_missing");
+    const rows = listMissionExceptions(db, "t1", "m1");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.reason).toBe("mission_policy_envelope_missing");
+    expect(rows[0]?.category).toBe("policy_exception");
+  });
+
+  it("does not raise an exception when the claim is allowed", () => {
+    const db = fixture();
+    bind(db, defaultPolicyEnvelope({
+      tenantId: "t1", policyEnvelopeId: "pe-1", createdAt: at, version: 1,
+    }));
+    assertRegaugePilotMissionPolicy(db, { ...claim, observedAt: at });
+    expect(listMissionExceptions(db, "t1", "m1")).toEqual([]);
+  });
+
+  it("CONTROL: a live ReGauge deny without a Mission exception is a red mutation", () => {
+    const db = fixture();
+    bind(db, {
+      ...defaultPolicyEnvelope({
+        tenantId: "t1", policyEnvelopeId: "pe-1", createdAt: at, version: 1,
+      }),
+      repositoryScope: Object.freeze(["repo-other"]),
+    });
+    expect(() => assertRegaugePilotMissionPolicy(db, { ...claim, observedAt: at })).toThrow();
+    expect(evaluateMissionExceptions(db, "t1", "m1").blocking).toHaveLength(1);
   });
 });

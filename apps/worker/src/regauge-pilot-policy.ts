@@ -5,9 +5,17 @@
  *
  * Unbound campaigns (no Mission) are not evaluated here — that enrollment gap
  * stays visible. A bound Mission with a missing envelope, invalid envelope, or
- * explicit deny fails closed and does not claim.
+ * explicit deny fails closed and does not claim. Those blockers are also raised
+ * as Mission exceptions (category `policy_exception`) so the same deny is not
+ * rediscovered on the next claim (ME-MSN-002).
  */
-import { resolveMissionForRegaugeCampaign, type AppDb } from "@mendpoint/db";
+import {
+  evaluateMissionExceptions,
+  raiseMissionException,
+  resolveMissionForRegaugeCampaign,
+  type AppDb,
+  type Mission,
+} from "@mendpoint/db";
 import { isTrainingTierModel } from "@mendpoint/agent";
 import {
   evaluateMissionTaskPolicy,
@@ -27,6 +35,7 @@ export type RegaugePilotPolicyInput = Readonly<{
    * to derive whether the attempt routes to a training-capturing tier.
    */
   adaptiveModelId?: string;
+  observedAt?: string;
 }>;
 
 function regaugePilotPolicyTask(input: RegaugePilotPolicyInput) {
@@ -52,22 +61,48 @@ function regaugePilotPolicyTask(input: RegaugePilotPolicyInput) {
   });
 }
 
+function recordPolicyException(
+  db: AppDb,
+  mission: Mission,
+  reason: string,
+  createdAt: string,
+): void {
+  const already = evaluateMissionExceptions(db, mission.tenantId, mission.id).blocking
+    .some((item) => item.category === "policy_exception" && item.reason === reason);
+  if (already) return;
+  raiseMissionException(db, {
+    tenantId: mission.tenantId,
+    missionId: mission.id,
+    reason,
+    impact: "ReGauge pilot claim denied by the inherited Policy Envelope",
+    ownerPrincipalId: mission.ownerPrincipalId,
+    resolutionPath: "adjust_task_or_rebind_policy_envelope",
+    blocking: true,
+    correlationId: `regauge-pilot-policy:${mission.id}`,
+    createdAt,
+    category: "policy_exception",
+  });
+}
+
 /**
  * Evaluate the campaign's bound Mission envelope. No-op when unbound.
  */
 export function assertRegaugePilotMissionPolicy(db: AppDb, input: RegaugePilotPolicyInput): void {
   const mission = resolveMissionForRegaugeCampaign(db, input.tenantId, input.campaignId);
   if (!mission) return;
+  const observedAt = input.observedAt ?? new Date().toISOString();
   const enforcement = evaluateMissionTaskPolicy(db, {
     tenantId: input.tenantId,
     missionId: mission.id,
     task: regaugePilotPolicyTask(input),
   });
   if (enforcement.status === "no_envelope") {
+    recordPolicyException(db, mission, "mission_policy_envelope_missing", observedAt);
     throw new Error("mission_policy_envelope_missing");
   }
   const reasons = missionPolicyDenialReasons(enforcement);
   if (reasons) {
+    recordPolicyException(db, mission, reasons.join(";"), observedAt);
     throw new Error(`mission_policy_denied:${reasons.join(";")}`);
   }
 }
