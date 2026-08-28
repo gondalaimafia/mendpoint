@@ -9,6 +9,7 @@ import {
   type AppDb,
   type JobRow,
 } from "@mendpoint/db";
+import { resolveUnambiguousSingleRepoFettlerCampaign } from "@mendpoint/pipeline";
 
 const JOB_TYPE = "fettler.pr.review";
 const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -182,6 +183,11 @@ export async function runFettlerPrReviewDispatch(input: FettlerPrReviewDispatchI
     deliveryId: payload.deliveryId,
     source: "github_webhook" as const,
   });
+  const campaign = resolveUnambiguousSingleRepoFettlerCampaign(
+    input.db,
+    payload.tenantId,
+    payload.repositoryId,
+  );
   const agentPayload = Object.freeze({
     goal:
       `Review customer pull request ${payload.pullRequestNumber} at exact head ${payload.headSha}. ` +
@@ -193,6 +199,7 @@ export async function runFettlerPrReviewDispatch(input: FettlerPrReviewDispatchI
     useLlm: true,
     allowNetwork: false,
     sessionId: ids.runId,
+    ...(campaign ? { fettlerCampaignId: campaign.campaignId } : {}),
     snapshotBinding: Object.freeze({
       repositoryId: materialized.repositoryId,
       snapshotId: materialized.snapshotId,
