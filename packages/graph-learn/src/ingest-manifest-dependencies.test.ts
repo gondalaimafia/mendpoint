@@ -1,13 +1,39 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ingestManifestDependencies } from "./ingest-manifest-dependencies.js";
 import { ingestControlPlane } from "./ingest.js";
 import { ingestLspSymbols } from "./lsp-ingest.js";
 import { runGraphQuery } from "./query.js";
 import { edgesFrom, getNode, listNodesByKind, openGraphLearnDb, openGraphLearnMemory, upsertEdge, upsertNode, type GraphLearnDb } from "./store.js";
+
+const manifestReadInterleave = vi.hoisted(() => ({
+  beforeOpen: undefined as undefined | (() => void),
+}));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    openSync(...args: Parameters<typeof actual.openSync>) {
+      const beforeOpen = manifestReadInterleave.beforeOpen;
+      manifestReadInterleave.beforeOpen = undefined;
+      beforeOpen?.();
+      return actual.openSync(...args);
+    },
+  };
+});
 
 const opened: GraphLearnDb[] = [];
 
@@ -26,6 +52,7 @@ function manifestEdgesAt(db: GraphLearnDb, tenantId: string, repoId: string, at:
 }
 
 afterEach(() => {
+  manifestReadInterleave.beforeOpen = undefined;
   for (const db of opened.splice(0)) db.raw.close();
 });
 
@@ -394,6 +421,51 @@ describe("ingestManifestDependencies", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects selected manifest and parent junction swaps after inventory without parsing outside bytes", () => {
+    for (const swap of ["manifest", "parent"] as const) {
+      const db = openGraphLearnMemory();
+      opened.push(db);
+      const dir = mkdtempSync(join(tmpdir(), `mendpoint-manifest-${swap}-swap-`));
+      const outside = mkdtempSync(join(tmpdir(), `mendpoint-manifest-${swap}-outside-`));
+      try {
+        const manifestRelative = swap === "manifest" ? "package.json" : "workspace/package.json";
+        const manifest = join(dir, ...manifestRelative.split("/"));
+        mkdirSync(join(dir, "workspace"), { recursive: true });
+        writeFileSync(manifest, JSON.stringify({ name: "safe-app" }));
+        const outsideManifest = join(outside, "package.json");
+        writeFileSync(outsideManifest, JSON.stringify({
+          name: "outside-app",
+          dependencies: { "outside-only": "1" },
+        }));
+        manifestReadInterleave.beforeOpen = () => {
+          if (swap === "manifest") {
+            renameSync(manifest, join(dir, "safe-package.json"));
+            copyFileSync(outsideManifest, manifest);
+          } else {
+            renameSync(join(dir, "workspace"), join(dir, "safe-workspace"));
+            symlinkSync(outside, join(dir, "workspace"), process.platform === "win32" ? "junction" : "dir");
+          }
+        };
+        const result = ingestManifestDependencies(db, {
+          repoPath: dir,
+          repoId: `repo-${swap}-swap`,
+          tenantId: "tenant-a",
+        });
+        expect(result).toMatchObject({
+          status: "skipped",
+          reason: "unsafe-filesystem",
+          coverage: "unknown",
+          dependencies: 0,
+        });
+        expect(listNodesByKind(db, "Service").some((node) => node.label === "outside-only"))
+          .toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        rmSync(outside, { recursive: true, force: true });
+      }
     }
   });
 

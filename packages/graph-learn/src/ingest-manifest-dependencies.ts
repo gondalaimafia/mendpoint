@@ -8,7 +8,18 @@
  * (`package.json`, `pyproject.toml`, `go.mod`) become tenant-scoped Service
  * nodes plus DEPENDS_ON edges. Malformed manifests are skipped, never guessed.
  */
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  type BigIntStats,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
@@ -47,7 +58,7 @@ export type ManifestDependency = Readonly<{
 }>;
 
 /** Why a manifest was not ingested; `null` on the ingested path. */
-export type ManifestSkipReason = "no-manifest" | "unparseable" | "no-package-name";
+export type ManifestSkipReason = "no-manifest" | "unparseable" | "no-package-name" | "unsafe-filesystem";
 
 export type ManifestIngestResult = Readonly<{
   /** `ingested` when a manifest parsed and produced a (possibly empty) edge set; `skipped` otherwise. */
@@ -109,17 +120,107 @@ function compareManifestPaths(left: string, right: string): number {
   return ecosystem || compareCodeUnits(left, right);
 }
 
+type PathComponentIdentity = Readonly<{
+  path: string;
+  identity: string;
+  kind: "directory" | "file";
+}>;
+
+type ManifestPathIdentity = Readonly<{
+  root: string;
+  components: readonly PathComponentIdentity[];
+}>;
+
+function statIdentity(stat: BigIntStats): string {
+  return [stat.dev, stat.ino, stat.mode, stat.size, stat.birthtimeNs, stat.ctimeNs]
+    .map(String).join(":");
+}
+
+function withinRoot(root: string, candidate: string): boolean {
+  const path = relative(root, candidate);
+  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+}
+
+function captureManifestPathIdentity(root: string, path: string): ManifestPathIdentity {
+  const components: PathComponentIdentity[] = [];
+  let cursor = root;
+  for (const [index, segment] of path.split("/").entries()) {
+    cursor = join(cursor, segment);
+    const stat = lstatSync(cursor, { bigint: true });
+    if (stat.isSymbolicLink() || (index < path.split("/").length - 1 && !stat.isDirectory()) ||
+        (index === path.split("/").length - 1 && !stat.isFile())) {
+      throw new Error("manifest_filesystem_identity_invalid");
+    }
+    const real = realpathSync(cursor);
+    if (!withinRoot(root, real)) throw new Error("manifest_filesystem_identity_invalid");
+    components.push(Object.freeze({
+      path: path.split("/").slice(0, index + 1).join("/"),
+      identity: statIdentity(stat),
+      kind: index === path.split("/").length - 1 ? "file" : "directory",
+    }));
+  }
+  return Object.freeze({ root, components: Object.freeze(components) });
+}
+
+function revalidateManifestPathIdentity(identity: ManifestPathIdentity): void {
+  for (const component of identity.components) {
+    const absolute = join(identity.root, ...component.path.split("/"));
+    const stat = lstatSync(absolute, { bigint: true });
+    if (stat.isSymbolicLink() || statIdentity(stat) !== component.identity ||
+        (component.kind === "directory" && !stat.isDirectory()) ||
+        (component.kind === "file" && !stat.isFile()) ||
+        !withinRoot(identity.root, realpathSync(absolute))) {
+      throw new Error("manifest_filesystem_identity_changed");
+    }
+  }
+}
+
+function readAuthenticatedFilesystemManifest(
+  repoPath: string,
+  path: string,
+  expected: ManifestPathIdentity,
+): string {
+  const rootEntry = lstatSync(repoPath, { bigint: true });
+  const root = realpathSync(resolve(repoPath));
+  if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink() || root !== expected.root) {
+    throw new Error("manifest_filesystem_identity_changed");
+  }
+  revalidateManifestPathIdentity(expected);
+  const absolute = join(root, ...path.split("/"));
+  const noFollow = process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW;
+  const descriptor = openSync(absolute, fsConstants.O_RDONLY | noFollow);
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    const final = expected.components.at(-1);
+    if (!final || !before.isFile() || statIdentity(before) !== final.identity) {
+      throw new Error("manifest_filesystem_identity_changed");
+    }
+    revalidateManifestPathIdentity(expected);
+    const text = readFileSync(descriptor, "utf8");
+    const after = fstatSync(descriptor, { bigint: true });
+    if (statIdentity(after) !== statIdentity(before)) {
+      throw new Error("manifest_filesystem_identity_changed");
+    }
+    revalidateManifestPathIdentity(expected);
+    return text;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 function discoverFilesystemManifests(repoPath: string): Readonly<{
   paths: readonly string[];
+  identities: Readonly<Record<string, ManifestPathIdentity>>;
   coverageReasons: readonly string[];
 }> {
-  if (!existsSync(repoPath)) return Object.freeze({ paths: [], coverageReasons: [] });
+  if (!existsSync(repoPath)) return Object.freeze({ paths: [], identities: {}, coverageReasons: [] });
   const rootEntry = lstatSync(repoPath);
   if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
-    return Object.freeze({ paths: [], coverageReasons: ["manifest_inventory_root_invalid"] });
+    return Object.freeze({ paths: [], identities: {}, coverageReasons: ["manifest_inventory_root_invalid"] });
   }
   const root = realpathSync(resolve(repoPath));
   const paths: string[] = [];
+  const identities: Record<string, ManifestPathIdentity> = {};
   const reasons = new Set<string>();
   const directories: Array<{ absolute: string; depth: number }> = [{ absolute: root, depth: 0 }];
   let entriesSeen = 0;
@@ -160,11 +261,19 @@ function discoverFilesystemManifests(repoPath: string): Readonly<{
         directories.push({ absolute, depth: current.depth + 1 });
         continue;
       }
-      if (entry.isFile() && SUPPORTED_MANIFEST_NAMES.has(entry.name)) paths.push(relativePath);
+      if (entry.isFile() && SUPPORTED_MANIFEST_NAMES.has(entry.name)) {
+        try {
+          identities[relativePath] = captureManifestPathIdentity(root, relativePath);
+          paths.push(relativePath);
+        } catch {
+          reasons.add(`manifest_inventory_identity_invalid:${relativePath}`);
+        }
+      }
     }
   }
   return Object.freeze({
     paths: Object.freeze([...new Set(paths)].sort(compareManifestPaths)),
+    identities: Object.freeze(identities),
     coverageReasons: Object.freeze([...reasons].sort(compareCodeUnits)),
   });
 }
@@ -751,7 +860,7 @@ export function ingestManifestDependencies(
     return [path];
   }).sort(compareManifestPaths) : [];
   const filesystemInventory = opts.files
-    ? { paths: suppliedManifestPaths, coverageReasons: [...suppliedInventoryReasons].sort(compareCodeUnits) }
+    ? { paths: suppliedManifestPaths, identities: {}, coverageReasons: [...suppliedInventoryReasons].sort(compareCodeUnits) }
     : discoverFilesystemManifests(opts.repoPath);
   let chosen: { path: string; text: string } | undefined;
   if (opts.files) {
@@ -761,7 +870,13 @@ export function ingestManifestDependencies(
     if (match && selectedPath) chosen = { path: selectedPath, text: match.text };
   } else if (filesystemInventory.paths[0]) {
     const selectedPath = filesystemInventory.paths[0]!;
-    chosen = { path: selectedPath, text: readFileSync(join(realpathSync(resolve(opts.repoPath)), selectedPath), "utf8") };
+    try {
+      const identity = filesystemInventory.identities[selectedPath];
+      if (!identity) throw new Error("manifest_filesystem_identity_missing");
+      chosen = { path: selectedPath, text: readAuthenticatedFilesystemManifest(opts.repoPath, selectedPath, identity) };
+    } catch {
+      return notIngested("unsafe-filesystem", selectedPath);
+    }
   }
   if (!chosen) return notIngested("no-manifest", null);
   const rawText = chosen.text;
