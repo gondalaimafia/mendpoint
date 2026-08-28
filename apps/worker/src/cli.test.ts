@@ -102,6 +102,7 @@ import {
   initializeWorkerServiceDurableState,
   parseReleasePollConfigurationsFromEnv,
   releaseIngestionWorkerPath,
+  releaseDispatchRuntimeStatus,
   summarizeWorkerFeedScheduleRun,
   summarizeCustomerFeedEvidence,
   writeWorkerHeartbeat,
@@ -559,6 +560,13 @@ describe("worker runtime", () => {
       feedScheduleStatus: "healthy",
       releaseConfigurationStatus: "healthy",
       releaseConfigurationFailed: 0,
+      releaseDispatchConfigured: true,
+      releaseDispatchConsumerCount: 1,
+      releaseDispatchStatus: "healthy",
+      releaseDispatchPending: 0,
+      releaseDispatchClaimed: 0,
+      releaseDispatchFailed: 0,
+      releaseDispatchExpiredClaims: 0,
     });
 
     expect(JSON.parse(readFileSync(heartbeatPath, "utf8"))).toMatchObject({
@@ -570,6 +578,13 @@ describe("worker runtime", () => {
       feedScheduleStatus: "healthy",
       releaseConfigurationStatus: "healthy",
       releaseConfigurationFailed: 0,
+      releaseDispatchConfigured: true,
+      releaseDispatchConsumerCount: 1,
+      releaseDispatchStatus: "healthy",
+      releaseDispatchPending: 0,
+      releaseDispatchClaimed: 0,
+      releaseDispatchFailed: 0,
+      releaseDispatchExpiredClaims: 0,
     });
     expect(() =>
       writeWorkerHeartbeat("relative.json", {
@@ -584,8 +599,33 @@ describe("worker runtime", () => {
         feedScheduleStatus: "not_started",
         releaseConfigurationStatus: "not_configured",
         releaseConfigurationFailed: 0,
+        releaseDispatchConfigured: false,
+        releaseDispatchConsumerCount: 0,
+        releaseDispatchStatus: "not_configured",
+        releaseDispatchPending: 0,
+        releaseDispatchClaimed: 0,
+        releaseDispatchFailed: 0,
+        releaseDispatchExpiredClaims: 0,
       }),
     ).toThrow(/absolute/i);
+  });
+
+  it("degrades dispatch while the mutation fence is held and recovers after drain", () => {
+    expect(releaseDispatchRuntimeStatus({
+      configured: true,
+      fenceAvailable: false,
+      degraded: false,
+    })).toBe("degraded");
+    expect(releaseDispatchRuntimeStatus({
+      configured: true,
+      fenceAvailable: true,
+      degraded: false,
+    })).toBe("healthy");
+    expect(releaseDispatchRuntimeStatus({
+      configured: false,
+      fenceAvailable: false,
+      degraded: false,
+    })).toBe("not_configured");
   });
 
   it("parses frozen canonical release polling configurations from one bounded authority", () => {
@@ -608,8 +648,8 @@ describe("worker runtime", () => {
     expect(Object.isFrozen(parsed[0]!.source)).toBe(true);
   });
 
-  it("keeps unset and blank release polling configuration frozen and disabled", () => {
-    for (const value of [undefined, "", "  \t "]) {
+  it("keeps unset, blank, and explicit empty release polling configuration frozen and disabled", () => {
+    for (const value of [undefined, "", "  \t ", "[]"]) {
       const parsed = parseReleasePollConfigurationsFromEnv({
         MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON: value,
       });
@@ -727,6 +767,46 @@ describe("worker runtime", () => {
     })).toContain(
       "MENDPOINT_DATA_DIR must be absolute when release polling is configured",
     );
+
+    const validDispatchConsumer = JSON.stringify([{
+      contractVersion: "catalog.release-dispatch.v1",
+      tenantId: "tenant-a",
+      actorPrincipalId: "service-release-dispatch-a",
+    }]);
+    expect(validateWorkerProductionEnv({
+      NODE_ENV: "production",
+      MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON: "not-json",
+    })).toContain("MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON is invalid");
+    expect(validateWorkerProductionEnv({
+      NODE_ENV: "production",
+      MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON: validDispatchConsumer,
+    })).toContain(
+      "MENDPOINT_DATA_DIR must be absolute when release dispatch is configured",
+    );
+    expect(validateWorkerProductionEnv({
+      NODE_ENV: "production",
+      MENDPOINT_DATA_DIR: "C:\\mendpoint-data",
+      MENDPOINT_TENANT_ID: "tenant-b",
+      MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON: validDispatchConsumer,
+    })).toContain("MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON is invalid");
+    expect(validateWorkerProductionEnv({
+      NODE_ENV: "production",
+      MENDPOINT_TENANT_ID: "tenant-a",
+      MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON: validConfiguration,
+      MENDPOINT_DATA_DIR: "C:\\mendpoint-data",
+    })).toContain("MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON is invalid");
+    const disabledErrors = validateWorkerProductionEnv({
+      NODE_ENV: "production",
+      MENDPOINT_DEPLOYMENT_PROFILE: "demo",
+      GITHUB_MODE: "mock",
+      MENDPOINT_SANDBOX_KIND: "local",
+      MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON: "[]",
+    });
+    expect(disabledErrors).not.toContain("MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON is invalid");
+    expect(disabledErrors).not.toContain(
+      "MENDPOINT_DATA_DIR must be absolute when release polling is configured",
+    );
+    expect(disabledErrors).not.toContain("MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON is invalid");
   });
 
   it("uses only the stable release ingestion path under the data directory", () => {
@@ -853,6 +933,64 @@ describe("worker runtime", () => {
     expect(disabled.releaseStore).toBeUndefined();
     disabled.close();
     expect(releaseOpens).toBe(0);
+
+    const dispatchConfigured = initializeWorkerServiceDurableState({
+      jobConcurrency: 1,
+      releaseConfigurationCount: 0,
+      releaseDispatchConsumerCount: 1,
+      openFeedDb: () => ({ close: () => undefined }),
+      openHeartbeatDb: () => ({ close: () => undefined }),
+      openTransformerDb: () => ({ close: () => undefined }),
+      openTransformerStore: () => ({ close: () => undefined }),
+      openJobDb: () => ({ close: () => undefined }),
+      openReleaseStore: () => { releaseOpens++; return { close: () => undefined }; },
+      closeDb: (handle) => handle.close(),
+    }, {});
+    expect(dispatchConfigured.releaseStore).toBeDefined();
+    dispatchConfigured.close();
+    expect(releaseOpens).toBe(1);
+
+    const customerDormant = initializeWorkerServiceDurableState({
+      jobConcurrency: 1,
+      releaseConfigurationCount: 0,
+      openFeedDb: () => ({ close: () => undefined }),
+      openHeartbeatDb: () => ({ close: () => undefined }),
+      openTransformerDb: () => ({ close: () => undefined }),
+      openTransformerStore: () => ({ close: () => undefined }),
+      openJobDb: () => ({ close: () => undefined }),
+      openReleaseStore: () => { releaseOpens++; return { close: () => undefined }; },
+      closeDb: (handle) => handle.close(),
+    }, { MENDPOINT_DEPLOYMENT_PROFILE: "customer" });
+    expect(customerDormant.releaseStore).toBeDefined();
+    customerDormant.close();
+    expect(releaseOpens).toBe(2);
+  });
+
+  it("pre-materializes the release-ingestion v4 database for a dormant customer profile", () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-release-backup-"));
+    dirs.push(root);
+    const releasePath = releaseIngestionWorkerPath({ MENDPOINT_DATA_DIR: root });
+    const state = initializeWorkerServiceDurableState({
+      jobConcurrency: 1,
+      releaseConfigurationCount: 0,
+      openFeedDb: () => ({ close: () => undefined }),
+      openHeartbeatDb: () => ({ close: () => undefined }),
+      openTransformerDb: () => ({ close: () => undefined }),
+      openTransformerStore: () => ({ close: () => undefined }),
+      openJobDb: () => ({ close: () => undefined }),
+      openReleaseStore: () => openReleaseIngestionStore(releasePath),
+      closeDb: (handle) => handle.close(),
+    }, { MENDPOINT_DEPLOYMENT_PROFILE: "customer" });
+    state.close();
+
+    expect(existsSync(releasePath)).toBe(true);
+    const db = new DatabaseSync(releasePath, { readOnly: true });
+    try {
+      expect(db.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations").get())
+        .toEqual({ version: 4 });
+    } finally {
+      db.close();
+    }
   });
 
   it("binds model source to an explicit tenant and stable remote repository classification", () => {
@@ -2372,6 +2510,12 @@ describe("worker runtime", () => {
     const completeCustomerProfile = {
       ...customerProfile,
       ...sandboxAuthority,
+      MENDPOINT_TENANT_ID: "tenant_default",
+      MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON: JSON.stringify([{
+        contractVersion: "catalog.release-dispatch.v1",
+        tenantId: "tenant_default",
+        actorPrincipalId: "service-release-dispatch",
+      }]),
       GITHUB_APP_ACCOUNT_TENANT_BINDINGS: '{"7123456":"tenant_default"}',
       MENDPOINT_WARDEN_MODEL_SOURCE_ENABLED: "1",
       MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS: "tenant_default",
@@ -2387,6 +2531,25 @@ describe("worker runtime", () => {
       LLM_AGENT_URL: "https://models.example/v1",
       OPENAI_API_KEY: "configured",
     };
+    expect(validateWorkerProductionEnv({
+      ...completeCustomerProfile,
+      MENDPOINT_TENANT_ID: "",
+    })).toContain("MENDPOINT_TENANT_ID is required when release dispatch is required");
+    expect(validateWorkerProductionEnv({
+      ...completeCustomerProfile,
+      MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON: JSON.stringify([
+        {
+          contractVersion: "catalog.release-dispatch.v1",
+          tenantId: "tenant_default",
+          actorPrincipalId: "service-release-dispatch",
+        },
+        {
+          contractVersion: "catalog.release-dispatch.v1",
+          tenantId: "tenant-other",
+          actorPrincipalId: "service-release-dispatch-other",
+        },
+      ]),
+    })).toContain("MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON is invalid");
     expect(validateWorkerProductionEnv({
       ...completeCustomerProfile,
       MENDPOINT_WARDEN_EXTERNAL_PROCESSING_ALLOWED: "0",

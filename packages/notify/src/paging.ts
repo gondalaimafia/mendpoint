@@ -17,6 +17,7 @@ export type PagingEventType =
   | "dead_letter_growth"
   | "expired_lease_uncertain_side_effect"
   | "worker_heartbeat_stale"
+  | "release_dispatch_degraded"
   | "egress_receipt_expiring"
   | "egress_receipt_renewal_failed";
 
@@ -43,6 +44,7 @@ export type NotifyPagingResult =
   | { ok: boolean; skipped?: false; deliveries: PagingDelivery[] };
 
 const DEFAULT_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
+const MAX_PAGING_COUNT = 1_000_000_000;
 
 const dedupeSeen = new Map<string, number>();
 
@@ -60,6 +62,11 @@ export function clearPagingDedupe(): void {
 
 function resolveDedupeKey(event: PagingEvent): string {
   return event.dedupeKey?.trim() || `${event.type}:${event.summary}`;
+}
+
+function boundedPagingCount(value: number | undefined): number {
+  if (!Number.isSafeInteger(value) || value === undefined || value < 0) return 0;
+  return Math.min(value, MAX_PAGING_COUNT);
 }
 
 /**
@@ -174,10 +181,38 @@ export function pagingEventForWorkerHeartbeat(input: {
   stale: boolean;
   deadLetter?: number;
   expiredLeases?: number;
+  releaseDispatchDegraded?: boolean;
+  releaseDispatchPending?: number;
+  releaseDispatchClaimed?: number;
+  releaseDispatchFailed?: number;
+  releaseDispatchExpiredClaims?: number;
 }): PagingEvent | null {
   const deadLetter = input.deadLetter ?? 0;
   const expiredLeases = input.expiredLeases ?? 0;
-  if (input.stale || !input.ok) {
+  if (input.stale) {
+    return {
+      type: "worker_heartbeat_stale",
+      severity: "critical",
+      summary: `Worker ${input.workerId} heartbeat stale`,
+      dedupeKey: `worker_heartbeat_stale:${input.workerId}`,
+      details: { deadLetter, expiredLeases, ok: input.ok, stale: input.stale },
+    };
+  }
+  if (input.releaseDispatchDegraded) {
+    return {
+      type: "release_dispatch_degraded",
+      severity: "critical",
+      summary: `Worker ${input.workerId} release dispatch degraded`,
+      dedupeKey: `release_dispatch_degraded:${input.workerId}`,
+      details: {
+        pending: boundedPagingCount(input.releaseDispatchPending),
+        claimed: boundedPagingCount(input.releaseDispatchClaimed),
+        failed: boundedPagingCount(input.releaseDispatchFailed),
+        expiredClaims: boundedPagingCount(input.releaseDispatchExpiredClaims),
+      },
+    };
+  }
+  if (!input.ok) {
     return {
       type: "worker_heartbeat_stale",
       severity: "critical",
@@ -308,9 +343,10 @@ export async function pageReadiness(probe: {
 
 /**
  * Best-effort page for a worker heartbeat snapshot. Fires the matching page
- * (`worker_heartbeat_stale`, `expired_lease_uncertain_side_effect`, or
- * `dead_letter_growth`) when the snapshot is unhealthy and returns null
- * otherwise. Never throws, for the same reason as `pageReadiness`.
+ * (`worker_heartbeat_stale`, `release_dispatch_degraded`,
+ * `expired_lease_uncertain_side_effect`, or `dead_letter_growth`) when the
+ * snapshot is unhealthy and returns null otherwise. Never throws, for the same
+ * reason as `pageReadiness`.
  */
 export async function pageWorkerHeartbeat(input: {
   workerId: string;
@@ -318,6 +354,11 @@ export async function pageWorkerHeartbeat(input: {
   stale: boolean;
   deadLetter?: number;
   expiredLeases?: number;
+  releaseDispatchDegraded?: boolean;
+  releaseDispatchPending?: number;
+  releaseDispatchClaimed?: number;
+  releaseDispatchFailed?: number;
+  releaseDispatchExpiredClaims?: number;
 }): Promise<NotifyPagingResult | null> {
   const event = pagingEventForWorkerHeartbeat(input);
   return event ? notifyPaging(event) : null;

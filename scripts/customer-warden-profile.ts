@@ -64,6 +64,22 @@ export const CUSTOMER_WARDEN_RCLONE_REQUIRED_SETTINGS = Object.freeze([
   "AWS_REGION",
 ] as const);
 
+export const CUSTOMER_WARDEN_REQUIRED_BINDINGS = Object.freeze([
+  "MENDPOINT_TENANT_ID",
+  "MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON",
+  "MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON",
+] as const);
+
+function hasNonemptyJsonArray(value: string | undefined): boolean {
+  if (!value?.trim()) return false;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 const CUSTOMER_SENSITIVE_CHILD_ENV = Object.freeze([
   "MENDPOINT_API_KEY",
   "MENDPOINT_WEB_ACCESS_TOKEN",
@@ -83,6 +99,7 @@ const CUSTOMER_SENSITIVE_CHILD_ENV = Object.freeze([
   "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID",
   "MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST",
   "MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON",
+  "MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON",
   "FLY_API_TOKEN",
 ] as const);
 
@@ -130,6 +147,7 @@ const CUSTOMER_ROLE_SECRETS = Object.freeze({
     "MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST",
     "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA",
     "MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON",
+    "MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON",
   ]),
   web: Object.freeze([
     "MENDPOINT_API_KEY",
@@ -194,6 +212,12 @@ export function validateCustomerWardenRuntime(
   }
   for (const name of CUSTOMER_WARDEN_REQUIRED_SECRETS) {
     if (!resolveEitherRenamedEnv(env, name)?.trim()) errors.push(`Customer Fettler profile requires ${name}`);
+  }
+  for (const name of CUSTOMER_WARDEN_REQUIRED_BINDINGS) {
+    const valid = name === "MENDPOINT_TENANT_ID"
+      ? Boolean(env[name]?.trim())
+      : hasNonemptyJsonArray(env[name]);
+    if (!valid) errors.push(`Customer Fettler profile requires ${name}`);
   }
   if (env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA !== SANDBOX_EGRESS_ATTESTATION_SCHEMA) {
     errors.push(

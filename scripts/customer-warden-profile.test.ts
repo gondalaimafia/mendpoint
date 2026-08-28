@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  CUSTOMER_WARDEN_REQUIRED_BINDINGS,
   CUSTOMER_WARDEN_REQUIRED_SECRETS,
   CUSTOMER_WARDEN_RCLONE_REQUIRED_SETTINGS,
   CUSTOMER_WARDEN_RCLONE_REQUIRED_SECRETS,
@@ -27,6 +28,19 @@ function customerRuntime(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     MENDPOINT_FETTLER_MODEL_SOURCE_ENABLED: "1",
     MENDPOINT_REGAUGE_ENABLED: "0",
     MENDPOINT_BACKUP_TRANSPORT: "rclone_s3",
+    MENDPOINT_TENANT_ID: "tenant_default",
+    MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON: JSON.stringify([{
+      contractVersion: "release-poll.v1",
+      tenantId: "tenant_default",
+      provider: { slug: "stripe" },
+      adapter: "rss",
+      source: { url: "https://docs.stripe.com/changelog/feed" },
+    }]),
+    MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON: JSON.stringify([{
+      contractVersion: "catalog.release-dispatch.v1",
+      tenantId: "tenant_default",
+      actorPrincipalId: "service-release-dispatch",
+    }]),
     ...overrides,
   };
   for (const name of CUSTOMER_WARDEN_REQUIRED_SECRETS) env[name] ??= `${name}-configured`;
@@ -84,6 +98,21 @@ describe("Fettler-only customer Fly profile", () => {
     expect(dockerfile).not.toContain("user_allow_other");
     for (const name of CUSTOMER_WARDEN_REQUIRED_SECRETS) {
       expect(manifest).not.toMatch(new RegExp(`^\\s*${name}\\s*=`, "m"));
+    }
+    for (const name of CUSTOMER_WARDEN_REQUIRED_BINDINGS) {
+      const env = customerRuntime();
+      delete env[name];
+      expect(validateCustomerWardenRuntime(env)).toContain(
+        `Customer Fettler profile requires ${name}`,
+      );
+    }
+    for (const name of [
+      "MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON",
+      "MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON",
+    ] as const) {
+      expect(validateCustomerWardenRuntime(customerRuntime({ [name]: "[]" }))).toContain(
+        `Customer Fettler profile requires ${name}`,
+      );
     }
   });
 
@@ -152,6 +181,7 @@ describe("Fettler-only customer Fly profile", () => {
     env.FLY_API_TOKEN = "deploy-token";
     env.AWS_SESSION_TOKEN = "aws-session";
     env.MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON = '[{"protected":"worker-only"}]';
+    env.MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON = '[{"protected":"worker-only"}]';
     const api = customerWardenChildEnvironment("api", env);
     const worker = customerWardenChildEnvironment("worker", env);
     const web = customerWardenChildEnvironment("web", env);
@@ -161,6 +191,7 @@ describe("Fettler-only customer Fly profile", () => {
     expect(api.MENDPOINT_BACKUP_KEY).toBe(env.MENDPOINT_BACKUP_KEY);
     expect(api.OPENAI_API_KEY).toBeUndefined();
     expect(api.MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON).toBeUndefined();
+    expect(api.MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON).toBeUndefined();
     expect(api.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(api.MENDPOINT_SANDBOX_KIND).toBe(env.MENDPOINT_SANDBOX_KIND);
     expect(api.MENDPOINT_SANDBOX_FLY_APP).toBe(env.MENDPOINT_SANDBOX_FLY_APP);
@@ -174,6 +205,9 @@ describe("Fettler-only customer Fly profile", () => {
     expect(worker.OPENAI_API_KEY).toBe(env.OPENAI_API_KEY);
     expect(worker.MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON).toBe(
       env.MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON,
+    );
+    expect(worker.MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON).toBe(
+      env.MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON,
     );
     expect(worker.GITHUB_APP_PRIVATE_KEY).toBe(env.GITHUB_APP_PRIVATE_KEY);
     expect(worker.MENDPOINT_BACKUP_KEY).toBeUndefined();
@@ -189,6 +223,7 @@ describe("Fettler-only customer Fly profile", () => {
     expect(web.GITHUB_APP_PRIVATE_KEY).toBeUndefined();
     expect(web.OPENAI_API_KEY).toBeUndefined();
     expect(web.MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON).toBeUndefined();
+    expect(web.MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON).toBeUndefined();
     expect(web.MENDPOINT_SANDBOX_FLY_TOKEN).toBeUndefined();
     expect(web.FLY_API_TOKEN).toBeUndefined();
     expect(backup.AWS_SECRET_ACCESS_KEY).toBe(env.AWS_SECRET_ACCESS_KEY);
@@ -196,8 +231,12 @@ describe("Fettler-only customer Fly profile", () => {
     expect(backup.GITHUB_APP_PRIVATE_KEY).toBeUndefined();
     expect(backup.MENDPOINT_BACKUP_KEY).toBeUndefined();
     expect(backup.MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON).toBeUndefined();
+    expect(backup.MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON).toBeUndefined();
     expect(CUSTOMER_WARDEN_REQUIRED_SECRETS).not.toContain(
       "MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON",
+    );
+    expect(CUSTOMER_WARDEN_REQUIRED_SECRETS).not.toContain(
+      "MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON",
     );
   });
 

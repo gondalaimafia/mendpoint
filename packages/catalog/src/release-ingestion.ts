@@ -100,6 +100,17 @@ export type ReleaseDispatch = Readonly<{
   createdAt: string;
 }>;
 
+export type ReleaseDispatchBacklogSummary = Readonly<{
+  tenantId: string;
+  asOf: string;
+  pending: number;
+  claimed: number;
+  completed: number;
+  failed: number;
+  due: number;
+  expiredClaimed: number;
+}>;
+
 export type ReleaseReviewerOverrideResult =
   | Readonly<{ status: "applied"; artifact: ReleaseArtifact }>
   | Readonly<{ status: "revision_conflict"; expectedRevision: number; actualRevision: number }>;
@@ -181,6 +192,15 @@ type DispatchRow = {
   last_failure_at: string | null;
   last_failure_code: string | null;
   created_at: string;
+};
+
+type DispatchBacklogSummaryRow = {
+  pending_count: number;
+  claimed_count: number;
+  completed_count: number;
+  failed_count: number;
+  due_count: number;
+  expired_claimed_count: number;
 };
 
 type OverrideRow = {
@@ -1031,6 +1051,46 @@ export function listReleaseDispatches(store: ReleaseIngestionStore, tenantId: st
   const tenant = required("release_tenant_id", tenantId, 256);
   return all<DispatchRow>(store, `SELECT * FROM release_ingestion_dispatches
     WHERE tenant_id = ? ORDER BY created_at, id`, [tenant]).map(dispatchFromRow);
+}
+
+function dispatchBacklogCount(name: string, value: unknown): number {
+  const count = Number(value);
+  if (!Number.isSafeInteger(count) || count < 0) throw new Error(`${name}_invalid`);
+  return count;
+}
+
+export function summarizeReleaseDispatchBacklog(
+  store: ReleaseIngestionStore,
+  tenantId: string,
+): ReleaseDispatchBacklogSummary {
+  const tenant = required("release_tenant_id", tenantId, 256);
+  const now = store.trustedNow();
+  const authority = one<{ watermark_at: string }>(store,
+    "SELECT watermark_at FROM release_ingestion_clock_authority WHERE singleton_id = 1");
+  if (authority && now < authority.watermark_at) throw new Error("release_store_clock_rollback");
+  const row = one<DispatchBacklogSummaryRow>(store, `SELECT
+      COUNT(*) FILTER (WHERE status = 'pending') AS pending_count,
+      COUNT(*) FILTER (WHERE status = 'claimed') AS claimed_count,
+      COUNT(*) FILTER (WHERE status = 'completed') AS completed_count,
+      COUNT(*) FILTER (WHERE status = 'failed') AS failed_count,
+      COUNT(*) FILTER (WHERE attempt_count < max_attempts AND (
+        (status = 'pending' AND available_at <= ?) OR
+        (status = 'claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+      )) AS due_count,
+      COUNT(*) FILTER (WHERE status = 'claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+        AS expired_claimed_count
+    FROM release_ingestion_dispatches WHERE tenant_id = ?`, [now, now, now, tenant]);
+  if (!row) throw new Error("release_dispatch_backlog_summary_failed");
+  return Object.freeze({
+    tenantId: tenant,
+    asOf: now,
+    pending: dispatchBacklogCount("release_dispatch_pending_count", row.pending_count),
+    claimed: dispatchBacklogCount("release_dispatch_claimed_count", row.claimed_count),
+    completed: dispatchBacklogCount("release_dispatch_completed_count", row.completed_count),
+    failed: dispatchBacklogCount("release_dispatch_failed_count", row.failed_count),
+    due: dispatchBacklogCount("release_dispatch_due_count", row.due_count),
+    expiredClaimed: dispatchBacklogCount("release_dispatch_expired_claimed_count", row.expired_claimed_count),
+  });
 }
 
 export function ingestReleaseDocument(

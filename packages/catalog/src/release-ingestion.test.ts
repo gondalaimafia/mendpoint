@@ -17,6 +17,7 @@ import {
   recordReleaseReviewerOverride,
   recordReleaseReviewerOverrideCas,
   rehydrateReleaseArtifact,
+  summarizeReleaseDispatchBacklog,
   type ReleaseIngestionStore,
 } from "./release-ingestion.js";
 
@@ -766,6 +767,82 @@ describe("release ingestion", () => {
     expect(tenantB.tenantId).toBe("tenant-b");
   });
 
+  it("summarizes a tenant dispatch backlog with bounded aggregate counts", () => {
+    const ledger = store();
+    const body = fixture("stripe-rss.xml");
+    for (let index = 0; index < 7; index += 1) {
+      ingestReleaseDocument(ledger, input("rss", body.replace("amount_cents", `amount_cents_${index}`)));
+    }
+    const dispatches = listReleaseDispatches(ledger, "tenant-a");
+    expect(dispatches).toHaveLength(7);
+    ledger.raw.prepare("UPDATE release_ingestion_dispatches SET available_at = ? WHERE id = ?")
+      .run("2026-08-02T12:01:00.000Z", dispatches[1]!.id);
+    ledger.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'claimed', lease_owner = 'worker-active', claimed_at = ?,
+          lease_expires_at = ?, lease_generation = 1, attempt_count = 1 WHERE id = ?`)
+      .run(NOW, "2026-08-02T12:01:00.000Z", dispatches[2]!.id);
+    ledger.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'claimed', lease_owner = 'worker-expired', claimed_at = ?,
+          lease_expires_at = ?, lease_generation = 1, attempt_count = 1 WHERE id = ?`)
+      .run("2026-08-02T11:59:00.000Z", "2026-08-02T11:59:59.000Z", dispatches[3]!.id);
+    ledger.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'claimed', lease_owner = 'worker-exhausted', claimed_at = ?,
+          lease_expires_at = ?, lease_generation = 1, attempt_count = max_attempts WHERE id = ?`)
+      .run("2026-08-02T11:59:00.000Z", "2026-08-02T11:59:59.000Z", dispatches[4]!.id);
+    ledger.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'completed', completed_at = ? WHERE id = ?`).run(NOW, dispatches[5]!.id);
+    ledger.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'failed', failed_at = ?, failure_code = 'invalid_payload' WHERE id = ?`)
+      .run(NOW, dispatches[6]!.id);
+
+    const summary = summarizeReleaseDispatchBacklog(ledger, "tenant-a");
+    expect(summary).toEqual({
+      tenantId: "tenant-a",
+      asOf: NOW,
+      pending: 2,
+      claimed: 3,
+      completed: 1,
+      failed: 1,
+      due: 2,
+      expiredClaimed: 2,
+    });
+    expect(Object.isFrozen(summary)).toBe(true);
+  });
+
+  it("isolates backlog aggregates by validated tenant identity", () => {
+    const ledger = store();
+    const body = fixture("stripe-rss.xml");
+    ingestReleaseDocument(ledger, input("rss", body));
+    const tenantBDispatch = ingestReleaseDocument(ledger, {
+      ...input("rss", body),
+      tenantId: "tenant-b",
+    }).artifacts[0]!;
+    const tenantBClaim = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-b", workerId: "worker-b", leaseDurationMs: 10_000,
+    })!;
+    completeReleaseDispatch(ledger, {
+      tenantId: "tenant-b",
+      dispatchId: tenantBClaim.id,
+      workerId: "worker-b",
+      leaseGeneration: tenantBClaim.leaseGeneration,
+    });
+
+    expect(tenantBDispatch.tenantId).toBe("tenant-b");
+    expect(summarizeReleaseDispatchBacklog(ledger, "tenant-a")).toMatchObject({
+      pending: 1, claimed: 0, completed: 0, failed: 0, due: 1, expiredClaimed: 0,
+    });
+    expect(summarizeReleaseDispatchBacklog(ledger, "tenant-b")).toMatchObject({
+      pending: 0, claimed: 0, completed: 1, failed: 0, due: 0, expiredClaimed: 0,
+    });
+    expect(summarizeReleaseDispatchBacklog(ledger, "tenant-c")).toEqual({
+      tenantId: "tenant-c", asOf: NOW,
+      pending: 0, claimed: 0, completed: 0, failed: 0, due: 0, expiredClaimed: 0,
+    });
+    expect(() => summarizeReleaseDispatchBacklog(ledger, " ")).toThrow("release_tenant_id_invalid");
+    expect(() => summarizeReleaseDispatchBacklog(ledger, "x".repeat(257)))
+      .toThrow("release_tenant_id_invalid");
+  });
+
   it("persists bounded retry and backoff state across restart", () => {
     const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-dispatch-retry-"));
     directories.push(directory);
@@ -808,6 +885,48 @@ describe("release ingestion", () => {
     expect(claimReleaseDispatch(ledger, {
       tenantId: "tenant-a", workerId: "worker-after-limit", leaseDurationMs: 10_000,
     })).toBeNull();
+  });
+
+  it("preserves v4 claimed time, backlog, and lease takeover authority across restart", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-v4-lease-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    let clock = NOW;
+    let ledger = store(path, () => clock);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+    const original = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-original", leaseDurationMs: 1_000,
+    })!;
+    expect(original).toMatchObject({
+      status: "claimed", claimedAt: NOW, leaseGeneration: 1,
+    });
+    ledger.close();
+    stores.splice(stores.indexOf(ledger), 1);
+
+    ledger = store(path, () => clock);
+    expect(summarizeReleaseDispatchBacklog(ledger, "tenant-a")).toMatchObject({
+      claimed: 1, expiredClaimed: 0,
+    });
+    expect(claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-early", leaseDurationMs: 1_000,
+    })).toBeNull();
+
+    clock = "2026-08-02T12:00:01.001Z";
+    expect(summarizeReleaseDispatchBacklog(ledger, "tenant-a")).toMatchObject({
+      claimed: 1, expiredClaimed: 1,
+    });
+    expect(() => completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: original.id, workerId: "worker-original",
+      leaseGeneration: original.leaseGeneration,
+    })).toThrow("release_dispatch_lease_lost");
+    const takeover = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-takeover", leaseDurationMs: 1_000,
+    })!;
+    expect(takeover).toMatchObject({ claimedAt: clock, leaseGeneration: 2 });
+    expect(completeReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: takeover.id, workerId: "worker-takeover",
+      leaseGeneration: takeover.leaseGeneration,
+    })).toMatchObject({ status: "completed", completedAt: clock });
   });
 
   it("keeps explicit terminal failures terminal", () => {
@@ -910,6 +1029,8 @@ describe("release ingestion", () => {
     expect(() => claimReleaseDispatch(ledger, {
       tenantId: "tenant-a", workerId: "worker-b", leaseDurationMs: 1_000,
     })).toThrow("release_store_clock_rollback");
+    expect(() => summarizeReleaseDispatchBacklog(ledger, "tenant-a"))
+      .toThrow("release_store_clock_rollback");
     ledger.close();
     stores.splice(stores.indexOf(ledger), 1);
 

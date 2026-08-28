@@ -3487,3 +3487,23 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Safety evidence: only HTTPS uses the legacy formula. FTP, file, and custom hierarchical identifiers retain the domain-separated literal digest, while opaque IDs and URNs remain unchanged; the complete ingestion suite re-proves returned and durable secret redaction.
 - Verification evidence: the focused upgrade regression passes 2 of 2, the complete ingestion file passes 33 of 33, and the full Catalog suite passes 158 of 158 across eight files. Full-workspace typecheck passes, `npm audit --omit=dev` reports zero vulnerabilities, the changed production source secret scan has no matches, and the CRLF-aware diff check is clean.
 - EOL and scope evidence: the two Catalog files remain LF, the worker CLI remains `i/crlf w/crlf`, and only the two Catalog files plus `tasks/todo.md` and `tasks/lessons.md` changed. No remote mutation occurred.
+
+## 2026-08-27 Release dispatch production runtime
+
+- [x] Add a tenant-bound identifier-and-digest dispatch sink with active service-principal authority and idempotent domain-event acceptance.
+- [x] Add an attempt-bounded, lease-generation-fenced dispatch drainer with exact artifact rehydration and retry classification.
+- [x] Wire a dedicated worker lane through the existing mutation fence, durable backlog summaries, atomic heartbeat, readiness, and paging paths.
+- [x] Preserve disabled `[]` release-poll configuration compatibility outside customer mode while requiring dispatch for real configured release feeds and customer deployments.
+- [x] Stop claiming, sink execution, and settlement at shutdown boundaries, then prove safe idempotent replay after lease expiry.
+- [x] Require all-or-none dispatch heartbeat fields and bind top-level worker health to both feed and dispatch health.
+- [x] Prove v4 claimed-time, backlog, expiry, takeover, and settlement behavior across a durable restart.
+- [x] Preserve protected configuration only for the worker role and validate startup data-root authority before opening durable state.
+- [x] Run the integrated acceptance matrix, complete affected workspace suites, full workspace typecheck, optimized build, dependency audit, changed-source secret scan, and diff-integrity checks.
+
+### Review
+
+- The first integrated audit exposed the complete five-layer failure chain: partial heartbeat records could pass, a SIGTERM could still allow up to 1,000 dispatches per consumer, an explicit empty release configuration regressed disabled-mode compatibility, v4 restart acceptance was indirect, and the computed dispatch health bit was not written to the top-level heartbeat.
+- Shutdown authority is checked before every consumer, claim, sink, failure settlement, and completion boundary. If shutdown follows a successful idempotent sink, the claim remains fenced and the next worker replays the same envelope once after expiry before completing it; no duplicate domain event is emitted.
+- Legacy heartbeats with no dispatch fields remain readable. Once any dispatch field is present, all seven fields must be present and valid; configured dispatch readiness requires an active consumer, healthy status, zero durable failures, and zero expired claims.
+- Verification evidence: the integrated nine-file matrix passes 205 of 205 tests. Full Worker passes 633 with one intentional skip across 69 files, Catalog passes 167 of 167, Notify passes 29 of 29, and Web passes 228 of 228. Full-workspace typecheck and optimized Next.js production build pass. `npm audit --omit=dev` reports zero vulnerabilities, the changed production-source secret scan has no matches, and `git diff --check` is clean.
+- Requirement status remains evidence-bound. This increment closes the worker-side dispatch execution path but does not claim production activation until protected CI, merge, deployment, live provider polling, and one-draft production evidence pass.
