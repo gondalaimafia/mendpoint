@@ -74,6 +74,8 @@ export type PrDetailData = {
   checks: CheckRow[];
   /** Impact-coverage view-model; absent when the PR is unavailable. */
   coverage?: CoverageSummary;
+  /** FET-016 provider→code→verification lineage; unknown when change detail is missing. */
+  lineage?: import("./impact-lineage.js").ImpactLineageView;
 };
 
 /** Everything `/settings` (SettingsView) seeds from, mapped from live config. */

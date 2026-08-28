@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
-import { apiGet, type Consumer, type MigrationPr } from "../../../../lib/api";
+import { apiGet, type ChangeImpactCoverage, type Consumer, type MigrationPr } from "../../../../lib/api";
 import { PrDetailView } from "../../../components/console/pr-detail-view";
 import type { PrDetailData } from "../../../components/console/fixtures";
+import { buildImpactLineage, type ChangeImpactFinding } from "../../../components/console/impact-lineage";
 import { coverageSummary, mapPrStatus, parseUnifiedDiff } from "../../../components/console/pr-map";
 
 export const dynamic = "force-dynamic";
@@ -23,6 +24,8 @@ type ChangeDetail = {
   risk: string;
   summary: string;
   diff: { entries: DiffEntry[]; risk: string; summary: string };
+  findings?: ChangeImpactFinding[];
+  impactCoverage?: ChangeImpactCoverage;
 };
 
 function endpointFor(entry: DiffEntry): string {
@@ -72,6 +75,12 @@ export default async function PullRequestDetailPage({
       alert: null,
       diffs: [],
       checks: [],
+      lineage: {
+        standing: "unknown",
+        reason: "pull_request_unavailable",
+        findings: [],
+        verification: { recorded: false, excerpt: null },
+      },
     };
     return <PrDetailView pr={empty} />;
   }
@@ -105,6 +114,12 @@ export default async function PullRequestDetailPage({
     // is derived from the raw status + coverage channel, defaulting to unknown
     // when the channel is absent — never to "analyzed".
     coverage: coverageSummary(pr.status, pr.coverage),
+    lineage: buildImpactLineage({
+      change,
+      consumerId: pr.consumerId,
+      prBody: pr.body,
+      prCoverageBasis: pr.coverage?.basis ?? null,
+    }),
     diffs,
     // No CI-check GET endpoint exists; surface the real review gates (status +
     // risk) as the nearest available signal.

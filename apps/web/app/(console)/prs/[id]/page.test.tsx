@@ -153,6 +153,102 @@ describe("/prs/[id] page — coverage keeps a clean result distinct from an unan
     expect(html).not.toContain("ds-status--failing");
   });
 
+  it("renders FET-016 provider path and verification from the change body", async () => {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path === "/prs/pr-1") {
+        return {
+          ...PR,
+          body: [
+            "### Structured Fettler draft package",
+            "#### Summary", "s",
+            "#### Why", "w",
+            "#### Exact files", "f",
+            "#### Verification results", "post-edit passed digest abc",
+            "#### Risks", "r",
+            "#### Rollback", "rb",
+            "#### Evidence", "e",
+            "#### Reviewer ownership", "o",
+            "#### Delivery controls", "d",
+          ].join("\n\n"),
+        };
+      }
+      if (path === "/consumers") {
+        return [{ id: "con1", name: "acme", githubOwner: "acme", githubRepo: "payments-sdk" }];
+      }
+      if (path === "/changes/chg1") {
+        return {
+          id: "chg1",
+          risk: "breaking",
+          summary: "charge renamed",
+          diff: { entries: [], risk: "breaking", summary: "" },
+          findings: [
+            {
+              id: "f-self",
+              consumerId: "con1",
+              filePath: "src/pay.ts",
+              lineStart: 12,
+              symbol: "charge",
+              graphPath: {
+                nodes: ["stripe.charges", "src/pay.ts"],
+                hops: 1,
+                terminal: "anchor",
+                truncated: false,
+                coverage: "complete",
+              },
+            },
+            {
+              id: "f-other",
+              consumerId: "con-other",
+              filePath: "src/other.ts",
+              lineStart: 1,
+              symbol: "other",
+              graphPath: {
+                nodes: ["stripe.charges", "src/other.ts"],
+                hops: 1,
+                terminal: "anchor",
+                truncated: false,
+                coverage: "complete",
+              },
+            },
+          ],
+          impactCoverage: {
+            impact: "impact",
+            coverageBasis: "analyzed",
+            reason: null,
+            findingCount: 2,
+            prCount: 2,
+          },
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    const html = renderToStaticMarkup(
+      await PullRequestDetailPage({ params: Promise.resolve({ id: "pr-1" }) }),
+    );
+    expect(html).toContain("IMPACT LINEAGE");
+    expect(html).toContain("src/pay.ts:12");
+    expect(html).toContain("stripe.charges → src/pay.ts");
+    expect(html).toContain("post-edit passed digest abc");
+    expect(html).not.toContain("src/other.ts");
+  });
+
+  it("does not treat a failed change fetch as no-impact", async () => {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path === "/prs/pr-1") return PR;
+      if (path === "/consumers") {
+        return [{ id: "con1", name: "acme", githubOwner: "acme", githubRepo: "payments-sdk" }];
+      }
+      if (path === "/changes/chg1") throw new Error("API /changes/chg1 returned 500");
+      throw new Error(`unexpected ${path}`);
+    });
+    const html = renderToStaticMarkup(
+      await PullRequestDetailPage({ params: Promise.resolve({ id: "pr-1" }) }),
+    );
+    expect(html).toContain("Impact lineage unavailable");
+    expect(html).toContain("That is not a no-impact result");
+    expect(html).not.toContain("This consumer was analyzed and no affected symbols were recorded");
+  });
+
   it("renders a PR with no coverage field as unknown, and does not crash", async () => {
     const html = await renderWith({ status: "low_confidence", risk: "safe" });
     expect(html).toContain("Coverage not recorded");

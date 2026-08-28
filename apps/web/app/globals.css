@@ -3345,6 +3345,73 @@ input:focus-visible {
   margin-top: 0.15rem;
 }
 
+/* FET-016 provider→code→verification lineage on /prs/[id]. */
+.ds-lineage__headline {
+  margin: 0.85rem 0 0;
+  font-family: var(--font);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.ds-lineage__detail {
+  margin: 0.6rem 0 0;
+  font-family: var(--font);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--secondary-foreground);
+}
+.ds-lineage__findings {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.ds-lineage__finding {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.ds-lineage__file {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--foreground);
+}
+.ds-lineage__symbol {
+  font-family: var(--font);
+  font-size: 0.8125rem;
+  color: var(--secondary-foreground);
+}
+.ds-lineage__path {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.ds-lineage__path--not_computed {
+  font-style: italic;
+}
+.ds-lineage__verification {
+  margin-top: 1rem;
+}
+.ds-lineage__excerpt {
+  margin: 0.6rem 0 0;
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--secondary-foreground);
+}
+.ds-lineage--impact {
+  border-color: var(--tint-amber-28);
+}
+.ds-lineage--no_impact {
+  border-color: var(--tint-emerald-30);
+}
+.ds-lineage--unknown {
+  border-color: var(--border);
+}
+
 /* ------------------------------- Checks --------------------------------- */
 .ds-check-list {
   list-style: none;
