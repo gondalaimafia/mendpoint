@@ -5,6 +5,7 @@ import {
   HANDOFF_WAVE_ASSIGNMENTS,
   buildExecutionLedger,
 } from "./generate-production-closure-execution-ledger.js";
+import { isTestPath } from "./evidence-reachability-check.js";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -63,7 +64,25 @@ describe("production closure execution ledger", () => {
       expect(row.smallestUnmetGap.trim().length).toBeGreaterThan(20);
       expect(row.owningWave).toBeGreaterThanOrEqual(1);
       expect(row.owningWave).toBeLessThanOrEqual(11);
-      expect(row.productionEvidenceTarget).toContain("5ba70419ef6164b51ba3bfdc38526bf96fa507d3");
+      // Derive the revision from the ledger under test rather than freezing a
+      // literal: a hardcoded observedMainRevision would let a stale revision
+      // persist forever because updating it would never fail this assertion.
+      expect(row.productionEvidenceTarget).toContain(ledger.observedMainRevision);
+    }
+  });
+
+  it("never records a test file as a reachable code path", () => {
+    // reachableCodePath is a production-reachability claim; a test file here is
+    // the row's own regression test masquerading as production evidence (it is
+    // already carried, verbatim, in mutationOrRegressionTest). The test/source
+    // distinction is routed through evidence-reachability-check's isTestPath so
+    // this is not a second, bespoke judge.
+    for (const row of ledger.rows) {
+      if (row.reachableCodePath === null) continue;
+      expect(
+        isTestPath(row.reachableCodePath),
+        `${row.requirementId} reachableCodePath is a test file: ${row.reachableCodePath}`,
+      ).toBe(false);
     }
   });
 
@@ -84,17 +103,46 @@ describe("production closure execution ledger", () => {
     expect(HANDOFF_WAVE_ASSIGNMENTS["ME-CGR-001"]).toBe(6);
   });
 
-  it("fails if the committed ledger drops a row or changes a requirement ID", () => {
+  it("keeps the committed artifact byte-identical to a fresh generation, every field", () => {
+    // The committed artifact must equal a fresh generation across EVERY field,
+    // not just the requirement-ID list: a deep structural comparison against the
+    // on-disk file means perturbing any single field of the committed JSON
+    // (owningWave, reachableCodePath, an assertion, the observed revision) fails
+    // this test. One side is the real committed file; the other is the live
+    // generator output, so the two do not trace to the same in-memory value.
     expect(committed.rows).toHaveLength(101);
     expect(committed.rows.map((row) => row.requirementId)).toEqual(registerIds);
-    expect(committed.rows.map((row) => row.requirementId)).toEqual(
-      ledger.rows.map((row) => row.requirementId),
-    );
+    expect(committed).toEqual(ledger);
   });
 
-  it("CONTROL: deleting ME-CGR-001 from the generated ledger is a red mutation", () => {
-    const withoutGraph = ledger.rows.filter((row) => row.requirementId !== "ME-CGR-001");
-    expect(withoutGraph).toHaveLength(100);
-    expect(withoutGraph.map((row) => row.requirementId)).not.toEqual(registerIds);
+  it("CONTROL: a single-field divergence in the committed artifact breaks the match", () => {
+    // Proves the deep comparison above has teeth and is not tautological. We
+    // read the committed artifact, perturb exactly one non-ID field on one row,
+    // and require that the perturbed copy no longer equals the generator output.
+    // If the comparison were vacuous (e.g. generated-vs-generated), this would
+    // fail. The intact committed artifact must still match the generator, which
+    // is exactly the assertion that goes red if the generator's real output ever
+    // diverges from what is checked in.
+    const target = committed.rows.find((row) => row.requirementId === "ME-CGR-001");
+    expect(target).toBeDefined();
+    const perturbed = {
+      ...committed,
+      rows: committed.rows.map((row) =>
+        row.requirementId === "ME-CGR-001"
+          ? { ...row, owningWave: row.owningWave + 1000 }
+          : row,
+      ),
+    };
+    expect(perturbed).not.toEqual(ledger);
+    expect(committed).toEqual(ledger);
+  });
+
+  it("CONTROL: dropping a row from the committed artifact breaks the match", () => {
+    const withoutGraph = {
+      ...committed,
+      rows: committed.rows.filter((row) => row.requirementId !== "ME-CGR-001"),
+    };
+    expect(withoutGraph.rows).toHaveLength(100);
+    expect(withoutGraph).not.toEqual(ledger);
   });
 });

@@ -213,6 +213,17 @@ function defaultGap(req: Requirement): string {
   }
 }
 
+/**
+ * The first cited NON-TEST production source locator for a requirement, or null.
+ *
+ * This column is `reachableCodePath`: a test file here reads as proof that a
+ * production code path exists, when it only proves a test exists (and the test
+ * locator is already carried, verbatim, in `mutationOrRegressionTest`). Two
+ * columns deriving from the same input is a tautology, so this MUST NOT fall
+ * back to a test path. When no non-test production `.ts`/`.tsx` locator is
+ * cited, the honest value is `null` — "no reachable production code path was
+ * determined" — never the row's own test file dressed as production evidence.
+ */
 function firstCodeLocator(req: Requirement): string | null {
   const locators = req.acceptance.flatMap((criterion) =>
     criterion.evidence
@@ -221,7 +232,7 @@ function firstCodeLocator(req: Requirement): string | null {
       .filter((locator) => !locator.startsWith("planned:") && !locator.startsWith("external:")),
   );
   const code = locators.find((locator) => /\.(ts|tsx)$/.test(locator) && !locator.includes(".test."));
-  return code ?? locators[0] ?? null;
+  return code ?? null;
 }
 
 function firstTestLocator(req: Requirement): string | null {
