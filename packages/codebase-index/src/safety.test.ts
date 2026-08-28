@@ -377,6 +377,59 @@ describe("codebase index traversal safety", () => {
     expect(paths.every((path) => existsSync(path))).toBe(true);
   });
 
+  it("rejects cross-tenant intermediate junctions before read and immediately before publish", () => {
+    const repository = root("persisted-cross-tenant-junction");
+    const storageRoot = root("persisted-cross-tenant-junction-storage");
+    const source = join(repository, "source.ts");
+    const victim = { tenantId: "tenant-victim", repositoryId: "shared-repository" };
+    const preexistingAttacker = {
+      tenantId: "tenant-preexisting-attacker",
+      repositoryId: "shared-repository",
+    };
+    const racingAttacker = { tenantId: "tenant-racing-attacker", repositoryId: "shared-repository" };
+    writeFileSync(source, "export const value = 1;\n", "utf8");
+    const victimResult = materializeCodebaseIndex(repository, {
+      authority: victim,
+      storageRoot,
+    });
+    const victimPath = persistedIndexPath(storageRoot, victim);
+    const victimTenantDirectory = dirname(dirname(dirname(victimPath)));
+    const victimBytes = readFileSync(victimPath, "utf8");
+    expect(victimResult.evidence.generation).toBe(1);
+
+    const preexistingPath = persistedIndexPath(storageRoot, preexistingAttacker);
+    const preexistingTenantDirectory = dirname(dirname(dirname(preexistingPath)));
+    symlinkSync(victimTenantDirectory, preexistingTenantDirectory, "junction");
+    expectSafetyError(
+      () => materializeCodebaseIndex(repository, {
+        authority: preexistingAttacker,
+        storageRoot,
+      }),
+      "codebase_index_symlink_not_allowed",
+    );
+    expect(readFileSync(victimPath, "utf8")).toBe(victimBytes);
+    expect(JSON.parse(readFileSync(victimPath, "utf8")).generation).toBe(1);
+    rmSync(preexistingTenantDirectory, { recursive: true, force: true });
+
+    const racingPath = persistedIndexPath(storageRoot, racingAttacker);
+    const racingTenantDirectory = dirname(dirname(dirname(racingPath)));
+    expectSafetyError(
+      () => materializeCodebaseIndex(repository, {
+        authority: racingAttacker,
+        storageRoot,
+        persistenceHooks: {
+          beforePublish: () => {
+            rmSync(racingTenantDirectory, { recursive: true, force: true });
+            symlinkSync(victimTenantDirectory, racingTenantDirectory, "junction");
+          },
+        },
+      }),
+      "codebase_index_symlink_not_allowed",
+    );
+    expect(readFileSync(victimPath, "utf8")).toBe(victimBytes);
+    expect(JSON.parse(readFileSync(victimPath, "utf8")).generation).toBe(1);
+  });
+
   it("serializes one authority and retries a fenced publication after an interleaved writer", () => {
     const repository = root("persisted-fence");
     const storageRoot = root("persisted-fence-storage");

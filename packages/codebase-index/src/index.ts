@@ -1066,6 +1066,68 @@ function pathWithin(parent: string, child: string): boolean {
   return rel === "" || (rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel));
 }
 
+function assertOwnedDirectoryComponent(
+  repoRoot: string,
+  storageRoot: string,
+  component: string,
+): void {
+  const stat = lstatSync(component);
+  if (stat.isSymbolicLink()) {
+    fail("codebase_index_symlink_not_allowed", repoRoot, component);
+  }
+  if (!stat.isDirectory()) {
+    fail("codebase_index_persisted_path_invalid", repoRoot, component);
+  }
+  const canonical = realpathSync(component);
+  if (!samePath(canonical, component)) {
+    fail("codebase_index_symlink_not_allowed", repoRoot, component);
+  }
+  if (!pathWithin(storageRoot, canonical)) {
+    fail("codebase_index_persisted_path_invalid", repoRoot, component);
+  }
+}
+
+function assertOwnedDirectoryChain(
+  repoRoot: string,
+  storageRoot: string,
+  parent: string,
+  create: boolean,
+): void {
+  if (!pathWithin(storageRoot, parent)) {
+    fail("codebase_index_persisted_path_invalid", repoRoot, parent);
+  }
+  assertOwnedDirectoryComponent(repoRoot, storageRoot, storageRoot);
+  const rel = relative(storageRoot, parent);
+  let component = storageRoot;
+  for (const segment of rel ? rel.split(sep) : []) {
+    if (!segment || segment === "." || segment === "..") {
+      fail("codebase_index_persisted_path_invalid", repoRoot, parent);
+    }
+    component = join(component, segment);
+    if (create && !existsSync(component)) {
+      try {
+        mkdirSync(component, { mode: 0o700 });
+      } catch (error) {
+        if (!isRecord(error) || error.code !== "EEXIST") throw error;
+      }
+    }
+    assertOwnedDirectoryComponent(repoRoot, storageRoot, component);
+  }
+}
+
+function assertOwnedRegularFile(repoRoot: string, storageRoot: string, path: string): void {
+  if (!pathWithin(storageRoot, path)) {
+    fail("codebase_index_persisted_path_invalid", repoRoot, path);
+  }
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) fail("codebase_index_symlink_not_allowed", repoRoot, path);
+  if (!stat.isFile()) fail("codebase_index_persisted_file_invalid", repoRoot, path);
+  const canonical = realpathSync(path);
+  if (!samePath(canonical, path)) {
+    fail("codebase_index_symlink_not_allowed", repoRoot, path);
+  }
+}
+
 export function persistedIndexPath(
   storageRoot: string,
   authority: CodebaseIndexAuthority,
@@ -1101,7 +1163,7 @@ function validateOwnedPath(
   if (pathWithin(canonicalRoot, requestedStorageRoot)) {
     fail("codebase_index_persisted_path_invalid", canonicalRoot, requestedStorageRoot);
   }
-  if (forWrite) mkdirSync(requestedStorageRoot, { recursive: true });
+  if (forWrite) mkdirSync(requestedStorageRoot, { recursive: true, mode: 0o700 });
   if (!existsSync(requestedStorageRoot)) {
     return persistedIndexPath(requestedStorageRoot, options.authority, options.sdkContext);
   }
@@ -1121,14 +1183,8 @@ function validateOwnedPath(
     fail("codebase_index_persisted_path_invalid", canonicalRoot, path);
   }
   const parent = dirname(expected);
-  if (forWrite) mkdirSync(parent, { recursive: true });
-  if (existsSync(parent)) {
-    const parentStat = lstatSync(parent);
-    if (parentStat.isSymbolicLink()) fail("codebase_index_symlink_not_allowed", canonicalRoot, parent);
-    if (!parentStat.isDirectory() || !pathWithin(storageRoot, realpathSync(parent))) {
-      fail("codebase_index_persisted_path_invalid", canonicalRoot, parent);
-    }
-  }
+  assertOwnedDirectoryChain(canonicalRoot, storageRoot, parent, forWrite);
+  if (existsSync(expected)) assertOwnedRegularFile(canonicalRoot, storageRoot, expected);
   return expected;
 }
 
@@ -1250,16 +1306,19 @@ function readOwnedPersisted(
   return parsed as unknown as PersistedCodebaseIndexEnvelope;
 }
 
-function fileState(repoRoot: string, path: string): string {
-  if (!existsSync(path)) return "missing";
-  const stat = lstatSync(path);
-  if (stat.isSymbolicLink()) fail("codebase_index_symlink_not_allowed", repoRoot, path);
-  if (!stat.isFile()) fail("codebase_index_persisted_file_invalid", repoRoot, path);
+function fileState(
+  repoRoot: string,
+  path: string,
+  options: MaterializeCodebaseIndexOptions,
+): string {
+  const safePath = validateOwnedPath(repoRoot, path, options, true);
+  if (!existsSync(safePath)) return "missing";
+  const stat = lstatSync(safePath);
   if (stat.size > MAX_PERSISTED_CODEBASE_INDEX_BYTES) {
-    fail("codebase_index_persisted_file_bytes_limit", repoRoot, path,
+    fail("codebase_index_persisted_file_bytes_limit", repoRoot, safePath,
       MAX_PERSISTED_CODEBASE_INDEX_BYTES, stat.size);
   }
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+  return createHash("sha256").update(readFileSync(safePath)).digest("hex");
 }
 
 function processAlive(pid: number): boolean {
@@ -1271,8 +1330,14 @@ function processAlive(pid: number): boolean {
   }
 }
 
-function acquireAuthorityLock(repoRoot: string, path: string): () => void {
-  const lockPath = `${path}.lock`;
+function acquireAuthorityLock(
+  repoRoot: string,
+  path: string,
+  options: MaterializeCodebaseIndexOptions,
+): () => void {
+  const safePath = validateOwnedPath(repoRoot, path, options, true);
+  const lockPath = `${safePath}.lock`;
+  const nonce = randomBytes(16).toString("hex");
   const create = (): number => {
     try {
       return openSync(lockPath, "wx", 0o600);
@@ -1295,11 +1360,25 @@ function acquireAuthorityLock(repoRoot: string, path: string): () => void {
     }
   };
   const fd = create();
-  writeFileSync(fd, JSON.stringify({ pid: process.pid, host: hostname() }), "utf8");
+  try {
+    validateOwnedPath(repoRoot, safePath, options, true);
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+  const lockValue = JSON.stringify({ pid: process.pid, host: hostname(), nonce });
+  writeFileSync(fd, lockValue, "utf8");
   fsyncSync(fd);
   closeSync(fd);
   return () => {
-    if (existsSync(lockPath)) unlinkSync(lockPath);
+    try {
+      validateOwnedPath(repoRoot, safePath, options);
+      if (existsSync(lockPath) && readFileSync(lockPath, "utf8") === lockValue) {
+        unlinkSync(lockPath);
+      }
+    } catch {
+      // A redirected or replaced authority path is never followed during cleanup.
+    }
   };
 }
 
@@ -1326,6 +1405,10 @@ function publishIndex(
   let fd: number | undefined;
   try {
     fd = openSync(temporary, "wx", 0o600);
+    validateOwnedPath(authority.canonicalRepoRoot, safePath, options, true);
+    assertOwnedRegularFile(
+      authority.canonicalRepoRoot, realpathSync(resolve(options.storageRoot)), temporary,
+    );
     writeFileSync(fd, JSON.stringify(envelope, null, 2), "utf8");
     fsyncSync(fd);
     closeSync(fd);
@@ -1336,17 +1419,33 @@ function publishIndex(
       nextGeneration: envelope.generation,
       observedFileDigest,
     });
-    if (fileState(authority.canonicalRepoRoot, safePath) !== observedFileDigest) {
+    if (fileState(authority.canonicalRepoRoot, safePath, options) !== observedFileDigest) {
       fail("codebase_index_persisted_generation_conflict", authority.canonicalRepoRoot, safePath);
     }
-    renameSync(temporary, safePath);
+    const publicationPath = validateOwnedPath(
+      authority.canonicalRepoRoot, safePath, options, true,
+    );
+    assertOwnedRegularFile(
+      authority.canonicalRepoRoot, realpathSync(resolve(options.storageRoot)), temporary,
+    );
+    renameSync(temporary, publicationPath);
     options.persistenceHooks?.afterPublish?.({
       path: safePath,
       committedGeneration: envelope.generation,
     });
   } finally {
     if (fd !== undefined) closeSync(fd);
-    if (existsSync(temporary)) unlinkSync(temporary);
+    try {
+      validateOwnedPath(authority.canonicalRepoRoot, safePath, options);
+      if (existsSync(temporary)) {
+        assertOwnedRegularFile(
+          authority.canonicalRepoRoot, realpathSync(resolve(options.storageRoot)), temporary,
+        );
+        unlinkSync(temporary);
+      }
+    } catch {
+      // Never clean up through a redirected authority component.
+    }
   }
   return envelope;
 }
@@ -1397,9 +1496,9 @@ export function materializeCodebaseIndex(
   const requestedPath = persistedIndexPath(options.storageRoot, options.authority, options.sdkContext);
   const path = validateOwnedPath(authority.canonicalRepoRoot, requestedPath, options, true);
   for (let attempt = 0; attempt < 2; attempt++) {
-    const release = acquireAuthorityLock(authority.canonicalRepoRoot, path);
+    const release = acquireAuthorityLock(authority.canonicalRepoRoot, path, options);
     try {
-      const observedFileDigest = fileState(authority.canonicalRepoRoot, path);
+      const observedFileDigest = fileState(authority.canonicalRepoRoot, path, options);
       let previous: CodebaseIndex | null = null;
       let previousDigest: string | undefined;
       let observedGeneration = 0;
