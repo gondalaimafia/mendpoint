@@ -13,8 +13,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The backup runs ON the customer machine and its producer fail-closed-refuses
+  # unless MENDPOINT_DEPLOYMENT_PROFILE == "customer" (customer_backup_profile_required).
+  # mendpoint-talal deliberately still runs the demo profile: the customer-profile
+  # activation was the discarded #337 headline, to be proposed on its own. Until the
+  # owner flips vars.MENDPOINT_CUSTOMER_PROFILE_ACTIVE to 'true' alongside that
+  # activation, a red cron here would be a permanent false alarm — and a silent skip
+  # would fake "we have backups". This gate is the explicit third state: run green,
+  # backup visibly NOT taken, reason printed every run.
+  profile-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      active: ${{ steps.check.outputs.active }}
+    steps:
+      - name: Report whether the customer profile is active
+        id: check
+        shell: bash
+        env:
+          ACTIVE: ${{ vars.MENDPOINT_CUSTOMER_PROFILE_ACTIVE }}
+        run: |
+          set -euo pipefail
+          if [ "$ACTIVE" = "true" ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            echo "customer profile active — backup will run"
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Customer backup not applicable::NOT-CONFIGURED — mendpoint-talal still runs the demo profile; the customer-profile activation (discarded #337 headline) has not been proposed. No backup was taken. Flip repo variable MENDPOINT_CUSTOMER_PROFILE_ACTIVE=true when activating."
+          fi
   backup:
-    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    needs: profile-gate
+    if: ${{ needs.profile-gate.outputs.active == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
     # The app's authenticated object-store operation is bounded at four hours.
     # Keep the runner alive through that fail-closed timeout so it does not sever
@@ -51,7 +80,7 @@ jobs:
             echo customer_backup_app_binding_invalid >&2
             exit 1
           }
-          mapfile -t visible_apps < <(flyctl apps list --json | jq -r '.[].name' | sort -u)
+          mapfile -t visible_apps < <(flyctl apps list --json | jq -r '.[] | (.Name // .name)' | sort -u)
           if [ "${#visible_apps[@]}" -ne 1 ] || [ "${visible_apps[0]:-}" != "$CUSTOMER_APP" ]; then
             echo customer_backup_token_not_app_scoped >&2
             exit 1

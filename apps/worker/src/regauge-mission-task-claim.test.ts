@@ -10,7 +10,10 @@ import {
   insertPrincipal,
   linkRegaugeCampaignToMission,
   listMissionTasks,
+  listMissionExceptions,
+  openTaskHandoff,
   regaugeLaunchMissionTaskId,
+  resolveTaskHandoff,
   transitionMissionTask,
   type AppDb,
 } from "@mendpoint/db";
@@ -90,6 +93,40 @@ describe("assignRegaugeMissionTaskOnClaim", () => {
       ownerType: "agent",
     });
     expect(driven?.assignedPrincipalId).toMatch(/^principal-mtask-agent-/);
+  });
+
+  it("returns an agent_resume task to agent_working on the next claim", () => {
+    const { db, missionId } = fixture();
+    launchTask(db, missionId, "repo-a");
+    assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    });
+    const exception = openTaskHandoff(db, {
+      tenantId: "t1",
+      missionId,
+      taskId: regaugeLaunchMissionTaskId(missionId, "repo-a"),
+      reason: "architecture_decision_required",
+      question: "Accept the pilot attempt?",
+      context: "Pilot verification passed.",
+      ownerPrincipalId: "p1",
+      correlationId: "campaign-a",
+      createdAt: at,
+    });
+    resolveTaskHandoff(db, {
+      tenantId: "t1",
+      priorExceptionId: exception.id,
+      taskId: regaugeLaunchMissionTaskId(missionId, "repo-a"),
+      resolutionNote: "Yes.",
+      decision: "Accept the attempt",
+      scope: "handoff_resolution:attempt-1",
+      authorPrincipalId: "p1",
+      correlationId: "campaign-a",
+      createdAt: at,
+    });
+    const resumed = assignRegaugeMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a", createdAt: at,
+    });
+    expect(resumed).toMatchObject({ status: "agent_working", ownerType: "agent" });
   });
 
   it("does not resolve a repo-scoped claim to the mission-level launch task", () => {
@@ -222,8 +259,18 @@ describe("handoffRegaugeMissionTaskOnReview", () => {
     });
     expect(handed).toMatchObject({
       status: "human_review_required",
-      handoffReason: "pilot_lane_review",
+      ownerType: "human",
+      handoffReason: "architecture_decision_required",
     });
+    const exceptions = listMissionExceptions(db, "t1", missionId);
+    expect(exceptions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        blocking: true,
+        category: "architecture_decision_required",
+        taskId: handed?.id,
+      }),
+    ]));
+    expect(exceptions[0]?.reason).toContain("proceed after the pilot attempt passed verification");
   });
 
   it("is idempotent once the task is already human_review_required", () => {

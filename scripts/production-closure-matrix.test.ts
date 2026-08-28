@@ -544,4 +544,54 @@ describe("production closure matrix", () => {
 
     expect(codes).toContain("RELEASE_SNAPSHOT_STALE");
   });
+
+  it("does not report an open PR head as unreachable when the oracle cannot verify other branches' heads", () => {
+    const matrix = loadMatrix();
+    const openPullRequest = matrix.releaseTrain.pullRequests.find(
+      (pullRequest) => pullRequest.state === "open",
+    )!;
+    // A local object database rejects this head: a force-pushed head becomes a
+    // dangling commit no checkout fetches. Every other revision still resolves,
+    // so the observed main revision stays reachable.
+    const revisionExists = (revision: string) =>
+      revision !== openPullRequest.headRevision;
+
+    const relaxedCodes = releaseTrainObservationIssues(matrix, {
+      revisionExists,
+      openPullRequestHeadsVerifiable: false,
+      now: new Date(matrix.releaseTrain.observedAt),
+    }).map((issue) => issue.code);
+    expect(relaxedCodes).not.toContain("PR_HEAD_REVISION_UNREACHABLE");
+
+    const strictCodes = releaseTrainObservationIssues(matrix, {
+      revisionExists,
+      openPullRequestHeadsVerifiable: true,
+      now: new Date(matrix.releaseTrain.observedAt),
+    }).map((issue) => issue.code);
+    expect(strictCodes).toContain("PR_HEAD_REVISION_UNREACHABLE");
+
+    const defaultCodes = releaseTrainObservationIssues(matrix, {
+      revisionExists,
+      now: new Date(matrix.releaseTrain.observedAt),
+    }).map((issue) => issue.code);
+    expect(defaultCodes).toContain("PR_HEAD_REVISION_UNREACHABLE");
+  });
+
+  it("still reports an unreachable merge revision regardless of the open-PR head flag", () => {
+    const matrix = loadMatrix();
+    const mergedPullRequest = matrix.releaseTrain.pullRequests.find(
+      (pullRequest) => pullRequest.state === "merged" && pullRequest.mergeRevision,
+    )!;
+    const revisionExists = (revision: string) =>
+      revision !== mergedPullRequest.mergeRevision;
+
+    for (const openPullRequestHeadsVerifiable of [false, true]) {
+      const observedCodes = releaseTrainObservationIssues(matrix, {
+        revisionExists,
+        openPullRequestHeadsVerifiable,
+        now: new Date(matrix.releaseTrain.observedAt),
+      }).map((issue) => issue.code);
+      expect(observedCodes).toContain("PR_MERGE_REVISION_UNREACHABLE");
+    }
+  });
 });

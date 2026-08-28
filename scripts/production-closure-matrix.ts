@@ -426,6 +426,15 @@ export function releaseTrainObservationIssues(
     revisionExists: (revision: string) => boolean;
     revisionIsAncestor?: (revision: string, descendant: string) => boolean;
     readArtifact?: (locator: string) => Buffer | null;
+    // Whether `revisionExists` can authoritatively decide reachability of OTHER
+    // open PRs' head revisions. A live GitHub API oracle can (a force-pushed head
+    // still resolves via /git/commits); a local object database CANNOT, because it
+    // only holds the current checkout's objects. When false, absence of an open
+    // PR head locally is treated as "unknown", not "unreachable", so the strict
+    // reachability report is skipped for open-PR heads. Defaults to true so an
+    // omitted flag keeps the strict behavior. Merge/deploy revisions are never
+    // gated by this flag: those must be on main and are correctly checked locally.
+    openPullRequestHeadsVerifiable?: boolean;
     now: Date;
   },
 ): ProductionClosureMatrixIssue[] {
@@ -464,6 +473,7 @@ export function releaseTrainObservationIssues(
     if (
       pullRequest.state === "open" &&
       SHA.test(pullRequest.headRevision) &&
+      (options.openPullRequestHeadsVerifiable ?? true) &&
       !options.revisionExists(pullRequest.headRevision)
     ) {
       add(
@@ -1574,6 +1584,14 @@ function main() {
         const artifactPath = resolve(root, locator);
         return existsSync(artifactPath) ? readFileSync(artifactPath) : null;
       },
+      // A local object database cannot see OTHER branches' open-PR heads: a
+      // force-pushed head becomes a dangling commit that no checkout fetches,
+      // so "absent locally" is NOT "absent on GitHub". Treating it as absence
+      // is the third-state collapse documented in docs/agents/FAILURE_MODES.md
+      // ("didn't look" masquerading as "looks bad"), and it fails ga:check on
+      // every branch whenever any open PR is force-pushed. Live-PR-head
+      // reachability is owned by the API-oracle callers (proposal authority).
+      openPullRequestHeadsVerifiable: false,
       now: new Date(),
     }),
     ...validateProductionClosureMatrix(manifest, matrix, {

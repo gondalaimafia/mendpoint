@@ -14,7 +14,9 @@ import {
   getMissionTask,
   getMission,
   insertPrincipal,
+  listRepositorySnapshots,
   missionTaskIdForJob,
+  openTaskHandoff,
   recordExecutionCostFromRoutingLedger,
   resolveMissionForFettlerCampaign,
   resolveMissionForRegaugeCampaign,
@@ -55,17 +57,16 @@ function parseRisk(value: unknown): MissionTaskRisk {
   return "medium";
 }
 
-function reviewTaskEvent(jobId: string): { eventId: string; idempotencyKey: string } {
+function resumeTaskEvent(jobId: string, revision: number): { eventId: string; idempotencyKey: string } {
   const digest = createHash("sha256")
-    .update(`mission-task:job:${jobId}:human_review_required`)
+    .update(`mission-task:job:${jobId}:agent_working_from_resume:r${revision}`)
     .digest("hex")
     .slice(0, 32);
   return {
     eventId: `e-mtask-${digest}`,
-    idempotencyKey: `mission-task-job:${jobId}:human_review_required`,
+    idempotencyKey: `mission-task-job:${jobId}:agent_working_from_resume:r${revision}`,
   };
 }
-
 function missionTaskAgentPrincipal(db: AppDb, tenantId: string, createdAt: string) {
   const id = `principal-mtask-agent-${createHash("sha256").update(tenantId).digest("hex").slice(0, 24)}`;
   return insertPrincipal(db, {
@@ -110,7 +111,7 @@ export function bridgeClaimedJobToMissionTask(
   if (!mission) return undefined;
   const agent = missionTaskAgentPrincipal(db, job.tenant_id, createdAt);
   const payload = payloadRecord(job);
-  return ensureMissionTaskForJob(db, {
+  const task = ensureMissionTaskForJob(db, {
     tenantId: job.tenant_id,
     jobId: job.id,
     missionId: mission.id,
@@ -121,6 +122,18 @@ export function bridgeClaimedJobToMissionTask(
     assignedPrincipalId: agent.id,
     createdAt,
     correlationId: job.id,
+  });
+  if (task.status !== "agent_resume") return task;
+  return transitionMissionTask(db, {
+    tenantId: job.tenant_id,
+    taskId: task.id,
+    expectedRevision: task.revision,
+    to: "agent_working",
+    actorPrincipalId: agent.id,
+    assignedPrincipalId: agent.id,
+    ...resumeTaskEvent(job.id, task.revision),
+    correlationId: job.id,
+    createdAt,
   });
 }
 
@@ -143,19 +156,27 @@ export function handoffCompletedJobToMissionReview(
   if (task.status !== "agent_working" || !task.assignedPrincipalId) {
     throw new Error("mission_task_job_review_transition_invalid");
   }
-  const event = reviewTaskEvent(job.id);
-  return transitionMissionTask(db, {
+  const snapshot = mission.snapshotId && mission.repositoryId
+    ? listRepositorySnapshots(db, job.tenant_id, mission.repositoryId)
+      .find((row) => row.id === mission.snapshotId)
+    : undefined;
+  openTaskHandoff(db, {
     tenantId: job.tenant_id,
+    missionId: mission.id,
     taskId: task.id,
-    expectedRevision: task.revision,
-    to: "human_review_required",
-    actorPrincipalId: task.assignedPrincipalId,
-    assignedPrincipalId: task.assignedPrincipalId,
-    handoffReason: "advisory_verification_review",
-    ...event,
+    reason: "architecture_decision_required",
+    question:
+      `Should job ${job.id} (${job.type}) under mission ${mission.id}` +
+      ` proceed after advisory verification passed?`,
+    context:
+      `Review-first job ${job.id} settled successfully. ` +
+      `Human approval is required before treating verification as delivery.`,
+    ownerPrincipalId: task.assignedPrincipalId,
+    ...(snapshot ? { observedAgainst: { snapshotId: snapshot.id, resolvedSha: snapshot.resolved_sha } } : {}),
     correlationId: job.id,
     createdAt,
   });
+  return getMissionTask(db, job.tenant_id, task.id);
 }
 
 /**

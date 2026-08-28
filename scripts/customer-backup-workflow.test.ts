@@ -36,7 +36,7 @@ describe("customer backup workflow", () => {
     const validate = step("Validate app-scoped backup authority");
     expect(validate.env.FLY_API_TOKEN).toBe("${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}");
     expect(validate.env.CUSTOMER_APP).toBe("${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}");
-    expect(validate.run).toContain("flyctl apps list --json | jq -r '.[].name'");
+    expect(validate.run).toContain("flyctl apps list --json | jq -r '.[] | (.Name // .name)'");
     expect(validate.run).not.toContain(".[].Name");
     expect(validate.run).toContain("customer_backup_token_not_app_scoped");
     expect(validate.run).toContain('flyctl status --app "$CUSTOMER_APP"');
@@ -66,5 +66,23 @@ describe("customer backup workflow", () => {
     const resolveAlert = step("Resolve backup failure alert");
     expect(resolveAlert.if).toBe("${{ success() }}");
     expect(resolveAlert.run).toContain("gh issue close");
+  });
+
+
+  it("gates the backup on explicit customer-profile activation, loudly", () => {
+    const gate = workflow.jobs["profile-gate"] as Record<string, any>;
+    expect(gate, "profile-gate job must exist").toBeTruthy();
+    const gateStep = (gate.steps as Record<string, any>[]).find(
+      (candidate) => candidate.id === "check",
+    ) as Record<string, any>;
+    expect(gateStep.env.ACTIVE).toBe("${{ vars.MENDPOINT_CUSTOMER_PROFILE_ACTIVE }}");
+    // The inactive path must be LOUD (a ::notice naming the pending activation),
+    // never a silent skip that fakes "we have backups".
+    expect(gateStep.run).toContain("::notice");
+    expect(gateStep.run).toContain("No backup was taken");
+    expect(job.needs).toBe("profile-gate");
+    expect(job.if).toContain("needs.profile-gate.outputs.active == 'true'");
+    // The original default-branch guard must survive composition.
+    expect(job.if).toContain("github.event.repository.default_branch");
   });
 });

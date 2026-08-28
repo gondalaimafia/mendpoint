@@ -15,7 +15,10 @@ import {
   insertPrincipal,
   insertRepositorySnapshot,
   linkFettlerCampaignToMission,
+  listMissionExceptions,
   listMissionTasks,
+  openTaskHandoff,
+  resolveTaskHandoff,
   transitionMissionTask,
   upsertScmConnection,
   type AppDb,
@@ -131,6 +134,42 @@ describe("assignFettlerMissionTaskOnClaim", () => {
       ownerType: "agent",
     });
     expect(driven?.assignedPrincipalId).toMatch(/^principal-mtask-agent-/);
+  });
+
+  it("returns an agent_resume task to agent_working on the next claim", () => {
+    const { db, missionId } = fixture();
+    enrollTask(db, missionId, "repo-a");
+    assignFettlerMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at,
+    });
+    const exception = openTaskHandoff(db, {
+      tenantId: "t1",
+      missionId,
+      taskId: fettlerCampaignMissionTaskId(missionId, "repo-a"),
+      reason: "architecture_decision_required",
+      question: "Proceed to delivery?",
+      context: "Post-edit verification passed.",
+      ownerPrincipalId: "p1",
+      correlationId: "camp-1",
+      createdAt: at,
+    });
+    resolveTaskHandoff(db, {
+      tenantId: "t1",
+      priorExceptionId: exception.id,
+      taskId: fettlerCampaignMissionTaskId(missionId, "repo-a"),
+      resolutionNote: "Yes.",
+      decision: "Proceed to delivery",
+      scope: "handoff_resolution:run-1",
+      authorPrincipalId: "p1",
+      correlationId: "camp-1",
+      createdAt: at,
+    });
+    expect(getMissionTask(db, "t1", fettlerCampaignMissionTaskId(missionId, "repo-a"))?.status)
+      .toBe("agent_resume");
+    const resumed = assignFettlerMissionTaskOnClaim(db, {
+      tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at,
+    });
+    expect(resumed).toMatchObject({ status: "agent_working", ownerType: "agent" });
   });
 
   it("does not resolve a repo-scoped claim to the mission-level enrollment task", () => {
@@ -296,7 +335,7 @@ describe("campaign execute claim drives MissionTask", () => {
     expect(getMissionTask(db, "t1", created.id)).toMatchObject({
       status: "human_review_required",
       ownerType: "human",
-      handoffReason: "campaign_execute_review",
+      handoffReason: "architecture_decision_required",
     });
   });
 
@@ -414,8 +453,17 @@ describe("handoffFettlerMissionTaskOnReview", () => {
     expect(handed).toMatchObject({
       status: "human_review_required",
       ownerType: "human",
-      handoffReason: "campaign_execute_review",
+      handoffReason: "architecture_decision_required",
     });
+    const exceptions = listMissionExceptions(db, "t1", missionId);
+    expect(exceptions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        blocking: true,
+        category: "architecture_decision_required",
+        taskId: handed?.id,
+      }),
+    ]));
+    expect(exceptions[0]?.reason).toContain("proceed to draft delivery after post-edit verification passed");
     expect(handoffFettlerMissionTaskOnReview(db, {
       tenantId: "t1", campaignId: "camp-1", targetId: "tgt-1", createdAt: at,
     })).toEqual(handed);

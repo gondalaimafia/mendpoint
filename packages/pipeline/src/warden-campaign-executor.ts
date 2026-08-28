@@ -8,6 +8,7 @@ import {
   getWardenRolloutDecision,
   insertArtifactManifest,
   listWardenCampaignTargets,
+  recordMissionVerification,
   replayWardenRun,
   resolveMissionForFettlerCampaign,
   getActiveMissionDecisions,
@@ -358,6 +359,48 @@ export function compareWardenVerificationRuns(
     postEditFailed: Object.freeze(postEditFailed),
     notVerified: Object.freeze(notVerified),
   });
+}
+
+/**
+ * Best-effort Mission verification write after a passing post-edit comparison.
+ * Unbound campaigns skip. Snapshot-binding / store faults never fail the
+ * execute-to-review transition — verification history is metadata on this seam.
+ */
+export function tryRecordFettlerCampaignMissionVerification(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    campaignId: string;
+    targetId: string;
+    snapshotId: string;
+    resolvedSha: string;
+    manifestSha256: string;
+    verifierPrincipalId: string;
+    createdAt: string;
+  },
+): void {
+  try {
+    const mission = resolveMissionForFettlerCampaign(db, input.tenantId, input.campaignId);
+    if (!mission) return;
+    recordMissionVerification(db, {
+      tenantId: input.tenantId,
+      missionId: mission.id,
+      verification: `campaign execute post-edit comparison passed for target ${input.targetId}`,
+      scope: `warden.campaign.execute:${input.campaignId}:${input.targetId}`,
+      snapshotId: input.snapshotId,
+      resolvedSha: input.resolvedSha,
+      manifestSha256: input.manifestSha256,
+      status: "passed",
+      verifierPrincipalId: input.verifierPrincipalId,
+      correlationId: input.campaignId,
+      createdAt: input.createdAt,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error(
+      `  mission verification record failed tenant=${input.tenantId} campaign=${input.campaignId} target=${input.targetId}: ${reason}`,
+    );
+  }
 }
 
 function persistJsonArtifact(db: AppDb, input: {
@@ -945,6 +988,17 @@ export async function executeWardenCampaignTarget(input: {
       throw new WardenCampaignExecutionError("warden_verification_not_verified", true);
     }
     if (!comparison.ok) throw new WardenCampaignExecutionError("warden_verification_regression", true);
+
+    tryRecordFettlerCampaignMissionVerification(input.db, {
+      tenantId: input.tenantId,
+      campaignId: input.campaignId,
+      targetId: input.targetId,
+      snapshotId: snapshot.id,
+      resolvedSha: snapshot.resolved_sha,
+      manifestSha256: snapshot.manifest_sha256,
+      verifierPrincipalId: input.actorPrincipalId,
+      createdAt: input.createdAt,
+    });
 
     const packageArtifact = persistJsonArtifact(input.db, {
       tenantId: input.tenantId, kind: "warden-campaign-review-package", value: createWardenCampaignReviewPackage({

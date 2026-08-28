@@ -3,6 +3,11 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  defaultGitHubSleep,
+  fetchGitHubReadWithRetry,
+  type GitHubSleep,
+} from "./production-closure-github-authority.js";
 import { parse } from "yaml";
 import {
   verifyAuthorityRotation,
@@ -34,6 +39,8 @@ import { revisionReachabilityIssues } from "./public-claims-check.js";
 const SHA = /^[a-f0-9]{40}$/;
 const MAX_BLOB_BYTES = 10 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+const MAX_TREE_OUTPUT_BYTES = 64 * 1024 * 1024;
+const MAX_TREE_ENTRIES = 200_000;
 
 interface GitTreeEntry {
   path: string;
@@ -57,6 +64,8 @@ export interface ProposalAuthorityObservation {
   proposalRevision: string;
   observedAt: string;
   fetchedBlobs: ProposalBlobObservation[];
+  providerValidationPullRequests: number[];
+  providerValidationIssues: number[];
   authorityRotation: {
     rotationId: string;
     kind: "runtime" | "stage_successor" | "activate_successor";
@@ -81,6 +90,8 @@ export function writeProposalAuthorityFailureObservation(
     proposalRevision: "unavailable",
     observedAt,
     fetchedBlobs: [],
+    providerValidationPullRequests: [],
+    providerValidationIssues: [],
     authorityRotation: null,
     verdict: "fail",
     issues: [{
@@ -94,10 +105,22 @@ export function writeProposalAuthorityFailureObservation(
 
 export interface ProposalAuthorityClient {
   getRepositoryId(): Promise<number>;
+  proposalHeadIsSameRepository(revision: string): Promise<boolean>;
   getRecursiveTree(revision: string): Promise<{ truncated: boolean; tree: GitTreeEntry[] }>;
   getBlob(sha: string): Promise<Buffer>;
   revisionExists(revision: string): Promise<boolean>;
   revisionIsAncestor(revision: string, descendant: string): Promise<boolean>;
+  /**
+   * Common ancestor of base and head, or null when it cannot be determined.
+   *
+   * Authority drift must be judged against what the PROPOSAL changed, not
+   * against how far the base has moved since it branched. Comparing head to the
+   * base tip marks every unrebased pull request as having modified the policy
+   * the moment any policy edit lands on the base — demanding a rotation receipt
+   * from proposals that touched nothing. Null is never "unchanged": callers
+   * fail closed.
+   */
+  getMergeBase(base: string, head: string): Promise<string | null>;
 }
 
 function digest(bytes: Buffer): string {
@@ -179,14 +202,20 @@ function protectedSurfaceDigest(path: string, bytes: Buffer): string {
   return path === AUTHORITY_MANIFEST_PATH ? authorityScriptSliceDigest(bytes) : digest(bytes);
 }
 
+function validGitTreePath(path: string): boolean {
+  return Boolean(
+    path &&
+    !path.startsWith("/") &&
+    !path.includes("\0") &&
+    !path.split("/").some((part) => part === "" || part === "." || part === ".."),
+  );
+}
+
 function normalizedPath(locator: string): string | null {
   const path = locator.split("#", 1)[0];
   if (
-    !path ||
-    path.startsWith("/") ||
-    path.includes("\\") ||
-    path.includes("\0") ||
-    path.split("/").some((part) => part === "" || part === "." || part === "..")
+    !validGitTreePath(path) ||
+    path.includes("\\")
   ) {
     return null;
   }
@@ -286,9 +315,18 @@ function referencedRevisions(
   return revisions;
 }
 
-function stableAuthorityRotationMatrixView(matrix: ProductionClosureMatrix): unknown {
+function stableAuthorityRotationMatrixView(
+  matrix: ProductionClosureMatrix,
+  currentPullRequestNumber: number,
+): unknown {
   const copy = JSON.parse(JSON.stringify(matrix)) as ProductionClosureMatrix;
+  for (const row of copy.requirements ?? []) {
+    row.pullRequests = (row.pullRequests ?? []).filter(
+      (pullRequest) => pullRequest !== currentPullRequestNumber,
+    );
+  }
   const releaseTrain = copy.releaseTrain as unknown as Record<string, unknown>;
+  delete releaseTrain.observedAt;
   delete releaseTrain.observedMainRevision;
   delete releaseTrain.observationDigest;
   delete releaseTrain.currentPullRequestBootstrap;
@@ -367,6 +405,8 @@ export async function verifyProductionClosureProposal(
     proposalRevision,
     observedAt,
     fetchedBlobs: [],
+    providerValidationPullRequests: [],
+    providerValidationIssues: [],
     authorityRotation: null,
     verdict: "fail",
     issues,
@@ -382,6 +422,15 @@ export async function verifyProductionClosureProposal(
       !SHA.test(proposalRevision)
     ) {
       add(issues, "PROPOSAL_AUTHORITY_IDENTITY_INVALID", "policy", "repository policy and proposal identity must match");
+      return observation;
+    }
+    if (!(await client.proposalHeadIsSameRepository(proposalRevision))) {
+      add(
+        issues,
+        "PROPOSAL_HEAD_NOT_SAME_REPOSITORY",
+        proposalRevision,
+        "proposal head must be reachable from an exact fetched branch in the protected repository",
+      );
       return observation;
     }
     const tree = await client.getRecursiveTree(proposalRevision);
@@ -490,6 +539,18 @@ export async function verifyProductionClosureProposal(
       if (
         !/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path) ||
         path === policy.workflowPath ||
+        // The workflow that IS the proposed active controller cannot be a
+        // "second workflow spoofing the controller surface": it is the surface.
+        // proposedPolicy.workflowPath only differs from policy.workflowPath in an
+        // activate_successor rotation, and that new active path is exactly the
+        // just-activated successor whose digest was pre-authorized by a staged
+        // rotation, proven live, and attested through verifyAuthorityRotation.
+        // Without this exemption the activate PR fails the very gate it executes,
+        // because at activation proposedPolicy.successor is cleared to null while
+        // the successor workflow remains present as the new active controller.
+        // This exemption is not reachable by an ordinary proposal (workflowPath is
+        // immutable outside an activate_successor rotation).
+        path === proposedPolicy.workflowPath ||
         path === proposedPolicy.successor?.workflowPath
       ) {
         continue;
@@ -512,34 +573,32 @@ export async function verifyProductionClosureProposal(
       }
     }
 
-    const bootstrapRotation = matrix.releaseTrain?.currentPullRequestBootstrap?.authorityRotation;
-    const policyChanged = !proposedPolicyBytes.equals(basePolicyBytes);
-    const ledgerChanged = !proposedLedgerBytes.equals(baseLedgerBytes);
-    const rotationRequested = policyChanged || ledgerChanged || bootstrapRotation !== undefined;
-    if (!rotationRequested) {
-      for (const [path, expectedDigest] of Object.entries(policy.protectedFiles)) {
-        const bytes = bytesByPath.get(normalizedPath(path) ?? "");
-        if (!bytes || protectedSurfaceDigest(path, bytes) !== expectedDigest) {
-          add(
-            issues,
-            "PROPOSAL_AUTHORITY_SURFACE_DRIFT",
-            path,
-            "a product proposal cannot modify or remove a pinned authority surface",
-          );
-        }
+    // Authority drift is a property of THIS proposal, not of how far the base
+    // has moved since the proposal branched. Anchoring these comparisons to the
+    // base tip makes every unrebased pull request look like it edited the
+    // policy the moment any policy edit lands on the base, and the gate then
+    // demands a rotation receipt from proposals that changed nothing. Anchor to
+    // the merge base instead: bytes a proposal never touched are not its drift.
+    const revisionReaders = new Map<
+      string,
+      { entries: Map<string, GitTreeEntry>; read: (path: string) => Promise<Buffer | null> }
+    >();
+    const readerFor = async (
+      revision: string,
+    ): Promise<{ entries: Map<string, GitTreeEntry>; read: (path: string) => Promise<Buffer | null> } | null> => {
+      const cachedReader = revisionReaders.get(revision);
+      if (cachedReader) return cachedReader;
+      const revisionTree = await client.getRecursiveTree(revision);
+      if (revisionTree.truncated) {
+        add(issues, "PROPOSAL_BASE_TREE_TRUNCATED", revision, "GitHub did not return the complete base authority tree");
+        return null;
       }
-    } else {
-      const baseTree = await client.getRecursiveTree(baseRevision);
-      if (baseTree.truncated) {
-        add(issues, "PROPOSAL_BASE_TREE_TRUNCATED", baseRevision, "GitHub did not return the complete base authority tree");
-        return observation;
-      }
-      const baseEntries = new Map(baseTree.tree.map((entry) => [entry.path, entry] as const));
-      const baseBytesByPath = new Map<string, Buffer>();
-      const readBasePath = async (path: string): Promise<Buffer | null> => {
-        const cached = baseBytesByPath.get(path);
+      const revisionEntries = new Map(revisionTree.tree.map((entry) => [entry.path, entry] as const));
+      const revisionBytes = new Map<string, Buffer>();
+      const read = async (path: string): Promise<Buffer | null> => {
+        const cached = revisionBytes.get(path);
         if (cached) return cached;
-        const entry = baseEntries.get(path);
+        const entry = revisionEntries.get(path);
         if (
           !entry ||
           entry.type !== "blob" ||
@@ -560,9 +619,142 @@ export async function verifyProductionClosureProposal(
           add(issues, "PROPOSAL_BASE_BLOB_INVALID", path, "base authority bytes must be bounded and match the exact Git blob");
           return null;
         }
-        baseBytesByPath.set(path, bytes);
+        revisionBytes.set(path, bytes);
         return bytes;
       };
+      const reader = { entries: revisionEntries, read };
+      revisionReaders.set(revision, reader);
+      return reader;
+    };
+
+    const mergeBase = await client.getMergeBase(baseRevision, proposalRevision);
+    if (!mergeBase) {
+      add(
+        issues,
+        "PROPOSAL_AUTHORITY_MERGE_BASE_UNRESOLVED",
+        proposalRevision,
+        "authority drift cannot be judged without the proposal's merge base with the base revision",
+      );
+      return observation;
+    }
+    const mergeBaseReader = await readerFor(mergeBase);
+    if (!mergeBaseReader) return observation;
+    const mergeBaseMatrixBytes = await mergeBaseReader.read(
+      "docs/PRODUCTION_CLOSURE_MATRIX.json",
+    );
+    if (!mergeBaseMatrixBytes) return observation;
+    let mergeBaseMatrix: ProductionClosureMatrix;
+    try {
+      mergeBaseMatrix = JSON.parse(
+        mergeBaseMatrixBytes.toString("utf8"),
+      ) as ProductionClosureMatrix;
+    } catch {
+      add(
+        issues,
+        "PROPOSAL_BASE_MATRIX_INVALID",
+        mergeBase,
+        "merge-base closure matrix must be valid JSON",
+      );
+      return observation;
+    }
+    const changedProviderRecords = <T extends { number: number }>(
+      baseRecords: readonly T[],
+      proposedRecords: readonly T[],
+      kind: "pull request" | "issue",
+      exemptRemovedNumber?: number,
+    ): number[] => {
+      const baseByNumber = new Map(baseRecords.map((record) => [record.number, record]));
+      const proposedByNumber = new Map(proposedRecords.map((record) => [record.number, record]));
+      for (const number of baseByNumber.keys()) {
+        if (!proposedByNumber.has(number)) {
+          // Promotion is not removal. A base-tracked pull request that the proposal
+          // moves into currentPullRequestBootstrap is not dropped from provider
+          // verification: the bootstrap slot subjects exactly that PR to the strictest
+          // live provider proof (bootstrap.number must equal the judged PR, its
+          // metadata is compared live, and an exact-head trusted review is required),
+          // so its tracking is upgraded, not lost. A proposal can only ever exempt
+          // ITSELF this way, and exactly one number; any OTHER removed record — a
+          // second tracked PR, or a PR removed without claiming the bootstrap slot —
+          // still flags.
+          if (exemptRemovedNumber !== undefined && number === exemptRemovedNumber) {
+            continue;
+          }
+          add(
+            issues,
+            "PROPOSAL_PROVIDER_RECORD_REMOVAL_UNVERIFIED",
+            String(number),
+            `${kind} declarations cannot be removed without a provider-verified full observation`,
+          );
+        }
+      }
+      return proposedRecords
+        .filter((record) =>
+          JSON.stringify(baseByNumber.get(record.number)) !== JSON.stringify(record)
+        )
+        .map((record) => record.number)
+        .sort((left, right) => left - right);
+    };
+    observation.providerValidationPullRequests = changedProviderRecords(
+      mergeBaseMatrix.releaseTrain?.pullRequests ?? [],
+      matrix.releaseTrain?.pullRequests ?? [],
+      "pull request",
+      matrix.releaseTrain?.currentPullRequestBootstrap?.number,
+    );
+    observation.providerValidationIssues = changedProviderRecords(
+      mergeBaseMatrix.issueAuthority?.issues ?? [],
+      matrix.issueAuthority?.issues ?? [],
+      "issue",
+    );
+    // Identical Git blob sha and mode is identical content, so the proposal did
+    // not touch this path; a path absent on both sides is untouched too. This
+    // never reads "could not tell" as "unchanged": an unresolvable merge base
+    // or an incomplete merge-base tree returned above, before any comparison.
+    const proposalTouched = (path: string): boolean => {
+      const from = mergeBaseReader.entries.get(path);
+      const to = entries.get(path);
+      return from?.sha !== to?.sha || from?.mode !== to?.mode;
+    };
+
+    const policyLocator = normalizedPath("config/production-closure-authority.json");
+    const ledgerLocator = normalizedPath(policy.authorityRotationManifestPath);
+    if (!policyLocator || !ledgerLocator) {
+      add(
+        issues,
+        "PROPOSAL_PATH_INVALID",
+        policy.authorityRotationManifestPath,
+        "authority paths must be normalized repository relative paths",
+      );
+      return observation;
+    }
+    const bootstrapRotation = matrix.releaseTrain?.currentPullRequestBootstrap?.authorityRotation;
+    const policyChanged = proposalTouched(policyLocator);
+    const ledgerChanged = proposalTouched(ledgerLocator);
+    const rotationRequested = policyChanged || ledgerChanged || bootstrapRotation !== undefined;
+    if (!rotationRequested) {
+      for (const [path, expectedDigest] of Object.entries(policy.protectedFiles)) {
+        const locator = normalizedPath(path) ?? "";
+        const bytes = bytesByPath.get(locator);
+        // A surface this proposal never touched has not drifted, however far
+        // the pin has moved on the base since the branch point. A surface it
+        // did touch still has to match the pin exactly.
+        if (!proposalTouched(locator)) continue;
+        if (!bytes || protectedSurfaceDigest(path, bytes) !== expectedDigest) {
+          add(
+            issues,
+            "PROPOSAL_AUTHORITY_SURFACE_DRIFT",
+            path,
+            "a product proposal cannot modify or remove a pinned authority surface",
+          );
+        }
+      }
+    } else {
+      // The rotation receipt is pinned to the exact base revision, so a
+      // rotating proposal is still judged against the base tip and must be up
+      // to date with it. Only untouched surfaces get the merge-base reprieve.
+      const baseReader = await readerFor(baseRevision);
+      if (!baseReader) return observation;
+      const baseEntries = baseReader.entries;
+      const readBasePath = baseReader.read;
       const exactBasePolicyBytes = await readBasePath("config/production-closure-authority.json");
       const exactBaseLedgerBytes = await readBasePath(policy.authorityRotationManifestPath);
       if (
@@ -640,10 +832,14 @@ export async function verifyProductionClosureProposal(
       }
       try {
         const baseMatrixBytes = await readBasePath("docs/PRODUCTION_CLOSURE_MATRIX.json");
+        const currentPullRequestNumber = matrix.releaseTrain.currentPullRequestBootstrap?.number ?? -1;
         if (
           !baseMatrixBytes ||
-          JSON.stringify(stableAuthorityRotationMatrixView(JSON.parse(baseMatrixBytes.toString("utf8")))) !==
-            JSON.stringify(stableAuthorityRotationMatrixView(matrix))
+          JSON.stringify(stableAuthorityRotationMatrixView(
+            JSON.parse(baseMatrixBytes.toString("utf8")),
+            currentPullRequestNumber,
+          )) !==
+            JSON.stringify(stableAuthorityRotationMatrixView(matrix, currentPullRequestNumber))
         ) {
           add(
             issues,
@@ -658,6 +854,14 @@ export async function verifyProductionClosureProposal(
           "AUTHORITY_ROTATION_MATRIX_SCOPE_INVALID",
           "docs/PRODUCTION_CLOSURE_MATRIX.json",
           "base and proposed closure matrices must remain structurally comparable",
+        );
+      }
+      if (matrix.releaseTrain.observedAt !== receipt?.issuedAt) {
+        add(
+          issues,
+          "AUTHORITY_ROTATION_OBSERVATION_TIME_MISMATCH",
+          "releaseTrain.observedAt",
+          "provider observation time must equal the exact authority rotation receipt issue time",
         );
       }
       if (
@@ -727,6 +931,14 @@ export async function verifyProductionClosureProposal(
     issues.push(
       ...releaseTrainObservationIssues(matrix, {
         revisionExists: (revision) => revisionResults.get(revision) === true,
+        // #490: this proposal authority resolves revisions against the post-#486
+        // local Git object database (closure:proposal:check reads the checked-out
+        // repo), which cannot see OTHER open PRs' force-pushed heads — "absent
+        // locally" is not "absent on GitHub". Skip the strict open-PR head
+        // reachability report here; the live-API PR_METADATA_MISMATCH verification in
+        // github-authority full_release_train scope remains the oracle for open-PR
+        // head accuracy. Merge/deploy revisions are on main and stay locally checked.
+        openPullRequestHeadsVerifiable: false,
         revisionIsAncestor: (revision, descendant) => ancestryResults.get(`${revision}:${descendant}`) === true,
         readArtifact: (locator) => bytesByPath.get(normalizedPath(locator) ?? "") ?? null,
         now: new Date(observedAt),
@@ -763,62 +975,176 @@ export async function verifyProductionClosureProposal(
 
 export class GitHubProposalAuthorityClient implements ProposalAuthorityClient {
   private readonly apiBase = "https://api.github.com";
+  private repositoryIdPromise: Promise<number> | undefined;
 
   constructor(
     private readonly repository: string,
     private readonly token: string,
     private readonly fetchImpl: typeof fetch = fetch,
+    private readonly sleepImpl: GitHubSleep = defaultGitHubSleep,
+    private readonly checkoutRoot: string = process.cwd(),
   ) {}
 
-  private async request<T>(path: string, allowMissing = false): Promise<T | null> {
-    const response = await this.fetchImpl(`${this.apiBase}${path}`, {
+  private async request<T>(path: string): Promise<T> {
+    const response = await fetchGitHubReadWithRetry(`${this.apiBase}${path}`, {
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${this.token}`,
         "user-agent": "mendpoint-production-closure-proposal-authority",
         "x-github-api-version": "2022-11-28",
       },
-    });
-    if (allowMissing && response.status === 404) return null;
+    }, this.fetchImpl, this.sleepImpl);
     if (!response.ok) throw new Error(`GitHub API request failed with HTTP ${response.status}`);
     return (await response.json()) as T;
   }
 
-  async getRepositoryId(): Promise<number> {
+  private async readRepositoryId(): Promise<number> {
     const result = await this.request<{ id?: unknown }>(`/repos/${this.repository}`);
-    if (!result || !Number.isInteger(result.id)) throw new Error("repository identity is invalid");
+    if (!Number.isInteger(result.id)) throw new Error("repository identity is invalid");
     return result.id as number;
   }
+
+  async getRepositoryId(): Promise<number> {
+    this.repositoryIdPromise ??= this.readRepositoryId();
+    return this.repositoryIdPromise;
+  }
+
+  private exactSha(value: string): string {
+    if (!SHA.test(value)) throw new Error("local authority reads require an exact Git object SHA");
+    return value;
+  }
+
+  private gitEnvironment(): NodeJS.ProcessEnv {
+    return { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" };
+  }
+
+  private gitOutput(args: string[], maxBuffer: number): Buffer {
+    return execFileSync("git", args, {
+      cwd: resolve(this.checkoutRoot),
+      env: this.gitEnvironment(),
+      maxBuffer,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+  }
+
+  private gitStatus(args: string[]): number {
+    try {
+      execFileSync("git", args, {
+        cwd: resolve(this.checkoutRoot),
+        env: this.gitEnvironment(),
+        shell: false,
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      return 0;
+    } catch (error) {
+      const status = (error as { status?: unknown }).status;
+      if (typeof status === "number") return status;
+      throw error;
+    }
+  }
+
+  async proposalHeadIsSameRepository(revision: string): Promise<boolean> {
+    const refs = this.gitOutput(
+      [
+        "for-each-ref",
+        "--contains",
+        this.exactSha(revision),
+        "--format=%(refname)",
+        "refs/remotes/origin/",
+      ],
+      1024 * 1024,
+    ).toString("utf8").split(/\r?\n/).filter(Boolean);
+    return refs.some((ref) => /^refs\/remotes\/origin\/[^/].*$/.test(ref));
+  }
+
   async getRecursiveTree(revision: string): Promise<{ truncated: boolean; tree: GitTreeEntry[] }> {
-    const result = await this.request<{ truncated?: unknown; tree?: unknown }>(
-      `/repos/${this.repository}/git/trees/${revision}?recursive=1`,
+    const output = this.gitOutput(
+      ["ls-tree", "-r", "-t", "-z", "-l", "--full-tree", this.exactSha(revision)],
+      MAX_TREE_OUTPUT_BYTES,
     );
-    if (!result || typeof result.truncated !== "boolean" || !Array.isArray(result.tree)) {
-      throw new Error("proposal tree response is invalid");
+    if (output.length > 0 && output.at(-1) !== 0) {
+      throw new Error("local proposal tree is not NUL terminated");
     }
-    return { truncated: result.truncated, tree: result.tree as GitTreeEntry[] };
+    const tree: GitTreeEntry[] = [];
+    const paths = new Set<string>();
+    let start = 0;
+    while (start < output.length) {
+      const end = output.indexOf(0, start);
+      if (end < 0) throw new Error("local proposal tree record is incomplete");
+      const record = output.subarray(start, end);
+      start = end + 1;
+      const separator = record.indexOf(0x09);
+      if (separator <= 0 || separator === record.length - 1) {
+        throw new Error("local proposal tree record is invalid");
+      }
+      const header = record.subarray(0, separator).toString("ascii");
+      const match = /^([0-7]{6}) (blob|tree|commit) ([a-f0-9]{40}) +([0-9]+|-)$/.exec(header);
+      if (!match) throw new Error("local proposal tree header is invalid");
+      const [, mode, type, sha, sizeText] = match;
+      const pathBytes = record.subarray(separator + 1);
+      const path = pathBytes.toString("utf8");
+      if (!Buffer.from(path, "utf8").equals(pathBytes) || !validGitTreePath(path)) {
+        throw new Error("local proposal tree path is invalid");
+      }
+      if (paths.has(path)) throw new Error("local proposal tree contains duplicate paths");
+      paths.add(path);
+      const validMode =
+        (type === "blob" && ["100644", "100755", "120000"].includes(mode)) ||
+        (type === "tree" && mode === "040000") ||
+        (type === "commit" && mode === "160000");
+      const size = sizeText === "-" ? undefined : Number(sizeText);
+      if (
+        !validMode ||
+        (type === "blob" && (!Number.isSafeInteger(size) || (size ?? -1) < 0)) ||
+        (type !== "blob" && size !== undefined)
+      ) {
+        throw new Error("local proposal tree entry is invalid");
+      }
+      tree.push({ path, mode, type, sha, ...(size === undefined ? {} : { size }) });
+      if (tree.length > MAX_TREE_ENTRIES) throw new Error("local proposal tree entry budget exceeded");
+    }
+    return { truncated: false, tree };
   }
+
   async getBlob(sha: string): Promise<Buffer> {
-    const result = await this.request<{ encoding?: unknown; content?: unknown; size?: unknown }>(
-      `/repos/${this.repository}/git/blobs/${sha}`,
-    );
-    if (!result || result.encoding !== "base64" || typeof result.content !== "string") {
-      throw new Error("proposal blob response is invalid");
-    }
-    const bytes = Buffer.from(result.content.replace(/\s+/g, ""), "base64");
-    if (typeof result.size === "number" && result.size !== bytes.length) {
-      throw new Error("proposal blob size is invalid");
-    }
-    return bytes;
+    return this.gitOutput(["cat-file", "blob", this.exactSha(sha)], MAX_BLOB_BYTES + 1);
   }
+
   async revisionExists(revision: string): Promise<boolean> {
-    return (await this.request(`/repos/${this.repository}/git/commits/${revision}`, true)) !== null;
+    const status = this.gitStatus(["cat-file", "-e", `${this.exactSha(revision)}^{commit}`]);
+    if (status === 0) return true;
+    if (status === 1 || status === 128) return false;
+    throw new Error(`local Git revision check failed with status ${status}`);
   }
+
   async revisionIsAncestor(revision: string, descendant: string): Promise<boolean> {
-    const result = await this.request<{ status?: unknown }>(
-      `/repos/${this.repository}/compare/${revision}...${descendant}`,
-    );
-    return result?.status === "ahead" || result?.status === "identical";
+    const status = this.gitStatus([
+      "merge-base",
+      "--is-ancestor",
+      this.exactSha(revision),
+      this.exactSha(descendant),
+    ]);
+    if (status === 0) return true;
+    if (status === 1) return false;
+    throw new Error(`local Git ancestry check failed with status ${status}`);
+  }
+
+  async getMergeBase(base: string, head: string): Promise<string | null> {
+    try {
+      const result = this.gitOutput(
+        ["merge-base", this.exactSha(base), this.exactSha(head)],
+        1024,
+      ).toString("ascii").trim();
+      if (!SHA.test(result)) throw new Error("local Git merge base is invalid");
+      return result;
+    } catch (error) {
+      const status = (error as { status?: unknown }).status;
+      if (status === 1) return null;
+      throw error;
+    }
   }
 }
 
