@@ -1,16 +1,21 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  bindMissionScope,
   bindMissionToPolicyEnvelope,
   createDb,
   createMission,
   createPolicyEnvelope,
   evaluateMissionExceptions,
+  insertConnectedRepository,
   insertPrincipal,
+  insertRepositorySnapshot,
   linkRegaugeCampaignToMission,
   listMissionExceptions,
+  resolveMissionException,
+  upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
 import {
@@ -24,6 +29,7 @@ const at = "2026-08-25T00:00:00.000Z";
 const opened: Array<{ db: AppDb; dir: string }> = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const { db, dir } of opened.splice(0)) {
     db.raw.close();
     rmSync(dir, { recursive: true, force: true });
@@ -62,6 +68,65 @@ function bind(db: AppDb, envelope: PolicyEnvelope) {
     tenantId: "t1", missionId: "m1", version: envelope.version, actorPrincipalId: "p1",
     eventId: "e-bind", idempotencyKey: "bind-1", correlationId: "campaign-a", createdAt: at,
   });
+}
+
+function bindMissionSnapshot(db: AppDb, input: {
+  snapshotId?: string;
+  resolvedSha?: string;
+  repositoryId?: string;
+} = {}) {
+  const dir = opened.find((item) => item.db === db)?.dir;
+  if (!dir) throw new Error("test_fixture_dir_missing");
+  const snapshotId = input.snapshotId ?? "snap-1";
+  const resolvedSha = input.resolvedSha ?? "a".repeat(40);
+  const repositoryId = input.repositoryId ?? "repo-a";
+  const storage = join(dir, "snapshot");
+  mkdirSync(storage, { recursive: true });
+  upsertScmConnection(db, {
+    id: "scm-1",
+    tenantId: "t1",
+    provider: "github",
+    credentialRef: "github-app://installation/1",
+    externalAccountId: "1",
+    displayName: "Acme",
+    createdAt: at,
+    updatedAt: at,
+  });
+  insertConnectedRepository(db, {
+    id: repositoryId,
+    tenantId: "t1",
+    connectionId: "scm-1",
+    remoteId: "200",
+    owner: "acme",
+    name: "payments",
+    defaultBranch: "main",
+    status: "ready",
+    createdAt: at,
+    updatedAt: at,
+  });
+  insertRepositorySnapshot(db, {
+    id: snapshotId,
+    tenantId: "t1",
+    repositoryId,
+    requestedRef: "main",
+    resolvedSha,
+    manifestSha256: "b".repeat(64),
+    storagePath: storage,
+    createdAt: at,
+    expiresAt: "2027-01-01T00:00:00.000Z",
+  });
+  bindMissionScope(db, {
+    tenantId: "t1",
+    missionId: "m1",
+    repositoryId,
+    snapshotId,
+    actorPrincipalId: "p1",
+    eventId: "e-scope",
+    idempotencyKey: "scope-1",
+    correlationId: "campaign-a",
+    createdAt: at,
+  });
+  return { snapshotId, resolvedSha } as const;
 }
 
 const claim = {
@@ -153,6 +218,8 @@ describe("assertRegaugePilotMissionPolicy", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.reason).toBe("mission_policy_envelope_missing");
     expect(rows[0]?.category).toBe("policy_exception");
+    expect(rows[0]?.observedSnapshotId).toBeNull();
+    expect(rows[0]?.observedResolvedSha).toBeNull();
   });
 
   it("does not raise an exception when the claim is allowed", () => {
@@ -164,7 +231,43 @@ describe("assertRegaugePilotMissionPolicy", () => {
     expect(listMissionExceptions(db, "t1", "m1")).toEqual([]);
   });
 
-  it("CONTROL: a live ReGauge deny without a Mission exception is a red mutation", () => {
+  it("does not swallow a raiseMissionException failure before deny", async () => {
+    const db = fixture();
+    const dbModule = await import("@mendpoint/db");
+    const raise = vi.spyOn(dbModule, "raiseMissionException")
+      .mockImplementationOnce(() => {
+        throw new Error("exception_store_unavailable");
+      });
+    expect(() => assertRegaugePilotMissionPolicy(db, { ...claim, observedAt: at }))
+      .toThrow("exception_store_unavailable");
+    raise.mockRestore();
+    expect(listMissionExceptions(db, "t1", "m1")).toEqual([]);
+  });
+
+  it("re-raises after the previous policy_exception is resolved", () => {
+    const db = fixture();
+    expect(() => assertRegaugePilotMissionPolicy(db, { ...claim, observedAt: at }))
+      .toThrow("mission_policy_envelope_missing");
+    const first = listMissionExceptions(db, "t1", "m1");
+    resolveMissionException(db, {
+      tenantId: "t1",
+      priorExceptionId: first[0]!.id,
+      resolutionNote: "rebound envelope",
+      actorPrincipalId: "p1",
+      correlationId: "corr-resolve",
+      createdAt: "2026-08-25T00:00:02.000Z",
+    });
+    expect(() => assertRegaugePilotMissionPolicy(db, {
+      ...claim,
+      observedAt: "2026-08-25T00:00:03.000Z",
+    })).toThrow("mission_policy_envelope_missing");
+    const evaluation = evaluateMissionExceptions(db, "t1", "m1");
+    expect(evaluation.missionBlocked).toBe(true);
+    expect(evaluation.blocking).toHaveLength(1);
+    expect(evaluation.blocking[0]?.createdAt).toBe("2026-08-25T00:00:03.000Z");
+  });
+
+  it("binds a scoped Mission deny to that snapshot so a later snapshot leaves it stale", () => {
     const db = fixture();
     bind(db, {
       ...defaultPolicyEnvelope({
@@ -172,7 +275,34 @@ describe("assertRegaugePilotMissionPolicy", () => {
       }),
       repositoryScope: Object.freeze(["repo-other"]),
     });
-    expect(() => assertRegaugePilotMissionPolicy(db, { ...claim, observedAt: at })).toThrow();
-    expect(evaluateMissionExceptions(db, "t1", "m1").blocking).toHaveLength(1);
+    const snap = bindMissionSnapshot(db);
+    expect(() => assertRegaugePilotMissionPolicy(db, { ...claim, observedAt: at }))
+      .toThrow(/mission_policy_denied:repository_out_of_scope:repo-a/);
+    const rows = listMissionExceptions(db, "t1", "m1");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.observedSnapshotId).toBe(snap.snapshotId);
+    expect(rows[0]?.observedResolvedSha).toBe(snap.resolvedSha);
+    const againstBound = evaluateMissionExceptions(db, "t1", "m1", snap);
+    expect(againstBound.missionBlocked).toBe(true);
+    expect(againstBound.blocking).toHaveLength(1);
+    const againstLater = evaluateMissionExceptions(db, "t1", "m1", {
+      snapshotId: "snap-later",
+      resolvedSha: "c".repeat(40),
+    });
+    expect(againstLater.missionBlocked).toBe(false);
+    expect(againstLater.stale).toHaveLength(1);
+    expect(againstLater.blocking).toHaveLength(0);
+  });
+
+  it("does not duplicate a snapshot-bound policy_exception on replay against the same snapshot", () => {
+    const db = fixture();
+    bindMissionSnapshot(db);
+    expect(() => assertRegaugePilotMissionPolicy(db, { ...claim, observedAt: at }))
+      .toThrow("mission_policy_envelope_missing");
+    expect(() => assertRegaugePilotMissionPolicy(db, {
+      ...claim,
+      observedAt: "2026-08-25T00:00:01.000Z",
+    })).toThrow("mission_policy_envelope_missing");
+    expect(listMissionExceptions(db, "t1", "m1")).toHaveLength(1);
   });
 });

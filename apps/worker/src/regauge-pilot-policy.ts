@@ -11,10 +11,12 @@
  */
 import {
   evaluateMissionExceptions,
+  listRepositorySnapshots,
   raiseMissionException,
   resolveMissionForRegaugeCampaign,
   type AppDb,
   type Mission,
+  type SnapshotIdentity,
 } from "@mendpoint/db";
 import { isTrainingTierModel } from "@mendpoint/agent";
 import {
@@ -61,14 +63,29 @@ function regaugePilotPolicyTask(input: RegaugePilotPolicyInput) {
   });
 }
 
+/** Bind to the Mission's snapshot when one exists. Missing snapshot id is context-independent; a dangling snapshot id fails closed. */
+function missionObservedAgainst(db: AppDb, mission: Mission): SnapshotIdentity | undefined {
+  if (!mission.snapshotId) return undefined;
+  if (!mission.repositoryId) throw new Error("mission_exception_snapshot_not_found");
+  const row = listRepositorySnapshots(db, mission.tenantId, mission.repositoryId)
+    .find((item) => item.id === mission.snapshotId);
+  if (!row) throw new Error("mission_exception_snapshot_not_found");
+  return { snapshotId: row.id, resolvedSha: row.resolved_sha };
+}
+
 function recordPolicyException(
   db: AppDb,
   mission: Mission,
   reason: string,
   createdAt: string,
 ): void {
-  const already = evaluateMissionExceptions(db, mission.tenantId, mission.id).blocking
-    .some((item) => item.category === "policy_exception" && item.reason === reason);
+  const observedAgainst = missionObservedAgainst(db, mission);
+  const already = evaluateMissionExceptions(
+    db,
+    mission.tenantId,
+    mission.id,
+    observedAgainst,
+  ).blocking.some((item) => item.category === "policy_exception" && item.reason === reason);
   if (already) return;
   raiseMissionException(db, {
     tenantId: mission.tenantId,
@@ -78,6 +95,7 @@ function recordPolicyException(
     ownerPrincipalId: mission.ownerPrincipalId,
     resolutionPath: "adjust_task_or_rebind_policy_envelope",
     blocking: true,
+    ...(observedAgainst ? { observedAgainst } : {}),
     correlationId: `regauge-pilot-policy:${mission.id}`,
     createdAt,
     category: "policy_exception",
