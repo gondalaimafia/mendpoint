@@ -264,6 +264,35 @@ describe("production closure proposal authority", () => {
     );
   });
 
+
+  it("does not report an open pull request head the local object database cannot resolve, but still flags an unreachable merge revision", async () => {
+    // #490 re-armed via #486's local-git oracle: closure:proposal:check resolves
+    // revisions against the checked-out object database, which cannot see OTHER open
+    // PRs' force-pushed heads. "Absent locally" must not read as "unreachable on
+    // GitHub" for open-PR heads (openPullRequestHeadsVerifiable: false at the proposal
+    // call site). Merge revisions are on main and stay locally checked (ungated).
+    const openHead = "63711d9aac1a2d9e89a50bd9b4a6b8f3b2ea3c3f"; // fixture open PR #284 head
+    const mergeRevision = "b3279db5157a2a33c8684f1cf595356953ff2a96"; // fixture merged PR #333 merge revision
+    class LocalObjectDatabaseClient extends FixtureClient {
+      async revisionExists(revision?: string): Promise<boolean> {
+        return revision !== openHead && revision !== mergeRevision;
+      }
+    }
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      new LocalObjectDatabaseClient(),
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    const codes = result.issues.map((issue) => issue.code);
+    expect(codes, JSON.stringify(result.issues, null, 2)).not.toContain("PR_HEAD_REVISION_UNREACHABLE");
+    expect(codes, JSON.stringify(result.issues, null, 2)).toContain("PR_MERGE_REVISION_UNREACHABLE");
+  });
+
   it("fails closed when GitHub truncates the exact proposal tree", async () => {
     const client = new FixtureClient();
     client.truncated = true;
