@@ -95,6 +95,12 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
       if (tenantId !== "tenant-a" || repositoryId !== "repo-a") throw new Error("repository_not_found");
       repositoryLoads.push({ allowedPaths, snapshotId });
       const snapshotDigest = recipeFilesDigest(activeFiles);
+      const workspaceIdentityDigest = digest(JSON.stringify({
+        manifestPaths: ["package.json"],
+        snapshotDigest,
+        snapshotId: "snapshot-a",
+        workspacePath: "",
+      }));
       return {
         planning: {
           id: "repo-a",
@@ -102,8 +108,10 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
           organizationId: "organization-a",
           revision: activeRevision,
           snapshotDigest,
+          workspacePath: "",
+          workspaceIdentityDigest,
           observedAt: new Date(Date.now() - 60_000).toISOString(),
-          evidenceRefs: ["evidence:snapshot:a"],
+          evidenceRefs: ["evidence:snapshot:a", `repository-snapshot:snapshot-a:workspace:${workspaceIdentityDigest}`],
           files: activeFiles,
           fileEvidence: Object.entries(activeFiles).map(([path, content]) => ({
             path,

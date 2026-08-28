@@ -38,6 +38,8 @@ export type TransformerMissionPlanningRepository = Readonly<{
   organizationId: string;
   revision: string;
   snapshotDigest: string;
+  workspacePath: string | null;
+  workspaceIdentityDigest: string;
   observedAt: string;
   evidenceRefs: readonly string[];
   files: RecipeFiles;

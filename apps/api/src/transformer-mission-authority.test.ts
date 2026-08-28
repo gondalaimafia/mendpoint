@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { ingestManifestDependencies, openGraphLearnMemory } from "@mendpoint/graph-learn";
 import {
   createDb,
   insertConnectedRepository,
@@ -14,6 +15,7 @@ import {
   upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
+import { consultRegaugeGraphDependencies } from "./regauge-plan-consult.js";
 import { createAppDbTransformerMissionAuthority } from "./transformer-mission-authority.js";
 
 const NOW = "2026-08-13T16:00:00.000Z";
@@ -111,6 +113,76 @@ function fixture() {
   return { db, root, snapshotRoot, files };
 }
 
+function addRepositorySnapshot(
+  value: ReturnType<typeof fixture>,
+  input: Readonly<{
+    repositoryId: string;
+    snapshotId: string;
+    manifestPath: string;
+    packageName: string;
+    dependencies?: Readonly<Record<string, string>>;
+  }>,
+) {
+  const content = `${JSON.stringify({
+    name: input.packageName,
+    dependencies: input.dependencies ?? {},
+  })}\n`;
+  const snapshotRoot = join(value.root, input.snapshotId);
+  const absoluteManifest = join(snapshotRoot, ...input.manifestPath.split("/"));
+  mkdirSync(dirname(absoluteManifest), { recursive: true });
+  writeFileSync(absoluteManifest, content);
+  insertConnectedRepository(value.db, {
+    id: input.repositoryId,
+    tenantId: "tenant-a",
+    connectionId: "connection-a",
+    remoteId: `remote-${input.repositoryId}`,
+    owner: "acme",
+    name: input.packageName,
+    defaultBranch: "main",
+    status: "ready",
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+  insertRepositorySnapshot(value.db, {
+    id: input.snapshotId,
+    tenantId: "tenant-a",
+    repositoryId: input.repositoryId,
+    requestedRef: "main",
+    resolvedSha: sha256(input.repositoryId).slice(0, 40),
+    manifestSha256: sha256(`${input.snapshotId}:manifest`),
+    storagePath: snapshotRoot,
+    fileManifestVersion: 1,
+    createdAt: NOW,
+    expiresAt: "2026-08-14T16:00:00.000Z",
+  });
+  insertRepositorySnapshotFiles(value.db, {
+    tenantId: "tenant-a",
+    snapshotId: input.snapshotId,
+    files: [{
+      path: input.manifestPath,
+      mode: "100644",
+      kind: "file",
+      size: Buffer.byteLength(content),
+      sha256: sha256(content),
+    }],
+  });
+  insertRepositorySnapshotPolicy(value.db, {
+    id: `policy-${input.repositoryId}`,
+    tenantId: "tenant-a",
+    snapshotId: input.snapshotId,
+    codeowners: [{ path: ".github/CODEOWNERS", content: "* @platform\n" }],
+    ciFiles: [".github/workflows/ci.yml"],
+    verificationCommands: ["npm test"],
+    protectedBranch: {
+      defaultBranch: "main",
+      selectedBranch: "main",
+      exactCommit: sha256(input.repositoryId).slice(0, 40),
+    },
+    createdAt: NOW,
+  });
+  return Object.freeze({ content });
+}
+
 afterEach(() => {
   while (opened.length) {
     const value = opened.pop()!;
@@ -128,6 +200,11 @@ describe("production Transformer mission authority", () => {
       id: "repo-a",
       organizationId: "tenant-a",
       revision: "a".repeat(40),
+      workspacePath: "",
+      workspaceIdentityDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      evidenceRefs: expect.arrayContaining([
+        expect.stringMatching(/^repository-snapshot:snapshot-a:workspace:sha256:[a-f0-9]{64}$/),
+      ]),
       files: value.files,
       fileEvidence: [
         expect.objectContaining({ path: "Dockerfile", ownerIds: ["github:platform"] }),
@@ -171,5 +248,114 @@ describe("production Transformer mission authority", () => {
     const authority = createAppDbTransformerMissionAuthority(value.db);
     expect(() => authority.repositories.load("tenant-a", "repo-a", NOW))
       .toThrow("transformer_mission_snapshot_file_size_mismatch");
+  });
+
+  it("carries exact snapshot workspace authority into every local dependency protocol", () => {
+    const value = fixture();
+    const sources = [
+      ["workspace", "workspace:*"] as const,
+      ["file", "file:../billing"] as const,
+      ["link", "link:../billing"] as const,
+      ["portal", "portal:../billing"] as const,
+      ["relative", "../billing"] as const,
+    ];
+    addRepositorySnapshot(value, {
+      repositoryId: "repo-billing",
+      snapshotId: "snapshot-billing",
+      manifestPath: "packages/billing/package.json",
+      packageName: "billing",
+    });
+    for (const [name, specifier] of sources) {
+      addRepositorySnapshot(value, {
+        repositoryId: `repo-${name}`,
+        snapshotId: `snapshot-${name}`,
+        manifestPath: `packages/shop-${name}/package.json`,
+        packageName: `shop-${name}`,
+        dependencies: { billing: specifier },
+      });
+    }
+    addRepositorySnapshot(value, {
+      repositoryId: "repo-unmapped",
+      snapshotId: "snapshot-unmapped",
+      manifestPath: "packages/shop-unmapped/package.json",
+      packageName: "shop-unmapped",
+      dependencies: { missing: "file:../missing" },
+    });
+
+    const repositoryIds = [
+      "repo-billing",
+      ...sources.map(([name]) => `repo-${name}`),
+      "repo-unmapped",
+    ].sort();
+    const authority = createAppDbTransformerMissionAuthority(value.db);
+    const planning = repositoryIds.map((repositoryId) =>
+      authority.repositories.load("tenant-a", repositoryId, NOW).planning);
+    const restarted = createAppDbTransformerMissionAuthority(value.db);
+    const restartedPlanning = repositoryIds.map((repositoryId) =>
+      restarted.repositories.load("tenant-a", repositoryId, NOW).planning);
+    expect(restartedPlanning).toEqual(planning);
+    expect(() => authority.repositories.load("tenant-b", "repo-billing", NOW))
+      .toThrow("transformer_mission_repository_not_found");
+
+    const workspacePaths = planning.flatMap((repository) =>
+      repository.workspacePath === null ? [] : [repository.workspacePath]).sort();
+    const graph = openGraphLearnMemory();
+    try {
+      for (const repository of planning) {
+        ingestManifestDependencies(graph, {
+          repoPath: "/unused",
+          repoId: repository.id,
+          tenantId: "tenant-a",
+          observedAt: "2026-08-13T15:59:00.000Z",
+          files: Object.entries(repository.files).map(([path, text]) => ({ path, text })),
+        });
+      }
+      const repositorySnapshots = planning.map((repository) => ({
+        ...repository,
+        workspacePaths,
+      }));
+      const result = consultRegaugeGraphDependencies({
+        graph,
+        tenantId: "tenant-a",
+        evaluatedAt: NOW,
+        repositoryIds,
+        repositorySnapshots,
+      });
+      expect(consultRegaugeGraphDependencies({
+        graph,
+        tenantId: "tenant-a",
+        evaluatedAt: NOW,
+        repositoryIds,
+        repositorySnapshots: restartedPlanning.map((repository) => ({ ...repository, workspacePaths })),
+      })).toEqual(result);
+      for (const [name] of sources) {
+        expect(result.repositories.find((repository) => repository.repositoryId === `repo-${name}`))
+          .toMatchObject({
+            coverage: "complete",
+            reason: "manifest_ingest_complete",
+            dependsOnRepositoryIds: ["repo-billing"],
+          });
+      }
+      expect(result.repositories.find((repository) => repository.repositoryId === "repo-unmapped"))
+        .toMatchObject({ coverage: "unknown", reason: "dependency_target_unmapped" });
+      expect(result.edges).toHaveLength(sources.length);
+      expect(result.edges.every((edge) => edge.evidenceRefs.some((ref) =>
+        ref.startsWith("manifest-resolution:sha256:")))).toBe(true);
+
+      const billing = repositorySnapshots.find((repository) => repository.id === "repo-billing")!;
+      const tampered = consultRegaugeGraphDependencies({
+        graph,
+        tenantId: "tenant-a",
+        evaluatedAt: NOW,
+        repositoryIds: ["repo-billing"],
+        repositorySnapshots: [{ ...billing, workspaceIdentityDigest: `sha256:${"0".repeat(64)}`, workspacePaths: [billing.workspacePath!] }],
+      });
+      expect(tampered.repositories[0]).toMatchObject({
+        coverage: "unknown",
+        reason: "workspace_snapshot_identity_invalid",
+      });
+    } finally {
+      graph.raw.close();
+    }
   });
 });

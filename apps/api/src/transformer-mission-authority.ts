@@ -52,6 +52,16 @@ function prefixedDigest(value: string | Buffer): string {
   return `sha256:${digest(value)}`;
 }
 
+function manifestDirectory(path: string): string {
+  const parts = path.split("/");
+  parts.pop();
+  return parts.join("/");
+}
+
+function supportedManifestPath(path: string): boolean {
+  return ["package.json", "pyproject.toml", "go.mod"].includes(path.split("/").at(-1) ?? "");
+}
+
 function stableId(prefix: string, ...values: readonly string[]): string {
   return `${prefix}-${digest(values.map((value) => `${value.length}:${value}`).join("" )).slice(0, 24)}`;
 }
@@ -235,8 +245,19 @@ function loadRepository(
   }).sort((left, right) => compareCodeUnits(left.path, right.path));
   const recipeFiles = Object.freeze(files) as RecipeFiles;
   const snapshotDigest = recipeFilesDigest(recipeFiles);
+  const manifestPaths = fileEvidence.map((file) => file.path)
+    .filter(supportedManifestPath)
+    .sort(compareCodeUnits);
+  const workspacePath = manifestPaths.length === 1 ? manifestDirectory(manifestPaths[0]!) : null;
+  const workspaceIdentityDigest = prefixedDigest(canonical({
+    snapshotId: snapshot.id,
+    snapshotDigest,
+    manifestPaths,
+    workspacePath,
+  }));
   const evidenceRefs = Object.freeze([
     `repository-snapshot:${snapshot.id}:manifest:sha256:${snapshot.manifest_sha256}`,
+    `repository-snapshot:${snapshot.id}:workspace:${workspaceIdentityDigest}`,
     `repository-snapshot-policy:${policy.id}`,
   ]);
   return Object.freeze({
@@ -246,6 +267,8 @@ function loadRepository(
       organizationId: tenantId,
       revision: snapshot.resolved_sha,
       snapshotDigest,
+      workspacePath,
+      workspaceIdentityDigest,
       observedAt: snapshot.created_at,
       evidenceRefs,
       files: recipeFiles,

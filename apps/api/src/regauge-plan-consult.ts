@@ -77,7 +77,8 @@ function manifestRootEvidence(
     props?.tenant_id !== tenantId ||
     !["complete", "incomplete"].includes(String(status ?? "")) ||
     props?.declared === true ||
-    typeof manifestPath !== "string" || !["package.json", "pyproject.toml", "go.mod"].includes(manifestPath) ||
+    typeof manifestPath !== "string" ||
+    !["package.json", "pyproject.toml", "go.mod"].includes(manifestPath.replace(/\\/g, "/").split("/").at(-1) ?? "") ||
     typeof contentDigest !== "string" || !DIGEST.test(contentDigest) ||
     typeof versionId !== "string" || !DIGEST.test(versionId) ||
     !evidenceRefs || !evidenceRefs.includes(`manifest-ingest:${contentDigest}`)
@@ -138,6 +139,29 @@ function workspacePatternMatches(pattern: string, path: string): boolean {
   return new RegExp(`^${escaped}$`).test(path);
 }
 
+function snapshotWorkspaceIdentity(snapshot: Readonly<{
+  snapshotId: string;
+  snapshotDigest: string;
+  files: Readonly<Record<string, string>>;
+}>): Readonly<{ workspacePath: string | null; workspaceIdentityDigest: string }> {
+  const manifestPaths = Object.keys(snapshot.files)
+    .map((path) => path.replace(/\\/g, "/"))
+    .filter((path) => ["package.json", "pyproject.toml", "go.mod"].includes(path.split("/").at(-1) ?? ""))
+    .sort(compareCodeUnits);
+  const workspacePath = manifestPaths.length === 1
+    ? manifestPaths[0]!.split("/").slice(0, -1).join("/")
+    : null;
+  return Object.freeze({
+    workspacePath,
+    workspaceIdentityDigest: sha256(JSON.stringify({
+      manifestPaths,
+      snapshotDigest: snapshot.snapshotDigest,
+      snapshotId: snapshot.snapshotId,
+      workspacePath,
+    })),
+  });
+}
+
 export function consultRegaugeGraphDependencies(input: {
   graph: GraphLearnDb | null;
   tenantId: string;
@@ -148,8 +172,10 @@ export function consultRegaugeGraphDependencies(input: {
     snapshotId: string;
     revision: string;
     snapshotDigest: string;
-    workspacePath?: string;
-    workspacePaths?: readonly string[];
+    workspacePath: string | null;
+    workspacePaths: readonly string[];
+    workspaceIdentityDigest: string;
+    evidenceRefs: readonly string[];
     files: Readonly<Record<string, string>>;
   }>[];
 }): RegaugeGraphPlanConsult {
@@ -205,6 +231,26 @@ export function consultRegaugeGraphDependencies(input: {
     const snapshotByRepository = new Map(
       (input.repositorySnapshots ?? []).map((snapshot) => [snapshot.id, snapshot]),
     );
+    const derivedWorkspaceByRepository = new Map([...snapshotByRepository].map(([repositoryId, snapshot]) =>
+      [repositoryId, snapshotWorkspaceIdentity(snapshot)] as const));
+    const authenticatedWorkspacePaths = [...new Set([...derivedWorkspaceByRepository.values()]
+      .flatMap((identity) => identity.workspacePath === null ? [] : [identity.workspacePath]))]
+      .sort(compareCodeUnits);
+    const workspacePathCounts = new Map<string, number>();
+    for (const identity of derivedWorkspaceByRepository.values()) {
+      if (identity.workspacePath !== null) {
+        workspacePathCounts.set(identity.workspacePath, (workspacePathCounts.get(identity.workspacePath) ?? 0) + 1);
+      }
+    }
+    const validWorkspaceRepositoryIds = new Set([...snapshotByRepository].flatMap(([repositoryId, snapshot]) => {
+      const identity = derivedWorkspaceByRepository.get(repositoryId)!;
+      return snapshot.workspacePath === identity.workspacePath &&
+        snapshot.workspaceIdentityDigest === identity.workspaceIdentityDigest &&
+        JSON.stringify(snapshot.workspacePaths) === JSON.stringify(authenticatedWorkspacePaths) &&
+        snapshot.evidenceRefs.includes(
+          `repository-snapshot:${snapshot.snapshotId}:workspace:${snapshot.workspaceIdentityDigest}`,
+        ) ? [repositoryId] : [];
+    }));
     for (const repositoryId of requestedRepositoryIds) {
       const candidates = roots.get(repositoryId) ?? [];
       if (candidates.length === 0) {
@@ -243,9 +289,13 @@ export function consultRegaugeGraphDependencies(input: {
       }
       const { node: source, evidence } = candidates[0]!;
       const snapshot = snapshotByRepository.get(repositoryId);
+      const workspaceIdentity = derivedWorkspaceByRepository.get(repositoryId);
+      const workspaceIdentityValid = Boolean(snapshot && workspaceIdentity &&
+        validWorkspaceRepositoryIds.has(repositoryId));
       if (
         evidence.coverage !== "complete" ||
         !snapshot ||
+        !workspaceIdentityValid ||
         typeof snapshot.files[evidence.manifestPath] !== "string" ||
         sha256(canonicalManifestText(snapshot.files[evidence.manifestPath]!)) !==
           evidence.contentDigest
@@ -262,6 +312,8 @@ export function consultRegaugeGraphDependencies(input: {
           coverage: "unknown",
           reason: evidence.coverage !== "complete"
             ? "manifest_ingest_incomplete"
+            : !workspaceIdentityValid
+              ? "workspace_snapshot_identity_invalid"
             : "manifest_snapshot_digest_mismatch",
           dependsOnRepositoryIds: [],
           evidenceRefs: evidence.evidenceRefs,
@@ -289,11 +341,14 @@ export function consultRegaugeGraphDependencies(input: {
           break;
         }
         const specifier = typeof edge.props?.specifier === "string" ? edge.props.specifier : "";
-        const sourceWorkspacePath = normalizeSnapshotPath(snapshot.workspacePath ?? "");
-        const sourceManifestDirectory = normalizeSnapshotPath(
-          [sourceWorkspacePath, evidence.manifestPath.split("/").slice(0, -1).join("/")]
-            .filter(Boolean).join("/"),
-        ) ?? "";
+        const sourceWorkspacePath = snapshot.workspacePath === null
+          ? null
+          : normalizeSnapshotPath(snapshot.workspacePath) ?? "";
+        if (sourceWorkspacePath === null || sourceWorkspacePath !== evidence.manifestPath.split("/").slice(0, -1).join("/")) {
+          reason = "workspace_snapshot_identity_invalid";
+          break;
+        }
+        const sourceManifestDirectory = sourceWorkspacePath;
         const relative = specifier.replace(/^(?:file:|link:|portal:)/i, "");
         const resolvedPath = /^(?:file:|link:|portal:|\.\.?[\\/])/i.test(specifier)
           ? normalizeSnapshotPath(`${sourceManifestDirectory}/${relative}`)
@@ -303,12 +358,14 @@ export function consultRegaugeGraphDependencies(input: {
           ...(snapshot.workspacePaths ?? []),
         ];
         const matches = [...roots.entries()].flatMap(([candidateRepositoryId, candidateRoots]) => {
-          if (candidateRepositoryId === repositoryId || candidateRoots.length !== 1) return [];
+          if (candidateRepositoryId === repositoryId || candidateRoots.length !== 1 ||
+              !validWorkspaceRepositoryIds.has(candidateRepositoryId)) return [];
           const candidateSnapshot = snapshotByRepository.get(candidateRepositoryId);
-          const candidateWorkspacePath = candidateSnapshot?.workspacePath
+          const candidateWorkspacePath = candidateSnapshot?.workspacePath !== null && candidateSnapshot?.workspacePath !== undefined
             ? normalizeSnapshotPath(candidateSnapshot.workspacePath)
             : null;
           const candidateRoot = candidateRoots[0]!.node;
+          if (candidateWorkspacePath === null || workspacePathCounts.get(candidateWorkspacePath) !== 1) return [];
           const pathProven = Boolean(candidateWorkspacePath && resolvedPath === candidateWorkspacePath);
           const workspaceProven = specifier.startsWith("workspace:") && Boolean(
             candidateWorkspacePath && candidateRoot.label === target.label &&
@@ -331,6 +388,8 @@ export function consultRegaugeGraphDependencies(input: {
           sourceWorkspacePath,
           targetSnapshotId: snapshotByRepository.get(matches[0]!.repositoryId)!.snapshotId,
           targetWorkspacePath: snapshotByRepository.get(matches[0]!.repositoryId)!.workspacePath,
+          sourceWorkspaceIdentityDigest: snapshot.workspaceIdentityDigest,
+          targetWorkspaceIdentityDigest: snapshotByRepository.get(matches[0]!.repositoryId)!.workspaceIdentityDigest,
           workspaceMembership: [...patterns].sort(compareCodeUnits),
           specifier,
         }))}`;

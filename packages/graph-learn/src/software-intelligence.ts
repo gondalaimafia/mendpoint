@@ -645,6 +645,13 @@ export type MissionGraphTopologyRepository = Readonly<{
   dependsOnRepositoryIds: readonly string[];
   evidenceRefs: readonly string[];
 }>;
+
+function topologyManifestPath(value: string): boolean {
+  const normalized = value.replace(/\\/g, "/");
+  return Boolean(normalized) && !normalized.startsWith("/") &&
+    !normalized.split("/").some((segment) => !segment || segment === "." || segment === "..") &&
+    ["package.json", "pyproject.toml", "go.mod"].includes(normalized.split("/").at(-1) ?? "");
+}
 export type MissionGraphTopologyEdge = Readonly<{
   sourceRepositoryId: string;
   targetRepositoryId: string;
@@ -693,7 +700,7 @@ export function compileMissionGraphTopologyProjection(input: Omit<
   if (repositories.length !== requestedRepositoryIds.length || repositories.some((repository, index) =>
     repository.repositoryId !== requestedRepositoryIds[index] ||
     (repository.serviceId !== null && (typeof repository.serviceId !== "string" || !repository.serviceId)) ||
-    (repository.manifestPath !== null && !["package.json", "pyproject.toml", "go.mod"].includes(repository.manifestPath)) ||
+    (repository.manifestPath !== null && !topologyManifestPath(repository.manifestPath)) ||
     (repository.manifestContentDigest !== null && !/^sha256:[a-f0-9]{64}$/.test(repository.manifestContentDigest)) ||
     (repository.manifestVersionId !== null && !/^sha256:[a-f0-9]{64}$/.test(repository.manifestVersionId)) ||
     (repository.snapshotId !== null && (typeof repository.snapshotId !== "string" || !repository.snapshotId)) ||

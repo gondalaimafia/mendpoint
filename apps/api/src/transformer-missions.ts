@@ -115,12 +115,14 @@ export class TransformerMissionService {
     }
     const repositories = repositoryIds.map((repositoryId) =>
       this.repositories.load(request.tenantId, repositoryId, input.evaluatedAt).planning);
+    const workspacePaths = [...new Set(repositories.flatMap((repository) =>
+      repository.workspacePath === null ? [] : [repository.workspacePath]))].sort(compareCodeUnits);
     const graphPlan = consultRegaugeGraphDependencies({
       graph: this.consults.graph ?? null,
       tenantId: request.tenantId,
       evaluatedAt: input.evaluatedAt,
       repositoryIds,
-      repositorySnapshots: repositories,
+      repositorySnapshots: repositories.map((repository) => ({ ...repository, workspacePaths })),
     });
     const incompleteDependencies = graphPlan.repositories
       .filter((repository) => repository.coverage !== "complete")
