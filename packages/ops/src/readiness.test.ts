@@ -7,6 +7,7 @@ import { readiness } from "./readiness.js";
 import {
   CORE_DISASTER_RECOVERY_POLICY,
   createBackupBundle,
+  createObjectBackupRecoveryReceipt,
   recordLastVerifiedBackupEvidence,
 } from "./disaster-recovery.js";
 
@@ -94,7 +95,30 @@ describe("readiness storage boundary", () => {
           configuration: "recovery-config.json",
         },
       });
-      recordLastVerifiedBackupEvidence({
+      const evidenceBase = {
+        evidencePath,
+        key,
+        keyId: "customer-backup-key-v1",
+        backupId: manifest.backupId,
+        backupRoot: join(outputRoot, "customer-001"),
+        createdAt: manifest.createdAt,
+        verifiedAt: new Date().toISOString(),
+        manifestAuthentication: manifest.integrity.digest,
+        manifest,
+      };
+      expect(() => recordLastVerifiedBackupEvidence({
+        ...evidenceBase,
+        backupId: "customer-002",
+      })).toThrow("backup_evidence_manifest_identity_mismatch");
+      expect(() => recordLastVerifiedBackupEvidence({
+        ...evidenceBase,
+        createdAt: new Date(Date.parse(manifest.createdAt) - 1_000).toISOString(),
+      })).toThrow("backup_evidence_manifest_identity_mismatch");
+      expect(() => recordLastVerifiedBackupEvidence({
+        ...evidenceBase,
+        keyId: "customer-backup-key-v2",
+      })).toThrow("backup_evidence_manifest_identity_mismatch");
+      expect(() => recordLastVerifiedBackupEvidence({
         evidencePath,
         key,
         keyId: "customer-backup-key-v1",
@@ -104,7 +128,7 @@ describe("readiness storage boundary", () => {
         verifiedAt: new Date().toISOString(),
         manifestAuthentication: "a".repeat(64),
         manifest,
-      });
+      })).toThrow("backup_evidence_manifest_identity_mismatch");
       expect(readiness({ dbPath: join(sourceRoot, "mendpoint.sqlite"), dbPing: () => true }).status)
         .toBe("fail");
 
@@ -113,7 +137,7 @@ describe("readiness storage boundary", () => {
         schemaVersion: 3 as const,
         resources: manifest.resources.filter((resource) => resource.kind !== "releaseIngestion"),
       };
-      recordLastVerifiedBackupEvidence({
+      expect(() => recordLastVerifiedBackupEvidence({
         evidencePath,
         key,
         keyId: "customer-backup-key-v1",
@@ -123,7 +147,7 @@ describe("readiness storage boundary", () => {
         verifiedAt: new Date().toISOString(),
         manifestAuthentication: manifest.integrity.digest,
         manifest: legacyManifest,
-      });
+      })).toThrow("backup_evidence_manifest_identity_mismatch");
       expect(readiness({ dbPath: join(sourceRoot, "mendpoint.sqlite"), dbPing: () => true }).status)
         .toBe("fail");
 
@@ -159,18 +183,27 @@ describe("readiness storage boundary", () => {
         commitDigest: "b".repeat(64),
         manifestSha256: "c".repeat(64),
       };
-      recordLastVerifiedBackupEvidence({
+      const publishedVerifiedAt = new Date().toISOString();
+      const recoveryReceipt = createObjectBackupRecoveryReceipt({
+        backupId: manifest.backupId,
+        keyId: "customer-backup-key-v1",
+        verifiedAt: publishedVerifiedAt,
+        manifestAuthentication: manifest.integrity.digest,
+        publication,
+      }, key);
+      expect(() => recordLastVerifiedBackupEvidence({
         evidencePath,
         key,
         keyId: "customer-backup-key-v1",
         backupId: manifest.backupId,
         backupRoot: join(outputRoot, "customer-001"),
         createdAt: manifest.createdAt,
-        verifiedAt: new Date().toISOString(),
+        verifiedAt: publishedVerifiedAt,
         manifestAuthentication: manifest.integrity.digest,
         manifest: legacyManifest,
         publication,
-      });
+        recoveryReceipt,
+      })).toThrow("backup_evidence_manifest_identity_mismatch");
       expect(readiness({ dbPath: join(sourceRoot, "mendpoint.sqlite"), dbPing: () => true }).status)
         .toBe("fail");
 
@@ -181,10 +214,11 @@ describe("readiness storage boundary", () => {
         backupId: manifest.backupId,
         backupRoot: join(outputRoot, "customer-001"),
         createdAt: manifest.createdAt,
-        verifiedAt: new Date().toISOString(),
+        verifiedAt: publishedVerifiedAt,
         manifestAuthentication: manifest.integrity.digest,
         manifest,
         publication,
+        recoveryReceipt,
       });
       const objectReport = readiness({ dbPath: join(sourceRoot, "mendpoint.sqlite"), dbPing: () => true });
       expect(objectReport.checks).toContainEqual({
@@ -192,6 +226,37 @@ describe("readiness storage boundary", () => {
         ok: true,
         detail: "current",
       });
+
+      const tamperedReceipt = {
+        ...recoveryReceipt,
+        manifestAuthentication: "d".repeat(64),
+      };
+      expect(() => recordLastVerifiedBackupEvidence({
+        evidencePath,
+        key,
+        keyId: "customer-backup-key-v1",
+        backupId: manifest.backupId,
+        backupRoot: join(outputRoot, "customer-001"),
+        createdAt: manifest.createdAt,
+        verifiedAt: publishedVerifiedAt,
+        manifestAuthentication: manifest.integrity.digest,
+        manifest,
+        publication,
+        recoveryReceipt: tamperedReceipt,
+      })).toThrow("backup_evidence_recovery_receipt_invalid");
+
+      expect(() => recordLastVerifiedBackupEvidence({
+        evidencePath,
+        key,
+        keyId: "customer-backup-key-v1",
+        backupId: manifest.backupId,
+        backupRoot: join(outputRoot, "customer-001"),
+        createdAt: manifest.createdAt,
+        verifiedAt: publishedVerifiedAt,
+        manifestAuthentication: manifest.integrity.digest,
+        manifest,
+        publication,
+      })).toThrow("backup_evidence_recovery_receipt_invalid");
     } finally {
       for (const key of Object.keys(process.env)) {
         if (!(key in previous)) delete process.env[key];

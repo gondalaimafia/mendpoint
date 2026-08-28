@@ -44,6 +44,15 @@ async function main(): Promise<void> {
       config: objectStore,
       publishedAt,
     }, transport);
+    const recoveryReceipt = await publishCustomerBackupRecoveryReceipt({
+      backupId: manifest.backupId,
+      keyId: input.keyId,
+      verifiedAt: publishedAt,
+      manifestAuthentication: manifest.integrity.digest,
+      publication,
+      key: input.key,
+      config: objectStore,
+    }, transport);
     const evidence = createLastVerifiedBackupEvidence({
       key: input.key,
       keyId: input.keyId,
@@ -54,16 +63,8 @@ async function main(): Promise<void> {
       manifestAuthentication: manifest.integrity.digest,
       manifest,
       publication,
+      recoveryReceipt,
     });
-    await publishCustomerBackupRecoveryReceipt({
-      backupId: evidence.backupId,
-      keyId: evidence.keyId,
-      verifiedAt: evidence.verifiedAt,
-      manifestAuthentication: evidence.manifestAuthentication,
-      publication,
-      key: input.key,
-      config: objectStore,
-    }, transport);
     recordLastVerifiedBackupEvidence({
       evidencePath: input.evidencePath!,
       key: input.key,
@@ -75,6 +76,7 @@ async function main(): Promise<void> {
       manifestAuthentication: manifest.integrity.digest,
       manifest,
       publication,
+      recoveryReceipt,
     });
     console.log(JSON.stringify({
       backupId: manifest.backupId,

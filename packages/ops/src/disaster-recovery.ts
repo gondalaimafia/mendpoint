@@ -188,6 +188,7 @@ export interface LastVerifiedBackupEvidence {
     resourceKinds: readonly RecoveryResourceKind[];
   }>;
   publication?: Readonly<ObjectBackupPublication>;
+  recoveryReceipt?: Readonly<ObjectBackupRecoveryReceipt>;
   integrity: Readonly<{ algorithm: "hmac-sha256"; keyId: string; digest: string }>;
 }
 
@@ -1774,12 +1775,9 @@ type LastVerifiedBackupEvidenceMaterial = {
   createdAt: string;
   verifiedAt: string;
   manifestAuthentication: string;
-  manifest: Readonly<{
-    schemaVersion: BackupManifest["schemaVersion"];
-    policy: Readonly<Pick<BackupManifest["policy"], "policyId" | "version">>;
-    resources: readonly Readonly<Pick<BackupResourceManifest, "kind">>[];
-  }>;
+  manifest: BackupManifest;
   publication?: ObjectBackupPublication;
+  recoveryReceipt?: ObjectBackupRecoveryReceipt;
 };
 
 function evidenceManifestSummary(
@@ -1796,6 +1794,37 @@ function evidenceManifestSummary(
     policyVersion: requiredText(manifest.policy.version, "backup_evidence_policy_version"),
     resourceKinds,
   };
+}
+
+function assertEvidenceManifestIdentity(input: LastVerifiedBackupEvidenceMaterial): void {
+  const manifest = input.manifest;
+  if (
+    manifest.backupId !== input.backupId ||
+    manifest.createdAt !== input.createdAt ||
+    manifest.integrity?.algorithm !== "hmac-sha256" ||
+    manifest.integrity.keyId !== input.keyId ||
+    manifest.integrity.digest !== input.manifestAuthentication ||
+    !safeEqualHex(manifest.integrity.digest, manifestDigest(manifest, input.key))
+  ) {
+    throw new Error("backup_evidence_manifest_identity_mismatch");
+  }
+}
+
+function recoveryReceiptMatchesEvidence(
+  evidence: Pick<LastVerifiedBackupEvidence,
+    "backupId" | "keyId" | "verifiedAt" | "manifestAuthentication" | "publication" | "recoveryReceipt">,
+  key: Buffer,
+): boolean {
+  if (!evidence.publication) return evidence.recoveryReceipt === undefined;
+  const receipt = evidence.recoveryReceipt;
+  if (!receipt) return false;
+  const verified = verifyObjectBackupRecoveryReceipt(receipt, key, evidence.keyId);
+  return verified.ok &&
+    receipt.backupId === evidence.backupId &&
+    receipt.keyId === evidence.keyId &&
+    receipt.verifiedAt === evidence.verifiedAt &&
+    receipt.manifestAuthentication === evidence.manifestAuthentication &&
+    JSON.stringify(receipt.publication) === JSON.stringify(evidence.publication);
 }
 
 function evidenceManifestSummaryValid(
@@ -1816,13 +1845,15 @@ function evidenceManifestSummaryValid(
 function evidenceProvesCurrentBackupContract(
   evidence: LastVerifiedBackupEvidence,
   policy: DisasterRecoveryPolicy,
+  key: Buffer,
 ): boolean {
   const summary = evidence.manifest;
   return evidence.schemaVersion === LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION &&
     summary?.schemaVersion === BACKUP_MANIFEST_SCHEMA_VERSION &&
     summary.policyId === policy.policyId &&
     summary.policyVersion === policy.version &&
-    JSON.stringify(summary.resourceKinds) === JSON.stringify(RESOURCE_KINDS);
+    JSON.stringify(summary.resourceKinds) === JSON.stringify(RESOURCE_KINDS) &&
+    recoveryReceiptMatchesEvidence(evidence, key);
 }
 
 export function createLastVerifiedBackupEvidence(
@@ -1830,6 +1861,7 @@ export function createLastVerifiedBackupEvidence(
 ): LastVerifiedBackupEvidence {
   if (!isAbsolute(input.backupRoot)) throw new Error("backup_evidence_root_must_be_absolute");
   if (input.key.byteLength !== 32) throw new Error("backup_evidence_key_invalid");
+  assertEvidenceManifestIdentity(input);
   validDate(input.createdAt, "backup_evidence_created_at");
   validDate(input.verifiedAt, "backup_evidence_verified_at");
   if (!/^[a-f0-9]{64}$/.test(input.manifestAuthentication)) {
@@ -1848,6 +1880,17 @@ export function createLastVerifiedBackupEvidence(
       throw new Error("object_backup_prefix_id_mismatch");
     }
   }
+  const evidenceIdentity = {
+    backupId: input.backupId,
+    keyId: input.keyId,
+    verifiedAt: input.verifiedAt,
+    manifestAuthentication: input.manifestAuthentication,
+    ...(input.publication ? { publication: input.publication } : {}),
+    ...(input.recoveryReceipt ? { recoveryReceipt: input.recoveryReceipt } : {}),
+  };
+  if (!recoveryReceiptMatchesEvidence(evidenceIdentity, input.key)) {
+    throw new Error("backup_evidence_recovery_receipt_invalid");
+  }
   const unsigned = {
     schemaVersion: LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION,
     backupId: requiredText(input.backupId, "backup_evidence_backup_id"),
@@ -1858,6 +1901,7 @@ export function createLastVerifiedBackupEvidence(
     manifestAuthentication: input.manifestAuthentication,
     manifest: evidenceManifestSummary(input.manifest),
     ...(input.publication ? { publication: input.publication } : {}),
+    ...(input.recoveryReceipt ? { recoveryReceipt: input.recoveryReceipt } : {}),
   };
   const evidence = {
     ...unsigned,
@@ -1907,7 +1951,9 @@ export function verifyAuthenticatedLastVerifiedBackupEvidence(
     evidence.keyId !== keyId ||
     !safeEqualHex(evidence.integrity.digest, evidenceDigest(evidence, key)) ||
     !/^[a-f0-9]{64}$/.test(evidence.manifestAuthentication) ||
-    !evidenceManifestSummaryValid(evidence)
+    !evidenceManifestSummaryValid(evidence) ||
+    (evidence.schemaVersion === LAST_VERIFIED_BACKUP_EVIDENCE_SCHEMA_VERSION &&
+      !recoveryReceiptMatchesEvidence(evidence, key))
   ) throw new Error("last_verified_backup_evidence_invalid");
   if (evidence.publication) {
     if (evidence.publication.backupId !== evidence.backupId) {
@@ -1943,7 +1989,7 @@ export function assessCustomerBackupReadiness(
       !safeEqualHex(evidence.integrity.digest, evidenceDigest(evidence, input.key)) ||
       !/^[a-f0-9]{64}$/.test(evidence.manifestAuthentication) ||
       !evidenceManifestSummaryValid(evidence) ||
-      !evidenceProvesCurrentBackupContract(evidence, input.policy)
+      !evidenceProvesCurrentBackupContract(evidence, input.policy, input.key)
     ) return { ok: false, detail: "missing_or_invalid" };
     if (evidence.publication) {
       const { backupId: publicationBackupId, ...publicationIdentity } = evidence.publication;
