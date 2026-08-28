@@ -69,6 +69,8 @@ function input(): TransformerMissionPlanningInput {
     manifestPaths: ["package.json"],
     snapshotDigest,
     snapshotId: "snapshot-repo-a",
+    workspaceAuthorityDigest: null,
+    workspaceAuthorityId: null,
     workspacePath: "",
   }));
   return {
@@ -99,6 +101,7 @@ function input(): TransformerMissionPlanningInput {
       revision: revision("b"),
       snapshotDigest,
       workspacePath: "",
+      workspaceAuthority: null,
       workspaceIdentityDigest,
       observedAt: "2026-08-13T11:50:00.000Z",
       evidenceRefs: ["evidence:snapshot:a", `repository-snapshot:snapshot-repo-a:workspace:${workspaceIdentityDigest}`],

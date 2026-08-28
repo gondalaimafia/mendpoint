@@ -17,6 +17,10 @@ import {
 } from "@mendpoint/db";
 import { consultRegaugeGraphDependencies } from "./regauge-plan-consult.js";
 import { createAppDbTransformerMissionAuthority } from "./transformer-mission-authority.js";
+import {
+  TRANSFORMER_WORKSPACE_AUTHORITY_PATH,
+  TRANSFORMER_WORKSPACE_AUTHORITY_SCHEMA,
+} from "./transformer-workspace-authority.js";
 
 const NOW = "2026-08-13T16:00:00.000Z";
 const opened: Array<{ db: AppDb; root: string }> = [];
@@ -121,6 +125,7 @@ function addRepositorySnapshot(
     manifestPath: string;
     packageName: string;
     dependencies?: Readonly<Record<string, string>>;
+    authorityText?: string;
   }>,
 ) {
   const content = `${JSON.stringify({
@@ -131,6 +136,11 @@ function addRepositorySnapshot(
   const absoluteManifest = join(snapshotRoot, ...input.manifestPath.split("/"));
   mkdirSync(dirname(absoluteManifest), { recursive: true });
   writeFileSync(absoluteManifest, content);
+  if (input.authorityText !== undefined) {
+    const absoluteAuthority = join(snapshotRoot, ...TRANSFORMER_WORKSPACE_AUTHORITY_PATH.split("/"));
+    mkdirSync(dirname(absoluteAuthority), { recursive: true });
+    writeFileSync(absoluteAuthority, input.authorityText);
+  }
   insertConnectedRepository(value.db, {
     id: input.repositoryId,
     tenantId: "tenant-a",
@@ -158,13 +168,22 @@ function addRepositorySnapshot(
   insertRepositorySnapshotFiles(value.db, {
     tenantId: "tenant-a",
     snapshotId: input.snapshotId,
-    files: [{
-      path: input.manifestPath,
-      mode: "100644",
-      kind: "file",
-      size: Buffer.byteLength(content),
-      sha256: sha256(content),
-    }],
+    files: [
+      {
+        path: input.manifestPath,
+        mode: "100644",
+        kind: "file",
+        size: Buffer.byteLength(content),
+        sha256: sha256(content),
+      },
+      ...(input.authorityText === undefined ? [] : [{
+        path: TRANSFORMER_WORKSPACE_AUTHORITY_PATH,
+        mode: "100644" as const,
+        kind: "file" as const,
+        size: Buffer.byteLength(input.authorityText),
+        sha256: sha256(input.authorityText),
+      }]),
+    ],
   });
   insertRepositorySnapshotPolicy(value.db, {
     id: `policy-${input.repositoryId}`,
@@ -201,6 +220,7 @@ describe("production Transformer mission authority", () => {
       organizationId: "tenant-a",
       revision: "a".repeat(40),
       workspacePath: "",
+      workspaceAuthority: null,
       workspaceIdentityDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       evidenceRefs: expect.arrayContaining([
         expect.stringMatching(/^repository-snapshot:snapshot-a:workspace:sha256:[a-f0-9]{64}$/),
@@ -250,6 +270,53 @@ describe("production Transformer mission authority", () => {
       .toThrow("transformer_mission_snapshot_file_size_mismatch");
   });
 
+  it("keeps separately cloned repositories unmapped without sealed shared-root authority", () => {
+    const value = fixture();
+    addRepositorySnapshot(value, {
+      repositoryId: "repo-separated-shop",
+      snapshotId: "snapshot-separated-shop",
+      manifestPath: "packages/shop/package.json",
+      packageName: "shop",
+      dependencies: { billing: "file:../billing" },
+    });
+    addRepositorySnapshot(value, {
+      repositoryId: "repo-separated-billing",
+      snapshotId: "snapshot-separated-billing",
+      manifestPath: "packages/billing/package.json",
+      packageName: "billing",
+    });
+    const authority = createAppDbTransformerMissionAuthority(value.db);
+    const repositoryIds = ["repo-separated-billing", "repo-separated-shop"];
+    const planning = repositoryIds.map((repositoryId) =>
+      authority.repositories.load("tenant-a", repositoryId, NOW).planning);
+    expect(planning.every((repository) => repository.workspaceAuthority === null)).toBe(true);
+    const graph = openGraphLearnMemory();
+    try {
+      for (const repository of planning) {
+        ingestManifestDependencies(graph, {
+          repoPath: "/unused",
+          repoId: repository.id,
+          tenantId: "tenant-a",
+          observedAt: "2026-08-13T15:59:00.000Z",
+          files: Object.entries(repository.files).map(([path, text]) => ({ path, text })),
+        });
+      }
+      const result = consultRegaugeGraphDependencies({
+        graph,
+        tenantId: "tenant-a",
+        evaluatedAt: NOW,
+        repositoryIds,
+        repositorySnapshots: planning,
+      });
+      expect(result.repositories.find((repository) =>
+        repository.repositoryId === "repo-separated-shop"))
+        .toMatchObject({ coverage: "unknown", reason: "dependency_target_unmapped" });
+      expect(result.edges).toEqual([]);
+    } finally {
+      graph.raw.close();
+    }
+  });
+
   it("carries exact snapshot workspace authority into every local dependency protocol", () => {
     const value = fixture();
     const sources = [
@@ -259,28 +326,44 @@ describe("production Transformer mission authority", () => {
       ["portal", "portal:../billing"] as const,
       ["relative", "../billing"] as const,
     ];
-    addRepositorySnapshot(value, {
-      repositoryId: "repo-billing",
-      snapshotId: "snapshot-billing",
-      manifestPath: "packages/billing/package.json",
-      packageName: "billing",
-    });
-    for (const [name, specifier] of sources) {
-      addRepositorySnapshot(value, {
+    const definitions = [
+      {
+        repositoryId: "repo-billing", snapshotId: "snapshot-billing",
+        manifestPath: "packages/billing/package.json", packageName: "billing",
+        dependencies: {} as Readonly<Record<string, string>>,
+      },
+      ...sources.map(([name, specifier]) => ({
         repositoryId: `repo-${name}`,
         snapshotId: `snapshot-${name}`,
         manifestPath: `packages/shop-${name}/package.json`,
         packageName: `shop-${name}`,
         dependencies: { billing: specifier },
-      });
-    }
-    addRepositorySnapshot(value, {
-      repositoryId: "repo-unmapped",
-      snapshotId: "snapshot-unmapped",
-      manifestPath: "packages/shop-unmapped/package.json",
-      packageName: "shop-unmapped",
-      dependencies: { missing: "file:../missing" },
+      })),
+      {
+        repositoryId: "repo-unmapped", snapshotId: "snapshot-unmapped",
+        manifestPath: "packages/shop-unmapped/package.json", packageName: "shop-unmapped",
+        dependencies: { missing: "file:../missing" },
+      },
+    ];
+    const authorityText = JSON.stringify({
+      schemaVersion: TRANSFORMER_WORKSPACE_AUTHORITY_SCHEMA,
+      tenantId: "tenant-a",
+      authorityId: "workspace-acme-platform",
+      members: definitions.map((definition) => {
+        const content = `${JSON.stringify({
+          name: definition.packageName,
+          dependencies: definition.dependencies,
+        })}\n`;
+        return {
+          repositoryId: definition.repositoryId,
+          revision: sha256(definition.repositoryId).slice(0, 40),
+          workspacePath: definition.manifestPath.split("/").slice(0, -1).join("/"),
+          manifestPath: definition.manifestPath,
+          manifestContentDigest: `sha256:${sha256(content)}`,
+        };
+      }).sort((left, right) => left.repositoryId.localeCompare(right.repositoryId)),
     });
+    for (const definition of definitions) addRepositorySnapshot(value, { ...definition, authorityText });
 
     const repositoryIds = [
       "repo-billing",
@@ -297,8 +380,6 @@ describe("production Transformer mission authority", () => {
     expect(() => authority.repositories.load("tenant-b", "repo-billing", NOW))
       .toThrow("transformer_mission_repository_not_found");
 
-    const workspacePaths = planning.flatMap((repository) =>
-      repository.workspacePath === null ? [] : [repository.workspacePath]).sort();
     const graph = openGraphLearnMemory();
     try {
       for (const repository of planning) {
@@ -310,10 +391,7 @@ describe("production Transformer mission authority", () => {
           files: Object.entries(repository.files).map(([path, text]) => ({ path, text })),
         });
       }
-      const repositorySnapshots = planning.map((repository) => ({
-        ...repository,
-        workspacePaths,
-      }));
+      const repositorySnapshots = planning;
       const result = consultRegaugeGraphDependencies({
         graph,
         tenantId: "tenant-a",
@@ -326,7 +404,7 @@ describe("production Transformer mission authority", () => {
         tenantId: "tenant-a",
         evaluatedAt: NOW,
         repositoryIds,
-        repositorySnapshots: restartedPlanning.map((repository) => ({ ...repository, workspacePaths })),
+        repositorySnapshots: restartedPlanning,
       })).toEqual(result);
       for (const [name] of sources) {
         expect(result.repositories.find((repository) => repository.repositoryId === `repo-${name}`))
@@ -348,7 +426,7 @@ describe("production Transformer mission authority", () => {
         tenantId: "tenant-a",
         evaluatedAt: NOW,
         repositoryIds: ["repo-billing"],
-        repositorySnapshots: [{ ...billing, workspaceIdentityDigest: `sha256:${"0".repeat(64)}`, workspacePaths: [billing.workspacePath!] }],
+        repositorySnapshots: [{ ...billing, workspaceIdentityDigest: `sha256:${"0".repeat(64)}` }],
       });
       expect(tampered.repositories[0]).toMatchObject({
         coverage: "unknown",

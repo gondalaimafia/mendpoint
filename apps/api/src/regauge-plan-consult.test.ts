@@ -10,6 +10,11 @@ import {
   consultRegaugeGraphDependencies as consultRegaugeGraphDependenciesAtInstant,
   consultRegaugeOrganizationMemory,
 } from "./regauge-plan-consult.js";
+import {
+  deriveTransformerSnapshotWorkspaceIdentity,
+  TRANSFORMER_WORKSPACE_AUTHORITY_PATH,
+  TRANSFORMER_WORKSPACE_AUTHORITY_SCHEMA,
+} from "./transformer-workspace-authority.js";
 
 describe("consultRegaugeGraphDependencies", () => {
   const evaluatedAt = "2026-08-27T12:00:00.000Z";
@@ -23,29 +28,70 @@ describe("consultRegaugeGraphDependencies", () => {
     packageName: string,
     dependencies: Record<string, string> = {},
     manifestPath = "package.json",
-    workspacePaths?: readonly string[],
+    authorityText?: string,
   ) => {
     const text = manifestText(packageName, dependencies);
-    const snapshotDigest = `sha256:${createHash("sha256").update(`snapshot:${repositoryId}:${manifestPath}:${text}`).digest("hex")}`;
-    const workspacePath = manifestPath.split("/").slice(0, -1).join("/");
-    const identityBody = JSON.stringify({
-      manifestPaths: [manifestPath],
-      snapshotDigest,
+    const files = {
+      [manifestPath]: text,
+      ...(authorityText === undefined ? {} : { [TRANSFORMER_WORKSPACE_AUTHORITY_PATH]: authorityText }),
+    };
+    const snapshotDigest = `sha256:${createHash("sha256").update(`snapshot:${repositoryId}:${JSON.stringify(files)}`).digest("hex")}`;
+    const revision = createHash("sha1").update(repositoryId).digest("hex");
+    const identity = deriveTransformerSnapshotWorkspaceIdentity({
+      tenantId: "tenant-a",
+      repositoryId,
       snapshotId: `snapshot-${repositoryId}`,
-      workspacePath,
+      revision,
+      snapshotDigest,
+      files,
     });
-    const workspaceIdentityDigest = `sha256:${createHash("sha256").update(identityBody).digest("hex")}`;
+    if (!identity.valid) throw new Error("invalid test workspace authority");
     return {
       id: repositoryId,
       snapshotId: `snapshot-${repositoryId}`,
-      revision: createHash("sha1").update(repositoryId).digest("hex"),
+      revision,
       snapshotDigest,
-      workspacePath,
-      workspacePaths: [...new Set(workspacePaths ?? [workspacePath])].sort(),
-      workspaceIdentityDigest,
-      evidenceRefs: [`repository-snapshot:snapshot-${repositoryId}:workspace:${workspaceIdentityDigest}`],
-      files: { [manifestPath]: text },
+      workspacePath: identity.workspacePath,
+      workspaceAuthority: identity.workspaceAuthority,
+      workspaceIdentityDigest: identity.workspaceIdentityDigest,
+      evidenceRefs: [
+        `repository-snapshot:snapshot-${repositoryId}:workspace:${identity.workspaceIdentityDigest}`,
+        ...(identity.workspaceAuthority ? [
+          `workspace-authority:${identity.workspaceAuthority.authorityId}:${identity.workspaceAuthority.contentDigest}`,
+        ] : []),
+      ],
+      files,
     };
+  };
+  const sharedSnapshots = (definitions: readonly Readonly<{
+    repositoryId: string;
+    packageName: string;
+    dependencies?: Record<string, string>;
+    manifestPath: string;
+  }>[]) => {
+    const members = definitions.map((definition) => {
+      const text = manifestText(definition.packageName, definition.dependencies ?? {});
+      return {
+        repositoryId: definition.repositoryId,
+        revision: createHash("sha1").update(definition.repositoryId).digest("hex"),
+        workspacePath: definition.manifestPath.split("/").slice(0, -1).join("/"),
+        manifestPath: definition.manifestPath,
+        manifestContentDigest: `sha256:${createHash("sha256").update(text).digest("hex")}`,
+      };
+    }).sort((left, right) => left.repositoryId.localeCompare(right.repositoryId));
+    const authorityText = JSON.stringify({
+      schemaVersion: TRANSFORMER_WORKSPACE_AUTHORITY_SCHEMA,
+      tenantId: "tenant-a",
+      authorityId: "workspace-acme-platform",
+      members,
+    });
+    return definitions.map((definition) => snapshot(
+      definition.repositoryId,
+      definition.packageName,
+      definition.dependencies ?? {},
+      definition.manifestPath,
+      authorityText,
+    ));
   };
   const ingest = (
     db: ReturnType<typeof openGraphLearnMemory>,
@@ -109,10 +155,10 @@ describe("consultRegaugeGraphDependencies", () => {
       graph: db,
       tenantId: "tenant-a",
       repositoryIds: ["repo-a", "repo-b"],
-      repositorySnapshots: [
-        snapshot("repo-a", "shop", { billing: "file:../billing" }, "packages/shop/package.json", ["packages/billing", "packages/shop"]),
-        snapshot("repo-b", "billing", {}, "packages/billing/package.json", ["packages/billing", "packages/shop"]),
-      ],
+      repositorySnapshots: sharedSnapshots([
+        { repositoryId: "repo-a", packageName: "shop", dependencies: { billing: "file:../billing" }, manifestPath: "packages/shop/package.json" },
+        { repositoryId: "repo-b", packageName: "billing", manifestPath: "packages/billing/package.json" },
+      ]),
     });
     expect(result.repositories).toEqual([
       expect.objectContaining({ repositoryId: "repo-a", coverage: "complete", dependsOnRepositoryIds: ["repo-b"] }),
@@ -135,10 +181,10 @@ describe("consultRegaugeGraphDependencies", () => {
       graph: db,
       tenantId: "tenant-a",
       repositoryIds: ["repo-a", "repo-b"],
-      repositorySnapshots: [
-        snapshot("repo-a", "shop", { billing: "workspace:*" }, "packages/shop/package.json", ["packages/billing", "packages/shop"]),
-        snapshot("repo-b", "billing", {}, "packages/billing/package.json", ["packages/billing", "packages/shop"]),
-      ],
+      repositorySnapshots: sharedSnapshots([
+        { repositoryId: "repo-a", packageName: "shop", dependencies: { billing: "workspace:*" }, manifestPath: "packages/shop/package.json" },
+        { repositoryId: "repo-b", packageName: "billing", manifestPath: "packages/billing/package.json" },
+      ]),
     });
     expect(result.repositories[0]).toMatchObject({
       repositoryId: "repo-a",
@@ -157,10 +203,10 @@ describe("consultRegaugeGraphDependencies", () => {
         graph: db,
         tenantId: "tenant-a",
         repositoryIds: ["repo-a", "repo-b"],
-        repositorySnapshots: [
-          snapshot("repo-a", "shop", { billing: specifier }, "packages/shop/package.json", ["packages/billing", "packages/shop"]),
-          snapshot("repo-b", "billing", {}, "packages/billing/package.json", ["packages/billing", "packages/shop"]),
-        ],
+        repositorySnapshots: sharedSnapshots([
+          { repositoryId: "repo-a", packageName: "shop", dependencies: { billing: specifier }, manifestPath: "packages/shop/package.json" },
+          { repositoryId: "repo-b", packageName: "billing", manifestPath: "packages/billing/package.json" },
+        ]),
       });
       expect(result.repositories[0]).toMatchObject({
         repositoryId: "repo-a",
@@ -168,6 +214,29 @@ describe("consultRegaugeGraphDependencies", () => {
         dependsOnRepositoryIds: ["repo-b"],
       });
       expect(result.edges[0]!.evidenceRefs).toContainEqual(expect.stringMatching(/^manifest-resolution:sha256:/));
+      db.raw.close();
+    }
+  });
+
+  it("does not infer a shared root from unrelated snapshots with colliding paths or workspace labels", () => {
+    for (const specifier of ["workspace:*", "file:../billing"]) {
+      const db = openGraphLearnMemory();
+      ingest(db, "tenant-a", "repo-a", "shop", { billing: specifier }, "packages/shop/package.json");
+      ingest(db, "tenant-a", "repo-b", "billing", {}, "packages/billing/package.json");
+      ingest(db, "tenant-a", "repo-c", "billing", {}, "packages/billing/package.json");
+      const result = consultRegaugeGraphDependencies({
+        graph: db,
+        tenantId: "tenant-a",
+        repositoryIds: ["repo-a", "repo-b", "repo-c"],
+        repositorySnapshots: [
+          snapshot("repo-a", "shop", { billing: specifier }, "packages/shop/package.json"),
+          snapshot("repo-b", "billing", {}, "packages/billing/package.json"),
+          snapshot("repo-c", "billing", {}, "packages/billing/package.json"),
+        ],
+      });
+      expect(result.repositories.find((repository) => repository.repositoryId === "repo-a"))
+        .toMatchObject({ coverage: "unknown", reason: "dependency_target_unmapped" });
+      expect(result.edges).toEqual([]);
       db.raw.close();
     }
   });
@@ -204,10 +273,10 @@ describe("consultRegaugeGraphDependencies", () => {
 
   it("is deterministic under requested-repository and ingest ordering", () => {
     const db = openGraphLearnMemory();
-    ingest(db, "tenant-a", "repo-a", "shop", { billing: "workspace:*" });
+    ingest(db, "tenant-a", "repo-a", "shop");
     ingest(db, "tenant-a", "repo-b", "billing");
     const repositorySnapshots = [
-      snapshot("repo-a", "shop", { billing: "workspace:*" }),
+      snapshot("repo-a", "shop"),
       snapshot("repo-b", "billing"),
     ];
     const first = consultRegaugeGraphDependencies({

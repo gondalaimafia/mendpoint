@@ -24,6 +24,7 @@ import type {
   TransformerMissionOrganizationAuthority,
   TransformerMissionRepositoryAuthority,
 } from "./transformer-missions.js";
+import { deriveTransformerSnapshotWorkspaceIdentity } from "./transformer-workspace-authority.js";
 
 const MAX_FILES = 10_000;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -50,16 +51,6 @@ function digest(value: string | Buffer): string {
 
 function prefixedDigest(value: string | Buffer): string {
   return `sha256:${digest(value)}`;
-}
-
-function manifestDirectory(path: string): string {
-  const parts = path.split("/");
-  parts.pop();
-  return parts.join("/");
-}
-
-function supportedManifestPath(path: string): boolean {
-  return ["package.json", "pyproject.toml", "go.mod"].includes(path.split("/").at(-1) ?? "");
 }
 
 function stableId(prefix: string, ...values: readonly string[]): string {
@@ -245,19 +236,21 @@ function loadRepository(
   }).sort((left, right) => compareCodeUnits(left.path, right.path));
   const recipeFiles = Object.freeze(files) as RecipeFiles;
   const snapshotDigest = recipeFilesDigest(recipeFiles);
-  const manifestPaths = fileEvidence.map((file) => file.path)
-    .filter(supportedManifestPath)
-    .sort(compareCodeUnits);
-  const workspacePath = manifestPaths.length === 1 ? manifestDirectory(manifestPaths[0]!) : null;
-  const workspaceIdentityDigest = prefixedDigest(canonical({
+  const workspace = deriveTransformerSnapshotWorkspaceIdentity({
+    tenantId,
+    repositoryId,
     snapshotId: snapshot.id,
+    revision: snapshot.resolved_sha,
     snapshotDigest,
-    manifestPaths,
-    workspacePath,
-  }));
+    files: recipeFiles,
+  });
+  if (!workspace.valid) throw new Error("transformer_mission_workspace_authority_invalid");
   const evidenceRefs = Object.freeze([
     `repository-snapshot:${snapshot.id}:manifest:sha256:${snapshot.manifest_sha256}`,
-    `repository-snapshot:${snapshot.id}:workspace:${workspaceIdentityDigest}`,
+    `repository-snapshot:${snapshot.id}:workspace:${workspace.workspaceIdentityDigest}`,
+    ...(workspace.workspaceAuthority ? [
+      `workspace-authority:${workspace.workspaceAuthority.authorityId}:${workspace.workspaceAuthority.contentDigest}`,
+    ] : []),
     `repository-snapshot-policy:${policy.id}`,
   ]);
   return Object.freeze({
@@ -267,8 +260,9 @@ function loadRepository(
       organizationId: tenantId,
       revision: snapshot.resolved_sha,
       snapshotDigest,
-      workspacePath,
-      workspaceIdentityDigest,
+      workspacePath: workspace.workspacePath,
+      workspaceAuthority: workspace.workspaceAuthority,
+      workspaceIdentityDigest: workspace.workspaceIdentityDigest,
       observedAt: snapshot.created_at,
       evidenceRefs,
       files: recipeFiles,

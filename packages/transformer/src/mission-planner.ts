@@ -39,6 +39,19 @@ export type TransformerMissionPlanningRepository = Readonly<{
   revision: string;
   snapshotDigest: string;
   workspacePath: string | null;
+  workspaceAuthority: Readonly<{
+    schemaVersion: "mendpoint.workspace-authority.v1";
+    tenantId: string;
+    authorityId: string;
+    contentDigest: string;
+    members: readonly Readonly<{
+      repositoryId: string;
+      revision: string;
+      workspacePath: string;
+      manifestPath: string;
+      manifestContentDigest: string;
+    }>[];
+  }> | null;
   workspaceIdentityDigest: string;
   observedAt: string;
   evidenceRefs: readonly string[];

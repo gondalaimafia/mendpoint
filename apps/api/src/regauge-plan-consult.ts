@@ -24,6 +24,7 @@ import {
   type PrecedenceResult,
 } from "@mendpoint/pipeline";
 import type { OrganizationMemoryRecord } from "@mendpoint/db";
+import { deriveTransformerSnapshotWorkspaceIdentity } from "./transformer-workspace-authority.js";
 
 type MemoryHead = Pick<
   OrganizationMemoryRecord,
@@ -116,52 +117,6 @@ function normalizeSnapshotPath(value: string): string | null {
   return parts.join("/");
 }
 
-function workspacePatterns(files: Readonly<Record<string, string>>, manifestPath: string): string[] {
-  try {
-    const parsed = JSON.parse(files[manifestPath] ?? "") as { workspaces?: unknown };
-    const value = parsed.workspaces;
-    const patterns = Array.isArray(value)
-      ? value
-      : value && typeof value === "object" && Array.isArray((value as { packages?: unknown }).packages)
-        ? (value as { packages: unknown[] }).packages
-        : [];
-    return patterns.filter((entry): entry is string => typeof entry === "string");
-  } catch {
-    return [];
-  }
-}
-
-function workspacePatternMatches(pattern: string, path: string): boolean {
-  const normalized = normalizeSnapshotPath(pattern);
-  if (!normalized) return false;
-  if (!normalized.includes("*")) return normalized === path;
-  const escaped = normalized.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*");
-  return new RegExp(`^${escaped}$`).test(path);
-}
-
-function snapshotWorkspaceIdentity(snapshot: Readonly<{
-  snapshotId: string;
-  snapshotDigest: string;
-  files: Readonly<Record<string, string>>;
-}>): Readonly<{ workspacePath: string | null; workspaceIdentityDigest: string }> {
-  const manifestPaths = Object.keys(snapshot.files)
-    .map((path) => path.replace(/\\/g, "/"))
-    .filter((path) => ["package.json", "pyproject.toml", "go.mod"].includes(path.split("/").at(-1) ?? ""))
-    .sort(compareCodeUnits);
-  const workspacePath = manifestPaths.length === 1
-    ? manifestPaths[0]!.split("/").slice(0, -1).join("/")
-    : null;
-  return Object.freeze({
-    workspacePath,
-    workspaceIdentityDigest: sha256(JSON.stringify({
-      manifestPaths,
-      snapshotDigest: snapshot.snapshotDigest,
-      snapshotId: snapshot.snapshotId,
-      workspacePath,
-    })),
-  });
-}
-
 export function consultRegaugeGraphDependencies(input: {
   graph: GraphLearnDb | null;
   tenantId: string;
@@ -173,7 +128,19 @@ export function consultRegaugeGraphDependencies(input: {
     revision: string;
     snapshotDigest: string;
     workspacePath: string | null;
-    workspacePaths: readonly string[];
+    workspaceAuthority: Readonly<{
+      schemaVersion: "mendpoint.workspace-authority.v1";
+      tenantId: string;
+      authorityId: string;
+      contentDigest: string;
+      members: readonly Readonly<{
+        repositoryId: string;
+        revision: string;
+        workspacePath: string;
+        manifestPath: string;
+        manifestContentDigest: string;
+      }>[];
+    }> | null;
     workspaceIdentityDigest: string;
     evidenceRefs: readonly string[];
     files: Readonly<Record<string, string>>;
@@ -232,24 +199,38 @@ export function consultRegaugeGraphDependencies(input: {
       (input.repositorySnapshots ?? []).map((snapshot) => [snapshot.id, snapshot]),
     );
     const derivedWorkspaceByRepository = new Map([...snapshotByRepository].map(([repositoryId, snapshot]) =>
-      [repositoryId, snapshotWorkspaceIdentity(snapshot)] as const));
-    const authenticatedWorkspacePaths = [...new Set([...derivedWorkspaceByRepository.values()]
-      .flatMap((identity) => identity.workspacePath === null ? [] : [identity.workspacePath]))]
-      .sort(compareCodeUnits);
+      [repositoryId, deriveTransformerSnapshotWorkspaceIdentity({
+        tenantId: input.tenantId,
+        repositoryId,
+        snapshotId: snapshot.snapshotId,
+        revision: snapshot.revision,
+        snapshotDigest: snapshot.snapshotDigest,
+        files: snapshot.files,
+      })] as const));
     const workspacePathCounts = new Map<string, number>();
     for (const identity of derivedWorkspaceByRepository.values()) {
-      if (identity.workspacePath !== null) {
-        workspacePathCounts.set(identity.workspacePath, (workspacePathCounts.get(identity.workspacePath) ?? 0) + 1);
+      if (identity.workspacePath !== null && identity.workspaceAuthority !== null) {
+        const key = `${identity.workspaceAuthority.contentDigest}\u0000${identity.workspacePath}`;
+        workspacePathCounts.set(key, (workspacePathCounts.get(key) ?? 0) + 1);
       }
     }
     const validWorkspaceRepositoryIds = new Set([...snapshotByRepository].flatMap(([repositoryId, snapshot]) => {
       const identity = derivedWorkspaceByRepository.get(repositoryId)!;
-      return snapshot.workspacePath === identity.workspacePath &&
+      const suppliedAuthorityMatches = snapshot.workspaceAuthority === null
+        ? identity.workspaceAuthority === null
+        : identity.workspaceAuthority !== null &&
+          snapshot.workspaceAuthority.schemaVersion === identity.workspaceAuthority.schemaVersion &&
+          snapshot.workspaceAuthority.tenantId === identity.workspaceAuthority.tenantId &&
+          snapshot.workspaceAuthority.authorityId === identity.workspaceAuthority.authorityId &&
+          snapshot.workspaceAuthority.contentDigest === identity.workspaceAuthority.contentDigest;
+      return identity.valid && snapshot.workspacePath === identity.workspacePath &&
+        suppliedAuthorityMatches &&
         snapshot.workspaceIdentityDigest === identity.workspaceIdentityDigest &&
-        JSON.stringify(snapshot.workspacePaths) === JSON.stringify(authenticatedWorkspacePaths) &&
         snapshot.evidenceRefs.includes(
           `repository-snapshot:${snapshot.snapshotId}:workspace:${snapshot.workspaceIdentityDigest}`,
-        ) ? [repositoryId] : [];
+        ) && (identity.workspaceAuthority === null || snapshot.evidenceRefs.includes(
+          `workspace-authority:${identity.workspaceAuthority.authorityId}:${identity.workspaceAuthority.contentDigest}`,
+        )) ? [repositoryId] : [];
     }));
     for (const repositoryId of requestedRepositoryIds) {
       const candidates = roots.get(repositoryId) ?? [];
@@ -349,27 +330,31 @@ export function consultRegaugeGraphDependencies(input: {
           break;
         }
         const sourceManifestDirectory = sourceWorkspacePath;
+        const sourceAuthority = workspaceIdentity!.workspaceAuthority;
         const relative = specifier.replace(/^(?:file:|link:|portal:)/i, "");
         const resolvedPath = /^(?:file:|link:|portal:|\.\.?[\\/])/i.test(specifier)
           ? normalizeSnapshotPath(`${sourceManifestDirectory}/${relative}`)
           : null;
-        const patterns = [
-          ...workspacePatterns(snapshot.files, evidence.manifestPath),
-          ...(snapshot.workspacePaths ?? []),
-        ];
         const matches = [...roots.entries()].flatMap(([candidateRepositoryId, candidateRoots]) => {
           if (candidateRepositoryId === repositoryId || candidateRoots.length !== 1 ||
               !validWorkspaceRepositoryIds.has(candidateRepositoryId)) return [];
           const candidateSnapshot = snapshotByRepository.get(candidateRepositoryId);
+          const candidateIdentity = derivedWorkspaceByRepository.get(candidateRepositoryId);
           const candidateWorkspacePath = candidateSnapshot?.workspacePath !== null && candidateSnapshot?.workspacePath !== undefined
             ? normalizeSnapshotPath(candidateSnapshot.workspacePath)
             : null;
           const candidateRoot = candidateRoots[0]!.node;
-          if (candidateWorkspacePath === null || workspacePathCounts.get(candidateWorkspacePath) !== 1) return [];
+          if (sourceAuthority === null || candidateIdentity?.workspaceAuthority === null ||
+              candidateIdentity?.workspaceAuthority === undefined ||
+              candidateIdentity.workspaceAuthority.authorityId !== sourceAuthority.authorityId ||
+              candidateIdentity.workspaceAuthority.contentDigest !== sourceAuthority.contentDigest ||
+              candidateWorkspacePath === null || workspacePathCounts.get(
+                `${sourceAuthority.contentDigest}\u0000${candidateWorkspacePath}`,
+              ) !== 1) return [];
           const pathProven = Boolean(candidateWorkspacePath && resolvedPath === candidateWorkspacePath);
           const workspaceProven = specifier.startsWith("workspace:") && Boolean(
-            candidateWorkspacePath && candidateRoot.label === target.label &&
-            patterns.some((pattern) => workspacePatternMatches(pattern, candidateWorkspacePath)),
+            candidateWorkspacePath && candidateRoot.label === target.label && sourceAuthority.members.some((member) =>
+              member.repositoryId === candidateRepositoryId && member.workspacePath === candidateWorkspacePath),
           );
           return pathProven || workspaceProven
             ? [{ repositoryId: candidateRepositoryId, serviceId: candidateRoot.id }]
@@ -390,7 +375,8 @@ export function consultRegaugeGraphDependencies(input: {
           targetWorkspacePath: snapshotByRepository.get(matches[0]!.repositoryId)!.workspacePath,
           sourceWorkspaceIdentityDigest: snapshot.workspaceIdentityDigest,
           targetWorkspaceIdentityDigest: snapshotByRepository.get(matches[0]!.repositoryId)!.workspaceIdentityDigest,
-          workspaceMembership: [...patterns].sort(compareCodeUnits),
+          workspaceAuthorityId: sourceAuthority!.authorityId,
+          workspaceAuthorityDigest: sourceAuthority!.contentDigest,
           specifier,
         }))}`;
         repositoryEdges.push({

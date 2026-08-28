@@ -99,6 +99,8 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
         manifestPaths: ["package.json"],
         snapshotDigest,
         snapshotId: "snapshot-a",
+        workspaceAuthorityDigest: null,
+        workspaceAuthorityId: null,
         workspacePath: "",
       }));
       return {
@@ -109,6 +111,7 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
           revision: activeRevision,
           snapshotDigest,
           workspacePath: "",
+          workspaceAuthority: null,
           workspaceIdentityDigest,
           observedAt: new Date(Date.now() - 60_000).toISOString(),
           evidenceRefs: ["evidence:snapshot:a", `repository-snapshot:snapshot-a:workspace:${workspaceIdentityDigest}`],
