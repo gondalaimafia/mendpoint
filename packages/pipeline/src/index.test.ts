@@ -833,6 +833,7 @@ describe("pipeline", () => {
       providerSlug: "acme-payments",
       db,
       graphDb: testGraphDb(),
+      indexStorageRoot: join(dir, "index-storage"),
       github: new MockGitHubDelivery(join(dir, "delivery")),
       persistIndex: false,
       contractCases: [
@@ -992,6 +993,7 @@ describe("pipeline", () => {
       tenantId: "tenant_default",
       repositoryId,
       rejectedReason: "missing",
+      generation: 1,
     });
     const event = listDomainEvents(db, "tenant_default", "api_change", report.changeId)
       .find((entry) => entry.event_type === "codebase_index.materialized");
@@ -1000,6 +1002,7 @@ describe("pipeline", () => {
       consumerId,
       classification: "rebuilt",
       repositoryId,
+      generation: 1,
     });
   }, 15_000);
 

@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -7,6 +8,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -58,6 +60,7 @@ import {
   buildIndexIncremental,
   defaultIndexPath,
   materializeCodebaseIndex,
+  persistedIndexPath,
 } from "./index.js";
 
 const roots: string[] = [];
@@ -80,6 +83,20 @@ function expectSafetyError(
     return error as CodebaseIndexSafetyError;
   }
   throw new Error(`expected_${code}`);
+}
+
+function canonicalDigest(value: unknown): string {
+  const canonical = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(canonical);
+    if (item && typeof item === "object") {
+      const record = item as Record<string, unknown>;
+      return Object.fromEntries(
+        Object.keys(record).sort().map((key) => [key, canonical(record[key])]),
+      );
+    }
+    return item;
+  };
+  return createHash("sha256").update(JSON.stringify(canonical(value)), "utf8").digest("hex");
 }
 
 afterEach(() => {
@@ -156,10 +173,12 @@ describe("codebase index traversal safety", () => {
 
   it("persists one authority-bound envelope and classifies exact, incremental, and rebuilt reuse", () => {
     const repository = root("persisted-authority");
+    const storageRoot = root("persisted-authority-storage");
     const source = join(repository, "source.ts");
     writeFileSync(source, "export function value() { return 1; }\n", "utf8");
     const options = {
       authority: { tenantId: "tenant-a", repositoryId: "repo-a" },
+      storageRoot,
       sdkContext: {
         receivers: ["Example"],
         methodPaths: ["values.get"],
@@ -182,51 +201,257 @@ describe("codebase index traversal safety", () => {
     const incremental = materializeCodebaseIndex(repository, options);
 
     expect(rebuilt.evidence).toMatchObject({ classification: "rebuilt", rejectedReason: "missing" });
+    expect(rebuilt.evidence.generation).toBe(1);
     expect(exact.evidence.classification).toBe("exact");
+    expect(exact.evidence.generation).toBe(1);
     expect(exact.evidence.indexContentDigest).toBe(rebuilt.evidence.indexContentDigest);
     expect(incremental.evidence.classification).toBe("incremental");
+    expect(incremental.evidence.generation).toBe(2);
     expect(incremental.evidence.previousIndexContentDigest).toBe(exact.evidence.indexContentDigest);
     expect(incremental.evidence.indexContentDigest).not.toBe(exact.evidence.indexContentDigest);
     expect(incremental.index.files.some((file) => file.path.startsWith(".mendpoint/"))).toBe(false);
-    expect(readdirSync(dirname(defaultIndexPath(repository))).filter((name) => name.endsWith(".tmp")))
+    const path = persistedIndexPath(storageRoot, options.authority, options.sdkContext);
+    expect(resolve(path).startsWith(resolve(repository))).toBe(false);
+    expect(existsSync(defaultIndexPath(repository))).toBe(false);
+    expect(readdirSync(dirname(path)).filter((name) => name.endsWith(".tmp")))
       .toEqual([]);
+  });
+
+  it("ignores a fully self-consistent repository-supplied envelope", () => {
+    const repository = root("persisted-forgery");
+    const firstStorage = root("persisted-forgery-first-storage");
+    const nextStorage = root("persisted-forgery-next-storage");
+    const authority = { tenantId: "tenant-a", repositoryId: "repo-a" };
+    writeFileSync(join(repository, "source.ts"), "export const value = 1;\n", "utf8");
+    materializeCodebaseIndex(repository, { authority, storageRoot: firstStorage });
+    const authenticPath = persistedIndexPath(firstStorage, authority);
+    const forged = JSON.parse(readFileSync(authenticPath, "utf8")) as {
+      index: { builtAt: string };
+      indexContentDigest: string;
+    };
+    forged.index.builtAt = "2099-01-01T00:00:00.000Z";
+    forged.indexContentDigest = canonicalDigest(forged.index);
+    const proofStorage = root("persisted-forgery-proof-storage");
+    const proofPath = persistedIndexPath(proofStorage, authority);
+    mkdirSync(dirname(proofPath), { recursive: true });
+    writeFileSync(proofPath, JSON.stringify(forged, null, 2), "utf8");
+    const selfConsistent = materializeCodebaseIndex(repository, {
+      authority,
+      storageRoot: proofStorage,
+    });
+    expect(selfConsistent.evidence.classification).toBe("exact");
+    expect(selfConsistent.index.builtAt).toBe("2099-01-01T00:00:00.000Z");
+    const repositorySuppliedPath = defaultIndexPath(repository);
+    mkdirSync(dirname(repositorySuppliedPath), { recursive: true });
+    writeFileSync(repositorySuppliedPath, JSON.stringify(forged, null, 2), "utf8");
+
+    const rebuilt = materializeCodebaseIndex(repository, {
+      authority,
+      storageRoot: nextStorage,
+    });
+
+    expect(rebuilt.evidence).toMatchObject({
+      classification: "rebuilt",
+      rejectedReason: "missing",
+      generation: 1,
+    });
+    expect(rebuilt.index.builtAt).not.toBe("2099-01-01T00:00:00.000Z");
+    expect(readFileSync(repositorySuppliedPath, "utf8")).toBe(JSON.stringify(forged, null, 2));
   });
 
   it("rejects foreign, corrupt, malformed, and symlinked persisted authority before reuse", () => {
     const repository = root("persisted-rejection");
+    const storageRoot = root("persisted-rejection-storage");
     writeFileSync(join(repository, "source.ts"), "export const value = 1;\n", "utf8");
     const authority = { tenantId: "tenant-a", repositoryId: "repo-a" };
-    materializeCodebaseIndex(repository, { authority });
-    const path = defaultIndexPath(repository);
+    materializeCodebaseIndex(repository, { authority, storageRoot });
+    const path = persistedIndexPath(storageRoot, authority);
 
     const foreign = materializeCodebaseIndex(repository, {
       authority: { tenantId: "tenant-b", repositoryId: "repo-a" },
+      storageRoot,
     });
     expect(foreign.evidence).toMatchObject({
       classification: "rebuilt",
-      rejectedReason: "codebase_index_persisted_authority_mismatch",
+      rejectedReason: "missing",
     });
 
     const envelope = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     envelope.indexContentDigest = "0".repeat(64);
     writeFileSync(path, `\uFEFF${JSON.stringify(envelope, null, 2).replace(/\n/g, "\r\n")}`, "utf8");
     const corrupt = materializeCodebaseIndex(repository, {
-      authority: { tenantId: "tenant-b", repositoryId: "repo-a" },
+      authority,
+      storageRoot,
     });
     expect(corrupt.evidence.rejectedReason).toBe("codebase_index_persisted_digest_mismatch");
 
     writeFileSync(path, JSON.stringify({ schemaVersion: 1, index: [] }), "utf8");
     const malformed = materializeCodebaseIndex(repository, {
-      authority: { tenantId: "tenant-b", repositoryId: "repo-a" },
+      authority,
+      storageRoot,
     });
     expect(malformed.evidence.rejectedReason).toBe("codebase_index_persisted_shape_invalid");
+
+    const inCheckout = join(repository, ".owned-index");
+    expectSafetyError(
+      () => materializeCodebaseIndex(repository, { authority, storageRoot: inCheckout }),
+      "codebase_index_persisted_path_invalid",
+    );
+    expect(existsSync(inCheckout)).toBe(false);
 
     rmSync(dirname(path), { recursive: true, force: true });
     const outside = root("persisted-symlink-outside");
     symlinkSync(outside, dirname(path), "junction");
     expectSafetyError(
-      () => materializeCodebaseIndex(repository, { authority }),
+      () => materializeCodebaseIndex(repository, { authority, storageRoot }),
       "codebase_index_symlink_not_allowed",
     );
+  });
+
+  it("keys owned storage by tenant, repository, and canonical SDK context without thrashing", () => {
+    const repository = root("persisted-keying");
+    const storageRoot = root("persisted-keying-storage");
+    writeFileSync(join(repository, "source.ts"), "export const value = 1;\n", "utf8");
+    const tenantA = { tenantId: "tenant-a", repositoryId: "shared-repo" };
+    const tenantB = { tenantId: "tenant-b", repositoryId: "shared-repo" };
+    const providerA = {
+      receivers: ["twilio"],
+      methodPaths: ["messages.create"],
+      methods: ["create"],
+      fields: ["body"],
+      importHints: ["twilio"],
+    };
+    const providerB = {
+      receivers: ["stripe"],
+      methodPaths: ["customers.retrieve"],
+      methods: ["retrieve"],
+      fields: ["id"],
+      importHints: ["stripe"],
+    };
+
+    const first = [
+      materializeCodebaseIndex(repository, {
+        authority: tenantA,
+        storageRoot,
+        sdkContext: providerA,
+      }),
+      materializeCodebaseIndex(repository, {
+        authority: tenantB,
+        storageRoot,
+        sdkContext: providerA,
+      }),
+      materializeCodebaseIndex(repository, {
+        authority: tenantA,
+        storageRoot,
+        sdkContext: providerB,
+      }),
+    ];
+    const alternating = [
+      materializeCodebaseIndex(repository, {
+        authority: tenantB,
+        storageRoot,
+        sdkContext: providerA,
+      }),
+      materializeCodebaseIndex(repository, {
+        authority: tenantA,
+        storageRoot,
+        sdkContext: providerB,
+      }),
+      materializeCodebaseIndex(repository, {
+        authority: tenantA,
+        storageRoot,
+        sdkContext: providerA,
+      }),
+    ];
+
+    expect(first.map((item) => item.evidence.classification))
+      .toEqual(["rebuilt", "rebuilt", "rebuilt"]);
+    expect(alternating.map((item) => item.evidence.classification))
+      .toEqual(["exact", "exact", "exact"]);
+    const paths = [
+      persistedIndexPath(storageRoot, tenantA, providerA),
+      persistedIndexPath(storageRoot, tenantB, providerA),
+      persistedIndexPath(storageRoot, tenantA, providerB),
+    ];
+    expect(new Set(paths).size).toBe(3);
+    expect(paths.every((path) => existsSync(path))).toBe(true);
+  });
+
+  it("serializes one authority and retries a fenced publication after an interleaved writer", () => {
+    const repository = root("persisted-fence");
+    const storageRoot = root("persisted-fence-storage");
+    const source = join(repository, "source.ts");
+    const authority = { tenantId: "tenant-a", repositoryId: "repo-a" };
+    const options = { authority, storageRoot };
+    writeFileSync(source, "export const value = 1;\n", "utf8");
+    const initial = materializeCodebaseIndex(repository, options);
+    const path = persistedIndexPath(storageRoot, authority);
+
+    writeFileSync(source, "export const value = 2;\n", "utf8");
+    expectSafetyError(
+      () => materializeCodebaseIndex(repository, {
+        ...options,
+        persistenceHooks: {
+          beforePublish: () => {
+            materializeCodebaseIndex(repository, options);
+          },
+        },
+      }),
+      "codebase_index_persisted_lock_conflict",
+    );
+    expect(JSON.parse(readFileSync(path, "utf8")).generation).toBe(1);
+    expect(materializeCodebaseIndex(repository, options).evidence.generation).toBe(2);
+
+    writeFileSync(source, "export const value = 3;\n", "utf8");
+    let interleaved = false;
+    const committed = materializeCodebaseIndex(repository, {
+      ...options,
+      persistenceHooks: {
+        beforePublish: ({ path, nextGeneration }) => {
+          if (interleaved) return;
+          interleaved = true;
+          const competing = JSON.parse(readFileSync(path, "utf8")) as { generation: number };
+          competing.generation = nextGeneration;
+          writeFileSync(path, JSON.stringify(competing, null, 2), "utf8");
+        },
+      },
+    });
+    expect(initial.evidence.generation).toBe(1);
+    expect(committed.evidence).toMatchObject({
+      classification: "incremental",
+      generation: 4,
+    });
+    expect(JSON.parse(readFileSync(path, "utf8")).generation).toBe(4);
+  });
+
+  it("recovers deterministically from crashes immediately before and after publish", () => {
+    const repository = root("persisted-crash");
+    const storageRoot = root("persisted-crash-storage");
+    const source = join(repository, "source.ts");
+    const authority = { tenantId: "tenant-a", repositoryId: "repo-a" };
+    const options = { authority, storageRoot };
+    writeFileSync(source, "export const value = 1;\n", "utf8");
+    materializeCodebaseIndex(repository, options);
+    const path = persistedIndexPath(storageRoot, authority);
+
+    writeFileSync(source, "export const value = 2;\n", "utf8");
+    expect(() => materializeCodebaseIndex(repository, {
+      ...options,
+      persistenceHooks: { beforePublish: () => { throw new Error("crash_before_publish"); } },
+    })).toThrow("crash_before_publish");
+    expect(JSON.parse(readFileSync(path, "utf8")).generation).toBe(1);
+    expect(readdirSync(dirname(path)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    expect(materializeCodebaseIndex(repository, options).evidence.generation).toBe(2);
+
+    writeFileSync(source, "export const value = 3;\n", "utf8");
+    expect(() => materializeCodebaseIndex(repository, {
+      ...options,
+      persistenceHooks: { afterPublish: () => { throw new Error("crash_after_publish"); } },
+    })).toThrow("crash_after_publish");
+    expect(JSON.parse(readFileSync(path, "utf8")).generation).toBe(3);
+    expect(materializeCodebaseIndex(repository, options).evidence).toMatchObject({
+      classification: "exact",
+      generation: 3,
+    });
   });
 });

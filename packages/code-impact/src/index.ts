@@ -85,6 +85,8 @@ export type AnalyzeOptions = {
   minConfidence?: Confidence;
   index?: CodebaseIndex;
   persistIndex?: boolean;
+  /** Mendpoint-owned tenant storage root; required when persisted reuse is enabled. */
+  indexStorageRoot?: string;
   useLlm?: boolean;
   surfaces?: ImpactableSurface[];
   sdkHints?: string[];
@@ -113,8 +115,11 @@ function analysisIndex(
   }
   const authority = authorityOverride ?? options.indexAuthority;
   if (!authority) throw new Error("codebase_index_authority_required");
+  const storageRoot = options.indexStorageRoot?.trim();
+  if (!storageRoot) throw new Error("codebase_index_storage_root_required");
   const materialized = materializeCodebaseIndex(repoRoot, {
     authority,
+    storageRoot,
     sdkContext,
     persist: true,
   });

@@ -33,6 +33,7 @@ import {
 } from "@mendpoint/db";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
@@ -234,6 +235,8 @@ export type PipelineInput = {
   softwareGraphAnalyzer?: typeof analyzeImpactWithSoftwareGraph;
   github?: GitHubDelivery;
   persistIndex?: boolean;
+  /** Override the Mendpoint-owned persisted-index root (primarily for tests). */
+  indexStorageRoot?: string;
   /** First-party brand pack id, or true to auto-pick by provider */
   brandPackId?: string | true;
   /** Provider rollout severity override */
@@ -540,6 +543,9 @@ export function createPipelineDeliveryResolver(input: PipelineInput, db: AppDb) 
  * @see docs/GRAPH_ENGINEERING.md
  */
 export async function runChangePipeline(input: PipelineInput): Promise<PipelineReport> {
+  const indexStorageRoot = input.indexStorageRoot ??
+    process.env.MENDPOINT_DATA_DIR?.trim() ??
+    join(process.cwd(), "data");
   if (!input.tenantId.trim()) throw new Error("tenantId is required");
   const db = input.db ?? createDb();
   const deliveryFor = createPipelineDeliveryResolver(input, db);
@@ -957,7 +963,10 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           observedAt: graphObservedAt,
           maxCallerHops: 4,
           maxContextBytes: 32_768,
-          impact: { persistIndex: input.persistIndex ?? true },
+          impact: {
+            persistIndex: input.persistIndex ?? true,
+            indexStorageRoot,
+          },
         });
         impactReport = graphAnalysis.impactReport;
         indexMaterialization = graphAnalysis.indexReuse;
@@ -1084,6 +1093,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       // stamp that fact rather than inventing a second retriever.
       impactReport = await analyzeImpact(repo.local_path, surfaces, {
         persistIndex: input.persistIndex ?? true,
+        indexStorageRoot,
         indexAuthority: {
           tenantId: input.tenantId,
           repositoryId: repo.connected_repository_id ?? repo.id,
@@ -1112,6 +1122,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           consumer.id,
           "codebase-index",
           evidence.classification,
+          String(evidence.generation),
           evidence.indexContentDigest,
         ),
         tenantId: input.tenantId,
@@ -1123,7 +1134,15 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         correlationId: changeId,
         causationId: trustId("event", input.tenantId, changeId, "normalized"),
         idempotencyKey:
-          `api_change:${changeId}:codebase_index:${consumer.id}:${evidence.classification}:${evidence.indexContentDigest}`,
+          [
+            "api_change",
+            changeId,
+            "codebase_index",
+            consumer.id,
+            evidence.classification,
+            String(evidence.generation),
+            evidence.indexContentDigest,
+          ].join(":"),
         payload: {
           consumerId: consumer.id,
           ...evidence,

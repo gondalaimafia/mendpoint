@@ -48,10 +48,13 @@ afterEach(() => {
 describe("persisted index production entrypoints", () => {
   it("reuses exact and incremental authority with output equivalent to a fresh build", async () => {
     const repoRoot = repository();
+    const indexStorageRoot = mkdtempSync(join(tmpdir(), "mendpoint-persisted-impact-storage-"));
+    roots.push(indexStorageRoot);
     const authority = { tenantId: "tenant-a", repositoryId: "repo-a" };
     const classifications: string[] = [];
     const options = {
       persistIndex: true,
+      indexStorageRoot,
       indexAuthority: authority,
       onIndexMaterialized: (evidence: { classification: string }) =>
         classifications.push(evidence.classification),
@@ -75,8 +78,14 @@ describe("persisted index production entrypoints", () => {
 
   it("makes the software-graph entrypoint reuse the same authority-bound index", async () => {
     const repoRoot = repository();
+    const indexStorageRoot = mkdtempSync(join(tmpdir(), "mendpoint-persisted-graph-storage-"));
+    roots.push(indexStorageRoot);
     const authority = { tenantId: "tenant-a", repositoryId: "repo-a" };
-    await analyzeImpact(repoRoot, [surface], { persistIndex: true, indexAuthority: authority });
+    await analyzeImpact(repoRoot, [surface], {
+      persistIndex: true,
+      indexStorageRoot,
+      indexAuthority: authority,
+    });
     const graphDb = openGraphLearnMemory();
     try {
       const result = await analyzeImpactWithSoftwareGraph(repoRoot, [surface], {
@@ -90,7 +99,7 @@ describe("persisted index production entrypoints", () => {
         observedAt: "2026-08-27T00:00:00.000Z",
         maxCallerHops: 4,
         maxContextBytes: 32_768,
-        impact: { persistIndex: true },
+        impact: { persistIndex: true, indexStorageRoot },
       });
       expect(result.indexReuse).toMatchObject({
         classification: "exact",
