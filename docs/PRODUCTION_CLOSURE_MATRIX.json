@@ -2056,17 +2056,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-27T23:49:35.952Z",
-    "observedMainRevision": "cf02b747d1661cc84c0a84d2cdb1c2f62ef9e7a4",
-    "observationDigest": "sha256:14e36b3da0e5de4b5639c702eefcaa6e42e8688716fc9e76f306af72571e2919",
+    "observedAt": "2026-08-28T21:41:35.151Z",
+    "observedMainRevision": "5ba70419ef6164b51ba3bfdc38526bf96fa507d3",
+    "observationDigest": "sha256:082d9c7c2c4df04fd9ad0b3e6868f8e82f44570de4b4a478a8821689f83bc214",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 505,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/505",
-      "title": "Add tenant scoped release polling runtime",
+      "number": 515,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/515",
+      "title": "authority: runtime fix open-PR head reachability oracle at the proposal call site",
       "baseBranch": "main",
-      "headBranch": "codex/live-release-polling",
+      "headBranch": "fix-open-pr-head-oracle",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2079,7 +2079,15 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": []
+      "remediatesPullRequests": [],
+      "authorityRotation": {
+        "rotationId": "rotation-20260828-001",
+        "kind": "runtime",
+        "issuedAt": "2026-08-28T21:41:35.151Z",
+        "expiresAt": "2026-08-29T21:41:35.151Z",
+        "basePolicySha256": "sha256:45cafb53dd1d6af6ca8410f024d2191ca64a2b621b79235faaf43174f6824ba8",
+        "proposedPolicySha256": "sha256:86585f7d707b5b28276b663660533068f936ccd3243557541168253ae70d3466"
+      }
     },
     "pullRequests": [
       {
@@ -4377,41 +4385,6 @@
         "blockers": []
       },
       {
-        "number": 511,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/511",
-        "title": "Preauthorize reactive production authority successor",
-        "headBranch": "codex/510-authority-reactive-gates",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Codex",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "3962f028df6aaa9dd03e982c5574d3634594501f",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
         "number": 506,
         "state": "open",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/506",
@@ -4465,7 +4438,182 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "569b8c8ed38de9431218e440e4336045e5d67998",
+        "headRevision": "884efb628e8b6cbd70c06b5aceeebc8e577a679f",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 511,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/511",
+        "title": "Preauthorize reactive production authority successor",
+        "headBranch": "codex/510-authority-reactive-gates",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "3962f028df6aaa9dd03e982c5574d3634594501f",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 512,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/512",
+        "title": "Bind ReGauge dependency certainty to sealed workspace authority",
+        "headBranch": "codex/regauge-dependency-certainty",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "a288d2bf8319fd0b51ab7fe598ca68726c28cd73",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 513,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/513",
+        "title": "Protect release ingestion backup recovery authority",
+        "headBranch": "codex/backup-release-ingestion-authority",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "8bccaa32ef396657ee8a71dd838b9c3632cac884",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 514,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/514",
+        "title": "ME-FET-015: Persist authority-bound Fettler indexes",
+        "headBranch": "codex/fettler-persisted-index-authority",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "1586773b9338997e50488e20dc21908cae72712c",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 516,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/516",
+        "title": "Bind review handoff resolution to the reviewed run's job task",
+        "headBranch": "cursor/resolve-review-job-task-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "4ff8326a5a14e6175059e670566949bc9d2b46a3",
         "mergeRevision": null,
         "checks": [],
         "review": {
