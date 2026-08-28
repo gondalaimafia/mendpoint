@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -339,16 +339,61 @@ describe("ingestManifestDependencies", () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-manifest-inventory-"));
     try {
       writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "app" }));
-      writeFileSync(join(dir, "go.mod"), "module example.com/tools\n");
-      const onDisk = ingestManifestDependencies(db, {
+      mkdirSync(join(dir, "packages", "worker"), { recursive: true });
+      const nestedManifest = join(dir, "packages", "worker", "pyproject.toml");
+      writeFileSync(nestedManifest, '[project]\nname="worker"\n');
+      const incomplete = ingestManifestDependencies(db, {
         repoPath: dir, repoId: "repo-on-disk", tenantId: "tenant-a",
+        observedAt: "2026-08-27T10:00:00.000Z",
       });
-      expect(onDisk).toMatchObject({
+      expect(incomplete).toMatchObject({
         coverage: "unknown",
-        coverageReasons: ["supported_manifest_not_ingested:go.mod"],
+        manifest: "package.json",
+        coverageReasons: ["supported_manifest_not_ingested:packages/worker/pyproject.toml"],
       });
+
+      // Mutating the live inventory must change the next observation. This
+      // catches implementations that only inspect the selected root manifest.
+      unlinkSync(nestedManifest);
+      const complete = ingestManifestDependencies(db, {
+        repoPath: dir, repoId: "repo-on-disk", tenantId: "tenant-a",
+        observedAt: "2026-08-27T11:00:00.000Z",
+      });
+      expect(complete).toMatchObject({ coverage: "complete", coverageReasons: [] });
+      expect(complete.versionId).not.toBe(incomplete.versionId);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds live inventory traversal and never follows repository symlinks", () => {
+    const db = openGraphLearnMemory();
+    opened.push(db);
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-manifest-bounds-"));
+    const outside = mkdtempSync(join(tmpdir(), "mendpoint-manifest-outside-"));
+    try {
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "app" }));
+      writeFileSync(join(outside, "pyproject.toml"), '[project]\nname="outside"\n');
+      symlinkSync(outside, join(dir, "linked"), process.platform === "win32" ? "junction" : "dir");
+      let cursor = dir;
+      for (let index = 0; index < 34; index++) {
+        cursor = join(cursor, `level-${index.toString().padStart(2, "0")}`);
+        mkdirSync(cursor);
+      }
+      writeFileSync(join(cursor, "go.mod"), "module example.com/deep\n");
+
+      const result = ingestManifestDependencies(db, {
+        repoPath: dir, repoId: "repo-bounded", tenantId: "tenant-a",
+      });
+      expect(result.coverage).toBe("unknown");
+      expect(result.coverageReasons).toEqual(expect.arrayContaining([
+        "manifest_inventory_symlink_skipped:linked",
+        expect.stringMatching(/^manifest_inventory_depth_exceeded:/),
+      ]));
+      expect(result.coverageReasons).not.toContain("supported_manifest_not_ingested:linked/pyproject.toml");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
     }
   });
 

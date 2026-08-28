@@ -8,9 +8,9 @@
  * (`package.json`, `pyproject.toml`, `go.mod`) become tenant-scoped Service
  * nodes plus DEPENDS_ON edges. Malformed manifests are skipped, never guessed.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   edgesFrom,
   listNodesByKind,
@@ -22,6 +22,11 @@ import {
 const PACKAGE_NAME = /^(?:@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+$/;
 const GO_MODULE = /^[A-Za-z0-9._~+/-]+$/;
 const MAX_DEPENDENCIES = 500;
+const MAX_INVENTORY_ENTRIES = 20_000;
+const MAX_INVENTORY_DIRECTORIES = 2_000;
+const MAX_INVENTORY_DEPTH = 32;
+const SUPPORTED_MANIFEST_NAMES = new Set(["package.json", "pyproject.toml", "go.mod"]);
+const IGNORED_INVENTORY_DIRECTORIES = new Set([".git", "node_modules"]);
 export const MANIFEST_DEPENDENCY_EXTRACTOR = Object.freeze({
   id: "mendpoint.manifest-dependencies",
   version: "2",
@@ -85,6 +90,83 @@ function sha256(...values: readonly string[]): string {
 
 function canonicalManifestText(value: string): string {
   return value.replace(/^\uFEFF/u, "").replace(/\r\n?/g, "\n");
+}
+
+function safeRelativeManifestPath(value: string): string | null {
+  const path = value.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!path || path.startsWith("/") || /^[A-Za-z]:\//.test(path) || path.includes("\0") ||
+      path.split("/").some((segment) => !segment || segment === "." || segment === "..")) return null;
+  return path;
+}
+
+function compareManifestPaths(left: string, right: string): number {
+  const leftDepth = left.split("/").length;
+  const rightDepth = right.split("/").length;
+  if (leftDepth !== rightDepth) return leftDepth - rightDepth;
+  const priority = (path: string) => ["package.json", "pyproject.toml", "go.mod"]
+    .indexOf(path.split("/").at(-1) ?? "");
+  const ecosystem = priority(left) - priority(right);
+  return ecosystem || compareCodeUnits(left, right);
+}
+
+function discoverFilesystemManifests(repoPath: string): Readonly<{
+  paths: readonly string[];
+  coverageReasons: readonly string[];
+}> {
+  if (!existsSync(repoPath)) return Object.freeze({ paths: [], coverageReasons: [] });
+  const rootEntry = lstatSync(repoPath);
+  if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
+    return Object.freeze({ paths: [], coverageReasons: ["manifest_inventory_root_invalid"] });
+  }
+  const root = realpathSync(resolve(repoPath));
+  const paths: string[] = [];
+  const reasons = new Set<string>();
+  const directories: Array<{ absolute: string; depth: number }> = [{ absolute: root, depth: 0 }];
+  let entriesSeen = 0;
+  let directoriesSeen = 0;
+  while (directories.length) {
+    const current = directories.shift()!;
+    directoriesSeen++;
+    if (directoriesSeen > MAX_INVENTORY_DIRECTORIES) {
+      reasons.add("manifest_inventory_directory_limit_exceeded");
+      break;
+    }
+    const entries = readdirSync(current.absolute, { withFileTypes: true })
+      .sort((left, right) => compareCodeUnits(left.name, right.name));
+    for (const entry of entries) {
+      entriesSeen++;
+      if (entriesSeen > MAX_INVENTORY_ENTRIES) {
+        reasons.add("manifest_inventory_entry_limit_exceeded");
+        directories.length = 0;
+        break;
+      }
+      const absolute = join(current.absolute, entry.name);
+      const relativePath = relative(root, absolute).replace(/\\/g, "/");
+      if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${sep}`) ||
+          isAbsolute(relativePath)) {
+        reasons.add("manifest_inventory_path_escape");
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
+        reasons.add(`manifest_inventory_symlink_skipped:${relativePath}`);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        if (IGNORED_INVENTORY_DIRECTORIES.has(entry.name)) continue;
+        if (current.depth >= MAX_INVENTORY_DEPTH) {
+          reasons.add(`manifest_inventory_depth_exceeded:${relativePath}`);
+          continue;
+        }
+        directories.push({ absolute, depth: current.depth + 1 });
+        continue;
+      }
+      if (entry.isFile() && SUPPORTED_MANIFEST_NAMES.has(entry.name)) paths.push(relativePath);
+    }
+  }
+  return Object.freeze({
+    paths: Object.freeze([...new Set(paths)].sort(compareManifestPaths)),
+    coverageReasons: Object.freeze([...reasons].sort(compareCodeUnits)),
+  });
 }
 
 function npmDependencyScope(specifier: string): ManifestDependency["scope"] {
@@ -657,40 +739,43 @@ export function ingestManifestDependencies(
   const observedValue = opts.observedAt ?? new Date().toISOString();
   if (Number.isNaN(Date.parse(observedValue))) throw new Error("manifest_ingest_observed_at_invalid");
   const observedAt = new Date(observedValue).toISOString();
-  const candidates = ["package.json", "pyproject.toml", "go.mod"] as const;
+  const suppliedInventoryReasons = new Set<string>();
+  const suppliedManifestPaths = opts.files ? opts.files.flatMap((file) => {
+    const path = safeRelativeManifestPath(file.path);
+    const name = file.path.replace(/\\/g, "/").split("/").at(-1) ?? "";
+    if (!SUPPORTED_MANIFEST_NAMES.has(name)) return [];
+    if (!path) {
+      suppliedInventoryReasons.add("manifest_inventory_path_invalid");
+      return [];
+    }
+    return [path];
+  }).sort(compareManifestPaths) : [];
+  const filesystemInventory = opts.files
+    ? { paths: suppliedManifestPaths, coverageReasons: [...suppliedInventoryReasons].sort(compareCodeUnits) }
+    : discoverFilesystemManifests(opts.repoPath);
   let chosen: { path: string; text: string } | undefined;
   if (opts.files) {
-    for (const name of candidates) {
-      const match = opts.files.find((file) =>
-        file.path.replace(/\\/g, "/").replace(/^\.\//, "") === name);
-      if (match) {
-        chosen = match;
-        break;
-      }
-    }
-  } else if (existsSync(opts.repoPath)) {
-    for (const name of candidates) {
-      const absolutePath = join(opts.repoPath, name);
-      if (!existsSync(absolutePath)) continue;
-      chosen = { path: name, text: readFileSync(absolutePath, "utf8") };
-      break;
-    }
+    const selectedPath = filesystemInventory.paths[0];
+    const match = selectedPath === undefined ? undefined : opts.files.find((file) =>
+      safeRelativeManifestPath(file.path) === selectedPath);
+    if (match && selectedPath) chosen = { path: selectedPath, text: match.text };
+  } else if (filesystemInventory.paths[0]) {
+    const selectedPath = filesystemInventory.paths[0]!;
+    chosen = { path: selectedPath, text: readFileSync(join(realpathSync(resolve(opts.repoPath)), selectedPath), "utf8") };
   }
   if (!chosen) return notIngested("no-manifest", null);
   const rawText = chosen.text;
   const canonicalText = canonicalManifestText(rawText);
   const parsed = parseManifest(chosen.path, canonicalText);
   if (!parsed.ok) return notIngested(parsed.reason, chosen.path, rawText);
-  const supportedManifestPaths = (opts.files
-    ? opts.files.map((file) => file.path)
-    : candidates.filter((path) => existsSync(join(opts.repoPath, path))))
-    .map((path) => path.replace(/\\/g, "/").replace(/^\.\//, ""))
-    .filter((path) => ["package.json", "pyproject.toml", "go.mod"].includes(path.split("/").at(-1) ?? ""))
-    .sort(compareCodeUnits);
-  const inventoryReasons = supportedManifestPaths
+  const inventoryReasons = filesystemInventory.paths
     .filter((path) => path !== chosen!.path)
     .map((path) => `supported_manifest_not_ingested:${path}`);
-  const coverageReasons = [...new Set([...parsed.coverageReasons, ...inventoryReasons])]
+  const coverageReasons = [...new Set([
+    ...parsed.coverageReasons,
+    ...filesystemInventory.coverageReasons,
+    ...inventoryReasons,
+  ])]
     .sort(compareCodeUnits);
   const rawContentDigest = `sha256:${createHash("sha256").update(rawText, "utf8").digest("hex")}`;
   const contentDigest = `sha256:${createHash("sha256").update(canonicalText, "utf8").digest("hex")}`;
