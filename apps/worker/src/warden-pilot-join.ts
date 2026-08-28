@@ -13,7 +13,10 @@ import {
   recordAudit,
   type AppDb,
 } from "@mendpoint/db";
-import type { PipelineReport } from "@mendpoint/pipeline";
+import {
+  resolveUnambiguousSingleRepoFettlerCampaign,
+  type PipelineReport,
+} from "@mendpoint/pipeline";
 
 const EXACT_REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const MAX_CHANGED_PATHS = 40;
@@ -51,6 +54,16 @@ function safePath(path: string): boolean {
     !pathBlocked(path);
 }
 
+function campaignHint(payload: Record<string, unknown>): string | undefined {
+  const value = payload.fettlerCampaignId ?? payload.campaignId;
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function withoutCampaignHint(payload: Record<string, unknown>): Record<string, unknown> {
+  const { fettlerCampaignId: _campaign, campaignId: _alias, missionId: _mission, ...rest } = payload;
+  return rest;
+}
+
 function equivalentReplayPayload(existingPayloadJson: string, expectedPayload: Record<string, unknown>): boolean {
   try {
     const existing = JSON.parse(existingPayloadJson) as Record<string, unknown>;
@@ -62,15 +75,18 @@ function equivalentReplayPayload(existingPayloadJson: string, expectedPayload: R
     ) {
       return false;
     }
+    const existingHint = campaignHint(existing);
+    const expectedHint = campaignHint(expectedPayload);
+    if (existingHint && expectedHint && existingHint !== expectedHint) return false;
     return isDeepStrictEqual(
       {
-        ...existing,
+        ...withoutCampaignHint(existing),
         source: {
           ...existingSource,
           pipelineJobId: (expectedSource as Record<string, unknown>).pipelineJobId,
         },
       },
-      expectedPayload,
+      withoutCampaignHint(expectedPayload),
     );
   } catch {
     return false;
@@ -172,6 +188,11 @@ export function enqueuePipelineWardenRuns(
     const runId = `warden-pilot-run-${identity.slice(32)}`;
     const goal = `Apply the recorded ${input.providerSlug} API migration for change ${input.report.changeId}. ` +
       "Update only the evidence linked paths and pass the repository verification policy.";
+    const campaign = resolveUnambiguousSingleRepoFettlerCampaign(
+      db,
+      input.tenantId,
+      repo.connected_repository_id,
+    );
     const payload = {
       goal,
       consumerId: consumer.id,
@@ -180,6 +201,7 @@ export function enqueuePipelineWardenRuns(
       useLlm: input.useLlm,
       allowNetwork: false,
       sessionId: runId,
+      ...(campaign ? { fettlerCampaignId: campaign.campaignId } : {}),
       source: {
         pipelineJobId: input.pipelineJobId,
         changeId: input.report.changeId,
@@ -271,6 +293,9 @@ export function enqueuePipelineWardenRuns(
           snapshotId: snapshot.id,
           revision: snapshot.resolved_sha,
           allowedChangedPaths,
+          ...(campaign
+            ? { fettlerCampaignId: campaign.campaignId, missionId: campaign.missionId }
+            : {}),
         },
       });
       if (ownsTransaction) db.raw.exec("COMMIT");

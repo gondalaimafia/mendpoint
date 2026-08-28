@@ -3,15 +3,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  addWardenCampaignTarget,
   bindConsumerRepoSnapshot,
   createDb,
+  createMission,
+  createWardenCampaign,
   getAgentRun,
   getJob,
   insertConnectedRepository,
   insertConsumer,
   insertConsumerRepo,
+  insertPrincipal,
   insertRepositorySnapshot,
   insertRepositorySnapshotPolicy,
+  linkFettlerCampaignToMission,
   listAgentRuns,
   listJobs,
   upsertScmConnection,
@@ -94,7 +99,71 @@ function fixture() {
     connectedRepositoryId: repository.id,
     snapshotId: "snapshot-a",
   });
+  db.raw.prepare(`INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+    VALUES ('tenant-a','one','One','team','active',10,?)`).run(observedAt);
+  insertPrincipal(db, {
+    id: "p1",
+    tenantId: "tenant-a",
+    kind: "human",
+    subject: "owner@example.com",
+    displayName: "Owner",
+    createdAt: observedAt,
+  });
   return { db };
+}
+
+function enrollSingleRepoCampaign(db: AppDb, input: {
+  campaignId?: string;
+  missionId?: string;
+} = {}) {
+  const campaignId = input.campaignId ?? "campaign-a";
+  const missionId = input.missionId ?? "mission-a";
+  createMission(db, {
+    id: missionId,
+    tenantId: "tenant-a",
+    product: "fettler",
+    triggerKind: "provider_change",
+    objective: "Migrate consumers off the recorded change",
+    ownerPrincipalId: "p1",
+    eventId: `e-${missionId}`,
+    idempotencyKey: `c-${missionId}`,
+    correlationId: "corr",
+    createdAt: observedAt,
+  });
+  createWardenCampaign(db, {
+    id: campaignId,
+    tenantId: "tenant-a",
+    name: "Stripe upgrade",
+    ownerPrincipalId: "p1",
+    concurrencyLimit: 1,
+    completionPolicy: "all",
+    eventId: `e-${campaignId}`,
+    idempotencyKey: `k-${campaignId}`,
+    correlationId: "corr",
+    createdAt: observedAt,
+  });
+  addWardenCampaignTarget(db, {
+    id: `target-${campaignId}`,
+    tenantId: "tenant-a",
+    campaignId,
+    repositoryId: "repository-a",
+    snapshotId: "snapshot-a",
+    ownerPrincipalId: "p1",
+    eventId: `e-target-${campaignId}`,
+    idempotencyKey: `k-target-${campaignId}`,
+    correlationId: "corr",
+    createdAt: observedAt,
+  });
+  linkFettlerCampaignToMission(db, {
+    tenantId: "tenant-a",
+    campaignId,
+    missionId,
+    actorPrincipalId: "p1",
+    eventId: `e-link-${campaignId}`,
+    idempotencyKey: `k-link-${campaignId}`,
+    correlationId: "corr",
+    createdAt: observedAt,
+  });
 }
 
 function report(paths: readonly string[], confidence: "high" | "medium" | "low" = "high"): PipelineReport {
@@ -195,6 +264,8 @@ describe("joined Warden pilot intake", () => {
       },
     }));
     expect(payload).not.toHaveProperty("verifyCommand");
+    expect(payload).not.toHaveProperty("fettlerCampaignId");
+    expect(payload).not.toHaveProperty("missionId");
     expect(getAgentRun(db, first[0]!.runId!, "tenant-a")).toMatchObject({
       status: "queued",
       repo_path: expect.stringContaining("snapshot"),
@@ -246,5 +317,78 @@ describe("joined Warden pilot intake", () => {
     });
     expect(result).toEqual([expect.objectContaining({ status: "abstained", reason: "consumer_not_available" })]);
     expect(listJobs(db, 20, "tenant-b")).toHaveLength(0);
+  });
+
+  it("attaches the unambiguous enrolled Fettler campaign to the queued agent.run", () => {
+    const { db } = fixture();
+    enrollSingleRepoCampaign(db);
+    const joined = enqueuePipelineWardenRuns(db, {
+      tenantId: "tenant-a",
+      pipelineJobId: "pipeline-job-bound",
+      providerSlug: "stripe",
+      report: report(["src/client.ts"]),
+      observedAt,
+      useLlm: false,
+    });
+    const job = getJob(db, joined[0]!.jobId!, "tenant-a");
+    const payload = JSON.parse(job!.payload_json) as Record<string, unknown>;
+    expect(payload.fettlerCampaignId).toBe("campaign-a");
+    expect(payload).not.toHaveProperty("missionId");
+  });
+
+  it("replays an already-queued unbound job after a campaign is enrolled", () => {
+    const { db } = fixture();
+    const first = enqueuePipelineWardenRuns(db, {
+      tenantId: "tenant-a",
+      pipelineJobId: "pipeline-job-a",
+      providerSlug: "stripe",
+      report: report(["src/client.ts"]),
+      observedAt,
+      useLlm: false,
+    });
+    enrollSingleRepoCampaign(db);
+    const second = enqueuePipelineWardenRuns(db, {
+      tenantId: "tenant-a",
+      pipelineJobId: "pipeline-job-b",
+      providerSlug: "stripe",
+      report: report(["src/client.ts"]),
+      observedAt,
+      useLlm: false,
+    });
+    expect(second[0]?.status).toBe("replayed");
+    expect(second[0]?.jobId).toBe(first[0]!.jobId);
+    const payload = JSON.parse(getJob(db, first[0]!.jobId!, "tenant-a")!.payload_json) as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("fettlerCampaignId");
+  });
+
+  it("stays unbound when two single-repo campaigns share the repository", () => {
+    const { db } = fixture();
+    enrollSingleRepoCampaign(db, { campaignId: "campaign-a", missionId: "mission-a" });
+    enrollSingleRepoCampaign(db, { campaignId: "campaign-b", missionId: "mission-b" });
+    const joined = enqueuePipelineWardenRuns(db, {
+      tenantId: "tenant-a",
+      pipelineJobId: "pipeline-ambiguous",
+      providerSlug: "stripe",
+      report: report(["src/client.ts"]),
+      observedAt,
+      useLlm: false,
+    });
+    const payload = JSON.parse(getJob(db, joined[0]!.jobId!, "tenant-a")!.payload_json) as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("fettlerCampaignId");
+  });
+
+  it("CONTROL: deleting the campaign hint leaves a live enqueue unbound", () => {
+    const { db } = fixture();
+    enrollSingleRepoCampaign(db);
+    const joined = enqueuePipelineWardenRuns(db, {
+      tenantId: "tenant-a",
+      pipelineJobId: "pipeline-control",
+      providerSlug: "stripe",
+      report: report(["src/client.ts"]),
+      observedAt,
+      useLlm: false,
+    });
+    const payload = JSON.parse(getJob(db, joined[0]!.jobId!, "tenant-a")!.payload_json) as Record<string, unknown>;
+    expect(payload.fettlerCampaignId).toBe("campaign-a");
   });
 });
