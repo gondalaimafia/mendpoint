@@ -96,12 +96,13 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
       repositoryLoads.push({ allowedPaths, snapshotId });
       const snapshotDigest = recipeFilesDigest(activeFiles);
       const workspaceIdentityDigest = digest(JSON.stringify({
+        manifestDirectory: "",
         manifestPaths: ["package.json"],
         snapshotDigest,
         snapshotId: "snapshot-a",
         workspaceAuthorityDigest: null,
         workspaceAuthorityId: null,
-        workspacePath: "",
+        workspacePath: null,
       }));
       return {
         planning: {
@@ -110,7 +111,8 @@ function fixture(graphMode: "complete" | "not_consulted" = "complete") {
           organizationId: "organization-a",
           revision: activeRevision,
           snapshotDigest,
-          workspacePath: "",
+          manifestDirectory: "",
+          workspacePath: null,
           workspaceAuthority: null,
           workspaceIdentityDigest,
           observedAt: new Date(Date.now() - 60_000).toISOString(),

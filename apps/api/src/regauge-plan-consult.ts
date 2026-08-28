@@ -127,6 +127,7 @@ export function consultRegaugeGraphDependencies(input: {
     snapshotId: string;
     revision: string;
     snapshotDigest: string;
+    manifestDirectory: string | null;
     workspacePath: string | null;
     workspaceAuthority: Readonly<{
       schemaVersion: "mendpoint.workspace-authority.v1";
@@ -223,7 +224,8 @@ export function consultRegaugeGraphDependencies(input: {
           snapshot.workspaceAuthority.tenantId === identity.workspaceAuthority.tenantId &&
           snapshot.workspaceAuthority.authorityId === identity.workspaceAuthority.authorityId &&
           snapshot.workspaceAuthority.contentDigest === identity.workspaceAuthority.contentDigest;
-      return identity.valid && snapshot.workspacePath === identity.workspacePath &&
+      return identity.valid && snapshot.manifestDirectory === identity.manifestDirectory &&
+        snapshot.workspacePath === identity.workspacePath &&
         suppliedAuthorityMatches &&
         snapshot.workspaceIdentityDigest === identity.workspaceIdentityDigest &&
         snapshot.evidenceRefs.includes(
@@ -322,18 +324,21 @@ export function consultRegaugeGraphDependencies(input: {
           break;
         }
         const specifier = typeof edge.props?.specifier === "string" ? edge.props.specifier : "";
-        const sourceWorkspacePath = snapshot.workspacePath === null
+        const sourceManifestDirectory = snapshot.manifestDirectory === null
           ? null
-          : normalizeSnapshotPath(snapshot.workspacePath) ?? "";
-        if (sourceWorkspacePath === null || sourceWorkspacePath !== evidence.manifestPath.split("/").slice(0, -1).join("/")) {
+          : normalizeSnapshotPath(snapshot.manifestDirectory) ?? "";
+        if (sourceManifestDirectory === null ||
+            sourceManifestDirectory !== evidence.manifestPath.split("/").slice(0, -1).join("/")) {
           reason = "workspace_snapshot_identity_invalid";
           break;
         }
-        const sourceManifestDirectory = sourceWorkspacePath;
+        const sourceWorkspacePath = snapshot.workspacePath === null
+          ? null
+          : normalizeSnapshotPath(snapshot.workspacePath) ?? "";
         const sourceAuthority = workspaceIdentity!.workspaceAuthority;
         const relative = specifier.replace(/^(?:file:|link:|portal:)/i, "");
-        const resolvedPath = /^(?:file:|link:|portal:|\.\.?[\\/])/i.test(specifier)
-          ? normalizeSnapshotPath(`${sourceManifestDirectory}/${relative}`)
+        const resolvedPath = sourceWorkspacePath !== null && /^(?:file:|link:|portal:|\.\.?[\\/])/i.test(specifier)
+          ? normalizeSnapshotPath(`${sourceWorkspacePath}/${relative}`)
           : null;
         const matches = [...roots.entries()].flatMap(([candidateRepositoryId, candidateRoots]) => {
           if (candidateRepositoryId === repositoryId || candidateRoots.length !== 1 ||

@@ -219,7 +219,8 @@ describe("production Transformer mission authority", () => {
       id: "repo-a",
       organizationId: "tenant-a",
       revision: "a".repeat(40),
-      workspacePath: "",
+      manifestDirectory: "",
+      workspacePath: null,
       workspaceAuthority: null,
       workspaceIdentityDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       evidenceRefs: expect.arrayContaining([
@@ -275,14 +276,14 @@ describe("production Transformer mission authority", () => {
     addRepositorySnapshot(value, {
       repositoryId: "repo-separated-shop",
       snapshotId: "snapshot-separated-shop",
-      manifestPath: "packages/shop/package.json",
+      manifestPath: "package.json",
       packageName: "shop",
       dependencies: { billing: "file:../billing" },
     });
     addRepositorySnapshot(value, {
       repositoryId: "repo-separated-billing",
       snapshotId: "snapshot-separated-billing",
-      manifestPath: "packages/billing/package.json",
+      manifestPath: "package.json",
       packageName: "billing",
     });
     const authority = createAppDbTransformerMissionAuthority(value.db);
@@ -329,19 +330,20 @@ describe("production Transformer mission authority", () => {
     const definitions = [
       {
         repositoryId: "repo-billing", snapshotId: "snapshot-billing",
-        manifestPath: "packages/billing/package.json", packageName: "billing",
+        manifestPath: "package.json", workspacePath: "packages/billing", packageName: "billing",
         dependencies: {} as Readonly<Record<string, string>>,
       },
       ...sources.map(([name, specifier]) => ({
         repositoryId: `repo-${name}`,
         snapshotId: `snapshot-${name}`,
-        manifestPath: `packages/shop-${name}/package.json`,
+        manifestPath: "package.json",
+        workspacePath: `packages/shop-${name}`,
         packageName: `shop-${name}`,
         dependencies: { billing: specifier },
       })),
       {
         repositoryId: "repo-unmapped", snapshotId: "snapshot-unmapped",
-        manifestPath: "packages/shop-unmapped/package.json", packageName: "shop-unmapped",
+        manifestPath: "package.json", workspacePath: "packages/shop-unmapped", packageName: "shop-unmapped",
         dependencies: { missing: "file:../missing" },
       },
     ];
@@ -357,7 +359,7 @@ describe("production Transformer mission authority", () => {
         return {
           repositoryId: definition.repositoryId,
           revision: sha256(definition.repositoryId).slice(0, 40),
-          workspacePath: definition.manifestPath.split("/").slice(0, -1).join("/"),
+          workspacePath: definition.workspacePath,
           manifestPath: definition.manifestPath,
           manifestContentDigest: `sha256:${sha256(content)}`,
         };

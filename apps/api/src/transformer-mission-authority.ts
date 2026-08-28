@@ -260,6 +260,7 @@ function loadRepository(
       organizationId: tenantId,
       revision: snapshot.resolved_sha,
       snapshotDigest,
+      manifestDirectory: workspace.manifestDirectory,
       workspacePath: workspace.workspacePath,
       workspaceAuthority: workspace.workspaceAuthority,
       workspaceIdentityDigest: workspace.workspaceIdentityDigest,

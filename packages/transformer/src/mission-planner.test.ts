@@ -66,12 +66,13 @@ function dependencyProjection(
 function input(): TransformerMissionPlanningInput {
   const snapshotDigest = recipeFilesDigest(files);
   const workspaceIdentityDigest = sha256(JSON.stringify({
+    manifestDirectory: "",
     manifestPaths: ["package.json"],
     snapshotDigest,
     snapshotId: "snapshot-repo-a",
     workspaceAuthorityDigest: null,
     workspaceAuthorityId: null,
-    workspacePath: "",
+    workspacePath: null,
   }));
   return {
     tenantId: "tenant-a",
@@ -100,7 +101,8 @@ function input(): TransformerMissionPlanningInput {
       organizationId: "organization-a",
       revision: revision("b"),
       snapshotDigest,
-      workspacePath: "",
+      manifestDirectory: "",
+      workspacePath: null,
       workspaceAuthority: null,
       workspaceIdentityDigest,
       observedAt: "2026-08-13T11:50:00.000Z",

@@ -63,6 +63,7 @@ export type TransformerSnapshotWorkspaceIdentity = Readonly<{
   valid: boolean;
   reason: string | null;
   manifestPaths: readonly string[];
+  manifestDirectory: string | null;
   workspacePath: string | null;
   workspaceAuthority: TransformerWorkspaceAuthority | null;
   workspaceIdentityDigest: string;
@@ -117,8 +118,7 @@ function parseAuthority(
   }
   members.sort((left, right) => compareCodeUnits(left.repositoryId, right.repositoryId));
   const current = members.find((member) => member.repositoryId === input.repositoryId);
-  if (!current || current.revision !== input.revision || current.workspacePath !== input.manifestPath
-    .split("/").slice(0, -1).join("/") || current.manifestPath !== input.manifestPath ||
+  if (!current || current.revision !== input.revision || current.manifestPath !== input.manifestPath ||
     current.manifestContentDigest !== input.manifestContentDigest) return null;
   const body = Object.freeze({
     schemaVersion: TRANSFORMER_WORKSPACE_AUTHORITY_SCHEMA,
@@ -140,11 +140,11 @@ export function deriveTransformerSnapshotWorkspaceIdentity(input: Readonly<{
   const manifestPaths = Object.keys(input.files)
     .filter((path) => safePath(path) && MANIFEST_NAMES.has(path.split("/").at(-1) ?? ""))
     .sort(compareCodeUnits);
-  const workspace = manifestPaths.length === 1
+  const manifestDirectory = manifestPaths.length === 1
     ? manifestPaths[0]!.split("/").slice(0, -1).join("/")
     : null;
   const authorityText = input.files[TRANSFORMER_WORKSPACE_AUTHORITY_PATH];
-  const authority = authorityText === undefined || workspace === null
+  const authority = authorityText === undefined || manifestDirectory === null
     ? null
     : parseAuthority(authorityText, {
       tenantId: input.tenantId,
@@ -154,11 +154,14 @@ export function deriveTransformerSnapshotWorkspaceIdentity(input: Readonly<{
       manifestContentDigest: sha256(canonicalManifestText(input.files[manifestPaths[0]!]!)),
     });
   const valid = authorityText === undefined || authority !== null;
+  const logicalWorkspacePath = authority?.members.find((member) =>
+    member.repositoryId === input.repositoryId)?.workspacePath ?? null;
   const workspaceIdentityDigest = sha256(canonical({
     snapshotId: input.snapshotId,
     snapshotDigest: input.snapshotDigest,
     manifestPaths,
-    workspacePath: workspace,
+    manifestDirectory,
+    workspacePath: logicalWorkspacePath,
     workspaceAuthorityId: authority?.authorityId ?? null,
     workspaceAuthorityDigest: authority?.contentDigest ?? null,
   }));
@@ -166,7 +169,8 @@ export function deriveTransformerSnapshotWorkspaceIdentity(input: Readonly<{
     valid,
     reason: valid ? null : "workspace_authority_invalid",
     manifestPaths: Object.freeze(manifestPaths),
-    workspacePath: workspace,
+    manifestDirectory,
+    workspacePath: logicalWorkspacePath,
     workspaceAuthority: authority,
     workspaceIdentityDigest,
   });
