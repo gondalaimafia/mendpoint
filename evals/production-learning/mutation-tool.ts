@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import type { Stats } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { AdmittedFixture } from "./fixture.js";
@@ -92,6 +93,15 @@ function assertSymlinkTargetInside(root: string, linkPath: string, target: strin
   if (existsSync(absoluteTarget)) safeInside(root, absoluteTarget);
 }
 
+function lstatIfPresent(path: string): Stats | null {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 function trackedIndexEntries(repoPath: string): Array<{ mode: string; objectId: string; path: string }> {
   return git(repoPath, ["ls-files", "-s", "-z"])
     .split("\0")
@@ -122,8 +132,8 @@ function assertTrackedWorktreeMatchesIndex(repoPath: string): void {
   if (diff.status !== 0) throw new Error(`git_diff-files_failed:${diff.stderr.trim()}`);
   for (const entry of trackedIndexEntries(root)) {
     const worktreePath = resolve(root, entry.path);
-    if (!existsSync(worktreePath)) throw new Error(`tracked_entry_missing:${entry.path}`);
-    const stat = lstatSync(worktreePath);
+    const stat = lstatIfPresent(worktreePath);
+    if (stat === null) throw new Error(`tracked_entry_missing:${entry.path}`);
     if (entry.mode === "120000") {
       const expected = gitBuffer(root, ["show", `:${entry.path}`]);
       let actual: Buffer;
@@ -164,8 +174,8 @@ function assertChangedPathsSafe(repoPath: string, paths: readonly string[], patc
     if (lexical === ".." || lexical.startsWith(`..${sep}`) || isAbsolute(lexical)) {
       throw new Error(`changed_path_outside_repository:${changedPath}`);
     }
-    if (!existsSync(absolutePath)) continue;
-    const stat = lstatSync(absolutePath);
+    const stat = lstatIfPresent(absolutePath);
+    if (stat === null) continue;
     const indexEntry = trackedIndexEntries(root).find((entry) => entry.path === changedPath);
     const intendedSymlink = stat.isSymbolicLink() || indexEntry?.mode === "120000" || patchSymlinkPaths.has(changedPath);
     if (intendedSymlink) {
