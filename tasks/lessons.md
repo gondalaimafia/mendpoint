@@ -246,3 +246,8 @@
 **Mistake:** The customer backup transport captured root's `HOME` before dropping to UID 1000, so rclone tried to read `/root/.rclone.conf` even though object-store credentials and backup inputs were valid.
 **Correction:** The subprocess environment must be valid for the identity that executes it and must not inherit implicit authority from the constructing identity.
 **Rule:** When work crosses a privilege boundary, explicitly reconstruct every subprocess environment, filesystem path, and credential source for the post-drop identity. Omit privileged home directories and force tools to a deterministic empty configuration when all required authority is already provided explicitly.
+
+### 2026-08-29 — Verify the complete privilege boundary and execution seam
+**Mistake:** The first backup fix changed UID and GID without clearing supplementary groups, and its regression asserted configuration construction without observing the spawned rclone process.
+**Correction:** Exact-head review showed that privileged group authority could survive and that deleting the runtime argument wiring would leave the test green.
+**Rule:** A privilege drop must clear supplementary groups before changing GID and UID, then read back all three identity dimensions. A subprocess regression must observe the real spawn boundary, including final argv and environment, so removing the production wiring makes the test fail.

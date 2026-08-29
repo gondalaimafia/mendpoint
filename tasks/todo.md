@@ -3544,7 +3544,10 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - [x] Remove the rclone configuration-file dependency and prevent inherited home/config authority.
 - [x] Separate unreadable recovery configuration from malformed JSON.
 - [x] Add focused regression and mutation coverage for both failures.
+- [x] Clear supplementary groups before every root-to-customer identity transition and verify UID, GID, and group state afterward.
+- [x] Exercise the actual rclone spawn seam so argv or environment regressions fail the focused suite.
 - [x] Run workspace typecheck, production build, and closure gates on the final head.
+- [x] Rebase onto the advanced exact main revision and rerun the affected gates.
 - [ ] Obtain independent exact-head Codex review and current-base protected CI.
 - [ ] Merge, deploy the exact revision to Fettler, and rerun the protected backup proof.
 
@@ -3552,4 +3555,5 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 - The transport now supplies an explicit platform null device through rclone's highest-precedence `--config` argument and omits `HOME` from the subprocess allowlist. A caller-supplied `RCLONE_CONFIG` remains excluded, so neither the constructing root identity nor ambient configuration can influence the post-drop process.
 - Recovery configuration reads and JSON parsing now have distinct errors. Focused coverage proves unreadable input is not reported as malformed and malformed JSON retains its existing error contract. Protected shipping and production proof remain pending.
-- The final implementation passes 17 focused backup, recovery, and launcher tests; the full workspace typecheck; the optimized 50-route production build; the 32-test closure structure gate over 101 requirements and 81 static pull requests; and `git diff --check`.
+- The implementation passes 20 focused backup, recovery, launcher, identity, and real-spawn tests; the full workspace typecheck; the optimized 50-route production build; the 32-test closure structure gate over 101 requirements and 81 static pull requests; and `git diff --check`.
+- Independent review rejected the first head because the root-launched scripts changed UID and GID without clearing supplementary groups, and the rclone test did not observe the real child-process boundary. One shared fail-closed identity helper now covers backup, restore, fence inspection, and fence recovery; it clears groups before GID/UID, verifies the resulting identity, and has negative coverage for retained authority. The rclone regression now invokes the real transport with a stubbed child process and asserts exact argv plus the sanitized environment. PR #547 merged its original fix while these corrections were in review, so the corrections were reapplied as one successor commit on exact main `0ffdbe78`; focused tests, full typecheck, production build, closure gate, and diff integrity pass there. A new PR bootstrap, protected CI, and exact-head review remain pending.
