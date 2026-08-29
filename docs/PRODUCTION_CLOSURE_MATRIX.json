@@ -2062,9 +2062,9 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T19:31:32.926Z",
-    "observedMainRevision": "5ba88a0e3f7a12a9b34b519eea2dd94b80bc108f",
-    "observationDigest": "sha256:202c386863e10535401a78a15e898de6170927e69b720d6198f2f1f3795cbebe",
+    "observedAt": "2026-08-29T19:58:29.324Z",
+    "observedMainRevision": "9459e59fb9bf4703b5eade04e762245783faf08a",
+    "observationDigest": "sha256:953743bc81a39084fcd9ce9814ced1624514995b515329d71fd2761a3dabe391",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -4773,7 +4773,7 @@
       },
       {
         "number": 523,
-        "state": "open",
+        "state": "merged",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/523",
         "title": "Raise a Mission policy exception on ReGauge pilot deny",
         "headBranch": "cursor/regauge-pilot-policy-exception-f457",
@@ -4783,15 +4783,15 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
           "pullRequests": [],
           "branches": []
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "66d4443cf15157b1f2dbae3fd02017f0cfc6e6fe",
-        "mergeRevision": null,
+        "headRevision": "8ce2ed4102e0b078104bf4ad2badb16d863efb38",
+        "mergeRevision": "9459e59fb9bf4703b5eade04e762245783faf08a",
         "checks": [],
         "review": {
           "state": "none",
