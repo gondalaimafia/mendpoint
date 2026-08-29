@@ -565,6 +565,34 @@ jobs:
           npm run regauge:production:proof -- --mode=readiness-soak
           --duration-seconds=${{ inputs.readiness_soak_seconds }} --interval-seconds=10
           --output=test-results/regauge-production/readiness-soak.json
+      - name: Capture worker failure diagnostics
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/regauge-production
+          if ! timeout --kill-after=2s 15s flyctl machines list --app mendpoint-regauge-production --json \
+            > test-results/regauge-production/worker-failure-machines.json; then
+            printf '[]\n' > test-results/regauge-production/worker-failure-machines.json
+          fi
+          timeout --kill-after=2s 10s flyctl checks list --app mendpoint-regauge-production \
+            > test-results/regauge-production/worker-failure-checks.txt 2>&1 || true
+          mapfile -t worker_ids < <(jq -r '
+            [.[]
+              | select(
+                  .config.metadata.fly_process_group == "worker"
+                  and .config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA
+                )
+              | .id]
+            | unique
+            | .[0:4][]
+          ' test-results/regauge-production/worker-failure-machines.json)
+          for machine_id in "${worker_ids[@]}"; do
+            (timeout --kill-after=2s 10s flyctl logs --app mendpoint-regauge-production \
+              --machine "$machine_id" --no-tail \
+              > "test-results/regauge-production/worker-${machine_id}.log" 2>&1 || true) &
+          done
+          wait || true
       - name: Contain target after activation failure
         if: ${{ failure() }}
         shell: bash

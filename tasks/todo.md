@@ -3557,3 +3557,21 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Recovery configuration reads and JSON parsing now have distinct errors. Focused coverage proves unreadable input is not reported as malformed and malformed JSON retains its existing error contract. Protected shipping and production proof remain pending.
 - The implementation passes 20 focused backup, recovery, launcher, identity, and real-spawn tests; the full workspace typecheck; the optimized 50-route production build; the 32-test closure structure gate over 101 requirements and 81 static pull requests; and `git diff --check`.
 - Independent review rejected the first head because the root-launched scripts changed UID and GID without clearing supplementary groups, and the rclone test did not observe the real child-process boundary. One shared fail-closed identity helper now covers backup, restore, fence inspection, and fence recovery; it clears groups before GID/UID, verifies the resulting identity, and has negative coverage for retained authority. The rclone regression now invokes the real transport with a stubbed child process and asserts exact argv plus the sanitized environment. PR #547 merged its original fix while these corrections were in review, so the corrections were reapplied as one successor commit on exact main `0ffdbe78`; focused tests, full typecheck, production build, closure gate, and diff integrity pass there. A new PR bootstrap, protected CI, and exact-head review remain pending.
+
+## 2026-08-29 ReGauge storage authority and worker diagnostics
+
+- [x] Capture the protected activation failure and prove containment stopped the worker.
+- [x] Trace the complete worker readiness chain from coordinator authentication through durable artifact storage.
+- [x] Reproduce the exact live storage failure and classify every response layer.
+- [x] Restore the app binding to its existing private bucket and prove the remaining credential denial.
+- [x] Add safe readiness state events plus pre-containment machine, check, and log capture.
+- [x] Distinguish missing-bucket and access-denied failures without exposing provider bodies or credentials.
+- [ ] Run focused tests, worker tests, workspace typecheck, production build, closure gates, and diff integrity.
+- [ ] Obtain independent exact-head review and current-base protected CI.
+- [ ] Merge, deploy, and rerun the bounded ReGauge activation proof.
+
+### Review
+
+- Run `33279520458` passed protected authority, dedicated app, encrypted volume, checkpoint storage, secret staging, coordinator deployment, and exact coordinator health. The volume-free worker bound port 9465 but remained unready until Fly timed out; failure containment then stopped it.
+- Live localhost inspection proved the worker listener was bound and the coordinator probe passed. Signed Tigris GET and PUT calls first returned `NoSuchBucket`; after restoring `BUCKET_NAME` to the attached private bucket, both returned 403, proving the failed create attempt had also replaced the bucket credentials. The worker remains stopped while replacement scoped credentials are pending.
+- The code now emits only structured, allowlisted readiness stage and error codes, and the protected workflow captures worker inventory, checks, and scoped logs before containment. S3 access denial and missing-bucket failures are distinct without retaining provider response bodies.
