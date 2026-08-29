@@ -2064,15 +2064,15 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-29T04:10:16.000Z",
     "observedMainRevision": "37c3867111fb7083667e5422ebf9b383dba9190a",
-    "observationDigest": "sha256:7909ab90384013ac769d20efe20111652749ee98f53cc7cb68ce46703e355b31",
+    "observationDigest": "sha256:10f888cd102b5bf34f278a0f00c09a04a450e289263e2b4215a6820ffedd973d",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 519,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/519",
-      "title": "Persist Mission Policy Envelope evaluation evidence",
+      "number": 518,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/518",
+      "title": "Add the 101-row production-closure execution ledger",
       "baseBranch": "main",
-      "headBranch": "cursor/mission-policy-evaluation-evidence-f457",
+      "headBranch": "cursor/101-execution-ledger-f457",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -4686,41 +4686,6 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "01cba0ddd362c78bd757d1f33ce2a2bfcf2aed29",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 518,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/518",
-        "title": "Add the 101-row production-closure execution ledger",
-        "headBranch": "cursor/101-execution-ledger-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "412131581b52bc20ff55e2cad2f338ef1473db63",
         "mergeRevision": null,
         "checks": [],
         "review": {
