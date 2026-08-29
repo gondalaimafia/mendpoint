@@ -1,17 +1,49 @@
+import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-// The consumer page fetches from the API; return empty sets so it renders the
-// empty-state placeholder we care about.
+const { pendingPrs } = vi.hoisted(() => ({
+  pendingPrs: { rows: [] as Array<Record<string, unknown>> },
+}));
+
 vi.mock("../../lib/api", () => ({
-  apiGet: vi.fn(async () => []),
+  apiGet: vi.fn(async (path: string) => {
+    if (path === "/prs") return pendingPrs.rows;
+    return [];
+  }),
 }));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
 }));
 
+vi.mock("next/link", () => ({
+  default: ({
+    children,
+    href,
+    ...rest
+  }: {
+    children: React.ReactNode;
+    href: string;
+  }) => React.createElement("a", { href, ...rest }, children),
+}));
+
 const originalFlag = process.env.MENDPOINT_SELF_SERVE_WARDEN;
+
+const BASE_PR = {
+  id: "pr1",
+  changeId: "chg1",
+  consumerId: "c1",
+  title: "Migrate charge()",
+  body: "",
+  branchName: "fettler/pr1",
+  status: "low_confidence",
+  risk: "low",
+  patchUnified: "",
+  githubPrNumber: null,
+  githubPrUrl: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+};
 
 async function renderPage(): Promise<string> {
   // Re-import per-test so the flag read at module/render time reflects env.
@@ -21,6 +53,7 @@ async function renderPage(): Promise<string> {
 }
 
 afterEach(() => {
+  pendingPrs.rows = [];
   if (originalFlag === undefined) delete process.env.MENDPOINT_SELF_SERVE_WARDEN;
   else process.env.MENDPOINT_SELF_SERVE_WARDEN = originalFlag;
 });
@@ -45,5 +78,42 @@ describe("consumer console self-serve scan trigger", () => {
     const html = await renderPage();
     expect(html).toContain("Scan for impact");
     expect(html).not.toContain("npm run demo");
+  });
+});
+
+describe("consumer pending PRs — FET-017 coverage standing", () => {
+  it("does not treat a missing coverage channel as verified no-impact", async () => {
+    pendingPrs.rows = [{ ...BASE_PR }];
+    const html = await renderPage();
+    expect(html).toContain("coverage unknown");
+    expect(html).toContain("low_confidence");
+    expect(html).not.toContain("no impact");
+    expect(html).toContain("Migrate charge()");
+  });
+
+  it("keeps analyzed empty findings distinct from partial coverage", async () => {
+    pendingPrs.rows = [
+      {
+        ...BASE_PR,
+        id: "clean",
+        title: "Clean analyzed PR",
+        coverage: { basis: "analyzed", gaps: [] },
+      },
+      {
+        ...BASE_PR,
+        id: "partial",
+        title: "Partial PR",
+        coverage: {
+          basis: "partial",
+          reason: "Ruby files were present but unsupported.",
+          gaps: [],
+        },
+      },
+    ];
+    const html = await renderPage();
+    expect(html).toContain("no impact");
+    expect(html).toContain("partial coverage");
+    expect(html).toContain("Clean analyzed PR");
+    expect(html).toContain("Partial PR");
   });
 });
