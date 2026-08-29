@@ -3487,3 +3487,78 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Safety evidence: only HTTPS uses the legacy formula. FTP, file, and custom hierarchical identifiers retain the domain-separated literal digest, while opaque IDs and URNs remain unchanged; the complete ingestion suite re-proves returned and durable secret redaction.
 - Verification evidence: the focused upgrade regression passes 2 of 2, the complete ingestion file passes 33 of 33, and the full Catalog suite passes 158 of 158 across eight files. Full-workspace typecheck passes, `npm audit --omit=dev` reports zero vulnerabilities, the changed production source secret scan has no matches, and the CRLF-aware diff check is clean.
 - EOL and scope evidence: the two Catalog files remain LF, the worker CLI remains `i/crlf w/crlf`, and only the two Catalog files plus `tasks/todo.md` and `tasks/lessons.md` changed. No remote mutation occurred.
+
+## 2026-08-28 Fettler and ReGauge 150 case production learning program
+
+Authority: the foundational specification is `C:\Users\Talal\Downloads\mendpoint_product_spec.md`. This program is tracked by GitHub issue #529 and starts from exact fetched `origin/main` revision `96801a319fc3d355cb2b28b4167b83023a192042` in isolated branch `codex/529-fettler-regauge-learning-program`. The dirty default checkout and every Claude, Cursor, shared, authority, and closure-ledger branch remain untouched. PR #518 owns the 101 row production closure ledger and the authority lane owns closure gates.
+
+### Wave 0: authority, coordination, and case contract
+
+- [x] Fetch `origin/main`, record the immutable base revision, and create an isolated `codex/*` worktree.
+- [x] Read the foundational product specification, current lessons, current plan, requirement register, production closure surfaces, learning contracts, security boundaries, and available live evidence without promoting stale claims.
+- [x] Read current GitHub coordination comments and establish collision boundaries before implementation.
+- [x] Define one versioned case schema covering product, case ID, cohort, evidence, repository provenance, fault or modernization pattern, expected diagnosis, expected repair or migration, deterministic oracle, allowed edit boundary, rollback, cleanup, security and tenant risk, and production acceptance.
+- [x] Define three valued evidence throughout: `verified`, `refuted`, and `unknown`; missing evidence must never become no impact, success, absence, or authorization.
+- [x] Add a requirement to case to test to production evidence matrix that preserves partial and external blockers.
+
+### Wave 1: sourced catalog and repository provenance
+
+- [x] Produce 50 common and 25 edge Fettler cases, plus 50 common and 25 edge ReGauge cases, with stable IDs and no duplicates.
+- [x] Ground each case in current primary evidence: official migration guides, security advisories and CVEs, issue trackers, public repository history, or incident postmortems. Popularity and frequency claims require explicit evidence or must be described qualitatively.
+- [x] Select a diverse set of reusable open source repositories and immutable commits that collectively cover the 150 cases.
+- [x] Clone all 10 selected repositories into the isolated pristine benchmark workspace and verify exact detached commit, clean status, license blob digest, dependency manifest evidence, and contained symlinks without executing repository code or dependencies.
+- [x] Record repository URL, exact commit SHA, SPDX license, license text digest, language, framework, dependency lockfiles, provenance, and intended governed learning use.
+- [x] Reject repositories or artifacts with incompatible licenses, unclear data terms, secrets, personal data, generated credentials, customer data, or unverifiable provenance.
+- [x] Verify catalog count, ID uniqueness, required field completeness, source URL form, provenance digest stability, and license policy with deterministic tests.
+
+### Wave 2: fixture and deterministic oracle substrate
+
+- [ ] Preserve a pristine content addressed snapshot for every selected repository and case binding.
+- [ ] Add a mutation or historical bug manifest for every case with exact patch, seed, expected impact graph, deterministic failure, allowed edit boundary, expected fix, rollback, and cleanup.
+- [x] Build mutation application, rollback, cleanup, and integrity tooling that refuses dirty, mismatched, symlink escaped, unlicensed, or unbound repositories.
+- [ ] Build deterministic oracles for diagnosis, changed path boundaries, compile or test behavior, security properties, migration completion, rollback, and negative controls.
+- [ ] Include positive controls, negative controls, ambiguous and insufficient evidence, multi repository dependency, partial coverage, stale or conflicting evidence, concurrency and replay, upgrade path, tenant isolation, SCM and webhook, authorization, provider outage, and model verifier failure cases.
+- [ ] Keep the sealed answer key outside every modeled control arm and prove predictions are invariant under case ID renaming and row reordering. The staged control contract and answer-key exclusion are implemented; metamorphic prediction invariance still requires actual runs.
+
+### Wave 3: production runner tracer
+
+- [x] Bind every run contract to exact production revision, tenant, repository identity, snapshot digest, graph version, policy version, model and router version, recipe version, consent decision, authorization, sandbox receipt, and execution digest.
+- [x] Require dedicated benchmark tenants and repositories with default deny egress, bounded time and cost budgets, draft PR only delivery, no merge authority, no customer deployment authority, and one open draft maximum per case.
+- [x] Fail closed in the benchmark preflight contract before model or tool execution when any binding or receipt is missing, stale, mismatched, cross tenant, or unverified. Production path integration and replay receipts remain open.
+- [ ] Add a Fettler tracer that enters the actual production job and worker path and records candidate, verification, review, delivery, replay, and rollback evidence.
+- [ ] Add a ReGauge tracer that enters the actual production campaign, task, recipe or adaptive execution, verification, review, delivery, replay, dependency restore, and rollback path.
+- [x] Keep DeepSeek advisory only in the production learning receipt and prove it cannot select candidates, mutate execution, deliver, merge, or deploy. Existing production authority remains untouched.
+
+### Wave 4: governed learning lineage
+
+- [ ] Admit accepted, rejected, corrected, failed, rolled back, and reviewer modified outcomes through the production governed learning contract. The benchmark event contract covers every outcome; production ingestion wiring remains open.
+- [x] Define required lineage for consent, license, provenance, repository snapshot, graph version, policy version, model, router, recipe, deterministic verification, cost, latency, and parent outcome.
+- [x] Route repository facts only to Change Graph, organization preferences only to Organization Memory, deterministic transformations only to recipes, and model failures only to sealed evaluation datasets in the benchmark admission contract.
+- [x] Reject shared training or external provider transmission without an exact compatible license and consent decision.
+- [ ] Prove tenant isolation, revocation, retention, replay, idempotency, lineage correction, and unknown evidence behavior.
+
+### Wave 5: development cohorts and sealed holdouts
+
+- [ ] Run development cases in safe cohorts under identical snapshots and budgets across production baseline, deterministic recipe, configured model or router, advisory verifier, and deterministic oracle. The equal-arm schema and validators are implemented; no modeled run is claimed.
+- [x] Reject any modeled control arm that contains the desired outcome or answer key material.
+- [x] Define and deterministically aggregate per-case and per-arm success, abstention quality, false repair or migration, false no impact, verification pass, rollback, tenant isolation, replay and idempotency, latency, cost, and severe regressions.
+- [ ] Freeze implementation and prompts before running sealed holdouts.
+- [ ] Run every sealed holdout once per configured arm, retain raw receipts, and prevent answer key access before prediction sealing.
+- [ ] Generate machine readable and human readable per case, cohort, product, and aggregate reports with confidence intervals only where sample design supports them.
+
+### Wave 6: verification and safe shipment
+
+- [ ] Run focused tests red first for behavior adding work, then affected workspace suites, full tests, full workspace typecheck, production build, GA and claims gates, dependency audit, container build and startup, local API probes, and strict diff integrity.
+- [ ] Independently review each exact branch head for correctness, security, data governance, evaluation leakage, license compliance, tenant isolation, and evidence honesty.
+- [ ] Push and open one safe PR per vertical slice. Require current base, intact branch protection, green protected checks, and resolved review before merge.
+- [ ] Merge and deploy one safe PR at a time. Verify exact production revision, public and authenticated endpoints, worker logs, receipts, and browser behavior before claiming production evidence.
+- [ ] Roll back immediately on regression and preserve exact rollback revision, image or deployment identity, health evidence, and incident timeline.
+- [ ] Never merge benchmark repository draft PRs, deploy to benchmark or customer repositories, set `MENDPOINT_CUSTOMER_READY`, promote blocked requirements, or fabricate unavailable proof.
+
+### Review
+
+First safe slice ready for independent review. The repository controlled case and evidence contracts, 150 case catalog, 101 requirement traceability matrix, 10 repository provenance candidates, 150 blocked fixture plan rows, content addressed mutation and rollback tooling, production receipt preflight, governed learning routing, equal arm evaluation contract, and machine readable reports are implemented without touching production authority or runtime paths. All 10 pristine repository clones are detached at their declared commits, clean, license-digest matched, dependency-manifest checked, and free of escaping symlinks; repository content screening remains `unknown`, so zero repositories and zero fixtures are admitted.
+
+Focused production learning verification passes 39 of 39 tests. The eval TypeScript project passes, the complete 33-project workspace typecheck passed before the final test-only timeout annotation, the optimized 50-page production web build passed, `npm audit --omit=dev` reports zero vulnerabilities, and diff, banned-word, and high-confidence secret-pattern checks are clean. An unsupported root aggregate run passed 5,145 tests and failed 80 across 14 existing files under severe Windows process and disk contention. Isolation confirmed all 28 production closure assertions pass with a 60 second diagnostic timeout, although Vitest still emitted a worker RPC timeout after the 241-second file; the existing Agent attempt-engine file continues to fail 25 of 36 tests with `spawn EINVAL` and one 30-second filesystem timeout. No production learning source imports or changes those paths. Full-suite, container, production tracer, live sandbox, deployment, and production receipt evidence therefore remain open and are not promoted.
+
+Repository controlled engineering and external proof are reported separately. Native GSD phase execution is unavailable because current main has no `.planning/STATE.md`, roadmap, or phase plans; the existing `tasks/todo.md` remains the authority, and the GSD execution and shipping gates are applied directly without creating a competing plan.
