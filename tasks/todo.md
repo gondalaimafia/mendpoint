@@ -3536,3 +3536,19 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Exact-head re-review then found that an ambiguous Launch secret deployment could infer a replacement Machine not present in the original inventory. Containment now records ID drift, repeatedly inventories the current set, stops every non-stopped current Machine including replacements, and proves every Machine is stopped in a final fresh inventory. ID drift remains evidence and can no longer leave unknown authority running.
 - Exact-head review approved `8e092bd0` against current base `301956d0` with no P0, P1, or P2 findings; 121 focused tests, 32 closure tests over 101 requirements and 80 static pull requests, 9 ledger tests, both workflow parses, and the exact PR #539 matrix record passed. Current-base CI then passed all four required lanes. The first protected authority rerun exposed one complete failure chain: PR #537 incorrectly carried PR #539's completed `rotation-20260828-005` receipt in its new current-PR bootstrap, so proposal authority interpreted an ordinary cutover proposal as a new rotation without a new ledger receipt; GitHub authority consequently failed closed on the failed proposal observation. The stale bootstrap rotation binding is removed and the release-train integrity digest is regenerated. Focused proposal, GitHub, and matrix tests pass 112 of 112, `npm run closure:check` passes 32 of 32, and `git diff --check` is clean. A new exact-head review and current-base authority run are required after push.
 - `main` advanced during that push to `8dbac043` through PR #544. The stale authority run was cancelled before it could publish a mergeable verdict, and the branch was rebased onto the exact new base. The overlap keeps the profile-aware release object needed for honest ReGauge `internal` availability, retains the stronger route and probe wiring proof from #544, records #544 as an exact merged static provider record, and leaves PR #537 as the rotation-free current bootstrap. The overlap-sensitive release, workflow, proposal, GitHub authority, and matrix suites pass 175 of 175; closure structure passes 32 of 32 over 101 requirements and 81 static pull requests; full workspace typecheck and the optimized 50-route production build pass. A new exact-head review, force-with-lease push, current-base CI, and protected authority run remain required.
+
+## 2026-08-29 Customer backup privilege-drop transport fix
+
+- [x] Reproduce the protected Fettler backup failure after configuration validation and encryption.
+- [x] Trace the complete transport chain from root-time construction through the UID 1000 execution boundary.
+- [x] Remove the rclone configuration-file dependency and prevent inherited home/config authority.
+- [x] Separate unreadable recovery configuration from malformed JSON.
+- [x] Add focused regression and mutation coverage for both failures.
+- [ ] Run workspace typecheck, production build, and closure gates on the final head.
+- [ ] Obtain independent exact-head Codex review and current-base protected CI.
+- [ ] Merge, deploy the exact revision to Fettler, and rerun the protected backup proof.
+
+### Review
+
+- The transport now supplies an explicit platform null device through rclone's highest-precedence `--config` argument and omits `HOME` from the subprocess allowlist. A caller-supplied `RCLONE_CONFIG` remains excluded, so neither the constructing root identity nor ambient configuration can influence the post-drop process.
+- Recovery configuration reads and JSON parsing now have distinct errors. Focused coverage proves unreadable input is not reported as malformed and malformed JSON retains its existing error contract. Protected shipping and production proof remain pending.

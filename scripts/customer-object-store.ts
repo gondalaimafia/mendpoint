@@ -42,7 +42,7 @@ const BACKUP_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 // reads /root/.rclone.conf: it fails with EACCES on a file it does not need, because
 // connectionArgs already specify the remote inline. Pointing --config at the null device
 // removes the configuration file, and with it the HOME dependency, for every rclone call.
-const RCLONE_NO_CONFIG_PATH = "/dev/null";
+const RCLONE_NO_CONFIG_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
 const DEFAULT_OPERATION_TIMEOUT_MS = 4 * 60 * 60 * 1_000;
 const MIN_OPERATION_TIMEOUT_MS = 60_000;
 const MAX_OPERATION_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
@@ -149,7 +149,7 @@ export function customerObjectStoreProcessEnv(
   env: Readonly<NodeJS.ProcessEnv>,
 ): NodeJS.ProcessEnv {
   const names = [
-    "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "SystemRoot",
+    "PATH", "TMPDIR", "TEMP", "TMP", "SystemRoot",
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION",
   ] as const;
   return Object.fromEntries(

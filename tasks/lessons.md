@@ -241,3 +241,8 @@
 **Mistake:** A completed authority rotation receipt from PR #539 was copied into PR #537's current pull request bootstrap even though #537 did not change the authority policy or ledger.
 **Correction:** The protected proposal verifier correctly treated that bootstrap binding as a new rotation request, then failed because no new append-only receipt existed; GitHub authority failed closed downstream.
 **Rule:** Never carry an earlier pull request's rotation tuple into a new current-PR bootstrap. An ordinary successor proposal omits `authorityRotation`; only the exact proposal that changes policy or the rotation ledger may bind its newly appended receipt, issue time, and digests.
+
+### 2026-08-29 — Rebuild subprocess authority after dropping privileges
+**Mistake:** The customer backup transport captured root's `HOME` before dropping to UID 1000, so rclone tried to read `/root/.rclone.conf` even though object-store credentials and backup inputs were valid.
+**Correction:** The subprocess environment must be valid for the identity that executes it and must not inherit implicit authority from the constructing identity.
+**Rule:** When work crosses a privilege boundary, explicitly reconstruct every subprocess environment, filesystem path, and credential source for the post-drop identity. Omit privileged home directories and force tools to a deterministic empty configuration when all required authority is already provided explicitly.

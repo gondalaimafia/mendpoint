@@ -92,7 +92,7 @@ describe("customer object store", () => {
     // the root HOME, so any rclone call that still resolves a configuration file from HOME dies
     // with EACCES on /root/.rclone.conf. The remote is fully specified by these args instead.
     expect(config().connectionArgs).toEqual([
-      "--config", "/dev/null",
+      "--config", process.platform === "win32" ? "NUL" : "/dev/null",
       "--s3-provider", "Other",
       "--s3-env-auth",
       "--s3-endpoint", "https://fly.storage.tigris.dev",
@@ -100,8 +100,15 @@ describe("customer object store", () => {
     ]);
     const configIndex = config().connectionArgs.indexOf("--config");
     expect(configIndex).toBeGreaterThanOrEqual(0);
-    expect(config().connectionArgs[configIndex + 1]).toBe("/dev/null");
-    expect(customerObjectStoreProcessEnv({ HOME: "/root" }).HOME).toBe("/root");
+    expect(config().connectionArgs[configIndex + 1]).toBe(
+      process.platform === "win32" ? "NUL" : "/dev/null",
+    );
+    const env = customerObjectStoreProcessEnv({
+      HOME: "/root",
+      RCLONE_CONFIG: "/root/.rclone.conf",
+    });
+    expect(env.HOME).toBeUndefined();
+    expect(env.RCLONE_CONFIG).toBeUndefined();
   });
 
   it("scopes credentials to rclone and proves startup write, read, and delete", async () => {
