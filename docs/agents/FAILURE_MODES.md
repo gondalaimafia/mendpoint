@@ -254,6 +254,26 @@ sub-check directly against a fixture, enumerate every failure at once — and sh
 one change-set with one verification cycle. Serial CI-cycle discovery is
 acceptable only when local enumeration is genuinely impossible.
 
+**Review is not a discovery mechanism.** When "brief → implement → review →
+discover the next layer" repeats, each PR costs N sequential CI cycles instead of
+one analysis pass — several PRs here took three and four round-trips for exactly
+this reason. Enumerate consumers **in both directions before writing code**: who
+reads the error or verdict a change emits, *and* who reads the underlying data the
+removed check was protecting. Removing a check silently promotes every reader of
+its data to unguarded — one change stopped verifying a field that
+`REQUIREMENT_ACTIVE_CLOSURE_PATH_REQUIRED` read straight out of the matrix, and a
+reviewer found it three rounds later instead of in pass one. Grep for **prose**,
+not just calls: a comment naming a check ("delegated to the oracle") is a consumer
+of it. Demand the enumeration as the *first* deliverable, before any code, with a
+stop condition if the list changes the shape of the fix — one such pass returned
+the real blocker, three non-gaps each cleared with a positive control, and a
+sub-gap not previously considered, all at once.
+
+**Sequential rounds on one PR are peeling; parallel discovery across PRs is not.**
+Running thirteen backlog reviews concurrently was correct and cost nothing extra.
+The waste is re-running CI on the *same* change to surface a layer that one
+analysis pass would have found.
+
 ---
 
 ## 11. Stacked PRs and branch deletion
@@ -341,6 +361,20 @@ the work to fit.* That instruction repeatedly prevented confident changes built 
 something untrue — including an agent told to harden a subsystem another session
 had already deleted.
 
+**A brief is a checklist, not prose — assemble it from these failure modes.** The
+lines that repeatedly earn their keep are boilerplate, and leaving one out costs a
+full stall-nudge round trip: *run all gates in the foreground, never end the turn
+to announce something is running*; *if a premise here is false, stop and report*;
+the clean-worktree warning naming the stale default checkout (§15); the explicit
+no-touch list of other agents' branches; *mutation-prove every regression test and
+report both exit codes* (§2); and *do not weaken or delete an assertion to make a
+gate pass* (§8). Carry the known bug shapes in too — third-state collapse (§1),
+fixtures unlike production (§19), unguarded caller wiring (§19), tautological
+controls (§2) — rather than a generic checklist; naming this repository's shapes is
+what makes a review or discovery pass productive. Recording the lesson is worth
+nothing if the template does not carry it: this was written down once and not
+applied, and two agents stalled identically the next session.
+
 ---
 
 ## 15. Environment traps on this host
@@ -357,6 +391,11 @@ had already deleted.
 - **Some suites carry hard-coded per-test timeouts** and fail under parallel load
   while passing in isolation. Distinguish an environmental timeout from an
   assertion failure before reporting either.
+- **`npx tsx -e` with a top-level `import` silently no-ops and exits 0** on this
+  host — no output, no file writes, success code. An agent nearly reported "no
+  encoding works" from three mutations that never applied, caught only because one
+  *should* have passed. Use a real script file and assert the post-mutation state;
+  never trust `-e` for anything that must actually run.
 
 ---
 
@@ -380,12 +419,121 @@ stale note, when one live check would have shown the work was already done.
 
 ---
 
+## 17. An unsatisfiable gate is not a failing PR
+
+**A gate can be red because its passing condition requires knowledge the author
+could not have had — and refreshing only re-loses the race.**
+
+The closure gate once compared each PR's committed matrix snapshot against *live*
+GitHub state at every judge: one code demanded the snapshot equal main's current
+tip, another demanded its open-PR set equal the live open-PR set. With ~30 open PRs
+and ~70 merges a day this was **unreachable by construction** — every merge turned
+the other ~29 PRs red, and every new PR turned all earlier ones red. On one day
+this was the sole cause of red on ~25 of 30 PRs; exactly one PR had a genuine test
+failure. Hand-refreshing 25 PRs would have been wasted within a single merge.
+
+**The discriminating test.** Ask whether *a perfectly diligent author could have
+satisfied the check at author time*. A PR authored at time T cannot enumerate a
+sibling created at T+1. When the answer is no, the check is unsatisfiable, and
+**relaxing it is the only correct move** — not a weakening. This is the mirror
+image of §8: there the check was right and relaxing it was the lazy path; here the
+check cannot be met, and refusing to change it just re-loses the race. Distinguish
+both from a *wrong-baseline* gate, which measures against the wrong anchor but is
+still satisfiable — fix the anchor, do not relax it.
+
+**Before relaxing, two guards.** Say plainly which guarantee is being given up.
+And confirm the property is a *reporting* one, not a *security* one: enumerate
+every consumer of the value first (§10) and stop if any makes a security decision
+on it. A provenance or snapshot change offered as "load-bearing" is often not —
+measure before accepting it. One PR re-pinned an audited revision to green a new
+gate; zero of the 13 claim surfaces had changed across 310 files, so the gate
+passed without the re-pin at all.
+
+---
+
+## 18. A systemic false positive does not entitle you to switch the check off
+
+**Reducing branch protection to drain a queue past a known-noisy gate let a real
+dependency violation through within the hour. The noise and the signal came out of
+the same check.**
+
+The closure gate was red on all 34 open PRs for one systemic reason (§17), so it
+carried no signal about any individual PR. To ship, the required contexts were cut
+to the four product checks and six reviewed PRs merged. Within the hour,
+`closure:check` on main reported `PR_DEPENDENCY_UNSATISFIED`: one merged PR
+declared a dependency on another that had been closed as superseded, and main's
+matrix recorded its disposition as *replace, do not merge as-is*. The gate would
+have caught both. It had been switched off.
+
+**The trap:** "this gate is red on all 34 PRs for one systemic cause, therefore it
+is telling me nothing about these six." The first clause was true; the second does
+not follow. A gate emitting a systemic false positive can emit true positives in
+the same run, and disabling it discards both. This is §8 one level up — applied to
+the enforcement mechanism instead of a single assertion.
+
+**What was available instead:** the per-PR `closure-authority (N)` checks were
+*not* required contexts — only the sweeps were. Reading each PR's own verdict for
+real findings while merging past the sweep was possible the whole time, visible in
+the branch-protection config already read. After the drain, all 28 per-PR runs on
+main's tip came back green: the check discriminates fine when its inputs are
+current. Note also that draining N PRs stales main's own matrix (it is authored
+inside PRs; the last merged wins), so budget a resync PR as part of any batch
+merge, not as a surprise after.
+
+**The rule.** Before disabling an enforcement mechanism to unblock delivery,
+separate its systemic failure from its per-item findings and read the per-item
+findings anyway. If you cannot separate them, you are not entitled to conclude it
+has nothing to say.
+
+---
+
+## 19. A fixture must look like production, not like the code
+
+**Across ~12 PRs reviewed in one session not one merged on first review, and every
+genuine defect hid behind a fixture shaped like the module under test rather than
+like production.** Carelessness was never the cause; the fixtures tested the wrong
+world.
+
+- **Identifier length.** Production ids are a 49-char campaign plus a 68-char
+  target — a verification scope of 217 chars and an entry id of 230 against a
+  `maxIdentifier: 200` that *throws*. Every fixture used two-character ids (`c1`,
+  `t1`), scope length 117, so the throw never fired in tests; in production it
+  dropped the entire mission context to absent, which downstream read as "no prior
+  context."
+- **A precondition production never establishes.** A fix derived a binding from
+  `mission.snapshotId`, which is *null on the live Fettler path*. Its test passed
+  only because the fixture had called the binding setup itself — a step production
+  never runs. Green in tests, no-op in prod. The remedy was removing that setup
+  call from the test so it exercised the unbound path.
+- **Caller wiring left unexercised.** The one line wiring a seam into production
+  was unguarded; mutating the caller to feed a bogus value left **618** and **90**
+  tests green in two PRs. The seam was well tested; its only production binding was
+  not.
+- **Vacuous evidence shims.** An evidence-shape check was hollow because the `jq`
+  shim ignored its filter and emitted a hardcoded object; deleting `result` and
+  `reason` from both evidence writers left **51/51** green.
+- Database age (§12) and tautological controls (§2) are the same disease in other
+  dimensions.
+
+**The rule.** A fixture must resemble production in every dimension the code is
+sensitive to: identifier length, database age, whether a setup function the live
+path never calls has been called, whether the caller wiring is exercised at all.
+When reviewing, ask *what does production actually look like here* and check whether
+any fixture matches. When fixing, **fix the fixture, not just the assertion** — an
+assertion tightened over a fake world still tests the fake world. Prove it by
+mutation (§2): the corrected fixture must make a *named* test die when the guard is
+reverted.
+
+---
+
 ## Quick checklist
 
 Before opening a PR:
 
 - [ ] Every new check has a test that **dies** when the check is reverted — run it
 - [ ] No source-text scan is standing in for behavioural coverage
+- [ ] Every fixture resembles production where the code is sensitive to it —
+      identifier length, database age, caller wiring actually exercised
 - [ ] Every value answering a question about the world can say "I don't know"
 - [ ] Every `catch` and default fails **closed**
 - [ ] New columns appear in **both** the `CREATE TABLE` and the additive-migration

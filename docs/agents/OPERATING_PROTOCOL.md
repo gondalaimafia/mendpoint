@@ -463,3 +463,66 @@ Two rules follow:
 
 This is the third-state defect in the tooling rather than the product: "the query
 did not run correctly" collapsed into "there is nothing there."
+
+## 19. Closure-authority operational hazards
+
+Hard-won operational knowledge for the production closure-authority system. Each
+item cost real time and is not obvious from the code. None of it changes how the
+gate is *written* — `docs/agents/FAILURE_MODES.md` covers that — it is about
+operating it.
+
+### 19.1 Every rotation needs a rotation-free bootstrap cleanup PR after it
+
+An `activate_successor` is not the whole ceremony; this is universal to every
+rotation. After a rotation merges, main's `currentPullRequestBootstrap` still
+carries that PR's `authorityRotation` key. Every PR that then merges main
+**inherits** it: `bootstrapRotation !== undefined` flips true and the PR is asked
+for a rotation receipt for work it never did (`AUTHORITY_ROTATION_RECEIPT_INVALID`),
+which blocks the entire queue. The cure is an ordinary matrix PR that authors a
+rotation-free bootstrap for its own number. Proven by natural experiment in one
+session: PRs that inherited a rotation-free bootstrap merged; those that inherited
+a rotation-carrying one all failed identically. The durable fix — require the
+bootstrap to have actually *changed* rather than merely be present — is worth
+landing so the manual cleanup PR is no longer needed.
+
+### 19.2 Only the closure-authority bot can attest, and the owner label routes trust
+
+`qualifyingReviews` excludes the PR author, and the trusted-reviewer set excludes
+the bootstrap owner's own actor. Because every agent pushes as the same GitHub
+account, that account authors every PR and therefore cannot attest any of them. The
+consequence is a label contract, not an authorship claim: the owner label must name
+the *other* trusted actor (`release-owner:codex`) or the reviewer set is empty and
+the PR can never be attested. The attestation is posted as the closure-authority
+GitHub App's own installation token, minted at run time with a one-hour lifetime and
+never printing key material, from operator-held credentials — the App id,
+installation id, and private-key path are operator secrets that live only in local
+operator notes, never in this repository. A rotation attestation body needs a
+`## Authority rotation attestation` heading followed by **exactly four** lines
+(Rotation ID, Transition, Base policy, Proposed policy); any fifth non-blank line
+before the next heading voids the whole section.
+
+### 19.3 Three timing races make healthy PRs look red — do not "fix" them
+
+- `closure-authority` evaluates required-checks-green **before** those checks can
+  have finished, so the first run after any push legitimately reports
+  `PR_REQUIRED_CHECKS_NOT_GREEN`. Let the checks settle, then re-run the unmodified
+  job.
+- A force-push can leave GitHub's PR object pinned to a **stale `head.sha` for
+  minutes** while the branch ref is already correct, so CI judges the wrong commit.
+  Poll `gh api .../pulls/<n> --jq .head.sha` until it matches. Amending to a new
+  sha with a byte-identical tree fires the synchronize event.
+- **Batched `gh pr update-branch` calls cause empty App API reads.** Four at once
+  produced six `invalidate-authority` failures in an eight-second window — an empty
+  response body, an empty head sha, the status POST 404ing — with 4811/5000
+  rate-limit budget remaining, so it is not rate limiting. Space them out.
+
+### 19.4 Closure tooling gotchas
+
+- `--failed` reruns reuse the cached `discover` job, so they re-judge against the
+  *old* `main_sha`. Use a full rerun.
+- The local dry-run proposal harness **exits 0 regardless of verdict**. Read the
+  printed `verdict=` line, never `$?`.
+- A rotation can silently rewrite dependency declarations, dispositions, and
+  blockers: `releaseTrain.pullRequests` is deleted from the rotation scope view, so
+  `AUTHORITY_ROTATION_MATRIX_SCOPE_INVALID` does not fire on such an edit. Only
+  truthfulness stops it — worth a guardrail.
