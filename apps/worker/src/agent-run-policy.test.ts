@@ -7,7 +7,9 @@ import {
   createDb,
   createMission,
   createPolicyEnvelope,
+  createWardenCampaign,
   insertPrincipal,
+  linkFettlerCampaignToMission,
   type AppDb,
   type SnapshotIdentity,
 } from "@mendpoint/db";
@@ -17,7 +19,10 @@ import {
   defaultPolicyEnvelope,
   type PolicyEnvelope,
 } from "@mendpoint/policy";
-import { assertAgentRunMissionPolicy } from "./agent-run-policy.js";
+import {
+  assertAgentRunMissionPolicy,
+  assertBoundAgentRunMissionPolicy,
+} from "./agent-run-policy.js";
 
 const at = "2026-08-25T00:00:00.000Z";
 const opened: Array<{ db: AppDb; dir: string }> = [];
@@ -146,5 +151,140 @@ describe("assertAgentRunMissionPolicy", () => {
       createdAt: at,
     });
     expect(() => assertAgentRunMissionPolicy(db, allowed)).toThrow(/mission_policy_denied/);
+  });
+});
+
+function enrollFettlerCampaign(db: AppDb, campaignId: string, missionId: string): void {
+  createWardenCampaign(db, {
+    id: campaignId,
+    tenantId: "t1",
+    name: "Payments",
+    ownerPrincipalId: "p1",
+    concurrencyLimit: 1,
+    completionPolicy: "all",
+    eventId: `e-${campaignId}`,
+    idempotencyKey: `k-${campaignId}`,
+    correlationId: "corr",
+    createdAt: at,
+  });
+  linkFettlerCampaignToMission(db, {
+    tenantId: "t1",
+    campaignId,
+    missionId,
+    actorPrincipalId: "p1",
+    eventId: `e-link-${campaignId}`,
+    idempotencyKey: `k-link-${campaignId}`,
+    correlationId: "corr",
+    createdAt: at,
+  });
+}
+
+function agentRunJob(payload: Record<string, unknown>) {
+  return {
+    id: "job-1",
+    tenant_id: "t1",
+    type: "agent.run",
+    payload_json: JSON.stringify(payload),
+  };
+}
+
+const boundTask = {
+  repositoryId: "repo-a",
+  branch: "main",
+  targetPaths: ["src/pay.ts"],
+  useLlm: false,
+  risk: "medium",
+  observedAgainst: snapA,
+  observedAt: at,
+} as const;
+
+describe("assertBoundAgentRunMissionPolicy", () => {
+  // Mutation proof for the policy-gate fix: a campaign-bound agent.run (no
+  // explicit `missionId`) must reach assertAgentRunMissionPolicy. Reverting the
+  // gate to resolve only `payload.missionId` makes this case skip the envelope,
+  // so this expectation flips from RED (throws) to a silent pass.
+  it("evaluates a campaign-bound agent.run and fails closed when its Mission has no envelope", () => {
+    const db = fixture();
+    enrollFettlerCampaign(db, "campaign", "m1");
+    expect(() => assertBoundAgentRunMissionPolicy(db, agentRunJob({ fettlerCampaignId: "campaign" }), boundTask))
+      .toThrow("mission_policy_envelope_missing");
+  });
+
+  // Non-vacuous reachability proof for the campaign path: a `.not.toThrow()`
+  // allow-case cannot distinguish "gate reached and allowed" from "gate skipped
+  // entirely", so this deny-case is what proves the campaign-bound run actually
+  // reaches the envelope evaluation. It throws only if the gate is reached; a
+  // reachability regression turns it red.
+  it("evaluates a campaign-bound agent.run and fails closed when the inherited envelope denies the edit", () => {
+    const db = fixture();
+    enrollFettlerCampaign(db, "campaign", "m1");
+    const restricted: PolicyEnvelope = {
+      ...defaultPolicyEnvelope({
+        tenantId: "t1",
+        policyEnvelopeId: "pe-restricted",
+        createdAt: at,
+      }),
+      repositoryScope: ["repo-other"],
+      allowedTools: ["read"],
+    };
+    createPolicyEnvelope(db, {
+      tenantId: "t1",
+      version: 1,
+      policyEnvelopeId: restricted.policyEnvelopeId,
+      envelopeJson: canonicalPolicyEnvelopeJson(restricted),
+      createdAt: at,
+    });
+    bindMissionToPolicyEnvelope(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      version: 1,
+      actorPrincipalId: "p1",
+      eventId: "e-bind",
+      idempotencyKey: "bind-1",
+      correlationId: "corr",
+      createdAt: at,
+    });
+    expect(() => assertBoundAgentRunMissionPolicy(db, agentRunJob({ fettlerCampaignId: "campaign" }), boundTask))
+      .toThrow(/mission_policy_denied/);
+  });
+
+  it("allows a campaign-bound agent.run whose Mission inherited the default envelope", () => {
+    const db = fixture();
+    enrollFettlerCampaign(db, "campaign", "m1");
+    ensureDefaultPolicyEnvelopeBinding(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      actorPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: at,
+    });
+    expect(() => assertBoundAgentRunMissionPolicy(db, agentRunJob({ fettlerCampaignId: "campaign" }), boundTask))
+      .not.toThrow();
+  });
+
+  it("also evaluates an explicitly mission-claimed agent.run", () => {
+    const db = fixture();
+    expect(() => assertBoundAgentRunMissionPolicy(db, agentRunJob({ missionId: "m1" }), boundTask))
+      .toThrow("mission_policy_envelope_missing");
+  });
+
+  it("is a no-op for an unbound agent.run (no claim, no linked campaign)", () => {
+    const db = fixture();
+    // A campaign that exists but is not linked to any Mission stays unbound.
+    createWardenCampaign(db, {
+      id: "campaign", tenantId: "t1", name: "Payments", ownerPrincipalId: "p1",
+      concurrencyLimit: 1, completionPolicy: "all", eventId: "e-c", idempotencyKey: "k-c",
+      correlationId: "corr", createdAt: at,
+    });
+    expect(() => assertBoundAgentRunMissionPolicy(db, agentRunJob({ fettlerCampaignId: "campaign" }), boundTask))
+      .not.toThrow();
+    expect(() => assertBoundAgentRunMissionPolicy(db, agentRunJob({ goal: "repair" }), boundTask))
+      .not.toThrow();
+  });
+
+  it("fails closed when a claimed Mission row is missing", () => {
+    const db = fixture();
+    expect(() => assertBoundAgentRunMissionPolicy(db, agentRunJob({ missionId: "missing" }), boundTask))
+      .toThrow("mission_task_job_mission_not_found");
   });
 });

@@ -1484,7 +1484,8 @@
       "pullRequests": [
         284,
         333,
-        337
+        337,
+        461
       ],
       "testEvidenceIds": [
         "ME-GTM-003-AC01-EV01"
@@ -1502,7 +1503,9 @@
       "issues": [
         431
       ],
-      "pullRequests": [],
+      "pullRequests": [
+        514
+      ],
       "testEvidenceIds": [
         "ME-FET-015-AC01-EV02",
         "ME-FET-015-AC01-EV03"
@@ -2059,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-28T21:41:35.151Z",
-    "observedMainRevision": "5ba70419ef6164b51ba3bfdc38526bf96fa507d3",
-    "observationDigest": "sha256:082d9c7c2c4df04fd9ad0b3e6868f8e82f44570de4b4a478a8821689f83bc214",
+    "observedAt": "2026-08-29T01:56:40.289Z",
+    "observedMainRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
+    "observationDigest": "sha256:755d9b899ef20f4f47613675a3dbec7dd0c1e8e1f30bb1f070fd4de2a507f9b6",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 515,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/515",
-      "title": "authority: runtime fix open-PR head reachability oracle at the proposal call site",
+      "number": 531,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/531",
+      "title": "Resync release train matrix: close #284 and bind ME-GTM-003 to #461",
       "baseBranch": "main",
-      "headBranch": "fix-open-pr-head-oracle",
+      "headBranch": "codex/matrix-resync-gtm003",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2082,20 +2085,12 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "rotation-20260828-001",
-        "kind": "runtime",
-        "issuedAt": "2026-08-28T21:41:35.151Z",
-        "expiresAt": "2026-08-29T21:41:35.151Z",
-        "basePolicySha256": "sha256:45cafb53dd1d6af6ca8410f024d2191ca64a2b621b79235faaf43174f6824ba8",
-        "proposedPolicySha256": "sha256:86585f7d707b5b28276b663660533068f936ccd3243557541168253ae70d3466"
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
         "number": 284,
-        "state": "open",
+        "state": "closed",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/284",
         "title": "Make the public claims gate able to fail",
         "headBranch": "claude/claims-gate-drift",
@@ -2105,7 +2100,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "extract_smaller_replacement",
+        "disposition": "superseded",
         "dependencies": {
           "pullRequests": [
             461
@@ -2115,8 +2110,8 @@
         "requirementIds": [
           "ME-GTM-003"
         ],
-        "checkState": "behind",
-        "headRevision": "b096e03c5b67d7b344a2bd8a2b79441323e11710",
+        "checkState": "stale_checks",
+        "headRevision": "7ea868393c310214c70b341856686eed3b64ef9a",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -3611,7 +3606,7 @@
         },
         "requirementIds": [],
         "checkState": "behind",
-        "headRevision": "d24319a0b86395af5e16f74eb935fcfccbf6465d",
+        "headRevision": "842ad1c7f7e76172b4a8177d9c437891ccd57a98",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -3684,9 +3679,11 @@
           "pullRequests": [],
           "branches": []
         },
-        "requirementIds": [],
+        "requirementIds": [
+          "ME-GTM-003"
+        ],
         "checkState": "behind",
-        "headRevision": "923f85717a8ed6708e0022e33ba460ee7d58a543",
+        "headRevision": "a025063315e570c3ea6b16eec7c9838274bfa84f",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -3888,7 +3885,7 @@
       },
       {
         "number": 473,
-        "state": "open",
+        "state": "closed",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/473",
         "title": "Restore fail closed customer backups",
         "headBranch": "codex/revert-green-no-backup",
@@ -3898,7 +3895,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "blocked_explicit_dependency",
+        "disposition": "superseded",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -4389,7 +4386,7 @@
       },
       {
         "number": 506,
-        "state": "open",
+        "state": "closed",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/506",
         "title": "Protect release ingestion recovery authority",
         "headBranch": "codex/release-ingestion-backup",
@@ -4399,7 +4396,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "superseded",
         "dependencies": {
           "pullRequests": [],
           "branches": []
@@ -4546,7 +4543,7 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "8bccaa32ef396657ee8a71dd838b9c3632cac884",
+        "headRevision": "e143f50c4b954ff7e5babd2df83134cb6c3e52d9",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -4564,7 +4561,7 @@
       },
       {
         "number": 514,
-        "state": "open",
+        "state": "merged",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/514",
         "title": "ME-FET-015: Persist authority-bound Fettler indexes",
         "headBranch": "codex/fettler-persisted-index-authority",
@@ -4574,15 +4571,52 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [
+          "ME-FET-015"
+        ],
+        "checkState": "stale_checks",
+        "headRevision": "1586773b9338997e50488e20dc21908cae72712c",
+        "mergeRevision": "972b1c75a7004347c1ca1bc6f640939305cbb4fe",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 515,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/515",
+        "title": "authority: runtime fix open-PR head reachability oracle at the proposal call site",
+        "headBranch": "fix-open-pr-head-oracle",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
         "dependencies": {
           "pullRequests": [],
           "branches": []
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "1586773b9338997e50488e20dc21908cae72712c",
-        "mergeRevision": null,
+        "headRevision": "a4f974efe8fd2f288600613c1b0f81bd275b6ee8",
+        "mergeRevision": "0cdf898accc83a739b25500734a4b737c6d401fc",
         "checks": [],
         "review": {
           "state": "none",
@@ -4617,6 +4651,496 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "4ff8326a5a14e6175059e670566949bc9d2b46a3",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 517,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/517",
+        "title": "Bind campaign-execute verification to the candidate, not the source snapshot",
+        "headBranch": "cursor/verification-candidate-scope-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "01cba0ddd362c78bd757d1f33ce2a2bfcf2aed29",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 518,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/518",
+        "title": "Add the 101-row production-closure execution ledger",
+        "headBranch": "cursor/101-execution-ledger-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "412131581b52bc20ff55e2cad2f338ef1473db63",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 519,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/519",
+        "title": "Persist Mission Policy Envelope evaluation evidence",
+        "headBranch": "cursor/mission-policy-evaluation-evidence-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "0eb6ebb9a9599a08239b3cd95890669438bd719c",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 520,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/520",
+        "title": "Resync release train matrix to current main and open pull requests",
+        "headBranch": "codex/release-train-matrix-resync",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "68f89748cf3755a453556b97a9e735547229944d",
+        "mergeRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 521,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/521",
+        "title": "closure authority: pre-authorize systemic-failure escalation successor template",
+        "headBranch": "mp-succ-esc-rot1",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Claude",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "75854c7e4f9032f424e672c1ab3e38a788fac26d",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 522,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/522",
+        "title": "Attach enrolled Fettler campaign to pipeline-pilot agent.run jobs",
+        "headBranch": "cursor/pilot-join-campaign-mission-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "9bf93afca096952492c451227edf2bd0645b1ba9",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 523,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/523",
+        "title": "Raise a Mission policy exception on ReGauge pilot deny",
+        "headBranch": "cursor/regauge-pilot-policy-exception-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "66d4443cf15157b1f2dbae3fd02017f0cfc6e6fe",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 524,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/524",
+        "title": "Raise a Mission policy exception on Fettler agent.run deny",
+        "headBranch": "cursor/fettler-agent-run-policy-exception-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "1c7aa60338cdb4c74159ddaeca897dff2d16389c",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 525,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/525",
+        "title": "Raise a Mission policy exception on Fettler campaign-execute deny",
+        "headBranch": "cursor/campaign-execute-policy-exception-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "c0c9c4b9c2f2fcd9bdb07cd38bafff22415e7130",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 526,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/526",
+        "title": "Surface Fettler impact lineage on the live PR review console",
+        "headBranch": "cursor/fettler-pr-impact-lineage-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "f869dcf0e53184316f109b395040ae01c2925eef",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 527,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/527",
+        "title": "Surface FET-017 coverage standing on the console /changes page",
+        "headBranch": "cursor/changes-impact-coverage-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "e405d9fcf60233e2dfaf4e0d04a284fe07f4099c",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 528,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/528",
+        "title": "Show FET-017 coverage standing on the consumer pending-PR list",
+        "headBranch": "cursor/consumer-pr-coverage-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "1e5f5d2f15ce74946b4c88e2cd14061f1b9fdf9d",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 530,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/530",
+        "title": "authority: relax cross-PR completeness and revision-equality to ancestry; state-scope sibling metadata mirror",
+        "headBranch": "mp-trustroot-completeness",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Claude",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "c5fd530c5ef767b219688d6b956ad0e8538b407a",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 532,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/532",
+        "title": "Define Fettler and ReGauge learning contracts",
+        "headBranch": "codex/529-fettler-regauge-learning-program",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "26384452eb8b2fbd435d591c8d6f57402a0fea2d",
         "mergeRevision": null,
         "checks": [],
         "review": {

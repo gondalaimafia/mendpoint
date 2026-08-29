@@ -182,6 +182,14 @@ export async function runFettlerPrReviewDispatch(input: FettlerPrReviewDispatchI
     deliveryId: payload.deliveryId,
     source: "github_webhook" as const,
   });
+  // Intentionally NOT campaign-bound. The review `agent.run` this enqueues sets
+  // no `allowedChangedPaths`, so the worker rejects it at the
+  // `warden_allowed_changed_paths_required` gate before it can execute. A
+  // campaign hint here would make the claim-time bridge enroll a MissionTask
+  // that then strands in `agent_working` forever, since the job never runs to
+  // transition it out. Leave this path unbound until it can actually execute;
+  // the pipeline-pilot path (warden-pilot-join), which does run, carries the
+  // hint instead.
   const agentPayload = Object.freeze({
     goal:
       `Review customer pull request ${payload.pullRequestNumber} at exact head ${payload.headSha}. ` +

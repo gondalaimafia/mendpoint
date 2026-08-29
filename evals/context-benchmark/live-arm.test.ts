@@ -40,6 +40,7 @@ import {
   MIGRATION_SCENARIO,
   CONFLICTING_CONTEXT_SCENARIO,
 } from "./scenarios.js";
+import { compileAndRenderMissionContext } from "@mendpoint/pipeline";
 
 const APPROVED_MODEL = "muse-spark-1.2-contributor";
 
@@ -456,6 +457,24 @@ describe("live context arm builds a synthetic, tenant-scoped compiler input", ()
     // memory is persistent-only).
     if (statelessInput.organizationMemory.consulted) {
       expect(statelessInput.organizationMemory.records.length).toBe(0);
+    }
+  });
+
+  it("reports mission artifacts as not_consulted for every arm, never a consulted-empty read", () => {
+    const scenario = MIGRATION_SCENARIO;
+    const stage3 = scenario.tasks.find((t) => t.taskId === "stage3-depends-on-prior")!;
+    for (const arm of ARM_IDS) {
+      const input = missionContextInputForTaskArm(scenario, stage3, arm);
+      // The benchmark cohort wires no artifact store, exactly like graph/history/
+      // verification/exceptions. The honest disposition is the third state — "not
+      // determined" — and NOT an empty `consulted` read, which would falsely
+      // assert "we looked at the artifact store and it held nothing".
+      expect(input.artifacts).toEqual({ consulted: false, reason: "store_not_available" });
+      // The compiled envelope a downstream reader (and the model) sees must carry
+      // that same not_consulted disposition, so "not determined" can never be read
+      // as the reassuring "no artifacts exist".
+      const envelope = compileAndRenderMissionContext(input).envelope;
+      expect(envelope.missionArtifacts.status).toBe("not_consulted");
     }
   });
 });

@@ -188,6 +188,51 @@ export function pinPublishedGraphVersionForSingleRepository(db: AppDb, input: {
   });
 }
 
+export type SingleRepoFettlerCampaignBinding = Readonly<{
+  campaignId: string;
+  missionId: string;
+}>;
+
+/**
+ * Campaign-linked Missions whose Fettler campaign targets exactly this one
+ * repository. Zero or many matches stay unresolved — this never invents a
+ * Mission or picks a winner among ambiguous campaigns.
+ */
+export function listSingleRepoFettlerCampaignBindings(
+  db: AppDb,
+  tenantId: string,
+  repositoryId: string,
+): readonly SingleRepoFettlerCampaignBinding[] {
+  if (!tenantId.trim() || !repositoryId.trim()) return Object.freeze([]);
+  const rows = db.raw.prepare(
+    `SELECT DISTINCT campaign_id AS campaignId FROM fettler_campaign_targets
+     WHERE tenant_id = ? AND repository_id = ?`,
+  ).all(tenantId, repositoryId) as Array<{ campaignId: string }>;
+  const bindings: SingleRepoFettlerCampaignBinding[] = [];
+  for (const { campaignId } of rows) {
+    const targets = listWardenCampaignTargets(db, tenantId, campaignId);
+    if (targets.length !== 1 || targets[0]!.repositoryId !== repositoryId) continue;
+    const mission = resolveMissionForFettlerCampaign(db, tenantId, campaignId);
+    if (!mission) continue;
+    bindings.push(Object.freeze({ campaignId, missionId: mission.id }));
+  }
+  return Object.freeze(bindings);
+}
+
+/**
+ * The unique single-repo Fettler campaign Mission for a repository, or
+ * undefined when none or more than one exists. Live enqueue seams use this so
+ * an unbound `agent.run` stays unbound instead of fabricating a Mission.
+ */
+export function resolveUnambiguousSingleRepoFettlerCampaign(
+  db: AppDb,
+  tenantId: string,
+  repositoryId: string,
+): SingleRepoFettlerCampaignBinding | undefined {
+  const bindings = listSingleRepoFettlerCampaignBindings(db, tenantId, repositoryId);
+  return bindings.length === 1 ? bindings[0] : undefined;
+}
+
 /**
  * After Fettler graph publication: pin the published version onto every
  * campaign-linked Mission whose campaign has exactly this one repository.
@@ -200,24 +245,14 @@ export function pinPublishedGraphVersionOnSingleRepoFettlerMissions(db: AppDb, i
   correlationId: string;
   createdAt: string;
 }): readonly PinMissionGraphResult[] {
-  const rows = db.raw.prepare(
-    `SELECT DISTINCT campaign_id AS campaignId FROM fettler_campaign_targets
-     WHERE tenant_id = ? AND repository_id = ?`,
-  ).all(input.tenantId, input.repositoryId) as Array<{ campaignId: string }>;
-  const results: PinMissionGraphResult[] = [];
-  for (const { campaignId } of rows) {
-    const targets = listWardenCampaignTargets(db, input.tenantId, campaignId);
-    if (targets.length !== 1 || targets[0]!.repositoryId !== input.repositoryId) continue;
-    const mission = resolveMissionForFettlerCampaign(db, input.tenantId, campaignId);
-    if (!mission) continue;
-    results.push(pinKnownGraphVersionToMission(db, {
+  return Object.freeze(listSingleRepoFettlerCampaignBindings(db, input.tenantId, input.repositoryId).map(
+    (binding) => pinKnownGraphVersionToMission(db, {
       tenantId: input.tenantId,
-      missionId: mission.id,
+      missionId: binding.missionId,
       graphVersionId: input.graphVersionId,
       actorPrincipalId: input.actorPrincipalId,
       correlationId: input.correlationId,
       createdAt: input.createdAt,
-    }));
-  }
-  return Object.freeze(results);
+    }),
+  ));
 }

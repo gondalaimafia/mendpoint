@@ -361,10 +361,30 @@ export function compareWardenVerificationRuns(
   });
 }
 
+export function fettlerCampaignExecuteVerificationScope(
+  campaignId: string,
+  targetId: string,
+  candidateDigest: string,
+): string {
+  return `warden.campaign.execute:${campaignId}:${targetId}:candidate:${candidateDigest}`;
+}
+
+/** `passed` only when every post-edit check is `passed`. comparison.ok can be
+ * true while pre-existing failures remain — that is `inconclusive`, not green. */
+export function classifyFettlerCampaignExecuteVerificationStatus(
+  postEditChecks: readonly { status: string }[],
+): "passed" | "inconclusive" {
+  if (postEditChecks.length > 0 && postEditChecks.every((check) => check.status === "passed")) {
+    return "passed";
+  }
+  return "inconclusive";
+}
+
 /**
- * Best-effort Mission verification write after a passing post-edit comparison.
- * Unbound campaigns skip. Snapshot-binding / store faults never fail the
- * execute-to-review transition — verification history is metadata on this seam.
+ * Best-effort Mission verification write after a successful review transition.
+ * Candidate bytes were verified, not the immutable source snapshot — scope
+ * includes the candidate digest so a later attempt cannot reuse this row as
+ * current evidence. Unbound campaigns skip. Store faults never fail execute.
  */
 export function tryRecordFettlerCampaignMissionVerification(
   db: AppDb,
@@ -375,22 +395,53 @@ export function tryRecordFettlerCampaignMissionVerification(
     snapshotId: string;
     resolvedSha: string;
     manifestSha256: string;
+    candidateDigest: string;
+    postEditChecks: readonly { status: string }[];
+    targetStage: string;
     verifierPrincipalId: string;
     createdAt: string;
   },
 ): void {
   try {
+    // Write only after verifying → review. A pre-transition call is "not
+    // determined" — skip rather than record evidence for an attempt that
+    // never reached review.
+    if (input.targetStage !== "review") {
+      console.warn(JSON.stringify({
+        event: "warden_mission_verification_skipped",
+        reason: "target_not_in_review",
+        tenantId: input.tenantId,
+        campaignId: input.campaignId,
+        targetId: input.targetId,
+        targetStage: input.targetStage,
+      }));
+      return;
+    }
+    const candidateDigest = typeof input.candidateDigest === "string" ? input.candidateDigest.trim() : "";
+    if (!/^[0-9a-f]{64}$/.test(candidateDigest)) {
+      console.warn(JSON.stringify({
+        event: "warden_mission_verification_skipped",
+        reason: "candidate_digest_invalid",
+        tenantId: input.tenantId,
+        campaignId: input.campaignId,
+        targetId: input.targetId,
+      }));
+      return;
+    }
     const mission = resolveMissionForFettlerCampaign(db, input.tenantId, input.campaignId);
     if (!mission) return;
+    const status = classifyFettlerCampaignExecuteVerificationStatus(input.postEditChecks);
     recordMissionVerification(db, {
       tenantId: input.tenantId,
       missionId: mission.id,
-      verification: `campaign execute post-edit comparison passed for target ${input.targetId}`,
-      scope: `warden.campaign.execute:${input.campaignId}:${input.targetId}`,
+      verification: status === "passed"
+        ? `campaign execute post-edit checks passed for target ${input.targetId} candidate ${candidateDigest}`
+        : `campaign execute introduced no regression for target ${input.targetId} candidate ${candidateDigest}; post-edit checks were not all passed`,
+      scope: fettlerCampaignExecuteVerificationScope(input.campaignId, input.targetId, candidateDigest),
       snapshotId: input.snapshotId,
       resolvedSha: input.resolvedSha,
       manifestSha256: input.manifestSha256,
-      status: "passed",
+      status,
       verifierPrincipalId: input.verifierPrincipalId,
       correlationId: input.campaignId,
       createdAt: input.createdAt,
@@ -989,17 +1040,6 @@ export async function executeWardenCampaignTarget(input: {
     }
     if (!comparison.ok) throw new WardenCampaignExecutionError("warden_verification_regression", true);
 
-    tryRecordFettlerCampaignMissionVerification(input.db, {
-      tenantId: input.tenantId,
-      campaignId: input.campaignId,
-      targetId: input.targetId,
-      snapshotId: snapshot.id,
-      resolvedSha: snapshot.resolved_sha,
-      manifestSha256: snapshot.manifest_sha256,
-      verifierPrincipalId: input.actorPrincipalId,
-      createdAt: input.createdAt,
-    });
-
     const packageArtifact = persistJsonArtifact(input.db, {
       tenantId: input.tenantId, kind: "warden-campaign-review-package", value: createWardenCampaignReviewPackage({
         campaignId: input.campaignId, targetId: input.targetId, runId, attempt: current.attemptCount,
@@ -1048,6 +1088,19 @@ export async function executeWardenCampaignTarget(input: {
       expectedRevision: current.revision, from: "verifying", to: "review", packageArtifactId: packageArtifact.id,
       actorPrincipalId: input.actorPrincipalId, eventId: `${runId}:target:review`,
       idempotencyKey: `${runId}:target:review`, correlationId: input.campaignId, createdAt: input.createdAt,
+    });
+    tryRecordFettlerCampaignMissionVerification(input.db, {
+      tenantId: input.tenantId,
+      campaignId: input.campaignId,
+      targetId: input.targetId,
+      snapshotId: snapshot.id,
+      resolvedSha: snapshot.resolved_sha,
+      manifestSha256: snapshot.manifest_sha256,
+      candidateDigest: sha256(candidate.candidateContent),
+      postEditChecks: postChecks,
+      targetStage: current.stage,
+      verifierPrincipalId: input.actorPrincipalId,
+      createdAt: input.createdAt,
     });
     appendRun("run_completed", { stage: current.stage, packageArtifactId: packageArtifact.id }, [artifactReference(packageArtifact)]);
     const replay = replayWardenRun(input.db, input.tenantId, runId);

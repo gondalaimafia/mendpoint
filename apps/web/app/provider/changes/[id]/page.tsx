@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { graphPathDisplay, type GraphPath } from "@mendpoint/shared";
 import { ApiRequestError, apiGet, type ChangeImpactCoverage, type MigrationPr } from "../../../../lib/api";
+import { changeImpactCoverageSummary } from "../../../components/console/change-impact-coverage";
 import { SeverityForm } from "./severity-form";
 
 export const dynamic = "force-dynamic";
@@ -61,20 +62,16 @@ function renderGraphPath(graphPath: FindingGraphPath) {
   );
 }
 
+// The empty-findings standing is the same FET-017/FET-018 discriminator the
+// console coverage card renders, so it is derived from the single shared mapper
+// rather than a second copy of the predicates that could silently drift.
 function emptyFindingsCopy(coverage?: ChangeImpactCoverage): string {
-  if (coverage?.impact === "no_impact" && coverage.fallback === "raw_retrieval") {
-    return "No impact — analyzed without a tenant graph. This is not a graph-authoritative no-impact result; Fettler used bounded raw retrieval.";
-  }
-  if (coverage?.impact === "no_impact") {
-    return "No impact — verified. Fettler analyzed the in-scope code with full coverage and found nothing affected.";
-  }
-  if (coverage?.impact === "unknown_impact" && coverage.reason === "partial_or_unknown_coverage") {
-    return "No known impact under partial coverage. There may be affected code that was not analyzed.";
-  }
-  if (coverage?.impact === "unknown_impact" && coverage.reason === "analysis_did_not_run") {
-    return "No analysis ran against real code. An empty findings list is not evidence of no impact.";
-  }
-  return "No impact findings are recorded. Confirm pipeline completion before treating this as no impact.";
+  const summary = changeImpactCoverageSummary(coverage);
+  // Headline is the standing ("No impact — verified"); detail is the reason.
+  // The page used to keep a second copy of these predicates. Rendering both
+  // fields from the shared mapper keeps the existing FET-017 assertions honest
+  // without re-introducing a parallel judge.
+  return `${summary.headline}. ${summary.detail}`;
 }
 
 function changeLoadMessage(error: unknown): string {
