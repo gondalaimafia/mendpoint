@@ -80,6 +80,7 @@ function envelope(over: Partial<InheritedContextEnvelope>): InheritedContextEnve
     policyConstraints: { status: "not_consulted", reason: "store_not_available" },
     verificationState: { status: "not_consulted", reason: "no_mission_bound" },
     unresolvedExceptions: { status: "not_consulted", reason: "no_mission_bound" },
+    missionArtifacts: { status: "not_consulted", reason: "no_mission_bound" },
     evidenceRefs: [],
     precedence: [],
     bounds: { sectionItemsCapped: false, historyTruncated: false, promptTruncated: false },
@@ -106,6 +107,24 @@ describe("classifyResumeStanding (pure, fail-closed three-state)", () => {
       false,
     );
     expect(orgFailed.kind).toBe("context_not_loaded");
+
+    const artifactsFailed = classifyResumeStanding(
+      envelope({ missionArtifacts: { status: "not_consulted", reason: "store_not_available" } as never }),
+      true,
+    );
+    expect(artifactsFailed.kind).toBe("context_not_loaded");
+    if (artifactsFailed.kind !== "context_not_loaded") throw new Error("unreachable");
+    expect(artifactsFailed.reason).toBe("store_not_available:artifacts");
+  });
+
+  it("CONTROL: a pre-section envelope does not throw; missing artifacts is context_not_loaded", () => {
+    const stale = envelope({});
+    delete (stale as { missionArtifacts?: unknown }).missionArtifacts;
+    expect(() => classifyResumeStanding(stale, true)).not.toThrow();
+    const standing = classifyResumeStanding(stale, true);
+    expect(standing.kind).toBe("context_not_loaded");
+    if (standing.kind !== "context_not_loaded") throw new Error("unreachable");
+    expect(standing.reason).toBe("section_missing:artifacts");
   });
 
   it("mission-bound but empty is no_prior_context; unbound but empty is no_mission_bound", () => {

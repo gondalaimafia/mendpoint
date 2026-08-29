@@ -14,13 +14,14 @@
  * `no_mission_bound` — distinct from "store unavailable" — while the tenant-scoped
  * organization memory still applies. When a Fettler job IS mission-bound (a
  * separate, acknowledged binding gap), passing the resolved `mission` lights up
- * decisions, exceptions, verification, and history too.
+ * decisions, exceptions, verification, history, and mission artifacts too.
  */
 import {
   classifyMissionVerificationEvidence,
   evaluateMissionExceptions,
   getActiveMissionDecisions,
   getMissionPolicyEnvelope,
+  listMissionArtifacts,
   listMissionVerifications,
   listOrganizationMemory,
   listTrajectories,
@@ -271,6 +272,32 @@ export function buildMissionContext(
       }
     : { consulted: false, reason: "no_mission_bound" };
 
+  const artifacts: MissionContextInput["artifacts"] = (() => {
+    if (!mission) return { consulted: false, reason: "no_mission_bound" };
+    try {
+      return {
+        consulted: true,
+        records: listMissionArtifacts(db, tenantId, mission.id, undefined, 32).map((artifact) => ({
+          tenantId,
+          id: artifact.id,
+          role: artifact.role,
+          artifactId: artifact.artifactId,
+          artifactSha256: artifact.artifactSha256,
+          label: artifact.label,
+          createdAt: artifact.createdAt,
+          taskId: artifact.taskId,
+        })),
+      };
+    } catch (error) {
+      console.error(
+        `  mission artifact context read failed tenant=${tenantId} mission=${mission.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return { consulted: false, reason: "store_not_available" };
+    }
+  })();
+
   const input: MissionContextInput = {
     tenantId,
     mission: {
@@ -296,6 +323,7 @@ export function buildMissionContext(
     history,
     verification,
     exceptions,
+    artifacts,
     ...(params.evidenceRefs ? { evidenceRefs: params.evidenceRefs } : {}),
   };
 
@@ -314,6 +342,9 @@ export function hasInheritedContent(envelope: InheritedContextEnvelope): boolean
   }
   if (envelope.activeDecisions.status === "consulted" && envelope.activeDecisions.entries.length > 0) return true;
   if (envelope.unresolvedExceptions.status === "consulted" && envelope.unresolvedExceptions.entries.length > 0) {
+    return true;
+  }
+  if (envelope.missionArtifacts.status === "consulted" && envelope.missionArtifacts.entries.length > 0) {
     return true;
   }
   if (envelope.verificationState.status === "consulted" && envelope.verificationState.entries.length > 0) return true;
