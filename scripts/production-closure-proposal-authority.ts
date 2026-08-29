@@ -935,9 +935,15 @@ export async function verifyProductionClosureProposal(
         // local Git object database (closure:proposal:check reads the checked-out
         // repo), which cannot see OTHER open PRs' force-pushed heads — "absent
         // locally" is not "absent on GitHub". Skip the strict open-PR head
-        // reachability report here; the live-API PR_METADATA_MISMATCH verification in
-        // github-authority full_release_train scope remains the oracle for open-PR
-        // head accuracy. Merge/deploy revisions are on main and stay locally checked.
+        // reachability report here. Note (#530): github-authority NO LONGER verifies
+        // an open sibling's head or state — that live mirror was removed as
+        // unsatisfiable, since a sibling re-pushed or merged after the snapshot would
+        // fail every other PR's snapshot through no fault of the author. Open-sibling
+        // head/state is now verified by nobody by design; what github-authority does
+        // still guarantee live is REQUIREMENT_CLOSURE_PATH_PR_NOT_LIVE_OPEN (an
+        // unfinished requirement's cited closure PR must be in the live open set) and
+        // the merged-record binding. Merge/deploy revisions are on main and stay
+        // locally checked.
         openPullRequestHeadsVerifiable: false,
         revisionIsAncestor: (revision, descendant) => ancestryResults.get(`${revision}:${descendant}`) === true,
         readArtifact: (locator) => bytesByPath.get(normalizedPath(locator) ?? "") ?? null,
