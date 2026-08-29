@@ -66,7 +66,12 @@ function renderGraphPath(graphPath: FindingGraphPath) {
 // console coverage card renders, so it is derived from the single shared mapper
 // rather than a second copy of the predicates that could silently drift.
 function emptyFindingsCopy(coverage?: ChangeImpactCoverage): string {
-  return changeImpactCoverageSummary(coverage).detail;
+  const summary = changeImpactCoverageSummary(coverage);
+  // Headline is the standing ("No impact — verified"); detail is the reason.
+  // The page used to keep a second copy of these predicates. Rendering both
+  // fields from the shared mapper keeps the existing FET-017 assertions honest
+  // without re-introducing a parallel judge.
+  return `${summary.headline}. ${summary.detail}`;
 }
 
 function changeLoadMessage(error: unknown): string {
