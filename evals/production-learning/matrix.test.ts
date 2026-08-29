@@ -43,6 +43,7 @@ describe("requirement to case to test to production evidence traceability", () =
     expect(traces.filter((trace) => trace.verificationState === "verified")).toHaveLength(0);
     expect(traces.every((trace) => trace.executionReceiptIds.length === 0 && trace.verifiedCaseIds.length === 0 && trace.verifiedOracleEvidenceIds.length === 0)).toBe(true);
     expect(traces.every((trace) => trace.productionEvidenceState === "unknown")).toBe(true);
+    expect(traces.every((trace) => trace.receiptEvidenceState === "absent" && trace.rejectedExecutionReceipts.length === 0)).toBe(true);
   });
 
   it("does not promote a caller-asserted completed receipt", () => {
@@ -72,6 +73,14 @@ describe("requirement to case to test to production evidence traceability", () =
     });
     expect(admitted.every((trace) => trace.verificationState === "unverified")).toBe(true);
     expect(admitted.every((trace) => trace.productionEvidenceState === "unknown")).toBe(true);
+    expect(admitted.find((trace) => trace.requirementId === requirementId)).toMatchObject({
+      receiptEvidenceState: "rejected",
+      rejectedExecutionReceipts: [{
+        receiptId: "receipt-matrix-test",
+        authorityEnvelopeDigest: null,
+        reason: "case_execution_receipt_not_verified",
+      }],
+    });
   });
 
   it("promotes only requirements carried by a signed, case-bound, production-bound receipt", () => {
@@ -88,7 +97,9 @@ describe("requirement to case to test to production evidence traceability", () =
     });
     expect(verified.find((trace) => trace.requirementId === "ME-WAR-001")).toMatchObject({
       verificationState: "verified",
+      receiptEvidenceState: "verified",
       executionReceiptIds: ["receipt-matrix-fet-c001"],
+      rejectedExecutionReceipts: [],
       verifiedCaseIds: ["FET-C001"],
       verifiedOracleEvidenceIds: ["oracle-evidence-fet-c001-run-1"],
       verifiedProductionEvidenceIds: ["production-evidence-fet-c001-run-1"],
@@ -108,13 +119,24 @@ describe("requirement to case to test to production evidence traceability", () =
     const receipt = verifyCaseExecutionReceipt(MATRIX_EXECUTION_EVIDENCE_AUTHORITY_ENVELOPE, authority, learningCase);
 
     process.env.MENDPOINT_PRODUCTION_REVISION = "c".repeat(40);
-    expect(buildRequirementCaseTraceability({ requirements, closureRows: closure.requirements, cases: learningCases, executionReceipts: [receipt] })
-      .every((trace) => trace.verificationState === "unverified")).toBe(true);
+    const revisionRevoked = buildRequirementCaseTraceability({ requirements, closureRows: closure.requirements, cases: learningCases, executionReceipts: [receipt] });
+    expect(revisionRevoked.every((trace) => trace.verificationState === "unverified")).toBe(true);
+    expect(revisionRevoked.find((trace) => trace.requirementId === "ME-WAR-001")).toMatchObject({
+      receiptEvidenceState: "rejected",
+      rejectedExecutionReceipts: [{
+        receiptId: "receipt-matrix-fet-c001",
+        authorityEnvelopeDigest: receipt.authorityEnvelopeDigest,
+        reason: "authority_production_revision_not_current",
+      }],
+      verificationGapReason: "Execution receipt evidence was present but rejected or revoked; see rejectedExecutionReceipts.",
+    });
 
     process.env.MENDPOINT_PRODUCTION_REVISION = PREFLIGHT_REVISION;
     process.env.MENDPOINT_CASE_EXECUTION_EVIDENCE_MINIMUM_ISSUED_AT = "2026-01-02T00:00:00.000Z";
-    expect(buildRequirementCaseTraceability({ requirements, closureRows: closure.requirements, cases: learningCases, executionReceipts: [receipt] })
-      .every((trace) => trace.verificationState === "unverified")).toBe(true);
+    const epochRevoked = buildRequirementCaseTraceability({ requirements, closureRows: closure.requirements, cases: learningCases, executionReceipts: [receipt] });
+    expect(epochRevoked.every((trace) => trace.verificationState === "unverified")).toBe(true);
+    expect(epochRevoked.find((trace) => trace.requirementId === "ME-WAR-001")?.rejectedExecutionReceipts[0]?.reason)
+      .toBe("authority_time_window_invalid");
     installTestAuthorityTrustRoots();
   });
 
@@ -139,6 +161,14 @@ describe("requirement to case to test to production evidence traceability", () =
       });
       expect(changed.every((trace) => trace.verificationState === "unverified")).toBe(true);
       expect(changed.every((trace) => trace.productionEvidenceState === "unknown")).toBe(true);
+      expect(changed.find((trace) => trace.requirementId === "ME-WAR-001")).toMatchObject({
+        receiptEvidenceState: "rejected",
+        rejectedExecutionReceipts: [{
+          receiptId: "receipt-matrix-fet-c001",
+          authorityEnvelopeDigest: receipt.authorityEnvelopeDigest,
+          reason: "case_execution_receipt_case_catalog_mismatch",
+        }],
+      });
     }
   });
 

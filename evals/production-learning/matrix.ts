@@ -46,7 +46,13 @@ export interface RequirementCaseTrace {
   plannedOracleIds: string[];
   verificationState: "verified" | "unverified";
   verificationGapReason: string | null;
+  receiptEvidenceState: "absent" | "rejected" | "verified" | "mixed";
   executionReceiptIds: string[];
+  rejectedExecutionReceipts: Array<{
+    receiptId: string;
+    authorityEnvelopeDigest: string | null;
+    reason: string;
+  }>;
   verifiedCaseIds: string[];
   verifiedOracleEvidenceIds: string[];
   registerEvidenceRefs: string[];
@@ -241,18 +247,29 @@ export function buildRequirementCaseTraceability(input: {
   executionReceipts?: readonly VerifiedCaseExecutionReceipt[];
 }): RequirementCaseTrace[] {
   const closureByRequirement = new Map(input.closureRows.map((row) => [row.requirementId, row]));
-  const admittedExecutionReceipts = (input.executionReceipts ?? []).filter((receipt) => {
+  const receiptEvaluations = (input.executionReceipts ?? []).map((receipt) => {
     try {
       const learningCase = input.cases.find((item) => item.id === receipt.caseId);
-      if (learningCase === undefined) return false;
+      if (learningCase === undefined) throw new Error("case_execution_receipt_case_not_found");
       requireVerifiedCaseExecutionReceipt(receipt, learningCase);
-      return receipt.admissionState === "admitted"
-        && receipt.executionState === "completed"
-        && receipt.oracleEvidence.length > 0;
-    } catch {
-      return false;
+      if (
+        receipt.admissionState !== "admitted"
+        || receipt.executionState !== "completed"
+        || receipt.oracleEvidence.length === 0
+      ) throw new Error("case_execution_receipt_state_invalid");
+      return { receipt, rejection: null };
+    } catch (error) {
+      return {
+        receipt,
+        rejection: {
+          receiptId: receipt.id,
+          authorityEnvelopeDigest: verifiedCaseExecutionReceipts.has(receipt) ? receipt.authorityEnvelopeDigest : null,
+          reason: error instanceof Error ? error.message.split(":", 1)[0]! : "case_execution_receipt_verification_failed",
+        },
+      };
     }
   });
+  const admittedExecutionReceipts = receiptEvaluations.filter((item) => item.rejection === null).map((item) => item.receipt);
   return [...input.requirements].sort((a, b) => a.id.localeCompare(b.id)).map((requirement) => {
     const closure = closureByRequirement.get(requirement.id);
     const plannedCases = input.cases.filter((item) => item.planning.requirementIds.includes(requirement.id));
@@ -260,8 +277,14 @@ export function buildRequirementCaseTraceability(input: {
       receipt.requirementIds.includes(requirement.id)
       && plannedCases.some((item) => item.id === receipt.caseId),
     );
+    const rejectedExecutionReceipts = receiptEvaluations
+      .filter((item) => item.rejection !== null && item.receipt.requirementIds.includes(requirement.id))
+      .map((item) => item.rejection!);
     const planningState = plannedCases.length > 0 ? "planned" : "unplanned";
     const verificationState = verifiedReceipts.length > 0 ? "verified" : "unverified";
+    const receiptEvidenceState = verifiedReceipts.length > 0
+      ? (rejectedExecutionReceipts.length > 0 ? "mixed" : "verified")
+      : (rejectedExecutionReceipts.length > 0 ? "rejected" : "absent");
     const verifiedProductionEvidenceIds = [...new Set(verifiedReceipts.flatMap((receipt) => receipt.productionEvidenceIds))];
     return {
       requirementId: requirement.id,
@@ -273,8 +296,14 @@ export function buildRequirementCaseTraceability(input: {
       plannedCaseIds: plannedCases.map((item) => item.id),
       plannedOracleIds: [...new Set(plannedCases.filter((item) => item.datasetSplit === "development").flatMap((item) => item.expected.oracleIds))],
       verificationState,
-      verificationGapReason: verificationState === "verified" ? null : "No protected-verifier-authenticated completed execution receipt verifies this requirement.",
+      verificationGapReason: verificationState === "verified"
+        ? null
+        : rejectedExecutionReceipts.length > 0
+          ? "Execution receipt evidence was present but rejected or revoked; see rejectedExecutionReceipts."
+          : "No protected-verifier-authenticated completed execution receipt verifies this requirement.",
+      receiptEvidenceState,
       executionReceiptIds: verifiedReceipts.map((receipt) => receipt.id),
+      rejectedExecutionReceipts,
       verifiedCaseIds: [...new Set(verifiedReceipts.map((receipt) => receipt.caseId))],
       verifiedOracleEvidenceIds: [...new Set(verifiedReceipts.flatMap((receipt) => receipt.oracleEvidence.map((item) => item.evidenceId)))],
       registerEvidenceRefs: requirement.acceptance.flatMap((acceptance) => acceptance.evidence.map((evidence) => evidence.locator)),
@@ -317,6 +346,15 @@ export function validateRequirementCaseTraceability(input: {
     }
     if (trace.verificationState === "unverified" && (trace.executionReceiptIds.length > 0 || trace.verifiedCaseIds.length > 0 || trace.verifiedOracleEvidenceIds.length > 0 || trace.verifiedProductionEvidenceIds.length > 0 || trace.verificationGapReason === null)) {
       errors.push(`${trace.requirementId} unverified trace must not retain verified execution claims`);
+    }
+    const expectedReceiptEvidenceState = trace.executionReceiptIds.length > 0
+      ? (trace.rejectedExecutionReceipts.length > 0 ? "mixed" : "verified")
+      : (trace.rejectedExecutionReceipts.length > 0 ? "rejected" : "absent");
+    if (trace.receiptEvidenceState !== expectedReceiptEvidenceState) {
+      errors.push(`${trace.requirementId} receiptEvidenceState does not match retained receipt evidence`);
+    }
+    if (trace.rejectedExecutionReceipts.some((receipt) => receipt.receiptId.trim().length === 0 || receipt.reason.trim().length === 0)) {
+      errors.push(`${trace.requirementId} rejected execution receipts must retain identity and reason`);
     }
     if (trace.productionEvidenceState === "verified" && trace.verifiedProductionEvidenceIds.length === 0) {
       errors.push(`${trace.requirementId} cannot claim verified production evidence without an id`);
