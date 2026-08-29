@@ -258,6 +258,7 @@ import {
   readiness,
   RELEASE,
   resolveReleaseRevision,
+  resolveReleaseProduct,
   releaseBanner,
   featureMatrix,
   isProduction,
@@ -948,7 +949,7 @@ app.get("/health", (c) =>
   c.json({
     ok: true,
     service: "mendpoint-api",
-    product: RELEASE.product,
+    product: resolveReleaseProduct(),
     platform: RELEASE.platform,
     version: RELEASE.version,
     channel: RELEASE.channel,
@@ -977,6 +978,7 @@ app.get("/ready", (c) => {
 app.get("/version", (c) =>
   c.json({
     ...RELEASE,
+    product: resolveReleaseProduct(),
     revision: resolveReleaseRevision(),
     banner: releaseBanner(),
     features: featureMatrix(),

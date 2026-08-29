@@ -5,6 +5,7 @@ import { describe, expect, it, beforeEach } from "vitest";
 import {
   RELEASE,
   resolveReleaseRevision,
+  resolveReleaseProduct,
   validateApiEnv,
   rateLimit,
   clearRateLimits,
@@ -69,6 +70,45 @@ describe("ops GA", () => {
     expect(RELEASE.channel).toBe("ga");
     expect(releaseBanner()).toBe("Mendpoint / Fettler 1.0.0 (ga)");
     expect(RELEASE.gaFeatures.length).toBeGreaterThan(5);
+  });
+
+  it("resolves product identity from the deployment profile", () => {
+    // ReGauge-engine profiles report the customer-facing ReGauge name.
+    // "Transformer" is the legacy internal engine name; transformer_pilot is a
+    // ReGauge deployment, so it must report ReGauge, not the engine's old name.
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "regauge_production" }),
+    ).toBe("ReGauge");
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "transformer_pilot" }),
+    ).toBe("ReGauge");
+    // Fettler profiles and the default fleet report Fettler.
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "customer" }),
+    ).toBe("Fettler");
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "demo" }),
+    ).toBe("Fettler");
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "pilot" }),
+    ).toBe("Fettler");
+    // An unknown or unset profile must never silently claim the ReGauge
+    // identity: it falls back to the default platform product.
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "not_a_profile" }),
+    ).toBe("Fettler");
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "  " }),
+    ).toBe("Fettler");
+    expect(resolveReleaseProduct({})).toBe("Fettler");
+    // The banner reflects the resolved product for the given environment.
+    expect(
+      releaseBanner({ MENDPOINT_DEPLOYMENT_PROFILE: "regauge_production" }),
+    ).toBe("Mendpoint / ReGauge 1.0.0 (ga)");
+    expect(
+      releaseBanner({ MENDPOINT_DEPLOYMENT_PROFILE: "transformer_pilot" }),
+    ).toBe("Mendpoint / ReGauge 1.0.0 (ga)");
+    expect(releaseBanner({})).toBe("Mendpoint / Fettler 1.0.0 (ga)");
   });
 
   it("accepts only an immutable deployed source revision", () => {

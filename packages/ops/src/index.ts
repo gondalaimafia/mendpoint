@@ -2,6 +2,7 @@ export {
   RELEASE,
   releaseBanner,
   resolveReleaseRevision,
+  resolveReleaseProduct,
   type ReleaseInfo,
 } from "./release.js";
 export {
