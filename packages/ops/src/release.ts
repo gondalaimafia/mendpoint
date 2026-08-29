@@ -38,14 +38,8 @@ export const RELEASE = {
 export const REGAUGE_RELEASE = {
   ...RELEASE,
   product: "Regauge",
+  channel: "internal",
   codename: "legacy-engineer",
-  gaFeatures: [
-    ...RELEASE.gaFeatures,
-    "transformer_bsg_campaigns",
-  ],
-  experimentalFeatures: RELEASE.experimentalFeatures.filter(
-    (feature) => feature !== "transformer_bsg_campaigns",
-  ),
 } as const;
 
 export type ReleaseInfo = typeof RELEASE | typeof REGAUGE_RELEASE;

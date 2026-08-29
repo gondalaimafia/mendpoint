@@ -463,12 +463,14 @@ jobs:
             if jq -e --arg revision "$GITHUB_SHA" '
                 .revision == $revision
                 and .product == "Regauge"
-                and ([.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "ga" and .enabled == true)] | length) == 1
+                and .channel == "internal"
+                and ([.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "experimental" and .enabled == true)] | length) == 1
               ' <<<"$version_json" >/dev/null \
               && jq -e '
                 .status == "ok"
                 and .release.product == "Regauge"
-                and ([.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "ga" and .enabled == true)] | length) == 1
+                and .release.channel == "internal"
+                and ([.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "experimental" and .enabled == true)] | length) == 1
               ' <<<"$ready_json" >/dev/null; then exit 0; fi
             test "$attempt" -lt 60
             sleep 2

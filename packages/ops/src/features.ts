@@ -22,6 +22,12 @@ function envEnabled(env: Readonly<Record<string, string | undefined>>): Set<stri
   if (env.MENDPOINT_EXPERIMENTAL === "1") {
     for (const f of release.experimentalFeatures) set.add(f);
   }
+  if (
+    env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() === "regauge_production" &&
+    env.MENDPOINT_REGAUGE_ENABLED?.trim() === "1"
+  ) {
+    set.add("transformer_bsg_campaigns");
+  }
   return set;
 }
 

@@ -73,16 +73,20 @@ describe("ops GA", () => {
   });
 
   it("reports the canonical Regauge product and GA capability only for its production profile", () => {
-    const env = { MENDPOINT_DEPLOYMENT_PROFILE: "regauge_production" };
+    const env = {
+      MENDPOINT_DEPLOYMENT_PROFILE: "regauge_production",
+      MENDPOINT_REGAUGE_ENABLED: "1",
+    };
     const release = resolveRelease(env);
 
     expect(release.product).toBe("Regauge");
-    expect(release.gaFeatures).toContain("transformer_bsg_campaigns");
-    expect(release.experimentalFeatures).not.toContain("transformer_bsg_campaigns");
-    expect(releaseBanner(env)).toBe("Mendpoint / Regauge 1.0.0 (ga)");
+    expect(release.channel).toBe("internal");
+    expect(release.gaFeatures).not.toContain("transformer_bsg_campaigns");
+    expect(release.experimentalFeatures).toContain("transformer_bsg_campaigns");
+    expect(releaseBanner(env)).toBe("Mendpoint / Regauge 1.0.0 (internal)");
     expect(featureMatrix(env)).toContainEqual({
       id: "transformer_bsg_campaigns",
-      tier: "ga",
+      tier: "experimental",
       enabled: true,
     });
 

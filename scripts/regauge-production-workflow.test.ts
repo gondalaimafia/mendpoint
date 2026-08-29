@@ -318,8 +318,9 @@ describe("Regauge production workflow", () => {
       "https://mendpoint-regauge-production.fly.dev/ready",
     );
     expect(steps[coordinatorHealthIndex].run).toContain('.product == "Regauge"');
+    expect(steps[coordinatorHealthIndex].run).toContain('.channel == "internal"');
     expect(steps[coordinatorHealthIndex].run).toContain(
-      '.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "ga" and .enabled == true)',
+      '.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "experimental" and .enabled == true)',
     );
     expect(
       steps.some((step) => step.name === "Deploy one coordinator and one worker"),
