@@ -12,9 +12,12 @@ import type { CoverageSummary } from "./pr-map.js";
  * spec-diff table. Amber is confined to the breaking-changes stat and the
  * "N BREAKING" header badge (Step-7: amber only on breaking). The per-row
  * severity badges map breaking -> danger, safe -> emerald; deprecated is
- * neutral rather than amber so amber stays exclusive to breaking. When the
- * API has no change to show, an honest empty state renders. Coverage standing
- * is a separate prop so a missing `impactCoverage` channel cannot hide inside
+ * neutral rather than amber so amber stays exclusive to breaking in the
+ * spec-diff surface. The impact-coverage card renders its own amber for
+ * `no_known_impact` / `no_basis` standing — a coverage caveat, not a
+ * breaking-change signal. When the API has no change to show, an honest empty
+ * state renders (still carrying the coverage card). Coverage standing is a
+ * required prop so a missing `impactCoverage` channel cannot hide inside
  * `ChangesData` and read as verified no-impact.
  */
 const SEVERITY_TONE: Record<Severity, BadgeTone> = {
@@ -28,7 +31,7 @@ export function ChangesView({
   coverage,
 }: {
   data: ChangesData | null;
-  coverage?: CoverageSummary | null;
+  coverage: CoverageSummary | null;
 }) {
   // `data` is null when the upstream change/provider fetch failed OR nothing is
   // staged. Either way we do NOT know the spec is unchanged, so we must not print
@@ -60,6 +63,7 @@ export function ChangesView({
           <SectionLabel tone="warden">FETTLER</SectionLabel>
           <h1 className="ds-view__title">{data.target}</h1>
         </header>
+        {coverage ? <CoverageCard summary={coverage} /> : null}
         <section className="ds-panel">
           <div className="ds-panel__head">
             <span className="ds-panel__title">Spec diff</span>
