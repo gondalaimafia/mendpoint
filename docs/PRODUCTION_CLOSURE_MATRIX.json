@@ -2064,7 +2064,7 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-29T19:31:32.926Z",
     "observedMainRevision": "5ba88a0e3f7a12a9b34b519eea2dd94b80bc108f",
-    "observationDigest": "sha256:abbcc0ac84f0ce46553fe00912c9a43802af404a8bcb5687b4c6d6449dae9078",
+    "observationDigest": "sha256:202c386863e10535401a78a15e898de6170927e69b720d6198f2f1f3795cbebe",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -4808,7 +4808,7 @@
       },
       {
         "number": 524,
-        "state": "open",
+        "state": "merged",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/524",
         "title": "Raise a Mission policy exception on Fettler agent.run deny",
         "headBranch": "cursor/fettler-agent-run-policy-exception-f457",
@@ -4818,15 +4818,15 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "merge_after_rebase_and_review",
+        "disposition": "merged",
         "dependencies": {
           "pullRequests": [],
           "branches": []
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "1c7aa60338cdb4c74159ddaeca897dff2d16389c",
-        "mergeRevision": null,
+        "headRevision": "2c60bcff2ef07cb13863e6b892bc0f6519a70145",
+        "mergeRevision": "5ba88a0e3f7a12a9b34b519eea2dd94b80bc108f",
         "checks": [],
         "review": {
           "state": "none",
