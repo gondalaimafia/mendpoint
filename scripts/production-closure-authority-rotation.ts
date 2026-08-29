@@ -5,6 +5,35 @@ const SHA = /^[a-f0-9]{40}$/;
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const ROTATION_ID = /^[a-z0-9][a-z0-9._-]{7,127}$/;
 const MAX_ROTATION_VALIDITY_MS = 7 * 24 * 60 * 60 * 1000;
+const SUCCESSOR_TUPLE_KEYS = [
+  "activationDeadline",
+  "controllerCheckAppId",
+  "controllerCheckName",
+  "controllerStatusCreatorLogin",
+  "controllerStatusCreatorUserId",
+  "externalCheckAppId",
+  "externalCheckName",
+  "templatePath",
+  "workflowPath",
+  "workflowSha256",
+] as const satisfies readonly (keyof AuthoritySuccessorTuple)[];
+const SUCCESSOR_STATE_KEYS = [
+  ...SUCCESSOR_TUPLE_KEYS,
+  "activatedByRotationId",
+  "phase",
+  "stagedByRotationId",
+].sort();
+// Re-staging may change only the workflow digest and the activation deadline;
+// every other tuple field is the successor's immutable identity. Derive that
+// identity key set structurally so a field added to AuthoritySuccessorTuple is
+// immutable across a re-stage by default rather than silently mutable.
+const SUCCESSOR_RESTAGE_MUTABLE_KEYS: ReadonlySet<keyof AuthoritySuccessorTuple> = new Set([
+  "workflowSha256",
+  "activationDeadline",
+]);
+const SUCCESSOR_RESTAGE_IDENTITY_KEYS = SUCCESSOR_TUPLE_KEYS.filter(
+  (key) => !SUCCESSOR_RESTAGE_MUTABLE_KEYS.has(key),
+);
 
 export interface AuthorityReviewerIdentity {
   login: string;
@@ -166,11 +195,25 @@ function exactSuccessorTuple(
   return JSON.stringify(tuple(left)) === JSON.stringify(tuple(right));
 }
 
+function exactSuccessorRestageIdentity(
+  left: AuthoritySuccessorTuple | null | undefined,
+  right: AuthoritySuccessorTuple | null | undefined,
+): boolean {
+  const identity = (value: AuthoritySuccessorTuple | null | undefined) => {
+    if (!value) return null;
+    const out: Record<string, unknown> = {};
+    for (const key of SUCCESSOR_RESTAGE_IDENTITY_KEYS) out[key] = value[key];
+    return out;
+  };
+  return JSON.stringify(identity(left)) === JSON.stringify(identity(right));
+}
+
 function validSuccessorTuple(
   successor: AuthoritySuccessorTuple | null | undefined,
 ): successor is AuthoritySuccessorTuple {
   return Boolean(
     successor &&
+    JSON.stringify(Object.keys(successor).sort()) === JSON.stringify(SUCCESSOR_TUPLE_KEYS) &&
     normalizedPath(successor.templatePath) === successor.templatePath &&
     /^config\/production-closure-successors\/closure-authority-[a-z0-9-]+\.yml$/.test(successor.templatePath) &&
     normalizedPath(successor.workflowPath) === successor.workflowPath &&
@@ -193,6 +236,47 @@ function validSuccessorTuple(
     successor.controllerStatusCreatorUserId > 0 &&
     canonicalTime(successor.activationDeadline)
   );
+}
+
+function validSuccessorState(
+  successor: AuthoritySuccessorState | null | undefined,
+): successor is AuthoritySuccessorState {
+  if (
+    !successor ||
+    JSON.stringify(Object.keys(successor).sort()) !== JSON.stringify(SUCCESSOR_STATE_KEYS)
+  ) return false;
+  const {
+    phase,
+    stagedByRotationId,
+    activatedByRotationId,
+    ...tuple
+  } = successor;
+  return phase === "staged" &&
+    ROTATION_ID.test(stagedByRotationId) &&
+    activatedByRotationId === null &&
+    validSuccessorTuple(tuple);
+}
+
+function exactSuccessorState(
+  left: AuthoritySuccessorState | null | undefined,
+  right: AuthoritySuccessorState | null | undefined,
+): boolean {
+  return validSuccessorState(left) &&
+    validSuccessorState(right) &&
+    left.phase === right.phase &&
+    left.stagedByRotationId === right.stagedByRotationId &&
+    left.activatedByRotationId === right.activatedByRotationId &&
+    exactSuccessorTuple(left, right);
+}
+
+function exactOptionalSuccessorState(
+  left: AuthoritySuccessorState | null | undefined,
+  right: AuthoritySuccessorState | null | undefined,
+): boolean {
+  if (left === null || left === undefined || right === null || right === undefined) {
+    return left === right;
+  }
+  return exactSuccessorState(left, right);
 }
 
 function activeIdentity(policy: ClosureAuthorityPolicy): unknown {
@@ -360,7 +444,10 @@ export function verifyAuthorityRotation(
   }
 
   if (transitionKind === "runtime") {
-    if (receipt.successor !== null || !exactSuccessorTuple(input.basePolicy.successor, input.proposedPolicy.successor)) {
+    if (
+      receipt.successor !== null ||
+      !exactOptionalSuccessorState(input.basePolicy.successor, input.proposedPolicy.successor)
+    ) {
       add(
         issues,
         "AUTHORITY_SUCCESSOR_TRANSITION_INVALID",
@@ -377,22 +464,77 @@ export function verifyAuthorityRotation(
     );
   } else if (transitionKind === "stage_successor") {
     const successor = receipt.successor;
+    const staged = input.basePolicy.successor;
+    const isRestage = staged !== null && staged !== undefined;
+    const stagedByReceipt = isRestage
+      ? baseRotations.find((candidate) => candidate.rotationId === staged.stagedByRotationId) ?? null
+      : null;
+    // The load-bearing guard against a crafted receipt injecting phase,
+    // stagedByRotationId, or activatedByRotationId is the exact 10-key set check
+    // in validSuccessorTuple: receipt.successor is validated at
+    // AUTHORITY_SUCCESSOR_TUPLE_INVALID above, so those three state keys can
+    // never reach expectedState. Spreading the tuple FIRST here is defence in
+    // depth behind that key-set check: if it is ever relaxed, the trusted phase,
+    // stagedByRotationId, and activatedByRotationId still win over the receipt.
     const expectedState: AuthoritySuccessorState = {
+      ...successor,
       phase: "staged",
       stagedByRotationId: receipt.rotationId,
       activatedByRotationId: null,
-      ...successor,
     };
     const deadline = Date.parse(successor.activationDeadline);
+    // The canonical seven-day window is absolute: it is measured from the first
+    // stage of the current staging episode (the earliest stage_successor after
+    // the last activation), never from each re-stage hop, so repeated re-staging
+    // cannot extend the activation window indefinitely.
+    const restageOrigin = isRestage
+      ? baseRotations
+          .slice(
+            baseRotations.reduce(
+              (index, candidate, position) =>
+                candidate.kind === "activate_successor" ? position : index,
+              -1,
+            ) + 1,
+          )
+          .find((candidate) => candidate.kind === "stage_successor") ?? null
+      : null;
+    // No permissive fallback: an unresolved or unparseable origin issue time
+    // fails the deadline guard closed below (NaN is rejected explicitly) rather
+    // than silently resolving to this hop's issuedAt and dropping the absolute
+    // window bound.
+    const restageOriginIssuedAt = isRestage
+      ? Date.parse(restageOrigin?.issuedAt ?? "")
+      : issuedAt;
     if (
-      input.basePolicy.successor !== null ||
-      JSON.stringify(input.proposedPolicy.successor) !== JSON.stringify(expectedState)
+      !exactSuccessorState(input.proposedPolicy.successor, expectedState)
     ) {
       add(
         issues,
         "AUTHORITY_SUCCESSOR_STAGE_STATE_INVALID",
         receipt.rotationId,
-        "staging must create one exact successor state from an authority with no pending successor",
+        "staging must create one exact successor state bound to the current rotation",
+      );
+    }
+    if (
+      staged === undefined || (isRestage && (
+        !validSuccessorState(staged) ||
+        stagedByReceipt?.kind !== "stage_successor" ||
+        !exactSuccessorTuple(stagedByReceipt.successor, staged)
+      ))
+    ) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_RESTAGE_AUTHORITY_INVALID",
+        staged?.stagedByRotationId ?? receipt.rotationId,
+        "re-staging requires the immutable stage receipt for the exact unactivated successor tuple",
+      );
+    }
+    if (isRestage && !exactSuccessorRestageIdentity(staged, successor)) {
+      add(
+        issues,
+        "AUTHORITY_SUCCESSOR_RESTAGE_TUPLE_DRIFT",
+        receipt.rotationId,
+        "re-staging may change only the workflow digest and canonical activation deadline",
       );
     }
     if (
@@ -414,17 +556,27 @@ export function verifyAuthorityRotation(
     if (
       deadline < observedAt ||
       deadline <= issuedAt ||
-      deadline - issuedAt > MAX_ROTATION_VALIDITY_MS
+      !Number.isFinite(restageOriginIssuedAt) ||
+      deadline - restageOriginIssuedAt > MAX_ROTATION_VALIDITY_MS
     ) {
       add(
         issues,
         "AUTHORITY_SUCCESSOR_ACTIVATION_DEADLINE_INVALID",
         receipt.rotationId,
-        "a staged successor must be activated within a canonical seven-day window",
+        "a staged successor must be activated within the canonical seven-day window measured from the original stage",
       );
     }
+    // The re-staged executable workflow still carries the previously staged
+    // digest on the base until this rotation overwrites it.
+    const baseWorkflowDigest = staged?.workflowSha256 ?? successor.workflowSha256;
     if (
+      // The NEW successor bytes must already be an inert, base-protected template,
+      // even on a re-stage. This preserves the two-step: authority bytes reach
+      // main as a reviewed template before they become executable. A runtime
+      // rotation may update the template file and its pin while a successor is
+      // staged, so the two-step remains available under a wedge.
       input.basePolicy.protectedFiles[successor.templatePath] !== successor.workflowSha256 ||
+      (isRestage && input.basePolicy.protectedFiles[successor.workflowPath] !== baseWorkflowDigest) ||
       input.proposedPolicy.protectedFiles[successor.templatePath] !== successor.workflowSha256 ||
       input.proposedPolicy.protectedFiles[successor.workflowPath] !== successor.workflowSha256 ||
       input.proposedFileDigests.get(successor.templatePath) !== successor.workflowSha256 ||
@@ -466,9 +618,7 @@ export function verifyAuthorityRotation(
     const successor = receipt.successor;
     const staged = input.basePolicy.successor;
     if (
-      !staged ||
-      staged.phase !== "staged" ||
-      staged.activatedByRotationId !== null ||
+      !validSuccessorState(staged) ||
       baseReceipt?.kind !== "stage_successor" ||
       baseReceipt.rotationId !== staged.stagedByRotationId ||
       !exactSuccessorTuple(baseReceipt.successor, successor) ||
