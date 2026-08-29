@@ -2064,15 +2064,15 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-29T03:13:54.620Z",
     "observedMainRevision": "dc7141bd3877a443dda96026e809f4e4f45ccd55",
-    "observationDigest": "sha256:533cb165d11384ceab5e7e0a9c34f37f50b81d92b96f6e84e2b3c235864a1777",
+    "observationDigest": "sha256:f27d392947fb485768b85105fc5ef8deadeb1cd197b5bca343fb4f6d71996707",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 535,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/535",
-      "title": "Refresh issue authority from one live snapshot and clear the inherited rotation bootstrap",
+      "number": 518,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/518",
+      "title": "Add the 101-row production-closure execution ledger",
       "baseBranch": "main",
-      "headBranch": "codex/issue-authority-refresh-431",
+      "headBranch": "cursor/101-execution-ledger-f457",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -4686,41 +4686,6 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "01cba0ddd362c78bd757d1f33ce2a2bfcf2aed29",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 518,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/518",
-        "title": "Add the 101-row production-closure execution ledger",
-        "headBranch": "cursor/101-execution-ledger-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "412131581b52bc20ff55e2cad2f338ef1473db63",
         "mergeRevision": null,
         "checks": [],
         "review": {
