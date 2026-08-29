@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { LearningCase } from "./schema.js";
 import {
   revalidateSignedAuthorityContext,
@@ -62,7 +63,7 @@ export interface CaseExecutionReceipt {
   id: string;
   caseId: string;
   requirementIds: string[];
-  oracleEvidenceIds: string[];
+  oracleEvidence: Array<{ oracleId: string; evidenceId: string }>;
   productionEvidenceIds: string[];
   admissionState: "admitted" | "blocked";
   executionState: "planned" | "completed" | "failed";
@@ -80,11 +81,10 @@ export interface CaseExecutionEvidenceAuthorityPayload {
   snapshotDigest: string;
   fixtureManifestDigest: string;
   fixtureManifestId: string;
-  oracleIds: string[];
+  oracleEvidence: Array<{ oracleId: string; evidenceId: string }>;
   executionDigest: string;
   productionReceiptAuthorityDigest: string;
   requirementIds: string[];
-  oracleEvidenceIds: string[];
   productionEvidenceIds: string[];
   admissionState: "admitted";
   executionState: "completed";
@@ -98,6 +98,20 @@ export type VerifiedCaseExecutionReceipt = Readonly<CaseExecutionReceipt> & {
 const verifiedCaseExecutionReceipts = new WeakSet<object>();
 const caseExecutionReceiptContexts = new WeakMap<object, VerifiedAuthorityContext>();
 const caseExecutionProductionAuthorities = new WeakMap<object, VerifiedProductionLearningAuthority>();
+interface CaseExecutionReceiptBinding {
+  caseCatalogDigest: string;
+  tenantId: string;
+  repositoryId: string;
+  repositoryCommit: string;
+  snapshotDigest: string;
+  fixtureManifestDigest: string;
+  executionDigest: string;
+}
+const caseExecutionReceiptBindings = new WeakMap<object, Readonly<CaseExecutionReceiptBinding>>();
+
+function caseCatalogBindingDigest(learningCase: LearningCase): string {
+  return createHash("sha256").update(JSON.stringify(learningCase)).digest("hex");
+}
 
 function validateEvidenceIds(values: readonly string[], field: string, errors: string[]): void {
   if (values.length === 0) errors.push(`${field} must be non-empty`);
@@ -132,12 +146,9 @@ export function verifyCaseExecutionReceipt(
     ["fixtureManifestId", payload.fixtureManifestId],
   ] as const) if (value.trim().length === 0) errors.push(`evidence ${field} must be non-empty`);
   validateEvidenceIds(payload.requirementIds, "evidence requirementIds", errors);
-  validateEvidenceIds(payload.oracleIds, "evidence oracleIds", errors);
-  validateEvidenceIds(payload.oracleEvidenceIds, "evidence oracleEvidenceIds", errors);
+  validateEvidenceIds(payload.oracleEvidence.map((item) => item.oracleId), "evidence oracleIds", errors);
+  validateEvidenceIds(payload.oracleEvidence.map((item) => item.evidenceId), "evidence oracleEvidenceIds", errors);
   validateEvidenceIds(payload.productionEvidenceIds, "evidence productionEvidenceIds", errors);
-  if (payload.oracleIds.length !== payload.oracleEvidenceIds.length) {
-    errors.push("evidence oracleIds and oracleEvidenceIds must have equal cardinality");
-  }
   if (payload.admissionState !== "admitted" || payload.executionState !== "completed") {
     errors.push("evidence receipt must be admitted and completed");
   }
@@ -168,7 +179,7 @@ export function verifyCaseExecutionReceipt(
   for (const requirementId of payload.requirementIds) {
     if (!learningCase.planning.requirementIds.includes(requirementId)) errors.push(`evidence requirement is not planned by the learning case: ${requirementId}`);
   }
-  for (const oracleId of payload.oracleIds) {
+  for (const { oracleId } of payload.oracleEvidence) {
     if (!learningCase.expected.oracleIds.includes(oracleId)) errors.push(`evidence oracle is not declared by the learning case: ${oracleId}`);
   }
   if (errors.length > 0) throw new Error(`case_execution_evidence_invalid:${errors.join("|")}`);
@@ -176,7 +187,7 @@ export function verifyCaseExecutionReceipt(
     id: payload.receiptId,
     caseId: payload.caseId,
     requirementIds: Object.freeze([...payload.requirementIds]),
-    oracleEvidenceIds: Object.freeze([...payload.oracleEvidenceIds]),
+    oracleEvidence: Object.freeze(payload.oracleEvidence.map((item) => Object.freeze({ ...item }))),
     productionEvidenceIds: Object.freeze([...payload.productionEvidenceIds]),
     admissionState: payload.admissionState,
     executionState: payload.executionState,
@@ -186,11 +197,21 @@ export function verifyCaseExecutionReceipt(
   verifiedCaseExecutionReceipts.add(token);
   caseExecutionReceiptContexts.set(token, verifiedEnvelope.context);
   caseExecutionProductionAuthorities.set(token, authority);
+  caseExecutionReceiptBindings.set(token, Object.freeze({
+    caseCatalogDigest: caseCatalogBindingDigest(learningCase),
+    tenantId: payload.tenantId,
+    repositoryId: payload.repositoryId,
+    repositoryCommit: payload.repositoryCommit,
+    snapshotDigest: payload.snapshotDigest,
+    fixtureManifestDigest: payload.fixtureManifestDigest,
+    executionDigest: payload.executionDigest,
+  }));
   return token;
 }
 
 export function requireVerifiedCaseExecutionReceipt(
   receipt: VerifiedCaseExecutionReceipt,
+  learningCase?: LearningCase,
 ): VerifiedCaseExecutionReceipt {
   if (!verifiedCaseExecutionReceipts.has(receipt)) throw new Error("case_execution_receipt_not_verified");
   const context = caseExecutionReceiptContexts.get(receipt);
@@ -198,6 +219,11 @@ export function requireVerifiedCaseExecutionReceipt(
   if (context === undefined || authority === undefined) throw new Error("case_execution_receipt_context_missing");
   revalidateSignedAuthorityContext(context);
   requireVerifiedProductionLearningAuthority(authority);
+  const binding = caseExecutionReceiptBindings.get(receipt);
+  if (binding === undefined) throw new Error("case_execution_receipt_binding_missing");
+  if (learningCase !== undefined && binding.caseCatalogDigest !== caseCatalogBindingDigest(learningCase)) {
+    throw new Error("case_execution_receipt_case_catalog_mismatch");
+  }
   return receipt;
 }
 
@@ -217,11 +243,12 @@ export function buildRequirementCaseTraceability(input: {
   const closureByRequirement = new Map(input.closureRows.map((row) => [row.requirementId, row]));
   const admittedExecutionReceipts = (input.executionReceipts ?? []).filter((receipt) => {
     try {
-      requireVerifiedCaseExecutionReceipt(receipt);
+      const learningCase = input.cases.find((item) => item.id === receipt.caseId);
+      if (learningCase === undefined) return false;
+      requireVerifiedCaseExecutionReceipt(receipt, learningCase);
       return receipt.admissionState === "admitted"
         && receipt.executionState === "completed"
-        && receipt.oracleEvidenceIds.length > 0
-        && input.cases.some((item) => item.id === receipt.caseId);
+        && receipt.oracleEvidence.length > 0;
     } catch {
       return false;
     }
@@ -249,7 +276,7 @@ export function buildRequirementCaseTraceability(input: {
       verificationGapReason: verificationState === "verified" ? null : "No protected-verifier-authenticated completed execution receipt verifies this requirement.",
       executionReceiptIds: verifiedReceipts.map((receipt) => receipt.id),
       verifiedCaseIds: [...new Set(verifiedReceipts.map((receipt) => receipt.caseId))],
-      verifiedOracleEvidenceIds: [...new Set(verifiedReceipts.flatMap((receipt) => receipt.oracleEvidenceIds))],
+      verifiedOracleEvidenceIds: [...new Set(verifiedReceipts.flatMap((receipt) => receipt.oracleEvidence.map((item) => item.evidenceId)))],
       registerEvidenceRefs: requirement.acceptance.flatMap((acceptance) => acceptance.evidence.map((evidence) => evidence.locator)),
       closureIssueRefs: (closure?.issues ?? []).map((issue) => `https://github.com/gondalaimafia/mendpoint/issues/${issue}`),
       closurePullRequestRefs: (closure?.pullRequests ?? []).map((pr) => `https://github.com/gondalaimafia/mendpoint/pull/${pr}`),

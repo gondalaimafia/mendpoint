@@ -52,7 +52,7 @@ describe("requirement to case to test to production evidence traceability", () =
       id: "receipt-matrix-test",
       caseId: learningCase.id,
       requirementIds: [requirementId],
-      oracleEvidenceIds: ["oracle-evidence-matrix-test"],
+      oracleEvidence: [{ oracleId: learningCase.expected.oracleIds[0]!, evidenceId: "oracle-evidence-matrix-test" }],
       productionEvidenceIds: ["production-evidence-matrix-test"],
       executionState: "completed" as const,
     };
@@ -116,6 +116,30 @@ describe("requirement to case to test to production evidence traceability", () =
     expect(buildRequirementCaseTraceability({ requirements, closureRows: closure.requirements, cases: learningCases, executionReceipts: [receipt] })
       .every((trace) => trace.verificationState === "unverified")).toBe(true);
     installTestAuthorityTrustRoots();
+  });
+
+  it("rejects authentic receipt replay after the current case catalog binding changes", () => {
+    installTestAuthorityTrustRoots();
+    process.env.MENDPOINT_PRODUCTION_REVISION = PREFLIGHT_REVISION;
+    const learningCase = learningCases.find((item) => item.id === "FET-C001")!;
+    const authority = verifyProductionLearningAuthority(MATRIX_PRODUCTION_AUTHORITY_ENVELOPE);
+    const receipt = verifyCaseExecutionReceipt(MATRIX_EXECUTION_EVIDENCE_AUTHORITY_ENVELOPE, authority, learningCase);
+    for (const mutate of [
+      (item: typeof learningCase) => { item.repository.provenanceId = "repo-attacker-swapped"; },
+      (item: typeof learningCase) => { item.fixture.manifestId = "fixture-attacker-swapped"; },
+      (item: typeof learningCase) => { item.expected.oracleIds = ["oracle-attacker-swapped"]; },
+    ]) {
+      const changedCases = structuredClone(learningCases);
+      mutate(changedCases.find((item) => item.id === "FET-C001")!);
+      const changed = buildRequirementCaseTraceability({
+        requirements,
+        closureRows: closure.requirements,
+        cases: changedCases,
+        executionReceipts: [receipt],
+      });
+      expect(changed.every((trace) => trace.verificationState === "unverified")).toBe(true);
+      expect(changed.every((trace) => trace.productionEvidenceState === "unknown")).toBe(true);
+    }
   });
 
   it("preserves register blockers and statuses instead of promoting them", () => {
