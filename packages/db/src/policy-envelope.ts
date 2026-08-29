@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { AppDb } from "./index.js";
+import { contentDigest, exactUtc } from "./mission-record-content.js";
 import {
   bindMissionPolicyEnvelopeVersion,
   getMission,
@@ -55,13 +56,14 @@ export function createPolicyEnvelope(db: AppDb, input: {
   if (!input.policyEnvelopeId.trim()) throw new Error("policy_envelope_id_invalid");
   if (!input.envelopeJson.trim()) throw new Error("policy_envelope_body_invalid");
   const contentSha256 = createHash("sha256").update(input.envelopeJson, "utf8").digest("hex");
-  db.raw.exec("BEGIN IMMEDIATE");
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const existing = one<StoredPolicyEnvelopeRow>(db,
       `SELECT * FROM policy_envelopes WHERE tenant_id = ? AND version = ?`, [input.tenantId, input.version]);
     if (existing) {
       if (existing.content_sha256 !== contentSha256) throw new Error("policy_envelope_version_conflict");
-      db.raw.exec("COMMIT");
+      if (owns) db.raw.exec("COMMIT");
       return hydrate(existing);
     }
     if (!one(db, `SELECT id FROM tenants WHERE id = ?`, [input.tenantId])) {
@@ -73,9 +75,9 @@ export function createPolicyEnvelope(db: AppDb, input: {
         input.envelopeJson, contentSha256, input.createdAt);
     const value = hydrate(one<StoredPolicyEnvelopeRow>(db,
       `SELECT * FROM policy_envelopes WHERE tenant_id = ? AND version = ?`, [input.tenantId, input.version])!);
-    db.raw.exec("COMMIT");
+    if (owns) db.raw.exec("COMMIT");
     return value;
-  } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
+  } catch (error) { if (owns) db.raw.exec("ROLLBACK"); throw error; }
 }
 
 export function getPolicyEnvelope(db: AppDb, tenantId: string, version: number): StoredPolicyEnvelope | undefined {
@@ -120,4 +122,142 @@ export function getMissionPolicyEnvelope(db: AppDb, tenantId: string, missionId:
   const version = Number(mission.policyEnvelopeVersion);
   if (!Number.isInteger(version)) return null;
   return getPolicyEnvelope(db, tenantId, version) ?? null;
+}
+
+export type MissionPolicyEvaluationStatus = "enforced" | "no_envelope" | "envelope_invalid";
+
+export type MissionPolicyEvaluation = Readonly<{
+  id: string;
+  tenantId: string;
+  missionId: string;
+  envelopeVersion: number | null;
+  status: MissionPolicyEvaluationStatus;
+  allowed: boolean | null;
+  reviewRequired: boolean | null;
+  violations: readonly Readonly<{ code: string; detail: string }>[];
+  taskDigest: string;
+  createdAt: string;
+}>;
+
+type MissionPolicyEvaluationRow = {
+  id: string;
+  tenant_id: string;
+  mission_id: string;
+  envelope_version: number | null;
+  status: MissionPolicyEvaluationStatus;
+  allowed: number | null;
+  review_required: number | null;
+  violations_json: string;
+  task_digest: string;
+  created_at: string;
+};
+
+// The `mission_policy_evaluations` table (and its append-only triggers) lives in
+// the static schema DDL in `./index.ts`, alongside the other mission durable
+// records, so it materialises on open for fresh AND pre-change databases and is
+// listed in the canonical schema — not created lazily on first write.
+
+function hydrateEvaluation(row: MissionPolicyEvaluationRow): MissionPolicyEvaluation {
+  const violations = JSON.parse(row.violations_json) as Array<{ code: string; detail: string }>;
+  if (!Array.isArray(violations) || violations.some((item) => typeof item?.code !== "string" || typeof item?.detail !== "string")) {
+    throw new Error("mission_policy_evaluation_violations_invalid");
+  }
+  return Object.freeze({
+    id: row.id,
+    tenantId: row.tenant_id,
+    missionId: row.mission_id,
+    envelopeVersion: row.envelope_version,
+    status: row.status,
+    allowed: row.allowed === null ? null : row.allowed === 1,
+    reviewRequired: row.review_required === null ? null : row.review_required === 1,
+    violations: Object.freeze(violations.map((item) => Object.freeze({ code: item.code, detail: item.detail }))),
+    taskDigest: row.task_digest,
+    createdAt: row.created_at,
+  });
+}
+
+/**
+ * Append one Policy Envelope evaluation fact for a Mission task. Idempotent on
+ * the content digest (tenant is inside the digest). A later evaluation with
+ * different bytes is a new row. Direct UPDATE/DELETE fail closed.
+ */
+export function recordMissionPolicyEvaluation(db: AppDb, input: {
+  tenantId: string;
+  missionId: string;
+  envelopeVersion: number | null;
+  status: MissionPolicyEvaluationStatus;
+  allowed: boolean | null;
+  reviewRequired: boolean | null;
+  violations: readonly Readonly<{ code: string; detail: string }>[];
+  taskDigest: string;
+  createdAt: string;
+}): MissionPolicyEvaluation {
+  if (!input.tenantId.trim()) throw new Error("mission_policy_evaluation_tenant_invalid");
+  if (!input.missionId.trim()) throw new Error("mission_policy_evaluation_mission_invalid");
+  if (!/^[a-f0-9]{64}$/.test(input.taskDigest)) throw new Error("mission_policy_evaluation_task_digest_invalid");
+  const createdAt = exactUtc(input.createdAt, "mission_policy_evaluation_created_at_invalid");
+  if (input.status === "enforced" && (input.allowed === null || input.reviewRequired === null || input.envelopeVersion === null)) {
+    throw new Error("mission_policy_evaluation_enforced_fields_required");
+  }
+  if (input.status !== "enforced" && (input.allowed !== null || input.reviewRequired !== null)) {
+    throw new Error("mission_policy_evaluation_unenforced_fields_invalid");
+  }
+  if (input.status === "no_envelope" && input.envelopeVersion !== null) {
+    throw new Error("mission_policy_evaluation_no_envelope_version_invalid");
+  }
+  const violations = [...input.violations]
+    .map((item) => ({ code: item.code, detail: item.detail }))
+    .sort((left, right) => left.code.localeCompare(right.code) || left.detail.localeCompare(right.detail));
+  const id = contentDigest({
+    tenantId: input.tenantId,
+    missionId: input.missionId,
+    envelopeVersion: input.envelopeVersion,
+    status: input.status,
+    allowed: input.allowed,
+    reviewRequired: input.reviewRequired,
+    violations,
+    taskDigest: input.taskDigest,
+    createdAt,
+  });
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = one<MissionPolicyEvaluationRow>(db,
+      `SELECT * FROM mission_policy_evaluations WHERE id = ? AND tenant_id = ?`, [id, input.tenantId]);
+    if (existing) {
+      if (owns) db.raw.exec("COMMIT");
+      return hydrateEvaluation(existing);
+    }
+    if (!one(db, `SELECT id FROM mission WHERE tenant_id = ? AND id = ?`, [input.tenantId, input.missionId])) {
+      throw new Error("mission_policy_evaluation_mission_not_found");
+    }
+    db.raw.prepare(`INSERT INTO mission_policy_evaluations
+      (id, tenant_id, mission_id, envelope_version, status, allowed, review_required, violations_json, task_digest, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      id, input.tenantId, input.missionId, input.envelopeVersion, input.status,
+      input.allowed === null ? null : input.allowed ? 1 : 0,
+      input.reviewRequired === null ? null : input.reviewRequired ? 1 : 0,
+      JSON.stringify(violations), input.taskDigest, createdAt,
+    );
+    const stored = one<MissionPolicyEvaluationRow>(db,
+      `SELECT * FROM mission_policy_evaluations WHERE id = ? AND tenant_id = ?`, [id, input.tenantId])!;
+    if (owns) db.raw.exec("COMMIT");
+    return hydrateEvaluation(stored);
+  } catch (error) { if (owns) db.raw.exec("ROLLBACK"); throw error; }
+}
+
+export function listMissionPolicyEvaluations(
+  db: AppDb,
+  tenantId: string,
+  missionId: string,
+): MissionPolicyEvaluation[] {
+  if (!tenantId.trim() || !missionId.trim()) return [];
+  const rows = db.raw.prepare(
+    `SELECT * FROM mission_policy_evaluations WHERE tenant_id = ? AND mission_id = ? ORDER BY created_at ASC, id ASC`,
+  ).all(tenantId, missionId) as MissionPolicyEvaluationRow[];
+  return rows.map(hydrateEvaluation);
+}
+
+export function policyTaskDigest(task: unknown): string {
+  return contentDigest(task);
 }

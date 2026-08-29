@@ -1,3 +1,16 @@
+# Mendpoint 101 production closure (2026-08-28)
+
+Observed `origin/main`: `96801a319fc3d355cb2b28b4167b83023a192042`.
+
+- [x] Convert the approved eleven-phase plan into the exhaustive 101-row execution ledger (`docs/PRODUCTION_CLOSURE_EXECUTION_LEDGER.json`).
+- [ ] Wave 0 Lane A: #515 merged. Claude owns remaining authority (#521 and quiet-sweeps). Do not push to `mp-succ-esc-rot1` or edit `scripts/production-closure-*.ts` / `config/production-closure-*.json` / `docs/PRODUCTION_CLOSURE_MATRIX.json` from this branch.
+- [ ] Wave 1 drain after authority is green: #507 → #513 → #514 → semantic package-lock authority → #512. Rebase, exact-head review, CI, authority, merge, deploy, health readback each time. This agent does not merge.
+- [ ] Wave 4 first Cursor product slice after #517 file overlap clears, or a zero-overlap slice: policy-evaluation evidence on ME-PEV-001 (files not in open PRs).
+- [ ] Keep this ledger synchronized after every merge and deployment.
+- [ ] Do not set `MENDPOINT_CUSTOMER_READY=1` or bulk-promote register rows.
+
+---
+
 # Mendpoint GA review
 
 - [x] Confirm `main` and `origin/main` are at `8725ba4`.

@@ -59,6 +59,8 @@
     "trajectory:view": "tsx scripts/trajectory-view.ts",
     "spec:check": "tsx scripts/product-spec-check.ts",
     "closure:check": "vitest run scripts/production-closure-matrix.test.ts && tsx scripts/production-closure-matrix.ts",
+    "ledger:generate": "tsx scripts/generate-production-closure-execution-ledger.ts",
+    "ledger:check": "vitest run scripts/production-closure-execution-ledger.test.ts && tsx scripts/production-closure-execution-ledger.ts",
     "closure:github:check": "tsx scripts/production-closure-github-authority.ts",
     "closure:proposal:check": "tsx scripts/production-closure-proposal-authority.ts",
     "evidence:reachability": "tsx scripts/evidence-reachability-check.ts",

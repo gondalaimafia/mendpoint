@@ -773,6 +773,7 @@ export async function runTransformerPilotLaneOnce(
         externalProcessing: Boolean(adaptiveAdapter),
         changedPaths: campaign.changedPaths,
         ...(adaptiveAdapter ? { adaptiveModelId: adaptiveAdapter.policy.model } : {}),
+        observedAt: now(),
       });
     } catch (error) {
       const code = error instanceof Error ? error.message : String(error);

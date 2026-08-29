@@ -3377,12 +3377,18 @@ if (job.type === "warden.candidate.cleanup") {
         // that resolves to a Mission. The resolver is the same one that enrolls
         // the MissionTask, so a campaign-bound run cannot appear on the Mission
         // timeline with its envelope left unevaluated. Unbound jobs stay a no-op.
+        // A recorded deny binds to the exact execution snapshot this run used
+        // (observedAgainst) and carries the attempt clock (observedAt).
+        // `started` is the caller-supplied observation timestamp so evidence
+        // rows carry domain provenance rather than worker clock time.
         assertBoundAgentRunMissionPolicy(db, job, {
           repositoryId: binding.repositoryId,
           branch: repository.selected_branch || repository.default_branch || "main",
           targetPaths: allowedChangedPaths,
           useLlm,
           risk: payload.ciFailure ? "high" : "medium",
+          observedAgainst: { snapshotId: binding.snapshotId, resolvedSha: binding.revision },
+          observedAt: started,
         });
         const repositoryClassification = modelSourcePolicy
           ? resolveWardenRepositoryClassification(job.tenant_id, repository.remote_id, workerEnv)
