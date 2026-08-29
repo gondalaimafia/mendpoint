@@ -7,6 +7,7 @@ import { Hono } from "hono";
 import { permissionForRoute } from "@mendpoint/platform";
 import {
   bindConsumerRepoSnapshot,
+  bindMissionScope,
   createDb,
   createWardenCampaign,
   getWardenCampaign,
@@ -22,6 +23,7 @@ import {
   fettlerCampaignMissionTaskId,
   putTenantMembership,
   resolveMissionForFettlerCampaign,
+  transitionWardenCampaign,
   upsertScmConnection,
   type AppDb,
 } from "@mendpoint/db";
@@ -161,7 +163,7 @@ function baseDb() {
   return { db, root };
 }
 
-function mountRoutes(db: AppDb, sessions: Record<string, Session>) {
+function mountRoutes(db: AppDb, sessions: Record<string, Session>, now: () => string = () => NOW) {
   const app = new Hono<ApiEnv>();
   app.use("*", async (c, next) => {
     const session = sessions[c.req.header("X-Test-Session") ?? ""];
@@ -178,7 +180,7 @@ function mountRoutes(db: AppDb, sessions: Record<string, Session>) {
   });
   // Both aliases mount the SAME router instance, exactly as apps/api/src/server.ts
   // does, so a gate change cannot land on one path and miss the other.
-  const routes = createWardenCampaignEnrollmentRoutes({ db, now: () => NOW, crawl: async () => CRAWL_REPOS });
+  const routes = createWardenCampaignEnrollmentRoutes({ db, now, crawl: async () => CRAWL_REPOS });
   app.route("/fettler/campaigns", routes);
   app.route("/warden/campaigns", routes);
   return app;
@@ -188,6 +190,7 @@ function fixture(opts: {
   membershipStatus?: "active" | "offboarded";
   trustExpiresAt?: string | null;
   trustRevokedAt?: string | null;
+  now?: () => string;
 } = {}) {
   const { db, root } = baseDb();
   seedTenant(db, "tenant-a", "writer-a", opts);
@@ -204,7 +207,7 @@ function fixture(opts: {
     eventId: "ev-create", idempotencyKey: "create", correlationId: "corr", createdAt: NOW });
 
   const sessions: Record<string, Session> = { "tenant-a": defaultSession("tenant-a", "writer-a") };
-  const app = mountRoutes(db, sessions);
+  const app = mountRoutes(db, sessions, opts.now);
   return { app, db, sessions, root };
 }
 
@@ -320,6 +323,8 @@ describe("Warden campaign org enrollment", () => {
       fettlerCampaignId: "campaign-a",
       ownerPrincipalId: "trust-tenant-a-writer-a",
       graphVersionId: null,
+      repositoryId: null,
+      snapshotId: null,
     });
 
     expect(listMissionTasks(db, "tenant-a", mission!.id)).toEqual([
@@ -421,9 +426,14 @@ describe("Warden campaign org enrollment", () => {
   });
 
   it("POST /fettler/campaigns/:id/start is a no-op when the campaign is already running", async () => {
-    const { app } = fixture();
+    const { app, db } = fixture();
     expect((await enroll(app)).status).toBe(200);
     expect((await startCampaign(app)).status).toBe(200);
+    const afterFirst = resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a");
+    expect(afterFirst).toMatchObject({
+      repositoryId: "repository-a",
+      snapshotId: "snapshot-repository-a",
+    });
     const second = await startCampaign(app);
     expect(second.status).toBe(200);
     expect(await second.json()).toMatchObject({
@@ -432,6 +442,115 @@ describe("Warden campaign org enrollment", () => {
       jobIds: [],
       rolloutDecisionId: "rollout-campaign-a",
     });
+    const afterReplay = resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a");
+    expect(afterReplay?.revision).toBe(afterFirst?.revision);
+    expect(afterReplay).toMatchObject({
+      repositoryId: "repository-a",
+      snapshotId: "snapshot-repository-a",
+    });
+  });
+
+  it("binds single-repo Mission scope only after a successful start", async () => {
+    const { app, db } = fixture();
+    expect((await enroll(app)).status).toBe(200);
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      repositoryId: null,
+      snapshotId: null,
+    });
+
+    expect((await startCampaign(app)).status).toBe(200);
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      repositoryId: "repository-a",
+      snapshotId: "snapshot-repository-a",
+    });
+    expect(getWardenCampaign(db, "tenant-a", "campaign-a")?.status).toBe("running");
+  });
+
+  it("leaves multi-repo Mission scope unbound at start", async () => {
+    const { app, db } = fixture();
+    insertMonitoredApi(db, {
+      id: "monitor-repository-b",
+      consumerId: "consumer-repository-b",
+      providerId: "provider-stripe",
+      detectionSource: "detected",
+    });
+    expect((await enroll(app)).status).toBe(200);
+    expect(listWardenCampaignTargets(db, "tenant-a", "campaign-a")).toHaveLength(2);
+
+    expect((await startCampaign(app)).status).toBe(200);
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      repositoryId: null,
+      snapshotId: null,
+    });
+  });
+
+  it("does not bind Mission scope when start is refused", async () => {
+    const { app, db } = fixture();
+    expect((await enroll(app)).status).toBe(200);
+    const campaign = getWardenCampaign(db, "tenant-a", "campaign-a")!;
+    transitionWardenCampaign(db, {
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      expectedRevision: campaign.revision,
+      to: "cancelled",
+      actorPrincipalId: "trust-tenant-a-writer-a",
+      eventId: "ev-cancel",
+      idempotencyKey: "cancel",
+      correlationId: "corr",
+      createdAt: NOW,
+    });
+
+    const res = await startCampaign(app);
+    expect(res.status).toBe(409);
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      repositoryId: null,
+      snapshotId: null,
+    });
+    const events = db.raw.prepare(
+      `SELECT event_type FROM domain_events WHERE tenant_id = ? AND event_type = 'mission.scope_bound'`,
+    ).all("tenant-a") as Array<{ event_type: string }>;
+    expect(events).toHaveLength(0);
+  });
+
+  it("skips binding an expired snapshot without failing start", async () => {
+    const clock = { at: NOW };
+    const { app, db } = fixture({ now: () => clock.at });
+    expect((await enroll(app)).status).toBe(200);
+    clock.at = "2026-09-02T18:00:00.000Z";
+
+    expect((await startCampaign(app)).status).toBe(200);
+    expect(getWardenCampaign(db, "tenant-a", "campaign-a")?.status).toBe("running");
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      repositoryId: null,
+      snapshotId: null,
+    });
+  });
+
+  it("replays enroll wiring after scope is already bound", async () => {
+    const { app, db } = fixture();
+    expect((await enroll(app)).status).toBe(200);
+    const mission = resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")!;
+    bindMissionScope(db, {
+      tenantId: "tenant-a",
+      missionId: mission.id,
+      repositoryId: "repository-a",
+      snapshotId: "snapshot-repository-a",
+      actorPrincipalId: "trust-tenant-a-writer-a",
+      eventId: `${mission.id}-scope-bound-test`,
+      idempotencyKey: `mission-scope-test-${mission.id}`,
+      correlationId: "campaign-a",
+      createdAt: NOW,
+    });
+    db.raw.prepare(`DELETE FROM mission_task WHERE mission_id = ?`).run(mission.id);
+    expect(listMissionTasks(db, "tenant-a", mission.id)).toHaveLength(0);
+
+    expect((await enroll(app)).status).toBe(200);
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      id: mission.id,
+      repositoryId: "repository-a",
+      snapshotId: "snapshot-repository-a",
+    });
+    expect(listMissionTasks(db, "tenant-a", mission.id)).toHaveLength(1);
   });
 
   it("fails closed on unknown provider, missing connection, and unknown fields", async () => {

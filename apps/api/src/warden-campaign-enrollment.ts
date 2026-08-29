@@ -1,22 +1,27 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   autoEnrollWardenCampaignOrg,
+  bindMissionScope,
   createMission,
   createMissionTask,
   createWardenCampaign,
   fettlerCampaignMissionTaskId,
+  getMission,
   getPrincipal,
   getProviderBySlug,
   getScmConnection,
   getTenantMembership,
   getWardenCampaign,
   getWardenRolloutDecision,
+  listRepositorySnapshots,
   listWardenCampaignTargets,
   planWardenRollout,
+  resolveMissionForFettlerCampaign,
   transitionWardenCampaign,
   linkFettlerCampaignToMission,
   recordAudit,
   type AppDb,
+  type WardenCampaignTarget,
   type WardenOrgRepositoryCandidate,
 } from "@mendpoint/db";
 import {
@@ -62,6 +67,11 @@ const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "warden_org_installation_not_connected", publicCode: "installation_not_connected", status: 409 },
   { internalCode: "warden_enroll_connection_revoked", publicCode: "connection_revoked", status: 409 },
   { internalCode: "warden_principal_tenant_mismatch", publicCode: "forbidden", status: 403 },
+  { internalCode: "mission_not_found", publicCode: "not_found", status: 404 },
+  { internalCode: "mission_scope_conflict", publicCode: "conflict", status: 409 },
+  { internalCode: "mission_revision_conflict", publicCode: "conflict", status: 409 },
+  { internalCode: "mission_snapshot_tenant_mismatch", publicCode: "unprocessable", status: 422 },
+  { internalCode: "mission_repository_tenant_mismatch", publicCode: "unprocessable", status: 422 },
   ...[
     "warden_enroll_content_type_invalid",
     "warden_enroll_payload_invalid",
@@ -323,6 +333,63 @@ function createFettlerEnrollmentMissionTasks(
   }
 }
 
+/**
+ * Pin repository + snapshot onto a Fettler Mission only at campaign start,
+ * after the campaign has become running. Draft enrollment can still add
+ * repositories; an enroll-time bind would freeze the first scan and go stale.
+ * Multi-repo stays unbound (set-once cannot honestly name one repo). Expired
+ * snapshots are skipped, not pinned. Best-effort: Mission bookkeeping must
+ * not fail a start that already transitioned.
+ */
+function tryBindSingleRepoFettlerMissionScope(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    campaignId: string;
+    actorPrincipalId: string;
+    createdAt: string;
+    targets: readonly WardenCampaignTarget[];
+  }>,
+): void {
+  if (input.targets.length !== 1) return;
+  const mission = resolveMissionForFettlerCampaign(db, input.tenantId, input.campaignId);
+  if (!mission) return;
+  const target = input.targets[0]!;
+  const snapshot = listRepositorySnapshots(db, input.tenantId, target.repositoryId)
+    .find((row) => row.id === target.snapshotId);
+  if (!snapshot) {
+    console.error(
+      `fettler mission scope skip: snapshot_missing tenant=${input.tenantId} campaign=${input.campaignId} snapshot=${target.snapshotId}`,
+    );
+    return;
+  }
+  if (Date.parse(snapshot.expires_at) <= Date.parse(input.createdAt)) {
+    console.error(
+      `fettler mission scope skip: snapshot_expired tenant=${input.tenantId} campaign=${input.campaignId} snapshot=${target.snapshotId}`,
+    );
+    return;
+  }
+  try {
+    bindMissionScope(db, {
+      tenantId: input.tenantId,
+      missionId: mission.id,
+      repositoryId: target.repositoryId,
+      snapshotId: target.snapshotId,
+      actorPrincipalId: input.actorPrincipalId,
+      eventId: `${mission.id}-scope-bound`,
+      idempotencyKey: `mission-scope-${mission.id}`,
+      correlationId: input.campaignId,
+      createdAt: input.createdAt,
+    });
+  } catch (error) {
+    console.error(
+      `fettler mission scope bind failed tenant=${input.tenantId} campaign=${input.campaignId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
 export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnrollmentOptions) {
   const routes = new Hono<ApiEnv>();
   const now = options.now ?? (() => new Date().toISOString());
@@ -498,6 +565,10 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           .update(`${tenantId}\0${campaignId}`)
           .digest("hex")
           .slice(0, 32)}`;
+        // Replay the already-bound scope if start pinned it. createMission
+        // compares repositoryId/snapshotId; passing null after a bind throws
+        // mission_id_conflict and would skip the rest of this best-effort block.
+        const existingMission = getMission(options.db, tenantId, missionId);
         createMission(options.db, {
           id: missionId,
           tenantId,
@@ -505,6 +576,8 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           triggerKind: "provider_change",
           objective: `Fettler campaign ${campaignId}`.slice(0, 200),
           ownerPrincipalId: trustPrincipalId,
+          repositoryId: existingMission?.repositoryId ?? null,
+          snapshotId: existingMission?.snapshotId ?? null,
           eventId: `${missionId}-created`,
           idempotencyKey: `mission-create-${missionId}`,
           correlationId: campaignId,
@@ -649,6 +722,15 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
         to: "running", actorPrincipalId: auth.trustPrincipalId,
         eventId: `${campaignId}-running`, idempotencyKey: `${campaignId}-running`,
         correlationId: campaignId, createdAt: at,
+      });
+      // Bind after the campaign is running so a refused start (cancelled /
+      // not-draft / plan failure) cannot permanently pin set-once scope.
+      tryBindSingleRepoFettlerMissionScope(options.db, {
+        tenantId: auth.tenantId,
+        campaignId,
+        actorPrincipalId: auth.trustPrincipalId,
+        createdAt: at,
+        targets,
       });
       const enqueued = enqueueReadyWardenCampaignTargets(options.db, {
         tenantId: auth.tenantId,
