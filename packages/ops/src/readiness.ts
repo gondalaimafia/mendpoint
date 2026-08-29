@@ -4,7 +4,7 @@
 import { existsSync, accessSync, constants, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { assessModelEgress } from "@mendpoint/shared";
-import { RELEASE, releaseBanner } from "./release.js";
+import { RELEASE, releaseBanner, resolveReleaseProduct } from "./release.js";
 import { validateApiEnv, assessCustomerReadiness } from "./env.js";
 import { featureMatrix } from "./features.js";
 import { assessCustomerBackupReadiness } from "./disaster-recovery.js";
@@ -39,7 +39,7 @@ export function liveness(): ProbeResult {
     release: {
       version: RELEASE.version,
       channel: RELEASE.channel,
-      product: RELEASE.product,
+      product: resolveReleaseProduct(),
       banner: releaseBanner(),
     },
     uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
@@ -164,7 +164,7 @@ export function readiness(opts?: {
     release: {
       version: RELEASE.version,
       channel: RELEASE.channel,
-      product: RELEASE.product,
+      product: resolveReleaseProduct(),
       banner: releaseBanner(),
     },
     features: featureMatrix(),

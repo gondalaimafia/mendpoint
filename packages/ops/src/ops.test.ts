@@ -5,6 +5,7 @@ import { describe, expect, it, beforeEach } from "vitest";
 import {
   RELEASE,
   resolveReleaseRevision,
+  resolveReleaseProduct,
   validateApiEnv,
   rateLimit,
   clearRateLimits,
@@ -69,6 +70,45 @@ describe("ops GA", () => {
     expect(RELEASE.channel).toBe("ga");
     expect(releaseBanner()).toBe("Mendpoint / Fettler 1.0.0 (ga)");
     expect(RELEASE.gaFeatures.length).toBeGreaterThan(5);
+  });
+
+  it("resolves product identity from the deployment profile", () => {
+    // ReGauge-engine profiles report the customer-facing ReGauge name.
+    // "Transformer" is the legacy internal engine name; transformer_pilot is a
+    // ReGauge deployment, so it must report ReGauge, not the engine's old name.
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "regauge_production" }),
+    ).toBe("ReGauge");
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "transformer_pilot" }),
+    ).toBe("ReGauge");
+    // Fettler profiles and the default fleet report Fettler.
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "customer" }),
+    ).toBe("Fettler");
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "demo" }),
+    ).toBe("Fettler");
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "pilot" }),
+    ).toBe("Fettler");
+    // An unknown or unset profile must never silently claim the ReGauge
+    // identity: it falls back to the default platform product.
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "not_a_profile" }),
+    ).toBe("Fettler");
+    expect(
+      resolveReleaseProduct({ MENDPOINT_DEPLOYMENT_PROFILE: "  " }),
+    ).toBe("Fettler");
+    expect(resolveReleaseProduct({})).toBe("Fettler");
+    // The banner reflects the resolved product for the given environment.
+    expect(
+      releaseBanner({ MENDPOINT_DEPLOYMENT_PROFILE: "regauge_production" }),
+    ).toBe("Mendpoint / ReGauge 1.0.0 (ga)");
+    expect(
+      releaseBanner({ MENDPOINT_DEPLOYMENT_PROFILE: "transformer_pilot" }),
+    ).toBe("Mendpoint / ReGauge 1.0.0 (ga)");
+    expect(releaseBanner({})).toBe("Mendpoint / Fettler 1.0.0 (ga)");
   });
 
   it("accepts only an immutable deployed source revision", () => {
@@ -635,6 +675,40 @@ describe("ops GA", () => {
     const r = readiness();
     expect(["ok", "degraded", "fail"]).toContain(r.status);
     expect(r.release.version).toBe("1.0.0");
+  });
+
+  // Wiring proof, not helper proof. resolveReleaseProduct() being correct says
+  // nothing about whether the probe payloads actually call it: RELEASE.product
+  // is a frozen constant, so a probe that still read the constant would keep
+  // reporting Fettler on a ReGauge deployment and every helper test would stay
+  // green. These probes are what /live, /ready, and /status serve, so this
+  // asserts the resolved identity reaches the payload the customer sees --
+  // release.product AND the release.banner interpolated beside it. It reads
+  // process.env because that is the env the probes resolve against in
+  // production; the helper's own env-argument form is covered above.
+  it("propagates the resolved product identity into the probe payloads and banner", () => {
+    const original = process.env.MENDPOINT_DEPLOYMENT_PROFILE;
+    try {
+      process.env.MENDPOINT_DEPLOYMENT_PROFILE = "regauge_production";
+      expect(liveness().release.product).toBe("ReGauge");
+      expect(liveness().release.banner).toBe("Mendpoint / ReGauge 1.0.0 (ga)");
+      expect(readiness().release.product).toBe("ReGauge");
+      expect(readiness().release.banner).toBe("Mendpoint / ReGauge 1.0.0 (ga)");
+
+      process.env.MENDPOINT_DEPLOYMENT_PROFILE = "transformer_pilot";
+      expect(liveness().release.product).toBe("ReGauge");
+      expect(readiness().release.product).toBe("ReGauge");
+
+      // An indeterminate deployment falls back to the platform default rather
+      // than silently claiming the ReGauge identity.
+      delete process.env.MENDPOINT_DEPLOYMENT_PROFILE;
+      expect(liveness().release.product).toBe(RELEASE.product);
+      expect(liveness().release.banner).toBe("Mendpoint / Fettler 1.0.0 (ga)");
+      expect(readiness().release.product).toBe(RELEASE.product);
+    } finally {
+      if (original === undefined) delete process.env.MENDPOINT_DEPLOYMENT_PROFILE;
+      else process.env.MENDPOINT_DEPLOYMENT_PROFILE = original;
+    }
   });
 
   it("fails boot when local_only egress is configured with an external model endpoint", () => {
