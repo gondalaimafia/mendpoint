@@ -482,6 +482,7 @@ export function missionContextInputForTaskArm(
     history: { consulted: false, reason: "store_not_available" },
     verification: { consulted: false, reason: "store_not_available" },
     exceptions: { consulted: false, reason: "store_not_available" },
+    artifacts: { consulted: false, reason: "store_not_available" },
   };
 }
 
