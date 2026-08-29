@@ -236,3 +236,8 @@
 **Mistake:** The first sandbox authority fix updated Machines sequentially without preserving an immutable image identity or proving rollback and containment for a partial failure.
 **Correction:** Exact-head review required digest-pinned updates, exact configuration restoration, and fail-closed containment evidence before rotating protected secrets.
 **Rule:** For a stateful multi-Machine mutation, capture exact identities and configurations first, mutate only immutable targets, restore every attempted target on pre-commit failure, and repeatedly re-inventory plus stop the complete current set whenever rollback or post-commit authority cannot be proven. The original inventory is rollback evidence, not a safe containment boundary after capacity may have changed.
+
+### 2026-08-29 — Rotation receipts belong only to the proposal that creates them
+**Mistake:** A completed authority rotation receipt from PR #539 was copied into PR #537's current pull request bootstrap even though #537 did not change the authority policy or ledger.
+**Correction:** The protected proposal verifier correctly treated that bootstrap binding as a new rotation request, then failed because no new append-only receipt existed; GitHub authority failed closed downstream.
+**Rule:** Never carry an earlier pull request's rotation tuple into a new current-PR bootstrap. An ordinary successor proposal omits `authorityRotation`; only the exact proposal that changes policy or the rotation ledger may bind its newly appended receipt, issue time, and digests.
