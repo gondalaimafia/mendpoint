@@ -2064,15 +2064,15 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-29T04:10:16.000Z",
     "observedMainRevision": "37c3867111fb7083667e5422ebf9b383dba9190a",
-    "observationDigest": "sha256:ae575162aff928b334cb9a46ad4211f2a225a203687ee35f82654f64106688f9",
+    "observationDigest": "sha256:ad7ebb576092c04b5520804a257d9f87a5fbd5ac9fe918f23eb53521416322b8",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 521,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/521",
-      "title": "closure authority: pre-authorize systemic-failure escalation successor template",
+      "number": 523,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/523",
+      "title": "Raise a Mission policy exception on ReGauge pilot deny",
       "baseBranch": "main",
-      "headBranch": "mp-succ-esc-rot1",
+      "headBranch": "cursor/regauge-pilot-policy-exception-f457",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2085,15 +2085,7 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "rotation-20260828-004",
-        "kind": "runtime",
-        "issuedAt": "2026-08-29T04:10:16.000Z",
-        "expiresAt": "2026-08-30T04:10:16.000Z",
-        "basePolicySha256": "sha256:35d7654bed7c77dfe142cf2fde081b9681f92b62e5974683fe172efb87ab381c",
-        "proposedPolicySha256": "sha256:ed8002ff17703c04f119e12d33e1e370fdd8575aa89a2a86ae5fee07f2145ae6"
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
@@ -4834,41 +4826,6 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "9bf93afca096952492c451227edf2bd0645b1ba9",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 523,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/523",
-        "title": "Raise a Mission policy exception on ReGauge pilot deny",
-        "headBranch": "cursor/regauge-pilot-policy-exception-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "66d4443cf15157b1f2dbae3fd02017f0cfc6e6fe",
         "mergeRevision": null,
         "checks": [],
         "review": {
