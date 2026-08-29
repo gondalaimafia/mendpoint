@@ -349,7 +349,11 @@ describe("Regauge production workflow", () => {
     expect(receipt).not.toContain("MENDPOINT_REGAUGE_TRANSFER_KEY=");
     const failure = steps.find((step) => step.name === "Contain target after activation failure")!;
     expect(failure.if).toBe("${{ failure() }}");
-    expect(failure.run).toContain("worker=0");
+    expect(failure.run).toContain("flyctl machines list --app mendpoint-regauge-production --json");
+    expect(failure.run).toContain('flyctl machine stop "$machine_id"');
+    expect(failure.run).toContain('test "$remaining_started_workers" = "0"');
+    expect(failure.run).toContain("failure-containment.json");
+    expect(failure.run).not.toContain("flyctl scale count worker=0");
     expect(failure.run).not.toContain("volumes delete");
     // Transfer authority is enforced only when a transfer is configured, but a
     // partial transfer config (id set, key or fence missing) still hard-fails.
@@ -392,5 +396,23 @@ describe("Regauge production workflow", () => {
     expect(workflow.jobs.deploy["timeout-minutes"]).toBe(60);
     expect(validation).toContain('test "$READINESS_SOAK_SECONDS" -le 1800');
     expect(validation).not.toContain('test "$READINESS_SOAK_SECONDS" -le 21600');
+  });
+
+  it("retains workflow context even when activation fails before deployment", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const steps = workflow.jobs.deploy.steps as Record<string, any>[];
+    const validation = steps.find(
+      (step) => step.name === "Validate exact authority before mutation",
+    )!.run as string;
+    const upload = steps.find(
+      (step) => step.name === "Upload Regauge production evidence",
+    )!;
+
+    expect(validation).toContain("workflow-context.json");
+    expect(validation).toContain('revision: $revision');
+    expect(upload.if).toBe("always()");
+    expect(upload.with["if-no-files-found"]).toBe("error");
   });
 });
