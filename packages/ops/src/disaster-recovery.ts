@@ -1328,7 +1328,6 @@ export function recoverStaleMutationMarker(input: {
     if (inspected.hostname === hostname() && processIsAlive(inspected.pid)) {
       throw new Error("backup_fence_recovery_owner_still_alive");
     }
-    rmSync(target);
     const audit = {
       schemaVersion: 1,
       recoveredAt: new Date().toISOString(),
@@ -1342,7 +1341,18 @@ export function recoverStaleMutationMarker(input: {
       recoveryOwnerToken: recoveryMarker.ownerToken,
     };
     const auditLine = `${JSON.stringify(audit)}\n`;
-    appendFileSync(paths.audit, auditLine, { encoding: "utf8", mode: 0o600 });
+    const heldMarker = resolve(
+      paths.root,
+      `.recovered-${input.kind}-${markerId}-${recoveryMarker.ownerToken}.json`,
+    );
+    renameSync(target, heldMarker);
+    try {
+      appendFileSync(paths.audit, auditLine, { encoding: "utf8", mode: 0o600 });
+    } catch (error) {
+      renameSync(heldMarker, target);
+      throw error;
+    }
+    rmSync(heldMarker, { force: true });
     return { recovered: true, kind: input.kind, markerId, auditSha256: sha256(auditLine) };
   } finally {
     rmSync(paths.recovery, { force: true });
@@ -1371,6 +1381,14 @@ export function prepareMutationFenceDirectories(
       chmodSync(directory, 0o700);
     }
     accessSync(directory, constants.R_OK | constants.W_OK);
+  }
+  if (existsSync(paths.audit)) {
+    assertNoSymlink(paths.audit);
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      chownSync(paths.audit, owner.uid, owner.gid);
+      chmodSync(paths.audit, 0o600);
+    }
+    accessSync(paths.audit, constants.R_OK | constants.W_OK);
   }
 }
 

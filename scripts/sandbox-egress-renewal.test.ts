@@ -130,9 +130,18 @@ describe("sandbox egress engine — rotation reaches every configured app", () =
     expect(rotate).toContain("parseFlyAppListing");
     // Iterates every resolved target rather than a single app.
     expect(rotate).toContain('while IFS= read -r app');
-    expect(rotate).toContain('flyctl secrets set --app "$app"');
+    expect(rotate).toContain('flyctl machine list --app "$app" --json');
+    expect(rotate).toContain('flyctl secrets set --stage --app "$app"');
+    expect(rotate).toContain('flyctl machine update "$machine_id" --app "$app"');
+    expect(rotate).toContain('--image "$machine_image"');
+    expect(rotate).toContain('--env "MENDPOINT_SANDBOX_FLY_IMAGE=$MENDPOINT_SANDBOX_EGRESS_IMAGE"');
+    expect(rotate).toContain("--metadata fly_platform_version=v2");
+    expect(rotate).toContain('flyctl secrets deploy --app "$app"');
+    expect(rotate).toContain('flyctl secrets list --app "$app" --json');
+    expect(rotate).toContain('all(.[]; .status == "Deployed")');
+    expect(rotate).toContain("length > 0 and all(.[]; .state == \"started\"");
     // The old single-app rotation is gone.
-    expect(rotate).not.toContain('flyctl secrets set --app "$SANDBOX_VERIFYING_APP"');
+    expect(rotate).not.toContain('flyctl secrets set --stage --app "$SANDBOX_VERIFYING_APP"');
     // Health is verified per app, not once.
     expect(rotate).toContain('"https://${app}.fly.dev/livez"');
     expect(rotate).toContain('"https://${app}.fly.dev/healthz"');

@@ -211,3 +211,18 @@
 **Mistake:** I treated the empty `mendpoint-regauge-production` app as evidence that ReGauge had no deployed production surface and failed to distinguish it from the live legacy `mendpoint-transformer-pilot` coordinator.
 **Correction:** Talal pointed out that an app was already in production and required all app identities to be named correctly, production configured, and current.
 **Rule:** Before any topology or readiness claim, enumerate every app, its role, state, deployed revision, profile, processes, hostname, and attached volumes. Distinguish created, deployed, running, production configured, and production proven; never infer one from another.
+
+### 2026-08-29 — Update every authority layer as one compatibility set
+**Mistake:** I initially followed the repository's stale sandbox image pin without reconciling it against the newer firewall policy, protected environment bindings, and last successful receipt.
+**Correction:** Talal required every canonical app and its dependencies to be up to date, not merely renamed or deployed from current source.
+**Rule:** For production authority, verify and update the image digest, executable policy digest, signed receipt scope, protected environment variables, consumer manifest, and deployed secret override as one compatibility set before retrying activation.
+
+### 2026-08-29 — Treat deployed labels as claims, not source proof
+**Mistake:** I initially treated the image's `GH_SHA` label as sufficient proof that its executable source matched current main.
+**Correction:** The live container emitted an error contract absent from current source even though its label named current main.
+**Rule:** Production freshness requires a newly built immutable digest from the exact reviewed commit plus behavioral probes. Never infer executable source identity from a mutable tag or image label alone.
+
+### 2026-08-29 — Make recovery evidence durable before deletion
+**Mistake:** Stale-marker recovery deleted the marker before appending its audit record, so an audit permission failure could erase the only recoverable evidence.
+**Correction:** A production recovery attempt reproduced that ordering failure and required restoration from the exact captured marker bytes.
+**Rule:** Move recoverable state to a transaction hold, persist and verify its audit evidence, then delete the hold. On any audit failure, restore the original state byte for byte and fail closed.

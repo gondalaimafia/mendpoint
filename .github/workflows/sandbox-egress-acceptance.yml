@@ -310,13 +310,34 @@ jobs:
           printf '%s\n' "$targets" > test-results/sandbox-egress/rotation-targets.txt
           while IFS= read -r app; do
             test -n "$app" || continue
-            flyctl secrets set --app "$app" \
+            # Stage first. A direct Machines-API app with a volume is not a Fly
+            # Launch process group; an unstaged `fly secrets set` asks Launch to
+            # create another Machine and fails because the only volume is already
+            # attached. Adopt the exact existing Machines into Launch v2 before
+            # deploying the staged vault generation. The secrets deployment then
+            # updates the current release in place instead of inferring capacity.
+            machines_json="$(flyctl machine list --app "$app" --json)"
+            jq -e 'length > 0 and all(.[]; .state == "started" and (.config.image | type == "string" and length > 0))' \
+              <<<"$machines_json" >/dev/null
+            flyctl secrets set --stage --app "$app" \
               MENDPOINT_SANDBOX_FLY_IMAGE="$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
               MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64="$attestation" \
               MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64="$public_key" \
               MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID="$key_id" \
               MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest" \
               MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA="$schema"
+            while IFS=$'\t' read -r machine_id machine_image; do
+              test -n "$machine_id"
+              test -n "$machine_image"
+              flyctl machine update "$machine_id" --app "$app" \
+                --image "$machine_image" \
+                --env "MENDPOINT_SANDBOX_FLY_IMAGE=$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
+                --metadata fly_platform_version=v2 \
+                --skip-health-checks --yes
+            done < <(jq -r '.[] | [.id, .config.image] | @tsv' <<<"$machines_json")
+            flyctl secrets deploy --app "$app"
+            flyctl secrets list --app "$app" --json \
+              | jq -e 'length > 0 and all(.[]; .status == "Deployed")' >/dev/null
             healthy=false
             for attempt in $(seq 1 24); do
               if curl --silent --show-error --fail --max-time 10 \
