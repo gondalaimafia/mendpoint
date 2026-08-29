@@ -231,3 +231,8 @@
 **Mistake:** Earlier production closure work peeled one failing layer per CI cycle and treated each newly exposed failure as a separate surprise.
 **Correction:** Talal required Codex to learn from that delay: after a second hidden layer or a retry that adds no evidence, stop retrying and enumerate every authority, identity, state, deployment, health, and evidence predicate locally.
 **Rule:** A second hidden failure triggers a full-chain audit before the next mutation. Close every discoverable layer in one reviewed increment, then retry once with explicit evidence for each predicate.
+
+### 2026-08-29 — Make multi-Machine authority rotation transactional
+**Mistake:** The first sandbox authority fix updated Machines sequentially without preserving an immutable image identity or proving rollback and containment for a partial failure.
+**Correction:** Exact-head review required digest-pinned updates, exact configuration restoration, and fail-closed containment evidence before rotating protected secrets.
+**Rule:** For a stateful multi-Machine mutation, capture exact identities and configurations first, mutate only immutable targets, restore every attempted target on pre-commit failure, and stop plus inventory the full original set whenever rollback or post-commit authority cannot be proven.

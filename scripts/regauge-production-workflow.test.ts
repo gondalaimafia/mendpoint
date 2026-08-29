@@ -427,15 +427,27 @@ describe("Regauge production workflow", () => {
       readFileSync(".github/workflows/regauge-production.yml", "utf8"),
     ) as Record<string, any>;
     const steps = workflow.jobs.deploy.steps as Record<string, any>[];
-    const validation = steps.find(
+    const contextIndex = steps.findIndex(
+      (step) => step.name === "Prepare immutable workflow context",
+    );
+    const installIndex = steps.findIndex((step) => step.name === "Install");
+    const deriveIndex = steps.findIndex(
+      (step) => step.name === "Derive one-run production authority",
+    );
+    const validationIndex = steps.findIndex(
       (step) => step.name === "Validate exact authority before mutation",
-    )!.run as string;
+    );
+    const context = steps[contextIndex]!.run as string;
     const upload = steps.find(
       (step) => step.name === "Upload Regauge production evidence",
     )!;
 
-    expect(validation).toContain("workflow-context.json");
-    expect(validation).toContain('revision: $revision');
+    expect(contextIndex).toBeGreaterThan(0);
+    expect(contextIndex).toBeLessThan(installIndex);
+    expect(contextIndex).toBeLessThan(deriveIndex);
+    expect(contextIndex).toBeLessThan(validationIndex);
+    expect(context).toContain("workflow-context.json");
+    expect(context).toContain('revision: $revision');
     expect(upload.if).toBe("always()");
     expect(upload.with["if-no-files-found"]).toBe("error");
   });

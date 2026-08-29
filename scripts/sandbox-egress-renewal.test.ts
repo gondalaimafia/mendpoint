@@ -131,13 +131,14 @@ describe("sandbox egress engine — rotation reaches every configured app", () =
     // Iterates every resolved target rather than a single app.
     expect(rotate).toContain('while IFS= read -r app');
     expect(rotate).toContain('flyctl machine list --app "$app" --json');
-    expect(rotate).toContain('flyctl secrets set --stage --app "$app"');
+    expect(rotate).toContain('flyctl secrets set --app "$app"');
+    expect(rotate).not.toContain("flyctl secrets set --stage");
     expect(rotate).toContain('flyctl machine update "$machine_id" --app "$app"');
     expect(rotate).toContain('--image "$machine_image"');
+    expect(rotate).toContain('.image_ref | "\\(.registry)/\\(.repository)@\\(.digest)"');
     expect(rotate).toContain('--env "MENDPOINT_SANDBOX_FLY_IMAGE=$MENDPOINT_SANDBOX_EGRESS_IMAGE"');
     expect(rotate).toContain("--metadata fly_platform_version=v2");
     expect(rotate).toContain('--metadata "fly_process_group=$machine_process_group"');
-    expect(rotate).toContain('flyctl secrets deploy --app "$app"');
     expect(rotate).toContain('flyctl secrets list --app "$app" --json');
     expect(rotate).toContain('all(.[]; .status == "Deployed")');
     expect(rotate).toContain("length > 0 and all(.[];");
@@ -149,7 +150,7 @@ describe("sandbox egress engine — rotation reaches every configured app", () =
     expect(rotate).toContain('"https://${app}.fly.dev/healthz"');
   });
 
-  it("fails before staging when a started image-bearing Machine has no Launch process group", () => {
+  it("fails before rotation when a started image-bearing Machine has no Launch process group", () => {
     const rotate = step(
       engine(),
       "accept",
@@ -158,18 +159,44 @@ describe("sandbox egress engine — rotation reaches every configured app", () =
     const guard = rotate.indexOf(
       '.config.metadata.fly_process_group | type == "string" and length > 0',
     );
-    const stage = rotate.indexOf('flyctl secrets set --stage --app "$app"');
+    const update = rotate.indexOf('flyctl machine update "$machine_id" --app "$app"');
+    const rotateSecrets = rotate.indexOf('flyctl secrets set --app "$app"');
     const postUpdateProof = rotate.indexOf(
       '.config.metadata.fly_platform_version == "v2"',
     );
-    const deploy = rotate.indexOf('flyctl secrets deploy --app "$app"');
 
     expect(guard).toBeGreaterThanOrEqual(0);
-    expect(guard).toBeLessThan(stage);
+    expect(guard).toBeLessThan(update);
     expect(rotate).toContain('launch_groups_before=');
+    expect(rotate).toContain('image_refs_before=');
     expect(rotate).toContain('processGroup: .config.metadata.fly_process_group');
-    expect(postUpdateProof).toBeGreaterThan(stage);
-    expect(postUpdateProof).toBeLessThan(deploy);
+    expect(postUpdateProof).toBeGreaterThan(update);
+    expect(postUpdateProof).toBeLessThan(rotateSecrets);
+  });
+
+  it("restores attempted Machines or stops the exact app when rotation cannot finish", () => {
+    const rotate = step(
+      engine(),
+      "accept",
+      "Rotate the egress authority to every consuming app",
+    ).run as string;
+
+    expect(rotate).toContain("expected_machine_configs=");
+    expect(rotate).toContain("attempted_machine_ids=()");
+    expect(rotate).toContain('attempted_machine_ids+=("$machine_id")');
+    expect(rotate).toContain("rollback_attempted_machines()");
+    expect(rotate).toContain('--machine-config "${machine_backup_dir}/${attempted_machine_id}.json"');
+    expect(rotate).toContain('rollback_attempted_machines "machine_update_failed:${machine_id}"');
+    expect(rotate).toContain('rollback_attempted_machines "post_update_invariant_failed"');
+    expect(rotate).toContain("contain_original_machines()");
+    expect(rotate).toContain("containment_unproven\\t%s\\n");
+    expect(rotate).toContain('all(.[]; .state != "started")');
+    expect(rotate).toContain('contain_original_machines "secret_deploy_outcome_unknown"');
+    expect(rotate).toContain('contain_original_machines "secret_generation_not_deployed"');
+    expect(rotate).toContain('contain_original_machines "post_secret_invariant_failed"');
+    expect(rotate).toContain('contain_original_machines "post_rotation_health_failed"');
+    expect(rotate).toContain('flyctl machine stop "$original_machine_id" --app "$app"');
+    expect(rotate).toContain('post_secret_machines_json="$(flyctl machine list --app "$app" --json)"');
   });
 });
 

@@ -256,7 +256,6 @@ import {
   assertApiEnvOrExit,
   liveness,
   readiness,
-  RELEASE,
   resolveRelease,
   resolveReleaseRevision,
   releaseBanner,
@@ -3970,10 +3969,11 @@ const port = Number(process.env.API_PORT ?? 3001);
 const hostname = process.env.API_HOST?.trim() || "0.0.0.0";
 
 const server = serve({ fetch: app.fetch, port, hostname }, () => {
+  const release = resolveRelease();
   console.log(releaseBanner());
   console.log(`Mendpoint API listening on http://${hostname}:${port}`);
   console.log(
-    `probes: /health /live /ready /version /status · auth=${effectiveAuthMode()} · channel=${RELEASE.channel}`,
+    `probes: /health /live /ready /version /status · auth=${effectiveAuthMode()} · channel=${release.channel}`,
   );
 });
 

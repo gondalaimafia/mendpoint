@@ -312,13 +312,15 @@ jobs:
             test -n "$app" || continue
             # A direct Machines-API app with a volume is unsafe to rotate through
             # Launch because it can infer new capacity while the only volume is
-            # attached. Require an existing Launch process group before staging
+            # attached. Require an existing Launch process group before rotating
             # anything, preserve that group while updating the exact Machines,
             # and prove Launch v2 ownership before deploying the vault generation.
             machines_json="$(flyctl machine list --app "$app" --json)"
             jq -e 'length > 0 and all(.[];
               .state == "started"
-              and (.config.image | type == "string" and length > 0)
+              and (.image_ref.registry | type == "string" and length > 0)
+              and (.image_ref.repository | type == "string" and length > 0)
+              and (.image_ref.digest | type == "string" and test("^sha256:[a-f0-9]{64}$"))
               and (.config.metadata.fly_process_group | type == "string" and length > 0)
             )' \
               <<<"$machines_json" >/dev/null
@@ -326,39 +328,147 @@ jobs:
               id,
               processGroup: .config.metadata.fly_process_group
             }] | sort_by(.id)' <<<"$machines_json")"
-            flyctl secrets set --stage --app "$app" \
-              MENDPOINT_SANDBOX_FLY_IMAGE="$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
-              MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64="$attestation" \
-              MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64="$public_key" \
-              MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID="$key_id" \
-              MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest" \
-              MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA="$schema"
+            image_refs_before="$(jq -cS '[.[] | {
+              id,
+              image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")
+            }] | sort_by(.id)' <<<"$machines_json")"
+            expected_machine_configs="$(jq -cS '[.[]
+              | (.image_ref | "\(.registry)/\(.repository)@\(.digest)") as $image
+              | {id, state, config: (.config + {image: $image})}
+            ] | sort_by(.id)' <<<"$machines_json")"
+            machine_backup_dir="test-results/sandbox-egress/machine-config-${app}"
+            mkdir -p "$machine_backup_dir"
+            while IFS= read -r machine_id; do
+              [[ "$machine_id" =~ ^[a-f0-9]+$ ]]
+              jq -c --arg id "$machine_id" \
+                '.[] | select(.id == $id)
+                  | (.image_ref | "\(.registry)/\(.repository)@\(.digest)") as $image
+                  | (.config + {image: $image})' \
+                <<<"$machines_json" >"${machine_backup_dir}/${machine_id}.json"
+            done < <(jq -r '.[].id' <<<"$machines_json")
+
+            contain_original_machines() {
+              local reason="$1"
+              local stop_failed=false
+              printf 'contain\t%s\n' "$reason" \
+                >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+              while IFS= read -r original_machine_id; do
+                if ! flyctl machine stop "$original_machine_id" --app "$app"; then
+                  stop_failed=true
+                fi
+              done < <(jq -r '.[].id' <<<"$machines_json")
+              contained_machines_json="$(flyctl machine list --app "$app" --json || printf '[]')"
+              printf '%s\n' "$contained_machines_json" \
+                >"test-results/sandbox-egress/contained-machines-${app}.json"
+              if [ "$stop_failed" = true ] || ! jq -e --argjson original "$machines_json" '
+                  ([.[].id] | sort) == ([$original[].id] | sort)
+                  and all(.[]; .state != "started")
+                ' <<<"$contained_machines_json" >/dev/null; then
+                printf 'containment_unproven\t%s\n' "$reason" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                return 1
+              fi
+              printf 'containment_proven\t%s\n' "$reason" \
+                >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+            }
+
+            attempted_machine_ids=()
+            rollback_attempted_machines() {
+              local reason="$1"
+              local rollback_failed=false
+              printf 'rollback\t%s\n' "$reason" \
+                >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+              for attempted_machine_id in "${attempted_machine_ids[@]}"; do
+                if ! flyctl machine update "$attempted_machine_id" --app "$app" \
+                    --machine-config "${machine_backup_dir}/${attempted_machine_id}.json" \
+                    --skip-health-checks --yes; then
+                  rollback_failed=true
+                fi
+              done
+              if [ "$rollback_failed" = false ]; then
+                restored_machines_json="$(flyctl machine list --app "$app" --json)"
+                if ! jq -e --argjson expected "$expected_machine_configs" '
+                    ([.[] | {id, state, config}] | sort_by(.id)) == $expected
+                  ' <<<"$restored_machines_json" >/dev/null; then
+                  rollback_failed=true
+                fi
+              fi
+              if [ "$rollback_failed" = true ]; then
+                contain_original_machines "rollback_failed:${reason}"
+              fi
+              return 1
+            }
+
             while IFS=$'\t' read -r machine_id machine_image machine_process_group; do
               test -n "$machine_id"
               test -n "$machine_image"
               test -n "$machine_process_group"
-              flyctl machine update "$machine_id" --app "$app" \
-                --image "$machine_image" \
-                --env "MENDPOINT_SANDBOX_FLY_IMAGE=$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
-                --metadata fly_platform_version=v2 \
-                --metadata "fly_process_group=$machine_process_group" \
-                --skip-health-checks --yes
+              attempted_machine_ids+=("$machine_id")
+              if ! flyctl machine update "$machine_id" --app "$app" \
+                  --image "$machine_image" \
+                  --env "MENDPOINT_SANDBOX_FLY_IMAGE=$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
+                  --metadata fly_platform_version=v2 \
+                  --metadata "fly_process_group=$machine_process_group" \
+                  --skip-health-checks --yes; then
+                rollback_attempted_machines "machine_update_failed:${machine_id}" || true
+                exit 1
+              fi
             done < <(jq -r '.[] | [
               .id,
-              .config.image,
+              (.image_ref | "\(.registry)/\(.repository)@\(.digest)"),
               .config.metadata.fly_process_group
             ] | @tsv' <<<"$machines_json")
             updated_machines_json="$(flyctl machine list --app "$app" --json)"
-            jq -e --argjson expected "$launch_groups_before" '
-              ([.[] | {
-                id,
-                processGroup: .config.metadata.fly_process_group
-              }] | sort_by(.id)) == $expected
-              and all(.[]; .config.metadata.fly_platform_version == "v2")
-            ' <<<"$updated_machines_json" >/dev/null
-            flyctl secrets deploy --app "$app"
-            flyctl secrets list --app "$app" --json \
-              | jq -e 'length > 0 and all(.[]; .status == "Deployed")' >/dev/null
+            if ! jq -e --argjson expected "$launch_groups_before" \
+                --argjson expected_images "$image_refs_before" '
+                ([.[] | {
+                  id,
+                  processGroup: .config.metadata.fly_process_group
+                }] | sort_by(.id)) == $expected
+                and ([.[] | {
+                  id,
+                  image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")
+                }] | sort_by(.id)) == $expected_images
+                and all(.[]; .config.metadata.fly_platform_version == "v2")
+              ' <<<"$updated_machines_json" >/dev/null; then
+              rollback_attempted_machines "post_update_invariant_failed" || true
+              exit 1
+            fi
+            if ! flyctl secrets set --app "$app" \
+                MENDPOINT_SANDBOX_FLY_IMAGE="$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
+                MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64="$attestation" \
+                MENDPOINT_SANDBOX_EGRESS_ATTESTATION_PUBLIC_KEY_SPKI_BASE64="$public_key" \
+                MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID="$key_id" \
+                MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest" \
+                MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA="$schema"; then
+              contain_original_machines "secret_deploy_outcome_unknown"
+              exit 1
+            fi
+            if ! flyctl secrets list --app "$app" --json \
+                | jq -e 'length > 0 and all(.[]; .status == "Deployed")' >/dev/null; then
+              contain_original_machines "secret_generation_not_deployed"
+              exit 1
+            fi
+            post_secret_machines_json="$(flyctl machine list --app "$app" --json)"
+            if ! jq -e --argjson expected "$launch_groups_before" \
+                --argjson expected_images "$image_refs_before" \
+                --arg expected_sandbox_image "$MENDPOINT_SANDBOX_EGRESS_IMAGE" '
+                ([.[] | {
+                  id,
+                  processGroup: .config.metadata.fly_process_group
+                }] | sort_by(.id)) == $expected
+                and ([.[] | {
+                  id,
+                  image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")
+                }] | sort_by(.id)) == $expected_images
+                and all(.[];
+                  .config.metadata.fly_platform_version == "v2"
+                  and .config.env.MENDPOINT_SANDBOX_FLY_IMAGE == $expected_sandbox_image
+                )
+              ' <<<"$post_secret_machines_json" >/dev/null; then
+              contain_original_machines "post_secret_invariant_failed"
+              exit 1
+            fi
             healthy=false
             for attempt in $(seq 1 24); do
               if curl --silent --show-error --fail --max-time 10 \
@@ -373,6 +483,7 @@ jobs:
               sleep 5
             done
             if [ "$healthy" != true ]; then
+              contain_original_machines "post_rotation_health_failed"
               echo "The app $app did not become healthy after receipt rotation"
               exit 1
             fi

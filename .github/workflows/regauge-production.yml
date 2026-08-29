@@ -117,6 +117,17 @@ jobs:
       MENDPOINT_RELEASE_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Prepare immutable workflow context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/regauge-production
+          jq -n \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg revision "$GITHUB_SHA" \
+            '{runId: $runId, runAttempt: $runAttempt, revision: $revision}' \
+            > test-results/regauge-production/workflow-context.json
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
@@ -250,13 +261,6 @@ jobs:
             and .trainingDataAllowed == false
           ' <<<"$MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON" >/dev/null \
             || { echo "regauge_deepseek_policy_not_authorized"; exit 1; }
-          mkdir -p test-results/regauge-production
-          jq -n \
-            --arg runId "$GITHUB_RUN_ID" \
-            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
-            --arg revision "$GITHUB_SHA" \
-            '{runId: $runId, runAttempt: $runAttempt, revision: $revision}' \
-            > test-results/regauge-production/workflow-context.json
       - name: Verify dedicated app and coordinator volume
         shell: bash
         run: |
