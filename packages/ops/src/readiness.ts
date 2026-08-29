@@ -4,7 +4,7 @@
 import { existsSync, accessSync, constants, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { assessModelEgress } from "@mendpoint/shared";
-import { RELEASE, releaseBanner, resolveReleaseProduct } from "./release.js";
+import { releaseBanner, resolveRelease } from "./release.js";
 import { validateApiEnv, assessCustomerReadiness } from "./env.js";
 import { featureMatrix } from "./features.js";
 import { assessCustomerBackupReadiness } from "./disaster-recovery.js";
@@ -33,13 +33,14 @@ export type ProbeResult = {
 const startedAt = Date.now();
 
 export function liveness(): ProbeResult {
+  const release = resolveRelease();
   return {
     status: "ok",
     checks: [{ name: "process", ok: true }],
     release: {
-      version: RELEASE.version,
-      channel: RELEASE.channel,
-      product: resolveReleaseProduct(),
+      version: release.version,
+      channel: release.channel,
+      product: release.product,
       banner: releaseBanner(),
     },
     uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
@@ -53,6 +54,7 @@ export function readiness(opts?: {
   schemaCheck?: () => boolean;
 }): ProbeResult {
   const span = startSpan("ops.readiness");
+  const release = resolveRelease();
   const startNs = Date.now();
   const checks: ProbeResult["checks"] = [];
   const env = validateApiEnv();
@@ -162,9 +164,9 @@ export function readiness(opts?: {
     status,
     checks,
     release: {
-      version: RELEASE.version,
-      channel: RELEASE.channel,
-      product: resolveReleaseProduct(),
+      version: release.version,
+      channel: release.channel,
+      product: release.product,
       banner: releaseBanner(),
     },
     features: featureMatrix(),

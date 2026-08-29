@@ -1,8 +1,9 @@
 export {
   RELEASE,
+  REGAUGE_RELEASE,
   releaseBanner,
+  resolveRelease,
   resolveReleaseRevision,
-  resolveReleaseProduct,
   type ReleaseInfo,
 } from "./release.js";
 export {

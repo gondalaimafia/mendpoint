@@ -207,3 +207,37 @@
 **Mistake:** Expanding URI redaction also changed the established HTTPS digest formula, so an upgrade could create duplicate artifacts and dispatches for the same release.
 **Correction:** Quality re-review required exact legacy HTTPS identity compatibility while applying the new domain-separated digest only to other hierarchical URI schemes.
 **Rule:** Treat persisted identity formulas as versioned compatibility contracts; extend safety behavior around them without changing existing canonical inputs or digests.
+### 2026-08-28 — Inventory deployed identities before declaring a production surface absent
+**Mistake:** I treated the empty `mendpoint-regauge-production` app as evidence that ReGauge had no deployed production surface and failed to distinguish it from the live legacy `mendpoint-transformer-pilot` coordinator.
+**Correction:** Talal pointed out that an app was already in production and required all app identities to be named correctly, production configured, and current.
+**Rule:** Before any topology or readiness claim, enumerate every app, its role, state, deployed revision, profile, processes, hostname, and attached volumes. Distinguish created, deployed, running, production configured, and production proven; never infer one from another.
+
+### 2026-08-29 — Update every authority layer as one compatibility set
+**Mistake:** I initially followed the repository's stale sandbox image pin without reconciling it against the newer firewall policy, protected environment bindings, and last successful receipt.
+**Correction:** Talal required every canonical app and its dependencies to be up to date, not merely renamed or deployed from current source.
+**Rule:** For production authority, verify and update the image digest, executable policy digest, signed receipt scope, protected environment variables, consumer manifest, and deployed secret override as one compatibility set before retrying activation.
+
+### 2026-08-29 — Treat deployed labels as claims, not source proof
+**Mistake:** I initially treated the image's `GH_SHA` label as sufficient proof that its executable source matched current main.
+**Correction:** The live container emitted an error contract absent from current source even though its label named current main.
+**Rule:** Production freshness requires a newly built immutable digest from the exact reviewed commit plus behavioral probes. Never infer executable source identity from a mutable tag or image label alone.
+
+### 2026-08-29 — Make recovery evidence durable before deletion
+**Mistake:** Stale-marker recovery deleted the marker before appending its audit record, so an audit permission failure could erase the only recoverable evidence.
+**Correction:** A production recovery attempt reproduced that ordering failure and required restoration from the exact captured marker bytes.
+**Rule:** Move recoverable state to a transaction hold, persist and verify its audit evidence, then delete the hold. On any audit failure, restore the original state byte for byte and fail closed.
+
+### 2026-08-29 — Enumerate the complete failure chain before retrying
+**Mistake:** Earlier production closure work peeled one failing layer per CI cycle and treated each newly exposed failure as a separate surprise.
+**Correction:** Talal required Codex to learn from that delay: after a second hidden layer or a retry that adds no evidence, stop retrying and enumerate every authority, identity, state, deployment, health, and evidence predicate locally.
+**Rule:** A second hidden failure triggers a full-chain audit before the next mutation. Close every discoverable layer in one reviewed increment, then retry once with explicit evidence for each predicate.
+
+### 2026-08-29 — Make multi-Machine authority rotation transactional
+**Mistake:** The first sandbox authority fix updated Machines sequentially without preserving an immutable image identity or proving rollback and containment for a partial failure.
+**Correction:** Exact-head review required digest-pinned updates, exact configuration restoration, and fail-closed containment evidence before rotating protected secrets.
+**Rule:** For a stateful multi-Machine mutation, capture exact identities and configurations first, mutate only immutable targets, restore every attempted target on pre-commit failure, and repeatedly re-inventory plus stop the complete current set whenever rollback or post-commit authority cannot be proven. The original inventory is rollback evidence, not a safe containment boundary after capacity may have changed.
+
+### 2026-08-29 — Rotation receipts belong only to the proposal that creates them
+**Mistake:** A completed authority rotation receipt from PR #539 was copied into PR #537's current pull request bootstrap even though #537 did not change the authority policy or ledger.
+**Correction:** The protected proposal verifier correctly treated that bootstrap binding as a new rotation request, then failed because no new append-only receipt existed; GitHub authority failed closed downstream.
+**Rule:** Never carry an earlier pull request's rotation tuple into a new current-PR bootstrap. An ordinary successor proposal omits `authorityRotation`; only the exact proposal that changes policy or the rotation ledger may bind its newly appended receipt, issue time, and digests.

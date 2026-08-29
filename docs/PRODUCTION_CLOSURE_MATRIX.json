@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T20:05:00.000Z",
-    "observedMainRevision": "301956d048a535b7cf493141d677da0b9172a5bc",
-    "observationDigest": "sha256:50cdf8a1a4aba72700cd02227f0ff621fedab769132d6aeed6a4cf93ab572c6d",
+    "observedAt": "2026-08-29T20:48:51.779Z",
+    "observedMainRevision": "8dbac0437efea360daec7a9733267ee3c89f4040",
+    "observationDigest": "sha256:8e54fb882fc97f8ae67ddb5ac2d07821f8103cbf3957474839e36c24c2e3d732",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 544,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/544",
-      "title": "Derive product identity from deployment profile",
+      "number": 537,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/537",
+      "title": "Harden ReGauge production activation and cutover evidence",
       "baseBranch": "main",
-      "headBranch": "codex/product-identity-from-profile",
+      "headBranch": "codex/fettler-regauge-production-cutover",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -4772,6 +4772,76 @@
         "blockers": []
       },
       {
+        "number": 523,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/523",
+        "title": "Raise a Mission policy exception on ReGauge pilot deny",
+        "headBranch": "cursor/regauge-pilot-policy-exception-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "8ce2ed4102e0b078104bf4ad2badb16d863efb38",
+        "mergeRevision": "9459e59fb9bf4703b5eade04e762245783faf08a",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 524,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/524",
+        "title": "Raise a Mission policy exception on Fettler agent.run deny",
+        "headBranch": "cursor/fettler-agent-run-policy-exception-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "2c60bcff2ef07cb13863e6b892bc0f6519a70145",
+        "mergeRevision": "5ba88a0e3f7a12a9b34b519eea2dd94b80bc108f",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
         "number": 525,
         "state": "open",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/525",
@@ -4967,6 +5037,76 @@
         "checkState": "stale_checks",
         "headRevision": "26384452eb8b2fbd435d591c8d6f57402a0fea2d",
         "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 539,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/539",
+        "title": "Salvage #504: successor re-stage transition + inherited-bootstrap receipt fix",
+        "headBranch": "codex/successor-restage-salvage",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "3b29d86c2a24f55f3ea4c06e8de5ef375554baa9",
+        "mergeRevision": "301956d048a535b7cf493141d677da0b9172a5bc",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 544,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/544",
+        "title": "Derive product identity from deployment profile",
+        "headBranch": "codex/product-identity-from-profile",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "405ca70581182c6591d1d8af25299bedf8a6882c",
+        "mergeRevision": "8dbac0437efea360daec7a9733267ee3c89f4040",
         "checks": [],
         "review": {
           "state": "none",

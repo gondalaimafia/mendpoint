@@ -317,9 +317,33 @@ describe("Regauge production workflow", () => {
     expect(steps[coordinatorHealthIndex].run).toContain(
       "https://mendpoint-regauge-production.fly.dev/ready",
     );
+    expect(steps[coordinatorHealthIndex].run).toContain('.product == "Regauge"');
+    expect(steps[coordinatorHealthIndex].run).toContain('.channel == "internal"');
+    expect(steps[coordinatorHealthIndex].run).toContain(
+      '.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "experimental" and .enabled == true)',
+    );
     expect(
       steps.some((step) => step.name === "Deploy one coordinator and one worker"),
     ).toBe(false);
+  });
+
+  it("proves exact post-deploy machine, revision, role, and volume topology", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const steps = workflow.jobs.deploy.steps as Record<string, any>[];
+    const proof = steps.find(
+      (step) => step.name === "Verify exact deployed revision and process health",
+    )!.run as string;
+
+    expect(proof).toContain("coordinator-volume.json");
+    expect(proof).toContain(".config.metadata.fly_process_group == \"coordinator\"");
+    expect(proof).toContain(".config.metadata.fly_process_group == \"worker\"");
+    expect(proof).toContain(".config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA");
+    expect(proof).toContain(".image_ref.labels.GH_SHA == env.GITHUB_SHA");
+    expect(proof).toContain(".config.mounts[] | select(.volume == $volume_id)");
+    expect(proof).toContain("(.config.mounts // [] | length) == 0");
+    expect(proof).toContain("machine-topology.json");
   });
 
   it("requires a fresh exact-volume restore attestation before target credentials or processes can start", () => {
@@ -349,7 +373,11 @@ describe("Regauge production workflow", () => {
     expect(receipt).not.toContain("MENDPOINT_REGAUGE_TRANSFER_KEY=");
     const failure = steps.find((step) => step.name === "Contain target after activation failure")!;
     expect(failure.if).toBe("${{ failure() }}");
-    expect(failure.run).toContain("worker=0");
+    expect(failure.run).toContain("flyctl machines list --app mendpoint-regauge-production --json");
+    expect(failure.run).toContain('flyctl machine stop "$machine_id"');
+    expect(failure.run).toContain('test "$remaining_started_workers" = "0"');
+    expect(failure.run).toContain("failure-containment.json");
+    expect(failure.run).not.toContain("flyctl scale count worker=0");
     expect(failure.run).not.toContain("volumes delete");
     // Transfer authority is enforced only when a transfer is configured, but a
     // partial transfer config (id set, key or fence missing) still hard-fails.
@@ -392,5 +420,35 @@ describe("Regauge production workflow", () => {
     expect(workflow.jobs.deploy["timeout-minutes"]).toBe(60);
     expect(validation).toContain('test "$READINESS_SOAK_SECONDS" -le 1800');
     expect(validation).not.toContain('test "$READINESS_SOAK_SECONDS" -le 21600');
+  });
+
+  it("retains workflow context even when activation fails before deployment", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const steps = workflow.jobs.deploy.steps as Record<string, any>[];
+    const contextIndex = steps.findIndex(
+      (step) => step.name === "Prepare immutable workflow context",
+    );
+    const installIndex = steps.findIndex((step) => step.name === "Install");
+    const deriveIndex = steps.findIndex(
+      (step) => step.name === "Derive one-run production authority",
+    );
+    const validationIndex = steps.findIndex(
+      (step) => step.name === "Validate exact authority before mutation",
+    );
+    const context = steps[contextIndex]!.run as string;
+    const upload = steps.find(
+      (step) => step.name === "Upload Regauge production evidence",
+    )!;
+
+    expect(contextIndex).toBeGreaterThan(0);
+    expect(contextIndex).toBeLessThan(installIndex);
+    expect(contextIndex).toBeLessThan(deriveIndex);
+    expect(contextIndex).toBeLessThan(validationIndex);
+    expect(context).toContain("workflow-context.json");
+    expect(context).toContain('revision: $revision');
+    expect(upload.if).toBe("always()");
+    expect(upload.with["if-no-files-found"]).toBe("error");
   });
 });

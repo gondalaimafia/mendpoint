@@ -35,7 +35,22 @@ export const RELEASE = {
   ],
 } as const;
 
-export type ReleaseInfo = typeof RELEASE;
+export const REGAUGE_RELEASE = {
+  ...RELEASE,
+  product: "Regauge",
+  channel: "internal",
+  codename: "legacy-engineer",
+} as const;
+
+export type ReleaseInfo = typeof RELEASE | typeof REGAUGE_RELEASE;
+
+export function resolveRelease(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): ReleaseInfo {
+  return env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() === "regauge_production"
+    ? REGAUGE_RELEASE
+    : RELEASE;
+}
 
 const IMMUTABLE_RELEASE_REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 
@@ -50,34 +65,9 @@ export function resolveReleaseRevision(
   return revision;
 }
 
-/**
- * Customer-facing product identity for a deployment, derived from its
- * MENDPOINT_DEPLOYMENT_PROFILE rather than a hardcoded constant.
- *
- * "Transformer" is the legacy internal package name for ReGauge's core engine;
- * the customer-facing product is ReGauge. Both the transformer_pilot and
- * regauge_production deployment profiles run that engine, so both report
- * ReGauge. Every other profile -- customer, demo, pilot -- and any unknown or
- * unset profile reports the default platform product (RELEASE.product,
- * "Fettler"): an indeterminate deployment must never silently claim the ReGauge
- * identity, so it falls back to the established default rather than guessing.
- *
- * This mirrors resolveReleaseRevision above: a frozen RELEASE object for every
- * static field, with the environment-dependent field resolved through a
- * function that reads the same env it is given.
- */
-const PRODUCT_BY_DEPLOYMENT_PROFILE: Readonly<Record<string, string>> = {
-  regauge_production: "ReGauge",
-  transformer_pilot: "ReGauge",
-};
-
-export function resolveReleaseProduct(
-  env: NodeJS.ProcessEnv = process.env,
+export function releaseBanner(
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): string {
-  const profile = env.MENDPOINT_DEPLOYMENT_PROFILE?.trim();
-  return (profile && PRODUCT_BY_DEPLOYMENT_PROFILE[profile]) || RELEASE.product;
-}
-
-export function releaseBanner(env: NodeJS.ProcessEnv = process.env): string {
-  return `${RELEASE.platform} / ${resolveReleaseProduct(env)} ${RELEASE.version} (${RELEASE.channel})`;
+  const release = resolveRelease(env);
+  return `${release.platform} / ${release.product} ${release.version} (${release.channel})`;
 }
