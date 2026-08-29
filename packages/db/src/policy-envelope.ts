@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { AppDb } from "./index.js";
-import { contentDigest } from "./mission-record-content.js";
+import { contentDigest, exactUtc } from "./mission-record-content.js";
 import {
   bindMissionPolicyEnvelopeVersion,
   getMission,
@@ -56,13 +56,14 @@ export function createPolicyEnvelope(db: AppDb, input: {
   if (!input.policyEnvelopeId.trim()) throw new Error("policy_envelope_id_invalid");
   if (!input.envelopeJson.trim()) throw new Error("policy_envelope_body_invalid");
   const contentSha256 = createHash("sha256").update(input.envelopeJson, "utf8").digest("hex");
-  db.raw.exec("BEGIN IMMEDIATE");
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const existing = one<StoredPolicyEnvelopeRow>(db,
       `SELECT * FROM policy_envelopes WHERE tenant_id = ? AND version = ?`, [input.tenantId, input.version]);
     if (existing) {
       if (existing.content_sha256 !== contentSha256) throw new Error("policy_envelope_version_conflict");
-      db.raw.exec("COMMIT");
+      if (owns) db.raw.exec("COMMIT");
       return hydrate(existing);
     }
     if (!one(db, `SELECT id FROM tenants WHERE id = ?`, [input.tenantId])) {
@@ -74,9 +75,9 @@ export function createPolicyEnvelope(db: AppDb, input: {
         input.envelopeJson, contentSha256, input.createdAt);
     const value = hydrate(one<StoredPolicyEnvelopeRow>(db,
       `SELECT * FROM policy_envelopes WHERE tenant_id = ? AND version = ?`, [input.tenantId, input.version])!);
-    db.raw.exec("COMMIT");
+    if (owns) db.raw.exec("COMMIT");
     return value;
-  } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
+  } catch (error) { if (owns) db.raw.exec("ROLLBACK"); throw error; }
 }
 
 export function getPolicyEnvelope(db: AppDb, tenantId: string, version: number): StoredPolicyEnvelope | undefined {
@@ -151,36 +152,10 @@ type MissionPolicyEvaluationRow = {
   created_at: string;
 };
 
-/**
- * Brand-new append-only table. Kept next to the writer so this change does not
- * edit `packages/db/src/index.ts` while other open PRs already touch that file.
- * CREATE TABLE IF NOT EXISTS converges on fresh and pre-change databases.
- */
-function ensureMissionPolicyEvaluationSchema(db: AppDb): void {
-  db.raw.exec(`
-CREATE TABLE IF NOT EXISTS mission_policy_evaluations (
-  id TEXT PRIMARY KEY,
-  tenant_id TEXT NOT NULL REFERENCES tenants(id),
-  mission_id TEXT NOT NULL,
-  envelope_version INTEGER,
-  status TEXT NOT NULL CHECK (status IN ('enforced', 'no_envelope', 'envelope_invalid')),
-  allowed INTEGER CHECK (allowed IN (0, 1) OR allowed IS NULL),
-  review_required INTEGER CHECK (review_required IN (0, 1) OR review_required IS NULL),
-  violations_json TEXT NOT NULL,
-  task_digest TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id)
-);
-CREATE INDEX IF NOT EXISTS mission_policy_evaluations_mission_idx
-  ON mission_policy_evaluations(tenant_id, mission_id, created_at);
-CREATE TRIGGER IF NOT EXISTS mission_policy_evaluations_immutable
-  BEFORE UPDATE ON mission_policy_evaluations
-  BEGIN SELECT RAISE(ABORT, 'mission_policy_evaluation_immutable'); END;
-CREATE TRIGGER IF NOT EXISTS mission_policy_evaluations_no_delete
-  BEFORE DELETE ON mission_policy_evaluations
-  BEGIN SELECT RAISE(ABORT, 'mission_policy_evaluation_immutable'); END;
-`);
-}
+// The `mission_policy_evaluations` table (and its append-only triggers) lives in
+// the static schema DDL in `./index.ts`, alongside the other mission durable
+// records, so it materialises on open for fresh AND pre-change databases and is
+// listed in the canonical schema — not created lazily on first write.
 
 function hydrateEvaluation(row: MissionPolicyEvaluationRow): MissionPolicyEvaluation {
   const violations = JSON.parse(row.violations_json) as Array<{ code: string; detail: string }>;
@@ -220,7 +195,7 @@ export function recordMissionPolicyEvaluation(db: AppDb, input: {
   if (!input.tenantId.trim()) throw new Error("mission_policy_evaluation_tenant_invalid");
   if (!input.missionId.trim()) throw new Error("mission_policy_evaluation_mission_invalid");
   if (!/^[a-f0-9]{64}$/.test(input.taskDigest)) throw new Error("mission_policy_evaluation_task_digest_invalid");
-  if (!input.createdAt.trim()) throw new Error("mission_policy_evaluation_created_at_invalid");
+  const createdAt = exactUtc(input.createdAt, "mission_policy_evaluation_created_at_invalid");
   if (input.status === "enforced" && (input.allowed === null || input.reviewRequired === null || input.envelopeVersion === null)) {
     throw new Error("mission_policy_evaluation_enforced_fields_required");
   }
@@ -242,15 +217,15 @@ export function recordMissionPolicyEvaluation(db: AppDb, input: {
     reviewRequired: input.reviewRequired,
     violations,
     taskDigest: input.taskDigest,
-    createdAt: input.createdAt,
+    createdAt,
   });
-  ensureMissionPolicyEvaluationSchema(db);
-  db.raw.exec("BEGIN IMMEDIATE");
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const existing = one<MissionPolicyEvaluationRow>(db,
       `SELECT * FROM mission_policy_evaluations WHERE id = ? AND tenant_id = ?`, [id, input.tenantId]);
     if (existing) {
-      db.raw.exec("COMMIT");
+      if (owns) db.raw.exec("COMMIT");
       return hydrateEvaluation(existing);
     }
     if (!one(db, `SELECT id FROM mission WHERE tenant_id = ? AND id = ?`, [input.tenantId, input.missionId])) {
@@ -262,13 +237,13 @@ export function recordMissionPolicyEvaluation(db: AppDb, input: {
       id, input.tenantId, input.missionId, input.envelopeVersion, input.status,
       input.allowed === null ? null : input.allowed ? 1 : 0,
       input.reviewRequired === null ? null : input.reviewRequired ? 1 : 0,
-      JSON.stringify(violations), input.taskDigest, input.createdAt,
+      JSON.stringify(violations), input.taskDigest, createdAt,
     );
     const stored = one<MissionPolicyEvaluationRow>(db,
       `SELECT * FROM mission_policy_evaluations WHERE id = ? AND tenant_id = ?`, [id, input.tenantId])!;
-    db.raw.exec("COMMIT");
+    if (owns) db.raw.exec("COMMIT");
     return hydrateEvaluation(stored);
-  } catch (error) { db.raw.exec("ROLLBACK"); throw error; }
+  } catch (error) { if (owns) db.raw.exec("ROLLBACK"); throw error; }
 }
 
 export function listMissionPolicyEvaluations(
@@ -277,7 +252,6 @@ export function listMissionPolicyEvaluations(
   missionId: string,
 ): MissionPolicyEvaluation[] {
   if (!tenantId.trim() || !missionId.trim()) return [];
-  ensureMissionPolicyEvaluationSchema(db);
   const rows = db.raw.prepare(
     `SELECT * FROM mission_policy_evaluations WHERE tenant_id = ? AND mission_id = ? ORDER BY created_at ASC, id ASC`,
   ).all(tenantId, missionId) as MissionPolicyEvaluationRow[];

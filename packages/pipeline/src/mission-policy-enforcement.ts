@@ -45,21 +45,39 @@ export type MissionPolicyEnforcement =
 
 /**
  * Evaluate a task against the Mission's inherited Policy Envelope. See the module
- * doc for the three-state contract. Performs one tenant-scoped read; the
- * evaluation itself is pure. Persistence is append-only and idempotent on the
- * content digest so a replay of the same decision does not duplicate the fact.
+ * doc for the three-state contract.
+ *
+ * This function WRITES: every decision that belongs to a real Mission is appended
+ * as an immutable evaluation fact (`recordMissionPolicyEvaluation`). It is not a
+ * pure read. `observedAt` is supplied by the caller (never a wall clock read here)
+ * and is the fact's `createdAt`; because the row id is a content digest that
+ * includes `createdAt`, a caller that replays the same decision under the same
+ * `observedAt` de-duplicates instead of appending a second row.
+ *
+ * The policy VERDICT and its PERSISTENCE are separated on purpose: a parse or
+ * evaluate throw means the pinned envelope is corrupt (`envelope_invalid`), but a
+ * storage fault (nested transaction, disk, FK) is NOT a policy decision. The write
+ * happens AFTER the verdict is computed and OUTSIDE the catch that maps to
+ * `envelope_invalid`, so a storage failure propagates as a storage error (the
+ * caller fails closed) and is never rewritten into an `envelope_invalid` verdict
+ * or fact.
+ *
+ * Retention: these facts are permanent evidence, like the sibling mission
+ * durable-record stores (decisions, exceptions, verifications), none of which
+ * bound retention here. Pruning, if any, is a tenant-level data-lifecycle concern,
+ * not this writer's — the table's BEFORE DELETE trigger makes inline deletion
+ * impossible by design.
  */
 export function evaluateMissionTaskPolicy(db: AppDb, input: {
   tenantId: string;
   missionId: string;
   task: PolicyTaskRequest;
-  observedAt?: string;
+  observedAt: string;
 }): MissionPolicyEnforcement {
-  const observedAt = input.observedAt ?? new Date().toISOString();
+  const observedAt = input.observedAt;
   const taskDigest = policyTaskDigest(input.task);
   const stored = getMissionPolicyEnvelope(db, input.tenantId, input.missionId);
   if (!stored) {
-    const result = { status: "no_envelope" } as const;
     if (getMission(db, input.tenantId, input.missionId)) {
       recordMissionPolicyEvaluation(db, {
         tenantId: input.tenantId,
@@ -73,12 +91,18 @@ export function evaluateMissionTaskPolicy(db: AppDb, input: {
         createdAt: observedAt,
       });
     }
-    return result;
+    return { status: "no_envelope" };
   }
+
+  // Compute the policy verdict purely. Only a parse/evaluate throw is an
+  // envelope_invalid verdict; the record write is deferred to after this block.
+  let enforcement: MissionPolicyEnforcement;
+  let fact: Parameters<typeof recordMissionPolicyEvaluation>[1];
   try {
     const envelope = parsePolicyEnvelope(JSON.parse(stored.envelopeJson));
     const decision = evaluatePolicyEnvelope(envelope, input.task);
-    recordMissionPolicyEvaluation(db, {
+    enforcement = { status: "enforced", decision, version: stored.version };
+    fact = {
       tenantId: input.tenantId,
       missionId: input.missionId,
       envelopeVersion: stored.version,
@@ -88,10 +112,10 @@ export function evaluateMissionTaskPolicy(db: AppDb, input: {
       violations: decision.violations,
       taskDigest,
       createdAt: observedAt,
-    });
-    return { status: "enforced", decision, version: stored.version };
+    };
   } catch {
-    recordMissionPolicyEvaluation(db, {
+    enforcement = { status: "envelope_invalid" };
+    fact = {
       tenantId: input.tenantId,
       missionId: input.missionId,
       envelopeVersion: stored.version,
@@ -101,9 +125,11 @@ export function evaluateMissionTaskPolicy(db: AppDb, input: {
       violations: [],
       taskDigest,
       createdAt: observedAt,
-    });
-    return { status: "envelope_invalid" };
+    };
   }
+  // Outside the catch: a storage throw here is a storage fault, not a verdict.
+  recordMissionPolicyEvaluation(db, fact);
+  return enforcement;
 }
 
 /**

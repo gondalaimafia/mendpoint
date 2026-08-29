@@ -68,6 +68,7 @@ const allowed = {
   targetPaths: ["src/pay.ts"],
   useLlm: false,
   risk: "medium",
+  observedAt: at,
 } as const;
 
 describe("assertAgentRunMissionPolicy", () => {

@@ -112,18 +112,46 @@ describe("mission policy evaluation evidence", () => {
   const at = "2026-01-02T00:00:00.000Z";
   const taskDigest = "a".repeat(64);
 
-  it("appends an evaluation on a pre-change database that lacked the table", () => {
-    const db = fixture();
-    fettlerMission(db);
-    expect(db.raw.prepare(
+  // UPGRADE: a fresh-install CI cannot catch a migration gap. This boots a
+  // PRE-CHANGE volume (one that never had the table), runs the normal open path,
+  // and asserts the table converges back via the static DDL while pre-existing
+  // rows survive.
+  it("materialises the table on a pre-change volume via the normal open path, preserving existing rows", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-policy-eval-upgrade-"));
+    const path = join(dir, "vol.sqlite");
+
+    // Boot once and seed a tenant + mission (pre-existing rows).
+    const first = createDb(path);
+    first.raw.prepare(`INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+      VALUES ('t1','one','One','team','active',10,'2026-01-01T00:00:00.000Z')`).run();
+    insertPrincipal(first, { id: "p1", tenantId: "t1", kind: "human", subject: "one@example.com",
+      displayName: "One", createdAt: "2026-01-01T00:00:00.000Z" });
+    fettlerMission(first);
+
+    // Simulate a PRE-CHANGE volume: drop the table (its triggers/indexes fall with
+    // it), as if created by code that never defined it. The mission row is intact.
+    first.raw.exec("DROP TABLE mission_policy_evaluations");
+    expect(first.raw.prepare(
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mission_policy_evaluations'`,
     ).get()).toBeUndefined();
-    const recorded = recordMissionPolicyEvaluation(db, {
+    first.raw.close();
+
+    // Re-open with the current code: the static DDL converges the table back.
+    const second = createDb(path);
+    opened.push({ db: second, dir });
+    expect(second.raw.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mission_policy_evaluations'`,
+    ).get()).toEqual({ name: "mission_policy_evaluations" });
+    // The pre-existing mission row survived the upgrade...
+    expect(second.raw.prepare(`SELECT id FROM mission WHERE tenant_id = 't1' AND id = 'm1'`).get())
+      .toEqual({ id: "m1" });
+    // ...and the evidence store is immediately usable again.
+    const recorded = recordMissionPolicyEvaluation(second, {
       tenantId: "t1", missionId: "m1", envelopeVersion: null, status: "no_envelope",
       allowed: null, reviewRequired: null, violations: [], taskDigest, createdAt: at,
     });
     expect(recorded.status).toBe("no_envelope");
-    expect(listMissionPolicyEvaluations(db, "t1", "m1")).toEqual([recorded]);
+    expect(listMissionPolicyEvaluations(second, "t1", "m1")).toEqual([recorded]);
   });
 
   it("is idempotent on identical bytes and immutable afterwards", () => {

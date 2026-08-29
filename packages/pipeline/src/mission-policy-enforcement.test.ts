@@ -70,7 +70,7 @@ const baseTask: PolicyTaskRequest = {
 describe("evaluateMissionTaskPolicy", () => {
   it("returns no_envelope when the mission pinned none (does not silently allow)", () => {
     const db = fixture();
-    const result = evaluateMissionTaskPolicy(db, { tenantId: "t1", missionId: "m1", task: baseTask });
+    const result = evaluateMissionTaskPolicy(db, { tenantId: "t1", missionId: "m1", task: baseTask, observedAt: at });
     expect(result.status).toBe("no_envelope");
     expect(missionPolicyDenialReasons(result)).toBeNull();
   });
@@ -78,7 +78,7 @@ describe("evaluateMissionTaskPolicy", () => {
   it("enforces an inherited default envelope: an in-bounds task is allowed", () => {
     const db = fixture();
     bind(db, permissiveEnvelope());
-    const result = evaluateMissionTaskPolicy(db, { tenantId: "t1", missionId: "m1", task: baseTask });
+    const result = evaluateMissionTaskPolicy(db, { tenantId: "t1", missionId: "m1", task: baseTask, observedAt: at });
     expect(result.status).toBe("enforced");
     if (result.status !== "enforced") throw new Error("unreachable");
     expect(result.decision.allowed).toBe(true);
@@ -94,7 +94,7 @@ describe("evaluateMissionTaskPolicy", () => {
       allowedTools: ["safe-tool"],
     });
     bind(db, restricted);
-    const denied = evaluateMissionTaskPolicy(db, { tenantId: "t1", missionId: "m1", task: baseTask });
+    const denied = evaluateMissionTaskPolicy(db, { tenantId: "t1", missionId: "m1", task: baseTask, observedAt: at });
     expect(denied.status).toBe("enforced");
     if (denied.status !== "enforced") throw new Error("unreachable");
     expect(denied.decision.allowed).toBe(false);
@@ -112,7 +112,7 @@ describe("evaluateMissionTaskPolicy", () => {
       envelopeJson: '{"not":"a valid envelope"}', createdAt: at });
     bindMissionToPolicyEnvelope(db, { tenantId: "t1", missionId: "m1", version: 1, actorPrincipalId: "p1",
       eventId: "e-bind", idempotencyKey: "bind-1", correlationId: "corr", createdAt: at });
-    const result = evaluateMissionTaskPolicy(db, { tenantId: "t1", missionId: "m1", task: baseTask });
+    const result = evaluateMissionTaskPolicy(db, { tenantId: "t1", missionId: "m1", task: baseTask, observedAt: at });
     expect(result.status).toBe("envelope_invalid");
     expect(missionPolicyDenialReasons(result)).toEqual(["policy_envelope_invalid"]);
   });
@@ -202,5 +202,26 @@ describe("evaluateMissionTaskPolicy", () => {
     expect(rows[0]?.status).toBe("enforced");
     expect(rows[0]?.envelopeVersion).toBe(1);
     expect(rows[0]?.taskDigest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  // MUTATION PROOF: a storage fault on an allowed decision must surface as a
+  // storage error, never be rewritten into an envelope_invalid verdict/fact. The
+  // injected trigger fails only the enforced INSERT (allowed IS NOT NULL) — the
+  // envelope_invalid INSERT (allowed IS NULL) would still succeed, so if the
+  // record write ever moved back inside the catch that maps to envelope_invalid,
+  // the enforced write would throw, the catch would persist an envelope_invalid
+  // row, and this test would go RED on both assertions.
+  it("does not record a storage fault on an allowed envelope as envelope_invalid", () => {
+    const db = fixture();
+    bind(db, permissiveEnvelope());
+    db.raw.exec(`CREATE TRIGGER test_reject_enforced_write
+      BEFORE INSERT ON mission_policy_evaluations
+      WHEN NEW.allowed IS NOT NULL
+      BEGIN SELECT RAISE(ABORT, 'storage_fault_injected'); END;`);
+    expect(() => evaluateMissionTaskPolicy(db, {
+      tenantId: "t1", missionId: "m1", task: baseTask, observedAt: at,
+    })).toThrow("storage_fault_injected");
+    // The storage fault was not swallowed into an envelope_invalid fact.
+    expect(listMissionPolicyEvaluations(db, "t1", "m1")).toEqual([]);
   });
 });

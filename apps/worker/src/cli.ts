@@ -3381,6 +3381,7 @@ if (job.type === "warden.candidate.cleanup") {
             targetPaths: allowedChangedPaths,
             useLlm,
             risk: payload.ciFailure ? "high" : "medium",
+            observedAt: started,
           });
         }
         const repositoryClassification = modelSourcePolicy
