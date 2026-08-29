@@ -59,8 +59,9 @@ export type RegaugePilotPolicyInput = Readonly<{
    */
   observedAgainst: SnapshotIdentity;
   /**
-   * Observation timestamp, taken from the lane's injected clock. Required so
-   * tests and replays agree — the seam never reads the wall clock itself.
+   * Caller-supplied evaluation timestamp, taken from the lane's injected clock;
+   * it is the evidence fact's createdAt. Required so tests and replays agree —
+   * the seam never reads the wall clock itself.
    */
   observedAt: string;
 }>;
@@ -131,6 +132,7 @@ export function assertRegaugePilotMissionPolicy(db: AppDb, input: RegaugePilotPo
     tenantId: input.tenantId,
     missionId: mission.id,
     task: regaugePilotPolicyTask(input),
+    observedAt: input.observedAt,
   });
   if (enforcement.status === "no_envelope") {
     recordPolicyException(db, mission, "mission_policy_envelope_missing", input.observedAt, input.observedAgainst);

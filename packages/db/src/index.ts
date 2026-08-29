@@ -1023,6 +1023,41 @@ BEFORE DELETE ON mission_verifications BEGIN
   SELECT RAISE(ABORT, 'mission_verifications_append_only');
 END;
 
+-- Mission Policy Envelope evaluation evidence (spec §6.7 / ME-PEV-001). One
+-- immutable fact per enforcement decision: the exact envelope version a task was
+-- evaluated under, the three-state outcome (enforced / no_envelope /
+-- envelope_invalid), and the deny reasons. Brand-new, so — like the mission
+-- durable-record tables above — it converges on fresh AND pre-change databases
+-- purely through CREATE TABLE/INDEX IF NOT EXISTS, with no ALTER and no shape
+-- change to any existing table. The composite foreign key (tenant_id, mission_id)
+-- -> mission(tenant_id, id) binds every row to a mission of the same tenant, and
+-- the primary key is a sha256 content digest that INCLUDES tenant_id, so a
+-- different tenant produces a different id by construction. Append-only, enforced
+-- by BEFORE UPDATE/DELETE triggers: a re-evaluation is a new row, never an
+-- overwrite. The status/allowed/review_required CHECKs make an unenforced verdict
+-- carrying a boolean decision unrepresentable.
+CREATE TABLE IF NOT EXISTS mission_policy_evaluations (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  mission_id TEXT NOT NULL,
+  envelope_version INTEGER,
+  status TEXT NOT NULL CHECK (status IN ('enforced', 'no_envelope', 'envelope_invalid')),
+  allowed INTEGER CHECK (allowed IN (0, 1) OR allowed IS NULL),
+  review_required INTEGER CHECK (review_required IN (0, 1) OR review_required IS NULL),
+  violations_json TEXT NOT NULL,
+  task_digest TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (tenant_id, mission_id) REFERENCES mission(tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS mission_policy_evaluations_mission_idx
+  ON mission_policy_evaluations(tenant_id, mission_id, created_at);
+CREATE TRIGGER IF NOT EXISTS mission_policy_evaluations_immutable
+  BEFORE UPDATE ON mission_policy_evaluations
+  BEGIN SELECT RAISE(ABORT, 'mission_policy_evaluation_immutable'); END;
+CREATE TRIGGER IF NOT EXISTS mission_policy_evaluations_no_delete
+  BEFORE DELETE ON mission_policy_evaluations
+  BEGIN SELECT RAISE(ABORT, 'mission_policy_evaluation_immutable'); END;
+
 -- Mission artifact registry (task brief §2). Mission outputs are first-class:
 -- impact report, migration plan, candidate patch, pull request, test run,
 -- verification report, architecture report, rollback plan, graph diff. These two

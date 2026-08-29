@@ -2062,9 +2062,9 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T04:10:16.000Z",
-    "observedMainRevision": "37c3867111fb7083667e5422ebf9b383dba9190a",
-    "observationDigest": "sha256:ad7ebb576092c04b5520804a257d9f87a5fbd5ac9fe918f23eb53521416322b8",
+    "observedAt": "2026-08-29T19:32:37.000Z",
+    "observedMainRevision": "5ba88a0e3f7a12a9b34b519eea2dd94b80bc108f",
+    "observationDigest": "sha256:8ab4eaa842b10910d6df530b2c6db103212e4651d0c61b41ec2f3c9acfe388c5",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -4702,76 +4702,6 @@
         "blockers": []
       },
       {
-        "number": 518,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/518",
-        "title": "Add the 101-row production-closure execution ledger",
-        "headBranch": "cursor/101-execution-ledger-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "412131581b52bc20ff55e2cad2f338ef1473db63",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 519,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/519",
-        "title": "Persist Mission Policy Envelope evaluation evidence",
-        "headBranch": "cursor/mission-policy-evaluation-evidence-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "0eb6ebb9a9599a08239b3cd95890669438bd719c",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
         "number": 520,
         "state": "merged",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/520",
@@ -4826,41 +4756,6 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "9bf93afca096952492c451227edf2bd0645b1ba9",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 524,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/524",
-        "title": "Raise a Mission policy exception on Fettler agent.run deny",
-        "headBranch": "cursor/fettler-agent-run-policy-exception-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "1c7aa60338cdb4c74159ddaeca897dff2d16389c",
         "mergeRevision": null,
         "checks": [],
         "review": {
