@@ -1824,8 +1824,8 @@
   "issueAuthority": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T03:38:44.422Z",
-    "observationDigest": "sha256:9df7c3c3f4d672e14c81047e33326cc9cb64356b570e24f5c885a5778fc1b133",
+    "observedAt": "2026-08-29T20:05:00.000Z",
+    "observationDigest": "sha256:c21960df74d74caba72369b43cc1ec1e1b87a111f65a84e2d79e87f00e7ef8df",
     "issues": [
       {
         "number": 350,
@@ -1877,7 +1877,7 @@
         "owner": "gondalaimafia",
         "title": "Production closure FC 00: foundational specification and release boundaries",
         "url": "https://github.com/gondalaimafia/mendpoint/issues/430",
-        "updatedAt": "2026-08-26T03:04:12.000Z",
+        "updatedAt": "2026-08-29T19:49:18.000Z",
         "requirementIds": [
           "ME-FND-001",
           "ME-FND-002",
@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T19:55:10.000Z",
-    "observedMainRevision": "9459e59fb9bf4703b5eade04e762245783faf08a",
-    "observationDigest": "sha256:d05f609463ffc73fbaead23db0bff251f305941108bdffb52e18f6691fa9e417",
+    "observedAt": "2026-08-29T20:05:00.000Z",
+    "observedMainRevision": "301956d048a535b7cf493141d677da0b9172a5bc",
+    "observationDigest": "sha256:50cdf8a1a4aba72700cd02227f0ff621fedab769132d6aeed6a4cf93ab572c6d",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 539,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/539",
-      "title": "Salvage #504: successor re-stage transition + inherited-bootstrap receipt fix",
+      "number": 544,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/544",
+      "title": "Derive product identity from deployment profile",
       "baseBranch": "main",
-      "headBranch": "codex/successor-restage-salvage",
+      "headBranch": "codex/product-identity-from-profile",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2085,15 +2085,7 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "rotation-20260828-005",
-        "kind": "runtime",
-        "issuedAt": "2026-08-29T19:55:10.000Z",
-        "expiresAt": "2026-08-30T19:55:10.000Z",
-        "basePolicySha256": "sha256:ed8002ff17703c04f119e12d33e1e370fdd8575aa89a2a86ae5fee07f2145ae6",
-        "proposedPolicySha256": "sha256:830e8511ad3d686227991f77e1aa67149ece2a3467c852fca7318b2b4aca0f7b"
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
