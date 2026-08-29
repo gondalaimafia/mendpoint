@@ -8,10 +8,20 @@
  * explicit deny fails closed and does not claim. Those blockers are also raised
  * as Mission exceptions (category `policy_exception`) so the same deny is not
  * rediscovered on the next claim (ME-MSN-002).
+ *
+ * The deny is observed in the context of the exact immutable snapshot this unit
+ * would execute against, so the exception is bound to THAT snapshot
+ * (`observedAgainst`), threaded from the caller (the runnable campaign unit's
+ * taskSnapshotId/expectedBaseRevision). It is NOT derived from
+ * `mission.snapshotId`: the unit snapshot advances per wave and is the precise
+ * context this claim was denied against, whereas the mission's launch snapshot
+ * is a single immutable pin that never moves. The exception counts as blocking
+ * only while the mission is on that snapshot; once a later claim runs against a
+ * newer unit snapshot the prior deny is STALE, surfaced for re-affirmation
+ * rather than blocking forever (apps/api/src/warden-candidate-review.ts).
  */
 import {
   evaluateMissionExceptions,
-  listRepositorySnapshots,
   raiseMissionException,
   resolveMissionForRegaugeCampaign,
   type AppDb,
@@ -37,7 +47,17 @@ export type RegaugePilotPolicyInput = Readonly<{
    * to derive whether the attempt routes to a training-capturing tier.
    */
   adaptiveModelId?: string;
-  observedAt?: string;
+  /**
+   * The immutable snapshot this unit would execute against. A raised policy
+   * exception is bound to it so it goes stale when the mission moves past it,
+   * instead of blocking the mission forever.
+   */
+  observedAgainst: SnapshotIdentity;
+  /**
+   * Observation timestamp, taken from the lane's injected clock. Required so
+   * tests and replays agree — the seam never reads the wall clock itself.
+   */
+  observedAt: string;
 }>;
 
 function regaugePilotPolicyTask(input: RegaugePilotPolicyInput) {
@@ -63,29 +83,19 @@ function regaugePilotPolicyTask(input: RegaugePilotPolicyInput) {
   });
 }
 
-/** Bind to the Mission's snapshot when one exists. Missing snapshot id is context-independent; a dangling snapshot id fails closed. */
-function missionObservedAgainst(db: AppDb, mission: Mission): SnapshotIdentity | undefined {
-  if (!mission.snapshotId) return undefined;
-  if (!mission.repositoryId) throw new Error("mission_exception_snapshot_not_found");
-  const row = listRepositorySnapshots(db, mission.tenantId, mission.repositoryId)
-    .find((item) => item.id === mission.snapshotId);
-  if (!row) throw new Error("mission_exception_snapshot_not_found");
-  return { snapshotId: row.id, resolvedSha: row.resolved_sha };
-}
-
 function recordPolicyException(
   db: AppDb,
   mission: Mission,
   reason: string,
   createdAt: string,
+  observedAgainst: SnapshotIdentity,
 ): void {
-  const observedAgainst = missionObservedAgainst(db, mission);
-  const already = evaluateMissionExceptions(
-    db,
-    mission.tenantId,
-    mission.id,
-    observedAgainst,
-  ).blocking.some((item) => item.category === "policy_exception" && item.reason === reason);
+  // Dedup against the CURRENT snapshot: a still-blocking policy_exception with
+  // the same reason on this snapshot means the deny was already recorded. A
+  // matching exception bound to a superseded snapshot is stale here, so a fresh
+  // deny on the new snapshot is recorded (and re-affirmed) rather than skipped.
+  const already = evaluateMissionExceptions(db, mission.tenantId, mission.id, observedAgainst).blocking
+    .some((item) => item.category === "policy_exception" && item.reason === reason);
   if (already) return;
   raiseMissionException(db, {
     tenantId: mission.tenantId,
@@ -95,7 +105,7 @@ function recordPolicyException(
     ownerPrincipalId: mission.ownerPrincipalId,
     resolutionPath: "adjust_task_or_rebind_policy_envelope",
     blocking: true,
-    ...(observedAgainst ? { observedAgainst } : {}),
+    observedAgainst,
     correlationId: `regauge-pilot-policy:${mission.id}`,
     createdAt,
     category: "policy_exception",
@@ -108,19 +118,18 @@ function recordPolicyException(
 export function assertRegaugePilotMissionPolicy(db: AppDb, input: RegaugePilotPolicyInput): void {
   const mission = resolveMissionForRegaugeCampaign(db, input.tenantId, input.campaignId);
   if (!mission) return;
-  const observedAt = input.observedAt ?? new Date().toISOString();
   const enforcement = evaluateMissionTaskPolicy(db, {
     tenantId: input.tenantId,
     missionId: mission.id,
     task: regaugePilotPolicyTask(input),
   });
   if (enforcement.status === "no_envelope") {
-    recordPolicyException(db, mission, "mission_policy_envelope_missing", observedAt);
+    recordPolicyException(db, mission, "mission_policy_envelope_missing", input.observedAt, input.observedAgainst);
     throw new Error("mission_policy_envelope_missing");
   }
   const reasons = missionPolicyDenialReasons(enforcement);
   if (reasons) {
-    recordPolicyException(db, mission, reasons.join(";"), observedAt);
+    recordPolicyException(db, mission, reasons.join(";"), input.observedAt, input.observedAgainst);
     throw new Error(`mission_policy_denied:${reasons.join(";")}`);
   }
 }
