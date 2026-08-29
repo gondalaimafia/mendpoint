@@ -202,7 +202,11 @@ export interface ProductionClosureMatrix {
     observedMainRevision: string;
     observationDigest: string;
     ownershipAuthority: "provisional_branch_prefix_only";
-    currentPullRequestBootstrap: CurrentPullRequestBootstrap;
+    // Optional under the event-sourced design: the pull request under judgement is
+    // resolved from the CI event or the merged commit by the protected GitHub
+    // authority, not from this field. When present it is validated for shape below
+    // and, for an authority rotation, binds the reviewed rotation receipt.
+    currentPullRequestBootstrap?: CurrentPullRequestBootstrap;
     pullRequests: ReleaseTrainPullRequest[];
   };
 }
@@ -1502,11 +1506,11 @@ export function validateProductionClosureMatrix(
   }
   for (const requirementId of currentBootstrap?.requirementIds ?? []) {
     const row = rowsById.get(requirementId);
-    if (row && !row.pullRequests.includes(currentBootstrap.number)) {
+    if (row && !row.pullRequests.includes(currentBootstrap!.number)) {
       add(
         issues,
         "PR_REQUIREMENT_MISMATCH",
-        String(currentBootstrap.number),
+        String(currentBootstrap!.number),
         `requirement ${requirementId} does not map back to the current pull request`,
       );
     }
@@ -1517,7 +1521,7 @@ export function validateProductionClosureMatrix(
       add(
         issues,
         "CURRENT_PR_REMEDIATION_INVALID",
-        String(currentBootstrap.number),
+        String(currentBootstrap!.number),
         `remediated pull request ${remediatedNumber} must be a tracked merged pull request`,
       );
     }
