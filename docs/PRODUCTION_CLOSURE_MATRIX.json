@@ -1824,8 +1824,8 @@
   "issueAuthority": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-26T04:06:40.824Z",
-    "observationDigest": "sha256:29d74e2d40365bdbbeea9bd297e148129267d1843bddb5d4edc211469a1bb5e1",
+    "observedAt": "2026-08-29T03:38:44.422Z",
+    "observationDigest": "sha256:9df7c3c3f4d672e14c81047e33326cc9cb64356b570e24f5c885a5778fc1b133",
     "issues": [
       {
         "number": 350,
@@ -1901,7 +1901,7 @@
         "owner": "gondalaimafia",
         "title": "Production closure FC 03: ingestion and Change Graph maturity",
         "url": "https://github.com/gondalaimafia/mendpoint/issues/431",
-        "updatedAt": "2026-08-26T03:04:14.000Z",
+        "updatedAt": "2026-08-29T03:18:34.000Z",
         "requirementIds": [
           "ME-CGR-001",
           "ME-FET-015",
@@ -2064,15 +2064,15 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-29T03:13:54.620Z",
     "observedMainRevision": "dc7141bd3877a443dda96026e809f4e4f45ccd55",
-    "observationDigest": "sha256:6d83e2906de277506a68108ffdf81cd2ab47bcc025de78c26795ef0642ebf0d7",
+    "observationDigest": "sha256:533cb165d11384ceab5e7e0a9c34f37f50b81d92b96f6e84e2b3c235864a1777",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 530,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/530",
-      "title": "authority: relax cross-PR completeness and revision-equality to ancestry; state-scope sibling metadata mirror; live-open closure-path guard",
+      "number": 535,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/535",
+      "title": "Refresh issue authority from one live snapshot and clear the inherited rotation bootstrap",
       "baseBranch": "main",
-      "headBranch": "mp-trustroot-completeness",
+      "headBranch": "codex/issue-authority-refresh-431",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2085,15 +2085,7 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "rotation-20260828-003",
-        "kind": "runtime",
-        "issuedAt": "2026-08-29T03:13:54.620Z",
-        "expiresAt": "2026-08-30T03:13:54.757Z",
-        "basePolicySha256": "sha256:86585f7d707b5b28276b663660533068f936ccd3243557541168253ae70d3466",
-        "proposedPolicySha256": "sha256:35d7654bed7c77dfe142cf2fde081b9681f92b62e5974683fe172efb87ab381c"
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
@@ -5080,6 +5072,41 @@
         "checkState": "stale_checks",
         "headRevision": "1e5f5d2f15ce74946b4c88e2cd14061f1b9fdf9d",
         "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 530,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/530",
+        "title": "authority: relax cross-PR completeness and revision-equality to ancestry; state-scope sibling metadata mirror; live-open closure-path guard",
+        "headBranch": "mp-trustroot-completeness",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "00c55e895d31620f340c91e1ac180ebceb788d1d",
+        "mergeRevision": "a2d4654c5b22a25304d5ebfdd22d5686a5f86560",
         "checks": [],
         "review": {
           "state": "none",
