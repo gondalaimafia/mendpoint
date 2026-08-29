@@ -1,4 +1,15 @@
 import type { LearningCase } from "./schema.js";
+import {
+  revalidateSignedAuthorityContext,
+  signedAuthorityEnvelopeDigest,
+  verifySignedAuthorityEnvelope,
+  type SignedAuthorityEnvelope,
+  type VerifiedAuthorityContext,
+} from "./authority.js";
+import {
+  requireVerifiedProductionLearningAuthority,
+  type VerifiedProductionLearningAuthority,
+} from "./preflight.js";
 
 export interface RequirementRecord {
   id: string;
@@ -57,11 +68,138 @@ export interface CaseExecutionReceipt {
   executionState: "planned" | "completed" | "failed";
 }
 
-declare const VERIFIED_CASE_EXECUTION_RECEIPT: unique symbol;
+export interface CaseExecutionEvidenceAuthorityPayload {
+  schemaVersion: "mendpoint.case-execution-evidence-authority.v1";
+  productionRevision: string;
+  receiptId: string;
+  caseId: string;
+  product: LearningCase["product"];
+  tenantId: string;
+  repositoryId: string;
+  repositoryCommit: string;
+  snapshotDigest: string;
+  fixtureManifestDigest: string;
+  fixtureManifestId: string;
+  oracleIds: string[];
+  executionDigest: string;
+  productionReceiptAuthorityDigest: string;
+  requirementIds: string[];
+  oracleEvidenceIds: string[];
+  productionEvidenceIds: string[];
+  admissionState: "admitted";
+  executionState: "completed";
+}
+
+const VERIFIED_CASE_EXECUTION_RECEIPT: unique symbol = Symbol("verified-case-execution-receipt");
 export type VerifiedCaseExecutionReceipt = Readonly<CaseExecutionReceipt> & {
+  readonly authorityEnvelopeDigest: string;
   readonly [VERIFIED_CASE_EXECUTION_RECEIPT]: true;
 };
 const verifiedCaseExecutionReceipts = new WeakSet<object>();
+const caseExecutionReceiptContexts = new WeakMap<object, VerifiedAuthorityContext>();
+const caseExecutionProductionAuthorities = new WeakMap<object, VerifiedProductionLearningAuthority>();
+
+function validateEvidenceIds(values: readonly string[], field: string, errors: string[]): void {
+  if (values.length === 0) errors.push(`${field} must be non-empty`);
+  if (new Set(values).size !== values.length) errors.push(`${field} must be unique`);
+  if (values.some((value) => value.trim().length === 0)) errors.push(`${field} must not contain empty values`);
+}
+
+export function verifyCaseExecutionReceipt(
+  envelope: SignedAuthorityEnvelope<CaseExecutionEvidenceAuthorityPayload>,
+  productionAuthority: VerifiedProductionLearningAuthority,
+  learningCase: LearningCase,
+): VerifiedCaseExecutionReceipt {
+  const verifiedEnvelope = verifySignedAuthorityEnvelope(envelope, "case_execution_evidence");
+  const authority = requireVerifiedProductionLearningAuthority(productionAuthority);
+  const payload = verifiedEnvelope.payload;
+  const errors: string[] = [];
+  const sha256 = /^[0-9a-f]{64}$/;
+  const gitSha = /^[0-9a-f]{40}$/;
+  if (payload.schemaVersion !== "mendpoint.case-execution-evidence-authority.v1") errors.push("evidence authority schema is invalid");
+  if (!gitSha.test(payload.productionRevision) || !gitSha.test(payload.repositoryCommit)) errors.push("evidence revisions must be git shas");
+  for (const [field, value] of [
+    ["snapshotDigest", payload.snapshotDigest],
+    ["fixtureManifestDigest", payload.fixtureManifestDigest],
+    ["executionDigest", payload.executionDigest],
+    ["productionReceiptAuthorityDigest", payload.productionReceiptAuthorityDigest],
+  ] as const) if (!sha256.test(value)) errors.push(`evidence ${field} must be sha256`);
+  for (const [field, value] of [
+    ["receiptId", payload.receiptId],
+    ["caseId", payload.caseId],
+    ["tenantId", payload.tenantId],
+    ["repositoryId", payload.repositoryId],
+    ["fixtureManifestId", payload.fixtureManifestId],
+  ] as const) if (value.trim().length === 0) errors.push(`evidence ${field} must be non-empty`);
+  validateEvidenceIds(payload.requirementIds, "evidence requirementIds", errors);
+  validateEvidenceIds(payload.oracleIds, "evidence oracleIds", errors);
+  validateEvidenceIds(payload.oracleEvidenceIds, "evidence oracleEvidenceIds", errors);
+  validateEvidenceIds(payload.productionEvidenceIds, "evidence productionEvidenceIds", errors);
+  if (payload.oracleIds.length !== payload.oracleEvidenceIds.length) {
+    errors.push("evidence oracleIds and oracleEvidenceIds must have equal cardinality");
+  }
+  if (payload.admissionState !== "admitted" || payload.executionState !== "completed") {
+    errors.push("evidence receipt must be admitted and completed");
+  }
+  const productionBindings: Array<[string, unknown, unknown]> = [
+    ["productionRevision", payload.productionRevision, authority.productionRevision],
+    ["caseId", payload.caseId, authority.caseId],
+    ["product", payload.product, authority.product],
+    ["tenantId", payload.tenantId, authority.tenantId],
+    ["repositoryId", payload.repositoryId, authority.repositoryId],
+    ["repositoryCommit", payload.repositoryCommit, authority.repositoryCommit],
+    ["snapshotDigest", payload.snapshotDigest, authority.snapshotDigest],
+    ["fixtureManifestDigest", payload.fixtureManifestDigest, authority.fixtureManifestDigest],
+    ["executionDigest", payload.executionDigest, authority.executionDigest],
+    ["productionReceiptAuthorityDigest", payload.productionReceiptAuthorityDigest, authority.authorityEnvelopeDigest],
+  ];
+  for (const [field, actual, expected] of productionBindings) {
+    if (actual !== expected) errors.push(`evidence ${field} must match trusted production authority`);
+  }
+  if (payload.caseId !== learningCase.id || payload.product !== learningCase.product) {
+    errors.push("evidence case identity must match the learning case");
+  }
+  if (payload.repositoryId !== learningCase.repository.provenanceId) {
+    errors.push("evidence repositoryId must match the learning case");
+  }
+  if (payload.fixtureManifestId !== learningCase.fixture.manifestId) {
+    errors.push("evidence fixtureManifestId must match the learning case");
+  }
+  for (const requirementId of payload.requirementIds) {
+    if (!learningCase.planning.requirementIds.includes(requirementId)) errors.push(`evidence requirement is not planned by the learning case: ${requirementId}`);
+  }
+  for (const oracleId of payload.oracleIds) {
+    if (!learningCase.expected.oracleIds.includes(oracleId)) errors.push(`evidence oracle is not declared by the learning case: ${oracleId}`);
+  }
+  if (errors.length > 0) throw new Error(`case_execution_evidence_invalid:${errors.join("|")}`);
+  const token = Object.freeze({
+    id: payload.receiptId,
+    caseId: payload.caseId,
+    requirementIds: Object.freeze([...payload.requirementIds]),
+    oracleEvidenceIds: Object.freeze([...payload.oracleEvidenceIds]),
+    productionEvidenceIds: Object.freeze([...payload.productionEvidenceIds]),
+    admissionState: payload.admissionState,
+    executionState: payload.executionState,
+    authorityEnvelopeDigest: signedAuthorityEnvelopeDigest(envelope),
+    [VERIFIED_CASE_EXECUTION_RECEIPT]: true,
+  }) as VerifiedCaseExecutionReceipt;
+  verifiedCaseExecutionReceipts.add(token);
+  caseExecutionReceiptContexts.set(token, verifiedEnvelope.context);
+  caseExecutionProductionAuthorities.set(token, authority);
+  return token;
+}
+
+export function requireVerifiedCaseExecutionReceipt(
+  receipt: VerifiedCaseExecutionReceipt,
+): VerifiedCaseExecutionReceipt {
+  if (!verifiedCaseExecutionReceipts.has(receipt)) throw new Error("case_execution_receipt_not_verified");
+  const context = caseExecutionReceiptContexts.get(receipt);
+  const authority = caseExecutionProductionAuthorities.get(receipt);
+  if (context === undefined || authority === undefined) throw new Error("case_execution_receipt_context_missing");
+  revalidateSignedAuthorityContext(context);
+  requireVerifiedProductionLearningAuthority(authority);
+  return receipt;
+}
 
 export function flattenRequirementRegister(register: RequirementRegister): RequirementRecord[] {
   return [
@@ -77,14 +215,17 @@ export function buildRequirementCaseTraceability(input: {
   executionReceipts?: readonly VerifiedCaseExecutionReceipt[];
 }): RequirementCaseTrace[] {
   const closureByRequirement = new Map(input.closureRows.map((row) => [row.requirementId, row]));
-  const admittedExecutionReceipts = (input.executionReceipts ?? []).filter((receipt) =>
-    verifiedCaseExecutionReceipts.has(receipt)
-    &&
-    receipt.admissionState === "admitted"
-    && receipt.executionState === "completed"
-    && receipt.oracleEvidenceIds.length > 0
-    && input.cases.some((item) => item.id === receipt.caseId),
-  );
+  const admittedExecutionReceipts = (input.executionReceipts ?? []).filter((receipt) => {
+    try {
+      requireVerifiedCaseExecutionReceipt(receipt);
+      return receipt.admissionState === "admitted"
+        && receipt.executionState === "completed"
+        && receipt.oracleEvidenceIds.length > 0
+        && input.cases.some((item) => item.id === receipt.caseId);
+    } catch {
+      return false;
+    }
+  });
   return [...input.requirements].sort((a, b) => a.id.localeCompare(b.id)).map((requirement) => {
     const closure = closureByRequirement.get(requirement.id);
     const plannedCases = input.cases.filter((item) => item.planning.requirementIds.includes(requirement.id));

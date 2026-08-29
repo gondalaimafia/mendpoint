@@ -1,6 +1,7 @@
 import type { SignedAuthorityEnvelope } from "./authority.js";
 import type { EvaluationArm, EvaluationGradeAuthorityPayload, EvaluationMetrics } from "./evaluation.js";
 import type { ExternalProviderTransmissionAuthorityPayload } from "./learning.js";
+import type { CaseExecutionEvidenceAuthorityPayload } from "./matrix.js";
 import type { ProductionLearningAuthorityPayload } from "./preflight.js";
 
 export const SHA = "a".repeat(64);
@@ -12,10 +13,16 @@ export const PREFLIGHT_FIXTURE_DIGEST = "8262b5bf6a876cb940f2453bb7e70fcc74e017a
 export function installTestAuthorityTrustRoots(): void {
   process.env.MENDPOINT_PRODUCTION_LEARNING_PUBLIC_KEY_SPKI_BASE64 = "MCowBQYDK2VwAyEAtHr/nbkT8McGDbavvjSp7oWLpanL07bwXf5JHpzxkgY=";
   process.env.MENDPOINT_PRODUCTION_LEARNING_TRUSTED_KEY_SHA256 = "a5828dad8415ec6c7d70eba15ecf399ca21941add6f673bc1588656ecea82c60";
+  process.env.MENDPOINT_PRODUCTION_LEARNING_MINIMUM_ISSUED_AT = "2026-01-01T00:00:00.000Z";
   process.env.MENDPOINT_EXTERNAL_PROVIDER_PUBLIC_KEY_SPKI_BASE64 = "MCowBQYDK2VwAyEAWIQyPsEbTcLdHHEChm8pMA/Dcw33h0ppwLjassvDjcE=";
   process.env.MENDPOINT_EXTERNAL_PROVIDER_TRUSTED_KEY_SHA256 = "71dc3ef2dba5fb6d07f47402efcea7e9b1e407ae2caf733828cf349ce1f97eee";
+  process.env.MENDPOINT_EXTERNAL_PROVIDER_MINIMUM_ISSUED_AT = "2026-01-01T00:00:00.000Z";
   process.env.MENDPOINT_EVALUATION_GRADING_PUBLIC_KEY_SPKI_BASE64 = "MCowBQYDK2VwAyEAA/C8ZPCO4+I95alR80dPxvLZp8hzj89mclxxA4GVphc=";
   process.env.MENDPOINT_EVALUATION_GRADING_TRUSTED_KEY_SHA256 = "b3efb695aa915685e4e1c2b285b9df752f4df6c57d61716e704d2c552974062a";
+  process.env.MENDPOINT_EVALUATION_GRADING_MINIMUM_ISSUED_AT = "2026-01-01T00:00:00.000Z";
+  process.env.MENDPOINT_CASE_EXECUTION_EVIDENCE_PUBLIC_KEY_SPKI_BASE64 = "MCowBQYDK2VwAyEAZcGysaBycmIFdZqaVqe9zXXMMsRxAw8TOF8OxABd9eE=";
+  process.env.MENDPOINT_CASE_EXECUTION_EVIDENCE_TRUSTED_KEY_SHA256 = "7d17f19091870c423d360b54563d7c943a05cdda8f977b9ba8e84f76042d4c82";
+  process.env.MENDPOINT_CASE_EXECUTION_EVIDENCE_MINIMUM_ISSUED_AT = "2026-01-01T00:00:00.000Z";
 }
 
 const VALIDITY = {
@@ -58,6 +65,41 @@ export const PREFLIGHT_EXPIRED_AUTHORITY_ENVELOPE: SignedAuthorityEnvelope<Produ
   ...PREFLIGHT_AUTHORITY_ENVELOPE,
   expiresAt: "2026-02-01T00:00:00.000Z",
   signature: "vTyTfe2SP3PTa0PLnCM2EolmMRbQ4rVBs5K/p3NcElfUlv+0KzWdnWhceNV+XZnVhdljPbqbzG5w0E4J0dInCg==",
+};
+
+export const MATRIX_PRODUCTION_AUTHORITY_ENVELOPE: SignedAuthorityEnvelope<ProductionLearningAuthorityPayload> = {
+  ...VALIDITY,
+  issuer: "mendpoint-production-learning-control-plane",
+  keyId: "production-learning-ed25519-v1",
+  payload: {
+    caseId: "FET-C001", product: "fettler", productionRevision: PREFLIGHT_REVISION,
+    tenantId: "benchmark-tenant-matrix", repositoryId: "repo-octokit-webhooks-js",
+    repositoryCommit: "b47e4b0049f8353d4ad796a5d0af26c4e568d732", snapshotDigest: "9".repeat(64),
+    fixtureManifestDigest: "1".repeat(64), graphVersion: "graph-v1", policyVersion: "policy-v1",
+    modelProvider: "configured", modelId: "model-v1", routerVersion: "router-v1", recipeVersion: null,
+    consentEvidenceRef: "consent://benchmark-tenant-matrix/evaluation/v1",
+    authorizationRef: "authorization://benchmark-tenant-matrix/FET-C001/v1",
+    sandboxReceiptDigest: "8".repeat(64), executionDigest: "2".repeat(64),
+  },
+  signature: "K2FTUnAnPxubCPvTtIo/fHRJYtHWj8a6lUangBRh6b/DXTRoit40LCLUKEM6HI0dLYMH4KY+5REPbhTH+qYpCw==",
+};
+
+export const MATRIX_EXECUTION_EVIDENCE_AUTHORITY_ENVELOPE: SignedAuthorityEnvelope<CaseExecutionEvidenceAuthorityPayload> = {
+  ...VALIDITY,
+  issuer: "mendpoint-case-execution-evidence-control-plane",
+  keyId: "case-execution-evidence-ed25519-v1",
+  payload: {
+    schemaVersion: "mendpoint.case-execution-evidence-authority.v1", productionRevision: PREFLIGHT_REVISION,
+    receiptId: "receipt-matrix-fet-c001", caseId: "FET-C001", product: "fettler",
+    tenantId: "benchmark-tenant-matrix", repositoryId: "repo-octokit-webhooks-js",
+    repositoryCommit: "b47e4b0049f8353d4ad796a5d0af26c4e568d732", snapshotDigest: "9".repeat(64),
+    fixtureManifestDigest: "1".repeat(64), executionDigest: "2".repeat(64),
+    fixtureManifestId: "fixture-fet-c001-manifest-v1", oracleIds: ["oracle-fet-c001-github-version-header"],
+    productionReceiptAuthorityDigest: "8f2431a33ae34d5f3c6dba44590c6c9d4e84028ab6b2996d51bc4fe5bb309edf",
+    requirementIds: ["ME-WAR-001"], oracleEvidenceIds: ["oracle-evidence-fet-c001-run-1"],
+    productionEvidenceIds: ["production-evidence-fet-c001-run-1"], admissionState: "admitted", executionState: "completed",
+  },
+  signature: "XxTnEOZ7Lrel2g8sZoG0JAkFhpR/Zw1+g3dRsLOQDM99C3B4SA2p1xF8/DFBstIOsPwgBeQmmnglHQ8ywR0SBg==",
 };
 
 const PROVIDER_PAYLOAD: ExternalProviderTransmissionAuthorityPayload = {

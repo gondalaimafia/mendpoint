@@ -1,6 +1,6 @@
 import type { Product } from "./schema.js";
-import { verifySignedAuthorityEnvelope } from "./authority.js";
-import type { SignedAuthorityEnvelope } from "./authority.js";
+import { revalidateSignedAuthorityContext, verifySignedAuthorityEnvelope } from "./authority.js";
+import type { SignedAuthorityEnvelope, VerifiedAuthorityContext } from "./authority.js";
 
 export type BenchmarkLearningOutcome =
   | "accepted"
@@ -112,6 +112,7 @@ const EXPECTED_SINK: Record<LearningFactClass, LearningSink> = {
   model_failure: "sealed_evaluation",
 };
 const verifiedExternalProviderAuthorities = new WeakSet<object>();
+const externalProviderAuthorityContexts = new WeakMap<object, VerifiedAuthorityContext>();
 
 function nonEmpty(value: string, path: string, errors: string[]): void {
   if (value.trim().length === 0) errors.push(`${path} must be a non-empty string`);
@@ -221,7 +222,8 @@ export function validateBenchmarkLearningEvent(event: BenchmarkLearningEvent): s
 export function verifyExternalProviderTransmissionAuthority(
   envelope: SignedAuthorityEnvelope<ExternalProviderTransmissionAuthorityPayload>,
 ): ExternalProviderTransmissionAuthority {
-  const payload = verifySignedAuthorityEnvelope(envelope, "external_provider_transmission");
+  const verifiedEnvelope = verifySignedAuthorityEnvelope(envelope, "external_provider_transmission");
+  const payload = verifiedEnvelope.payload;
   const errors: string[] = [];
   if (payload.schemaVersion !== "mendpoint.external-provider-transmission-authority.v1") {
     errors.push("external authority schemaVersion must be mendpoint.external-provider-transmission-authority.v1");
@@ -242,6 +244,7 @@ export function verifyExternalProviderTransmissionAuthority(
   if (errors.length > 0) throw new Error(`external_provider_authority_invalid:${errors.join("|")}`);
   const token = payload as ExternalProviderTransmissionAuthority;
   verifiedExternalProviderAuthorities.add(token);
+  externalProviderAuthorityContexts.set(token, verifiedEnvelope.context);
   return token;
 }
 
@@ -250,6 +253,9 @@ export function assertExternalProviderTransmissionAllowed(
   authority: ExternalProviderTransmissionAuthority,
 ): void {
   if (!verifiedExternalProviderAuthorities.has(authority)) throw new Error("external_provider_authority_not_verified");
+  const context = externalProviderAuthorityContexts.get(authority);
+  if (context === undefined) throw new Error("external_provider_authority_context_missing");
+  revalidateSignedAuthorityContext(context);
   const errors = validateBenchmarkLearningEvent(event);
   if (errors.length > 0) throw new Error(`learning_event_invalid:${errors.join("|")}`);
   if (event.governance.externalProvider.decision !== "allowed") {

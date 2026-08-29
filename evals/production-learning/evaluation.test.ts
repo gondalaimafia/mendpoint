@@ -247,6 +247,22 @@ describe("case arm evaluation", () => {
     );
   });
 
+  it("stops trusting issued production and grading capabilities after their key epochs advance", () => {
+    const rows = cohort();
+    const trusted = registry();
+    process.env.MENDPOINT_PRODUCTION_LEARNING_MINIMUM_ISSUED_AT = "2026-01-02T00:00:00.000Z";
+    expect(validateCaseArmCohort(rows, trusted)).toContain(
+      "evaluation registry contains an unverified production authority",
+    );
+    installTestAuthorityTrustRoots();
+    process.env.MENDPOINT_PRODUCTION_REVISION = PRODUCTION_REVISION;
+    process.env.MENDPOINT_EVALUATION_GRADING_MINIMUM_ISSUED_AT = "2026-01-02T00:00:00.000Z";
+    expect(validateCaseArmCohort(rows, trusted)).toContain(
+      "evaluation registry contains an unverified grading authority",
+    );
+    installTestAuthorityTrustRoots();
+  });
+
   it("reports all requested rates without inventing confidence intervals", () => {
     const report = aggregateCaseArmResults(cohort(), registry());
     expect(report.caseCount).toBe(1);

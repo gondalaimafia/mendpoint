@@ -122,6 +122,18 @@ describe("governed benchmark learning lineage", () => {
     expect(() => assertExternalProviderTransmissionAllowed(value, authority(value))).not.toThrow();
   });
 
+  it("revokes an already verified provider capability when its revision or key epoch is no longer current", () => {
+    const value = event();
+    value.governance.externalProvider = { decision: "allowed", providerId: "provider-a", purpose: "case_execution", sharedTrainingAllowed: false, repositoryContentAllowed: false, retention: "none" };
+    const verified = authority(value);
+    process.env.MENDPOINT_PRODUCTION_REVISION = "c".repeat(40);
+    expect(() => assertExternalProviderTransmissionAllowed(value, verified)).toThrow("authority_production_revision_not_current");
+    process.env.MENDPOINT_PRODUCTION_REVISION = REVISION;
+    process.env.MENDPOINT_EXTERNAL_PROVIDER_MINIMUM_ISSUED_AT = "2026-01-02T00:00:00.000Z";
+    expect(() => assertExternalProviderTransmissionAllowed(value, verified)).toThrow("authority_time_window_invalid");
+    installTestAuthorityTrustRoots();
+  });
+
   it("rejects an unverified or mismatched provider authority and any shared-training permission", () => {
     const value = event();
     value.governance.externalProvider = { decision: "allowed", providerId: "provider-a", purpose: "case_execution", sharedTrainingAllowed: false, repositoryContentAllowed: false, retention: "none" };

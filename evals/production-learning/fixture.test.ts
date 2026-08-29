@@ -130,6 +130,20 @@ describe("fixture admission and production preflight", () => {
     expect(result.errors).toEqual([]);
   });
 
+  it("fails a later preflight when a verified production capability is no longer current", () => {
+    const manifest = fixture();
+    const run = receipt(manifest);
+    const verified = authority(run);
+    process.env.MENDPOINT_PRODUCTION_REVISION = "c".repeat(40);
+    expect(evaluateProductionLearningPreflight({ learningCase, repository: repository(), fixture: manifest, receipt: run, authority: verified }).errors)
+      .toContain("trusted production authority must be signature verified and current");
+    process.env.MENDPOINT_PRODUCTION_REVISION = REVISION;
+    process.env.MENDPOINT_PRODUCTION_LEARNING_MINIMUM_ISSUED_AT = "2026-01-02T00:00:00.000Z";
+    expect(evaluateProductionLearningPreflight({ learningCase, repository: repository(), fixture: manifest, receipt: run, authority: verified }).errors)
+      .toContain("trusted production authority must be signature verified and current");
+    installTestAuthorityTrustRoots();
+  });
+
   it("rejects a self-consistent receipt that does not match trusted deployed authority", () => {
     const manifest = fixture();
     const run = receipt(manifest);

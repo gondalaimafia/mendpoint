@@ -6,7 +6,13 @@ import {
   type RepositoryProvenance,
 } from "./schema.js";
 import { fixtureManifestDigest, validateFixtureManifest, type FixtureManifest } from "./fixture.js";
-import { signedAuthorityEnvelopeDigest, verifySignedAuthorityEnvelope, type SignedAuthorityEnvelope } from "./authority.js";
+import {
+  revalidateSignedAuthorityContext,
+  signedAuthorityEnvelopeDigest,
+  verifySignedAuthorityEnvelope,
+  type SignedAuthorityEnvelope,
+  type VerifiedAuthorityContext,
+} from "./authority.js";
 
 export interface ProductionLearningAuthorityPayload {
   caseId: string;
@@ -31,6 +37,7 @@ export interface ProductionLearningAuthorityPayload {
 
 const VERIFIED_PRODUCTION_AUTHORITY: unique symbol = Symbol("verified-production-learning-authority");
 const verifiedProductionAuthorities = new WeakSet<object>();
+const productionAuthorityContexts = new WeakMap<object, VerifiedAuthorityContext>();
 export type VerifiedProductionLearningAuthority = Readonly<ProductionLearningAuthorityPayload> & {
   readonly authorityEnvelopeDigest: string;
   readonly [VERIFIED_PRODUCTION_AUTHORITY]: true;
@@ -39,7 +46,8 @@ export type VerifiedProductionLearningAuthority = Readonly<ProductionLearningAut
 export function verifyProductionLearningAuthority(
   envelope: SignedAuthorityEnvelope<ProductionLearningAuthorityPayload>,
 ): VerifiedProductionLearningAuthority {
-  const payload = verifySignedAuthorityEnvelope(envelope, "production_learning");
+  const verifiedEnvelope = verifySignedAuthorityEnvelope(envelope, "production_learning");
+  const payload = verifiedEnvelope.payload;
   const errors: string[] = [];
   const sha256 = /^[0-9a-f]{64}$/;
   const gitSha = /^[0-9a-f]{40}$/;
@@ -61,6 +69,7 @@ export function verifyProductionLearningAuthority(
     [VERIFIED_PRODUCTION_AUTHORITY]: true,
   }) as VerifiedProductionLearningAuthority;
   verifiedProductionAuthorities.add(token);
+  productionAuthorityContexts.set(token, verifiedEnvelope.context);
   return token;
 }
 
@@ -68,6 +77,9 @@ export function requireVerifiedProductionLearningAuthority(
   authority: VerifiedProductionLearningAuthority,
 ): VerifiedProductionLearningAuthority {
   if (!verifiedProductionAuthorities.has(authority)) throw new Error("production_learning_authority_not_verified");
+  const context = productionAuthorityContexts.get(authority);
+  if (context === undefined) throw new Error("production_learning_authority_context_missing");
+  revalidateSignedAuthorityContext(context);
   return authority;
 }
 
@@ -98,7 +110,11 @@ export function evaluateProductionLearningPreflight(input: {
     ...validateFixtureManifest(fixture, learningCase, repository),
     ...validateExecutionReceipt(receipt),
   ];
-  if (!verifiedProductionAuthorities.has(authority)) errors.push("trusted production authority must be signature verified");
+  try {
+    requireVerifiedProductionLearningAuthority(authority);
+  } catch {
+    errors.push("trusted production authority must be signature verified and current");
+  }
   if (receipt.caseId !== learningCase.id) errors.push("receipt caseId must match the learning case");
   if (receipt.product !== learningCase.product) errors.push("receipt product must match the learning case");
   if (receipt.repositoryId !== repository.id) errors.push("receipt repositoryId must match provenance");

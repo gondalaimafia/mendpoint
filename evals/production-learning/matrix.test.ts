@@ -1,11 +1,28 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import {
+  MATRIX_EXECUTION_EVIDENCE_AUTHORITY_ENVELOPE,
+  MATRIX_PRODUCTION_AUTHORITY_ENVELOPE,
+  PREFLIGHT_REVISION,
+  installTestAuthorityTrustRoots,
+} from "./authority-fixtures.test-support.js";
 import { learningCases } from "./catalog.js";
-import { buildRequirementCaseTraceability, flattenRequirementRegister, validateRequirementCaseTraceability, type ClosureRow, type RequirementRegister, type VerifiedCaseExecutionReceipt } from "./matrix.js";
+import {
+  buildRequirementCaseTraceability,
+  flattenRequirementRegister,
+  validateRequirementCaseTraceability,
+  verifyCaseExecutionReceipt,
+  type ClosureRow,
+  type RequirementRegister,
+  type VerifiedCaseExecutionReceipt,
+} from "./matrix.js";
+import { verifyProductionLearningAuthority } from "./preflight.js";
 
 const register = JSON.parse(readFileSync("docs/PRODUCT_REQUIREMENTS.json", "utf8")) as RequirementRegister;
 const requirements = flattenRequirementRegister(register);
 const closure = JSON.parse(readFileSync("docs/PRODUCTION_CLOSURE_MATRIX.json", "utf8")) as { requirements: ClosureRow[] };
+installTestAuthorityTrustRoots();
+process.env.MENDPOINT_PRODUCTION_REVISION = PREFLIGHT_REVISION;
 
 describe("requirement to case to test to production evidence traceability", () => {
   const traces = buildRequirementCaseTraceability({ requirements, closureRows: closure.requirements, cases: learningCases });
@@ -55,6 +72,50 @@ describe("requirement to case to test to production evidence traceability", () =
     });
     expect(admitted.every((trace) => trace.verificationState === "unverified")).toBe(true);
     expect(admitted.every((trace) => trace.productionEvidenceState === "unknown")).toBe(true);
+  });
+
+  it("promotes only requirements carried by a signed, case-bound, production-bound receipt", () => {
+    installTestAuthorityTrustRoots();
+    process.env.MENDPOINT_PRODUCTION_REVISION = PREFLIGHT_REVISION;
+    const learningCase = learningCases.find((item) => item.id === "FET-C001")!;
+    const authority = verifyProductionLearningAuthority(MATRIX_PRODUCTION_AUTHORITY_ENVELOPE);
+    const receipt = verifyCaseExecutionReceipt(MATRIX_EXECUTION_EVIDENCE_AUTHORITY_ENVELOPE, authority, learningCase);
+    const verified = buildRequirementCaseTraceability({
+      requirements,
+      closureRows: closure.requirements,
+      cases: learningCases,
+      executionReceipts: [receipt],
+    });
+    expect(verified.find((trace) => trace.requirementId === "ME-WAR-001")).toMatchObject({
+      verificationState: "verified",
+      executionReceiptIds: ["receipt-matrix-fet-c001"],
+      verifiedCaseIds: ["FET-C001"],
+      verifiedOracleEvidenceIds: ["oracle-evidence-fet-c001-run-1"],
+      verifiedProductionEvidenceIds: ["production-evidence-fet-c001-run-1"],
+      productionEvidenceState: "verified",
+    });
+    expect(verified.find((trace) => trace.requirementId === "ME-WAR-002")?.verificationState).toBe("unverified");
+  });
+
+  it("rejects tampered evidence and stops trusting an issued receipt after revision or key revocation", () => {
+    installTestAuthorityTrustRoots();
+    process.env.MENDPOINT_PRODUCTION_REVISION = PREFLIGHT_REVISION;
+    const learningCase = learningCases.find((item) => item.id === "FET-C001")!;
+    const authority = verifyProductionLearningAuthority(MATRIX_PRODUCTION_AUTHORITY_ENVELOPE);
+    const tampered = structuredClone(MATRIX_EXECUTION_EVIDENCE_AUTHORITY_ENVELOPE);
+    tampered.payload.productionEvidenceIds = ["caller-asserted-evidence"];
+    expect(() => verifyCaseExecutionReceipt(tampered, authority, learningCase)).toThrow("authority_signature_invalid");
+    const receipt = verifyCaseExecutionReceipt(MATRIX_EXECUTION_EVIDENCE_AUTHORITY_ENVELOPE, authority, learningCase);
+
+    process.env.MENDPOINT_PRODUCTION_REVISION = "c".repeat(40);
+    expect(buildRequirementCaseTraceability({ requirements, closureRows: closure.requirements, cases: learningCases, executionReceipts: [receipt] })
+      .every((trace) => trace.verificationState === "unverified")).toBe(true);
+
+    process.env.MENDPOINT_PRODUCTION_REVISION = PREFLIGHT_REVISION;
+    process.env.MENDPOINT_CASE_EXECUTION_EVIDENCE_MINIMUM_ISSUED_AT = "2026-01-02T00:00:00.000Z";
+    expect(buildRequirementCaseTraceability({ requirements, closureRows: closure.requirements, cases: learningCases, executionReceipts: [receipt] })
+      .every((trace) => trace.verificationState === "unverified")).toBe(true);
+    installTestAuthorityTrustRoots();
   });
 
   it("preserves register blockers and statuses instead of promoting them", () => {

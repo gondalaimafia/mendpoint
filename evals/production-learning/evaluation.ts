@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { signedAuthorityEnvelopeDigest, verifySignedAuthorityEnvelope, type SignedAuthorityEnvelope } from "./authority.js";
+import {
+  revalidateSignedAuthorityContext,
+  signedAuthorityEnvelopeDigest,
+  verifySignedAuthorityEnvelope,
+  type SignedAuthorityEnvelope,
+  type VerifiedAuthorityContext,
+} from "./authority.js";
 import { validateExecutionReceipt } from "./schema.js";
 import type { LearningCase, ProductionExecutionReceipt, RepositoryProvenance } from "./schema.js";
 import { requireVerifiedProductionLearningAuthority, type VerifiedProductionLearningAuthority } from "./preflight.js";
@@ -83,6 +89,7 @@ export interface EvaluationGradeAuthorityPayload {
 
 const VERIFIED_EVALUATION_GRADE_AUTHORITY: unique symbol = Symbol("verified-evaluation-grade-authority");
 const verifiedEvaluationGradeAuthorities = new WeakSet<object>();
+const evaluationGradeAuthorityContexts = new WeakMap<object, VerifiedAuthorityContext>();
 export type VerifiedEvaluationGradeAuthority = Readonly<EvaluationGradeAuthorityPayload> & {
   readonly authorityEnvelopeDigest: string;
   readonly [VERIFIED_EVALUATION_GRADE_AUTHORITY]: true;
@@ -159,7 +166,8 @@ export function evaluationMetricsDigest(metrics: EvaluationMetrics): string {
 export function verifyEvaluationGradeAuthority(
   envelope: SignedAuthorityEnvelope<EvaluationGradeAuthorityPayload>,
 ): VerifiedEvaluationGradeAuthority {
-  const payload = verifySignedAuthorityEnvelope(envelope, "evaluation_grading");
+  const verifiedEnvelope = verifySignedAuthorityEnvelope(envelope, "evaluation_grading");
+  const payload = verifiedEnvelope.payload;
   const errors: string[] = [];
   if (payload.schemaVersion !== "mendpoint.evaluation-grade-authority.v1") errors.push("grading authority schema is invalid");
   if (!ARMS.includes(payload.arm)) errors.push("grading authority arm is invalid");
@@ -196,6 +204,7 @@ export function verifyEvaluationGradeAuthority(
     [VERIFIED_EVALUATION_GRADE_AUTHORITY]: true,
   }) as VerifiedEvaluationGradeAuthority;
   verifiedEvaluationGradeAuthorities.add(token);
+  evaluationGradeAuthorityContexts.set(token, verifiedEnvelope.context);
   return token;
 }
 
@@ -203,6 +212,9 @@ export function requireVerifiedEvaluationGradeAuthority(
   authority: VerifiedEvaluationGradeAuthority,
 ): VerifiedEvaluationGradeAuthority {
   if (!verifiedEvaluationGradeAuthorities.has(authority)) throw new Error("evaluation_grade_authority_not_verified");
+  const context = evaluationGradeAuthorityContexts.get(authority);
+  if (context === undefined) throw new Error("evaluation_grade_authority_context_missing");
+  revalidateSignedAuthorityContext(context);
   return authority;
 }
 
