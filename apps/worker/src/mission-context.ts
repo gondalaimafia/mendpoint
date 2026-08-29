@@ -308,7 +308,7 @@ export function hasInheritedContent(envelope: InheritedContextEnvelope): boolean
   if (envelope.unresolvedExceptions.status === "consulted" && envelope.unresolvedExceptions.entries.length > 0) {
     return true;
   }
-  if (envelope.missionArtifacts?.status === "consulted" && envelope.missionArtifacts.entries.length > 0) {
+  if (envelope.missionArtifacts.status === "consulted" && envelope.missionArtifacts.entries.length > 0) {
     return true;
   }
   if (envelope.verificationState.status === "consulted" && envelope.verificationState.entries.length > 0) return true;

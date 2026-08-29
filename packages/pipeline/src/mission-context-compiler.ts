@@ -847,7 +847,16 @@ export function compileMissionContext(input: MissionContextInput): InheritedCont
     ? Object.freeze({
         status: "consulted",
         entries: Object.freeze(
-          cap(input.artifacts.records).map((record) => {
+          // Order by recorded currency, newest first, tie-broken by id — the same
+          // order the sole production caller (`listMissionArtifacts`) emits. The
+          // render's newest-in-role / superseded-in-role labelling reads this order,
+          // so currency must be DERIVED from `createdAt` here, never assumed from the
+          // caller's array order. Sort before `cap` so a truncation keeps the newest.
+          cap(
+            [...input.artifacts.records].sort(
+              (a, b) => compareCodeUnits(b.createdAt, a.createdAt) || compareCodeUnits(b.id, a.id),
+            ),
+          ).map((record) => {
             return Object.freeze({
               id: identifier(record.id, "mission_context_artifact_id_invalid"),
               role: identifier(record.role, "mission_context_artifact_role_invalid"),

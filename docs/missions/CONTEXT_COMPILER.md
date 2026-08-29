@@ -153,12 +153,12 @@ From `packages/pipeline/src/mission-context-measure.ts` (run with
 | Quantity | Bytes |
 |---|---|
 | Today's constant prompt (`wardenPlaybook()`, no tenant/task context) | 4089 |
-| Representative compiled envelope (2 applied + 1 overridden memory, 1 decision, current verification, 1 history) | 1025 |
+| Representative compiled envelope (2 applied + 1 overridden memory, 1 decision, current verification, 1 history) | 1093 |
 | Unbounded dump of an oversized input (500 memories + 500 history entries) | 100196 |
-| Same input, compiled (bounded) | 6215 |
+| Same input, compiled (bounded) | 6283 |
 
 Repeated/excess-information reduction of the bounded selection versus the
-unbounded dump: **93.8%**, with the 32 KB ceiling honoured (here via 32-item
+unbounded dump: **93.7%**, with the 32 KB ceiling honoured (here via 32-item
 section caps; `sectionItemsCapped = true`). A representative real envelope is
 ~1 KB. The compiler adds task-specific inherited context that the constant prompt
 never carried, while capping total size hard.

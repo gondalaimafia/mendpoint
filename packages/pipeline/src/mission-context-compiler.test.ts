@@ -494,6 +494,50 @@ describe("mission context compiler", () => {
     expect(body.indexOf("art-new")).toBeLessThan(body.indexOf("art-old"));
   });
 
+  it("derives newest-in-role from createdAt, not the caller's array order (records supplied oldest-first)", () => {
+    const envelope = compileMissionContext(
+      baseInput({
+        artifacts: {
+          consulted: true,
+          records: [
+            {
+              tenantId: "t1",
+              id: "ma-old",
+              role: "candidate_patch",
+              artifactId: "art-old",
+              artifactSha256: "d".repeat(64),
+              label: "previous",
+              createdAt: T0,
+              taskId: "task-old",
+            },
+            {
+              tenantId: "t1",
+              id: "ma-new",
+              role: "candidate_patch",
+              artifactId: "art-new",
+              artifactSha256: "c".repeat(64),
+              label: "latest",
+              createdAt: "2026-01-02T00:00:00.000Z",
+              taskId: "task-new",
+            },
+          ],
+        },
+      }),
+    );
+    // The newer artifact is supplied LAST. Currency must be derived from createdAt,
+    // so the envelope entries are canonically newest-first regardless of input order.
+    if (envelope.missionArtifacts.status !== "consulted") throw new Error("unreachable");
+    expect(envelope.missionArtifacts.entries.map((e) => e.artifactId)).toEqual(["art-new", "art-old"]);
+    // And the render labels the newer one newest-in-role, the older superseded-in-role —
+    // not the other way round, which is what caller-order labelling would produce here.
+    const body = renderMissionContext(envelope).injection.promptBody;
+    const newLine = body.split("\n").find((l) => l.includes("art-new"))!;
+    const oldLine = body.split("\n").find((l) => l.includes("art-old"))!;
+    expect(newLine).toContain("newest-in-role");
+    expect(oldLine).toContain("superseded-in-role");
+    expect(body.indexOf("art-new")).toBeLessThan(body.indexOf("art-old"));
+  });
+
   it("CONTROL: artifact section drops before verification under truncation", () => {
     const envelope = compileMissionContext(
       baseInput({
