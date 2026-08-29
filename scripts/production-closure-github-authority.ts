@@ -159,6 +159,12 @@ export interface GitHubReview {
   html_url: string;
 }
 
+export interface GitHubIssueEvent {
+  event: string;
+  created_at: string;
+  label?: { name: string };
+}
+
 export interface ProviderResolvedPullRequest {
   observationSource: "github_api";
   number: number;
@@ -242,7 +248,11 @@ export interface GitHubAuthorityMatrix {
     repository: string;
     observedMainRevision: string;
     pullRequests: StaticPullRequestRecord[];
-    currentPullRequestBootstrap: ProviderResolvedPullRequest;
+    // Optional under the event-sourced design: the pull request under judgement is
+    // resolved from the CI event (pull_request) or the merged commit (push), not
+    // from this author-declared field. It is honoured only to carry an authority
+    // rotation binding, and only when it names the resolved current pull request.
+    currentPullRequestBootstrap?: ProviderResolvedPullRequest;
   };
 }
 
@@ -271,6 +281,12 @@ export interface GitHubAuthorityContext {
   // Populated by main() from docs/PRODUCT_REQUIREMENTS.json; absent in unit
   // fixtures that do not exercise the closure-path check.
   canonicalRequirementStatuses?: Record<string, ProductImplementationStatus>;
+  // The authority rotation the proposal-authority validated for this exact head, or
+  // null. Populated by main() from the trusted, head-bound proposal observation on
+  // the pull_request path. This — not the self-declared matrix bootstrap number — is
+  // what drives the rotation attestation demand, so a rotation declared under a
+  // foreign pull request number cannot suppress the attestation requirement.
+  proposalAuthorityRotation?: ProviderResolvedPullRequest["authorityRotation"] | null;
 }
 
 export interface GitHubAuthorityClient {
@@ -278,10 +294,12 @@ export interface GitHubAuthorityClient {
   revisionIsAncestor(revision: string, descendant: string): Promise<boolean>;
   listOpenPullRequests(baseBranch: string): Promise<GitHubPullRequest[]>;
   getPullRequest(number: number): Promise<GitHubPullRequest>;
+  listPullRequestsForCommit(revision: string): Promise<GitHubPullRequest[]>;
   listCheckRuns(revision: string): Promise<GitHubCheckRun[]>;
   listWorkflowRuns(revision: string): Promise<GitHubWorkflowRun[]>;
   listWorkflowJobs(runId: number): Promise<GitHubWorkflowJob[]>;
   listReviews(number: number): Promise<GitHubReview[]>;
+  listIssueEvents(number: number): Promise<GitHubIssueEvent[]>;
   listCommitStatuses(revision: string): Promise<GitHubCommitStatus[]>;
   getWorkflowRun(runId: number): Promise<GitHubWorkflowRun>;
   getIssue(number: number): Promise<GitHubIssue>;
@@ -441,6 +459,26 @@ function normalizedPullRequestState(
   return pullRequest.state;
 }
 
+// Derive the release owner from the live pull request's labels rather than from
+// author-declared matrix data. Exactly one release-owner:<actor> label must be
+// present; zero or several is ambiguous and returns null so the caller fails
+// closed. This is the live equivalent of the removed matrix owner mirror.
+const RELEASE_OWNER_LABELS: ReadonlyArray<readonly [string, ReleaseOwnerActor]> = [
+  ["release-owner:codex", "Codex"],
+  ["release-owner:claude", "Claude"],
+  ["release-owner:cursor", "Cursor"],
+];
+function resolveReleaseOwner(
+  pullRequest: GitHubPullRequest,
+): { actor: ReleaseOwnerActor; source: "github_label"; label: string } | null {
+  const matches = RELEASE_OWNER_LABELS.filter(([label]) =>
+    pullRequest.labels.some((applied) => applied.name === label),
+  );
+  if (matches.length !== 1) return null;
+  const [label, actor] = matches[0];
+  return { actor, source: "github_label", label };
+}
+
 function trustedReviewerIdentities(
   context: GitHubAuthorityContext,
   owner: ReleaseOwnerActor,
@@ -561,9 +599,10 @@ function requirementsWithoutLiveClosurePath(
   matrix: GitHubAuthorityMatrix,
   context: GitHubAuthorityContext,
   isLiveOpenPullRequest: (pullRequestNumber: number) => boolean,
+  currentPullRequestNumber: number,
 ): string[] {
   const statuses = context.canonicalRequirementStatuses ?? {};
-  const bootstrapNumber = matrix.releaseTrain.currentPullRequestBootstrap.number;
+  const bootstrapNumber = currentPullRequestNumber;
   const issueStateByNumber = new Map(
     matrix.issueAuthority.issues.map((issue) => [issue.number, issue.state] as const),
   );
@@ -663,10 +702,48 @@ export async function verifyGitHubClosureAuthority(
       liveOpenPullRequests.map((pullRequest) => pullRequest.number),
     );
     const liveOpenPullRequestNumbers = new Set(observation.openPullRequests);
+
+    // Resolve the pull request under judgement from provider facts, never from
+    // author-declared matrix data: on pull_request it is the workflow event's PR;
+    // on push it is the single pull request the pushed commit merged. Both are
+    // facts a proposal cannot forge, whereas the matrix bootstrap field could (it
+    // was only ever caught later by the live cross-check that this replaces), so
+    // event-sourcing the identity is strictly stronger than the removed mirror.
+    let currentNumber: number;
+    if (context.eventName === "pull_request") {
+      if (!context.pullRequest) {
+        add(
+          issues,
+          "PR_EVENT_NUMBER_MISMATCH",
+          "releaseTrain",
+          "the pull_request workflow event does not identify a pull request",
+        );
+        return observation;
+      }
+      currentNumber = context.pullRequest.number;
+    } else {
+      const associated = await client.listPullRequestsForCommit(context.githubSha);
+      const merged = associated.filter(
+        (pullRequest) => pullRequest.merge_commit_sha === context.githubSha,
+      );
+      if (merged.length !== 1) {
+        add(
+          issues,
+          "PUSH_MERGED_PULL_REQUEST_UNRESOLVED",
+          context.githubSha,
+          "the pushed commit must resolve to exactly one merged pull request",
+        );
+        return observation;
+      }
+      currentNumber = merged[0].number;
+    }
+    observation.eventPullRequest = currentNumber;
+
     for (const requirementId of requirementsWithoutLiveClosurePath(
       matrix,
       context,
       (pullRequestNumber) => liveOpenPullRequestNumbers.has(pullRequestNumber),
+      currentNumber,
     )) {
       add(
         issues,
@@ -676,7 +753,50 @@ export async function verifyGitHubClosureAuthority(
       );
     }
 
-    const bootstrap = matrix.releaseTrain.currentPullRequestBootstrap;
+    const liveBootstrap = await client.getPullRequest(currentNumber);
+    // The authority rotation binding is the one part of the bootstrap that carries
+    // reviewed intent (base/proposed policy digests attested in an exact-head
+    // review) and cannot be reconstructed from live pull request metadata, so it
+    // stays author-time. It is honoured ONLY when the matrix bootstrap names THIS
+    // resolved pull request; a stale bootstrap left on main for a previously merged
+    // pull request (or naming any other number) is inert, so a merged rotation's
+    // declaration is never inherited by the next pull request, and a forged matrix
+    // bootstrap can only ever add obligations (attestation, ledger receipt), never
+    // remove them or influence a pull request it does not name.
+    const matrixBootstrap = matrix.releaseTrain.currentPullRequestBootstrap;
+    const boundMatrixBootstrap =
+      matrixBootstrap && matrixBootstrap.number === currentNumber
+        ? matrixBootstrap
+        : undefined;
+    const owner = resolveReleaseOwner(liveBootstrap);
+    // owner stays null when the live pull request has no single release-owner label;
+    // it is never materialised into a specific actor. Trust selection and the
+    // metadata guard both read `owner` directly and fail closed on null, so the
+    // effective bootstrap carries the honest nullable value rather than a default.
+    const bootstrap: Omit<ProviderResolvedPullRequest, "owner"> & {
+      owner: ReturnType<typeof resolveReleaseOwner>;
+    } = {
+      observationSource: "github_api",
+      number: currentNumber,
+      url: liveBootstrap.html_url,
+      title: liveBootstrap.title,
+      baseBranch: liveBootstrap.base.ref,
+      headBranch: liveBootstrap.head.ref,
+      owner,
+      disposition: boundMatrixBootstrap?.disposition ?? "merge_after_rebase_and_review",
+      dependencies: boundMatrixBootstrap?.dependencies ?? { pullRequests: [], branches: [] },
+      requirementIds: requirementMapping(liveBootstrap.body) ?? [],
+      blockers: boundMatrixBootstrap?.blockers ?? [],
+      remediatesPullRequests: boundMatrixBootstrap?.remediatesPullRequests ?? [],
+      // authorityRotation is deliberately not carried on the effective bootstrap: the
+      // rotation to attest is computed as expectedRotation below (from the proposal
+      // determination or, when it did not run, the number-bound matrix declaration).
+    };
+    // When the owner label is absent or ambiguous the trusted-reviewer set is empty,
+    // so no approval qualifies and the run fails closed regardless of policy shape.
+    const bootstrapTrustedReviewers = owner
+      ? trustedReviewerIdentities(context, owner.actor)
+      : new Map<string, number>();
     if (
       bootstrap.blockers.length > 0 ||
       bootstrap.disposition !== "merge_after_rebase_and_review"
@@ -710,36 +830,45 @@ export async function verifyGitHubClosureAuthority(
         "current pull request branch dependencies are not provider verified",
       );
     }
-    const liveBootstrap = await client.getPullRequest(bootstrap.number);
     const expectedBootstrapState =
       context.eventName === "pull_request" ? "open" : "merged";
-    const bootstrapMetadataMatches =
-      liveBootstrap.number === bootstrap.number &&
-      liveBootstrap.html_url === bootstrap.url &&
-      liveBootstrap.title === bootstrap.title &&
-      liveBootstrap.base.ref === bootstrap.baseBranch &&
-      liveBootstrap.head.ref === bootstrap.headBranch &&
-      normalizedPullRequestState(liveBootstrap) === expectedBootstrapState &&
-      liveBootstrap.labels.some((label) => label.name === bootstrap.owner.label);
-    if (!bootstrapMetadataMatches) {
+    // Residual live eligibility: identity fields are now sourced from liveBootstrap
+    // so comparing them to the bootstrap would be tautological. What remains
+    // load-bearing is that the resolved pull request targets main, is in the state
+    // the event implies (open on pull_request, merged on push), and carries exactly
+    // one release-owner label.
+    if (
+      liveBootstrap.base.ref !== "main" ||
+      normalizedPullRequestState(liveBootstrap) !== expectedBootstrapState ||
+      owner === null
+    ) {
       add(
         issues,
         "PR_METADATA_MISMATCH",
         String(bootstrap.number),
-        "provider-resolved pull request metadata does not match its release declaration",
+        "the pull request under judgement is not an open or merged main-targeted release-owned pull request",
       );
     }
+
+    // Live requirement-mapping binding for the resolved pull request. The matrix may
+    // credit the current pull request with closing a requirement only if the live PR
+    // body declares it. Sourced from the event number and the live body, not the
+    // (possibly stale, inherited) matrix bootstrap, so a matrix cannot self-assert a
+    // closure the PR body does not claim.
+    const matrixCreditedRequirements = (matrix.requirements ?? [])
+      .filter((row) => row.pullRequests.includes(currentNumber))
+      .map((row) => row.requirementId);
     if (
       !sameValues(
         requirementMapping(liveBootstrap.body) ?? [],
-        bootstrap.requirementIds,
+        matrixCreditedRequirements,
       )
     ) {
       add(
         issues,
         "PR_REQUIREMENT_MAPPING_MISMATCH",
         String(bootstrap.number),
-        "GitHub pull request requirement mapping does not match the matrix",
+        "the live pull request requirement mapping does not match the requirements the matrix credits to it",
       );
     }
 
@@ -831,11 +960,79 @@ export async function verifyGitHubClosureAuthority(
       bootstrapReviews,
       liveBootstrap.head.sha,
       liveBootstrap.user.login,
-      trustedReviewerIdentities(context, bootstrap.owner.actor),
+      bootstrapTrustedReviewers,
     );
-    const expectedRotation = bootstrap.authorityRotation;
+    // The owner label selects the trusted set but is not part of the head SHA, so a
+    // stale exact-head approval made under a previous release-owner label set must not
+    // be promoted by mutating the labels. Bind trust to the current label state by
+    // time: an approval only qualifies if it was submitted at or after the LATEST
+    // mutation of ANY release-owner label. This anchors on both labeled AND unlabeled
+    // events (removing a label emits unlabeled, not labeled), so adding, removing, or
+    // swapping any release-owner label invalidates prior approvals. If no such event
+    // can be established, fail closed.
+    const ownerLabelMutatedAt = owner
+      ? (await client.listIssueEvents(currentNumber))
+          .filter(
+            (entry) =>
+              (entry.event === "labeled" || entry.event === "unlabeled") &&
+              /^release-owner:/.test(entry.label?.name ?? ""),
+          )
+          .map((entry) => Date.parse(entry.created_at))
+          .filter((time) => Number.isFinite(time))
+          .sort((left, right) => right - left)[0]
+      : undefined;
+    const labelBoundReviewCandidates = bootstrapReviewCandidates.filter((review) => {
+      const submittedAt = Date.parse(review.submitted_at ?? "");
+      return (
+        Number.isFinite(submittedAt) &&
+        ownerLabelMutatedAt !== undefined &&
+        submittedAt >= ownerLabelMutatedAt
+      );
+    });
+    // The rotation-attestation determination has THREE states, and they must not be
+    // collapsed on this authorization path (FAILURE_MODES.md:16-40):
+    //   (a) context.proposalAuthorityRotation is a rotation object — the proposal
+    //       determination ran (current_pull_request scope) and validated a rotation;
+    //   (b) it is null — the determination ran and saw no rotation;
+    //   (c) it is undefined — the determination NEVER RAN on this trigger. The sweep,
+    //       push and workflow_dispatch runs force eventName=pull_request but keep
+    //       observationScope=full_release_train (raw GITHUB_EVENT_NAME), so main()
+    //       never plumbs the proposal observation and the value stays undefined.
+    // (c) must never be read as (b): a */30 sweep would otherwise clear a rotation on
+    // an ordinary approval. When the determination did not run, adjudicate the rotation
+    // deliberately from the NUMBER-BOUND matrix declaration (boundMatrixBootstrap names
+    // the resolved pull request, so this is not the foreign-number bypass), keeping a
+    // self-named rotation attestation-gated on the sweep exactly as the proposal path
+    // gates it. The push arm is unreachable from the merge gate (only the
+    // main-authority-observation job runs with eventName=push and it writes no required
+    // status); it keeps the number-bound declaration for completeness.
+    let expectedRotation: ProviderResolvedPullRequest["authorityRotation"] | undefined;
+    if (context.eventName === "pull_request") {
+      expectedRotation =
+        context.proposalAuthorityRotation !== undefined
+          ? context.proposalAuthorityRotation ?? undefined
+          : boundMatrixBootstrap?.authorityRotation;
+    } else {
+      expectedRotation = boundMatrixBootstrap?.authorityRotation;
+    }
+    // No rotation may be declared under a number that is not the resolved pull request.
+    // A genuine rotation (expectedRotation set) whose matrix declaration names another
+    // pull request is rejected; an inherited, non-rotating bootstrap that names an
+    // earlier pull request carries no expectedRotation and stays inert.
+    if (
+      matrixBootstrap?.authorityRotation &&
+      matrixBootstrap.number !== currentNumber &&
+      expectedRotation
+    ) {
+      add(
+        issues,
+        "AUTHORITY_ROTATION_FOREIGN_DECLARATION",
+        String(currentNumber),
+        "an authority rotation cannot be declared under a pull request number other than the one under judgement",
+      );
+    }
     const bootstrapReview = expectedRotation
-      ? bootstrapReviewCandidates.find((review) => {
+      ? labelBoundReviewCandidates.find((review) => {
           const attestation = authorityRotationAttestation(review.body);
           const submittedAt = Date.parse(review.submitted_at ?? "");
           return Boolean(
@@ -849,7 +1046,7 @@ export async function verifyGitHubClosureAuthority(
             submittedAt <= Date.parse(expectedRotation.expiresAt)
           );
         }) ?? null
-      : bootstrapReviewCandidates[0] ?? null;
+      : labelBoundReviewCandidates[0] ?? null;
     if (!bootstrapReview) {
       add(
         issues,
@@ -1043,10 +1240,14 @@ export async function verifyGitHubClosureAuthority(
           record.review.reviewId === String(liveReview.id) &&
           record.review.url === liveReview.html_url,
         );
+        // Remediation authority is reviewed intent, so its live source of truth is
+        // the current pull request's attested remediation scope (parsed from the
+        // exact-head review body below), not an author-declared matrix mirror. The
+        // sibling record must still name this pull request as its remediator and the
+        // review must attest the exact remediated head.
         const reviewedRemediationMatches = Boolean(
           record.checkState === "checks_green_unreviewed" &&
           record.reviewRemediationPullRequest === bootstrap.number &&
-          bootstrap.remediatesPullRequests.includes(record.number) &&
           bootstrapReview &&
           attestedRemediationScope?.get(record.number) === record.headRevision,
         );
@@ -1229,6 +1430,15 @@ export class GitHubRestClient implements GitHubAuthorityClient {
       `/repos/${this.repository}/pulls/${number}`,
     );
   }
+  async listPullRequestsForCommit(revision: string): Promise<GitHubPullRequest[]> {
+    // "List pull requests associated with a commit" (GA; served with the standard
+    // application/vnd.github+json media type this client already sends). exactSha
+    // rejects any non-SHA before interpolation so the path cannot be reshaped; an
+    // unresolvable commit yields an empty list, which the push resolver fails closed.
+    return this.paginate<GitHubPullRequest>(
+      `/repos/${this.repository}/commits/${encodeURIComponent(exactSha(revision))}/pulls`,
+    );
+  }
   async listCheckRuns(revision: string): Promise<GitHubCheckRun[]> {
     const entries: GitHubCheckRun[] = [];
     for (let page = 1; ; page += 1) {
@@ -1271,6 +1481,11 @@ export class GitHubRestClient implements GitHubAuthorityClient {
   async listReviews(number: number): Promise<GitHubReview[]> {
     return this.paginate<GitHubReview>(
       `/repos/${this.repository}/pulls/${number}/reviews`,
+    );
+  }
+  async listIssueEvents(number: number): Promise<GitHubIssueEvent[]> {
+    return this.paginate<GitHubIssueEvent>(
+      `/repos/${this.repository}/issues/${number}/events`,
     );
   }
   async listCommitStatuses(revision: string): Promise<GitHubCommitStatus[]> {
@@ -1498,6 +1713,7 @@ async function main(): Promise<void> {
       verdict?: unknown;
       providerValidationPullRequests?: unknown;
       providerValidationIssues?: unknown;
+      authorityRotation?: ProviderResolvedPullRequest["authorityRotation"] | null;
     };
     const exactNumbers = (value: unknown, label: string): number[] => {
       if (
@@ -1523,6 +1739,9 @@ async function main(): Promise<void> {
       proposalObservation.providerValidationIssues,
       "issue",
     );
+    // Trusted because the observation is only consumed after its verdict is pass and
+    // its proposalRevision equals the exact pull request head (checked above).
+    context.proposalAuthorityRotation = proposalObservation.authorityRotation ?? null;
   }
   if (context.repository !== policy.repository) {
     throw new Error("protected authority repository does not match pinned policy");

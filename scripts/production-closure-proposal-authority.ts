@@ -396,6 +396,14 @@ export async function verifyProductionClosureProposal(
     policyBytes?: Buffer;
     rotationLedgerBytes?: Buffer;
   } = {},
+  // The pull request under judgement, from the CI-attested MENDPOINT_CLOSURE_PR_NUMBER
+  // when it is available. In PRODUCTION it is usually ABSENT: the workflow sets that
+  // env var only on the closure:github:check step, not on this proposal step (leaving
+  // it optional here is what keeps the pinned workflow out of this rotation's
+  // changeset — see main()). So the merge-base bootstrapChanged rule below is the
+  // production path for the self-removal exemption; this value refines it only when a
+  // caller (a future workflow wiring, or a unit test) does supply it.
+  currentPullRequestNumber?: number,
 ): Promise<ProposalAuthorityObservation> {
   const issues: ProductionClosureMatrixIssue[] = [];
   const observation: ProposalAuthorityObservation = {
@@ -702,7 +710,12 @@ export async function verifyProductionClosureProposal(
       mergeBaseMatrix.releaseTrain?.pullRequests ?? [],
       matrix.releaseTrain?.pullRequests ?? [],
       "pull request",
-      bootstrapChanged ? proposedBootstrap?.number : undefined,
+      // Event-sourced identity: the self-removal exemption follows the CI-attested
+      // pull request number (MENDPOINT_CLOSURE_PR_NUMBER). Without it (pure-function
+      // callers) it falls back to #539's rule: only a bootstrap CHANGED by this
+      // proposal may exempt its own promoted record, so an inherited or forged
+      // bootstrap number can never hide a removal.
+      currentPullRequestNumber ?? (bootstrapChanged ? proposedBootstrap?.number : undefined),
     );
     observation.providerValidationIssues = changedProviderRecords(
       mergeBaseMatrix.issueAuthority?.issues ?? [],
@@ -842,14 +855,17 @@ export async function verifyProductionClosureProposal(
       }
       try {
         const baseMatrixBytes = await readBasePath("docs/PRODUCTION_CLOSURE_MATRIX.json");
-        const currentPullRequestNumber = matrix.releaseTrain.currentPullRequestBootstrap?.number ?? -1;
+        // Event-sourced identity: prefer the CI-attested number for the scope view,
+        // falling back to the declared bootstrap number for pure-function callers.
+        const scopeCurrentNumber =
+          currentPullRequestNumber ?? matrix.releaseTrain.currentPullRequestBootstrap?.number ?? -1;
         if (
           !baseMatrixBytes ||
           JSON.stringify(stableAuthorityRotationMatrixView(
             JSON.parse(baseMatrixBytes.toString("utf8")),
-            currentPullRequestNumber,
+            scopeCurrentNumber,
           )) !==
-            JSON.stringify(stableAuthorityRotationMatrixView(matrix, currentPullRequestNumber))
+            JSON.stringify(stableAuthorityRotationMatrixView(matrix, scopeCurrentNumber))
         ) {
           add(
             issues,
@@ -1185,6 +1201,21 @@ async function main(): Promise<void> {
   const configuredBaseRevision = requiredEnvironment("MENDPOINT_AUTHORITY_BASE_SHA");
   if (baseRevision !== configuredBaseRevision) throw new Error("checked-out base authority revision is not exact");
   const repository = requiredEnvironment("GITHUB_REPOSITORY");
+  // Optional: the workflow does not set MENDPOINT_CLOSURE_PR_NUMBER for the proposal
+  // step (adding it would edit the pinned workflowPath and force a successor-ceremony
+  // rotation). When absent, the self-removal exemption falls back to the merge-base
+  // bootstrapChanged rule and the rotation number-binding is enforced by the
+  // provider-side github authority, which always has the event pull request number.
+  const rawPullRequestNumber = process.env.MENDPOINT_CLOSURE_PR_NUMBER?.trim();
+  const currentPullRequestNumber = rawPullRequestNumber
+    ? Number(rawPullRequestNumber)
+    : undefined;
+  if (
+    currentPullRequestNumber !== undefined &&
+    (!Number.isInteger(currentPullRequestNumber) || currentPullRequestNumber < 1)
+  ) {
+    throw new Error("MENDPOINT_CLOSURE_PR_NUMBER must be a positive integer when set");
+  }
   const observation = await verifyProductionClosureProposal(
     policy,
     repository,
@@ -1196,6 +1227,7 @@ async function main(): Promise<void> {
       policyBytes,
       rotationLedgerBytes,
     },
+    currentPullRequestNumber,
   );
   const outputPath = requiredEnvironment("MENDPOINT_PROPOSAL_OBSERVATION_PATH");
   writeFileSync(outputPath, `${JSON.stringify(observation, null, 2)}\n`, { mode: 0o600 });
