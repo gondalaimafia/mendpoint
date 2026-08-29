@@ -271,6 +271,8 @@ describe("production closure proposal authority", () => {
     // PRs' force-pushed heads. "Absent locally" must not read as "unreachable on
     // GitHub" for open-PR heads (openPullRequestHeadsVerifiable: false at the proposal
     // call site). Merge revisions are on main and stay locally checked (ungated).
+    // Note (#530): open-PR heads/state are no longer re-verified live by github-
+    // authority either; this remains a local reporting relaxation, not a delegation.
     const openHead = "63711d9aac1a2d9e89a50bd9b4a6b8f3b2ea3c3f"; // fixture open PR #284 head
     const mergeRevision = "b3279db5157a2a33c8684f1cf595356953ff2a96"; // fixture merged PR #333 merge revision
     class LocalObjectDatabaseClient extends FixtureClient {
