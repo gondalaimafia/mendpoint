@@ -42,6 +42,36 @@ import {
 import { queryFettlerEndpointImpact, type GraphLearnDb } from "@mendpoint/graph-learn";
 import { createHash } from "node:crypto";
 
+/**
+ * Mission and fallback repository ids must agree when both are present. Silently
+ * picking one would consult the wrong tenant surface (or pin the wrong identity
+ * on the envelope). This is an identity contradiction, not a store read.
+ */
+function boundRepositoryId(params: BuildMissionContextParams): string | null {
+  const missionRepo = params.mission?.repositoryId ?? null;
+  const fallbackRepo = params.fallback.repositoryId;
+  if (missionRepo && fallbackRepo && missionRepo !== fallbackRepo) {
+    throw new Error("mission_context_repository_mismatch");
+  }
+  return missionRepo ?? fallbackRepo;
+}
+
+/** Published software-graph versions live in `gl_software_versions_v1`, never `gl_nodes`. */
+function publishedSoftwareGraphVersionExists(
+  graphDb: GraphLearnDb,
+  tenantId: string,
+  repositoryId: string,
+  graphVersionId: string,
+): boolean {
+  const row = graphDb.raw
+    .prepare(
+      `SELECT version_id FROM gl_software_versions_v1
+       WHERE version_id = ? AND tenant_id = ? AND repository_id = ?`,
+    )
+    .get(graphVersionId, tenantId, repositoryId) as { version_id: string } | undefined;
+  return Boolean(row);
+}
+
 export type BuildMissionContextParams = Readonly<{
   tenantId: string;
   /** The resolved Mission, or null when the task is not mission-bound. */
@@ -129,10 +159,20 @@ function buildGraphSource(params: BuildMissionContextParams): MissionContextInpu
   if (!graphVersionId) return { consulted: false, reason: "graph_version_absent" };
   const endpointKey = params.task.endpointKey?.trim() ?? "";
   if (!endpointKey) return { consulted: false, reason: "endpoint_key_absent" };
-  const repositoryId = params.mission?.repositoryId ?? params.fallback.repositoryId;
+  // Graph versions are pinned on the Mission. Do not silently query fallback.repositoryId
+  // when the mission has no repository — that would invent a surface.
+  const repositoryId = params.mission?.repositoryId ?? null;
   if (!repositoryId) return { consulted: false, reason: "not_applicable_to_task" };
+  boundRepositoryId(params);
   const graphDb = params.graphDb ?? null;
   if (!graphDb) return { consulted: false, reason: "store_not_available" };
+  try {
+    if (!publishedSoftwareGraphVersionExists(graphDb, params.tenantId, repositoryId, graphVersionId)) {
+      return { consulted: false, reason: "graph_version_absent" };
+    }
+  } catch {
+    return { consulted: false, reason: "graph_projection_failed" };
+  }
   try {
     const impact = queryFettlerEndpointImpact(graphDb, {
       tenantId: params.tenantId,
@@ -160,6 +200,7 @@ export function buildMissionContext(
   params: BuildMissionContextParams,
 ): CompiledMissionContext {
   const { tenantId, mission } = params;
+  const repositoryId = boundRepositoryId(params);
 
   // Organization memory is tenant-scoped and applies with or without a mission.
   // Subject key is the memory scope, which decisions share, so a decision and a
@@ -304,7 +345,7 @@ export function buildMissionContext(
       missionId,
       product: mission?.product ?? "fettler",
       objective: mission?.objective ?? params.fallback.objective,
-      repositoryId: mission?.repositoryId ?? params.fallback.repositoryId,
+      repositoryId,
       snapshotId,
       graphVersionId: mission?.graphVersionId ?? null,
     },

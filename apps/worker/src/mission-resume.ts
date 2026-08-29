@@ -84,12 +84,16 @@ type IntendedSection =
   | InheritedContextEnvelope["verificationState"]
   | InheritedContextEnvelope["relevantHistory"]
   | InheritedContextEnvelope["relevantOrgMemory"]
-  | InheritedContextEnvelope["missionArtifacts"];
+  | InheritedContextEnvelope["missionArtifacts"]
+  | InheritedContextEnvelope["graphProjection"];
 
 /**
  * Classify an already-compiled envelope (pure). `store_not_available` on a
  * section we intended to read means the store did not load: that is
- * `context_not_loaded`, NOT `no_prior_context`. `no_mission_bound` on a
+ * `context_not_loaded`, NOT `no_prior_context`. `graph_projection_failed` is the
+ * same failure for a live endpoint-key consult — never "no impact" and never
+ * `loaded` because a graph version pin is present. `graph_version_absent` and
+ * `endpoint_key_absent` stay legitimate absences. `no_mission_bound` on a
  * mission-scoped section is a legitimate absence, not a load failure. Only
  * `hardPolicies`/`userPreferences` are excluded here — they are known-absent
  * stores on main (no per-tenant policy row exists), not failed loads.
@@ -105,11 +109,15 @@ export function classifyResumeStanding(
     { name: "verification", section: envelope.verificationState },
     { name: "history", section: envelope.relevantHistory },
     { name: "artifacts", section: envelope.missionArtifacts },
+    { name: "graph", section: envelope.graphProjection },
   ];
   for (const { name, section } of intended) {
     if (!section) return { kind: "context_not_loaded", reason: `section_missing:${name}` };
     if (section.status === "not_consulted" && section.reason === "store_not_available") {
       return { kind: "context_not_loaded", reason: `store_not_available:${name}` };
+    }
+    if (section.status === "not_consulted" && section.reason === "graph_projection_failed") {
+      return { kind: "context_not_loaded", reason: `graph_projection_failed:${name}` };
     }
   }
   if (hasInheritedContent(envelope)) return { kind: "loaded" };

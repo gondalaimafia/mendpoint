@@ -14,6 +14,7 @@ import {
   createDb,
   createExplicitMemory,
   createMission,
+  getMission,
   insertPrincipal,
   recordMissionDecision,
   type AppDb,
@@ -23,6 +24,8 @@ import type { InheritedContextEnvelope } from "@mendpoint/pipeline";
 import { classifyResumeStanding, resolveResumeContext } from "./mission-resume.js";
 
 const T0 = "2026-01-01T00:00:00.000Z";
+const SHA = "1".repeat(40);
+const MANIFEST = "a".repeat(64);
 const opened: Array<{ db: AppDb; dir: string }> = [];
 
 afterEach(() => {
@@ -115,6 +118,61 @@ describe("classifyResumeStanding (pure, fail-closed three-state)", () => {
     expect(artifactsFailed.kind).toBe("context_not_loaded");
     if (artifactsFailed.kind !== "context_not_loaded") throw new Error("unreachable");
     expect(artifactsFailed.reason).toBe("store_not_available:artifacts");
+
+    // A live endpoint-key consult that could not open the graph must not read as
+    // loaded just because a graph version pin is present on mission identity.
+    const graphFailed = classifyResumeStanding(
+      envelope({
+        missionIdentity: {
+          missionId: "m1",
+          product: "fettler",
+          objective: "o",
+          repositoryId: "r1",
+          snapshotId: "snapA",
+          graphVersionId: "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+        graphProjection: { status: "not_consulted", reason: "store_not_available" },
+      } as never),
+      true,
+    );
+    expect(graphFailed.kind).toBe("context_not_loaded");
+    if (graphFailed.kind !== "context_not_loaded") throw new Error("unreachable");
+    expect(graphFailed.reason).toBe("store_not_available:graph");
+  });
+
+  it("CONTROL: graph_projection_failed is context_not_loaded, never no_impact or loaded", () => {
+    const standing = classifyResumeStanding(
+      envelope({
+        missionIdentity: {
+          missionId: "m1",
+          product: "fettler",
+          objective: "o",
+          repositoryId: "r1",
+          snapshotId: "snapA",
+          graphVersionId: "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+        graphProjection: { status: "not_consulted", reason: "graph_projection_failed" },
+      } as never),
+      true,
+    );
+    expect(standing.kind).toBe("context_not_loaded");
+    if (standing.kind !== "context_not_loaded") throw new Error("unreachable");
+    expect(standing.reason).toBe("graph_projection_failed:graph");
+  });
+
+  it("graph_version_absent and endpoint_key_absent stay legitimate absences", () => {
+    expect(
+      classifyResumeStanding(
+        envelope({ graphProjection: { status: "not_consulted", reason: "graph_version_absent" } }),
+        true,
+      ).kind,
+    ).toBe("no_prior_context");
+    expect(
+      classifyResumeStanding(
+        envelope({ graphProjection: { status: "not_consulted", reason: "endpoint_key_absent" } }),
+        true,
+      ).kind,
+    ).toBe("no_prior_context");
   });
 
   it("CONTROL: a pre-section envelope does not throw; missing artifacts is context_not_loaded", () => {
@@ -319,5 +377,109 @@ describe("resolveResumeContext (real stores)", () => {
     expect(block).toContain(injectionText);
     const headerEnd = block.indexOf("<<<INHERITED_CONTEXT_DATA>>>");
     expect(block.indexOf(injectionText)).toBeGreaterThan(headerEnd);
+  });
+
+  // CONTROL: the live resume caller (cli.ts → resolveResumeContext) must fail
+  // closed when a live endpoint key cannot open the graph. Deleting the graph
+  // scan in classifyResumeStanding makes this die — hasInheritedContent would
+  // otherwise return loaded because the pin is present.
+  it("CONTROL: live endpointKey without a graph handle is context_not_loaded", () => {
+    const db = fixture();
+    db.raw
+      .prepare(
+        `INSERT INTO scm_connections (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+         VALUES ('c1','t1','github','me://ref','acct','Acme',?,?)`,
+      )
+      .run(T0, T0);
+    db.raw
+      .prepare(
+        `INSERT INTO connected_repositories
+          (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch, environment, retention_days, status, created_at, updated_at)
+         VALUES ('r1','t1','c1','1','acme','svc','main','main','production',30,'ready',?,?)`,
+      )
+      .run(T0, T0);
+    db.raw
+      .prepare(
+        `INSERT INTO repository_snapshots
+          (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+           submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+         VALUES ('snapA','t1','r1','main',?,?, 'C:/tmp/snapA','reject','reject','[]',1,?, '2026-02-01T00:00:00.000Z')`,
+      )
+      .run(SHA, MANIFEST, T0);
+    createMission(db, {
+      id: "m-graph",
+      tenantId: "t1",
+      product: "fettler",
+      triggerKind: "migration_objective",
+      objective: "Migrate the payments SDK",
+      ownerPrincipalId: "human-1",
+      repositoryId: "r1",
+      snapshotId: "snapA",
+      eventId: "ev-m-graph",
+      idempotencyKey: "cm-m-graph",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m-graph",
+      graphVersionId: "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      actorPrincipalId: "human-1",
+      eventId: "graph-bind-live",
+      idempotencyKey: "graph-bind-live",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    expect(getMission(db, "t1", "m-graph")?.repositoryId).toBe("r1");
+    const standing = resolveResumeContext(db, {
+      tenantId: "t1",
+      currentRunStatus: "running",
+      missionId: "m-graph",
+      task: { ...TASK, endpointKey: "POST /v1/charges" },
+      fallback: { objective: "Migrate the payments SDK", repositoryId: "r1", snapshotId: "snapA" },
+    });
+    expect(standing.status).toBe("context_not_loaded");
+    if (standing.status !== "context_not_loaded") throw new Error("unreachable");
+    expect(standing.reason).toBe("store_not_available:graph");
+  });
+
+  it("disagreeing mission and fallback repository ids fail closed on resume", () => {
+    const db = fixture();
+    db.raw
+      .prepare(
+        `INSERT INTO scm_connections (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+         VALUES ('c1','t1','github','me://ref','acct','Acme',?,?)`,
+      )
+      .run(T0, T0);
+    db.raw
+      .prepare(
+        `INSERT INTO connected_repositories
+          (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch, environment, retention_days, status, created_at, updated_at)
+         VALUES ('r1','t1','c1','1','acme','svc','main','main','production',30,'ready',?,?)`,
+      )
+      .run(T0, T0);
+    createMission(db, {
+      id: "m-repo",
+      tenantId: "t1",
+      product: "fettler",
+      triggerKind: "migration_objective",
+      objective: "Migrate the payments SDK",
+      ownerPrincipalId: "human-1",
+      repositoryId: "r1",
+      eventId: "ev-m-repo",
+      idempotencyKey: "cm-m-repo",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const standing = resolveResumeContext(db, {
+      tenantId: "t1",
+      currentRunStatus: "running",
+      missionId: "m-repo",
+      task: TASK,
+      fallback: { objective: "Migrate the payments SDK", repositoryId: "r-other", snapshotId: null },
+    });
+    expect(standing.status).toBe("context_not_loaded");
+    if (standing.status !== "context_not_loaded") throw new Error("unreachable");
+    expect(standing.reason).toBe("compile_failed:mission_context_repository_mismatch");
   });
 });
