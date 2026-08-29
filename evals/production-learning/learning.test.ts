@@ -4,6 +4,7 @@ import {
   validateBenchmarkLearningEvent,
   type BenchmarkLearningEvent,
   type BenchmarkLearningOutcome,
+  type ExternalProviderTransmissionAuthority,
 } from "./learning.js";
 
 const SHA = "a".repeat(64);
@@ -38,10 +39,9 @@ function event(outcome: BenchmarkLearningOutcome = "accepted"): BenchmarkLearnin
     },
     governance: {
       tenantId: "benchmark-tenant-a",
-      consentDecisionRef: "consent://benchmark-tenant-a/governed-learning/v1",
-      consentGranted: true,
-      licenseCompatible: true,
-      externalProviderAllowed: false,
+      consent: { decision: "granted", purpose: "governed_learning", evidenceRef: "consent://benchmark-tenant-a/governed-learning/v1" },
+      license: { decision: "compatible", intendedUse: "governed_learning", evidenceRef: "license://repo-a/v1" },
+      externalProvider: { decision: "denied", providerId: null, purpose: null, sharedTrainingAllowed: false, repositoryContentAllowed: false, retention: "none" },
       containsRepositoryContent: false,
       containsCustomerData: false,
       containsPrivateReasoning: false,
@@ -49,6 +49,21 @@ function event(outcome: BenchmarkLearningOutcome = "accepted"): BenchmarkLearnin
     },
     economics: { costUsd: 0.1, latencyMs: 1_000 },
     createdAt: "2026-08-28T23:00:00.000Z",
+  };
+}
+
+function authority(value: BenchmarkLearningEvent): ExternalProviderTransmissionAuthority {
+  return {
+    tenantId: value.governance.tenantId,
+    repositoryId: value.lineage.repositoryId,
+    repositoryCommit: value.lineage.repositoryCommit,
+    repositorySnapshotDigest: value.lineage.repositorySnapshotDigest,
+    providerId: "provider-a",
+    purpose: "case_execution",
+    consentEvidenceRef: value.governance.consent.evidenceRef,
+    licenseEvidenceRef: value.governance.license.evidenceRef,
+    sharedTrainingAllowed: false,
+    repositoryContentAllowed: false,
   };
 }
 
@@ -76,14 +91,24 @@ describe("governed benchmark learning lineage", () => {
   });
 
   it("denies external provider transmission without an explicit compatible decision", () => {
-    expect(() => assertExternalProviderTransmissionAllowed(event())).toThrow(
+    expect(() => assertExternalProviderTransmissionAllowed(event(), authority(event()))).toThrow(
       "external_provider_transmission_not_authorized",
     );
   });
 
   it("permits only an explicitly authorized, license compatible, consented event", () => {
     const value = event();
-    value.governance.externalProviderAllowed = true;
-    expect(() => assertExternalProviderTransmissionAllowed(value)).not.toThrow();
+    value.governance.externalProvider = { decision: "allowed", providerId: "provider-a", purpose: "case_execution", sharedTrainingAllowed: false, repositoryContentAllowed: false, retention: "none" };
+    expect(() => assertExternalProviderTransmissionAllowed(value, authority(value))).not.toThrow();
+  });
+
+  it("rejects self-authorized provider transmission and any shared-training permission", () => {
+    const value = event();
+    value.governance.externalProvider = { decision: "allowed", providerId: "provider-a", purpose: "case_execution", sharedTrainingAllowed: false, repositoryContentAllowed: false, retention: "none" };
+    const trusted = authority(value);
+    trusted.repositorySnapshotDigest = "c".repeat(64);
+    expect(() => assertExternalProviderTransmissionAllowed(value, trusted)).toThrow("external_provider_authority_mismatch:snapshot");
+    (value.governance.externalProvider as unknown as { sharedTrainingAllowed: boolean }).sharedTrainingAllowed = true;
+    expect(validateBenchmarkLearningEvent(value)).toContain("external provider shared training must be exactly denied");
   });
 });

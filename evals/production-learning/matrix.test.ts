@@ -10,7 +10,7 @@ const closure = JSON.parse(readFileSync("docs/PRODUCTION_CLOSURE_MATRIX.json", "
 describe("requirement to case to test to production evidence traceability", () => {
   const traces = buildRequirementCaseTraceability({ requirements, closureRows: closure.requirements, cases: learningCases });
 
-  it("covers every canonical requirement and every case without creating production proof", () => {
+  it("retains every canonical requirement, binds every case semantically, and leaves unrelated requirements uncovered", () => {
     expect(traces).toHaveLength(101);
     expect(validateRequirementCaseTraceability({
       traces,
@@ -18,12 +18,12 @@ describe("requirement to case to test to production evidence traceability", () =
       expectedCaseIds: learningCases.map((item) => item.id),
     })).toEqual([]);
     expect(new Set(traces.flatMap((trace) => trace.caseIds))).toEqual(new Set(learningCases.map((item) => item.id)));
+    expect(traces.some((trace) => trace.coverageState === "uncovered")).toBe(true);
+    expect(traces.filter((trace) => trace.coverageState === "uncovered").every((trace) => trace.caseIds.length === 0 && trace.testRefs.length === 0 && trace.gapReason !== null)).toBe(true);
   });
 
   it("preserves missing production evidence as unknown", () => {
-    const withoutProof = traces.filter((trace) => trace.productionEvidenceIds.length === 0);
-    expect(withoutProof.length).toBeGreaterThan(0);
-    expect(withoutProof.every((trace) => trace.productionEvidenceState === "unknown")).toBe(true);
+    expect(traces.every((trace) => trace.productionEvidenceState === "unknown")).toBe(true);
   });
 
   it("preserves register blockers and statuses instead of promoting them", () => {
@@ -35,8 +35,10 @@ describe("requirement to case to test to production evidence traceability", () =
     }
   });
 
-  it("keeps product-specific requirements on their product cases", () => {
+  it("keeps product-specific requirements on their product cases without mapping every case to every requirement", () => {
     expect(traces.find((trace) => trace.requirementId === "ME-WAR-001")?.caseIds.every((id) => id.startsWith("FET-"))).toBe(true);
     expect(traces.find((trace) => trace.requirementId === "ME-TRN-001")?.caseIds.every((id) => id.startsWith("REG-"))).toBe(true);
+    expect(traces.find((trace) => trace.requirementId === "ME-WAR-003")?.coverageState).toBe("uncovered");
+    expect(traces.find((trace) => trace.requirementId === "ME-WAR-003")?.caseIds).toEqual([]);
   });
 });

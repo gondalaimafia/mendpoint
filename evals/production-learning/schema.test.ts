@@ -124,6 +124,7 @@ function receipt(): ProductionExecutionReceipt {
     repositoryId: "repo-example",
     repositoryCommit: REVISION,
     snapshotDigest: SHA,
+    fixtureManifestDigest: SHA,
     graphVersion: "graph-v1",
     policyVersion: "policy-v1",
     model: { provider: "configured", modelId: "model-v1", requestId: "request-1" },
@@ -278,11 +279,27 @@ describe("sealed controls and production receipts", () => {
     value.advisoryVerifier.maySelectCandidate = true;
     expect(validateExecutionReceipt(value)).toEqual(
       expect.arrayContaining([
-        "delivery mergeAllowed must be false",
-        "delivery deploymentAllowed must be false",
+        "delivery mergeAllowed must be exactly false",
+        "delivery deploymentAllowed must be exactly false",
         "delivery openDraftCountForCase must be 0 before delivery",
-        "advisory verifier maySelectCandidate must be false",
+        "advisory verifier maySelectCandidate must be exactly false",
       ]),
     );
+  });
+
+  it("rejects omitted denial fields and empty advisory or recipe identity", () => {
+    const value = receipt() as unknown as Record<string, unknown>;
+    const delivery = value.delivery as Record<string, unknown>;
+    const advisory = value.advisoryVerifier as Record<string, unknown>;
+    delete delivery.mergeAllowed;
+    delete advisory.mayDeliver;
+    advisory.name = "";
+    value.recipeVersion = "";
+    expect(validateExecutionReceipt(value as unknown as ProductionExecutionReceipt)).toEqual(expect.arrayContaining([
+      "delivery mergeAllowed must be exactly false",
+      "advisory verifier mayDeliver must be exactly false",
+      "advisoryVerifier.name must be a non-empty string",
+      "recipeVersion must be a non-empty string",
+    ]));
   });
 });

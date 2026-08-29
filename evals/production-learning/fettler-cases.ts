@@ -192,22 +192,23 @@ const sourceLibrary = {
 } as const satisfies Record<string, Omit<LearningSource, "id" | "retrievedAt">>;
 
 const repositories = {
-  octokit: { provenanceId: "repo-octokit-webhooks-js", languages: ["TypeScript"], frameworks: ["Octokit", "Node.js"] },
-  stripe: { provenanceId: "repo-stripe-stripe-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Stripe SDK", "Node.js"] },
-  slack: { provenanceId: "repo-octokit-webhooks-js", languages: ["TypeScript"], frameworks: ["Node.js", "webhook processing"] },
-  twilio: { provenanceId: "repo-octokit-webhooks-js", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "webhook processing"] },
-  aws: { provenanceId: "repo-aws-aws-sdk-js-v3", languages: ["TypeScript", "JavaScript"], frameworks: ["AWS SDK for JavaScript"] },
-  kubernetes: { provenanceId: "repo-kubernetes-client-go", languages: ["Go", "YAML"], frameworks: ["Kubernetes", "client-go"] },
-  microsoft: { provenanceId: "repo-dotnet-architecture-eshoponweb", languages: ["C#"], frameworks: [".NET", "Microsoft Graph"] },
-  express: { provenanceId: "repo-octokit-webhooks-js", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "HTTP routing"] },
-  cpython: { provenanceId: "repo-pallets-flask", languages: ["Python"], frameworks: ["Flask", "Python standard library"] },
-  openapi: { provenanceId: "repo-openai-openai-node", languages: ["TypeScript", "JSON"], frameworks: ["OpenAPI", "generated SDK"] },
-  protobuf: { provenanceId: "repo-kubernetes-client-go", languages: ["Go", "Protocol Buffers"], frameworks: ["Kubernetes", "Protocol Buffers"] },
-  oauth: { provenanceId: "repo-pallets-flask", languages: ["Python"], frameworks: ["Flask", "OAuth 2.0"] },
-  terraform: { provenanceId: "repo-kubernetes-client-go", languages: ["Go"], frameworks: ["Go provider client", "schema migration"] },
-  axios: { provenanceId: "repo-openai-openai-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "HTTP client"] },
-  urllib3: { provenanceId: "repo-pallets-flask", languages: ["Python"], frameworks: ["Flask", "urllib3"] },
-  jsonwebtoken: { provenanceId: "repo-openai-openai-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "JWT authentication"] },
+  octokit: { provenanceId: "repo-octokit-webhooks-js", languages: ["TypeScript"], frameworks: ["Node.js", "GitHub Webhooks"] },
+  stripe: { provenanceId: "repo-stripe-stripe-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "Stripe API"] },
+  slack: { provenanceId: "repo-octokit-webhooks-js", languages: ["TypeScript"], frameworks: ["Node.js", "GitHub Webhooks"] },
+  openaiClient: { provenanceId: "repo-openai-openai-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "OpenAI API", "pnpm workspace"] },
+  twilio: { provenanceId: "repo-octokit-webhooks-js", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "GitHub Webhooks"] },
+  aws: { provenanceId: "repo-aws-aws-sdk-js-v3", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "AWS SDK for JavaScript v3", "Smithy"] },
+  kubernetes: { provenanceId: "repo-kubernetes-client-go", languages: ["Go"], frameworks: ["Go modules", "Kubernetes client-go"] },
+  microsoft: { provenanceId: "repo-dotnet-architecture-eshoponweb", languages: ["C#"], frameworks: ["ASP.NET Core", "Entity Framework Core", "Docker", "Bicep"] },
+  express: { provenanceId: "repo-stripe-stripe-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "Stripe API"] },
+  cpython: { provenanceId: "repo-pallets-flask", languages: ["Python"], frameworks: ["Flask", "Jinja", "WSGI"] },
+  openapi: { provenanceId: "repo-openai-openai-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "OpenAI API", "pnpm workspace"] },
+  protobuf: { provenanceId: "repo-kubernetes-client-go", languages: ["Go"], frameworks: ["Go modules", "Kubernetes client-go"] },
+  oauth: { provenanceId: "repo-pallets-flask", languages: ["Python"], frameworks: ["Flask", "Jinja", "WSGI"] },
+  terraform: { provenanceId: "repo-kubernetes-client-go", languages: ["Go"], frameworks: ["Go modules", "Kubernetes client-go"] },
+  axios: { provenanceId: "repo-openai-openai-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "OpenAI API", "pnpm workspace"] },
+  urllib3: { provenanceId: "repo-pallets-flask", languages: ["Python"], frameworks: ["Flask", "Jinja", "WSGI"] },
+  jsonwebtoken: { provenanceId: "repo-openai-openai-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "OpenAI API", "pnpm workspace"] },
 } as const;
 
 type SourceKey = keyof typeof sourceLibrary;
@@ -234,8 +235,8 @@ interface CaseSeed {
 }
 
 const applicationPaths = ["src/**", "test/**", "package.json", "package-lock.json"];
-const pythonPaths = ["src/**", "tests/**", "pyproject.toml", "requirements*.txt"];
-const infrastructurePaths = ["deploy/**", "charts/**", "manifests/**", "tests/**"];
+const pythonPaths = ["src/flask/**", "tests/**", "pyproject.toml", "uv.lock"];
+const infrastructurePaths = ["applyconfigurations/**", "kubernetes/typed/**", "openapi/**"];
 
 const seeds: CaseSeed[] = [
   {
@@ -351,7 +352,7 @@ const seeds: CaseSeed[] = [
     allowedEditPaths: applicationPaths, tenantRisk: "critical", risks: ["Captured payment events can be replayed."],
   },
   {
-    id: "FET-C015", title: "Replace Slack files.upload with the asynchronous upload flow", source: "slackUpload", repository: "slack", family: "api-retirement",
+    id: "FET-C015", title: "Replace Slack files.upload with the asynchronous upload flow", source: "slackUpload", repository: "openaiClient", family: "api-retirement",
     importance: "Slack retired files.upload on November 12, 2025 and documents the replacement upload URL and completion sequence.",
     seededFailure: "Call the retired files.upload endpoint.", impact: ["slack-client", "file-upload", "channel-delivery"],
     diagnosis: "Locate the retired call and every assumption about its single-request lifecycle.", repair: "Use filesUploadV2 or the documented get URL, upload bytes, and complete sequence.",
@@ -359,7 +360,7 @@ const seeds: CaseSeed[] = [
     allowedEditPaths: applicationPaths, tenantRisk: "high", risks: ["A file can fail delivery or reach the wrong workspace channel."],
   },
   {
-    id: "FET-C016", title: "Update Slack upload parameters and result shape", source: "slackUpload", repository: "slack", family: "sdk-response-shape",
+    id: "FET-C016", title: "Update Slack upload parameters and result shape", source: "slackUpload", repository: "openaiClient", family: "sdk-response-shape",
     importance: "Slack documents channel_id replacing channels and result.files replacing result.file in the Node migration path.",
     seededFailure: "Read result.file after switching to filesUploadV2.", impact: ["slack-client", "upload-result", "file-receipt"],
     diagnosis: "Compare old and new parameter cardinality and response fields.", repair: "Use one channel_id and decode the returned files array.",
@@ -367,7 +368,7 @@ const seeds: CaseSeed[] = [
     allowedEditPaths: applicationPaths, tenantRisk: "bounded", risks: ["Incorrect channel selection can expose a file."],
   },
   {
-    id: "FET-C017", title: "Honor Slack Retry-After per workspace and method", source: "slackLimits", repository: "slack", family: "rate-limit-remediation",
+    id: "FET-C017", title: "Honor Slack Retry-After per workspace and method", source: "slackLimits", repository: "openaiClient", family: "rate-limit-remediation",
     importance: "Slack defines 429 Retry-After behavior scoped by API method, workspace, and app.",
     seededFailure: "Retry immediately or pause every tenant after one workspace receives 429.", impact: ["slack-client", "retry-scheduler", "tenant-budget"],
     diagnosis: "Extract Retry-After and determine the affected workspace and method boundary.", repair: "Schedule a bounded retry only for that workspace and method.",
@@ -841,6 +842,43 @@ const seeds: CaseSeed[] = [
   },
 ];
 
+function coherentAllowedEditPaths(seed: CaseSeed): string[] {
+  if (seed.repository === "kubernetes") {
+    const kubernetesPaths: Partial<Record<string, string[]>> = {
+      "FET-C032": ["applyconfigurations/batch/v1/**", "kubernetes/typed/batch/v1/**"],
+      "FET-C033": ["applyconfigurations/autoscaling/v2/**", "kubernetes/typed/autoscaling/v2/**"],
+      "FET-C034": ["applyconfigurations/admissionregistration/v1/**", "kubernetes/typed/admissionregistration/v1/**"],
+      "FET-C035": ["kubernetes/typed/policy/v1/**", "kubernetes/typed/policy/v1beta1/**"],
+      "FET-C036": ["applyconfigurations/discovery/v1/**", "kubernetes/typed/discovery/v1/**"],
+      "FET-E016": ["applyconfigurations/**", "openapi/**"],
+      "FET-E017": ["applyconfigurations/flowcontrol/v1/**", "kubernetes/typed/flowcontrol/v1/**"],
+      "FET-E018": ["applyconfigurations/admissionregistration/v1/**", "kubernetes/typed/admissionregistration/v1/**"],
+    };
+    return kubernetesPaths[seed.id] ?? infrastructurePaths;
+  }
+
+  const repositoryPaths: Record<RepositoryKey, string[]> = {
+    octokit: ["src/event-handler/**", "src/middleware/**", "src/verify-and-receive.ts", "test/integration/**"],
+    stripe: ["src/Webhooks.ts", "src/stripe.core.ts", "test/**", "examples/webhook-signing/**"],
+    slack: ["src/event-handler/**", "src/middleware/**", "src/verify-and-receive.ts", "test/integration/**"],
+    openaiClient: ["src/uploads.ts", "src/resources/files.ts", "src/client.ts", "tests/**"],
+    twilio: ["src/middleware/**", "src/verify-and-receive.ts", "test/integration/**"],
+    aws: ["clients/client-s3/src/**", "lib/lib-dynamodb/src/**", "packages/credential-providers/src/**"],
+    kubernetes: infrastructurePaths,
+    microsoft: ["src/PublicApi/**", "src/BlazorShared/**", "tests/FunctionalTests/**"],
+    express: ["examples/webhook-signing/express/**", "src/Webhooks.ts", "test/Webhook.spec.ts"],
+    cpython: pythonPaths,
+    openapi: ["api_reference/openapi.transformed.yml", "src/lib/jsonschema.ts", "tests/**"],
+    protobuf: ["applyconfigurations/meta/v1/condition.go", "applyconfigurations/scheduling/v1alpha3/**"],
+    oauth: ["examples/tutorial/flaskr/auth.py", "examples/tutorial/tests/test_auth.py", "pyproject.toml"],
+    terraform: ["applyconfigurations/**", "go.mod"],
+    axios: ["ecosystem-tests/browser-direct-import/**", "src/client.ts", "tests/**"],
+    urllib3: ["uv.lock", "src/flask/**", "tests/**"],
+    jsonwebtoken: ["pnpm-lock.yaml", "src/auth/**", "ecosystem-tests/bun/workload-identity-access-token.test.ts"],
+  };
+  return repositoryPaths[seed.repository];
+}
+
 function toLearningCase(seed: CaseSeed): LearningCase {
   const sourceId = `${seed.id.toLowerCase()}-source-1`;
   const source = sourceLibrary[seed.source];
@@ -880,7 +918,7 @@ function toLearningCase(seed: CaseSeed): LearningCase {
     fixture: {
       manifestId: `fixture-${seed.id.toLowerCase()}-manifest-v1`,
       mutationId: `mutation-${seed.id.toLowerCase()}-seed-v1`,
-      allowedEditPaths: seed.allowedEditPaths,
+      allowedEditPaths: coherentAllowedEditPaths(seed),
       rollbackId: `rollback-${seed.id.toLowerCase()}-restore-pristine-v1`,
       cleanupId: `cleanup-${seed.id.toLowerCase()}-sandbox-v1`,
     },

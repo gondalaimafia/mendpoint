@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import type { EvidenceState, LearningCase, RepositoryProvenance } from "./schema.js";
 
 export interface FixtureManifest {
   schemaVersion: "mendpoint.fixture-manifest.v1";
+  manifestId: string;
   caseId: string;
   repository: {
     provenanceId: string;
@@ -44,6 +46,21 @@ const GIT_SHA = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SAFE_RELATIVE_PATH = /^(?![A-Za-z]:)(?![/\\])(?!.*(?:^|[/\\])\.\.(?:[/\\]|$)).+$/;
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function fixtureManifestDigest(manifest: FixtureManifest): string {
+  return createHash("sha256").update(canonicalJson(manifest)).digest("hex");
+}
+
 export function validateFixtureManifest(
   manifest: FixtureManifest,
   learningCase: LearningCase,
@@ -52,6 +69,9 @@ export function validateFixtureManifest(
   const errors: string[] = [];
   if (manifest.schemaVersion !== "mendpoint.fixture-manifest.v1") {
     errors.push("schemaVersion must be mendpoint.fixture-manifest.v1");
+  }
+  if (manifest.manifestId !== learningCase.fixture.manifestId) {
+    errors.push("manifestId must match the learning case");
   }
   if (manifest.caseId !== learningCase.id) errors.push("caseId must match the learning case");
   if (manifest.repository.provenanceId !== learningCase.repository.provenanceId) {
@@ -86,6 +106,14 @@ export function validateFixtureManifest(
   if (manifest.expectedImpactGraph.nodes.length === 0) {
     errors.push("expectedImpactGraph nodes must not be empty");
   }
+  const expectedNodes = [...new Set(learningCase.pattern.expectedImpactGraph)].sort();
+  const manifestNodes = [...new Set(manifest.expectedImpactGraph.nodes)].sort();
+  if (JSON.stringify(manifestNodes) !== JSON.stringify(expectedNodes)) {
+    errors.push("expectedImpactGraph nodes must match the learning case");
+  }
+  if (manifest.expectedImpactGraph.evidenceState !== learningCase.pattern.evidenceState) {
+    errors.push("expectedImpactGraph evidenceState must match the learning case");
+  }
   if (manifest.expectedImpactGraph.evidenceState === "unknown" && manifest.expectedImpactGraph.edges.length > 0) {
     errors.push("unknown expectedImpactGraph must not claim verified edges");
   }
@@ -108,6 +136,9 @@ export function validateFixtureManifest(
   }
   if (manifest.rollback.id !== learningCase.fixture.rollbackId) {
     errors.push("rollback id must match the learning case");
+  }
+  if (manifest.rollback.oracleId !== manifest.failingOracle.id) {
+    errors.push("rollback oracleId must match the failing oracle");
   }
   if (manifest.cleanup.id !== learningCase.fixture.cleanupId) {
     errors.push("cleanup id must match the learning case");

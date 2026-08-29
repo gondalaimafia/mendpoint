@@ -1,15 +1,15 @@
 # Fettler and ReGauge production learning catalog
 
-Generated: 2026-08-29T00:55:16.523Z
+Generated: 2026-08-29T02:22:58.317Z
 
 Program base revision: `96801a319fc3d355cb2b28b4167b83023a192042`
 
-This artifact contains 150 sourced cases: 50 common and 25 edge cases for each product. Catalog admission is verified by deterministic tests. Repository content screening, exact fixture patches, production runs, deployment evidence, and rollback evidence remain separate gates and are not claimed by this report.
+This artifact contains 150 source-referenced cases: 50 common and 25 edge cases for each product. Structural catalog validation is deterministic. Source snapshots are not yet content-addressed. Repository content screening, protected holdout storage, exact fixture patches, production runs, deployment evidence, and rollback evidence remain separate gates and are not claimed by this report.
 
 ## Current evidence boundary
 
 - Catalog: 150 of 150 structurally valid.
-- Sealed holdouts: 30 of 30 assigned.
+- Holdout candidates: 30 assigned; protected seals: 0.
 - Repository candidates: 10; production admitted: 0.
 - Fixture plans: 150; admitted exact mutation manifests: 0.
 - Required equal arm runs: 750; completed production runs: 0.
@@ -33,9 +33,9 @@ This artifact contains 150 sourced cases: 50 common and 25 edge cases for each p
 | FET-C012 | fettler | common | development | Acknowledge Stripe webhooks before long-running work | webhook-retry | [Stripe](https://docs.stripe.com/webhooks) | repo-stripe-stripe-node |
 | FET-C013 | fettler | common | development | Align Stripe webhook API and SDK versions | sdk-schema-versioning | [Stripe](https://docs.stripe.com/webhooks/versioning) | repo-stripe-stripe-node |
 | FET-C014 | fettler | common | development | Reject stale Stripe webhook replays | webhook-replay-protection | [Stripe](https://docs.stripe.com/webhooks) | repo-stripe-stripe-node |
-| FET-C015 | fettler | common | holdout | Replace Slack files.upload with the asynchronous upload flow | api-retirement | [Slack](https://docs.slack.dev/changelog/2024-04-a-better-way-to-upload-files-is-here-to-stay/) | repo-octokit-webhooks-js |
-| FET-C016 | fettler | common | development | Update Slack upload parameters and result shape | sdk-response-shape | [Slack](https://docs.slack.dev/changelog/2024-04-a-better-way-to-upload-files-is-here-to-stay/) | repo-octokit-webhooks-js |
-| FET-C017 | fettler | common | development | Honor Slack Retry-After per workspace and method | rate-limit-remediation | [Slack](https://docs.slack.dev/apis/web-api/rate-limits) | repo-octokit-webhooks-js |
+| FET-C015 | fettler | common | holdout | Replace Slack files.upload with the asynchronous upload flow | api-retirement | [Slack](https://docs.slack.dev/changelog/2024-04-a-better-way-to-upload-files-is-here-to-stay/) | repo-openai-openai-node |
+| FET-C016 | fettler | common | development | Update Slack upload parameters and result shape | sdk-response-shape | [Slack](https://docs.slack.dev/changelog/2024-04-a-better-way-to-upload-files-is-here-to-stay/) | repo-openai-openai-node |
+| FET-C017 | fettler | common | development | Honor Slack Retry-After per workspace and method | rate-limit-remediation | [Slack](https://docs.slack.dev/apis/web-api/rate-limits) | repo-openai-openai-node |
 | FET-C018 | fettler | common | development | Acknowledge Slack events within three seconds | webhook-acknowledgement | [Slack](https://docs.slack.dev/apis/events-api/) | repo-octokit-webhooks-js |
 | FET-C019 | fettler | common | development | Preserve Slack retry number and reason | webhook-retry-lineage | [Slack](https://docs.slack.dev/apis/events-api/) | repo-octokit-webhooks-js |
 | FET-C020 | fettler | common | holdout | Handle Slack URL verification separately from events | webhook-handshake | [Slack](https://docs.slack.dev/apis/events-api/) | repo-octokit-webhooks-js |
@@ -59,9 +59,9 @@ This artifact contains 150 sourced cases: 50 common and 25 edge cases for each p
 | FET-C038 | fettler | common | development | Replace Azure AD Graph objectId with Microsoft Graph id | provider-identifier-migration | [Microsoft](https://learn.microsoft.com/en-us/cli/azure/microsoft-graph-migration) | repo-dotnet-architecture-eshoponweb |
 | FET-C039 | fettler | common | development | Remap Microsoft Graph permissions and consent | authorization-contract-migration | [Microsoft](https://learn.microsoft.com/en-us/graph/migrate-azure-ad-graph-planning-checklist) | repo-dotnet-architecture-eshoponweb |
 | FET-C040 | fettler | common | holdout | Migrate Microsoft Graph operation and payload differences | provider-operation-migration | [Microsoft](https://learn.microsoft.com/en-us/graph/migrate-azure-ad-graph-planning-checklist) | repo-dotnet-architecture-eshoponweb |
-| FET-C041 | fettler | common | development | Migrate Express 4 route syntax to Express 5 | framework-route-migration | [OpenJS Foundation Express project](https://expressjs.com/en/guide/migrating-5/) | repo-octokit-webhooks-js |
-| FET-C042 | fettler | common | development | Replace removed Express 5 request and response APIs | framework-api-removal | [OpenJS Foundation Express project](https://expressjs.com/en/guide/migrating-5/) | repo-octokit-webhooks-js |
-| FET-C043 | fettler | common | development | Avoid double error propagation with Express 5 async handlers | framework-error-semantics | [OpenJS Foundation Express project](https://expressjs.com/en/guide/migrating-5/) | repo-octokit-webhooks-js |
+| FET-C041 | fettler | common | development | Migrate Express 4 route syntax to Express 5 | framework-route-migration | [OpenJS Foundation Express project](https://expressjs.com/en/guide/migrating-5/) | repo-stripe-stripe-node |
+| FET-C042 | fettler | common | development | Replace removed Express 5 request and response APIs | framework-api-removal | [OpenJS Foundation Express project](https://expressjs.com/en/guide/migrating-5/) | repo-stripe-stripe-node |
+| FET-C043 | fettler | common | development | Avoid double error propagation with Express 5 async handlers | framework-error-semantics | [OpenJS Foundation Express project](https://expressjs.com/en/guide/migrating-5/) | repo-stripe-stripe-node |
 | FET-C044 | fettler | common | development | Remove Python distutils dependencies for Python 3.12 | runtime-standard-library-removal | [Python Software Foundation](https://docs.python.org/3.12/whatsnew/3.12.html) | repo-pallets-flask |
 | FET-C045 | fettler | common | holdout | Replace removed ssl.wrap_socket with SSLContext | runtime-security-api-removal | [Python Software Foundation](https://docs.python.org/3.12/whatsnew/3.12.html) | repo-pallets-flask |
 | FET-C046 | fettler | common | development | Replace removed Python 3.13 cgi parsing | runtime-module-removal | [Python Software Foundation](https://docs.python.org/3.13/whatsnew/3.13.html) | repo-pallets-flask |
@@ -130,7 +130,7 @@ This artifact contains 150 sourced cases: 50 common and 25 edge cases for each p
 | REG-C034 | regauge | common | development | Kubernetes controller and client API migration | controller-sdk-migration | [Kubernetes](https://kubernetes.io/docs/reference/using-api/deprecation-guide/) | repo-kubernetes-client-go |
 | REG-C035 | regauge | common | holdout | Terraform provider source address migration | provider-address-migration | [HashiCorp](https://developer.hashicorp.com/terraform/language/v1-compatibility-promises) | repo-kubernetes-client-go |
 | REG-C036 | regauge | common | development | Terraform provider major version migration | provider-major-upgrade | [HashiCorp](https://developer.hashicorp.com/terraform/language/v1-compatibility-promises) | repo-kubernetes-client-go |
-| REG-C037 | regauge | common | development | Terraform resource address refactor | state-preserving-refactor | [HashiCorp](https://developer.hashicorp.com/terraform/cli/state/move) | repo-kubernetes-client-go |
+| REG-C037 | regauge | common | development | Terraform resource address refactor | state-preserving-refactor | [HashiCorp](https://developer.hashicorp.com/terraform/cli/state/move) | repo-dotnet-architecture-eshoponweb |
 | REG-C038 | regauge | common | development | Docker Compose v1 to v2 migration | cli-runtime-migration | [Docker](https://docs.docker.com/retired/) | repo-dotnet-architecture-eshoponweb |
 | REG-C039 | regauge | common | development | Container base image modernization | base-image-migration | [Microsoft](https://learn.microsoft.com/en-us/dotnet/core/compatibility/8.0) | repo-dotnet-architecture-eshoponweb |
 | REG-C040 | regauge | common | holdout | PostgreSQL major version upgrade | database-major-upgrade | [PostgreSQL Global Development Group](https://www.postgresql.org/docs/current/upgrading.html) | repo-dotnet-architecture-eshoponweb |
@@ -144,7 +144,7 @@ This artifact contains 150 sourced cases: 50 common and 25 edge cases for each p
 | REG-C048 | regauge | common | development | npm publishing token to OIDC migration | publishing-auth-migration | [npm](https://docs.npmjs.com/trusted-publishers/) | repo-openai-openai-node |
 | REG-C049 | regauge | common | development | OAuth implicit or password flow to authorization code | authorization-protocol-migration | [Internet Engineering Task Force](https://datatracker.ietf.org/doc/html/rfc9700) | repo-octokit-webhooks-js |
 | REG-C050 | regauge | common | holdout | OAuth token replay and privilege restriction | token-security-migration | [Internet Engineering Task Force](https://datatracker.ietf.org/doc/html/rfc9700) | repo-octokit-webhooks-js |
-| REG-E001 | regauge | edge | development | Already modern positive control | positive-control-noop | [HashiCorp](https://developer.hashicorp.com/terraform/language/v1-compatibility-promises) | repo-kubernetes-client-go |
+| REG-E001 | regauge | edge | development | Already modern positive control | positive-control-noop | [HashiCorp](https://developer.hashicorp.com/terraform/language/v1-compatibility-promises) | repo-dotnet-architecture-eshoponweb |
 | REG-E002 | regauge | edge | development | Supported pinned version negative control | negative-control-not-applicable | [Django Software Foundation](https://docs.djangoproject.com/en/dev/howto/upgrade-version/) | repo-pallets-flask |
 | REG-E003 | regauge | edge | development | Missing lockfile with ambiguous target | insufficient-evidence | [Open Source Security Foundation](https://slsa.dev/spec/v1.2/provenance) | repo-openai-openai-node |
 | REG-E004 | regauge | edge | development | Conflicting migration guide and resolved dependency graph | conflicting-evidence | [HashiCorp](https://developer.hashicorp.com/terraform/language/v1-compatibility-promises) | repo-kubernetes-client-go |

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { admitFixture, type FixtureManifest } from "./fixture.js";
-import { evaluateProductionLearningPreflight } from "./preflight.js";
+import { admitFixture, fixtureManifestDigest, type FixtureManifest } from "./fixture.js";
+import { evaluateProductionLearningPreflight, type TrustedProductionLearningAuthority } from "./preflight.js";
 import type { LearningCase, ProductionExecutionReceipt, RepositoryProvenance } from "./schema.js";
 
 const SHA = "a".repeat(64);
@@ -33,7 +33,7 @@ function repository(): RepositoryProvenance {
 
 function fixture(): FixtureManifest {
   return {
-    schemaVersion: "mendpoint.fixture-manifest.v1", caseId: learningCase.id,
+    schemaVersion: "mendpoint.fixture-manifest.v1", manifestId: learningCase.fixture.manifestId, caseId: learningCase.id,
     repository: { provenanceId: "repo-a", immutableCommit: REVISION, pristineSnapshotSha256: SHA },
     mutation: { id: "mutation-FET-E001", kind: "patch", patchPath: "patches/FET-E001.patch", patchSha256: SHA, seededFailure: learningCase.pattern.seededFailure },
     expectedImpactGraph: { nodes: ["provider", "client"], edges: [], evidenceState: "unknown" },
@@ -44,15 +44,39 @@ function fixture(): FixtureManifest {
   };
 }
 
-function receipt(): ProductionExecutionReceipt {
+function receipt(value = fixture()): ProductionExecutionReceipt {
   return {
     schemaVersion: "mendpoint.production-learning-receipt.v1", caseId: learningCase.id, product: "fettler", productionRevision: REVISION, tenantId: "benchmark-tenant-a", repositoryId: "repo-a", repositoryCommit: REVISION, snapshotDigest: SHA,
+    fixtureManifestDigest: fixtureManifestDigest(value),
     graphVersion: "graph-v1", policyVersion: "policy-v1", model: { provider: "configured", modelId: "model-v1", requestId: "request-1" }, routerVersion: "router-v1", recipeVersion: null,
     consent: { decision: "granted", purpose: "evaluation", evidenceRef: "consent://benchmark-tenant-a/evaluation/v1" }, authorizationRef: "authorization://benchmark-tenant-a/run-1",
     sandbox: { kind: "dedicated_benchmark", receiptDigest: SHA, defaultDenyEgress: true }, executionDigest: SHA,
     budget: { maximumUsd: 1, maximumLatencyMs: 60_000, maximumAttempts: 1 }, delivery: { mode: "draft_pr_only", mergeAllowed: false, deploymentAllowed: false, openDraftCountForCase: 0 },
     advisoryVerifier: { name: "deepseek", advisoryOnly: true, maySelectCandidate: false, mayMutateExecution: false, mayDeliver: false, mayMerge: false, mayDeploy: false },
     evidence: { diagnosis: "unknown", repairOrMigration: "unknown", verification: "unknown", rollback: "unknown", production: "unknown" },
+  };
+}
+
+function authority(run: ProductionExecutionReceipt): TrustedProductionLearningAuthority {
+  return {
+    caseId: run.caseId,
+    product: run.product,
+    productionRevision: run.productionRevision,
+    tenantId: run.tenantId,
+    repositoryId: run.repositoryId,
+    repositoryCommit: run.repositoryCommit,
+    snapshotDigest: run.snapshotDigest,
+    fixtureManifestDigest: run.fixtureManifestDigest,
+    graphVersion: run.graphVersion,
+    policyVersion: run.policyVersion,
+    modelProvider: run.model.provider,
+    modelId: run.model.modelId,
+    routerVersion: run.routerVersion,
+    recipeVersion: run.recipeVersion,
+    consentEvidenceRef: run.consent.evidenceRef,
+    authorizationRef: run.authorizationRef,
+    sandboxReceiptDigest: run.sandbox.receiptDigest,
+    executionDigest: run.executionDigest,
   };
 }
 
@@ -77,7 +101,7 @@ describe("fixture admission and production preflight", () => {
     const run = receipt();
     run.snapshotDigest = "c".repeat(64);
     run.tenantId = "customer-tenant-a";
-    const result = evaluateProductionLearningPreflight({ learningCase, repository: repository(), fixture: fixture(), receipt: run });
+    const result = evaluateProductionLearningPreflight({ learningCase, repository: repository(), fixture: fixture(), receipt: run, authority: authority(receipt()) });
     expect(result.allowed).toBe(false);
     expect(result.errors).toEqual(expect.arrayContaining([
       "receipt snapshotDigest must match fixture snapshot",
@@ -86,8 +110,38 @@ describe("fixture admission and production preflight", () => {
   });
 
   it("allows preflight only after every binding validates", () => {
-    const result = evaluateProductionLearningPreflight({ learningCase, repository: repository(), fixture: fixture(), receipt: receipt() });
+    const manifest = fixture();
+    const run = receipt(manifest);
+    const result = evaluateProductionLearningPreflight({ learningCase, repository: repository(), fixture: manifest, receipt: run, authority: authority(run) });
     expect(result.allowed).toBe(true);
     expect(result.errors).toEqual([]);
+  });
+
+  it("rejects a self-consistent receipt that does not match trusted deployed authority", () => {
+    const manifest = fixture();
+    const run = receipt(manifest);
+    const trusted = authority(run);
+    trusted.productionRevision = "c".repeat(40);
+    trusted.authorizationRef = "authorization://benchmark-tenant-a/protected-run";
+    const result = evaluateProductionLearningPreflight({ learningCase, repository: repository(), fixture: manifest, receipt: run, authority: trusted });
+    expect(result.errors).toEqual(expect.arrayContaining([
+      "receipt productionRevision must match trusted production authority",
+      "receipt authorizationRef must match trusted production authority",
+    ]));
+  });
+
+  it("binds manifest identity, impact graph, rollback oracle, and complete manifest digest", () => {
+    const manifest = fixture();
+    manifest.manifestId = "wrong-manifest";
+    manifest.expectedImpactGraph.nodes = ["different"];
+    manifest.rollback.oracleId = "different-oracle";
+    const run = receipt(fixture());
+    const result = evaluateProductionLearningPreflight({ learningCase, repository: repository(), fixture: manifest, receipt: run, authority: authority(run) });
+    expect(result.errors).toEqual(expect.arrayContaining([
+      "manifestId must match the learning case",
+      "expectedImpactGraph nodes must match the learning case",
+      "rollback oracleId must match the failing oracle",
+      "receipt fixtureManifestDigest must match the complete fixture manifest",
+    ]));
   });
 });

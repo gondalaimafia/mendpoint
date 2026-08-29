@@ -31,7 +31,7 @@ describe("sourced 150 case catalog", () => {
     expect(missing.map((item) => item.id)).toEqual([]);
   });
 
-  it("keeps all holdout cases sealed by stable split assignment", () => {
+  it("assigns stable holdout candidates without claiming protected sealing", () => {
     const holdoutIds = learningCases.filter((item) => item.datasetSplit === "holdout").map((item) => item.id);
     expect(holdoutIds).toHaveLength(30);
     expect(new Set(holdoutIds).size).toBe(30);

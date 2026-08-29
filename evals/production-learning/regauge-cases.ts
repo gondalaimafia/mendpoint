@@ -1,4 +1,5 @@
 import type { LearningCase, LearningSource } from "./schema.js";
+import { admissionCandidates } from "./repositories.js";
 
 const RETRIEVED_AT = "2026-08-28T23:00:00.000Z";
 
@@ -118,6 +119,33 @@ const reviewedRepositoryIdForOpenTelemetryPattern: Record<string, ReviewedReposi
   "holdout-contamination": "repo-openai-openai-node",
 };
 
+const reviewedRepositoryIdByCase: Partial<Record<`REG-${"C" | "E"}${string}`, ReviewedRepositoryId>> = {
+  "REG-C037": "repo-dotnet-architecture-eshoponweb",
+  "REG-E001": "repo-dotnet-architecture-eshoponweb",
+};
+
+const allowedEditPathsByCase: Partial<Record<`REG-${"C" | "E"}${string}`, string[]>> = {
+  "REG-C019": ["railties/**", "activesupport/**"],
+  "REG-C031": ["compiler/Cargo.toml", "compiler/Cargo.lock", "compiler/crates/**"],
+  "REG-C032": ["compiler/Cargo.toml", "compiler/Cargo.lock", "compiler/crates/**"],
+  "REG-C033": ["kubernetes/**", "discovery/**"],
+  "REG-C036": ["go.mod", "go.sum", "rest/**", "tools/**"],
+  "REG-C037": ["infra/**"],
+  "REG-C043": ["codegen/generic-client-test-codegen/model/**", "codegen/smithy-aws-typescript-codegen/src/test/resources/**"],
+  "REG-C045": ["pom.xml", "build.gradle", "docker-compose.yml", "src/test/**"],
+  "REG-E001": ["infra/**"],
+  "REG-E005": ["compiler/Cargo.toml", "compiler/Cargo.lock", "compiler/crates/**"],
+  "REG-E006": ["codegen/generic-client-test-codegen/model/**", "codegen/smithy-aws-typescript-codegen/src/test/resources/**"],
+  "REG-E009": ["tests/**"],
+  "REG-E011": ["tests/**"],
+  "REG-E017": ["tests/**"],
+  "REG-E019": ["package.json", "packages/**", "codegen/**"],
+  "REG-E021": ["pom.xml", "build.gradle", "docker-compose.yml", "src/test/**"],
+  "REG-E022": ["pom.xml", "build.gradle", "docker-compose.yml", "src/test/**"],
+  "REG-E024": ["go.mod", "go.sum", "rest/**", "kubernetes/**"],
+  "REG-E025": ["tests/**"],
+};
+
 interface CaseDefinition {
   id: `REG-${"C" | "E"}${string}`;
   title: string;
@@ -144,6 +172,12 @@ function makeCase(definition: CaseDefinition): LearningCase {
   const ordinal = Number(definition.id.slice(5));
   const selectedSource = sources[definition.source];
   const fixtureStem = definition.id.toLowerCase();
+  const reviewedRepositoryId = selectReviewedRepositoryId(definition);
+  const reviewedRepository = admissionCandidates.find((candidate) => candidate.id === reviewedRepositoryId);
+
+  if (reviewedRepository === undefined) {
+    throw new Error(`Reviewed repository metadata is missing for ${definition.id}`);
+  }
 
   return {
     schemaVersion: "mendpoint.learning-case.v1",
@@ -159,9 +193,9 @@ function makeCase(definition: CaseDefinition): LearningCase {
     },
     sources: [selectedSource],
     repository: {
-      provenanceId: selectReviewedRepositoryId(definition),
-      languages: definition.languages,
-      frameworks: definition.frameworks,
+      provenanceId: reviewedRepositoryId,
+      languages: [...reviewedRepository.languages],
+      frameworks: [...reviewedRepository.frameworks],
     },
     pattern: {
       family: definition.family,
@@ -182,7 +216,7 @@ function makeCase(definition: CaseDefinition): LearningCase {
     fixture: {
       manifestId: `fixture:${fixtureStem}:v1`,
       mutationId: `mutation:${fixtureStem}:v1`,
-      allowedEditPaths: definition.allowedEditPaths,
+      allowedEditPaths: allowedEditPathsByCase[definition.id] ?? definition.allowedEditPaths,
       rollbackId: `rollback:${fixtureStem}:v1`,
       cleanupId: `cleanup:${fixtureStem}:v1`,
     },
@@ -195,9 +229,9 @@ function makeCase(definition: CaseDefinition): LearningCase {
 }
 
 function selectReviewedRepositoryId(definition: CaseDefinition): ReviewedRepositoryId {
-  const reviewedRepositoryId = definition.provenanceId === "repo-opentelemetry-demo"
+  const reviewedRepositoryId = reviewedRepositoryIdByCase[definition.id] ?? (definition.provenanceId === "repo-opentelemetry-demo"
     ? reviewedRepositoryIdForOpenTelemetryPattern[definition.family]
-    : reviewedRepositoryIdByResearchCandidate[definition.provenanceId];
+    : reviewedRepositoryIdByResearchCandidate[definition.provenanceId]);
 
   if (reviewedRepositoryId === undefined) {
     throw new Error(`No reviewed repository mapping for ${definition.id}`);

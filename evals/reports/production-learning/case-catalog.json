@@ -1,6 +1,6 @@
 {
   "schemaVersion": "mendpoint.case-catalog.v1",
-  "generatedAt": "2026-08-29T00:55:16.523Z",
+  "generatedAt": "2026-08-29T02:22:58.317Z",
   "programBaseRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
   "cases": [
     {
@@ -33,8 +33,8 @@
           "TypeScript"
         ],
         "frameworks": [
-          "Octokit",
-          "Node.js"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -62,10 +62,10 @@
         "manifestId": "fixture-fet-c001-manifest-v1",
         "mutationId": "mutation-fet-c001-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c001-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c001-sandbox-v1"
@@ -108,8 +108,8 @@
           "TypeScript"
         ],
         "frameworks": [
-          "Octokit",
-          "Node.js"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -137,10 +137,10 @@
         "manifestId": "fixture-fet-c002-manifest-v1",
         "mutationId": "mutation-fet-c002-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c002-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c002-sandbox-v1"
@@ -183,8 +183,8 @@
           "TypeScript"
         ],
         "frameworks": [
-          "Octokit",
-          "Node.js"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -212,10 +212,10 @@
         "manifestId": "fixture-fet-c003-manifest-v1",
         "mutationId": "mutation-fet-c003-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c003-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c003-sandbox-v1"
@@ -258,8 +258,8 @@
           "TypeScript"
         ],
         "frameworks": [
-          "Octokit",
-          "Node.js"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -287,10 +287,10 @@
         "manifestId": "fixture-fet-c004-manifest-v1",
         "mutationId": "mutation-fet-c004-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c004-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c004-sandbox-v1"
@@ -333,8 +333,8 @@
           "TypeScript"
         ],
         "frameworks": [
-          "Octokit",
-          "Node.js"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -347,25 +347,14 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Inspect raw-body availability, selected signature header, algorithm, and comparison operation.",
-        "repairOrMigration": "Verify the raw UTF-8 bytes with HMAC-SHA-256 and a timing-safe comparison.",
-        "oracleIds": [
-          "oracle-fet-c005-github-hmac"
-        ],
-        "productionAcceptance": [
-          "GitHub's published test vector passes.",
-          "A one-byte payload mutation fails before enqueue."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-c005-manifest-v1",
         "mutationId": "mutation-fet-c005-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c005-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c005-sandbox-v1"
@@ -376,6 +365,11 @@
           "A forged SCM event can trigger cross-tenant work."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "b0cf148b62421829c22fea123268059b78d662e2f6e8b1483f851c6d06de58c5",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -408,8 +402,8 @@
           "TypeScript"
         ],
         "frameworks": [
-          "Octokit",
-          "Node.js"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -437,10 +431,10 @@
         "manifestId": "fixture-fet-c006-manifest-v1",
         "mutationId": "mutation-fet-c006-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c006-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c006-sandbox-v1"
@@ -483,8 +477,8 @@
           "TypeScript"
         ],
         "frameworks": [
-          "Octokit",
-          "Node.js"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -512,10 +506,10 @@
         "manifestId": "fixture-fet-c007-manifest-v1",
         "mutationId": "mutation-fet-c007-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c007-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c007-sandbox-v1"
@@ -558,8 +552,8 @@
           "TypeScript"
         ],
         "frameworks": [
-          "Octokit",
-          "Node.js"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -587,10 +581,10 @@
         "manifestId": "fixture-fet-c008-manifest-v1",
         "mutationId": "mutation-fet-c008-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c008-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c008-sandbox-v1"
@@ -634,8 +628,8 @@
           "JavaScript"
         ],
         "frameworks": [
-          "Stripe SDK",
-          "Node.js"
+          "Node.js",
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -663,10 +657,10 @@
         "manifestId": "fixture-fet-c009-manifest-v1",
         "mutationId": "mutation-fet-c009-seed-v1",
         "allowedEditPaths": [
-          "src/**",
+          "src/Webhooks.ts",
+          "src/stripe.core.ts",
           "test/**",
-          "package.json",
-          "package-lock.json"
+          "examples/webhook-signing/**"
         ],
         "rollbackId": "rollback-fet-c009-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c009-sandbox-v1"
@@ -710,8 +704,8 @@
           "JavaScript"
         ],
         "frameworks": [
-          "Stripe SDK",
-          "Node.js"
+          "Node.js",
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -724,25 +718,14 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Differentiate delivery identity, Event identity, and object/type identity.",
-        "repairOrMigration": "Persist appropriate tenant-scoped deduplication keys before business effects.",
-        "oracleIds": [
-          "oracle-fet-c010-stripe-dedup"
-        ],
-        "productionAcceptance": [
-          "Duplicate fixtures create one state transition.",
-          "Every delivery remains linked to its outcome."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-c010-manifest-v1",
         "mutationId": "mutation-fet-c010-seed-v1",
         "allowedEditPaths": [
-          "src/**",
+          "src/Webhooks.ts",
+          "src/stripe.core.ts",
           "test/**",
-          "package.json",
-          "package-lock.json"
+          "examples/webhook-signing/**"
         ],
         "rollbackId": "rollback-fet-c010-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c010-sandbox-v1"
@@ -753,6 +736,11 @@
           "Duplicate fulfillment or money movement."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "5714388f8e6ab8bdcbeef9b624086a4ae734291230cae8a8e746c963e50c9a7a",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -786,8 +774,8 @@
           "JavaScript"
         ],
         "frameworks": [
-          "Stripe SDK",
-          "Node.js"
+          "Node.js",
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -815,10 +803,10 @@
         "manifestId": "fixture-fet-c011-manifest-v1",
         "mutationId": "mutation-fet-c011-seed-v1",
         "allowedEditPaths": [
-          "src/**",
+          "src/Webhooks.ts",
+          "src/stripe.core.ts",
           "test/**",
-          "package.json",
-          "package-lock.json"
+          "examples/webhook-signing/**"
         ],
         "rollbackId": "rollback-fet-c011-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c011-sandbox-v1"
@@ -862,8 +850,8 @@
           "JavaScript"
         ],
         "frameworks": [
-          "Stripe SDK",
-          "Node.js"
+          "Node.js",
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -891,10 +879,10 @@
         "manifestId": "fixture-fet-c012-manifest-v1",
         "mutationId": "mutation-fet-c012-seed-v1",
         "allowedEditPaths": [
-          "src/**",
+          "src/Webhooks.ts",
+          "src/stripe.core.ts",
           "test/**",
-          "package.json",
-          "package-lock.json"
+          "examples/webhook-signing/**"
         ],
         "rollbackId": "rollback-fet-c012-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c012-sandbox-v1"
@@ -938,8 +926,8 @@
           "JavaScript"
         ],
         "frameworks": [
-          "Stripe SDK",
-          "Node.js"
+          "Node.js",
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -967,10 +955,10 @@
         "manifestId": "fixture-fet-c013-manifest-v1",
         "mutationId": "mutation-fet-c013-seed-v1",
         "allowedEditPaths": [
-          "src/**",
+          "src/Webhooks.ts",
+          "src/stripe.core.ts",
           "test/**",
-          "package.json",
-          "package-lock.json"
+          "examples/webhook-signing/**"
         ],
         "rollbackId": "rollback-fet-c013-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c013-sandbox-v1"
@@ -1014,8 +1002,8 @@
           "JavaScript"
         ],
         "frameworks": [
-          "Stripe SDK",
-          "Node.js"
+          "Node.js",
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -1043,10 +1031,10 @@
         "manifestId": "fixture-fet-c014-manifest-v1",
         "mutationId": "mutation-fet-c014-seed-v1",
         "allowedEditPaths": [
-          "src/**",
+          "src/Webhooks.ts",
+          "src/stripe.core.ts",
           "test/**",
-          "package.json",
-          "package-lock.json"
+          "examples/webhook-signing/**"
         ],
         "rollbackId": "rollback-fet-c014-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c014-sandbox-v1"
@@ -1084,13 +1072,15 @@
         }
       ],
       "repository": {
-        "provenanceId": "repo-octokit-webhooks-js",
+        "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "TypeScript"
+          "TypeScript",
+          "JavaScript"
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -1103,25 +1093,14 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Locate the retired call and every assumption about its single-request lifecycle.",
-        "repairOrMigration": "Use filesUploadV2 or the documented get URL, upload bytes, and complete sequence.",
-        "oracleIds": [
-          "oracle-fet-c015-slack-upload-sequence"
-        ],
-        "productionAcceptance": [
-          "The fixture observes every required stage in order.",
-          "The final file is delivered once to the intended channel."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-c015-manifest-v1",
         "mutationId": "mutation-fet-c015-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/uploads.ts",
+          "src/resources/files.ts",
+          "src/client.ts",
+          "tests/**"
         ],
         "rollbackId": "rollback-fet-c015-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c015-sandbox-v1"
@@ -1132,6 +1111,11 @@
           "A file can fail delivery or reach the wrong workspace channel."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "2b4210432507944c8d94220c2b829c0b016b8de54f7bf90ac723bddf9227ba8f",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -1159,13 +1143,15 @@
         }
       ],
       "repository": {
-        "provenanceId": "repo-octokit-webhooks-js",
+        "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "TypeScript"
+          "TypeScript",
+          "JavaScript"
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -1193,10 +1179,10 @@
         "manifestId": "fixture-fet-c016-manifest-v1",
         "mutationId": "mutation-fet-c016-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/uploads.ts",
+          "src/resources/files.ts",
+          "src/client.ts",
+          "tests/**"
         ],
         "rollbackId": "rollback-fet-c016-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c016-sandbox-v1"
@@ -1234,13 +1220,15 @@
         }
       ],
       "repository": {
-        "provenanceId": "repo-octokit-webhooks-js",
+        "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "TypeScript"
+          "TypeScript",
+          "JavaScript"
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -1268,10 +1256,10 @@
         "manifestId": "fixture-fet-c017-manifest-v1",
         "mutationId": "mutation-fet-c017-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/uploads.ts",
+          "src/resources/files.ts",
+          "src/client.ts",
+          "tests/**"
         ],
         "rollbackId": "rollback-fet-c017-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c017-sandbox-v1"
@@ -1315,7 +1303,7 @@
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -1343,10 +1331,10 @@
         "manifestId": "fixture-fet-c018-manifest-v1",
         "mutationId": "mutation-fet-c018-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c018-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c018-sandbox-v1"
@@ -1390,7 +1378,7 @@
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -1418,10 +1406,10 @@
         "manifestId": "fixture-fet-c019-manifest-v1",
         "mutationId": "mutation-fet-c019-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c019-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c019-sandbox-v1"
@@ -1465,7 +1453,7 @@
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -1478,25 +1466,14 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Detect the url_verification envelope before normal event dispatch.",
-        "repairOrMigration": "Verify the request and return the exact challenge without enqueuing domain work.",
-        "oracleIds": [
-          "oracle-fet-c020-slack-challenge"
-        ],
-        "productionAcceptance": [
-          "A valid challenge is echoed exactly.",
-          "A forged challenge fails and produces no job."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-c020-manifest-v1",
         "mutationId": "mutation-fet-c020-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c020-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c020-sandbox-v1"
@@ -1507,6 +1484,11 @@
           "An unauthenticated handshake can redirect sensitive workspace events."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "587e1cf5459d69dd3a45b338a44b770c473efcbf86089cd33558da52fc4c8c13",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -1540,7 +1522,7 @@
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -1568,10 +1550,10 @@
         "manifestId": "fixture-fet-c021-manifest-v1",
         "mutationId": "mutation-fet-c021-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c021-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c021-sandbox-v1"
@@ -1616,7 +1598,7 @@
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -1644,10 +1626,9 @@
         "manifestId": "fixture-fet-c022-manifest-v1",
         "mutationId": "mutation-fet-c022-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c022-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c022-sandbox-v1"
@@ -1692,7 +1673,7 @@
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -1720,10 +1701,9 @@
         "manifestId": "fixture-fet-c023-manifest-v1",
         "mutationId": "mutation-fet-c023-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c023-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c023-sandbox-v1"
@@ -1768,7 +1748,7 @@
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -1796,10 +1776,9 @@
         "manifestId": "fixture-fet-c024-manifest-v1",
         "mutationId": "mutation-fet-c024-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-c024-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c024-sandbox-v1"
@@ -1843,7 +1822,9 @@
           "JavaScript"
         ],
         "frameworks": [
-          "AWS SDK for JavaScript"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -1856,25 +1837,13 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Inventory v2 imports, services, methods, runtime, region, and credential behavior.",
-        "repairOrMigration": "Use v3 service clients and explicit commands through send.",
-        "oracleIds": [
-          "oracle-fet-c025-aws-v3-command"
-        ],
-        "productionAcceptance": [
-          "No aws-sdk v2 import remains.",
-          "Every affected call passes a recorded service contract fixture."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-c025-manifest-v1",
         "mutationId": "mutation-fet-c025-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "clients/client-s3/src/**",
+          "lib/lib-dynamodb/src/**",
+          "packages/credential-providers/src/**"
         ],
         "rollbackId": "rollback-fet-c025-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c025-sandbox-v1"
@@ -1885,6 +1854,11 @@
           "A migration can execute under the wrong region or credentials."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "6e4e70142a75738c2fb6e8eccb17971f6a89bd74404a2b48af7e6cedf68a1687",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -1918,7 +1892,9 @@
           "JavaScript"
         ],
         "frameworks": [
-          "AWS SDK for JavaScript"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -1946,10 +1922,9 @@
         "manifestId": "fixture-fet-c026-manifest-v1",
         "mutationId": "mutation-fet-c026-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "clients/client-s3/src/**",
+          "lib/lib-dynamodb/src/**",
+          "packages/credential-providers/src/**"
         ],
         "rollbackId": "rollback-fet-c026-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c026-sandbox-v1"
@@ -1993,7 +1968,9 @@
           "JavaScript"
         ],
         "frameworks": [
-          "AWS SDK for JavaScript"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -2021,10 +1998,9 @@
         "manifestId": "fixture-fet-c027-manifest-v1",
         "mutationId": "mutation-fet-c027-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "clients/client-s3/src/**",
+          "lib/lib-dynamodb/src/**",
+          "packages/credential-providers/src/**"
         ],
         "rollbackId": "rollback-fet-c027-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c027-sandbox-v1"
@@ -2068,7 +2044,9 @@
           "JavaScript"
         ],
         "frameworks": [
-          "AWS SDK for JavaScript"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -2096,10 +2074,9 @@
         "manifestId": "fixture-fet-c028-manifest-v1",
         "mutationId": "mutation-fet-c028-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "clients/client-s3/src/**",
+          "lib/lib-dynamodb/src/**",
+          "packages/credential-providers/src/**"
         ],
         "rollbackId": "rollback-fet-c028-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c028-sandbox-v1"
@@ -2143,7 +2120,9 @@
           "JavaScript"
         ],
         "frameworks": [
-          "AWS SDK for JavaScript"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -2171,10 +2150,9 @@
         "manifestId": "fixture-fet-c029-manifest-v1",
         "mutationId": "mutation-fet-c029-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "clients/client-s3/src/**",
+          "lib/lib-dynamodb/src/**",
+          "packages/credential-providers/src/**"
         ],
         "rollbackId": "rollback-fet-c029-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c029-sandbox-v1"
@@ -2218,7 +2196,9 @@
           "JavaScript"
         ],
         "frameworks": [
-          "AWS SDK for JavaScript"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -2231,25 +2211,13 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Inventory runtime-specific credential sources and prove the selected source and account.",
-        "repairOrMigration": "Use the documented v3 provider or default chain and remove credential literals.",
-        "oracleIds": [
-          "oracle-fet-c030-aws-credential-precedence"
-        ],
-        "productionAcceptance": [
-          "Fixture providers resolve in the expected order.",
-          "The execution receipt binds the expected account and role."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-c030-manifest-v1",
         "mutationId": "mutation-fet-c030-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "clients/client-s3/src/**",
+          "lib/lib-dynamodb/src/**",
+          "packages/credential-providers/src/**"
         ],
         "rollbackId": "rollback-fet-c030-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c030-sandbox-v1"
@@ -2260,6 +2228,11 @@
           "A changed provider can execute in another AWS account."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "3917e199fd0adceacacad9cb9e195b1403296d58af5598d3d3e383d21cbb4f1f",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -2293,7 +2266,9 @@
           "JavaScript"
         ],
         "frameworks": [
-          "AWS SDK for JavaScript"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -2321,10 +2296,9 @@
         "manifestId": "fixture-fet-c031-manifest-v1",
         "mutationId": "mutation-fet-c031-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "clients/client-s3/src/**",
+          "lib/lib-dynamodb/src/**",
+          "packages/credential-providers/src/**"
         ],
         "rollbackId": "rollback-fet-c031-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c031-sandbox-v1"
@@ -2364,12 +2338,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "Go",
-          "YAML"
+          "Go"
         ],
         "frameworks": [
-          "Kubernetes",
-          "client-go"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -2397,10 +2370,8 @@
         "manifestId": "fixture-fet-c032-manifest-v1",
         "mutationId": "mutation-fet-c032-seed-v1",
         "allowedEditPaths": [
-          "deploy/**",
-          "charts/**",
-          "manifests/**",
-          "tests/**"
+          "applyconfigurations/batch/v1/**",
+          "kubernetes/typed/batch/v1/**"
         ],
         "rollbackId": "rollback-fet-c032-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c032-sandbox-v1"
@@ -2440,12 +2411,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "Go",
-          "YAML"
+          "Go"
         ],
         "frameworks": [
-          "Kubernetes",
-          "client-go"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -2473,10 +2443,8 @@
         "manifestId": "fixture-fet-c033-manifest-v1",
         "mutationId": "mutation-fet-c033-seed-v1",
         "allowedEditPaths": [
-          "deploy/**",
-          "charts/**",
-          "manifests/**",
-          "tests/**"
+          "applyconfigurations/autoscaling/v2/**",
+          "kubernetes/typed/autoscaling/v2/**"
         ],
         "rollbackId": "rollback-fet-c033-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c033-sandbox-v1"
@@ -2516,12 +2484,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "Go",
-          "YAML"
+          "Go"
         ],
         "frameworks": [
-          "Kubernetes",
-          "client-go"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -2549,10 +2516,8 @@
         "manifestId": "fixture-fet-c034-manifest-v1",
         "mutationId": "mutation-fet-c034-seed-v1",
         "allowedEditPaths": [
-          "deploy/**",
-          "charts/**",
-          "manifests/**",
-          "tests/**"
+          "applyconfigurations/admissionregistration/v1/**",
+          "kubernetes/typed/admissionregistration/v1/**"
         ],
         "rollbackId": "rollback-fet-c034-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c034-sandbox-v1"
@@ -2592,12 +2557,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "Go",
-          "YAML"
+          "Go"
         ],
         "frameworks": [
-          "Kubernetes",
-          "client-go"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -2610,25 +2574,12 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Map each enforced PSP control to the target admission mechanism.",
-        "repairOrMigration": "Configure Pod Security Admission or an approved webhook and stage policy tests before removal.",
-        "oracleIds": [
-          "oracle-fet-c035-kubernetes-pod-security"
-        ],
-        "productionAcceptance": [
-          "A privileged pod is denied.",
-          "An approved baseline pod remains admitted."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-c035-manifest-v1",
         "mutationId": "mutation-fet-c035-seed-v1",
         "allowedEditPaths": [
-          "deploy/**",
-          "charts/**",
-          "manifests/**",
-          "tests/**"
+          "kubernetes/typed/policy/v1/**",
+          "kubernetes/typed/policy/v1beta1/**"
         ],
         "rollbackId": "rollback-fet-c035-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c035-sandbox-v1"
@@ -2639,6 +2590,11 @@
           "Removing enforcement can permit workload privilege escalation."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "77fd5bab1a3f6e8f4bf8768799cbc6901cc507f0763868fddf9f621cd681eec2",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -2668,12 +2624,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "Go",
-          "YAML"
+          "Go"
         ],
         "frameworks": [
-          "Kubernetes",
-          "client-go"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -2701,10 +2656,8 @@
         "manifestId": "fixture-fet-c036-manifest-v1",
         "mutationId": "mutation-fet-c036-seed-v1",
         "allowedEditPaths": [
-          "deploy/**",
-          "charts/**",
-          "manifests/**",
-          "tests/**"
+          "applyconfigurations/discovery/v1/**",
+          "kubernetes/typed/discovery/v1/**"
         ],
         "rollbackId": "rollback-fet-c036-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c036-sandbox-v1"
@@ -2747,8 +2700,10 @@
           "C#"
         ],
         "frameworks": [
-          ".NET",
-          "Microsoft Graph"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -2776,10 +2731,9 @@
         "manifestId": "fixture-fet-c037-manifest-v1",
         "mutationId": "mutation-fet-c037-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/PublicApi/**",
+          "src/BlazorShared/**",
+          "tests/FunctionalTests/**"
         ],
         "rollbackId": "rollback-fet-c037-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c037-sandbox-v1"
@@ -2822,8 +2776,10 @@
           "C#"
         ],
         "frameworks": [
-          ".NET",
-          "Microsoft Graph"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -2851,10 +2807,9 @@
         "manifestId": "fixture-fet-c038-manifest-v1",
         "mutationId": "mutation-fet-c038-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/PublicApi/**",
+          "src/BlazorShared/**",
+          "tests/FunctionalTests/**"
         ],
         "rollbackId": "rollback-fet-c038-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c038-sandbox-v1"
@@ -2897,8 +2852,10 @@
           "C#"
         ],
         "frameworks": [
-          ".NET",
-          "Microsoft Graph"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -2926,10 +2883,9 @@
         "manifestId": "fixture-fet-c039-manifest-v1",
         "mutationId": "mutation-fet-c039-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/PublicApi/**",
+          "src/BlazorShared/**",
+          "tests/FunctionalTests/**"
         ],
         "rollbackId": "rollback-fet-c039-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c039-sandbox-v1"
@@ -2972,8 +2928,10 @@
           "C#"
         ],
         "frameworks": [
-          ".NET",
-          "Microsoft Graph"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -2986,25 +2944,13 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Build an operation-level difference inventory rather than assuming endpoint parity.",
-        "repairOrMigration": "Update serializers, pagination, batching, and response mapping per documented operation.",
-        "oracleIds": [
-          "oracle-fet-c040-microsoft-operation-parity"
-        ],
-        "productionAcceptance": [
-          "Recorded legacy and target responses normalize to the same domain result.",
-          "The full test-tenant lifecycle succeeds."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-c040-manifest-v1",
         "mutationId": "mutation-fet-c040-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/PublicApi/**",
+          "src/BlazorShared/**",
+          "tests/FunctionalTests/**"
         ],
         "rollbackId": "rollback-fet-c040-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c040-sandbox-v1"
@@ -3015,6 +2961,11 @@
           "Partial directory data can produce false impact or authorization results."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "bed6c9649b55b6418972b1de801fc6cdb97daa02834f5f5c0d4421d79e0c2d0f",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -3042,14 +2993,14 @@
         }
       ],
       "repository": {
-        "provenanceId": "repo-octokit-webhooks-js",
+        "provenanceId": "repo-stripe-stripe-node",
         "languages": [
           "TypeScript",
           "JavaScript"
         ],
         "frameworks": [
           "Node.js",
-          "HTTP routing"
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -3077,10 +3028,9 @@
         "manifestId": "fixture-fet-c041-manifest-v1",
         "mutationId": "mutation-fet-c041-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "examples/webhook-signing/express/**",
+          "src/Webhooks.ts",
+          "test/Webhook.spec.ts"
         ],
         "rollbackId": "rollback-fet-c041-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c041-sandbox-v1"
@@ -3118,14 +3068,14 @@
         }
       ],
       "repository": {
-        "provenanceId": "repo-octokit-webhooks-js",
+        "provenanceId": "repo-stripe-stripe-node",
         "languages": [
           "TypeScript",
           "JavaScript"
         ],
         "frameworks": [
           "Node.js",
-          "HTTP routing"
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -3153,10 +3103,9 @@
         "manifestId": "fixture-fet-c042-manifest-v1",
         "mutationId": "mutation-fet-c042-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "examples/webhook-signing/express/**",
+          "src/Webhooks.ts",
+          "test/Webhook.spec.ts"
         ],
         "rollbackId": "rollback-fet-c042-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c042-sandbox-v1"
@@ -3194,14 +3143,14 @@
         }
       ],
       "repository": {
-        "provenanceId": "repo-octokit-webhooks-js",
+        "provenanceId": "repo-stripe-stripe-node",
         "languages": [
           "TypeScript",
           "JavaScript"
         ],
         "frameworks": [
           "Node.js",
-          "HTTP routing"
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -3229,10 +3178,9 @@
         "manifestId": "fixture-fet-c043-manifest-v1",
         "mutationId": "mutation-fet-c043-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "examples/webhook-signing/express/**",
+          "src/Webhooks.ts",
+          "test/Webhook.spec.ts"
         ],
         "rollbackId": "rollback-fet-c043-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c043-sandbox-v1"
@@ -3276,7 +3224,8 @@
         ],
         "frameworks": [
           "Flask",
-          "Python standard library"
+          "Jinja",
+          "WSGI"
         ]
       },
       "pattern": {
@@ -3304,10 +3253,10 @@
         "manifestId": "fixture-fet-c044-manifest-v1",
         "mutationId": "mutation-fet-c044-seed-v1",
         "allowedEditPaths": [
-          "src/**",
+          "src/flask/**",
           "tests/**",
           "pyproject.toml",
-          "requirements*.txt"
+          "uv.lock"
         ],
         "rollbackId": "rollback-fet-c044-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c044-sandbox-v1"
@@ -3351,7 +3300,8 @@
         ],
         "frameworks": [
           "Flask",
-          "Python standard library"
+          "Jinja",
+          "WSGI"
         ]
       },
       "pattern": {
@@ -3364,25 +3314,14 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Locate direct and transitive use and enumerate prior trust and hostname expectations.",
-        "repairOrMigration": "Create a configured SSLContext and use its wrap_socket with hostname validation.",
-        "oracleIds": [
-          "oracle-fet-c045-python-ssl-context"
-        ],
-        "productionAcceptance": [
-          "A valid hostname and chain pass.",
-          "A wrong hostname or untrusted chain fails."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-c045-manifest-v1",
         "mutationId": "mutation-fet-c045-seed-v1",
         "allowedEditPaths": [
-          "src/**",
+          "src/flask/**",
           "tests/**",
           "pyproject.toml",
-          "requirements*.txt"
+          "uv.lock"
         ],
         "rollbackId": "rollback-fet-c045-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c045-sandbox-v1"
@@ -3393,6 +3332,11 @@
           "Improper certificate validation enables provider impersonation."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "544e3a83692e336567d15d8bed5450f0361c04762712fce80c2461c0c56792e5",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -3426,7 +3370,8 @@
         ],
         "frameworks": [
           "Flask",
-          "Python standard library"
+          "Jinja",
+          "WSGI"
         ]
       },
       "pattern": {
@@ -3454,10 +3399,10 @@
         "manifestId": "fixture-fet-c046-manifest-v1",
         "mutationId": "mutation-fet-c046-seed-v1",
         "allowedEditPaths": [
-          "src/**",
+          "src/flask/**",
           "tests/**",
           "pyproject.toml",
-          "requirements*.txt"
+          "uv.lock"
         ],
         "rollbackId": "rollback-fet-c046-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c046-sandbox-v1"
@@ -3498,11 +3443,12 @@
         "provenanceId": "repo-openai-openai-node",
         "languages": [
           "TypeScript",
-          "JSON"
+          "JavaScript"
         ],
         "frameworks": [
-          "OpenAPI",
-          "generated SDK"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -3530,11 +3476,9 @@
         "manifestId": "fixture-fet-c047-manifest-v1",
         "mutationId": "mutation-fet-c047-seed-v1",
         "allowedEditPaths": [
-          "openapi/**",
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "api_reference/openapi.transformed.yml",
+          "src/lib/jsonschema.ts",
+          "tests/**"
         ],
         "rollbackId": "rollback-fet-c047-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c047-sandbox-v1"
@@ -3574,12 +3518,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "Go",
-          "Protocol Buffers"
+          "Go"
         ],
         "frameworks": [
-          "Kubernetes",
-          "Protocol Buffers"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -3607,9 +3550,8 @@
         "manifestId": "fixture-fet-c048-manifest-v1",
         "mutationId": "mutation-fet-c048-seed-v1",
         "allowedEditPaths": [
-          "proto/**",
-          "src/**",
-          "test/**"
+          "applyconfigurations/meta/v1/condition.go",
+          "applyconfigurations/scheduling/v1alpha3/**"
         ],
         "rollbackId": "rollback-fet-c048-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c048-sandbox-v1"
@@ -3653,7 +3595,8 @@
         ],
         "frameworks": [
           "Flask",
-          "OAuth 2.0"
+          "Jinja",
+          "WSGI"
         ]
       },
       "pattern": {
@@ -3681,10 +3624,9 @@
         "manifestId": "fixture-fet-c049-manifest-v1",
         "mutationId": "mutation-fet-c049-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "tests/**",
-          "pyproject.toml",
-          "requirements*.txt"
+          "examples/tutorial/flaskr/auth.py",
+          "examples/tutorial/tests/test_auth.py",
+          "pyproject.toml"
         ],
         "rollbackId": "rollback-fet-c049-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c049-sandbox-v1"
@@ -3729,7 +3671,8 @@
         ],
         "frameworks": [
           "Node.js",
-          "HTTP client"
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -3742,25 +3685,13 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Prove the affected version and the user-controlled data flow into the request target.",
-        "repairOrMigration": "Upgrade to a patched version and enforce a destination allowlist or relative-only path contract.",
-        "oracleIds": [
-          "oracle-fet-c050-axios-ssrf"
-        ],
-        "productionAcceptance": [
-          "The attacker server receives no request or credential header.",
-          "The patched dependency is pinned in the lockfile."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-c050-manifest-v1",
         "mutationId": "mutation-fet-c050-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "ecosystem-tests/browser-direct-import/**",
+          "src/client.ts",
+          "tests/**"
         ],
         "rollbackId": "rollback-fet-c050-restore-pristine-v1",
         "cleanupId": "cleanup-fet-c050-sandbox-v1"
@@ -3771,6 +3702,11 @@
           "SSRF can reach metadata services and leak cross-tenant credentials."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "08dafcfde07138033778b1eff8c397205b37aa9ea7ed0866fbcadc94f55f8416",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -3803,8 +3739,8 @@
           "TypeScript"
         ],
         "frameworks": [
-          "Octokit",
-          "Node.js"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -3832,10 +3768,10 @@
         "manifestId": "fixture-fet-e001-manifest-v1",
         "mutationId": "mutation-fet-e001-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-e001-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e001-sandbox-v1"
@@ -3878,8 +3814,8 @@
           "TypeScript"
         ],
         "frameworks": [
-          "Octokit",
-          "Node.js"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -3907,10 +3843,10 @@
         "manifestId": "fixture-fet-e002-manifest-v1",
         "mutationId": "mutation-fet-e002-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-e002-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e002-sandbox-v1"
@@ -3953,8 +3889,8 @@
           "TypeScript"
         ],
         "frameworks": [
-          "Octokit",
-          "Node.js"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -3982,10 +3918,10 @@
         "manifestId": "fixture-fet-e003-manifest-v1",
         "mutationId": "mutation-fet-e003-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-e003-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e003-sandbox-v1"
@@ -4029,8 +3965,8 @@
           "JavaScript"
         ],
         "frameworks": [
-          "Stripe SDK",
-          "Node.js"
+          "Node.js",
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -4058,10 +3994,10 @@
         "manifestId": "fixture-fet-e004-manifest-v1",
         "mutationId": "mutation-fet-e004-seed-v1",
         "allowedEditPaths": [
-          "src/**",
+          "src/Webhooks.ts",
+          "src/stripe.core.ts",
           "test/**",
-          "package.json",
-          "package-lock.json"
+          "examples/webhook-signing/**"
         ],
         "rollbackId": "rollback-fet-e004-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e004-sandbox-v1"
@@ -4105,8 +4041,8 @@
           "JavaScript"
         ],
         "frameworks": [
-          "Stripe SDK",
-          "Node.js"
+          "Node.js",
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -4119,25 +4055,14 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Bind event creation version independently from the current account and request versions.",
-        "repairOrMigration": "Use a version-aware decoder or retrieve the current object explicitly when that is the intended evidence.",
-        "oracleIds": [
-          "oracle-fet-e005-stripe-historical-schema"
-        ],
-        "productionAcceptance": [
-          "The historical payload remains decodable after account upgrade.",
-          "Its receipt records the immutable event version."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-e005-manifest-v1",
         "mutationId": "mutation-fet-e005-seed-v1",
         "allowedEditPaths": [
-          "src/**",
+          "src/Webhooks.ts",
+          "src/stripe.core.ts",
           "test/**",
-          "package.json",
-          "package-lock.json"
+          "examples/webhook-signing/**"
         ],
         "rollbackId": "rollback-fet-e005-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e005-sandbox-v1"
@@ -4148,6 +4073,11 @@
           "Historical billing events can be silently misinterpreted."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "b9389b0df2c4069445795e52ffe41c8c66c0f264bc38f151551a13f2a59b0c43",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -4181,8 +4111,8 @@
           "JavaScript"
         ],
         "frameworks": [
-          "Stripe SDK",
-          "Node.js"
+          "Node.js",
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -4210,10 +4140,10 @@
         "manifestId": "fixture-fet-e006-manifest-v1",
         "mutationId": "mutation-fet-e006-seed-v1",
         "allowedEditPaths": [
-          "src/**",
+          "src/Webhooks.ts",
+          "src/stripe.core.ts",
           "test/**",
-          "package.json",
-          "package-lock.json"
+          "examples/webhook-signing/**"
         ],
         "rollbackId": "rollback-fet-e006-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e006-sandbox-v1"
@@ -4257,8 +4187,8 @@
           "JavaScript"
         ],
         "frameworks": [
-          "Stripe SDK",
-          "Node.js"
+          "Node.js",
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -4286,10 +4216,10 @@
         "manifestId": "fixture-fet-e007-manifest-v1",
         "mutationId": "mutation-fet-e007-seed-v1",
         "allowedEditPaths": [
-          "src/**",
+          "src/Webhooks.ts",
+          "src/stripe.core.ts",
           "test/**",
-          "package.json",
-          "package-lock.json"
+          "examples/webhook-signing/**"
         ],
         "rollbackId": "rollback-fet-e007-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e007-sandbox-v1"
@@ -4333,7 +4263,7 @@
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -4361,10 +4291,10 @@
         "manifestId": "fixture-fet-e008-manifest-v1",
         "mutationId": "mutation-fet-e008-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-e008-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e008-sandbox-v1"
@@ -4408,7 +4338,7 @@
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -4436,10 +4366,10 @@
         "manifestId": "fixture-fet-e009-manifest-v1",
         "mutationId": "mutation-fet-e009-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-e009-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e009-sandbox-v1"
@@ -4483,7 +4413,7 @@
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -4496,25 +4426,14 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Calculate the rolling success rate and identify the synchronous failure source.",
-        "repairOrMigration": "Prioritize durable acknowledgement and enter an explicit degraded processing mode.",
-        "oracleIds": [
-          "oracle-fet-e010-slack-failure-window"
-        ],
-        "productionAcceptance": [
-          "The fixture enters degraded mode before disablement.",
-          "The alert contains measured window evidence."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-e010-manifest-v1",
         "mutationId": "mutation-fet-e010-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/event-handler/**",
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-e010-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e010-sandbox-v1"
@@ -4525,6 +4444,11 @@
           "One failure cohort can stop events for an entire workspace."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "0ef72d41076996d633d4a8d696d75591f5279256e7ea5c5a43278f6fba6c5b97",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -4559,7 +4483,7 @@
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -4587,10 +4511,9 @@
         "manifestId": "fixture-fet-e011-manifest-v1",
         "mutationId": "mutation-fet-e011-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-e011-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e011-sandbox-v1"
@@ -4635,7 +4558,7 @@
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -4663,10 +4586,9 @@
         "manifestId": "fixture-fet-e012-manifest-v1",
         "mutationId": "mutation-fet-e012-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-e012-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e012-sandbox-v1"
@@ -4711,7 +4633,7 @@
         ],
         "frameworks": [
           "Node.js",
-          "webhook processing"
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -4739,10 +4661,9 @@
         "manifestId": "fixture-fet-e013-manifest-v1",
         "mutationId": "mutation-fet-e013-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/middleware/**",
+          "src/verify-and-receive.ts",
+          "test/integration/**"
         ],
         "rollbackId": "rollback-fet-e013-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e013-sandbox-v1"
@@ -4786,7 +4707,9 @@
           "JavaScript"
         ],
         "frameworks": [
-          "AWS SDK for JavaScript"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -4814,10 +4737,9 @@
         "manifestId": "fixture-fet-e014-manifest-v1",
         "mutationId": "mutation-fet-e014-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "clients/client-s3/src/**",
+          "lib/lib-dynamodb/src/**",
+          "packages/credential-providers/src/**"
         ],
         "rollbackId": "rollback-fet-e014-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e014-sandbox-v1"
@@ -4861,7 +4783,9 @@
           "JavaScript"
         ],
         "frameworks": [
-          "AWS SDK for JavaScript"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -4874,25 +4798,13 @@
         ],
         "evidenceState": "unknown"
       },
-      "expected": {
-        "diagnosis": "Match the exact v2 class against the official provider availability table.",
-        "repairOrMigration": "Block or require an explicitly approved credential architecture instead of guessing.",
-        "oracleIds": [
-          "oracle-fet-e015-aws-unsupported-provider"
-        ],
-        "productionAcceptance": [
-          "The case remains blocked without an authoritative mapping.",
-          "No guessed credential code is emitted."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-e015-manifest-v1",
         "mutationId": "mutation-fet-e015-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "clients/client-s3/src/**",
+          "lib/lib-dynamodb/src/**",
+          "packages/credential-providers/src/**"
         ],
         "rollbackId": "rollback-fet-e015-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e015-sandbox-v1"
@@ -4903,6 +4815,11 @@
           "A guessed credential path can leak secrets or select the wrong account."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "ac1ea1c0f9745e437f30815ea5aa151cb67d0832792bb40064509d458b8f580a",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -4932,12 +4849,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "Go",
-          "YAML"
+          "Go"
         ],
         "frameworks": [
-          "Kubernetes",
-          "client-go"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -4965,10 +4881,8 @@
         "manifestId": "fixture-fet-e016-manifest-v1",
         "mutationId": "mutation-fet-e016-seed-v1",
         "allowedEditPaths": [
-          "deploy/**",
-          "charts/**",
-          "manifests/**",
-          "tests/**"
+          "applyconfigurations/**",
+          "openapi/**"
         ],
         "rollbackId": "rollback-fet-e016-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e016-sandbox-v1"
@@ -5008,12 +4922,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "Go",
-          "YAML"
+          "Go"
         ],
         "frameworks": [
-          "Kubernetes",
-          "client-go"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -5041,10 +4954,8 @@
         "manifestId": "fixture-fet-e017-manifest-v1",
         "mutationId": "mutation-fet-e017-seed-v1",
         "allowedEditPaths": [
-          "deploy/**",
-          "charts/**",
-          "manifests/**",
-          "tests/**"
+          "applyconfigurations/flowcontrol/v1/**",
+          "kubernetes/typed/flowcontrol/v1/**"
         ],
         "rollbackId": "rollback-fet-e017-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e017-sandbox-v1"
@@ -5084,12 +4995,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "Go",
-          "YAML"
+          "Go"
         ],
         "frameworks": [
-          "Kubernetes",
-          "client-go"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -5117,10 +5027,8 @@
         "manifestId": "fixture-fet-e018-manifest-v1",
         "mutationId": "mutation-fet-e018-seed-v1",
         "allowedEditPaths": [
-          "deploy/**",
-          "charts/**",
-          "manifests/**",
-          "tests/**"
+          "applyconfigurations/admissionregistration/v1/**",
+          "kubernetes/typed/admissionregistration/v1/**"
         ],
         "rollbackId": "rollback-fet-e018-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e018-sandbox-v1"
@@ -5163,8 +5071,10 @@
           "C#"
         ],
         "frameworks": [
-          ".NET",
-          "Microsoft Graph"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -5192,10 +5102,9 @@
         "manifestId": "fixture-fet-e019-manifest-v1",
         "mutationId": "mutation-fet-e019-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/PublicApi/**",
+          "src/BlazorShared/**",
+          "tests/FunctionalTests/**"
         ],
         "rollbackId": "rollback-fet-e019-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e019-sandbox-v1"
@@ -5238,8 +5147,10 @@
           "C#"
         ],
         "frameworks": [
-          ".NET",
-          "Microsoft Graph"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -5252,25 +5163,13 @@
         ],
         "evidenceState": "unknown"
       },
-      "expected": {
-        "diagnosis": "Verify target capability and semantic parity in v1.0 rather than inferring from beta.",
-        "repairOrMigration": "Block or require a separately approved beta exception with rollback.",
-        "oracleIds": [
-          "oracle-fet-e020-microsoft-beta-gap"
-        ],
-        "productionAcceptance": [
-          "Missing GA support is reported as insufficient evidence.",
-          "No beta dependency reaches the production path automatically."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-e020-manifest-v1",
         "mutationId": "mutation-fet-e020-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "src/PublicApi/**",
+          "src/BlazorShared/**",
+          "tests/FunctionalTests/**"
         ],
         "rollbackId": "rollback-fet-e020-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e020-sandbox-v1"
@@ -5281,6 +5180,11 @@
           "A beta dependency can change without the expected production contract."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "3ff2d5018ba1361c2e6609bb8cfcfeedc0530ca1ff68cea642748495b426bdd6",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -5310,12 +5214,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "Go",
-          "Protocol Buffers"
+          "Go"
         ],
         "frameworks": [
-          "Kubernetes",
-          "Protocol Buffers"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -5343,9 +5246,8 @@
         "manifestId": "fixture-fet-e021-manifest-v1",
         "mutationId": "mutation-fet-e021-seed-v1",
         "allowedEditPaths": [
-          "proto/**",
-          "src/**",
-          "test/**"
+          "applyconfigurations/meta/v1/condition.go",
+          "applyconfigurations/scheduling/v1alpha3/**"
         ],
         "rollbackId": "rollback-fet-e021-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e021-sandbox-v1"
@@ -5385,12 +5287,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "Go",
-          "Protocol Buffers"
+          "Go"
         ],
         "frameworks": [
-          "Kubernetes",
-          "Protocol Buffers"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -5418,9 +5319,8 @@
         "manifestId": "fixture-fet-e022-manifest-v1",
         "mutationId": "mutation-fet-e022-seed-v1",
         "allowedEditPaths": [
-          "proto/**",
-          "src/**",
-          "test/**"
+          "applyconfigurations/meta/v1/condition.go",
+          "applyconfigurations/scheduling/v1alpha3/**"
         ],
         "rollbackId": "rollback-fet-e022-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e022-sandbox-v1"
@@ -5461,11 +5361,12 @@
         "provenanceId": "repo-openai-openai-node",
         "languages": [
           "TypeScript",
-          "JSON"
+          "JavaScript"
         ],
         "frameworks": [
-          "OpenAPI",
-          "generated SDK"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -5493,11 +5394,9 @@
         "manifestId": "fixture-fet-e023-manifest-v1",
         "mutationId": "mutation-fet-e023-seed-v1",
         "allowedEditPaths": [
-          "openapi/**",
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "api_reference/openapi.transformed.yml",
+          "src/lib/jsonschema.ts",
+          "tests/**"
         ],
         "rollbackId": "rollback-fet-e023-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e023-sandbox-v1"
@@ -5541,7 +5440,8 @@
         ],
         "frameworks": [
           "Flask",
-          "urllib3"
+          "Jinja",
+          "WSGI"
         ]
       },
       "pattern": {
@@ -5569,10 +5469,9 @@
         "manifestId": "fixture-fet-e024-manifest-v1",
         "mutationId": "mutation-fet-e024-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "tests/**",
-          "pyproject.toml",
-          "requirements*.txt"
+          "uv.lock",
+          "src/flask/**",
+          "tests/**"
         ],
         "rollbackId": "rollback-fet-e024-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e024-sandbox-v1"
@@ -5617,7 +5516,8 @@
         ],
         "frameworks": [
           "Node.js",
-          "JWT authentication"
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -5630,25 +5530,13 @@
         ],
         "evidenceState": "unknown"
       },
-      "expected": {
-        "diagnosis": "Preserve the withdrawal and separately test whether untrusted input controls key retrieval at the call site.",
-        "repairOrMigration": "Harden an unsafe call site and optionally upgrade, but do not assert the withdrawn library CVE without its prerequisites.",
-        "oracleIds": [
-          "oracle-fet-e025-jwt-withdrawn-advisory"
-        ],
-        "productionAcceptance": [
-          "Safe and unsafe calling patterns are distinguished.",
-          "The final record separates withdrawn advisory evidence from proven application risk."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture-fet-e025-manifest-v1",
         "mutationId": "mutation-fet-e025-seed-v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "package.json",
-          "package-lock.json"
+          "pnpm-lock.yaml",
+          "src/auth/**",
+          "ecosystem-tests/bun/workload-identity-access-token.test.ts"
         ],
         "rollbackId": "rollback-fet-e025-restore-pristine-v1",
         "cleanupId": "cleanup-fet-e025-sandbox-v1"
@@ -5659,6 +5547,11 @@
           "False closure can hide unsafe application use or cause an unjustified breaking upgrade."
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "776963463e473870f900cc425acaa98f2547b83f10a9fabb63a66350d9f52a5a",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -5688,11 +5581,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript",
-          "javascript"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "node"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -5770,12 +5668,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript",
-          "javascript"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "node",
-          "esm"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -5850,11 +5752,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "javascript"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "node",
-          "express"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -5929,11 +5836,18 @@
       "repository": {
         "provenanceId": "repo-react-react",
         "languages": [
-          "typescript",
-          "javascript"
+          "JavaScript",
+          "Rust",
+          "TypeScript",
+          "HTML",
+          "CSS",
+          "CoffeeScript",
+          "Shell"
         ],
         "frameworks": [
-          "react"
+          "React",
+          "Yarn workspaces",
+          "Babel"
         ]
       },
       "pattern": {
@@ -6007,11 +5921,18 @@
       "repository": {
         "provenanceId": "repo-react-react",
         "languages": [
-          "typescript",
-          "javascript"
+          "JavaScript",
+          "Rust",
+          "TypeScript",
+          "HTML",
+          "CSS",
+          "CoffeeScript",
+          "Shell"
         ],
         "frameworks": [
-          "react"
+          "React",
+          "Yarn workspaces",
+          "Babel"
         ]
       },
       "pattern": {
@@ -6024,18 +5945,6 @@
           "tests"
         ],
         "evidenceState": "verified"
-      },
-      "expected": {
-        "diagnosis": "Identify rethrow-dependent telemetry and implementation-detail test assertions.",
-        "repairOrMigration": "Add root error callbacks and migrate tests to user-visible DOM behavior.",
-        "oracleIds": [
-          "oracle-reg-c005-error-reporting"
-        ],
-        "productionAcceptance": [
-          "Seeded caught and uncaught errors produce one expected report and the correct fallback UI.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
       },
       "fixture": {
         "manifestId": "fixture:reg-c005:v1",
@@ -6055,6 +5964,11 @@
           "duplicate_incident_reports"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "a7d566879b6a3bb15684cdd4c984d9d74fb259ae520560237e9ca32dfbe6e472",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -6084,12 +5998,18 @@
       "repository": {
         "provenanceId": "repo-react-react",
         "languages": [
-          "typescript",
-          "javascript"
+          "JavaScript",
+          "Rust",
+          "TypeScript",
+          "HTML",
+          "CSS",
+          "CoffeeScript",
+          "Shell"
         ],
         "frameworks": [
-          "nextjs",
-          "react"
+          "React",
+          "Yarn workspaces",
+          "Babel"
         ]
       },
       "pattern": {
@@ -6164,12 +6084,18 @@
       "repository": {
         "provenanceId": "repo-react-react",
         "languages": [
-          "typescript",
-          "javascript"
+          "JavaScript",
+          "Rust",
+          "TypeScript",
+          "HTML",
+          "CSS",
+          "CoffeeScript",
+          "Shell"
         ],
         "frameworks": [
-          "nextjs",
-          "react"
+          "React",
+          "Yarn workspaces",
+          "Babel"
         ]
       },
       "pattern": {
@@ -6245,10 +6171,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "typescript"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -6323,11 +6255,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "typescript",
-          "node"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -6402,11 +6339,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "javascript",
-          "typescript"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "eslint"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -6420,18 +6362,6 @@
           "ci"
         ],
         "evidenceState": "verified"
-      },
-      "expected": {
-        "diagnosis": "Evaluate dynamic legacy configuration, processors, overrides, ignored files, and command flags.",
-        "repairOrMigration": "Create an explicit flat configuration and migrate plugins, globals, and ignore semantics.",
-        "oracleIds": [
-          "oracle-reg-c010-lint-parity"
-        ],
-        "productionAcceptance": [
-          "A frozen corpus has the approved rule and file coverage delta only.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
       },
       "fixture": {
         "manifestId": "fixture:reg-c010:v1",
@@ -6453,6 +6383,11 @@
           "generated_file_noise"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "eb38287b6f8fae825400c1e419c8d00cf1a68777f10db79da90c42db9ecbf988",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -6482,12 +6417,18 @@
       "repository": {
         "provenanceId": "repo-aws-aws-sdk-js-v3",
         "languages": [
-          "typescript",
-          "javascript"
+          "TypeScript",
+          "JavaScript",
+          "Java",
+          "Smithy",
+          "Handlebars",
+          "Shell",
+          "Makefile"
         ],
         "frameworks": [
-          "node",
-          "aws-sdk"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -6562,12 +6503,18 @@
       "repository": {
         "provenanceId": "repo-aws-aws-sdk-js-v3",
         "languages": [
-          "typescript",
-          "javascript"
+          "TypeScript",
+          "JavaScript",
+          "Java",
+          "Smithy",
+          "Handlebars",
+          "Shell",
+          "Makefile"
         ],
         "frameworks": [
-          "node",
-          "aws-sdk"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -6642,11 +6589,15 @@
       "repository": {
         "provenanceId": "repo-pallets-flask",
         "languages": [
-          "python",
-          "c"
+          "Python",
+          "HTML",
+          "Shell",
+          "CSS"
         ],
         "frameworks": [
-          "python"
+          "Flask",
+          "Jinja",
+          "WSGI"
         ]
       },
       "pattern": {
@@ -6723,10 +6674,15 @@
       "repository": {
         "provenanceId": "repo-pallets-flask",
         "languages": [
-          "python"
+          "Python",
+          "HTML",
+          "Shell",
+          "CSS"
         ],
         "frameworks": [
-          "django"
+          "Flask",
+          "Jinja",
+          "WSGI"
         ]
       },
       "pattern": {
@@ -6802,10 +6758,15 @@
       "repository": {
         "provenanceId": "repo-pallets-flask",
         "languages": [
-          "python"
+          "Python",
+          "HTML",
+          "Shell",
+          "CSS"
         ],
         "frameworks": [
-          "django"
+          "Flask",
+          "Jinja",
+          "WSGI"
         ]
       },
       "pattern": {
@@ -6819,18 +6780,6 @@
           "rollback"
         ],
         "evidenceState": "verified"
-      },
-      "expected": {
-        "diagnosis": "Identify serialized cache entries, session formats, key namespaces, and their retention windows.",
-        "repairOrMigration": "Version or drain incompatible entries and deploy compatible readers before writers.",
-        "oracleIds": [
-          "oracle-reg-c015-cache-cross-version"
-        ],
-        "productionAcceptance": [
-          "Old and new nodes pass the serialized-state matrix and the drain receipt is complete.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
       },
       "fixture": {
         "manifestId": "fixture:reg-c015:v1",
@@ -6850,6 +6799,11 @@
           "cross_tenant_cache_collision"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "0670232d0248729a9dc2c55f0634a1116985cd2a15f573e1ef6ae598c5da28fa",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -6879,11 +6833,15 @@
       "repository": {
         "provenanceId": "repo-pallets-flask",
         "languages": [
-          "python"
+          "Python",
+          "HTML",
+          "Shell",
+          "CSS"
         ],
         "frameworks": [
-          "fastapi",
-          "pydantic"
+          "Flask",
+          "Jinja",
+          "WSGI"
         ]
       },
       "pattern": {
@@ -6958,10 +6916,15 @@
       "repository": {
         "provenanceId": "repo-pallets-flask",
         "languages": [
-          "python"
+          "Python",
+          "HTML",
+          "Shell",
+          "CSS"
         ],
         "frameworks": [
-          "pydantic"
+          "Flask",
+          "Jinja",
+          "WSGI"
         ]
       },
       "pattern": {
@@ -7035,11 +6998,18 @@
       "repository": {
         "provenanceId": "repo-rails-rails",
         "languages": [
-          "ruby",
-          "javascript"
+          "Ruby",
+          "JavaScript",
+          "HTML",
+          "SCSS",
+          "CSS",
+          "Dockerfile",
+          "Shell"
         ],
         "frameworks": [
-          "rails"
+          "Ruby on Rails",
+          "Active Record",
+          "Bundler"
         ]
       },
       "pattern": {
@@ -7116,10 +7086,18 @@
       "repository": {
         "provenanceId": "repo-rails-rails",
         "languages": [
-          "ruby"
+          "Ruby",
+          "JavaScript",
+          "HTML",
+          "SCSS",
+          "CSS",
+          "Dockerfile",
+          "Shell"
         ],
         "frameworks": [
-          "rails"
+          "Ruby on Rails",
+          "Active Record",
+          "Bundler"
         ]
       },
       "pattern": {
@@ -7150,10 +7128,8 @@
         "manifestId": "fixture:reg-c019:v1",
         "mutationId": "mutation:reg-c019:v1",
         "allowedEditPaths": [
-          "config/**",
-          "app/**",
-          "test/**",
-          "spec/**"
+          "railties/**",
+          "activesupport/**"
         ],
         "rollbackId": "rollback:reg-c019:v1",
         "cleanupId": "cleanup:reg-c019:v1"
@@ -7194,11 +7170,17 @@
       "repository": {
         "provenanceId": "repo-spring-projects-spring-petclinic",
         "languages": [
-          "java"
+          "Java",
+          "CSS",
+          "HTML",
+          "SCSS",
+          "Dockerfile"
         ],
         "frameworks": [
-          "java",
-          "spring"
+          "Spring Boot",
+          "Spring Data JPA",
+          "Maven",
+          "Gradle"
         ]
       },
       "pattern": {
@@ -7212,18 +7194,6 @@
           "deployment"
         ],
         "evidenceState": "verified"
-      },
-      "expected": {
-        "diagnosis": "Inspect source and bytecode targets, modules, reflection, JVM flags, and container runtime.",
-        "repairOrMigration": "Stage the toolchain and runtime and replace obsolete APIs and flags.",
-        "oracleIds": [
-          "oracle-reg-c020-jvm-runtime"
-        ],
-        "productionAcceptance": [
-          "The target image starts with production JVM flags and passes the full test and load smoke suite.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
       },
       "fixture": {
         "manifestId": "fixture:reg-c020:v1",
@@ -7245,6 +7215,11 @@
           "reflective_access_failure"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "c0a78b5deef0f5797930ed8e1bedc851ed382be29b5bdea5614f26700f7e6220",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -7274,11 +7249,17 @@
       "repository": {
         "provenanceId": "repo-spring-projects-spring-petclinic",
         "languages": [
-          "java"
+          "Java",
+          "CSS",
+          "HTML",
+          "SCSS",
+          "Dockerfile"
         ],
         "frameworks": [
-          "spring-boot",
-          "jakarta"
+          "Spring Boot",
+          "Spring Data JPA",
+          "Maven",
+          "Gradle"
         ]
       },
       "pattern": {
@@ -7352,11 +7333,17 @@
       "repository": {
         "provenanceId": "repo-spring-projects-spring-petclinic",
         "languages": [
-          "java",
-          "yaml"
+          "Java",
+          "CSS",
+          "HTML",
+          "SCSS",
+          "Dockerfile"
         ],
         "frameworks": [
-          "spring-boot"
+          "Spring Boot",
+          "Spring Data JPA",
+          "Maven",
+          "Gradle"
         ]
       },
       "pattern": {
@@ -7431,12 +7418,17 @@
       "repository": {
         "provenanceId": "repo-spring-projects-spring-petclinic",
         "languages": [
-          "java",
-          "kotlin",
-          "groovy"
+          "Java",
+          "CSS",
+          "HTML",
+          "SCSS",
+          "Dockerfile"
         ],
         "frameworks": [
-          "gradle"
+          "Spring Boot",
+          "Spring Data JPA",
+          "Maven",
+          "Gradle"
         ]
       },
       "pattern": {
@@ -7512,12 +7504,17 @@
       "repository": {
         "provenanceId": "repo-spring-projects-spring-petclinic",
         "languages": [
-          "java",
-          "kotlin",
-          "groovy"
+          "Java",
+          "CSS",
+          "HTML",
+          "SCSS",
+          "Dockerfile"
         ],
         "frameworks": [
-          "gradle"
+          "Spring Boot",
+          "Spring Data JPA",
+          "Maven",
+          "Gradle"
         ]
       },
       "pattern": {
@@ -7593,11 +7590,19 @@
       "repository": {
         "provenanceId": "repo-dotnet-architecture-eshoponweb",
         "languages": [
-          "csharp"
+          "C#",
+          "HTML",
+          "CSS",
+          "SCSS",
+          "Bicep",
+          "Dockerfile",
+          "JavaScript"
         ],
         "frameworks": [
-          "dotnet",
-          "aspnetcore"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -7611,18 +7616,6 @@
           "deployment"
         ],
         "evidenceState": "verified"
-      },
-      "expected": {
-        "diagnosis": "Map target frameworks, packages, reflection, serialization, globalization, and deployment mode.",
-        "repairOrMigration": "Retarget projects coherently and update packages and runtime images.",
-        "oracleIds": [
-          "oracle-reg-c025-publish-run"
-        ],
-        "productionAcceptance": [
-          "Both supported publish modes run in the production-like target image.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
       },
       "fixture": {
         "manifestId": "fixture:reg-c025:v1",
@@ -7644,6 +7637,11 @@
           "cryptography_default_change"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "767232c37cdd6bde1192af60b3cd59ecb04ab22ed104d4f644164b90fdc85fb7",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -7673,12 +7671,19 @@
       "repository": {
         "provenanceId": "repo-dotnet-architecture-eshoponweb",
         "languages": [
-          "csharp",
-          "yaml"
+          "C#",
+          "HTML",
+          "CSS",
+          "SCSS",
+          "Bicep",
+          "Dockerfile",
+          "JavaScript"
         ],
         "frameworks": [
-          "aspnetcore",
-          "docker"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -7754,12 +7759,19 @@
       "repository": {
         "provenanceId": "repo-dotnet-architecture-eshoponweb",
         "languages": [
-          "csharp",
-          "sql"
+          "C#",
+          "HTML",
+          "CSS",
+          "SCSS",
+          "Bicep",
+          "Dockerfile",
+          "JavaScript"
         ],
         "frameworks": [
-          "ef-core",
-          "sql-server"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -7834,11 +7846,19 @@
       "repository": {
         "provenanceId": "repo-dotnet-architecture-eshoponweb",
         "languages": [
-          "csharp",
-          "sql"
+          "C#",
+          "HTML",
+          "CSS",
+          "SCSS",
+          "Bicep",
+          "Dockerfile",
+          "JavaScript"
         ],
         "frameworks": [
-          "ef-core"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -7913,10 +7933,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "go"
+          "Go"
         ],
         "frameworks": [
-          "go-modules"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -7991,10 +8012,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "go"
+          "Go"
         ],
         "frameworks": [
-          "go-modules"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -8008,18 +8030,6 @@
           "consumers"
         ],
         "evidenceState": "verified"
-      },
-      "expected": {
-        "diagnosis": "Detect inconsistent tags, module directives, import paths, and downstream consumers.",
-        "repairOrMigration": "Change the module and imports coherently and validate the new major as a distinct module.",
-        "oracleIds": [
-          "oracle-reg-c030-major-consumers"
-        ],
-        "productionAcceptance": [
-          "Clean consumers can import the old and new majors independently through the module proxy.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
       },
       "fixture": {
         "manifestId": "fixture:reg-c030:v1",
@@ -8039,6 +8049,11 @@
           "consumer_resolution_failure"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "2f503b9be043796e15b15363fcc575fced1c4072eb383641807adfa874650f45",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -8068,10 +8083,18 @@
       "repository": {
         "provenanceId": "repo-react-react",
         "languages": [
-          "rust"
+          "JavaScript",
+          "Rust",
+          "TypeScript",
+          "HTML",
+          "CSS",
+          "CoffeeScript",
+          "Shell"
         ],
         "frameworks": [
-          "cargo"
+          "React",
+          "Yarn workspaces",
+          "Babel"
         ]
       },
       "pattern": {
@@ -8102,11 +8125,9 @@
         "manifestId": "fixture:reg-c031:v1",
         "mutationId": "mutation:reg-c031:v1",
         "allowedEditPaths": [
-          "Cargo.toml",
-          "Cargo.lock",
-          "src/**",
-          "tests/**",
-          "examples/**"
+          "compiler/Cargo.toml",
+          "compiler/Cargo.lock",
+          "compiler/crates/**"
         ],
         "rollbackId": "rollback:reg-c031:v1",
         "cleanupId": "cleanup:reg-c031:v1"
@@ -8147,10 +8168,18 @@
       "repository": {
         "provenanceId": "repo-react-react",
         "languages": [
-          "rust"
+          "JavaScript",
+          "Rust",
+          "TypeScript",
+          "HTML",
+          "CSS",
+          "CoffeeScript",
+          "Shell"
         ],
         "frameworks": [
-          "cargo"
+          "React",
+          "Yarn workspaces",
+          "Babel"
         ]
       },
       "pattern": {
@@ -8181,11 +8210,9 @@
         "manifestId": "fixture:reg-c032:v1",
         "mutationId": "mutation:reg-c032:v1",
         "allowedEditPaths": [
-          "Cargo.toml",
-          "Cargo.lock",
-          "src/**",
-          "tests/**",
-          "build.rs"
+          "compiler/Cargo.toml",
+          "compiler/Cargo.lock",
+          "compiler/crates/**"
         ],
         "rollbackId": "rollback:reg-c032:v1",
         "cleanupId": "cleanup:reg-c032:v1"
@@ -8226,10 +8253,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "yaml"
+          "Go"
         ],
         "frameworks": [
-          "kubernetes"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -8260,10 +8288,8 @@
         "manifestId": "fixture:reg-c033:v1",
         "mutationId": "mutation:reg-c033:v1",
         "allowedEditPaths": [
-          "**/*.yaml",
-          "**/*.yml",
-          "charts/**",
-          "kustomize/**"
+          "kubernetes/**",
+          "discovery/**"
         ],
         "rollbackId": "rollback:reg-c033:v1",
         "cleanupId": "cleanup:reg-c033:v1"
@@ -8304,11 +8330,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "go"
+          "Go"
         ],
         "frameworks": [
-          "kubernetes",
-          "controller-runtime"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -8385,11 +8411,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "go",
-          "hcl"
+          "Go"
         ],
         "frameworks": [
-          "terraform"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -8403,18 +8429,6 @@
           "plan"
         ],
         "evidenceState": "verified"
-      },
-      "expected": {
-        "diagnosis": "Inventory implicit providers, child module requirements, locks, and state bindings.",
-        "repairOrMigration": "Add explicit source constraints and perform a reviewed provider replacement only where state requires it.",
-        "oracleIds": [
-          "oracle-reg-c035-noop-plan"
-        ],
-        "productionAcceptance": [
-          "Provider checksums are verified and the copied-state plan has no unintended actions.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
       },
       "fixture": {
         "manifestId": "fixture:reg-c035:v1",
@@ -8436,6 +8450,11 @@
           "state_binding_corruption"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "af77eb75e794d0120a5f53533dbd877232e720045f151b291a278360504fe531",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -8465,11 +8484,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "go",
-          "hcl"
+          "Go"
         ],
         "frameworks": [
-          "terraform"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -8500,10 +8519,10 @@
         "manifestId": "fixture:reg-c036:v1",
         "mutationId": "mutation:reg-c036:v1",
         "allowedEditPaths": [
-          "**/*.tf",
-          ".terraform.lock.hcl",
-          "internal/**",
-          "test/**"
+          "go.mod",
+          "go.sum",
+          "rest/**",
+          "tools/**"
         ],
         "rollbackId": "rollback:reg-c036:v1",
         "cleanupId": "cleanup:reg-c036:v1"
@@ -8542,12 +8561,21 @@
         }
       ],
       "repository": {
-        "provenanceId": "repo-kubernetes-client-go",
+        "provenanceId": "repo-dotnet-architecture-eshoponweb",
         "languages": [
-          "hcl"
+          "C#",
+          "HTML",
+          "CSS",
+          "SCSS",
+          "Bicep",
+          "Dockerfile",
+          "JavaScript"
         ],
         "frameworks": [
-          "terraform"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -8578,8 +8606,7 @@
         "manifestId": "fixture:reg-c037:v1",
         "mutationId": "mutation:reg-c037:v1",
         "allowedEditPaths": [
-          "**/*.tf",
-          ".terraform.lock.hcl"
+          "infra/**"
         ],
         "rollbackId": "rollback:reg-c037:v1",
         "cleanupId": "cleanup:reg-c037:v1"
@@ -8620,11 +8647,19 @@
       "repository": {
         "provenanceId": "repo-dotnet-architecture-eshoponweb",
         "languages": [
-          "go",
-          "yaml"
+          "C#",
+          "HTML",
+          "CSS",
+          "SCSS",
+          "Bicep",
+          "Dockerfile",
+          "JavaScript"
         ],
         "frameworks": [
-          "docker-compose"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -8700,12 +8735,19 @@
       "repository": {
         "provenanceId": "repo-dotnet-architecture-eshoponweb",
         "languages": [
-          "dockerfile",
-          "yaml"
+          "C#",
+          "HTML",
+          "CSS",
+          "SCSS",
+          "Bicep",
+          "Dockerfile",
+          "JavaScript"
         ],
         "frameworks": [
-          "docker",
-          "kubernetes"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -8782,11 +8824,19 @@
       "repository": {
         "provenanceId": "repo-dotnet-architecture-eshoponweb",
         "languages": [
-          "c",
-          "sql"
+          "C#",
+          "HTML",
+          "CSS",
+          "SCSS",
+          "Bicep",
+          "Dockerfile",
+          "JavaScript"
         ],
         "frameworks": [
-          "postgresql"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -8800,18 +8850,6 @@
           "application"
         ],
         "evidenceState": "verified"
-      },
-      "expected": {
-        "diagnosis": "Check extensions, collations, catalogs, binaries, and application-visible release changes.",
-        "repairOrMigration": "Rehearse the target upgrade on an immutable snapshot and preserve the old cluster for rollback.",
-        "oracleIds": [
-          "oracle-reg-c040-database-integrity"
-        ],
-        "productionAcceptance": [
-          "Schema, row counts, checksums, application tests, and restore rehearsal all pass.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
       },
       "fixture": {
         "manifestId": "fixture:reg-c040:v1",
@@ -8833,6 +8871,11 @@
           "rollback_loss"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "4de853f7a6a5c709de38dd82c97baf3b99f3f7b7d4585f598ac56400c160f41c",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -8862,11 +8905,19 @@
       "repository": {
         "provenanceId": "repo-dotnet-architecture-eshoponweb",
         "languages": [
-          "sql",
-          "c"
+          "C#",
+          "HTML",
+          "CSS",
+          "SCSS",
+          "Bicep",
+          "Dockerfile",
+          "JavaScript"
         ],
         "frameworks": [
-          "postgresql"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -8942,13 +8993,19 @@
       "repository": {
         "provenanceId": "repo-dotnet-architecture-eshoponweb",
         "languages": [
-          "sql",
-          "typescript",
-          "go"
+          "C#",
+          "HTML",
+          "CSS",
+          "SCSS",
+          "Bicep",
+          "Dockerfile",
+          "JavaScript"
         ],
         "frameworks": [
-          "postgresql",
-          "microservices"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -9024,14 +9081,18 @@
       "repository": {
         "provenanceId": "repo-aws-aws-sdk-js-v3",
         "languages": [
-          "protobuf",
-          "cpp",
-          "go",
-          "java"
+          "TypeScript",
+          "JavaScript",
+          "Java",
+          "Smithy",
+          "Handlebars",
+          "Shell",
+          "Makefile"
         ],
         "frameworks": [
-          "protobuf",
-          "grpc"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -9062,9 +9123,8 @@
         "manifestId": "fixture:reg-c043:v1",
         "mutationId": "mutation:reg-c043:v1",
         "allowedEditPaths": [
-          "**/*.proto",
-          "src/**",
-          "test/**"
+          "codegen/generic-client-test-codegen/model/**",
+          "codegen/smithy-aws-typescript-codegen/src/test/resources/**"
         ],
         "rollbackId": "rollback:reg-c043:v1",
         "cleanupId": "cleanup:reg-c043:v1"
@@ -9105,11 +9165,14 @@
       "repository": {
         "provenanceId": "repo-stripe-stripe-node",
         "languages": [
-          "yaml",
-          "json"
+          "TypeScript",
+          "JavaScript",
+          "Just",
+          "Makefile"
         ],
         "frameworks": [
-          "openapi"
+          "Node.js",
+          "Stripe API"
         ]
       },
       "pattern": {
@@ -9184,12 +9247,17 @@
       "repository": {
         "provenanceId": "repo-spring-projects-spring-petclinic",
         "languages": [
-          "java",
-          "scala"
+          "Java",
+          "CSS",
+          "HTML",
+          "SCSS",
+          "Dockerfile"
         ],
         "frameworks": [
-          "kafka",
-          "kraft"
+          "Spring Boot",
+          "Spring Data JPA",
+          "Maven",
+          "Gradle"
         ]
       },
       "pattern": {
@@ -9204,27 +9272,14 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Establish broker and client versions, metadata state, quorum readiness, and the last reversible point.",
-        "repairOrMigration": "Upgrade to a supported 3.x release, migrate metadata to KRaft, verify, then upgrade to 4.x.",
-        "oracleIds": [
-          "oracle-reg-c045-cluster-semantics"
-        ],
-        "productionAcceptance": [
-          "Quorum, ACL, leadership, and exactly-once produce and consume checks pass before finalization.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture:reg-c045:v1",
         "mutationId": "mutation:reg-c045:v1",
         "allowedEditPaths": [
-          "config/**",
-          "core/**",
-          "clients/**",
-          "metadata/**",
-          "tests/**"
+          "pom.xml",
+          "build.gradle",
+          "docker-compose.yml",
+          "src/test/**"
         ],
         "rollbackId": "rollback:reg-c045:v1",
         "cleanupId": "cleanup:reg-c045:v1"
@@ -9237,6 +9292,11 @@
           "duplicate_events"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "e8f7bf2c1146f85c0dfedf047acb79819cbd8a8c1118f73fd4459f991213a917",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -9266,14 +9326,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "go",
-          "java",
-          "typescript",
-          "python",
-          "csharp"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "opentelemetry"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -9351,11 +9413,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript",
-          "yaml"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "github-actions"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -9432,13 +9499,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript",
-          "yaml"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "npm",
-          "github-actions",
-          "oidc"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -9512,12 +9582,12 @@
       "repository": {
         "provenanceId": "repo-octokit-webhooks-js",
         "languages": [
-          "typescript",
-          "javascript"
+          "TypeScript",
+          "JavaScript"
         ],
         "frameworks": [
-          "oauth2",
-          "openid-connect"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -9593,12 +9663,12 @@
       "repository": {
         "provenanceId": "repo-octokit-webhooks-js",
         "languages": [
-          "typescript",
-          "javascript"
+          "TypeScript",
+          "JavaScript"
         ],
         "frameworks": [
-          "oauth2",
-          "openid-connect"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -9612,18 +9682,6 @@
           "incident_lineage"
         ],
         "evidenceState": "verified"
-      },
-      "expected": {
-        "diagnosis": "Map bearer exposure, rotation, sender constraint, audience, scope, and reuse detection.",
-        "repairOrMigration": "Add bounded rotation and replay detection and sender constraint where the deployment supports it.",
-        "oracleIds": [
-          "oracle-reg-c050-token-replay"
-        ],
-        "productionAcceptance": [
-          "Old, replayed, wrong-audience, and wrong-tenant tokens fail without invalidating unrelated sessions.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
       },
       "fixture": {
         "manifestId": "fixture:reg-c050:v1",
@@ -9645,6 +9703,11 @@
           "cross_tenant_replay"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "a6e1fc01319f86f5560b647aa87f5dd727e2d9ef938d0f44171898e86d309ff0",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -9672,12 +9735,21 @@
         }
       ],
       "repository": {
-        "provenanceId": "repo-kubernetes-client-go",
+        "provenanceId": "repo-dotnet-architecture-eshoponweb",
         "languages": [
-          "hcl"
+          "C#",
+          "HTML",
+          "CSS",
+          "SCSS",
+          "Bicep",
+          "Dockerfile",
+          "JavaScript"
         ],
         "frameworks": [
-          "terraform"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -9706,8 +9778,7 @@
         "manifestId": "fixture:reg-e001:v1",
         "mutationId": "mutation:reg-e001:v1",
         "allowedEditPaths": [
-          "**/*.tf",
-          ".terraform.lock.hcl"
+          "infra/**"
         ],
         "rollbackId": "rollback:reg-e001:v1",
         "cleanupId": "cleanup:reg-e001:v1"
@@ -9748,10 +9819,15 @@
       "repository": {
         "provenanceId": "repo-pallets-flask",
         "languages": [
-          "python"
+          "Python",
+          "HTML",
+          "Shell",
+          "CSS"
         ],
         "frameworks": [
-          "django"
+          "Flask",
+          "Jinja",
+          "WSGI"
         ]
       },
       "pattern": {
@@ -9825,10 +9901,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "node"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -9901,11 +9983,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "go",
-          "hcl"
+          "Go"
         ],
         "frameworks": [
-          "terraform"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -9979,10 +10061,18 @@
       "repository": {
         "provenanceId": "repo-react-react",
         "languages": [
-          "rust"
+          "JavaScript",
+          "Rust",
+          "TypeScript",
+          "HTML",
+          "CSS",
+          "CoffeeScript",
+          "Shell"
         ],
         "frameworks": [
-          "cargo"
+          "React",
+          "Yarn workspaces",
+          "Babel"
         ]
       },
       "pattern": {
@@ -9996,27 +10086,13 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Enumerate the covered and uncovered feature and target graph rather than generalizing from the default build.",
-        "repairOrMigration": "Extend the run to the declared matrix or abstain on uncovered branches.",
-        "oracleIds": [
-          "oracle-reg-e005-partial-matrix"
-        ],
-        "productionAcceptance": [
-          "The receipt explicitly lists every covered and unknown configuration.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture:reg-e005:v1",
         "mutationId": "mutation:reg-e005:v1",
         "allowedEditPaths": [
-          "Cargo.toml",
-          "Cargo.lock",
-          "src/**",
-          "tests/**",
-          "build.rs"
+          "compiler/Cargo.toml",
+          "compiler/Cargo.lock",
+          "compiler/crates/**"
         ],
         "rollbackId": "rollback:reg-e005:v1",
         "cleanupId": "cleanup:reg-e005:v1"
@@ -10028,6 +10104,11 @@
           "false_completion_claim"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "8bfc7c5c7d8864e096b3ab2cb17c3a88daea6a26113588e36af6ba392bc70734",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -10057,13 +10138,18 @@
       "repository": {
         "provenanceId": "repo-aws-aws-sdk-js-v3",
         "languages": [
-          "protobuf",
-          "go",
-          "java"
+          "TypeScript",
+          "JavaScript",
+          "Java",
+          "Smithy",
+          "Handlebars",
+          "Shell",
+          "Makefile"
         ],
         "frameworks": [
-          "protobuf",
-          "grpc"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -10093,9 +10179,8 @@
         "manifestId": "fixture:reg-e006:v1",
         "mutationId": "mutation:reg-e006:v1",
         "allowedEditPaths": [
-          "**/*.proto",
-          "src/**",
-          "test/**"
+          "codegen/generic-client-test-codegen/model/**",
+          "codegen/smithy-aws-typescript-codegen/src/test/resources/**"
         ],
         "rollbackId": "rollback:reg-e006:v1",
         "cleanupId": "cleanup:reg-e006:v1"
@@ -10136,13 +10221,19 @@
       "repository": {
         "provenanceId": "repo-dotnet-architecture-eshoponweb",
         "languages": [
-          "sql",
-          "typescript",
-          "go"
+          "C#",
+          "HTML",
+          "CSS",
+          "SCSS",
+          "Bicep",
+          "Dockerfile",
+          "JavaScript"
         ],
         "frameworks": [
-          "postgresql",
-          "microservices"
+          "ASP.NET Core",
+          "Entity Framework Core",
+          "Docker",
+          "Bicep"
         ]
       },
       "pattern": {
@@ -10216,10 +10307,12 @@
       "repository": {
         "provenanceId": "repo-octokit-webhooks-js",
         "languages": [
-          "typescript"
+          "TypeScript",
+          "JavaScript"
         ],
         "frameworks": [
-          "github-webhooks"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -10294,10 +10387,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "regauge"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -10328,8 +10427,7 @@
         "manifestId": "fixture:reg-e009:v1",
         "mutationId": "mutation:reg-e009:v1",
         "allowedEditPaths": [
-          "evals/**",
-          "fixtures/**"
+          "tests/**"
         ],
         "rollbackId": "rollback:reg-e009:v1",
         "cleanupId": "cleanup:reg-e009:v1"
@@ -10370,11 +10468,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript",
-          "go"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "microservices"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -10388,18 +10491,6 @@
           "execution"
         ],
         "evidenceState": "verified"
-      },
-      "expected": {
-        "diagnosis": "Compare every authority binding at execution time and identify the stale plan.",
-        "repairOrMigration": "Invalidate the plan and rebuild diagnosis from the fresh immutable snapshot.",
-        "oracleIds": [
-          "oracle-reg-e010-stale-plan-rejection"
-        ],
-        "productionAcceptance": [
-          "A one-byte source or graph change prevents execution under the prior digest.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
       },
       "fixture": {
         "manifestId": "fixture:reg-e010:v1",
@@ -10420,6 +10511,11 @@
           "wrong_impact_graph"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "aff7fc18bc29e3bfb8cf66f588cac8df9e71b487986382c853d1092bda96eed2",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -10449,12 +10545,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript",
-          "javascript"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "regauge",
-          "oauth2"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -10485,8 +10585,7 @@
         "manifestId": "fixture:reg-e011:v1",
         "mutationId": "mutation:reg-e011:v1",
         "allowedEditPaths": [
-          "fixtures/**",
-          "evals/**"
+          "tests/**"
         ],
         "rollbackId": "rollback:reg-e011:v1",
         "cleanupId": "cleanup:reg-e011:v1"
@@ -10527,11 +10626,12 @@
       "repository": {
         "provenanceId": "repo-octokit-webhooks-js",
         "languages": [
-          "typescript"
+          "TypeScript",
+          "JavaScript"
         ],
         "frameworks": [
-          "github-app",
-          "oauth2"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -10605,10 +10705,12 @@
       "repository": {
         "provenanceId": "repo-octokit-webhooks-js",
         "languages": [
-          "typescript"
+          "TypeScript",
+          "JavaScript"
         ],
         "frameworks": [
-          "github-webhooks"
+          "Node.js",
+          "GitHub Webhooks"
         ]
       },
       "pattern": {
@@ -10682,11 +10784,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript",
-          "yaml"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "github-actions"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -10761,12 +10868,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript",
-          "javascript"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "regauge",
-          "express"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -10780,18 +10891,6 @@
           "learning_event"
         ],
         "evidenceState": "verified"
-      },
-      "expected": {
-        "diagnosis": "Record the disagreement and identify the verifier error without changing the oracle outcome.",
-        "repairOrMigration": "Keep the deterministic result authoritative and store the verifier failure in the sealed evaluation set.",
-        "oracleIds": [
-          "oracle-reg-e015-good-repair"
-        ],
-        "productionAcceptance": [
-          "Outcome lineage records the correction and no advisory vote is promoted to execution authority.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
       },
       "fixture": {
         "manifestId": "fixture:reg-e015:v1",
@@ -10811,6 +10910,11 @@
           "biased_learning_signal"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "ddcfc4a9f315079ec89d1b27042b872bb156baba1efbf0777d813d60a3f1a911",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -10840,11 +10944,17 @@
       "repository": {
         "provenanceId": "repo-spring-projects-spring-petclinic",
         "languages": [
-          "java"
+          "Java",
+          "CSS",
+          "HTML",
+          "SCSS",
+          "Dockerfile"
         ],
         "frameworks": [
-          "regauge",
-          "spring-boot"
+          "Spring Boot",
+          "Spring Data JPA",
+          "Maven",
+          "Gradle"
         ]
       },
       "pattern": {
@@ -10918,10 +11028,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "regauge"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -10952,8 +11068,7 @@
         "manifestId": "fixture:reg-e017:v1",
         "mutationId": "mutation:reg-e017:v1",
         "allowedEditPaths": [
-          "evals/**",
-          "fixtures/**"
+          "tests/**"
         ],
         "rollbackId": "rollback:reg-e017:v1",
         "cleanupId": "cleanup:reg-e017:v1"
@@ -10995,10 +11110,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "go"
+          "Go"
         ],
         "frameworks": [
-          "kubernetes"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -11073,12 +11189,18 @@
       "repository": {
         "provenanceId": "repo-aws-aws-sdk-js-v3",
         "languages": [
-          "go",
-          "typescript",
-          "python"
+          "TypeScript",
+          "JavaScript",
+          "Java",
+          "Smithy",
+          "Handlebars",
+          "Shell",
+          "Makefile"
         ],
         "frameworks": [
-          "microservices"
+          "Node.js",
+          "AWS SDK for JavaScript v3",
+          "Smithy"
         ]
       },
       "pattern": {
@@ -11109,10 +11231,9 @@
         "manifestId": "fixture:reg-e019:v1",
         "mutationId": "mutation:reg-e019:v1",
         "allowedEditPaths": [
-          "src/**",
-          "test/**",
-          "*.yml",
-          "*.yaml"
+          "package.json",
+          "packages/**",
+          "codegen/**"
         ],
         "rollbackId": "rollback:reg-e019:v1",
         "cleanupId": "cleanup:reg-e019:v1"
@@ -11154,10 +11275,17 @@
       "repository": {
         "provenanceId": "repo-spring-projects-spring-petclinic",
         "languages": [
-          "java"
+          "Java",
+          "CSS",
+          "HTML",
+          "SCSS",
+          "Dockerfile"
         ],
         "frameworks": [
-          "log4j"
+          "Spring Boot",
+          "Spring Data JPA",
+          "Maven",
+          "Gradle"
         ]
       },
       "pattern": {
@@ -11171,18 +11299,6 @@
           "application"
         ],
         "evidenceState": "verified"
-      },
-      "expected": {
-        "diagnosis": "Resolve the full transitive affected range and compare security and application behavior.",
-        "repairOrMigration": "Select a vendor-approved fixed branch and adapt the application without restoring unsafe lookup behavior.",
-        "oracleIds": [
-          "oracle-reg-e020-log4j-exploit"
-        ],
-        "productionAcceptance": [
-          "The full graph is outside affected ranges and exploit and logging goldens both pass.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
       },
       "fixture": {
         "manifestId": "fixture:reg-e020:v1",
@@ -11203,6 +11319,11 @@
           "logging_availability_regression"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "6b662e9d5a69cae96678139cc1322b5bd2419dc50d3ad161112bfb1b243fa856",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -11232,11 +11353,17 @@
       "repository": {
         "provenanceId": "repo-spring-projects-spring-petclinic",
         "languages": [
-          "java",
-          "scala"
+          "Java",
+          "CSS",
+          "HTML",
+          "SCSS",
+          "Dockerfile"
         ],
         "frameworks": [
-          "kafka"
+          "Spring Boot",
+          "Spring Data JPA",
+          "Maven",
+          "Gradle"
         ]
       },
       "pattern": {
@@ -11266,10 +11393,10 @@
         "manifestId": "fixture:reg-e021:v1",
         "mutationId": "mutation:reg-e021:v1",
         "allowedEditPaths": [
-          "config/**",
-          "core/**",
-          "clients/**",
-          "tests/**"
+          "pom.xml",
+          "build.gradle",
+          "docker-compose.yml",
+          "src/test/**"
         ],
         "rollbackId": "rollback:reg-e021:v1",
         "cleanupId": "cleanup:reg-e021:v1"
@@ -11310,12 +11437,17 @@
       "repository": {
         "provenanceId": "repo-spring-projects-spring-petclinic",
         "languages": [
-          "java",
-          "scala"
+          "Java",
+          "CSS",
+          "HTML",
+          "SCSS",
+          "Dockerfile"
         ],
         "frameworks": [
-          "kafka",
-          "kraft"
+          "Spring Boot",
+          "Spring Data JPA",
+          "Maven",
+          "Gradle"
         ]
       },
       "pattern": {
@@ -11346,10 +11478,10 @@
         "manifestId": "fixture:reg-e022:v1",
         "mutationId": "mutation:reg-e022:v1",
         "allowedEditPaths": [
-          "config/**",
-          "metadata/**",
-          "core/**",
-          "tests/**"
+          "pom.xml",
+          "build.gradle",
+          "docker-compose.yml",
+          "src/test/**"
         ],
         "rollbackId": "rollback:reg-e022:v1",
         "cleanupId": "cleanup:reg-e022:v1"
@@ -11390,12 +11522,18 @@
       "repository": {
         "provenanceId": "repo-react-react",
         "languages": [
-          "typescript",
-          "javascript"
+          "JavaScript",
+          "Rust",
+          "TypeScript",
+          "HTML",
+          "CSS",
+          "CoffeeScript",
+          "Shell"
         ],
         "frameworks": [
-          "react",
-          "codemod"
+          "React",
+          "Yarn workspaces",
+          "Babel"
         ]
       },
       "pattern": {
@@ -11470,13 +11608,11 @@
       "repository": {
         "provenanceId": "repo-kubernetes-client-go",
         "languages": [
-          "yaml",
-          "typescript",
-          "go"
+          "Go"
         ],
         "frameworks": [
-          "kubernetes",
-          "github-actions"
+          "Go modules",
+          "Kubernetes client-go"
         ]
       },
       "pattern": {
@@ -11507,11 +11643,10 @@
         "manifestId": "fixture:reg-e024:v1",
         "mutationId": "mutation:reg-e024:v1",
         "allowedEditPaths": [
-          "deploy/**",
-          ".github/workflows/**",
-          "Dockerfile*",
-          "src/**",
-          "test/**"
+          "go.mod",
+          "go.sum",
+          "rest/**",
+          "kubernetes/**"
         ],
         "rollbackId": "rollback:reg-e024:v1",
         "cleanupId": "cleanup:reg-e024:v1"
@@ -11552,11 +11687,16 @@
       "repository": {
         "provenanceId": "repo-openai-openai-node",
         "languages": [
-          "typescript"
+          "TypeScript",
+          "JavaScript",
+          "Python",
+          "Shell",
+          "HTML"
         ],
         "frameworks": [
-          "regauge",
-          "evaluation"
+          "Node.js",
+          "OpenAI API",
+          "pnpm workspace"
         ]
       },
       "pattern": {
@@ -11571,24 +11711,11 @@
         ],
         "evidenceState": "verified"
       },
-      "expected": {
-        "diagnosis": "Detect any answer-bearing reference in modeled control-arm inputs or accessible repository paths.",
-        "repairOrMigration": "Quarantine the contaminated holdout, rotate it, and rerun with blinded inputs and identical budgets.",
-        "oracleIds": [
-          "oracle-reg-e025-leakage-sentinel"
-        ],
-        "productionAcceptance": [
-          "Holdout access logs contain no answer-bearing reads and all control arms remain blinded.",
-          "The exact repository snapshot, graph, policy, authorization, model, and execution digest are bound in the run receipt.",
-          "The deterministic oracle passes and no path outside the allowed edit boundary changes."
-        ]
-      },
       "fixture": {
         "manifestId": "fixture:reg-e025:v1",
         "mutationId": "mutation:reg-e025:v1",
         "allowedEditPaths": [
-          "evals/production-learning/**",
-          "fixtures/holdouts/**"
+          "tests/**"
         ],
         "rollbackId": "rollback:reg-e025:v1",
         "cleanupId": "cleanup:reg-e025:v1"
@@ -11601,6 +11728,11 @@
           "evaluation_leakage"
         ],
         "requiresDedicatedBenchmarkTenant": true
+      },
+      "holdout": {
+        "state": "assigned_unsealed",
+        "answerKeyCommitmentSha256": "384bfd71cfb4e419c25e49b1587e957a31f28d38d114e6678b844d5dbaa6cbb6",
+        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     }
   ]

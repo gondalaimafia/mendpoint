@@ -48,10 +48,24 @@ export interface BenchmarkLearningEvent {
   };
   governance: {
     tenantId: string;
-    consentDecisionRef: string;
-    consentGranted: boolean;
-    licenseCompatible: boolean;
-    externalProviderAllowed: boolean;
+    consent: {
+      decision: "granted" | "denied" | "unknown";
+      purpose: "governed_learning";
+      evidenceRef: string;
+    };
+    license: {
+      decision: "compatible" | "incompatible" | "unknown";
+      intendedUse: "governed_learning";
+      evidenceRef: string;
+    };
+    externalProvider: {
+      decision: "allowed" | "denied";
+      providerId: string | null;
+      purpose: "case_execution" | null;
+      sharedTrainingAllowed: false;
+      repositoryContentAllowed: false;
+      retention: "none";
+    };
     containsRepositoryContent: false;
     containsCustomerData: false;
     containsPrivateReasoning: false;
@@ -59,6 +73,19 @@ export interface BenchmarkLearningEvent {
   };
   economics: { costUsd: number; latencyMs: number };
   createdAt: string;
+}
+
+export interface ExternalProviderTransmissionAuthority {
+  tenantId: string;
+  repositoryId: string;
+  repositoryCommit: string;
+  repositorySnapshotDigest: string;
+  providerId: string;
+  purpose: "case_execution";
+  consentEvidenceRef: string;
+  licenseEvidenceRef: string;
+  sharedTrainingAllowed: false;
+  repositoryContentAllowed: false;
 }
 
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -94,7 +121,8 @@ export function validateBenchmarkLearningEvent(event: BenchmarkLearningEvent): s
     ["lineage.routerVersion", event.lineage.routerVersion],
     ["lineage.deterministicVerificationRef", event.lineage.deterministicVerificationRef],
     ["governance.tenantId", event.governance.tenantId],
-    ["governance.consentDecisionRef", event.governance.consentDecisionRef],
+    ["governance.consent.evidenceRef", event.governance.consent.evidenceRef],
+    ["governance.license.evidenceRef", event.governance.license.evidenceRef],
   ] as const) nonEmpty(value, path, errors);
   if (!GIT_SHA.test(event.lineage.productionRevision)) {
     errors.push("lineage.productionRevision must be a 40 character lowercase git sha");
@@ -114,8 +142,33 @@ export function validateBenchmarkLearningEvent(event: BenchmarkLearningEvent): s
   if (!event.governance.tenantId.startsWith("benchmark-tenant-")) {
     errors.push("governance.tenantId must identify a dedicated benchmark tenant");
   }
-  if (!event.governance.consentGranted) errors.push("governance consent must be granted");
-  if (!event.governance.licenseCompatible) errors.push("governance license must be compatible");
+  if (event.governance.consent.decision !== "granted") errors.push("governance consent must be granted");
+  if (event.governance.consent.purpose !== "governed_learning") {
+    errors.push("governance consent purpose must be governed_learning");
+  }
+  if (event.governance.license.decision !== "compatible") errors.push("governance license must be compatible");
+  if (event.governance.license.intendedUse !== "governed_learning") {
+    errors.push("governance license intended use must be governed_learning");
+  }
+  if (event.governance.externalProvider.sharedTrainingAllowed !== false) {
+    errors.push("external provider shared training must be exactly denied");
+  }
+  if (event.governance.externalProvider.repositoryContentAllowed !== false) {
+    errors.push("external provider repository content must be exactly denied in learning events");
+  }
+  if (event.governance.externalProvider.retention !== "none") {
+    errors.push("external provider retention must be none");
+  }
+  if (event.governance.externalProvider.decision === "allowed") {
+    if (event.governance.externalProvider.providerId === null || event.governance.externalProvider.providerId.trim() === "") {
+      errors.push("allowed external provider transmission requires provider identity");
+    }
+    if (event.governance.externalProvider.purpose !== "case_execution") {
+      errors.push("allowed external provider transmission requires case_execution purpose");
+    }
+  } else if (event.governance.externalProvider.providerId !== null || event.governance.externalProvider.purpose !== null) {
+    errors.push("denied external provider transmission must not carry provider authority");
+  }
   if (event.governance.containsRepositoryContent !== false) {
     errors.push("governance must not carry repository content in the learning event");
   }
@@ -141,13 +194,28 @@ export function validateBenchmarkLearningEvent(event: BenchmarkLearningEvent): s
   return errors;
 }
 
-export function assertExternalProviderTransmissionAllowed(event: BenchmarkLearningEvent): void {
+export function assertExternalProviderTransmissionAllowed(
+  event: BenchmarkLearningEvent,
+  authority: ExternalProviderTransmissionAuthority,
+): void {
   const errors = validateBenchmarkLearningEvent(event);
   if (errors.length > 0) throw new Error(`learning_event_invalid:${errors.join("|")}`);
-  if (!event.governance.externalProviderAllowed) {
+  if (event.governance.externalProvider.decision !== "allowed") {
     throw new Error("external_provider_transmission_not_authorized");
   }
-  if (!event.governance.consentGranted || !event.governance.licenseCompatible) {
-    throw new Error("external_provider_license_or_consent_missing");
+  const bindings: Array<[string, unknown, unknown]> = [
+    ["tenant", event.governance.tenantId, authority.tenantId],
+    ["repository", event.lineage.repositoryId, authority.repositoryId],
+    ["commit", event.lineage.repositoryCommit, authority.repositoryCommit],
+    ["snapshot", event.lineage.repositorySnapshotDigest, authority.repositorySnapshotDigest],
+    ["provider", event.governance.externalProvider.providerId, authority.providerId],
+    ["purpose", event.governance.externalProvider.purpose, authority.purpose],
+    ["consent", event.governance.consent.evidenceRef, authority.consentEvidenceRef],
+    ["license", event.governance.license.evidenceRef, authority.licenseEvidenceRef],
+    ["sharedTraining", event.governance.externalProvider.sharedTrainingAllowed, authority.sharedTrainingAllowed],
+    ["repositoryContent", event.governance.externalProvider.repositoryContentAllowed, authority.repositoryContentAllowed],
+  ];
+  for (const [field, actual, expected] of bindings) {
+    if (actual !== expected) throw new Error(`external_provider_authority_mismatch:${field}`);
   }
 }

@@ -18,6 +18,8 @@ function cohort(): CaseArmResult[] {
     predictionArtifactDigest: "c".repeat(64),
     predictionSealedAt: "2026-08-28T23:00:00.000Z",
     answerKeyOpenedAt: "2026-08-28T23:01:00.000Z",
+    answerKeyAccessReceiptDigest: "d".repeat(64),
+    gradedAt: "2026-08-28T23:02:00.000Z",
     expectedOutcomeIncludedInInput: false,
     answerKeyIncludedInInput: false,
     metrics: {
@@ -64,6 +66,16 @@ describe("case arm evaluation", () => {
     expect(validateCaseArmCohort(rows)).toContain(
       "REG-E001/production_baseline answer key must open after prediction sealing",
     );
+  });
+
+  it("rejects malformed chronology and grading without an access receipt", () => {
+    const rows = cohort();
+    rows[0]!.predictionSealedAt = "not-a-time";
+    rows[0]!.answerKeyAccessReceiptDigest = null;
+    expect(validateCaseArmCohort(rows)).toEqual(expect.arrayContaining([
+      "REG-E001/production_baseline predictionSealedAt must be a canonical UTC timestamp",
+      "REG-E001/production_baseline graded result requires an answer-key access receipt digest",
+    ]));
   });
 
   it("reports all requested rates without inventing confidence intervals", () => {

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "mendpoint.production-learning-status.v1",
-  "generatedAt": "2026-08-29T00:55:16.523Z",
+  "generatedAt": "2026-08-29T02:22:58.317Z",
   "programBaseRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
   "catalog": {
     "total": 150,
@@ -16,7 +16,19 @@
     "repositoryCount": 10
   },
   "requirements": {
-    "total": 101
+    "total": 101,
+    "covered": 15,
+    "uncovered": 86,
+    "productionEvidenceState": "unknown"
+  },
+  "sourceEvidence": {
+    "retainedContentSnapshots": 0,
+    "evidenceState": "unknown"
+  },
+  "holdouts": {
+    "assigned": 30,
+    "sealed": 0,
+    "evidenceState": "unknown"
   },
   "repositoryProvenance": {
     "candidates": 10,

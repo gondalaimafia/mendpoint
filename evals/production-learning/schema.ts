@@ -98,6 +98,7 @@ export interface ProductionExecutionReceipt {
   repositoryId: string;
   repositoryCommit: string;
   snapshotDigest: string;
+  fixtureManifestDigest: string;
   graphVersion: string;
   policyVersion: string;
   model: { provider: string; modelId: string; requestId: string };
@@ -328,6 +329,7 @@ export function validateExecutionReceipt(value: ProductionExecutionReceipt): str
   required(value.repositoryId, "repositoryId", errors);
   requireSha(value.repositoryCommit, "repositoryCommit", GIT_SHA, "40 character lowercase git sha", errors);
   requireSha(value.snapshotDigest, "snapshotDigest", SHA256, "64 character lowercase sha256", errors);
+  requireSha(value.fixtureManifestDigest, "fixtureManifestDigest", SHA256, "64 character lowercase sha256", errors);
   required(value.graphVersion, "graphVersion", errors);
   required(value.policyVersion, "policyVersion", errors);
   required(value.model.provider, "model.provider", errors);
@@ -335,6 +337,9 @@ export function validateExecutionReceipt(value: ProductionExecutionReceipt): str
   required(value.model.requestId, "model.requestId", errors);
   required(value.routerVersion, "routerVersion", errors);
   if (value.consent.decision !== "granted") errors.push("consent decision must be granted");
+  if (!(value.consent.purpose === "evaluation" || value.consent.purpose === "governed_learning")) {
+    errors.push("consent purpose must be evaluation or governed_learning");
+  }
   required(value.consent.evidenceRef, "consent.evidenceRef", errors);
   required(value.authorizationRef, "authorizationRef", errors);
   if (value.sandbox.kind !== "dedicated_benchmark") errors.push("sandbox kind must be dedicated_benchmark");
@@ -347,12 +352,14 @@ export function validateExecutionReceipt(value: ProductionExecutionReceipt): str
     errors.push("budget maximumAttempts must be a positive integer");
   }
   if (value.delivery.mode !== "draft_pr_only") errors.push("delivery mode must be draft_pr_only");
-  if (value.delivery.mergeAllowed) errors.push("delivery mergeAllowed must be false");
-  if (value.delivery.deploymentAllowed) errors.push("delivery deploymentAllowed must be false");
+  if (value.delivery.mergeAllowed !== false) errors.push("delivery mergeAllowed must be exactly false");
+  if (value.delivery.deploymentAllowed !== false) errors.push("delivery deploymentAllowed must be exactly false");
   if (value.delivery.openDraftCountForCase !== 0) {
     errors.push("delivery openDraftCountForCase must be 0 before delivery");
   }
-  if (!value.advisoryVerifier.advisoryOnly) errors.push("advisory verifier advisoryOnly must be true");
+  required(value.advisoryVerifier.name, "advisoryVerifier.name", errors);
+  if (value.advisoryVerifier.advisoryOnly !== true) errors.push("advisory verifier advisoryOnly must be exactly true");
+  if (value.recipeVersion !== null) required(value.recipeVersion, "recipeVersion", errors);
   const deniedAuthorities: Array<keyof ProductionExecutionReceipt["advisoryVerifier"]> = [
     "maySelectCandidate",
     "mayMutateExecution",
@@ -361,8 +368,8 @@ export function validateExecutionReceipt(value: ProductionExecutionReceipt): str
     "mayDeploy",
   ];
   for (const authority of deniedAuthorities) {
-    if (value.advisoryVerifier[authority] === true) {
-      errors.push(`advisory verifier ${authority} must be false`);
+    if (value.advisoryVerifier[authority] !== false) {
+      errors.push(`advisory verifier ${authority} must be exactly false`);
     }
   }
   for (const [field, state] of Object.entries(value.evidence)) {

@@ -5,7 +5,28 @@ import {
   type ProductionExecutionReceipt,
   type RepositoryProvenance,
 } from "./schema.js";
-import { validateFixtureManifest, type FixtureManifest } from "./fixture.js";
+import { fixtureManifestDigest, validateFixtureManifest, type FixtureManifest } from "./fixture.js";
+
+export interface TrustedProductionLearningAuthority {
+  caseId: string;
+  product: LearningCase["product"];
+  productionRevision: string;
+  tenantId: string;
+  repositoryId: string;
+  repositoryCommit: string;
+  snapshotDigest: string;
+  fixtureManifestDigest: string;
+  graphVersion: string;
+  policyVersion: string;
+  modelProvider: string;
+  modelId: string;
+  routerVersion: string;
+  recipeVersion: string | null;
+  consentEvidenceRef: string;
+  authorizationRef: string;
+  sandboxReceiptDigest: string;
+  executionDigest: string;
+}
 
 export interface ProductionLearningPreflight {
   allowed: boolean;
@@ -25,8 +46,9 @@ export function evaluateProductionLearningPreflight(input: {
   repository: RepositoryProvenance;
   fixture: FixtureManifest;
   receipt: ProductionExecutionReceipt;
+  authority: TrustedProductionLearningAuthority;
 }): ProductionLearningPreflight {
-  const { learningCase, repository, fixture, receipt } = input;
+  const { learningCase, repository, fixture, receipt, authority } = input;
   const errors = [
     ...validateRepositoryProvenance(repository),
     ...validateFixtureManifest(fixture, learningCase, repository),
@@ -44,8 +66,35 @@ export function evaluateProductionLearningPreflight(input: {
   if (receipt.snapshotDigest !== fixture.repository.pristineSnapshotSha256) {
     errors.push("receipt snapshotDigest must match fixture snapshot");
   }
+  const computedManifestDigest = fixtureManifestDigest(fixture);
+  if (receipt.fixtureManifestDigest !== computedManifestDigest) {
+    errors.push("receipt fixtureManifestDigest must match the complete fixture manifest");
+  }
   if (!receipt.tenantId.startsWith("benchmark-tenant-")) {
     errors.push("receipt tenantId must identify a dedicated benchmark tenant");
+  }
+  const authorityBindings: Array<[string, unknown, unknown]> = [
+    ["caseId", receipt.caseId, authority.caseId],
+    ["product", receipt.product, authority.product],
+    ["productionRevision", receipt.productionRevision, authority.productionRevision],
+    ["tenantId", receipt.tenantId, authority.tenantId],
+    ["repositoryId", receipt.repositoryId, authority.repositoryId],
+    ["repositoryCommit", receipt.repositoryCommit, authority.repositoryCommit],
+    ["snapshotDigest", receipt.snapshotDigest, authority.snapshotDigest],
+    ["fixtureManifestDigest", receipt.fixtureManifestDigest, authority.fixtureManifestDigest],
+    ["graphVersion", receipt.graphVersion, authority.graphVersion],
+    ["policyVersion", receipt.policyVersion, authority.policyVersion],
+    ["model.provider", receipt.model.provider, authority.modelProvider],
+    ["model.modelId", receipt.model.modelId, authority.modelId],
+    ["routerVersion", receipt.routerVersion, authority.routerVersion],
+    ["recipeVersion", receipt.recipeVersion, authority.recipeVersion],
+    ["consent.evidenceRef", receipt.consent.evidenceRef, authority.consentEvidenceRef],
+    ["authorizationRef", receipt.authorizationRef, authority.authorizationRef],
+    ["sandbox.receiptDigest", receipt.sandbox.receiptDigest, authority.sandboxReceiptDigest],
+    ["executionDigest", receipt.executionDigest, authority.executionDigest],
+  ];
+  for (const [field, actual, expected] of authorityBindings) {
+    if (actual !== expected) errors.push(`receipt ${field} must match trusted production authority`);
   }
   return {
     allowed: errors.length === 0,
