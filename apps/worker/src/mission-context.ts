@@ -39,6 +39,7 @@ import {
   type VerificationInput,
 } from "@mendpoint/pipeline";
 import { queryFettlerEndpointImpact, type GraphLearnDb } from "@mendpoint/graph-learn";
+import { createHash } from "node:crypto";
 
 export type BuildMissionContextParams = Readonly<{
   tenantId: string;
@@ -61,6 +62,24 @@ export type BuildMissionContextParams = Readonly<{
    */
   graphDb?: GraphLearnDb | null;
 }>;
+
+/**
+ * Bounded, stable entry id for an absence (`no_current_evidence`) verification.
+ * The absence paths carry no record id, so the id must be derived from the scope.
+ * A production scope is `warden.campaign.execute:<campaignId>:<targetId>:candidate:
+ * <64 hex>` — with the real generators (campaignId 49 chars, targetId 68 chars) the
+ * scope is 217 chars, and the raw `verification:<scope>` id was 230. The compiler
+ * validates ids against `maxIdentifier` (200) with a THROW, not a clip, so an
+ * over-long id sinks the whole mission context to `context_not_loaded` on exactly
+ * the missions this scoping serves. Keying on a sha256 of the scope fixes the id at
+ * 77 chars: stable across runs, unique per verification family (sha256 is
+ * collision-resistant), and its `verification:` namespace never overlaps a real
+ * record id. The id is opaque downstream — recorded in context refs, never parsed
+ * back into a scope.
+ */
+function verificationAbsenceEntryId(scope: string): string {
+  return `verification:${createHash("sha256").update(scope, "utf8").digest("hex")}`;
+}
 
 /** Map a per-scope verification standing to the compiler's carried-through input. */
 function verificationInputsForStanding(
@@ -96,7 +115,7 @@ function verificationInputsForStanding(
   // "never verified" stays distinct from "only stale" and from a failed current run.
   return {
     tenantId,
-    id: `verification:${scope}`,
+    id: verificationAbsenceEntryId(scope),
     statement: `scope ${scope}`,
     verdict: "none",
     state: "no_current_evidence",
@@ -201,15 +220,16 @@ export function buildMissionContext(
     return {
       consulted: true,
       records: selections.map((selection) => {
+        // An unresolvable candidate tie is an absence with its own reason, decided
+        // by selectCurrentVerificationRecords and carried through the single
+        // standing->input mapper — never a hand-built input with an ad-hoc reason.
+        // The reason is a first-class MissionVerificationAbsence member, so the
+        // currency decision stays owned by the verification classification types.
         if (selection.standing === "ambiguous") {
-          return {
-            tenantId,
-            id: `verification:${selection.family}`,
-            statement: `scope ${selection.family}`,
-            verdict: "none",
-            state: "no_current_evidence",
+          return verificationInputsForStanding(tenantId, selection.family, {
+            standing: "no_current_evidence",
             reason: "ambiguous_current_candidate",
-          } satisfies VerificationInput;
+          });
         }
         return verificationInputsForStanding(
           tenantId,

@@ -208,4 +208,14 @@ describe("mission verification history", () => {
     expect(scopes).toEqual(["stage-2", "stage-3"]);
     expect(selected.every((s) => s.standing === "current")).toBe(true);
   });
+
+  // Direct guard on the family reducer itself. A candidate-suffixed scope is
+  // stripped to its base; a non-candidate scope is its own family. Replacing
+  // verificationScopeFamily with the identity function fails the first assertion.
+  it("strips the trailing candidate digest to a shared family", () => {
+    const base = "warden.campaign.execute:c1:t1";
+    expect(verificationScopeFamily(`${base}:candidate:${"a".repeat(64)}`)).toBe(base);
+    expect(verificationScopeFamily(`${base}:candidate:${"b".repeat(64)}`)).toBe(base);
+    expect(verificationScopeFamily("stage-2")).toBe("stage-2");
+  });
 });

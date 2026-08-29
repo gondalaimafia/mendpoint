@@ -71,7 +71,13 @@ export type MissionVerificationAbsence =
   | "no_verification_recorded"
   | "current_verification_failed"
   | "current_verification_inconclusive"
-  | "only_stale_evidence";
+  | "only_stale_evidence"
+  // A scope family whose newest record cannot be determined (a createdAt tie,
+  // refused by selectCurrentVerificationRecords). Never emitted by
+  // classifyMissionVerificationEvidence; carried as an absence so the producer
+  // surfaces the refusal through the single standing mapper instead of an ad-hoc
+  // reason string.
+  | "ambiguous_current_candidate";
 
 export type SnapshotIdentityDelta = Readonly<{
   field: "snapshot_id" | "resolved_sha" | "manifest_sha256";
