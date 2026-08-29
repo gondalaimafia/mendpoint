@@ -46,6 +46,11 @@ function makeCase(
       provenanceId: "repo-example",
       languages: ["typescript"],
       frameworks: ["node"],
+      binding: {
+        mode: "native",
+        originalResearchCandidate: "repo-example",
+        rationale: "The fixture directly exercises the documented repository capability.",
+      },
     },
     pattern: {
       family: product === "fettler" ? "api-contract-change" : "runtime-upgrade",
@@ -74,6 +79,7 @@ function makeCase(
       risks: ["untrusted_repository_content"],
       requiresDedicatedBenchmarkTenant: true,
     },
+    planning: { requirementIds: ["REQ-EVAL-CATALOG"] },
   };
 }
 
@@ -269,6 +275,12 @@ describe("sealed controls and production receipts", () => {
         "sandbox.receiptDigest must be a 64 character lowercase sha256",
       ]),
     );
+  });
+
+  it("requires sandbox default-deny egress to be the exact boolean true", () => {
+    const value = receipt();
+    (value.sandbox as unknown as { defaultDenyEgress: unknown }).defaultDenyEgress = "false";
+    expect(validateExecutionReceipt(value)).toContain("sandbox defaultDenyEgress must be exactly true");
   });
 
   it("rejects merge, deployment, second-draft, or advisory-verifier authority", () => {

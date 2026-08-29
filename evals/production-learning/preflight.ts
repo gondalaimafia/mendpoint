@@ -6,8 +6,9 @@ import {
   type RepositoryProvenance,
 } from "./schema.js";
 import { fixtureManifestDigest, validateFixtureManifest, type FixtureManifest } from "./fixture.js";
+import { signedAuthorityEnvelopeDigest, verifySignedAuthorityEnvelope, type SignedAuthorityEnvelope, type TrustedAuthorityVerifierConfig } from "./authority.js";
 
-export interface TrustedProductionLearningAuthority {
+export interface ProductionLearningAuthorityPayload {
   caseId: string;
   product: LearningCase["product"];
   productionRevision: string;
@@ -28,6 +29,49 @@ export interface TrustedProductionLearningAuthority {
   executionDigest: string;
 }
 
+const VERIFIED_PRODUCTION_AUTHORITY: unique symbol = Symbol("verified-production-learning-authority");
+const verifiedProductionAuthorities = new WeakSet<object>();
+export type VerifiedProductionLearningAuthority = Readonly<ProductionLearningAuthorityPayload> & {
+  readonly authorityEnvelopeDigest: string;
+  readonly [VERIFIED_PRODUCTION_AUTHORITY]: true;
+};
+
+export function verifyProductionLearningAuthority(
+  envelope: SignedAuthorityEnvelope<ProductionLearningAuthorityPayload>,
+  config: TrustedAuthorityVerifierConfig,
+): VerifiedProductionLearningAuthority {
+  const payload = verifySignedAuthorityEnvelope(envelope, config);
+  const errors: string[] = [];
+  const sha256 = /^[0-9a-f]{64}$/;
+  const gitSha = /^[0-9a-f]{40}$/;
+  if (!(payload.product === "fettler" || payload.product === "regauge")) errors.push("authority product is invalid");
+  if (!gitSha.test(payload.productionRevision) || !gitSha.test(payload.repositoryCommit)) errors.push("authority revisions must be git shas");
+  for (const [field, value] of [
+    ["snapshotDigest", payload.snapshotDigest],
+    ["fixtureManifestDigest", payload.fixtureManifestDigest],
+    ["sandboxReceiptDigest", payload.sandboxReceiptDigest],
+    ["executionDigest", payload.executionDigest],
+  ] as const) if (!sha256.test(value)) errors.push(`authority ${field} must be sha256`);
+  for (const [field, value] of Object.entries(payload)) {
+    if (field !== "recipeVersion" && typeof value === "string" && value.trim().length === 0) errors.push(`authority ${field} must be non-empty`);
+  }
+  if (errors.length > 0) throw new Error(`production_learning_authority_invalid:${errors.join("|")}`);
+  const token = Object.freeze({
+    ...payload,
+    authorityEnvelopeDigest: signedAuthorityEnvelopeDigest(envelope),
+    [VERIFIED_PRODUCTION_AUTHORITY]: true,
+  }) as VerifiedProductionLearningAuthority;
+  verifiedProductionAuthorities.add(token);
+  return token;
+}
+
+export function requireVerifiedProductionLearningAuthority(
+  authority: VerifiedProductionLearningAuthority,
+): VerifiedProductionLearningAuthority {
+  if (!verifiedProductionAuthorities.has(authority)) throw new Error("production_learning_authority_not_verified");
+  return authority;
+}
+
 export interface ProductionLearningPreflight {
   allowed: boolean;
   errors: string[];
@@ -38,6 +82,7 @@ export interface ProductionLearningPreflight {
     repositoryId: string;
     repositoryCommit: string;
     executionDigest: string;
+    authorityEnvelopeDigest: string;
   };
 }
 
@@ -46,7 +91,7 @@ export function evaluateProductionLearningPreflight(input: {
   repository: RepositoryProvenance;
   fixture: FixtureManifest;
   receipt: ProductionExecutionReceipt;
-  authority: TrustedProductionLearningAuthority;
+  authority: VerifiedProductionLearningAuthority;
 }): ProductionLearningPreflight {
   const { learningCase, repository, fixture, receipt, authority } = input;
   const errors = [
@@ -54,6 +99,7 @@ export function evaluateProductionLearningPreflight(input: {
     ...validateFixtureManifest(fixture, learningCase, repository),
     ...validateExecutionReceipt(receipt),
   ];
+  if (!verifiedProductionAuthorities.has(authority)) errors.push("trusted production authority must be signature verified");
   if (receipt.caseId !== learningCase.id) errors.push("receipt caseId must match the learning case");
   if (receipt.product !== learningCase.product) errors.push("receipt product must match the learning case");
   if (receipt.repositoryId !== repository.id) errors.push("receipt repositoryId must match provenance");
@@ -106,6 +152,7 @@ export function evaluateProductionLearningPreflight(input: {
       repositoryId: receipt.repositoryId,
       repositoryCommit: receipt.repositoryCommit,
       executionDigest: receipt.executionDigest,
+      authorityEnvelopeDigest: authority.authorityEnvelopeDigest,
     },
   };
 }

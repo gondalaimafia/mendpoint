@@ -1,16 +1,21 @@
 {
   "schemaVersion": "mendpoint.requirement-case-traceability.v1",
-  "generatedAt": "2026-08-29T02:22:58.317Z",
+  "generatedAt": "2026-08-29T03:05:16.963Z",
   "rows": [
     {
       "requirementId": "ME-CGR-001",
       "requirementTitle": "Change Graph production-grade acceptance",
       "registerStatus": "unimplemented",
       "registerClaimState": "roadmap_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "planned:ME-CGR-001"
       ],
@@ -18,7 +23,9 @@
         "https://github.com/gondalaimafia/mendpoint/issues/431"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -27,10 +34,15 @@
       "requirementTitle": "MCU definition",
       "registerStatus": "verified",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/platform/src/mcu.test.ts"
       ],
@@ -38,7 +50,11 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/390"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-COM-001-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -47,10 +63,15 @@
       "requirementTitle": "Usage ledger",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/usage.test.ts"
       ],
@@ -58,7 +79,11 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/390"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-COM-002-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -67,10 +92,15 @@
       "requirementTitle": "Billing",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/usage.test.ts",
         "external:approved billing processor or invoice export account,finance pricing and tax policy"
@@ -79,7 +109,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/439"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-COM-003-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": [
         "approved billing processor or invoice export account",
@@ -91,10 +125,15 @@
       "requirementTitle": "Gross margin analytics",
       "registerStatus": "verified",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/api/src/billing-economics.test.ts"
       ],
@@ -102,7 +141,11 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/390"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-COM-004-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -111,10 +154,15 @@
       "requirementTitle": "Human identity",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/api/src/auth.test.ts",
         "packages/db/src/identity.test.ts",
@@ -124,7 +172,12 @@
         "https://github.com/gondalaimafia/mendpoint/issues/437"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ENT-001-AC01-EV01",
+        "ME-ENT-001-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": [
         "approved identity provider tenant",
@@ -136,10 +189,15 @@
       "requirementTitle": "Tenant isolation proof",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/trust.test.ts",
         "packages/contract/src/tenant-boundary.test.ts"
@@ -151,7 +209,12 @@
         "https://github.com/gondalaimafia/mendpoint/pull/394",
         "https://github.com/gondalaimafia/mendpoint/pull/396"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ENT-002-AC01-EV01",
+        "ME-ENT-002-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -160,10 +223,15 @@
       "requirementTitle": "Secrets lifecycle",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/platform/src/credentials.test.ts",
         "packages/platform/src/vault-envelope.test.ts"
@@ -175,7 +243,12 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/358"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ENT-003-AC01-EV01",
+        "ME-ENT-003-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -184,10 +257,15 @@
       "requirementTitle": "Audit integrity and retention",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/trust.test.ts",
         "packages/contract/src/audit-governance.test.ts"
@@ -199,7 +277,12 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/358"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ENT-004-AC01-EV01",
+        "ME-ENT-004-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -208,10 +291,15 @@
       "requirementTitle": "Observability",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/api/src/production.test.ts",
         "packages/ops/src/service-health.test.ts"
@@ -220,7 +308,12 @@
         "https://github.com/gondalaimafia/mendpoint/issues/438"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ENT-005-AC01-EV01",
+        "ME-ENT-005-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -229,10 +322,15 @@
       "requirementTitle": "Horizontal reliability",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/index.test.ts"
       ],
@@ -240,7 +338,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/438"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ENT-006-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -249,10 +351,15 @@
       "requirementTitle": "Disaster recovery",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/ops/src/disaster-recovery.test.ts",
         "external:production backup provider,approved cross region recovery infrastructure,real production regional failover drill"
@@ -264,7 +371,11 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/358"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ENT-007-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": [
         "production backup provider",
@@ -277,10 +388,15 @@
       "requirementTitle": "Dependency outage behavior",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/platform/src/router.test.ts"
       ],
@@ -288,7 +404,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/438"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ENT-008-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -297,10 +417,15 @@
       "requirementTitle": "Performance contract",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/eval/src/performance-contract.test.ts",
         "packages/eval/src/performance-runner.test.ts",
@@ -310,7 +435,12 @@
         "https://github.com/gondalaimafia/mendpoint/issues/438"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ENT-009-AC01-EV01",
+        "ME-ENT-009-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -319,10 +449,15 @@
       "requirementTitle": "Self hosted support contract",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "tests/e2e/deployment.spec.ts"
       ],
@@ -330,7 +465,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/438"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ENT-010-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -339,10 +478,15 @@
       "requirementTitle": "VPC deployment",
       "registerStatus": "scaffold",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/ops/src/vpc-deployment.test.ts",
         "docs/VPC_REFERENCE_DEPLOYMENT.md",
@@ -352,7 +496,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/438"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ENT-011-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": [
         "approved cloud account and region",
@@ -364,10 +512,15 @@
       "requirementTitle": "Compliance program",
       "registerStatus": "scaffold",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/contract/src/compliance-program.test.ts",
         "external:legal approved DPA and subprocessors record,operational control evidence from deployed environment,independent penetration test,independent compliance assessor"
@@ -376,7 +529,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/438"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ENT-012-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": [
         "legal approved DPA and subprocessors record",
@@ -390,9 +547,9 @@
       "requirementTitle": "Relationship materialization",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "FET-C001",
         "FET-C002",
         "FET-C003",
@@ -469,7 +626,7 @@
         "FET-E024",
         "FET-E025"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-fet-c001-github-version-header",
         "oracle-fet-c002-removed-field",
         "oracle-fet-c003-cvss-severities",
@@ -531,6 +688,11 @@
         "oracle-fet-e023-openapi-tool-conflict",
         "oracle-fet-e024-urllib3-proxy-auth"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/codebase-index/src/index.ts#materializeCodebaseIndex",
         "packages/code-impact/src/persisted-index.test.ts",
@@ -542,7 +704,12 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/514"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-FET-015-AC01-EV02",
+        "ME-FET-015-AC01-EV03"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -551,9 +718,9 @@
       "requirementTitle": "Impact-path explainability",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "FET-C001",
         "FET-C002",
         "FET-C003",
@@ -630,7 +797,7 @@
         "FET-E024",
         "FET-E025"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-fet-c001-github-version-header",
         "oracle-fet-c002-removed-field",
         "oracle-fet-c003-cvss-severities",
@@ -692,6 +859,11 @@
         "oracle-fet-e023-openapi-tool-conflict",
         "oracle-fet-e024-urllib3-proxy-auth"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/shared/src/index.ts",
         "packages/db/src/index.test.ts",
@@ -701,7 +873,12 @@
         "https://github.com/gondalaimafia/mendpoint/issues/431"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-FET-016-AC01-EV02",
+        "ME-FET-016-AC01-EV03"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -710,9 +887,9 @@
       "requirementTitle": "Coverage-aware no-impact result",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "FET-C014",
         "FET-E001",
         "FET-E002",
@@ -724,7 +901,7 @@
         "FET-E023",
         "FET-E025"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-fet-c014-stripe-replay",
         "oracle-fet-e001-github-unknown-enum",
         "oracle-fet-e002-github-missing-evidence",
@@ -733,6 +910,11 @@
         "oracle-fet-e019-microsoft-ownership",
         "oracle-fet-e023-openapi-tool-conflict"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/code-impact/src/index.ts",
         "apps/web/app/components/console/pr-map.test.ts",
@@ -745,7 +927,11 @@
         "https://github.com/gondalaimafia/mendpoint/pull/427",
         "https://github.com/gondalaimafia/mendpoint/pull/440"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-FET-017-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -754,9 +940,9 @@
       "requirementTitle": "Raw-retrieval fallback",
       "registerStatus": "unimplemented",
       "registerClaimState": "roadmap_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "FET-C014",
         "FET-E001",
         "FET-E002",
@@ -768,7 +954,7 @@
         "FET-E023",
         "FET-E025"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-fet-c014-stripe-replay",
         "oracle-fet-e001-github-unknown-enum",
         "oracle-fet-e002-github-missing-evidence",
@@ -777,6 +963,11 @@
         "oracle-fet-e019-microsoft-ownership",
         "oracle-fet-e023-openapi-tool-conflict"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "planned:ME-FET-018"
       ],
@@ -788,7 +979,9 @@
         "https://github.com/gondalaimafia/mendpoint/pull/427",
         "https://github.com/gondalaimafia/mendpoint/pull/440"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -797,10 +990,15 @@
       "requirementTitle": "Canonical foundational specification",
       "registerStatus": "documented",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "docs/PRODUCT_CONTRACT.md"
       ],
@@ -811,7 +1009,9 @@
         "https://github.com/gondalaimafia/mendpoint/pull/478",
         "https://github.com/gondalaimafia/mendpoint/pull/481"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -820,10 +1020,15 @@
       "requirementTitle": "GitHub pilot and GitLab GA scope",
       "registerStatus": "documented",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "docs/PRODUCT_CONTRACT.md"
       ],
@@ -831,7 +1036,9 @@
         "https://github.com/gondalaimafia/mendpoint/issues/430"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -840,10 +1047,15 @@
       "requirementTitle": "Regauge pilot and GA separation",
       "registerStatus": "documented",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "docs/PRODUCT_CONTRACT.md"
       ],
@@ -853,7 +1065,9 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/337"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -862,10 +1076,15 @@
       "requirementTitle": "Router and post training release boundary",
       "registerStatus": "documented",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "docs/PRODUCT_CONTRACT.md"
       ],
@@ -873,7 +1092,9 @@
         "https://github.com/gondalaimafia/mendpoint/issues/430"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -882,10 +1103,15 @@
       "requirementTitle": "Self hosted and VPC release boundary",
       "registerStatus": "documented",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "docs/PRODUCT_CONTRACT.md"
       ],
@@ -893,7 +1119,9 @@
         "https://github.com/gondalaimafia/mendpoint/issues/430"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -902,10 +1130,15 @@
       "requirementTitle": "Measurable performance contract",
       "registerStatus": "documented",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "docs/PRODUCT_CONTRACT.md"
       ],
@@ -913,7 +1146,9 @@
         "https://github.com/gondalaimafia/mendpoint/issues/430"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -922,10 +1157,15 @@
       "requirementTitle": "Versioned metric dictionary",
       "registerStatus": "documented",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "docs/PRODUCT_CONTRACT.md"
       ],
@@ -933,7 +1173,9 @@
         "https://github.com/gondalaimafia/mendpoint/issues/430"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -942,10 +1184,15 @@
       "requirementTitle": "Versioned migration compute unit",
       "registerStatus": "documented",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "docs/PRODUCT_CONTRACT.md"
       ],
@@ -953,7 +1200,9 @@
         "https://github.com/gondalaimafia/mendpoint/issues/430"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -962,10 +1211,15 @@
       "requirementTitle": "Cross customer learning governance",
       "registerStatus": "documented",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "docs/PRODUCT_CONTRACT.md"
       ],
@@ -973,7 +1227,9 @@
         "https://github.com/gondalaimafia/mendpoint/issues/430"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -982,10 +1238,15 @@
       "requirementTitle": "Atomic release tier assignment",
       "registerStatus": "documented",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "docs/PRODUCT_CONTRACT.md"
       ],
@@ -995,7 +1256,9 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/337"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1004,10 +1267,15 @@
       "requirementTitle": "Entity and edge completeness",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/graph-learn/src/graph-learn.test.ts"
       ],
@@ -1021,7 +1289,11 @@
         "https://github.com/gondalaimafia/mendpoint/pull/396",
         "https://github.com/gondalaimafia/mendpoint/pull/415"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-GRF-001-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1030,10 +1302,15 @@
       "requirementTitle": "Temporal reconstruction",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/graph-learn/src/graph-learn.test.ts"
       ],
@@ -1041,7 +1318,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/431"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-GRF-002-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1050,10 +1331,15 @@
       "requirementTitle": "Complete dependency paths",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/graph-learn/src/dependency-paths.test.ts"
       ],
@@ -1061,7 +1347,11 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/384"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-GRF-003-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1070,10 +1360,15 @@
       "requirementTitle": "Multi language semantic accuracy",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/call-graph/src/index.test.ts"
       ],
@@ -1081,7 +1376,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/431"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-GRF-004-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1090,10 +1389,15 @@
       "requirementTitle": "Runtime, test, owner, and CI evidence",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/graph-learn/src/runtime-evidence.test.ts",
         "packages/pipeline/src/warden-campaign-executor.test.ts"
@@ -1102,7 +1406,12 @@
         "https://github.com/gondalaimafia/mendpoint/issues/431"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-GRF-005-AC01-EV01",
+        "ME-GRF-005-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1111,10 +1420,15 @@
       "requirementTitle": "Calibrated confidence",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/graph-learn/src/graph-learn.test.ts"
       ],
@@ -1125,7 +1439,11 @@
         "https://github.com/gondalaimafia/mendpoint/pull/388",
         "https://github.com/gondalaimafia/mendpoint/pull/395"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-GRF-006-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1134,10 +1452,15 @@
       "requirementTitle": "Production graph scale",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/eval/src/coverage-metrics.test.ts"
       ],
@@ -1145,7 +1468,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/431"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-GRF-007-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1154,10 +1481,15 @@
       "requirementTitle": "Impact benchmark",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/graph-learn/src/impact-benchmark.test.ts",
         "packages/eval/src/coverage-metrics.test.ts"
@@ -1168,7 +1500,12 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/331"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-GRF-008-AC01-EV01",
+        "ME-GRF-008-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1177,17 +1514,26 @@
       "requirementTitle": "Guided onboarding",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/web/app/install/pilot-readiness-checklist.tsx",
         "apps/web/app/install/pilot-readiness-checklist.test.tsx"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-GTM-001-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1196,17 +1542,27 @@
       "requirementTitle": "Pilot success contract",
       "registerStatus": "verified",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/api/src/pilot-success-contracts.test.ts",
         "packages/db/src/pilot-success-contract.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-GTM-002-AC01-EV01",
+        "ME-GTM-002-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1215,10 +1571,15 @@
       "requirementTitle": "Public trust and proof",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/contract/src/public-claims.test.ts",
         "external:observed external customer proof"
@@ -1229,7 +1590,11 @@
         "https://github.com/gondalaimafia/mendpoint/pull/333",
         "https://github.com/gondalaimafia/mendpoint/pull/337"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-GTM-003-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": [
         "observed external customer proof"
@@ -1240,10 +1605,15 @@
       "requirementTitle": "Unified source artifacts",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/change-intel/src/unified-change-evidence.test.ts",
         "packages/pipeline/src/warden-campaign-executor.test.ts"
@@ -1252,7 +1622,12 @@
         "https://github.com/gondalaimafia/mendpoint/issues/431"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ING-001-AC01-EV01",
+        "ME-ING-001-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1261,17 +1636,27 @@
       "requirementTitle": "OpenAPI validation",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/catalog/src/poll.test.ts",
         "packages/db/src/index.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ING-002-AC01-EV01",
+        "ME-ING-002-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1280,10 +1665,15 @@
       "requirementTitle": "Changelog and release ingestion",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/catalog/src/release-ingestion.test.ts",
         "packages/change-intel/src/unified-change-evidence.test.ts",
@@ -1293,7 +1683,13 @@
         "https://github.com/gondalaimafia/mendpoint/issues/431"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ING-003-AC01-EV01",
+        "ME-ING-003-AC01-EV02",
+        "ME-ING-003-AC01-EV03"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1302,10 +1698,15 @@
       "requirementTitle": "SDK release ingestion",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/catalog/src/release-ingestion.test.ts"
       ],
@@ -1313,7 +1714,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/431"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ING-004-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1322,16 +1727,25 @@
       "requirementTitle": "Manual provider announcement",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/api/src/change-sources.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ING-005-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1340,10 +1754,15 @@
       "requirementTitle": "Customer incident intake",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/api/src/change-sources.test.ts"
       ],
@@ -1351,7 +1770,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/431"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ING-006-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1360,10 +1783,15 @@
       "requirementTitle": "Scheduled provider monitoring",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/catalog/src/run-poll.test.ts",
         "packages/catalog/src/schedule-runner.test.ts",
@@ -1371,7 +1799,13 @@
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ING-007-AC01-EV01",
+        "ME-ING-007-AC01-EV02",
+        "ME-ING-007-AC01-EV03"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1380,16 +1814,25 @@
       "requirementTitle": "Change taxonomy",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/change-intel/src/unified-change-evidence.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ING-008-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1398,10 +1841,15 @@
       "requirementTitle": "Provider recipe catalog",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/transformer/src/recipe-catalog.test.ts",
         "packages/transformer/src/recipe.test.ts"
@@ -1410,7 +1858,12 @@
         "https://github.com/gondalaimafia/mendpoint/issues/431"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-ING-009-AC01-EV01",
+        "ME-ING-009-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1419,10 +1872,15 @@
       "requirementTitle": "Mission Context Compiler",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/pipeline/src/mission-context-compiler.ts",
         "apps/worker/src/mission-context.ts",
@@ -1438,7 +1896,9 @@
         "https://github.com/gondalaimafia/mendpoint/pull/421",
         "https://github.com/gondalaimafia/mendpoint/pull/440"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1447,10 +1907,15 @@
       "requirementTitle": "Persistent Mission Space",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/mission.ts",
         "packages/db/src/mission.test.ts"
@@ -1463,7 +1928,11 @@
         "https://github.com/gondalaimafia/mendpoint/pull/416",
         "https://github.com/gondalaimafia/mendpoint/pull/440"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-MSN-001-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1472,10 +1941,15 @@
       "requirementTitle": "Mission decisions, exceptions, and artifacts",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/mission-decisions.ts",
         "packages/db/src/mission-exceptions.ts",
@@ -1493,7 +1967,12 @@
         "https://github.com/gondalaimafia/mendpoint/pull/419",
         "https://github.com/gondalaimafia/mendpoint/pull/421"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-MSN-002-AC01-EV05",
+        "ME-MSN-002-AC01-EV07"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1502,10 +1981,15 @@
       "requirementTitle": "Mission and persistent-context acceptance",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/mission.ts",
         "packages/pipeline/src/mission-context-compiler.test.ts",
@@ -1526,7 +2010,11 @@
         "https://github.com/gondalaimafia/mendpoint/pull/420",
         "https://github.com/gondalaimafia/mendpoint/pull/421"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-MSN-003-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1535,10 +2023,15 @@
       "requirementTitle": "Shared Mission task engine handoff",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/mission-handoff.ts",
         "apps/worker/src/mission-resume.ts",
@@ -1559,7 +2052,11 @@
         "https://github.com/gondalaimafia/mendpoint/pull/417",
         "https://github.com/gondalaimafia/mendpoint/pull/419"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-MTE-001-AC01-EV04"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1568,10 +2065,15 @@
       "requirementTitle": "Organization Memory governed store",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/organization-memory.ts",
         "packages/db/src/organization-memory.test.ts",
@@ -1583,7 +2085,11 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/377"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-OMM-001-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1592,10 +2098,15 @@
       "requirementTitle": "Versioned Policy Envelope inheritance",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/policy/src/policy-envelope.ts",
         "packages/pipeline/src/mission-policy-binding.ts",
@@ -1609,7 +2120,11 @@
         "https://github.com/gondalaimafia/mendpoint/pull/400",
         "https://github.com/gondalaimafia/mendpoint/pull/414"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-PEV-001-AC01-EV03"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1618,9 +2133,9 @@
       "requirementTitle": "Hybrid relationship discovery",
       "registerStatus": "unimplemented",
       "registerClaimState": "roadmap_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "REG-C001",
         "REG-C002",
         "REG-C003",
@@ -1697,7 +2212,7 @@
         "REG-E024",
         "REG-E025"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-reg-c001-runtime-matrix",
         "oracle-reg-c002-module-consumers",
         "oracle-reg-c003-route-corpus",
@@ -1759,6 +2274,11 @@
         "oracle-reg-e023-cleanup-hash",
         "oracle-reg-e024-environment-binding"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "planned:ME-REG-015"
       ],
@@ -1766,7 +2286,9 @@
         "https://github.com/gondalaimafia/mendpoint/issues/434"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1775,9 +2297,9 @@
       "requirementTitle": "Migration-constraint provenance",
       "registerStatus": "unimplemented",
       "registerClaimState": "roadmap_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "REG-C001",
         "REG-C002",
         "REG-C003",
@@ -1833,7 +2355,7 @@
         "REG-E020",
         "REG-E021"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-reg-c001-runtime-matrix",
         "oracle-reg-c002-module-consumers",
         "oracle-reg-c003-route-corpus",
@@ -1878,6 +2400,11 @@
         "oracle-reg-e014-fault-injection",
         "oracle-reg-e021-staged-path"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "planned:ME-REG-016"
       ],
@@ -1885,7 +2412,9 @@
         "https://github.com/gondalaimafia/mendpoint/issues/434"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1894,9 +2423,9 @@
       "requirementTitle": "Unknown vs absent dependency",
       "registerStatus": "unimplemented",
       "registerClaimState": "roadmap_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "REG-E002",
         "REG-E003",
         "REG-E004",
@@ -1906,7 +2435,7 @@
         "REG-E018",
         "REG-E023"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-reg-e002-no-change",
         "oracle-reg-e003-unknown-preserved",
         "oracle-reg-e004-conflict-ledger",
@@ -1914,6 +2443,11 @@
         "oracle-reg-e018-budget-frontier",
         "oracle-reg-e023-cleanup-hash"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "planned:ME-REG-017"
       ],
@@ -1921,7 +2455,9 @@
         "https://github.com/gondalaimafia/mendpoint/issues/434"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -1930,9 +2466,9 @@
       "requirementTitle": "Graph-backed planning",
       "registerStatus": "unimplemented",
       "registerClaimState": "roadmap_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "REG-C001",
         "REG-C002",
         "REG-C003",
@@ -2009,7 +2545,7 @@
         "REG-E024",
         "REG-E025"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-reg-c001-runtime-matrix",
         "oracle-reg-c002-module-consumers",
         "oracle-reg-c003-route-corpus",
@@ -2071,6 +2607,11 @@
         "oracle-reg-e023-cleanup-hash",
         "oracle-reg-e024-environment-binding"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "planned:ME-REG-018"
       ],
@@ -2078,7 +2619,9 @@
         "https://github.com/gondalaimafia/mendpoint/issues/434"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2087,16 +2630,25 @@
       "requirementTitle": "Structured task specification",
       "registerStatus": "verified",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/platform/src/router.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-RTR-001-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2105,16 +2657,25 @@
       "requirementTitle": "Model and executor registry",
       "registerStatus": "verified",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/platform/src/router.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-RTR-002-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2123,16 +2684,25 @@
       "requirementTitle": "Routing policy",
       "registerStatus": "verified",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/platform/src/router.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-RTR-003-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2141,16 +2711,25 @@
       "requirementTitle": "Typed fallback",
       "registerStatus": "verified",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/platform/src/router.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-RTR-004-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2159,16 +2738,25 @@
       "requirementTitle": "Actual cost ledger",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/api/src/billing-economics.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-RTR-005-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2177,10 +2765,15 @@
       "requirementTitle": "Outcome feedback",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/learning.test.ts"
       ],
@@ -2192,7 +2785,11 @@
         "https://github.com/gondalaimafia/mendpoint/pull/330",
         "https://github.com/gondalaimafia/mendpoint/pull/387"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-RTR-006-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2201,16 +2798,25 @@
       "requirementTitle": "Training dataset governance",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/learning.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-RTR-007-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2219,10 +2825,15 @@
       "requirementTitle": "Adapter lifecycle",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/platform/src/adapter-lifecycle.test.ts",
         "external:consented representative dataset,approved training and serving infrastructure"
@@ -2231,7 +2842,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/436"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-RTR-008-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": [
         "consented representative dataset",
@@ -2243,10 +2858,15 @@
       "requirementTitle": "Router value proof",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/eval/src/router-value-proof.test.ts",
         "packages/eval/src/router-value-proof-runner.test.ts"
@@ -2258,7 +2878,12 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/387"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-RTR-009-AC01-EV01",
+        "ME-RTR-009-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2267,16 +2892,25 @@
       "requirementTitle": "SCM neutral repository identity",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/repository.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-SCM-001-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2285,16 +2919,25 @@
       "requirementTitle": "Immutable repository snapshot",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/platform/src/repository-source.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-SCM-002-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2303,10 +2946,15 @@
       "requirementTitle": "GitHub App end to end",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/github/src/index.test.ts",
         "external:GitHub App production credentials",
@@ -2318,9 +2966,15 @@
         "https://github.com/gondalaimafia/mendpoint/issues/432"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [
+      "closureTestEvidenceIds": [
+        "ME-SCM-003-AC01-EV01",
+        "ME-SCM-003-AC01-EV03",
+        "ME-SCM-003-AC01-EV04"
+      ],
+      "closureProductionEvidenceIds": [
         "ME-SCM-003-AC01-EV05"
       ],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": [
         "GitHub App production credentials"
@@ -2331,10 +2985,15 @@
       "requirementTitle": "GitLab end to end",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/platform/src/gitlab-fixture.test.ts",
         "external:approved GitLab credential and disposable private project,live GitLab webhook and recovery drill"
@@ -2343,7 +3002,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/432"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-SCM-004-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": [
         "approved GitLab credential and disposable private project",
@@ -2355,16 +3018,25 @@
       "requirementTitle": "Connection health",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/api/src/repository-connections.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-SCM-005-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2373,10 +3045,15 @@
       "requirementTitle": "Ownership and CI discovery",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/platform/src/repository-source.test.ts"
       ],
@@ -2384,7 +3061,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/432"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-SCM-006-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2393,10 +3074,15 @@
       "requirementTitle": "Pluggable structural extractor contract",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/structural-graph/src/index.ts",
         "docs/graph/STRUCTURAL_EXTRACTOR_CONTRACT.md"
@@ -2408,7 +3094,9 @@
         "https://github.com/gondalaimafia/mendpoint/pull/331",
         "https://github.com/gondalaimafia/mendpoint/pull/337"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2417,9 +3105,9 @@
       "requirementTitle": "Objective to blueprint",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "REG-C001",
         "REG-C002",
         "REG-C003",
@@ -2496,7 +3184,7 @@
         "REG-E024",
         "REG-E025"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-reg-c001-runtime-matrix",
         "oracle-reg-c002-module-consumers",
         "oracle-reg-c003-route-corpus",
@@ -2558,6 +3246,11 @@
         "oracle-reg-e023-cleanup-hash",
         "oracle-reg-e024-environment-binding"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/transformer/src/blueprint-planner.test.ts"
       ],
@@ -2565,7 +3258,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/434"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-TRN-001-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2574,10 +3271,15 @@
       "requirementTitle": "Behavioral Specification Graph extraction",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/transformer/src/bsg-extractor.test.ts"
       ],
@@ -2585,7 +3287,11 @@
         "https://github.com/gondalaimafia/mendpoint/issues/434"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-TRN-002-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2594,10 +3300,15 @@
       "requirementTitle": "Durable campaign state",
       "registerStatus": "verified",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/transformer/src/control-plane-store.test.ts"
       ],
@@ -2613,7 +3324,11 @@
         "https://github.com/gondalaimafia/mendpoint/pull/407",
         "https://github.com/gondalaimafia/mendpoint/pull/414"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-TRN-003-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2622,9 +3337,9 @@
       "requirementTitle": "Executable transformation recipes",
       "registerStatus": "verified",
       "registerClaimState": "internal_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "REG-C001",
         "REG-C002",
         "REG-C003",
@@ -2701,7 +3416,7 @@
         "REG-E024",
         "REG-E025"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-reg-c001-runtime-matrix",
         "oracle-reg-c002-module-consumers",
         "oracle-reg-c003-route-corpus",
@@ -2763,12 +3478,21 @@
         "oracle-reg-e023-cleanup-hash",
         "oracle-reg-e024-environment-binding"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/transformer/src/recipe.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-TRN-004-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2777,9 +3501,9 @@
       "requirementTitle": "Real repository execution",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "REG-C001",
         "REG-C002",
         "REG-C003",
@@ -2856,7 +3580,7 @@
         "REG-E024",
         "REG-E025"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-reg-c001-runtime-matrix",
         "oracle-reg-c002-module-consumers",
         "oracle-reg-c003-route-corpus",
@@ -2918,6 +3642,11 @@
         "oracle-reg-e023-cleanup-hash",
         "oracle-reg-e024-environment-binding"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/transformer/src/recipe-workspace-execution.test.ts",
         "packages/transformer/src/pilot-execution.test.ts"
@@ -2929,7 +3658,12 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/387"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-TRN-005-AC01-EV01",
+        "ME-TRN-005-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2938,10 +3672,15 @@
       "requirementTitle": "Staged PR batches",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/transformer/src/staged-pr-batches.test.ts",
         "packages/transformer/src/control-plane-store.test.ts",
@@ -2951,7 +3690,13 @@
         "https://github.com/gondalaimafia/mendpoint/issues/435"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-TRN-006-AC01-EV01",
+        "ME-TRN-006-AC01-EV02",
+        "ME-TRN-006-AC01-EV03"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2960,10 +3705,15 @@
       "requirementTitle": "Progress and exception operations",
       "registerStatus": "verified",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/api/src/transformer-pilot-executions.test.ts",
         "packages/transformer/src/pilot-execution.test.ts",
@@ -2974,7 +3724,13 @@
         "https://github.com/gondalaimafia/mendpoint/pull/407",
         "https://github.com/gondalaimafia/mendpoint/pull/414"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-TRN-007-AC01-EV01",
+        "ME-TRN-007-AC01-EV02",
+        "ME-TRN-007-AC01-EV03"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -2983,9 +3739,9 @@
       "requirementTitle": "Rollback execution",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "REG-E001",
         "REG-E002",
         "REG-E003",
@@ -3012,7 +3768,7 @@
         "REG-E024",
         "REG-E025"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-reg-e001-byte-identical",
         "oracle-reg-e002-no-change",
         "oracle-reg-e003-unknown-preserved",
@@ -3034,6 +3790,11 @@
         "oracle-reg-e023-cleanup-hash",
         "oracle-reg-e024-environment-binding"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/transformer/src/recipe-workspace-execution.test.ts",
         "packages/transformer/src/pilot-execution.test.ts"
@@ -3042,7 +3803,12 @@
         "https://github.com/gondalaimafia/mendpoint/issues/435"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-TRN-008-AC01-EV01",
+        "ME-TRN-008-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3051,10 +3817,15 @@
       "requirementTitle": "Organization constraints",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/platform/src/repository-source.test.ts",
         "packages/transformer/src/organization-constraints.test.ts",
@@ -3064,7 +3835,13 @@
         "https://github.com/gondalaimafia/mendpoint/issues/434"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-TRN-009-AC01-EV01",
+        "ME-TRN-009-AC01-EV02",
+        "ME-TRN-009-AC01-EV03"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3073,10 +3850,15 @@
       "requirementTitle": "Regauge workspace",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/web/app/transformer/workspace-model.test.ts",
         "apps/api/src/transformer-control-plane.test.ts"
@@ -3085,7 +3867,12 @@
         "https://github.com/gondalaimafia/mendpoint/issues/434"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-TRN-010-AC01-EV01",
+        "ME-TRN-010-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3094,17 +3881,27 @@
       "requirementTitle": "Regauge outcome metrics",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/web/app/transformer/workspace-model.test.ts",
         "packages/transformer/src/pilot-execution.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-TRN-011-AC01-EV01",
+        "ME-TRN-011-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3113,10 +3910,15 @@
       "requirementTitle": "Regauge evaluation",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/eval/src/agent-eval.test.ts",
         "packages/transformer/src/pilot-execution.test.ts"
@@ -3128,7 +3930,12 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/387"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-TRN-012-AC01-EV01",
+        "ME-TRN-012-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3137,10 +3944,15 @@
       "requirementTitle": "Experimental gate enforcement",
       "registerStatus": "verified",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/api/src/transformer-control-plane.test.ts",
         "apps/worker/src/transformer-authorization.test.ts",
@@ -3151,7 +3963,14 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/337"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-TRN-013-AC01-EV01",
+        "ME-TRN-013-AC01-EV02",
+        "ME-TRN-013-AC01-EV03",
+        "ME-TRN-013-AC01-EV04"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3160,9 +3979,9 @@
       "requirementTitle": "Impact to precise edit",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "FET-C001",
         "FET-C002",
         "FET-C003",
@@ -3239,7 +4058,7 @@
         "FET-E024",
         "FET-E025"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-fet-c001-github-version-header",
         "oracle-fet-c002-removed-field",
         "oracle-fet-c003-cvss-severities",
@@ -3301,6 +4120,11 @@
         "oracle-fet-e023-openapi-tool-conflict",
         "oracle-fet-e024-urllib3-proxy-auth"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/generation/src/index.test.ts",
         "packages/pipeline/src/warden-campaign-executor.test.ts"
@@ -3312,7 +4136,12 @@
         "https://github.com/gondalaimafia/mendpoint/pull/395",
         "https://github.com/gondalaimafia/mendpoint/pull/401"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-WAR-001-AC01-EV01",
+        "ME-WAR-001-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3321,9 +4150,9 @@
       "requirementTitle": "Baseline verification",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "FET-C001",
         "FET-C002",
         "FET-C003",
@@ -3400,7 +4229,7 @@
         "FET-E024",
         "FET-E025"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-fet-c001-github-version-header",
         "oracle-fet-c002-removed-field",
         "oracle-fet-c003-cvss-severities",
@@ -3462,6 +4291,11 @@
         "oracle-fet-e023-openapi-tool-conflict",
         "oracle-fet-e024-urllib3-proxy-auth"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/pipeline/src/index.test.ts",
         "packages/pipeline/src/warden-campaign-executor.test.ts"
@@ -3470,7 +4304,12 @@
         "https://github.com/gondalaimafia/mendpoint/issues/431"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-WAR-002-AC01-EV01",
+        "ME-WAR-002-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3479,10 +4318,15 @@
       "requirementTitle": "Structured PR package",
       "registerStatus": "verified",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/pipeline/src/index.test.ts",
         "packages/pipeline/src/warden-pr-package.test.ts",
@@ -3490,7 +4334,13 @@
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-WAR-003-AC01-EV01",
+        "ME-WAR-003-AC01-EV02",
+        "ME-WAR-003-AC01-EV03"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3499,10 +4349,15 @@
       "requirementTitle": "Review actions",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "apps/api/src/reviews.test.ts"
       ],
@@ -3515,7 +4370,11 @@
         "https://github.com/gondalaimafia/mendpoint/pull/410",
         "https://github.com/gondalaimafia/mendpoint/pull/418"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-WAR-004-AC01-EV01"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": [
         "live authenticated GitHub and GitLab review reconciliation drills"
@@ -3526,9 +4385,9 @@
       "requirementTitle": "Policy enforcement",
       "registerStatus": "scaffold",
       "registerClaimState": "experimental_only",
-      "coverageState": "covered",
-      "gapReason": null,
-      "caseIds": [
+      "planningState": "planned",
+      "planningGapReason": null,
+      "plannedCaseIds": [
         "FET-C001",
         "FET-C002",
         "FET-C003",
@@ -3605,7 +4464,7 @@
         "FET-E024",
         "FET-E025"
       ],
-      "testRefs": [
+      "plannedOracleIds": [
         "oracle-fet-c001-github-version-header",
         "oracle-fet-c002-removed-field",
         "oracle-fet-c003-cvss-severities",
@@ -3667,6 +4526,11 @@
         "oracle-fet-e023-openapi-tool-conflict",
         "oracle-fet-e024-urllib3-proxy-auth"
       ],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/policy/src/index.test.ts",
         "packages/policy/src/warden-policy.test.ts"
@@ -3677,7 +4541,12 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/379"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-WAR-005-AC01-EV01",
+        "ME-WAR-005-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3686,10 +4555,15 @@
       "requirementTitle": "Durable Fettler campaigns",
       "registerStatus": "partial",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/warden-campaign.test.ts",
         "packages/pipeline/src/warden-campaign-executor.test.ts"
@@ -3706,7 +4580,12 @@
         "https://github.com/gondalaimafia/mendpoint/pull/413",
         "https://github.com/gondalaimafia/mendpoint/pull/417"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-WAR-006-AC01-EV01",
+        "ME-WAR-006-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3715,17 +4594,27 @@
       "requirementTitle": "Rollout order",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/warden-campaign.test.ts",
         "packages/pipeline/src/warden-campaign-executor.test.ts"
       ],
       "closureIssueRefs": [],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-WAR-007-AC01-EV01",
+        "ME-WAR-007-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3734,10 +4623,15 @@
       "requirementTitle": "Audit completeness",
       "registerStatus": "verified",
       "registerClaimState": "experimental_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/db/src/warden-campaign.test.ts",
         "packages/db/src/warden-replay.test.ts"
@@ -3746,7 +4640,12 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/330"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-WAR-008-AC01-EV01",
+        "ME-WAR-008-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3755,10 +4654,15 @@
       "requirementTitle": "Fettler metrics",
       "registerStatus": "partial",
       "registerClaimState": "internal_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "packages/eval/src/warden-metrics.test.ts",
         "packages/eval/src/coverage-metrics.test.ts"
@@ -3769,7 +4673,12 @@
       "closurePullRequestRefs": [
         "https://github.com/gondalaimafia/mendpoint/pull/395"
       ],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [
+        "ME-WAR-009-AC01-EV01",
+        "ME-WAR-009-AC01-EV02"
+      ],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": null
     },
@@ -3778,10 +4687,15 @@
       "requirementTitle": "Real customer proof",
       "registerStatus": "blocked_external",
       "registerClaimState": "roadmap_only",
-      "coverageState": "uncovered",
-      "gapReason": "No production-learning case has an explicit semantic binding to this requirement in the current slice.",
-      "caseIds": [],
-      "testRefs": [],
+      "planningState": "unplanned",
+      "planningGapReason": "No production-learning case declares a planned binding to this requirement in the current slice.",
+      "plannedCaseIds": [],
+      "plannedOracleIds": [],
+      "verificationState": "unverified",
+      "verificationGapReason": "No admitted completed execution receipt verifies this requirement.",
+      "executionReceiptIds": [],
+      "verifiedCaseIds": [],
+      "verifiedOracleEvidenceIds": [],
       "registerEvidenceRefs": [
         "external:consented private customer repository,design partner acceptance and observed outcome"
       ],
@@ -3789,7 +4703,9 @@
         "https://github.com/gondalaimafia/mendpoint/issues/433"
       ],
       "closurePullRequestRefs": [],
-      "productionEvidenceIds": [],
+      "closureTestEvidenceIds": [],
+      "closureProductionEvidenceIds": [],
+      "verifiedProductionEvidenceIds": [],
       "productionEvidenceState": "unknown",
       "externalBlockers": [
         "consented private customer repository",

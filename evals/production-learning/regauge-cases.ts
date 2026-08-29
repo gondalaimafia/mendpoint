@@ -124,6 +124,14 @@ const reviewedRepositoryIdByCase: Partial<Record<`REG-${"C" | "E"}${string}`, Re
   "REG-E001": "repo-dotnet-architecture-eshoponweb",
 };
 
+const nativeReviewedRepositoryByResearchCandidate: Partial<Record<string, ReviewedRepositoryId>> = {
+  "repo-aws-sdk-js-v3": "repo-aws-aws-sdk-js-v3",
+  "repo-facebook-react": "repo-react-react",
+  "repo-octokit-webhooks": "repo-octokit-webhooks-js",
+  "repo-rails-rails": "repo-rails-rails",
+  "repo-spring-petclinic": "repo-spring-projects-spring-petclinic",
+};
+
 const allowedEditPathsByCase: Partial<Record<`REG-${"C" | "E"}${string}`, string[]>> = {
   "REG-C019": ["railties/**", "activesupport/**"],
   "REG-C031": ["compiler/Cargo.toml", "compiler/Cargo.lock", "compiler/crates/**"],
@@ -178,6 +186,14 @@ function makeCase(definition: CaseDefinition): LearningCase {
   if (reviewedRepository === undefined) {
     throw new Error(`Reviewed repository metadata is missing for ${definition.id}`);
   }
+  const nativeRepository = nativeReviewedRepositoryByResearchCandidate[definition.provenanceId] === reviewedRepositoryId;
+  const uncertainty = `${definition.family} ${definition.title}`.toLowerCase();
+  const requirementIds = ["ME-TRN-001", "ME-TRN-004", "ME-TRN-005", "ME-REG-015", "ME-REG-018"];
+  if (cohort === "edge") requirementIds.push("ME-TRN-008");
+  if (/(constraint|dependency|upgrade|migration|version|provider|runtime)/.test(uncertainty)) requirementIds.push("ME-REG-016");
+  if (definition.evidenceState !== undefined || /(negative|unknown|ambiguous|conflict|stale|partial|no-impact|not-applicable)/.test(uncertainty)) {
+    requirementIds.push("ME-REG-017");
+  }
 
   return {
     schemaVersion: "mendpoint.learning-case.v1",
@@ -196,7 +212,15 @@ function makeCase(definition: CaseDefinition): LearningCase {
       provenanceId: reviewedRepositoryId,
       languages: [...reviewedRepository.languages],
       frameworks: [...reviewedRepository.frameworks],
+      binding: {
+        mode: nativeRepository ? "native" : "synthetic_substrate",
+        originalResearchCandidate: definition.provenanceId,
+        rationale: nativeRepository
+          ? "The reviewed immutable repository is the same public repository family named by the research candidate."
+          : `The reviewed immutable repository provides a controlled ${definition.family} fixture seam for ${definition.provenanceId}; it is not evidence that the repository natively implements that candidate's provider or framework semantics.`,
+      },
     },
+    planning: { requirementIds },
     pattern: {
       family: definition.family,
       seededFailure: definition.seededFailure,

@@ -1,11 +1,16 @@
 {
   "schemaVersion": "mendpoint.fixture-manifest-ledger.v1",
-  "generatedAt": "2026-08-29T02:22:58.317Z",
+  "generatedAt": "2026-08-29T03:05:16.963Z",
   "manifests": [
     {
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C001",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks-js",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c001-manifest-v1",
       "mutationId": "mutation-fet-c001-seed-v1",
       "seededFailure": "Remove the API version header from one repository request.",
@@ -43,6 +48,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C002",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks-js",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c002-manifest-v1",
       "mutationId": "mutation-fet-c002-seed-v1",
       "seededFailure": "Keep a required read of merge_commit_sha while serving a payload without it.",
@@ -80,6 +90,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C003",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks-js",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c003-manifest-v1",
       "mutationId": "mutation-fet-c003-seed-v1",
       "seededFailure": "Decode only the legacy cvss property from a new advisory payload.",
@@ -117,6 +132,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C004",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks-js",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c004-manifest-v1",
       "mutationId": "mutation-fet-c004-seed-v1",
       "seededFailure": "Treat a 451 response as a retryable generic client error.",
@@ -154,6 +174,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C005",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks-js",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c005-manifest-v1",
       "mutationId": "mutation-fet-c005-seed-v1",
       "seededFailure": "Accept a webhook using plain equality or the legacy SHA-1 header only.",
@@ -185,6 +210,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C006",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks-js",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c006-manifest-v1",
       "mutationId": "mutation-fet-c006-seed-v1",
       "seededFailure": "Process the same delivery identifier twice.",
@@ -222,6 +252,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C007",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks-js",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c007-manifest-v1",
       "mutationId": "mutation-fet-c007-seed-v1",
       "seededFailure": "Decode a different event's payload based only on overlapping fields.",
@@ -259,6 +294,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C008",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks-js",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c008-manifest-v1",
       "mutationId": "mutation-fet-c008-seed-v1",
       "seededFailure": "Interpret a missing webhook receipt as proof that repository state did not change.",
@@ -296,6 +336,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C009",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-stripe-stripe-node",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c009-manifest-v1",
       "mutationId": "mutation-fet-c009-seed-v1",
       "seededFailure": "Run JSON middleware before Stripe signature verification.",
@@ -333,6 +378,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C010",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-stripe-stripe-node",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c010-manifest-v1",
       "mutationId": "mutation-fet-c010-seed-v1",
       "seededFailure": "Apply the same payment transition twice.",
@@ -364,6 +414,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C011",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-stripe-stripe-node",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c011-manifest-v1",
       "mutationId": "mutation-fet-c011-seed-v1",
       "seededFailure": "Require subscription-created before invoice-paid.",
@@ -401,6 +456,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C012",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-stripe-stripe-node",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c012-manifest-v1",
       "mutationId": "mutation-fet-c012-seed-v1",
       "seededFailure": "Perform a slow downstream operation before returning 2xx.",
@@ -438,6 +498,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C013",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-stripe-stripe-node",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c013-manifest-v1",
       "mutationId": "mutation-fet-c013-seed-v1",
       "seededFailure": "Deserialize a target-version webhook with an SDK generated for a different version.",
@@ -475,6 +540,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C014",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-stripe-stripe-node",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c014-manifest-v1",
       "mutationId": "mutation-fet-c014-seed-v1",
       "seededFailure": "Accept a correctly signed event outside the allowed time window.",
@@ -512,6 +582,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C015",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-openai-openai-node",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c015-manifest-v1",
       "mutationId": "mutation-fet-c015-seed-v1",
       "seededFailure": "Call the retired files.upload endpoint.",
@@ -543,6 +618,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C016",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-openai-openai-node",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c016-manifest-v1",
       "mutationId": "mutation-fet-c016-seed-v1",
       "seededFailure": "Read result.file after switching to filesUploadV2.",
@@ -580,6 +660,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C017",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-openai-openai-node",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c017-manifest-v1",
       "mutationId": "mutation-fet-c017-seed-v1",
       "seededFailure": "Retry immediately or pause every tenant after one workspace receives 429.",
@@ -617,6 +702,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C018",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c018-manifest-v1",
       "mutationId": "mutation-fet-c018-seed-v1",
       "seededFailure": "Run the event's business action before sending the acknowledgement.",
@@ -654,6 +744,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C019",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c019-manifest-v1",
       "mutationId": "mutation-fet-c019-seed-v1",
       "seededFailure": "Discard retry headers and create a new causal event for every attempt.",
@@ -691,6 +786,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C020",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c020-manifest-v1",
       "mutationId": "mutation-fet-c020-seed-v1",
       "seededFailure": "Decode url_verification as a normal domain event.",
@@ -722,6 +822,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C021",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c021-manifest-v1",
       "mutationId": "mutation-fet-c021-seed-v1",
       "seededFailure": "Authorize a request because its body contains the expected verification token.",
@@ -759,6 +864,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C022",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-twilio-twilio-node",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-twilio-twilio-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c022-manifest-v1",
       "mutationId": "mutation-fet-c022-seed-v1",
       "seededFailure": "Accept a Twilio callback without validating X-Twilio-Signature.",
@@ -795,6 +905,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C023",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-twilio-twilio-node",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-twilio-twilio-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c023-manifest-v1",
       "mutationId": "mutation-fet-c023-seed-v1",
       "seededFailure": "Validate against a hardcoded allowlist of current form fields.",
@@ -831,6 +946,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C024",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-twilio-twilio-node",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-twilio-twilio-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c024-manifest-v1",
       "mutationId": "mutation-fet-c024-seed-v1",
       "seededFailure": "Execute a communication action for every retry attempt.",
@@ -867,6 +987,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C025",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c025-manifest-v1",
       "mutationId": "mutation-fet-c025-seed-v1",
       "seededFailure": "Leave an AWS.Service call with .promise() after removing the v2 package.",
@@ -897,6 +1022,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C026",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c026-manifest-v1",
       "mutationId": "mutation-fet-c026-seed-v1",
       "seededFailure": "Replace DocumentClient with the low-level DynamoDB client while retaining native JS objects.",
@@ -933,6 +1063,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C027",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c027-manifest-v1",
       "mutationId": "mutation-fet-c027-seed-v1",
       "seededFailure": "Marshal nested undefined values with the v3 default configuration.",
@@ -969,6 +1104,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C028",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c028-manifest-v1",
       "mutationId": "mutation-fet-c028-seed-v1",
       "seededFailure": "Call the removed s3.upload helper for a multipart object.",
@@ -1005,6 +1145,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C029",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c029-manifest-v1",
       "mutationId": "mutation-fet-c029-seed-v1",
       "seededFailure": "Treat Body as a Buffer and leave the response stream unconsumed.",
@@ -1041,6 +1186,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C030",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c030-manifest-v1",
       "mutationId": "mutation-fet-c030-seed-v1",
       "seededFailure": "Replace the provider chain with a hardcoded credential object or a different precedence.",
@@ -1071,6 +1221,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C031",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c031-manifest-v1",
       "mutationId": "mutation-fet-c031-seed-v1",
       "seededFailure": "Invoke waitFor on a v3 service client or poll without a terminal bound.",
@@ -1107,6 +1262,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C032",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-kubernetes-client-go",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c032-manifest-v1",
       "mutationId": "mutation-fet-c032-seed-v1",
       "seededFailure": "Apply a CronJob manifest using batch/v1beta1 to a v1.25 API server.",
@@ -1142,6 +1302,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C033",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-kubernetes-client-go",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c033-manifest-v1",
       "mutationId": "mutation-fet-c033-seed-v1",
       "seededFailure": "Change only apiVersion and retain the obsolete HPA field.",
@@ -1177,6 +1342,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C034",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-kubernetes-client-go",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c034-manifest-v1",
       "mutationId": "mutation-fet-c034-seed-v1",
       "seededFailure": "Bump apiVersion while relying on v1beta1 defaults.",
@@ -1212,6 +1382,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C035",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-kubernetes-client-go",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c035-manifest-v1",
       "mutationId": "mutation-fet-c035-seed-v1",
       "seededFailure": "Delete a PSP without installing equivalent enforcement.",
@@ -1241,6 +1416,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C036",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-kubernetes-client-go",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-c036-manifest-v1",
       "mutationId": "mutation-fet-c036-seed-v1",
       "seededFailure": "Write the deprecated topology map on a v1 EndpointSlice.",
@@ -1276,6 +1456,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C037",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-microsoft-dotnet",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-microsoft-dotnet; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c037-manifest-v1",
       "mutationId": "mutation-fet-c037-seed-v1",
       "seededFailure": "Continue calling graph.windows.net after changing the SDK dependency.",
@@ -1312,6 +1497,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C038",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-microsoft-dotnet",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-microsoft-dotnet; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c038-manifest-v1",
       "mutationId": "mutation-fet-c038-seed-v1",
       "seededFailure": "Read objectId from a Microsoft Graph principal response.",
@@ -1348,6 +1538,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C039",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-microsoft-dotnet",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-microsoft-dotnet; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c039-manifest-v1",
       "mutationId": "mutation-fet-c039-seed-v1",
       "seededFailure": "Change the endpoint but retain incompatible or excessive legacy permissions.",
@@ -1384,6 +1579,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C040",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-microsoft-dotnet",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-microsoft-dotnet; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c040-manifest-v1",
       "mutationId": "mutation-fet-c040-seed-v1",
       "seededFailure": "Perform only a host-name substitution for an operation with a changed payload.",
@@ -1414,6 +1614,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C041",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-expressjs-express",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-expressjs-express; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c041-manifest-v1",
       "mutationId": "mutation-fet-c041-seed-v1",
       "seededFailure": "Keep an Express 4 wildcard route under Express 5.",
@@ -1450,6 +1655,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C042",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-expressjs-express",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-expressjs-express; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c042-manifest-v1",
       "mutationId": "mutation-fet-c042-seed-v1",
       "seededFailure": "Call req.param or a removed response signature after the upgrade.",
@@ -1486,6 +1696,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C043",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-expressjs-express",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-expressjs-express; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c043-manifest-v1",
       "mutationId": "mutation-fet-c043-seed-v1",
       "seededFailure": "Retain a wrapper that calls next after Express has already forwarded the rejection.",
@@ -1522,6 +1737,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C044",
       "repositoryProvenanceId": "repo-pallets-flask",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-python-cpython",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-python-cpython; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c044-manifest-v1",
       "mutationId": "mutation-fet-c044-seed-v1",
       "seededFailure": "Import distutils from a package build or runtime module on Python 3.12.",
@@ -1559,6 +1779,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C045",
       "repositoryProvenanceId": "repo-pallets-flask",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-python-cpython",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-python-cpython; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c045-manifest-v1",
       "mutationId": "mutation-fet-c045-seed-v1",
       "seededFailure": "Call ssl.wrap_socket on Python 3.12 or replace it with an unverified context.",
@@ -1590,6 +1815,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C046",
       "repositoryProvenanceId": "repo-pallets-flask",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-python-cpython",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-python-cpython; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c046-manifest-v1",
       "mutationId": "mutation-fet-c046-seed-v1",
       "seededFailure": "Import cgi.FieldStorage under Python 3.13.",
@@ -1627,6 +1857,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C047",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-oai-openapi-specification",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-oai-openapi-specification; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c047-manifest-v1",
       "mutationId": "mutation-fet-c047-seed-v1",
       "seededFailure": "Change openapi to 3.1 while retaining incompatible 3.0-only nullable assumptions.",
@@ -1663,6 +1898,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C048",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-protocolbuffers-protobuf",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-protocolbuffers-protobuf; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c048-manifest-v1",
       "mutationId": "mutation-fet-c048-seed-v1",
       "seededFailure": "Reuse a deleted field number for a different meaning.",
@@ -1698,6 +1938,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C049",
       "repositoryProvenanceId": "repo-pallets-flask",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-panva-openid-client",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-panva-openid-client; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c049-manifest-v1",
       "mutationId": "mutation-fet-c049-seed-v1",
       "seededFailure": "Return an access token in the front-channel URL without a transaction-bound PKCE verifier.",
@@ -1734,6 +1979,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-C050",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-axios-axios",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-axios-axios; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-c050-manifest-v1",
       "mutationId": "mutation-fet-c050-seed-v1",
       "seededFailure": "Pass an attacker-controlled absolute URL to a client configured with a trusted baseURL and API key.",
@@ -1764,6 +2014,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E001",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks-js",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-e001-manifest-v1",
       "mutationId": "mutation-fet-e001-seed-v1",
       "seededFailure": "Map an unknown enum value to an existing successful state.",
@@ -1801,6 +2056,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E002",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks-js",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-e002-manifest-v1",
       "mutationId": "mutation-fet-e002-seed-v1",
       "seededFailure": "Report no impact solely because no webhook receipt exists.",
@@ -1838,6 +2098,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E003",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks-js",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-e003-manifest-v1",
       "mutationId": "mutation-fet-e003-seed-v1",
       "seededFailure": "Wait indefinitely for GitHub to retry a failed delivery.",
@@ -1875,6 +2140,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E004",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-stripe-stripe-node",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-e004-manifest-v1",
       "mutationId": "mutation-fet-e004-seed-v1",
       "seededFailure": "Release multiple workers after they all observe no existing receipt.",
@@ -1912,6 +2182,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E005",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-stripe-stripe-node",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-e005-manifest-v1",
       "mutationId": "mutation-fet-e005-seed-v1",
       "seededFailure": "Decode an old stored Event as if it had the current account API version.",
@@ -1943,6 +2218,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E006",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-stripe-stripe-node",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-e006-manifest-v1",
       "mutationId": "mutation-fet-e006-seed-v1",
       "seededFailure": "Treat manual resend as cancelling every pending automatic delivery.",
@@ -1980,6 +2260,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E007",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-stripe-stripe-node",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-e007-manifest-v1",
       "mutationId": "mutation-fet-e007-seed-v1",
       "seededFailure": "Accept only the newest secret or reuse a secret from another endpoint.",
@@ -2017,6 +2302,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E008",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-e008-manifest-v1",
       "mutationId": "mutation-fet-e008-seed-v1",
       "seededFailure": "Apply a valid but old event over a newer workspace state.",
@@ -2054,6 +2344,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E009",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-e009-manifest-v1",
       "mutationId": "mutation-fet-e009-seed-v1",
       "seededFailure": "Translate unknown_error into a fabricated DNS, timeout, or application cause.",
@@ -2091,6 +2386,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E010",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-e010-manifest-v1",
       "mutationId": "mutation-fet-e010-seed-v1",
       "seededFailure": "Retry expensive work inline while the rolling webhook failure rate rises.",
@@ -2122,6 +2422,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E011",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-twilio-twilio-node",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-twilio-twilio-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-e011-manifest-v1",
       "mutationId": "mutation-fet-e011-seed-v1",
       "seededFailure": "Pin a Twilio leaf certificate and fail on the next valid rotation.",
@@ -2158,6 +2463,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E012",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-twilio-twilio-node",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-twilio-twilio-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-e012-manifest-v1",
       "mutationId": "mutation-fet-e012-seed-v1",
       "seededFailure": "Validate against an internal HTTP URL instead of the external signed HTTPS URL.",
@@ -2194,6 +2504,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E013",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-twilio-twilio-node",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-twilio-twilio-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-e013-manifest-v1",
       "mutationId": "mutation-fet-e013-seed-v1",
       "seededFailure": "Treat a JSON body as alphabetized form parameters.",
@@ -2230,6 +2545,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E014",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-e014-manifest-v1",
       "mutationId": "mutation-fet-e014-seed-v1",
       "seededFailure": "Enable region following globally even when bucket regions are known.",
@@ -2266,6 +2586,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E015",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-e015-manifest-v1",
       "mutationId": "mutation-fet-e015-seed-v1",
       "seededFailure": "Invent a v3 import for an unsupported v2 SAML or filesystem provider.",
@@ -2296,6 +2621,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E016",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-kubernetes-client-go",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-e016-manifest-v1",
       "mutationId": "mutation-fet-e016-seed-v1",
       "seededFailure": "Accept a schema-valid converted manifest without comparing effective behavior.",
@@ -2331,6 +2661,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E017",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-kubernetes-client-go",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-e017-manifest-v1",
       "mutationId": "mutation-fet-e017-seed-v1",
       "seededFailure": "Serialize zero and absence as the same value during migration.",
@@ -2366,6 +2701,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E018",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-kubernetes-client-go",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture-fet-e018-manifest-v1",
       "mutationId": "mutation-fet-e018-seed-v1",
       "seededFailure": "Migrate a webhook without testing the unreachable-provider branch.",
@@ -2401,6 +2741,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E019",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-microsoft-dotnet",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-microsoft-dotnet; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-e019-manifest-v1",
       "mutationId": "mutation-fet-e019-seed-v1",
       "seededFailure": "Edit a local app registration as if it owned an externally published service principal.",
@@ -2437,6 +2782,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E020",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-microsoft-dotnet",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-microsoft-dotnet; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-e020-manifest-v1",
       "mutationId": "mutation-fet-e020-seed-v1",
       "seededFailure": "Replace a retired GA operation with a beta-only Microsoft Graph operation without approval.",
@@ -2467,6 +2817,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E021",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-protocolbuffers-protobuf",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-protocolbuffers-protobuf; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-e021-manifest-v1",
       "mutationId": "mutation-fet-e021-seed-v1",
       "seededFailure": "Emit a value above INT32_MAX while an old reader remains deployed.",
@@ -2502,6 +2857,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E022",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-protocolbuffers-protobuf",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-protocolbuffers-protobuf; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-e022-manifest-v1",
       "mutationId": "mutation-fet-e022-seed-v1",
       "seededFailure": "Apply a binary-safe field change to persisted JSON without testing historical payloads.",
@@ -2537,6 +2897,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E023",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-oai-openapi-specification",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-oai-openapi-specification; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-e023-manifest-v1",
       "mutationId": "mutation-fet-e023-seed-v1",
       "seededFailure": "Use a generator that accepts the document but applies OpenAPI 3.0 schema semantics.",
@@ -2573,6 +2938,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E024",
       "repositoryProvenanceId": "repo-pallets-flask",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-urllib3-urllib3",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-urllib3-urllib3; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-e024-manifest-v1",
       "mutationId": "mutation-fet-e024-seed-v1",
       "seededFailure": "Follow a cross-origin redirect with a manually configured Proxy-Authorization header on an affected version.",
@@ -2609,6 +2979,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "FET-E025",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-auth0-node-jsonwebtoken",
+        "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-auth0-node-jsonwebtoken; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture-fet-e025-manifest-v1",
       "mutationId": "mutation-fet-e025-seed-v1",
       "seededFailure": "Report a library vulnerability as fixed solely because a scanner names the withdrawn CVE.",
@@ -2639,6 +3014,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C001",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-nodejs-node",
+        "rationale": "The reviewed immutable repository provides a controlled runtime-major-upgrade fixture seam for repo-nodejs-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c001:v1",
       "mutationId": "mutation:reg-c001:v1",
       "seededFailure": "The fixture uses APIs or native dependencies whose behavior changes across the target Node releases.",
@@ -2681,6 +3061,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C002",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-nodejs-node",
+        "rationale": "The reviewed immutable repository provides a controlled module-architecture-migration fixture seam for repo-nodejs-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c002:v1",
       "mutationId": "mutation:reg-c002:v1",
       "seededFailure": "Mixed require, import, extension, and package export assumptions fail in a clean ESM consumer.",
@@ -2720,6 +3105,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C003",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-expressjs-express",
+        "rationale": "The reviewed immutable repository provides a controlled framework-major-upgrade fixture seam for repo-expressjs-express; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c003:v1",
       "mutationId": "mutation:reg-c003:v1",
       "seededFailure": "Legacy response methods, request parameter access, or route patterns fail under Express 5.",
@@ -2759,6 +3149,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C004",
       "repositoryProvenanceId": "repo-react-react",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-facebook-react",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-c004:v1",
       "mutationId": "mutation:reg-c004:v1",
       "seededFailure": "The fixture mounts or hydrates with removed React DOM APIs.",
@@ -2797,6 +3192,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C005",
       "repositoryProvenanceId": "repo-react-react",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-facebook-react",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-c005:v1",
       "mutationId": "mutation:reg-c005:v1",
       "seededFailure": "Error telemetry depends on rethrown render errors and tests depend on renderer internals.",
@@ -2827,6 +3227,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C006",
       "repositoryProvenanceId": "repo-react-react",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-vercel-nextjs",
+        "rationale": "The reviewed immutable repository provides a controlled request-api-migration fixture seam for repo-vercel-nextjs; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c006:v1",
       "mutationId": "mutation:reg-c006:v1",
       "seededFailure": "A dynamic route reads request-bound APIs synchronously.",
@@ -2866,6 +3271,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C007",
       "repositoryProvenanceId": "repo-react-react",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-vercel-nextjs",
+        "rationale": "The reviewed immutable repository provides a controlled router-architecture-transformation fixture seam for repo-vercel-nextjs; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c007:v1",
       "mutationId": "mutation:reg-c007:v1",
       "seededFailure": "A selected route slice mixes incompatible data fetching and client or server component boundaries.",
@@ -2906,6 +3316,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C008",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-microsoft-typescript",
+        "rationale": "The reviewed immutable repository provides a controlled language-feature-migration fixture seam for repo-microsoft-typescript; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c008:v1",
       "mutationId": "mutation:reg-c008:v1",
       "seededFailure": "Legacy decorators rely on metadata or parameter behavior that standard decorators do not provide.",
@@ -2945,6 +3360,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C009",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-microsoft-typescript",
+        "rationale": "The reviewed immutable repository provides a controlled compiler-resolution-migration fixture seam for repo-microsoft-typescript; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c009:v1",
       "mutationId": "mutation:reg-c009:v1",
       "seededFailure": "The repository typechecks with bundler resolution but its packed library fails in Node consumers.",
@@ -2984,6 +3404,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C010",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-eslint-eslint",
+        "rationale": "The reviewed immutable repository provides a controlled tooling-config-migration fixture seam for repo-eslint-eslint; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c010:v1",
       "mutationId": "mutation:reg-c010:v1",
       "seededFailure": "The legacy config or one of its nested overrides is ignored under the flat configuration system.",
@@ -3016,6 +3441,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C011",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-aws-sdk-js-v3",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-c011:v1",
       "mutationId": "mutation:reg-c011:v1",
       "seededFailure": "The fixture uses v2 service constructors, global configuration, or promise calls.",
@@ -3055,6 +3485,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C012",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-aws-sdk-js-v3",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-c012:v1",
       "mutationId": "mutation:reg-c012:v1",
       "seededFailure": "Manual pagination, v2 waiters, or upload streams lose pages, retry incorrectly, or cannot abort.",
@@ -3093,6 +3528,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C013",
       "repositoryProvenanceId": "repo-pallets-flask",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-python-cpython",
+        "rationale": "The reviewed immutable repository provides a controlled runtime-major-upgrade fixture seam for repo-python-cpython; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c013:v1",
       "mutationId": "mutation:reg-c013:v1",
       "seededFailure": "The fixture imports a removed API or installs a wheel built for an incompatible runtime ABI.",
@@ -3134,6 +3574,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C014",
       "repositoryProvenanceId": "repo-pallets-flask",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-django-django",
+        "rationale": "The reviewed immutable repository provides a controlled framework-staged-upgrade fixture seam for repo-django-django; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c014:v1",
       "mutationId": "mutation:reg-c014:v1",
       "seededFailure": "A direct jump hides deprecations or installs a dependency set unsupported by the target release.",
@@ -3174,6 +3619,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C015",
       "repositoryProvenanceId": "repo-pallets-flask",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-django-django",
+        "rationale": "The reviewed immutable repository provides a controlled serialized-state-migration fixture seam for repo-django-django; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c015:v1",
       "mutationId": "mutation:reg-c015:v1",
       "seededFailure": "Mixed-version nodes cannot safely read cached responses or sessions written by the other version.",
@@ -3204,6 +3654,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C016",
       "repositoryProvenanceId": "repo-pallets-flask",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-fastapi-fastapi",
+        "rationale": "The reviewed immutable repository provides a controlled validation-framework-upgrade fixture seam for repo-fastapi-fastapi; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c016:v1",
       "mutationId": "mutation:reg-c016:v1",
       "seededFailure": "A route uses v1 models, validators, configuration, or nested mixed-version models.",
@@ -3243,6 +3698,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C017",
       "repositoryProvenanceId": "repo-pallets-flask",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-pydantic-pydantic",
+        "rationale": "The reviewed immutable repository provides a controlled validation-semantic-migration fixture seam for repo-pydantic-pydantic; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c017:v1",
       "mutationId": "mutation:reg-c017:v1",
       "seededFailure": "A seeded union, coercion, or serializer produces a different security-relevant value in v2.",
@@ -3281,6 +3741,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C018",
       "repositoryProvenanceId": "repo-rails-rails",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-rails-rails",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-c018:v1",
       "mutationId": "mutation:reg-c018:v1",
       "seededFailure": "A direct Rails jump fails because Ruby, gems, defaults, assets, or jobs were not staged.",
@@ -3322,6 +3787,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C019",
       "repositoryProvenanceId": "repo-rails-rails",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-rails-rails",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-c019:v1",
       "mutationId": "mutation:reg-c019:v1",
       "seededFailure": "A full defaults flip changes cookies, caches, queues, or ORM behavior without attribution.",
@@ -3359,6 +3829,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C020",
       "repositoryProvenanceId": "repo-spring-projects-spring-petclinic",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-spring-petclinic",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-c020:v1",
       "mutationId": "mutation:reg-c020:v1",
       "seededFailure": "The application uses removed modules, obsolete JVM flags, or reflective access blocked by the target runtime.",
@@ -3391,6 +3866,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C021",
       "repositoryProvenanceId": "repo-spring-projects-spring-petclinic",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-spring-petclinic",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-c021:v1",
       "mutationId": "mutation:reg-c021:v1",
       "seededFailure": "The application retains javax imports or incompatible servlet, persistence, or security dependencies.",
@@ -3429,6 +3909,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C022",
       "repositoryProvenanceId": "repo-spring-projects-spring-petclinic",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-spring-petclinic",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-c022:v1",
       "mutationId": "mutation:reg-c022:v1",
       "seededFailure": "One profile silently retains a removed property or receives a different default.",
@@ -3468,6 +3953,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C023",
       "repositoryProvenanceId": "repo-spring-projects-spring-petclinic",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-gradle-gradle",
+        "rationale": "The reviewed immutable repository provides a controlled build-system-major-upgrade fixture seam for repo-gradle-gradle; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c023:v1",
       "mutationId": "mutation:reg-c023:v1",
       "seededFailure": "The wrapper, plugin, JDK, or deprecated DSL fails under Gradle 8.",
@@ -3508,6 +3998,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C024",
       "repositoryProvenanceId": "repo-spring-projects-spring-petclinic",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-gradle-gradle",
+        "rationale": "The reviewed immutable repository provides a controlled build-architecture-migration fixture seam for repo-gradle-gradle; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c024:v1",
       "mutationId": "mutation:reg-c024:v1",
       "seededFailure": "Custom build logic mutates observed configurations or reads legacy conventions.",
@@ -3548,6 +4043,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C025",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-dotnet-aspnetcore",
+        "rationale": "The reviewed immutable repository provides a controlled runtime-major-upgrade fixture seam for repo-dotnet-aspnetcore; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c025:v1",
       "mutationId": "mutation:reg-c025:v1",
       "seededFailure": "The application compiles but changes serialization, reflection, or deployment behavior on .NET 8.",
@@ -3580,6 +4080,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C026",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-dotnet-aspnetcore",
+        "rationale": "The reviewed immutable repository provides a controlled container-contract-migration fixture seam for repo-dotnet-aspnetcore; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c026:v1",
       "mutationId": "mutation:reg-c026:v1",
       "seededFailure": "The image listens on one port while service, ingress, or readiness probes target another.",
@@ -3620,6 +4125,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C027",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-dotnet-efcore",
+        "rationale": "The reviewed immutable repository provides a controlled orm-query-migration fixture seam for repo-dotnet-efcore; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c027:v1",
       "mutationId": "mutation:reg-c027:v1",
       "seededFailure": "A translated Contains query fails on the bound server compatibility level or regresses its plan.",
@@ -3659,6 +4169,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C028",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-dotnet-efcore",
+        "rationale": "The reviewed immutable repository provides a controlled data-representation-migration fixture seam for repo-dotnet-efcore; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c028:v1",
       "mutationId": "mutation:reg-c028:v1",
       "seededFailure": "Existing JSON or scaffolded models round-trip to different enum or temporal values.",
@@ -3698,6 +4213,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C029",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-golang-example",
+        "rationale": "The reviewed immutable repository provides a controlled dependency-architecture-migration fixture seam for repo-golang-example; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c029:v1",
       "mutationId": "mutation:reg-c029:v1",
       "seededFailure": "The build resolves differently outside the developer GOPATH or without an implicit vendor tree.",
@@ -3737,6 +4257,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C030",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-golang-example",
+        "rationale": "The reviewed immutable repository provides a controlled api-major-version-migration fixture seam for repo-golang-example; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c030:v1",
       "mutationId": "mutation:reg-c030:v1",
       "seededFailure": "A v2 tag has a v1 module path or downstream imports resolve the wrong major version.",
@@ -3767,6 +4292,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C031",
       "repositoryProvenanceId": "repo-react-react",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-rust-lang-rustlings",
+        "rationale": "The reviewed immutable repository provides a controlled language-edition-migration fixture seam for repo-rust-lang-rustlings; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c031:v1",
       "mutationId": "mutation:reg-c031:v1",
       "seededFailure": "Edition compatibility lints fail on source, macros, generated code, or doctests.",
@@ -3805,6 +4335,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C032",
       "repositoryProvenanceId": "repo-react-react",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-rust-lang-rustlings",
+        "rationale": "The reviewed immutable repository provides a controlled conditional-coverage-migration fixture seam for repo-rust-lang-rustlings; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c032:v1",
       "mutationId": "mutation:reg-c032:v1",
       "seededFailure": "The default build passes while an optional feature or target-specific branch remains incompatible.",
@@ -3843,6 +4378,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C033",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-kubernetes-examples",
+        "rationale": "The reviewed immutable repository provides a controlled platform-api-migration fixture seam for repo-kubernetes-examples; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c033:v1",
       "mutationId": "mutation:reg-c033:v1",
       "seededFailure": "A manifest or rendered chart uses an API version removed by the target cluster.",
@@ -3880,6 +4420,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C034",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-controller-runtime",
+        "rationale": "The reviewed immutable repository provides a controlled controller-sdk-migration fixture seam for repo-controller-runtime; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c034:v1",
       "mutationId": "mutation:reg-c034:v1",
       "seededFailure": "Generated clients or watches use removed API types and fail to reconcile on the target cluster.",
@@ -3921,6 +4466,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C035",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-terraform-provider-scaffolding",
+        "rationale": "The reviewed immutable repository provides a controlled provider-address-migration fixture seam for repo-terraform-provider-scaffolding; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c035:v1",
       "mutationId": "mutation:reg-c035:v1",
       "seededFailure": "Configuration and copied state refer to different provider source addresses.",
@@ -3953,6 +4503,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C036",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-terraform-provider-scaffolding",
+        "rationale": "The reviewed immutable repository provides a controlled provider-major-upgrade fixture seam for repo-terraform-provider-scaffolding; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c036:v1",
       "mutationId": "mutation:reg-c036:v1",
       "seededFailure": "A provider major changes resource schemas, defaults, or force-new behavior.",
@@ -3992,6 +4547,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C037",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-terraform-provider-scaffolding",
+        "rationale": "The reviewed immutable repository provides a controlled state-preserving-refactor fixture seam for repo-terraform-provider-scaffolding; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c037:v1",
       "mutationId": "mutation:reg-c037:v1",
       "seededFailure": "A resource rename appears as destroy and create instead of an identity-preserving move.",
@@ -4028,6 +4588,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C038",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-docker-compose",
+        "rationale": "The reviewed immutable repository provides a controlled cli-runtime-migration fixture seam for repo-docker-compose; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c038:v1",
       "mutationId": "mutation:reg-c038:v1",
       "seededFailure": "Scripts call docker-compose or depend on implicit project, network, container, or volume names.",
@@ -4068,6 +4633,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C039",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-opentelemetry-demo",
+        "rationale": "The reviewed immutable repository provides a controlled base-image-migration fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c039:v1",
       "mutationId": "mutation:reg-c039:v1",
       "seededFailure": "A new base image changes libc, packages, certificates, shell, architecture, or runtime user behavior.",
@@ -4108,6 +4678,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C040",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-postgres-postgres",
+        "rationale": "The reviewed immutable repository provides a controlled database-major-upgrade fixture seam for repo-postgres-postgres; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c040:v1",
       "mutationId": "mutation:reg-c040:v1",
       "seededFailure": "The target cluster fails compatibility checks because of extensions, collations, catalogs, or binaries.",
@@ -4139,6 +4714,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C041",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-postgres-postgres",
+        "rationale": "The reviewed immutable repository provides a controlled database-online-migration fixture seam for repo-postgres-postgres; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c041:v1",
       "mutationId": "mutation:reg-c041:v1",
       "seededFailure": "Replication omits required objects, sequences diverge, or cutover allows writes on both sides.",
@@ -4178,6 +4758,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C042",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-opentelemetry-demo",
+        "rationale": "The reviewed immutable repository provides a controlled expand-contract-migration fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c042:v1",
       "mutationId": "mutation:reg-c042:v1",
       "seededFailure": "A destructive rename or drop breaks either the old or new application fleet.",
@@ -4218,6 +4803,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C043",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-protocolbuffers-protobuf",
+        "rationale": "The reviewed immutable repository provides a controlled wire-schema-migration fixture seam for repo-protocolbuffers-protobuf; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c043:v1",
       "mutationId": "mutation:reg-c043:v1",
       "seededFailure": "A field number is reused, changed, or given a wire-incompatible type across producer and consumer versions.",
@@ -4255,6 +4845,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C044",
       "repositoryProvenanceId": "repo-stripe-stripe-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-oai-openapi-specification",
+        "rationale": "The reviewed immutable repository provides a controlled api-contract-migration fixture seam for repo-oai-openapi-specification; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c044:v1",
       "mutationId": "mutation:reg-c044:v1",
       "seededFailure": "A changed operation, required field, enum, or security scheme breaks a registered generated client.",
@@ -4294,6 +4889,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C045",
       "repositoryProvenanceId": "repo-spring-projects-spring-petclinic",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-apache-kafka",
+        "rationale": "The reviewed immutable repository provides a controlled distributed-control-plane-migration fixture seam for repo-apache-kafka; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c045:v1",
       "mutationId": "mutation:reg-c045:v1",
       "seededFailure": "A ZooKeeper cluster or unsupported metadata version is targeted directly for Kafka 4.",
@@ -4325,6 +4925,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C046",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-opentelemetry-demo",
+        "rationale": "The reviewed immutable repository provides a controlled observability-contract-migration fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c046:v1",
       "mutationId": "mutation:reg-c046:v1",
       "seededFailure": "A package or semantic convention upgrade breaks instrumentation, dashboards, alerts, or privacy assumptions.",
@@ -4367,6 +4972,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C047",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-actions-toolkit",
+        "rationale": "The reviewed immutable repository provides a controlled ci-runtime-migration fixture seam for repo-actions-toolkit; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c047:v1",
       "mutationId": "mutation:reg-c047:v1",
       "seededFailure": "A custom or third-party action declares an obsolete JavaScript runtime or runs on an unsupported runner.",
@@ -4408,6 +5018,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C048",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-npm-cli",
+        "rationale": "The reviewed immutable repository provides a controlled publishing-auth-migration fixture seam for repo-npm-cli; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c048:v1",
       "mutationId": "mutation:reg-c048:v1",
       "seededFailure": "A release workflow depends on a long-lived token or has an OIDC binding that does not exactly match the package workflow.",
@@ -4446,6 +5061,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C049",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-panva-openid-client",
+        "rationale": "The reviewed immutable repository provides a controlled authorization-protocol-migration fixture seam for repo-panva-openid-client; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c049:v1",
       "mutationId": "mutation:reg-c049:v1",
       "seededFailure": "A client uses implicit or password credentials flow, loose redirects, or reusable PKCE material.",
@@ -4485,6 +5105,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-C050",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-panva-openid-client",
+        "rationale": "The reviewed immutable repository provides a controlled token-security-migration fixture seam for repo-panva-openid-client; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-c050:v1",
       "mutationId": "mutation:reg-c050:v1",
       "seededFailure": "A stolen access or refresh token can be replayed outside its intended sender, audience, or tenant.",
@@ -4516,6 +5141,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E001",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-terraform-provider-scaffolding",
+        "rationale": "The reviewed immutable repository provides a controlled positive-control-noop fixture seam for repo-terraform-provider-scaffolding; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e001:v1",
       "mutationId": "mutation:reg-e001:v1",
       "seededFailure": "The fixture already uses the target version and supported provider declarations.",
@@ -4550,6 +5180,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E002",
       "repositoryProvenanceId": "repo-pallets-flask",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-django-django",
+        "rationale": "The reviewed immutable repository provides a controlled negative-control-not-applicable fixture seam for repo-django-django; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e002:v1",
       "mutationId": "mutation:reg-e002:v1",
       "seededFailure": "The fixture pin is supported and the seeded campaign target does not apply to its code or dependencies.",
@@ -4588,6 +5223,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E003",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-opentelemetry-demo",
+        "rationale": "The reviewed immutable repository provides a controlled insufficient-evidence fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e003:v1",
       "mutationId": "mutation:reg-e003:v1",
       "seededFailure": "The manifest range, generated artifacts, and vendored code disagree and no lockfile or resolved graph is present.",
@@ -4625,6 +5265,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E004",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-terraform-provider-scaffolding",
+        "rationale": "The reviewed immutable repository provides a controlled conflicting-evidence fixture seam for repo-terraform-provider-scaffolding; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e004:v1",
       "mutationId": "mutation:reg-e004:v1",
       "seededFailure": "The core guide suggests compatibility while the exact provider graph declares a narrower supported range.",
@@ -4663,6 +5308,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E005",
       "repositoryProvenanceId": "repo-react-react",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-rust-lang-rustlings",
+        "rationale": "The reviewed immutable repository provides a controlled partial-coverage fixture seam for repo-rust-lang-rustlings; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e005:v1",
       "mutationId": "mutation:reg-e005:v1",
       "seededFailure": "Default features pass while a nondefault feature or target-specific path remains incompatible.",
@@ -4693,6 +5343,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E006",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-protocolbuffers-protobuf",
+        "rationale": "The reviewed immutable repository provides a controlled multi-repo-schema-sequencing fixture seam for repo-protocolbuffers-protobuf; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e006:v1",
       "mutationId": "mutation:reg-e006:v1",
       "seededFailure": "Producer and consumer repositories cannot deploy the proposed field change in the same order.",
@@ -4729,6 +5384,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E007",
       "repositoryProvenanceId": "repo-dotnet-architecture-eshoponweb",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-opentelemetry-demo",
+        "rationale": "The reviewed immutable repository provides a controlled multi-repo-rollback-sequencing fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e007:v1",
       "mutationId": "mutation:reg-e007:v1",
       "seededFailure": "The forward application passes but the rollback binary cannot read the proposed contracted schema.",
@@ -4767,6 +5427,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E008",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-e008:v1",
       "mutationId": "mutation:reg-e008:v1",
       "seededFailure": "Two schedulers select the same case and snapshot before either observes the other's write.",
@@ -4805,6 +5470,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E009",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-mendpoint-governed-synthetic",
+        "rationale": "The reviewed immutable repository provides a controlled checkpoint-binding-replay fixture seam for repo-mendpoint-governed-synthetic; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e009:v1",
       "mutationId": "mutation:reg-e009:v1",
       "seededFailure": "A valid checkpoint is presented to a different executor digest for resume.",
@@ -4841,6 +5511,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E010",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-opentelemetry-demo",
+        "rationale": "The reviewed immutable repository provides a controlled stale-evidence-binding fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e010:v1",
       "mutationId": "mutation:reg-e010:v1",
       "seededFailure": "The repository head, snapshot digest, or graph version changes after candidate selection.",
@@ -4872,6 +5547,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E011",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-expressjs-express",
+        "rationale": "The reviewed immutable repository provides a controlled tenant-binding-authorization fixture seam for repo-expressjs-express; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e011:v1",
       "mutationId": "mutation:reg-e011:v1",
       "seededFailure": "A valid actor and repository are bound to different benchmark tenants.",
@@ -4908,6 +5588,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E012",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-e012:v1",
       "mutationId": "mutation:reg-e012:v1",
       "seededFailure": "The run starts authorized but consent or SCM authority is revoked before draft delivery.",
@@ -4946,6 +5631,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E013",
       "repositoryProvenanceId": "repo-octokit-webhooks-js",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-octokit-webhooks",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-e013:v1",
       "mutationId": "mutation:reg-e013:v1",
       "seededFailure": "Duplicate, delayed, and reordered signed events target one modernization campaign.",
@@ -4984,6 +5674,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E014",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-opentelemetry-demo",
+        "rationale": "The reviewed immutable repository provides a controlled provider-outage-resilience fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e014:v1",
       "mutationId": "mutation:reg-e014:v1",
       "seededFailure": "Dependency fetch or draft delivery returns timeouts or retriable 5xx responses with unknown side-effect status.",
@@ -5022,6 +5717,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E015",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-expressjs-express",
+        "rationale": "The reviewed immutable repository provides a controlled verifier-false-positive fixture seam for repo-expressjs-express; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e015:v1",
       "mutationId": "mutation:reg-e015:v1",
       "seededFailure": "The advisory verifier rejects a repair that the sealed deterministic oracle proves correct.",
@@ -5052,6 +5752,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E016",
       "repositoryProvenanceId": "repo-spring-projects-spring-petclinic",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-spring-petclinic",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-e016:v1",
       "mutationId": "mutation:reg-e016:v1",
       "seededFailure": "The advisory verifier approves a repair that fails a sealed tenant or authorization regression.",
@@ -5090,6 +5795,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E017",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-mendpoint-governed-synthetic",
+        "rationale": "The reviewed immutable repository provides a controlled untrusted-advisory-output fixture seam for repo-mendpoint-governed-synthetic; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e017:v1",
       "mutationId": "mutation:reg-e017:v1",
       "seededFailure": "Advisory output contains instructions to select a candidate, invoke tools, deliver, merge, or deploy.",
@@ -5126,6 +5836,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E018",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-kubernetes-kubernetes",
+        "rationale": "The reviewed immutable repository provides a controlled budgeted-partial-analysis fixture seam for repo-kubernetes-kubernetes; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e018:v1",
       "mutationId": "mutation:reg-e018:v1",
       "seededFailure": "The run reaches its time, token, or cost ceiling before the full dependency graph is traversed.",
@@ -5165,6 +5880,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E019",
       "repositoryProvenanceId": "repo-aws-aws-sdk-js-v3",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-opentelemetry-demo",
+        "rationale": "The reviewed immutable repository provides a controlled license-boundary-enforcement fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e019:v1",
       "mutationId": "mutation:reg-e019:v1",
       "seededFailure": "The repository contains approved first-party source plus vendored, generated, or separately licensed paths.",
@@ -5203,6 +5923,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E020",
       "repositoryProvenanceId": "repo-spring-projects-spring-petclinic",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-apache-log4j2",
+        "rationale": "The reviewed immutable repository provides a controlled security-remediation-migration fixture seam for repo-apache-log4j2; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e020:v1",
       "mutationId": "mutation:reg-e020:v1",
       "seededFailure": "The vulnerable dependency is found, but the first candidate patch remains affected or breaks required logging behavior.",
@@ -5234,6 +5959,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E021",
       "repositoryProvenanceId": "repo-spring-projects-spring-petclinic",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-apache-kafka",
+        "rationale": "The reviewed immutable repository provides a controlled required-intermediate-upgrade fixture seam for repo-apache-kafka; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e021:v1",
       "mutationId": "mutation:reg-e021:v1",
       "seededFailure": "The requested source and target omit a required runtime, metadata, or framework intermediate stage.",
@@ -5272,6 +6002,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E022",
       "repositoryProvenanceId": "repo-spring-projects-spring-petclinic",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-apache-kafka",
+        "rationale": "The reviewed immutable repository provides a controlled irreversible-state-transition fixture seam for repo-apache-kafka; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e022:v1",
       "mutationId": "mutation:reg-e022:v1",
       "seededFailure": "The forward migration passes while the old binary cannot read the finalized state or metadata.",
@@ -5311,6 +6046,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E023",
       "repositoryProvenanceId": "repo-react-react",
+      "repositoryBinding": {
+        "mode": "native",
+        "originalResearchCandidate": "repo-facebook-react",
+        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+      },
       "manifestId": "fixture:reg-e023:v1",
       "mutationId": "mutation:reg-e023:v1",
       "seededFailure": "The codemod edits only part of the tree, exits unsuccessfully, or leaves generated and cache artifacts.",
@@ -5349,6 +6089,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E024",
       "repositoryProvenanceId": "repo-kubernetes-client-go",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-opentelemetry-demo",
+        "rationale": "The reviewed immutable repository provides a controlled environment-equivalence-gate fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e024:v1",
       "mutationId": "mutation:reg-e024:v1",
       "seededFailure": "The canary passes with a different image, architecture, profile, policy, or secret metadata than the production cohort.",
@@ -5388,6 +6133,11 @@
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
       "caseId": "REG-E025",
       "repositoryProvenanceId": "repo-openai-openai-node",
+      "repositoryBinding": {
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-opentelemetry-demo",
+        "rationale": "The reviewed immutable repository provides a controlled holdout-contamination fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+      },
       "manifestId": "fixture:reg-e025:v1",
       "mutationId": "mutation:reg-e025:v1",
       "seededFailure": "The model or candidate selector can read the mutation label, expected patch, oracle implementation, or answer key.",

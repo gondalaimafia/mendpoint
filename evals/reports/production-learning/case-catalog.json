@@ -1,6 +1,6 @@
 {
   "schemaVersion": "mendpoint.case-catalog.v1",
-  "generatedAt": "2026-08-29T02:22:58.317Z",
+  "generatedAt": "2026-08-29T03:05:16.963Z",
   "programBaseRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
   "cases": [
     {
@@ -35,6 +35,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks-js",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -110,6 +124,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks-js",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -185,6 +213,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks-js",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -260,6 +302,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks-js",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -335,6 +391,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks-js",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -404,6 +474,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks-js",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -479,6 +563,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks-js",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -554,6 +652,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks-js",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -630,6 +742,20 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-stripe-stripe-node",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -706,6 +832,20 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-stripe-stripe-node",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -776,6 +916,20 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-stripe-stripe-node",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -852,6 +1006,20 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-stripe-stripe-node",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -928,6 +1096,20 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-stripe-stripe-node",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -1004,6 +1186,22 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-stripe-stripe-node",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016",
+          "ME-FET-017",
+          "ME-FET-018"
         ]
       },
       "pattern": {
@@ -1081,6 +1279,20 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-openai-openai-node",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -1152,6 +1364,20 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-openai-openai-node",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -1229,6 +1455,20 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-openai-openai-node",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -1304,6 +1544,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -1379,6 +1633,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -1454,6 +1722,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -1523,6 +1805,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -1599,6 +1895,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-twilio-twilio-node",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-twilio-twilio-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -1674,6 +1984,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-twilio-twilio-node",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-twilio-twilio-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -1749,6 +2073,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-twilio-twilio-node",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-twilio-twilio-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -1825,6 +2163,20 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -1895,6 +2247,20 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -1971,6 +2337,20 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -2047,6 +2427,20 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -2123,6 +2517,20 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -2199,6 +2607,20 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -2269,6 +2691,20 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -2343,6 +2779,20 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-kubernetes-client-go",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -2416,6 +2866,20 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-kubernetes-client-go",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -2489,6 +2953,20 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-kubernetes-client-go",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -2562,6 +3040,20 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-kubernetes-client-go",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -2629,6 +3121,20 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-kubernetes-client-go",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -2704,6 +3210,20 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-microsoft-dotnet",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-microsoft-dotnet; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -2780,6 +3300,20 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-microsoft-dotnet",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-microsoft-dotnet; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -2856,6 +3390,20 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-microsoft-dotnet",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-microsoft-dotnet; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -2932,6 +3480,20 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-microsoft-dotnet",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-microsoft-dotnet; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -3001,6 +3563,20 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-expressjs-express",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-expressjs-express; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -3076,6 +3652,20 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-expressjs-express",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-expressjs-express; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -3151,6 +3741,20 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-expressjs-express",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-expressjs-express; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -3226,6 +3830,20 @@
           "Flask",
           "Jinja",
           "WSGI"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-python-cpython",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-python-cpython; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -3302,6 +3920,20 @@
           "Flask",
           "Jinja",
           "WSGI"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-python-cpython",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-python-cpython; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -3372,6 +4004,20 @@
           "Flask",
           "Jinja",
           "WSGI"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-python-cpython",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-python-cpython; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -3449,6 +4095,20 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-oai-openapi-specification",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-oai-openapi-specification; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -3523,6 +4183,20 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-protocolbuffers-protobuf",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-protocolbuffers-protobuf; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -3597,6 +4271,20 @@
           "Flask",
           "Jinja",
           "WSGI"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-panva-openid-client",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-panva-openid-client; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -3673,6 +4361,20 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-axios-axios",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-axios-axios; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -3741,6 +4443,22 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks-js",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016",
+          "ME-FET-017",
+          "ME-FET-018"
         ]
       },
       "pattern": {
@@ -3816,6 +4534,22 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks-js",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016",
+          "ME-FET-017",
+          "ME-FET-018"
         ]
       },
       "pattern": {
@@ -3891,6 +4625,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks-js",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -3967,6 +4715,20 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-stripe-stripe-node",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -4043,6 +4805,20 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-stripe-stripe-node",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -4113,6 +4889,20 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-stripe-stripe-node",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -4189,6 +4979,20 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-stripe-stripe-node",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -4264,6 +5068,22 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016",
+          "ME-FET-017",
+          "ME-FET-018"
         ]
       },
       "pattern": {
@@ -4339,6 +5159,22 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016",
+          "ME-FET-017",
+          "ME-FET-018"
         ]
       },
       "pattern": {
@@ -4414,6 +5250,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-slackapi-node-slack-sdk; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -4484,6 +5334,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-twilio-twilio-node",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-twilio-twilio-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -4559,6 +5423,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-twilio-twilio-node",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-twilio-twilio-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -4634,6 +5512,20 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-twilio-twilio-node",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-twilio-twilio-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -4710,6 +5602,20 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -4786,6 +5692,22 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-aws-aws-sdk-js-v3",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016",
+          "ME-FET-017",
+          "ME-FET-018"
         ]
       },
       "pattern": {
@@ -4854,6 +5776,20 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-kubernetes-client-go",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -4927,6 +5863,20 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-kubernetes-client-go",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -5000,6 +5950,20 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-kubernetes-client-go",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -5075,6 +6039,22 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-microsoft-dotnet",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-microsoft-dotnet; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016",
+          "ME-FET-017",
+          "ME-FET-018"
         ]
       },
       "pattern": {
@@ -5151,6 +6131,22 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-microsoft-dotnet",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-microsoft-dotnet; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016",
+          "ME-FET-017",
+          "ME-FET-018"
         ]
       },
       "pattern": {
@@ -5219,6 +6215,20 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-protocolbuffers-protobuf",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-protocolbuffers-protobuf; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -5292,6 +6302,20 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-protocolbuffers-protobuf",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-protocolbuffers-protobuf; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -5367,6 +6391,22 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-oai-openapi-specification",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-oai-openapi-specification; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016",
+          "ME-FET-017",
+          "ME-FET-018"
         ]
       },
       "pattern": {
@@ -5442,6 +6482,20 @@
           "Flask",
           "Jinja",
           "WSGI"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-urllib3-urllib3",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-urllib3-urllib3; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016"
         ]
       },
       "pattern": {
@@ -5518,6 +6572,22 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-auth0-node-jsonwebtoken",
+          "rationale": "The reviewed immutable repository provides a controlled fixture seam for repo-auth0-node-jsonwebtoken; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-WAR-001",
+          "ME-WAR-002",
+          "ME-WAR-005",
+          "ME-FET-015",
+          "ME-FET-016",
+          "ME-FET-017",
+          "ME-FET-018"
         ]
       },
       "pattern": {
@@ -5591,6 +6661,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-nodejs-node",
+          "rationale": "The reviewed immutable repository provides a controlled runtime-major-upgrade fixture seam for repo-nodejs-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -5678,6 +6763,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-nodejs-node",
+          "rationale": "The reviewed immutable repository provides a controlled module-architecture-migration fixture seam for repo-nodejs-node; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -5762,6 +6862,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-expressjs-express",
+          "rationale": "The reviewed immutable repository provides a controlled framework-major-upgrade fixture seam for repo-expressjs-express; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -5848,6 +6963,21 @@
           "React",
           "Yarn workspaces",
           "Babel"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-facebook-react",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -5933,6 +7063,21 @@
           "React",
           "Yarn workspaces",
           "Babel"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-facebook-react",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -6010,6 +7155,21 @@
           "React",
           "Yarn workspaces",
           "Babel"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-vercel-nextjs",
+          "rationale": "The reviewed immutable repository provides a controlled request-api-migration fixture seam for repo-vercel-nextjs; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -6096,6 +7256,21 @@
           "React",
           "Yarn workspaces",
           "Babel"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-vercel-nextjs",
+          "rationale": "The reviewed immutable repository provides a controlled router-architecture-transformation fixture seam for repo-vercel-nextjs; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -6181,6 +7356,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-microsoft-typescript",
+          "rationale": "The reviewed immutable repository provides a controlled language-feature-migration fixture seam for repo-microsoft-typescript; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -6265,6 +7455,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-microsoft-typescript",
+          "rationale": "The reviewed immutable repository provides a controlled compiler-resolution-migration fixture seam for repo-microsoft-typescript; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -6349,6 +7554,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-eslint-eslint",
+          "rationale": "The reviewed immutable repository provides a controlled tooling-config-migration fixture seam for repo-eslint-eslint; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -6429,6 +7649,21 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-aws-sdk-js-v3",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -6515,6 +7750,21 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-aws-sdk-js-v3",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -6598,6 +7848,21 @@
           "Flask",
           "Jinja",
           "WSGI"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-python-cpython",
+          "rationale": "The reviewed immutable repository provides a controlled runtime-major-upgrade fixture seam for repo-python-cpython; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -6683,6 +7948,21 @@
           "Flask",
           "Jinja",
           "WSGI"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-django-django",
+          "rationale": "The reviewed immutable repository provides a controlled framework-staged-upgrade fixture seam for repo-django-django; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -6767,6 +8047,21 @@
           "Flask",
           "Jinja",
           "WSGI"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-django-django",
+          "rationale": "The reviewed immutable repository provides a controlled serialized-state-migration fixture seam for repo-django-django; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -6842,6 +8137,21 @@
           "Flask",
           "Jinja",
           "WSGI"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-fastapi-fastapi",
+          "rationale": "The reviewed immutable repository provides a controlled validation-framework-upgrade fixture seam for repo-fastapi-fastapi; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -6925,6 +8235,21 @@
           "Flask",
           "Jinja",
           "WSGI"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-pydantic-pydantic",
+          "rationale": "The reviewed immutable repository provides a controlled validation-semantic-migration fixture seam for repo-pydantic-pydantic; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -7010,6 +8335,21 @@
           "Ruby on Rails",
           "Active Record",
           "Bundler"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-rails-rails",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -7098,6 +8438,21 @@
           "Ruby on Rails",
           "Active Record",
           "Bundler"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-rails-rails",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -7181,6 +8536,21 @@
           "Spring Data JPA",
           "Maven",
           "Gradle"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-spring-petclinic",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -7260,6 +8630,21 @@
           "Spring Data JPA",
           "Maven",
           "Gradle"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-spring-petclinic",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -7344,6 +8729,21 @@
           "Spring Data JPA",
           "Maven",
           "Gradle"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-spring-petclinic",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -7429,6 +8829,21 @@
           "Spring Data JPA",
           "Maven",
           "Gradle"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-gradle-gradle",
+          "rationale": "The reviewed immutable repository provides a controlled build-system-major-upgrade fixture seam for repo-gradle-gradle; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -7515,6 +8930,21 @@
           "Spring Data JPA",
           "Maven",
           "Gradle"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-gradle-gradle",
+          "rationale": "The reviewed immutable repository provides a controlled build-architecture-migration fixture seam for repo-gradle-gradle; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -7603,6 +9033,21 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-dotnet-aspnetcore",
+          "rationale": "The reviewed immutable repository provides a controlled runtime-major-upgrade fixture seam for repo-dotnet-aspnetcore; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -7684,6 +9129,21 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-dotnet-aspnetcore",
+          "rationale": "The reviewed immutable repository provides a controlled container-contract-migration fixture seam for repo-dotnet-aspnetcore; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -7772,6 +9232,21 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-dotnet-efcore",
+          "rationale": "The reviewed immutable repository provides a controlled orm-query-migration fixture seam for repo-dotnet-efcore; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -7859,6 +9334,21 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-dotnet-efcore",
+          "rationale": "The reviewed immutable repository provides a controlled data-representation-migration fixture seam for repo-dotnet-efcore; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -7938,6 +9428,21 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-golang-example",
+          "rationale": "The reviewed immutable repository provides a controlled dependency-architecture-migration fixture seam for repo-golang-example; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -8017,6 +9522,21 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-golang-example",
+          "rationale": "The reviewed immutable repository provides a controlled api-major-version-migration fixture seam for repo-golang-example; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -8095,6 +9615,21 @@
           "React",
           "Yarn workspaces",
           "Babel"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-rust-lang-rustlings",
+          "rationale": "The reviewed immutable repository provides a controlled language-edition-migration fixture seam for repo-rust-lang-rustlings; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -8180,6 +9715,21 @@
           "React",
           "Yarn workspaces",
           "Babel"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-rust-lang-rustlings",
+          "rationale": "The reviewed immutable repository provides a controlled conditional-coverage-migration fixture seam for repo-rust-lang-rustlings; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -8258,6 +9808,21 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-kubernetes-examples",
+          "rationale": "The reviewed immutable repository provides a controlled platform-api-migration fixture seam for repo-kubernetes-examples; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -8335,6 +9900,21 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-controller-runtime",
+          "rationale": "The reviewed immutable repository provides a controlled controller-sdk-migration fixture seam for repo-controller-runtime; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -8416,6 +9996,21 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-terraform-provider-scaffolding",
+          "rationale": "The reviewed immutable repository provides a controlled provider-address-migration fixture seam for repo-terraform-provider-scaffolding; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -8489,6 +10084,21 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-terraform-provider-scaffolding",
+          "rationale": "The reviewed immutable repository provides a controlled provider-major-upgrade fixture seam for repo-terraform-provider-scaffolding; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -8576,6 +10186,20 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-terraform-provider-scaffolding",
+          "rationale": "The reviewed immutable repository provides a controlled state-preserving-refactor fixture seam for repo-terraform-provider-scaffolding; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018"
         ]
       },
       "pattern": {
@@ -8660,6 +10284,21 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-docker-compose",
+          "rationale": "The reviewed immutable repository provides a controlled cli-runtime-migration fixture seam for repo-docker-compose; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -8748,6 +10387,21 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-opentelemetry-demo",
+          "rationale": "The reviewed immutable repository provides a controlled base-image-migration fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -8837,6 +10491,21 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-postgres-postgres",
+          "rationale": "The reviewed immutable repository provides a controlled database-major-upgrade fixture seam for repo-postgres-postgres; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -8918,6 +10587,21 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-postgres-postgres",
+          "rationale": "The reviewed immutable repository provides a controlled database-online-migration fixture seam for repo-postgres-postgres; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -9006,6 +10690,21 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-opentelemetry-demo",
+          "rationale": "The reviewed immutable repository provides a controlled expand-contract-migration fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -9093,6 +10792,21 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-protocolbuffers-protobuf",
+          "rationale": "The reviewed immutable repository provides a controlled wire-schema-migration fixture seam for repo-protocolbuffers-protobuf; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -9173,6 +10887,21 @@
         "frameworks": [
           "Node.js",
           "Stripe API"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-oai-openapi-specification",
+          "rationale": "The reviewed immutable repository provides a controlled api-contract-migration fixture seam for repo-oai-openapi-specification; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -9258,6 +10987,21 @@
           "Spring Data JPA",
           "Maven",
           "Gradle"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-apache-kafka",
+          "rationale": "The reviewed immutable repository provides a controlled distributed-control-plane-migration fixture seam for repo-apache-kafka; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -9336,6 +11080,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-opentelemetry-demo",
+          "rationale": "The reviewed immutable repository provides a controlled observability-contract-migration fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -9423,6 +11182,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-actions-toolkit",
+          "rationale": "The reviewed immutable repository provides a controlled ci-runtime-migration fixture seam for repo-actions-toolkit; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -9509,6 +11283,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-npm-cli",
+          "rationale": "The reviewed immutable repository provides a controlled publishing-auth-migration fixture seam for repo-npm-cli; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -9588,6 +11377,21 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-panva-openid-client",
+          "rationale": "The reviewed immutable repository provides a controlled authorization-protocol-migration fixture seam for repo-panva-openid-client; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -9669,6 +11473,21 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-panva-openid-client",
+          "rationale": "The reviewed immutable repository provides a controlled token-security-migration fixture seam for repo-panva-openid-client; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -9750,6 +11569,21 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-terraform-provider-scaffolding",
+          "rationale": "The reviewed immutable repository provides a controlled positive-control-noop fixture seam for repo-terraform-provider-scaffolding; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {
@@ -9828,6 +11662,23 @@
           "Flask",
           "Jinja",
           "WSGI"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-django-django",
+          "rationale": "The reviewed immutable repository provides a controlled negative-control-not-applicable fixture seam for repo-django-django; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008",
+          "ME-REG-016",
+          "ME-REG-017"
         ]
       },
       "pattern": {
@@ -9911,6 +11762,22 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-opentelemetry-demo",
+          "rationale": "The reviewed immutable repository provides a controlled insufficient-evidence fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008",
+          "ME-REG-017"
         ]
       },
       "pattern": {
@@ -9988,6 +11855,23 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-terraform-provider-scaffolding",
+          "rationale": "The reviewed immutable repository provides a controlled conflicting-evidence fixture seam for repo-terraform-provider-scaffolding; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008",
+          "ME-REG-016",
+          "ME-REG-017"
         ]
       },
       "pattern": {
@@ -10073,6 +11957,22 @@
           "React",
           "Yarn workspaces",
           "Babel"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-rust-lang-rustlings",
+          "rationale": "The reviewed immutable repository provides a controlled partial-coverage fixture seam for repo-rust-lang-rustlings; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008",
+          "ME-REG-017"
         ]
       },
       "pattern": {
@@ -10150,6 +12050,21 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-protocolbuffers-protobuf",
+          "rationale": "The reviewed immutable repository provides a controlled multi-repo-schema-sequencing fixture seam for repo-protocolbuffers-protobuf; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {
@@ -10234,6 +12149,21 @@
           "Entity Framework Core",
           "Docker",
           "Bicep"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-opentelemetry-demo",
+          "rationale": "The reviewed immutable repository provides a controlled multi-repo-rollback-sequencing fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {
@@ -10313,6 +12243,21 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {
@@ -10397,6 +12342,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-mendpoint-governed-synthetic",
+          "rationale": "The reviewed immutable repository provides a controlled checkpoint-binding-replay fixture seam for repo-mendpoint-governed-synthetic; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {
@@ -10478,6 +12438,22 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-opentelemetry-demo",
+          "rationale": "The reviewed immutable repository provides a controlled stale-evidence-binding fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008",
+          "ME-REG-017"
         ]
       },
       "pattern": {
@@ -10555,6 +12531,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-expressjs-express",
+          "rationale": "The reviewed immutable repository provides a controlled tenant-binding-authorization fixture seam for repo-expressjs-express; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {
@@ -10632,6 +12623,21 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {
@@ -10711,6 +12717,21 @@
         "frameworks": [
           "Node.js",
           "GitHub Webhooks"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-octokit-webhooks",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {
@@ -10794,6 +12815,22 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-opentelemetry-demo",
+          "rationale": "The reviewed immutable repository provides a controlled provider-outage-resilience fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -10878,6 +12915,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-expressjs-express",
+          "rationale": "The reviewed immutable repository provides a controlled verifier-false-positive fixture seam for repo-expressjs-express; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {
@@ -10955,6 +13007,22 @@
           "Spring Data JPA",
           "Maven",
           "Gradle"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-spring-petclinic",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008",
+          "ME-REG-017"
         ]
       },
       "pattern": {
@@ -11038,6 +13106,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-mendpoint-governed-synthetic",
+          "rationale": "The reviewed immutable repository provides a controlled untrusted-advisory-output fixture seam for repo-mendpoint-governed-synthetic; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {
@@ -11115,6 +13198,22 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-kubernetes-kubernetes",
+          "rationale": "The reviewed immutable repository provides a controlled budgeted-partial-analysis fixture seam for repo-kubernetes-kubernetes; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008",
+          "ME-REG-017"
         ]
       },
       "pattern": {
@@ -11201,6 +13300,21 @@
           "Node.js",
           "AWS SDK for JavaScript v3",
           "Smithy"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-opentelemetry-demo",
+          "rationale": "The reviewed immutable repository provides a controlled license-boundary-enforcement fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {
@@ -11286,6 +13400,22 @@
           "Spring Data JPA",
           "Maven",
           "Gradle"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-apache-log4j2",
+          "rationale": "The reviewed immutable repository provides a controlled security-remediation-migration fixture seam for repo-apache-log4j2; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -11364,6 +13494,22 @@
           "Spring Data JPA",
           "Maven",
           "Gradle"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-apache-kafka",
+          "rationale": "The reviewed immutable repository provides a controlled required-intermediate-upgrade fixture seam for repo-apache-kafka; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008",
+          "ME-REG-016"
         ]
       },
       "pattern": {
@@ -11448,6 +13594,21 @@
           "Spring Data JPA",
           "Maven",
           "Gradle"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-apache-kafka",
+          "rationale": "The reviewed immutable repository provides a controlled irreversible-state-transition fixture seam for repo-apache-kafka; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {
@@ -11534,6 +13695,22 @@
           "React",
           "Yarn workspaces",
           "Babel"
+        ],
+        "binding": {
+          "mode": "native",
+          "originalResearchCandidate": "repo-facebook-react",
+          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008",
+          "ME-REG-017"
         ]
       },
       "pattern": {
@@ -11613,6 +13790,21 @@
         "frameworks": [
           "Go modules",
           "Kubernetes client-go"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-opentelemetry-demo",
+          "rationale": "The reviewed immutable repository provides a controlled environment-equivalence-gate fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {
@@ -11697,6 +13889,21 @@
           "Node.js",
           "OpenAI API",
           "pnpm workspace"
+        ],
+        "binding": {
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-opentelemetry-demo",
+          "rationale": "The reviewed immutable repository provides a controlled holdout-contamination fixture seam for repo-opentelemetry-demo; it is not evidence that the repository natively implements that candidate's provider or framework semantics."
+        }
+      },
+      "planning": {
+        "requirementIds": [
+          "ME-TRN-001",
+          "ME-TRN-004",
+          "ME-TRN-005",
+          "ME-REG-015",
+          "ME-REG-018",
+          "ME-TRN-008"
         ]
       },
       "pattern": {

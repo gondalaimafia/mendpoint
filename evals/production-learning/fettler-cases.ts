@@ -192,24 +192,45 @@ const sourceLibrary = {
 } as const satisfies Record<string, Omit<LearningSource, "id" | "retrievedAt">>;
 
 const repositories = {
-  octokit: { provenanceId: "repo-octokit-webhooks-js", languages: ["TypeScript"], frameworks: ["Node.js", "GitHub Webhooks"] },
-  stripe: { provenanceId: "repo-stripe-stripe-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "Stripe API"] },
-  slack: { provenanceId: "repo-octokit-webhooks-js", languages: ["TypeScript"], frameworks: ["Node.js", "GitHub Webhooks"] },
-  openaiClient: { provenanceId: "repo-openai-openai-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "OpenAI API", "pnpm workspace"] },
-  twilio: { provenanceId: "repo-octokit-webhooks-js", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "GitHub Webhooks"] },
-  aws: { provenanceId: "repo-aws-aws-sdk-js-v3", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "AWS SDK for JavaScript v3", "Smithy"] },
-  kubernetes: { provenanceId: "repo-kubernetes-client-go", languages: ["Go"], frameworks: ["Go modules", "Kubernetes client-go"] },
-  microsoft: { provenanceId: "repo-dotnet-architecture-eshoponweb", languages: ["C#"], frameworks: ["ASP.NET Core", "Entity Framework Core", "Docker", "Bicep"] },
-  express: { provenanceId: "repo-stripe-stripe-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "Stripe API"] },
-  cpython: { provenanceId: "repo-pallets-flask", languages: ["Python"], frameworks: ["Flask", "Jinja", "WSGI"] },
-  openapi: { provenanceId: "repo-openai-openai-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "OpenAI API", "pnpm workspace"] },
-  protobuf: { provenanceId: "repo-kubernetes-client-go", languages: ["Go"], frameworks: ["Go modules", "Kubernetes client-go"] },
-  oauth: { provenanceId: "repo-pallets-flask", languages: ["Python"], frameworks: ["Flask", "Jinja", "WSGI"] },
-  terraform: { provenanceId: "repo-kubernetes-client-go", languages: ["Go"], frameworks: ["Go modules", "Kubernetes client-go"] },
-  axios: { provenanceId: "repo-openai-openai-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "OpenAI API", "pnpm workspace"] },
-  urllib3: { provenanceId: "repo-pallets-flask", languages: ["Python"], frameworks: ["Flask", "Jinja", "WSGI"] },
-  jsonwebtoken: { provenanceId: "repo-openai-openai-node", languages: ["TypeScript", "JavaScript"], frameworks: ["Node.js", "OpenAI API", "pnpm workspace"] },
+  octokit: repositoryBinding("repo-octokit-webhooks-js", ["TypeScript"], ["Node.js", "GitHub Webhooks"], "repo-octokit-webhooks-js", true),
+  stripe: repositoryBinding("repo-stripe-stripe-node", ["TypeScript", "JavaScript"], ["Node.js", "Stripe API"], "repo-stripe-stripe-node", true),
+  slack: repositoryBinding("repo-octokit-webhooks-js", ["TypeScript"], ["Node.js", "GitHub Webhooks"], "repo-slackapi-node-slack-sdk", false),
+  openaiClient: repositoryBinding("repo-openai-openai-node", ["TypeScript", "JavaScript"], ["Node.js", "OpenAI API", "pnpm workspace"], "repo-openai-openai-node", true),
+  twilio: repositoryBinding("repo-octokit-webhooks-js", ["TypeScript", "JavaScript"], ["Node.js", "GitHub Webhooks"], "repo-twilio-twilio-node", false),
+  aws: repositoryBinding("repo-aws-aws-sdk-js-v3", ["TypeScript", "JavaScript"], ["Node.js", "AWS SDK for JavaScript v3", "Smithy"], "repo-aws-aws-sdk-js-v3", true),
+  kubernetes: repositoryBinding("repo-kubernetes-client-go", ["Go"], ["Go modules", "Kubernetes client-go"], "repo-kubernetes-client-go", true),
+  microsoft: repositoryBinding("repo-dotnet-architecture-eshoponweb", ["C#"], ["ASP.NET Core", "Entity Framework Core", "Docker", "Bicep"], "repo-microsoft-dotnet", false),
+  express: repositoryBinding("repo-stripe-stripe-node", ["TypeScript", "JavaScript"], ["Node.js", "Stripe API"], "repo-expressjs-express", false),
+  cpython: repositoryBinding("repo-pallets-flask", ["Python"], ["Flask", "Jinja", "WSGI"], "repo-python-cpython", false),
+  openapi: repositoryBinding("repo-openai-openai-node", ["TypeScript", "JavaScript"], ["Node.js", "OpenAI API", "pnpm workspace"], "repo-oai-openapi-specification", false),
+  protobuf: repositoryBinding("repo-kubernetes-client-go", ["Go"], ["Go modules", "Kubernetes client-go"], "repo-protocolbuffers-protobuf", false),
+  oauth: repositoryBinding("repo-pallets-flask", ["Python"], ["Flask", "Jinja", "WSGI"], "repo-panva-openid-client", false),
+  terraform: repositoryBinding("repo-kubernetes-client-go", ["Go"], ["Go modules", "Kubernetes client-go"], "repo-hashicorp-terraform-plugin-framework", false),
+  axios: repositoryBinding("repo-openai-openai-node", ["TypeScript", "JavaScript"], ["Node.js", "OpenAI API", "pnpm workspace"], "repo-axios-axios", false),
+  urllib3: repositoryBinding("repo-pallets-flask", ["Python"], ["Flask", "Jinja", "WSGI"], "repo-urllib3-urllib3", false),
+  jsonwebtoken: repositoryBinding("repo-openai-openai-node", ["TypeScript", "JavaScript"], ["Node.js", "OpenAI API", "pnpm workspace"], "repo-auth0-node-jsonwebtoken", false),
 } as const;
+
+function repositoryBinding(
+  provenanceId: string,
+  languages: string[],
+  frameworks: string[],
+  originalResearchCandidate: string,
+  native: boolean,
+) {
+  return {
+    provenanceId,
+    languages,
+    frameworks,
+    binding: {
+      mode: native ? "native" as const : "synthetic_substrate" as const,
+      originalResearchCandidate,
+      rationale: native
+        ? "The reviewed immutable repository is the same public repository family named by the research candidate."
+        : `The reviewed immutable repository provides a controlled fixture seam for ${originalResearchCandidate}; it is not evidence that the repository natively implements that candidate's provider or framework semantics.`,
+    },
+  };
+}
 
 type SourceKey = keyof typeof sourceLibrary;
 type RepositoryKey = keyof typeof repositories;
@@ -884,6 +905,11 @@ function toLearningCase(seed: CaseSeed): LearningCase {
   const source = sourceLibrary[seed.source];
   const repository = repositories[seed.repository];
   const numericId = Number(seed.id.slice(-3));
+  const uncertainty = `${seed.family} ${seed.title}`.toLowerCase();
+  const requirementIds = ["ME-WAR-001", "ME-WAR-002", "ME-WAR-005", "ME-FET-015", "ME-FET-016"];
+  if (seed.evidenceState !== undefined || /(negative|unknown|ambiguous|conflict|stale|partial|no-impact|not-applicable)/.test(uncertainty)) {
+    requirementIds.push("ME-FET-017", "ME-FET-018");
+  }
 
   return {
     schemaVersion: "mendpoint.learning-case.v1",
@@ -902,7 +928,9 @@ function toLearningCase(seed: CaseSeed): LearningCase {
       provenanceId: repository.provenanceId,
       languages: [...repository.languages],
       frameworks: [...repository.frameworks],
+      binding: repository.binding,
     },
+    planning: { requirementIds },
     pattern: {
       family: seed.family,
       seededFailure: seed.seededFailure,

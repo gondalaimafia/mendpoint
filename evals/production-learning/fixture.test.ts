@@ -1,10 +1,20 @@
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { admitFixture, fixtureManifestDigest, type FixtureManifest } from "./fixture.js";
-import { evaluateProductionLearningPreflight, type TrustedProductionLearningAuthority } from "./preflight.js";
+import { canonicalAuthorityBytes, type SignedAuthorityEnvelope } from "./authority.js";
+import {
+  evaluateProductionLearningPreflight,
+  verifyProductionLearningAuthority,
+  type ProductionLearningAuthorityPayload,
+  type VerifiedProductionLearningAuthority,
+} from "./preflight.js";
 import type { LearningCase, ProductionExecutionReceipt, RepositoryProvenance } from "./schema.js";
 
 const SHA = "a".repeat(64);
 const REVISION = "b".repeat(40);
+const authorityKeys = generateKeyPairSync("ed25519");
+const authorityPublicKey = authorityKeys.publicKey.export({ format: "der", type: "spki" });
+const AUTHORITY_NOW = "2026-08-28T23:30:00.000Z";
 
 const learningCase: LearningCase = {
   schemaVersion: "mendpoint.learning-case.v1",
@@ -15,11 +25,12 @@ const learningCase: LearningCase = {
   title: "Unknown impact under conflicting evidence",
   importance: { statement: "Official evidence defines fail closed behavior.", frequencyClaim: "not_claimed", sourceIds: ["s1"] },
   sources: [{ id: "s1", kind: "official_documentation", title: "Evidence", publisher: "Upstream", url: "https://example.invalid/evidence", retrievedAt: "2026-08-28T23:00:00.000Z" }],
-  repository: { provenanceId: "repo-a", languages: ["typescript"], frameworks: ["node"] },
+  repository: { provenanceId: "repo-a", languages: ["typescript"], frameworks: ["node"], binding: { mode: "native", originalResearchCandidate: "repo-a", rationale: "The fixture directly targets this repository." } },
   pattern: { family: "conflicting-evidence", seededFailure: "Two receipts bind different revisions.", expectedImpactGraph: ["provider", "client"], evidenceState: "unknown" },
   expected: { diagnosis: "Preserve unknown.", repairOrMigration: "Abstain pending a current binding.", oracleIds: ["oracle-FET-E001"], productionAcceptance: ["No draft is created."] },
   fixture: { manifestId: "fixture-FET-E001", mutationId: "mutation-FET-E001", allowedEditPaths: ["src/**"], rollbackId: "rollback-FET-E001", cleanupId: "cleanup-FET-E001" },
   security: { tenantRisk: "high", risks: ["stale_evidence"], requiresDedicatedBenchmarkTenant: true },
+  planning: { requirementIds: ["REQ-EVAL-FIXTURE"] },
 };
 
 function repository(): RepositoryProvenance {
@@ -57,8 +68,11 @@ function receipt(value = fixture()): ProductionExecutionReceipt {
   };
 }
 
-function authority(run: ProductionExecutionReceipt): TrustedProductionLearningAuthority {
-  return {
+function authority(
+  run: ProductionExecutionReceipt,
+  overrides: Partial<ProductionLearningAuthorityPayload> = {},
+): VerifiedProductionLearningAuthority {
+  const payload: ProductionLearningAuthorityPayload = {
     caseId: run.caseId,
     product: run.product,
     productionRevision: run.productionRevision,
@@ -77,12 +91,36 @@ function authority(run: ProductionExecutionReceipt): TrustedProductionLearningAu
     authorizationRef: run.authorizationRef,
     sandboxReceiptDigest: run.sandbox.receiptDigest,
     executionDigest: run.executionDigest,
+    ...overrides,
   };
+  const unsigned: Omit<SignedAuthorityEnvelope<ProductionLearningAuthorityPayload>, "signature"> = {
+    schemaVersion: "mendpoint.signed-authority.v1",
+    issuer: "mendpoint-production-control-plane",
+    keyId: "production-key-v1",
+    issuedAt: "2026-08-28T23:00:00.000Z",
+    expiresAt: "2026-08-29T00:00:00.000Z",
+    payload,
+  };
+  const envelope = {
+    ...unsigned,
+    signature: sign(null, canonicalAuthorityBytes(unsigned), authorityKeys.privateKey).toString("base64"),
+  };
+  return verifyProductionLearningAuthority(envelope, {
+    issuer: unsigned.issuer,
+    keyId: unsigned.keyId,
+    publicKeyDerBase64: authorityPublicKey.toString("base64"),
+    publicKeySha256: createHash("sha256").update(authorityPublicKey).digest("hex"),
+    currentProductionRevision: payload.productionRevision,
+    now: AUTHORITY_NOW,
+  });
 }
 
 describe("fixture admission and production preflight", () => {
   it("admits a content addressed fixture and exact rollback contract", () => {
-    expect(admitFixture(fixture(), learningCase, repository())).toEqual({ admitted: true, errors: [] });
+    const result = admitFixture(fixture(), learningCase, repository());
+    expect(result.admitted).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.admission?.manifestDigest).toBe(fixtureManifestDigest(fixture()));
   });
 
   it("rejects path escape and missing immutable patch evidence", () => {
@@ -120,14 +158,47 @@ describe("fixture admission and production preflight", () => {
   it("rejects a self-consistent receipt that does not match trusted deployed authority", () => {
     const manifest = fixture();
     const run = receipt(manifest);
-    const trusted = authority(run);
-    trusted.productionRevision = "c".repeat(40);
-    trusted.authorizationRef = "authorization://benchmark-tenant-a/protected-run";
+    const trusted = authority(run, {
+      productionRevision: "c".repeat(40),
+      authorizationRef: "authorization://benchmark-tenant-a/protected-run",
+    });
     const result = evaluateProductionLearningPreflight({ learningCase, repository: repository(), fixture: manifest, receipt: run, authority: trusted });
     expect(result.errors).toEqual(expect.arrayContaining([
       "receipt productionRevision must match trusted production authority",
       "receipt authorizationRef must match trusted production authority",
     ]));
+  });
+
+  it("rejects tampered or expired production authority envelopes before preflight", () => {
+    const run = receipt();
+    const payload = { ...authority(run) } as unknown as ProductionLearningAuthorityPayload;
+    const unsigned: Omit<SignedAuthorityEnvelope<ProductionLearningAuthorityPayload>, "signature"> = {
+      schemaVersion: "mendpoint.signed-authority.v1",
+      issuer: "mendpoint-production-control-plane",
+      keyId: "production-key-v1",
+      issuedAt: "2026-08-28T21:00:00.000Z",
+      expiresAt: "2026-08-28T22:00:00.000Z",
+      payload,
+    };
+    const envelope = { ...unsigned, signature: sign(null, canonicalAuthorityBytes(unsigned), authorityKeys.privateKey).toString("base64") };
+    expect(() => verifyProductionLearningAuthority(envelope, {
+      issuer: unsigned.issuer,
+      keyId: unsigned.keyId,
+      publicKeyDerBase64: authorityPublicKey.toString("base64"),
+      publicKeySha256: createHash("sha256").update(authorityPublicKey).digest("hex"),
+      currentProductionRevision: run.productionRevision,
+      now: AUTHORITY_NOW,
+    })).toThrow("authority_time_window_invalid");
+    envelope.expiresAt = "2026-08-29T00:00:00.000Z";
+    envelope.payload = { ...payload, tenantId: "benchmark-tenant-tampered" };
+    expect(() => verifyProductionLearningAuthority(envelope, {
+      issuer: unsigned.issuer,
+      keyId: unsigned.keyId,
+      publicKeyDerBase64: authorityPublicKey.toString("base64"),
+      publicKeySha256: createHash("sha256").update(authorityPublicKey).digest("hex"),
+      currentProductionRevision: run.productionRevision,
+      now: AUTHORITY_NOW,
+    })).toThrow("authority_signature_invalid");
   });
 
   it("binds manifest identity, impact graph, rollback oracle, and complete manifest digest", () => {

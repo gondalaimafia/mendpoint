@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { learningCases } from "./catalog.js";
 import { admissionCandidates, rejectedCandidates, repositories } from "./repositories.js";
 
 describe("repository provenance candidates", () => {
@@ -29,5 +30,32 @@ describe("repository provenance candidates", () => {
       "https://github.com/fastapi/fastapi",
       "https://github.com/tokio-rs/tokio",
     ]));
+  });
+
+  it("labels substitute repositories as synthetic substrates rather than native provenance", () => {
+    const reviewedIds = new Set(admissionCandidates.map((candidate) => candidate.id));
+    const nativeBindings = learningCases.filter((item) => item.repository.binding.mode === "native");
+    const syntheticBindings = learningCases.filter((item) => item.repository.binding.mode === "synthetic_substrate");
+    expect(nativeBindings).toHaveLength(55);
+    expect(syntheticBindings).toHaveLength(95);
+    expect(nativeBindings.length + syntheticBindings.length).toBe(150);
+    for (const item of learningCases) {
+      expect(reviewedIds.has(item.repository.provenanceId)).toBe(true);
+      expect(item.repository.binding.originalResearchCandidate.length).toBeGreaterThan(0);
+      expect(item.repository.binding.rationale.length).toBeGreaterThan(0);
+    }
+    for (const originalResearchCandidate of [
+      "repo-slackapi-node-slack-sdk",
+      "repo-twilio-twilio-node",
+      "repo-expressjs-express",
+      "repo-apache-kafka",
+    ]) {
+      expect(learningCases.filter((item) => item.repository.binding.originalResearchCandidate === originalResearchCandidate))
+        .toEqual(expect.arrayContaining([
+          expect.objectContaining({ repository: expect.objectContaining({ binding: expect.objectContaining({ mode: "synthetic_substrate" }) }) }),
+        ]));
+      expect(learningCases.filter((item) => item.repository.binding.originalResearchCandidate === originalResearchCandidate)
+        .every((item) => item.repository.binding.mode === "synthetic_substrate")).toBe(true);
+    }
   });
 });

@@ -1,4 +1,6 @@
 import type { Product } from "./schema.js";
+import { verifySignedAuthorityEnvelope } from "./authority.js";
+import type { SignedAuthorityEnvelope, TrustedAuthorityVerifierConfig } from "./authority.js";
 
 export type BenchmarkLearningOutcome =
   | "accepted"
@@ -75,7 +77,9 @@ export interface BenchmarkLearningEvent {
   createdAt: string;
 }
 
-export interface ExternalProviderTransmissionAuthority {
+export interface ExternalProviderTransmissionAuthorityPayload {
+  schemaVersion: "mendpoint.external-provider-transmission-authority.v1";
+  productionRevision: string;
   tenantId: string;
   repositoryId: string;
   repositoryCommit: string;
@@ -88,15 +92,26 @@ export interface ExternalProviderTransmissionAuthority {
   repositoryContentAllowed: false;
 }
 
+declare const VERIFIED_EXTERNAL_PROVIDER_AUTHORITY: unique symbol;
+export type ExternalProviderTransmissionAuthority = Readonly<ExternalProviderTransmissionAuthorityPayload> & {
+  readonly [VERIFIED_EXTERNAL_PROVIDER_AUTHORITY]: true;
+};
+
 const SHA256 = /^[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+const PRODUCTS: readonly Product[] = ["fettler", "regauge"];
+const OUTCOMES: readonly BenchmarkLearningOutcome[] = ["accepted", "rejected", "corrected", "failed", "rolled_back", "reviewer_modified"];
+const FACT_CLASSES: readonly LearningFactClass[] = ["repository_fact", "organization_preference", "deterministic_transformation", "model_failure"];
+const SINKS: readonly LearningSink[] = ["change_graph", "organization_memory", "deterministic_recipe", "sealed_evaluation"];
+const EXTERNAL_PROVIDER_DECISIONS = ["allowed", "denied"] as const;
 const EXPECTED_SINK: Record<LearningFactClass, LearningSink> = {
   repository_fact: "change_graph",
   organization_preference: "organization_memory",
   deterministic_transformation: "deterministic_recipe",
   model_failure: "sealed_evaluation",
 };
+const verifiedExternalProviderAuthorities = new WeakSet<object>();
 
 function nonEmpty(value: string, path: string, errors: string[]): void {
   if (value.trim().length === 0) errors.push(`${path} must be a non-empty string`);
@@ -106,6 +121,13 @@ export function validateBenchmarkLearningEvent(event: BenchmarkLearningEvent): s
   const errors: string[] = [];
   if (event.schemaVersion !== "mendpoint.benchmark-learning-event.v1") {
     errors.push("schemaVersion must be mendpoint.benchmark-learning-event.v1");
+  }
+  if (!(PRODUCTS as readonly string[]).includes(event.product)) errors.push("product must be fettler or regauge");
+  if (!(OUTCOMES as readonly string[]).includes(event.outcome)) errors.push("outcome is invalid");
+  if (!(FACT_CLASSES as readonly string[]).includes(event.factClass)) errors.push("factClass is invalid");
+  if (!(SINKS as readonly string[]).includes(event.sink)) errors.push("sink is invalid");
+  if (!(EXTERNAL_PROVIDER_DECISIONS as readonly string[]).includes(event.governance.externalProvider.decision)) {
+    errors.push("external provider decision is invalid");
   }
   for (const [path, value] of [
     ["eventId", event.eventId],
@@ -136,8 +158,9 @@ export function validateBenchmarkLearningEvent(event: BenchmarkLearningEvent): s
   ] as const) {
     if (!SHA256.test(value)) errors.push(`${path} must be a 64 character lowercase sha256`);
   }
-  if (event.sink !== EXPECTED_SINK[event.factClass]) {
-    errors.push(`${event.factClass} must route only to ${EXPECTED_SINK[event.factClass]}`);
+  const expectedSink = EXPECTED_SINK[event.factClass];
+  if (expectedSink !== undefined && event.sink !== expectedSink) {
+    errors.push(`${event.factClass} must route only to ${expectedSink}`);
   }
   if (!event.governance.tenantId.startsWith("benchmark-tenant-")) {
     errors.push("governance.tenantId must identify a dedicated benchmark tenant");
@@ -166,7 +189,7 @@ export function validateBenchmarkLearningEvent(event: BenchmarkLearningEvent): s
     if (event.governance.externalProvider.purpose !== "case_execution") {
       errors.push("allowed external provider transmission requires case_execution purpose");
     }
-  } else if (event.governance.externalProvider.providerId !== null || event.governance.externalProvider.purpose !== null) {
+  } else if (event.governance.externalProvider.decision === "denied" && (event.governance.externalProvider.providerId !== null || event.governance.externalProvider.purpose !== null)) {
     errors.push("denied external provider transmission must not carry provider authority");
   }
   if (event.governance.containsRepositoryContent !== false) {
@@ -178,10 +201,11 @@ export function validateBenchmarkLearningEvent(event: BenchmarkLearningEvent): s
   if (event.governance.containsPrivateReasoning !== false) {
     errors.push("governance must not carry private reasoning");
   }
-  if (event.factClass === "model_failure" && !event.governance.sealedDataset) {
+  if (typeof event.governance.sealedDataset !== "boolean") {
+    errors.push("governance.sealedDataset must be boolean");
+  } else if (event.factClass === "model_failure" && event.governance.sealedDataset !== true) {
     errors.push("model failures must enter a sealed evaluation dataset");
-  }
-  if (event.factClass !== "model_failure" && event.governance.sealedDataset) {
+  } else if (event.factClass !== "model_failure" && event.governance.sealedDataset !== false) {
     errors.push("only model failures may enter the sealed evaluation sink");
   }
   if (!Number.isFinite(event.economics.costUsd) || event.economics.costUsd < 0) {
@@ -194,16 +218,46 @@ export function validateBenchmarkLearningEvent(event: BenchmarkLearningEvent): s
   return errors;
 }
 
+export function verifyExternalProviderTransmissionAuthority(
+  envelope: SignedAuthorityEnvelope<ExternalProviderTransmissionAuthorityPayload>,
+  config: TrustedAuthorityVerifierConfig,
+): ExternalProviderTransmissionAuthority {
+  const payload = verifySignedAuthorityEnvelope(envelope, config);
+  const errors: string[] = [];
+  if (payload.schemaVersion !== "mendpoint.external-provider-transmission-authority.v1") {
+    errors.push("external authority schemaVersion must be mendpoint.external-provider-transmission-authority.v1");
+  }
+  for (const [path, value] of [
+    ["tenantId", payload.tenantId],
+    ["repositoryId", payload.repositoryId],
+    ["providerId", payload.providerId],
+    ["consentEvidenceRef", payload.consentEvidenceRef],
+    ["licenseEvidenceRef", payload.licenseEvidenceRef],
+  ] as const) nonEmpty(value, `external authority ${path}`, errors);
+  if (!GIT_SHA.test(payload.productionRevision)) errors.push("external authority productionRevision must be a 40 character lowercase git sha");
+  if (!GIT_SHA.test(payload.repositoryCommit)) errors.push("external authority repositoryCommit must be a 40 character lowercase git sha");
+  if (!SHA256.test(payload.repositorySnapshotDigest)) errors.push("external authority repositorySnapshotDigest must be a 64 character lowercase sha256");
+  if (payload.purpose !== "case_execution") errors.push("external authority purpose must be case_execution");
+  if (payload.sharedTrainingAllowed !== false) errors.push("external authority sharedTrainingAllowed must be exactly false");
+  if (payload.repositoryContentAllowed !== false) errors.push("external authority repositoryContentAllowed must be exactly false");
+  if (errors.length > 0) throw new Error(`external_provider_authority_invalid:${errors.join("|")}`);
+  const token = payload as ExternalProviderTransmissionAuthority;
+  verifiedExternalProviderAuthorities.add(token);
+  return token;
+}
+
 export function assertExternalProviderTransmissionAllowed(
   event: BenchmarkLearningEvent,
   authority: ExternalProviderTransmissionAuthority,
 ): void {
+  if (!verifiedExternalProviderAuthorities.has(authority)) throw new Error("external_provider_authority_not_verified");
   const errors = validateBenchmarkLearningEvent(event);
   if (errors.length > 0) throw new Error(`learning_event_invalid:${errors.join("|")}`);
   if (event.governance.externalProvider.decision !== "allowed") {
     throw new Error("external_provider_transmission_not_authorized");
   }
   const bindings: Array<[string, unknown, unknown]> = [
+    ["productionRevision", event.lineage.productionRevision, authority.productionRevision],
     ["tenant", event.governance.tenantId, authority.tenantId],
     ["repository", event.lineage.repositoryId, authority.repositoryId],
     ["commit", event.lineage.repositoryCommit, authority.repositoryCommit],

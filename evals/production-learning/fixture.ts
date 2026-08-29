@@ -149,10 +149,18 @@ export function validateFixtureManifest(
   return errors;
 }
 
-export interface FixtureAdmission {
-  admitted: boolean;
-  errors: string[];
-}
+const ADMITTED_FIXTURE: unique symbol = Symbol("admitted-fixture");
+export type AdmittedFixture = Readonly<{
+  manifest: FixtureManifest;
+  learningCase: LearningCase;
+  repository: RepositoryProvenance;
+  manifestDigest: string;
+  [ADMITTED_FIXTURE]: true;
+}>;
+
+export type FixtureAdmission =
+  | { admitted: true; errors: []; admission: AdmittedFixture }
+  | { admitted: false; errors: string[]; admission: null };
 
 export function admitFixture(
   manifest: FixtureManifest,
@@ -160,5 +168,13 @@ export function admitFixture(
   repository: RepositoryProvenance,
 ): FixtureAdmission {
   const errors = validateFixtureManifest(manifest, learningCase, repository);
-  return { admitted: errors.length === 0, errors };
+  if (errors.length > 0) return { admitted: false, errors, admission: null };
+  const admission = Object.freeze({
+    manifest: structuredClone(manifest),
+    learningCase: structuredClone(learningCase),
+    repository: structuredClone(repository),
+    manifestDigest: fixtureManifestDigest(manifest),
+    [ADMITTED_FIXTURE]: true as const,
+  }) as AdmittedFixture;
+  return { admitted: true, errors: [], admission };
 }

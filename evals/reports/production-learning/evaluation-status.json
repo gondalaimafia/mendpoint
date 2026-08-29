@@ -1,6 +1,6 @@
 {
   "schemaVersion": "mendpoint.production-learning-status.v1",
-  "generatedAt": "2026-08-29T02:22:58.317Z",
+  "generatedAt": "2026-08-29T03:05:16.963Z",
   "programBaseRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
   "catalog": {
     "total": 150,
@@ -17,8 +17,10 @@
   },
   "requirements": {
     "total": 101,
-    "covered": 15,
-    "uncovered": 86,
+    "planned": 15,
+    "unplanned": 86,
+    "verified": 0,
+    "unverified": 101,
     "productionEvidenceState": "unknown"
   },
   "sourceEvidence": {
@@ -34,7 +36,9 @@
     "candidates": 10,
     "admitted": 0,
     "rejected": 3,
-    "evidenceState": "unknown"
+    "evidenceState": "unknown",
+    "nativeCaseBindings": 55,
+    "syntheticSubstrateCaseBindings": 95
   },
   "fixtures": {
     "planned": 150,

@@ -36,6 +36,11 @@ export interface LearningCase {
     provenanceId: string;
     languages: string[];
     frameworks: string[];
+    binding: {
+      mode: "native" | "synthetic_substrate";
+      originalResearchCandidate: string;
+      rationale: string;
+    };
   };
   pattern: {
     family: string;
@@ -60,6 +65,9 @@ export interface LearningCase {
     tenantRisk: "none" | "bounded" | "high" | "critical";
     risks: string[];
     requiresDedicatedBenchmarkTenant: boolean;
+  };
+  planning: {
+    requirementIds: string[];
   };
 }
 
@@ -216,6 +224,11 @@ function validateCase(value: LearningCase): string[] {
 
   required(value.repository.provenanceId, `${value.id} repository.provenanceId`, errors);
   if (value.repository.languages.length === 0) errors.push(`${value.id} repository.languages must not be empty`);
+  if (!(value.repository.binding.mode === "native" || value.repository.binding.mode === "synthetic_substrate")) {
+    errors.push(`${value.id} repository.binding.mode must be native or synthetic_substrate`);
+  }
+  required(value.repository.binding.originalResearchCandidate, `${value.id} repository.binding.originalResearchCandidate`, errors);
+  required(value.repository.binding.rationale, `${value.id} repository.binding.rationale`, errors);
   required(value.pattern.family, `${value.id} pattern.family`, errors);
   required(value.pattern.seededFailure, `${value.id} pattern.seededFailure`, errors);
   if (value.pattern.expectedImpactGraph.length === 0) {
@@ -241,6 +254,10 @@ function validateCase(value: LearningCase): string[] {
     errors.push(`${value.id} must require a dedicated benchmark tenant`);
   }
   if (value.security.risks.length === 0) errors.push(`${value.id} security.risks must not be empty`);
+  if (value.planning.requirementIds.length === 0) errors.push(`${value.id} planning.requirementIds must not be empty`);
+  for (const requirementId of value.planning.requirementIds) {
+    required(requirementId, `${value.id} planning.requirementIds entry`, errors);
+  }
   return errors;
 }
 
@@ -344,7 +361,7 @@ export function validateExecutionReceipt(value: ProductionExecutionReceipt): str
   required(value.authorizationRef, "authorizationRef", errors);
   if (value.sandbox.kind !== "dedicated_benchmark") errors.push("sandbox kind must be dedicated_benchmark");
   requireSha(value.sandbox.receiptDigest, "sandbox.receiptDigest", SHA256, "64 character lowercase sha256", errors);
-  if (!value.sandbox.defaultDenyEgress) errors.push("sandbox defaultDenyEgress must be true");
+  if (value.sandbox.defaultDenyEgress !== true) errors.push("sandbox defaultDenyEgress must be exactly true");
   requireSha(value.executionDigest, "executionDigest", SHA256, "64 character lowercase sha256", errors);
   if (!(value.budget.maximumUsd > 0)) errors.push("budget maximumUsd must be greater than 0");
   if (!(value.budget.maximumLatencyMs > 0)) errors.push("budget maximumLatencyMs must be greater than 0");

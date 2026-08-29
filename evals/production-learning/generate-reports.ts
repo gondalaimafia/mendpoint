@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { learningCases, assertCatalogComplete, catalogSummary } from "./catalog.js";
 import { buildRequirementCaseTraceability, flattenRequirementRegister, validateRequirementCaseTraceability, type ClosureRow, type RequirementRegister } from "./matrix.js";
@@ -33,6 +33,7 @@ const fixtureManifestLedger = learningCases.map((learningCase) => ({
   schemaVersion: "mendpoint.fixture-manifest-plan.v1",
   caseId: learningCase.id,
   repositoryProvenanceId: learningCase.repository.provenanceId,
+  repositoryBinding: learningCase.repository.binding,
   manifestId: learningCase.fixture.manifestId,
   mutationId: learningCase.fixture.mutationId,
   seededFailure: learningCase.pattern.seededFailure,
@@ -63,8 +64,10 @@ const status = {
   catalog: catalogSummary(),
   requirements: {
     total: traceability.length,
-    covered: traceability.filter((trace) => trace.coverageState === "covered").length,
-    uncovered: traceability.filter((trace) => trace.coverageState === "uncovered").length,
+    planned: traceability.filter((trace) => trace.planningState === "planned").length,
+    unplanned: traceability.filter((trace) => trace.planningState === "unplanned").length,
+    verified: traceability.filter((trace) => trace.verificationState === "verified").length,
+    unverified: traceability.filter((trace) => trace.verificationState === "unverified").length,
     productionEvidenceState: "unknown",
   },
   sourceEvidence: { retainedContentSnapshots: 0, evidenceState: "unknown" },
@@ -78,6 +81,8 @@ const status = {
     admitted: repositories.length,
     rejected: rejectedCandidates.length,
     evidenceState: repositories.length === admissionCandidates.length ? "verified" : "unknown",
+    nativeCaseBindings: learningCases.filter((item) => item.repository.binding.mode === "native").length,
+    syntheticSubstrateCaseBindings: learningCases.filter((item) => item.repository.binding.mode === "synthetic_substrate").length,
   },
   fixtures: {
     planned: fixtureManifestLedger.length,
@@ -99,8 +104,15 @@ const status = {
   },
 };
 
+function writeAtomic(name: string, content: string): void {
+  const target = resolve(outputDirectory, name);
+  const temporary = `${target}.${process.pid}.tmp`;
+  writeFileSync(temporary, content, { encoding: "utf8", flag: "wx" });
+  renameSync(temporary, target);
+}
+
 function json(name: string, value: unknown): void {
-  writeFileSync(resolve(outputDirectory, name), `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  writeAtomic(name, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 json("case-catalog.json", { schemaVersion: "mendpoint.case-catalog.v1", generatedAt, programBaseRevision: PROGRAM_BASE_REVISION, cases: learningCases.map(publicCaseProjection) });
@@ -111,9 +123,9 @@ json("evaluation-status.json", status);
 
 const caseRows = learningCases.map((item) => {
   const source = item.sources[0]!;
-  return `| ${item.id} | ${item.product} | ${item.cohort} | ${item.datasetSplit} | ${item.title.replace(/\|/g, "\\|")} | ${item.pattern.family} | [${source.publisher}](${source.url}) | ${item.repository.provenanceId} |`;
+  return `| ${item.id} | ${item.product} | ${item.cohort} | ${item.datasetSplit} | ${item.title.replace(/\|/g, "\\|")} | ${item.pattern.family} | [${source.publisher}](${source.url}) | ${item.repository.provenanceId} | ${item.repository.binding.mode} | ${item.repository.binding.originalResearchCandidate} |`;
 });
-const markdown = `# Fettler and ReGauge production learning catalog\n\nGenerated: ${generatedAt}\n\nProgram base revision: \`${PROGRAM_BASE_REVISION}\`\n\nThis artifact contains 150 source-referenced cases: 50 common and 25 edge cases for each product. Structural catalog validation is deterministic. Source snapshots are not yet content-addressed. Repository content screening, protected holdout storage, exact fixture patches, production runs, deployment evidence, and rollback evidence remain separate gates and are not claimed by this report.\n\n## Current evidence boundary\n\n- Catalog: 150 of 150 structurally valid.\n- Holdout candidates: 30 assigned; protected seals: 0.\n- Repository candidates: ${admissionCandidates.length}; production admitted: ${repositories.length}.\n- Fixture plans: ${fixtureManifestLedger.length}; admitted exact mutation manifests: 0.\n- Required equal arm runs: ${learningCases.length * 5}; completed production runs: 0.\n- Customer readiness: not claimed.\n\n## Case ledger\n\n| Case | Product | Cohort | Split | Title | Pattern | Primary source | Repository candidate |\n|---|---|---|---|---|---|---|---|\n${caseRows.join("\n")}\n`;
-writeFileSync(resolve(outputDirectory, "case-catalog.md"), markdown, "utf8");
+const markdown = `# Fettler and ReGauge production learning catalog\n\nGenerated: ${generatedAt}\n\nProgram base revision: \`${PROGRAM_BASE_REVISION}\`\n\nThis artifact contains 150 source-referenced cases: 50 common and 25 edge cases for each product. Structural catalog validation is deterministic. Source snapshots are not yet content-addressed. Repository content screening, protected holdout storage, exact fixture patches, production runs, deployment evidence, and rollback evidence remain separate gates and are not claimed by this report. A synthetic substrate is only a controlled fixture host; it is not proof that the pinned repository natively implements the original provider or framework.\n\n## Current evidence boundary\n\n- Catalog: 150 of 150 structurally valid.\n- Requirement bindings planned: ${traceability.filter((trace) => trace.planningState === "planned").length}; verified by admitted execution receipts: ${traceability.filter((trace) => trace.verificationState === "verified").length}.\n- Holdout candidates: 30 assigned; protected seals: 0.\n- Repository candidates: ${admissionCandidates.length}; production admitted: ${repositories.length}.\n- Native case bindings: ${learningCases.filter((item) => item.repository.binding.mode === "native").length}; synthetic substrate case bindings: ${learningCases.filter((item) => item.repository.binding.mode === "synthetic_substrate").length}.\n- Fixture plans: ${fixtureManifestLedger.length}; admitted exact mutation manifests: 0.\n- Required equal arm runs: ${learningCases.length * 5}; completed production runs: 0.\n- Customer readiness: not claimed.\n\n## Case ledger\n\n| Case | Product | Cohort | Split | Title | Pattern | Primary source | Repository candidate | Binding | Original research candidate |\n|---|---|---|---|---|---|---|---|---|---|\n${caseRows.join("\n")}\n`;
+writeAtomic("case-catalog.md", markdown);
 
 process.stdout.write(`${JSON.stringify({ outputDirectory, status }, null, 2)}\n`);

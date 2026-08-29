@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import { validateExecutionReceipt } from "./schema.js";
+import type { LearningCase, ProductionExecutionReceipt, RepositoryProvenance } from "./schema.js";
+import { requireVerifiedProductionLearningAuthority, type VerifiedProductionLearningAuthority } from "./preflight.js";
+
 export type EvaluationArm =
   | "production_baseline"
   | "deterministic_recipe"
@@ -12,7 +17,23 @@ export interface CaseArmResult {
   cohort: "common" | "edge";
   datasetSplit: "development" | "holdout";
   arm: EvaluationArm;
+  tenantId: string;
+  repositoryProvenanceId: string;
+  repositoryCommit: string;
+  productionRevision: string;
   snapshotDigest: string;
+  fixtureManifestId: string;
+  fixtureManifestDigest: string;
+  graphVersion: string;
+  policyVersion: string;
+  model: { provider: string; modelId: string; requestId: string };
+  routerVersion: string;
+  recipeVersion: string | null;
+  consentEvidenceRef: string;
+  authorizationRef: string;
+  executionDigest: string;
+  sandboxReceiptDigest: string;
+  trustedProductionReceiptAuthorityDigest: string;
   budgetDigest: string;
   predictionArtifactDigest: string;
   predictionSealedAt: string;
@@ -34,6 +55,15 @@ export interface CaseArmResult {
     latencyMs: number;
     costUsd: number;
   };
+}
+
+export interface EvaluationRegistry {
+  cases: readonly LearningCase[];
+  repositories: readonly RepositoryProvenance[];
+  trustedProductionRuns: readonly {
+    authority: VerifiedProductionLearningAuthority;
+    receipt: ProductionExecutionReceipt;
+  }[];
 }
 
 export interface AggregateMetrics {
@@ -63,11 +93,38 @@ const ARMS: readonly EvaluationArm[] = [
   "oracle",
 ];
 const SHA256 = /^[0-9a-f]{64}$/;
+const GIT_SHA = /^[0-9a-f]{40}$/;
 const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+const BOOLEAN_METRICS = [
+  "success",
+  "correctAbstention",
+  "falseRepairOrMigration",
+  "falseNoImpact",
+  "deterministicVerificationPass",
+  "rollbackPass",
+  "tenantIsolationPass",
+  "replayIdempotencyPass",
+  "severeRegression",
+] as const;
 
-export function validateCaseArmCohort(results: readonly CaseArmResult[]): string[] {
+function nonEmpty(value: unknown, path: string, errors: string[]): void {
+  if (typeof value !== "string" || value.trim().length === 0) errors.push(`${path} must be a non-empty string`);
+}
+
+export function validateCaseArmCohort(results: readonly CaseArmResult[], registry: EvaluationRegistry): string[] {
   const errors: string[] = [];
   const byCase = new Map<string, CaseArmResult[]>();
+  const casesById = new Map(registry.cases.map((item) => [item.id, item]));
+  const repositoriesById = new Map(registry.repositories.map((item) => [item.id, item]));
+  const trustedRuns = new Map<string, { authority: VerifiedProductionLearningAuthority; receipt: ProductionExecutionReceipt }>();
+  for (const run of registry.trustedProductionRuns) {
+    try {
+      const authority = requireVerifiedProductionLearningAuthority(run.authority);
+      trustedRuns.set(authority.authorityEnvelopeDigest, { authority, receipt: run.receipt });
+    } catch {
+      errors.push("evaluation registry contains an unverified production authority");
+    }
+  }
   for (const result of results) {
     if (result.schemaVersion !== "mendpoint.case-arm-result.v1") {
       errors.push(`${result.caseId}/${result.arm} schemaVersion must be mendpoint.case-arm-result.v1`);
@@ -85,7 +142,86 @@ export function validateCaseArmCohort(results: readonly CaseArmResult[]): string
     const rows = byCase.get(result.caseId) ?? [];
     rows.push(result);
     byCase.set(result.caseId, rows);
-    if (!SHA256.test(result.snapshotDigest)) errors.push(`${result.caseId}/${result.arm} snapshotDigest must be sha256`);
+    const prefix = `${result.caseId}/${result.arm}`;
+    for (const [path, value] of [
+      ["tenantId", result.tenantId],
+      ["repositoryProvenanceId", result.repositoryProvenanceId],
+      ["fixtureManifestId", result.fixtureManifestId],
+      ["graphVersion", result.graphVersion],
+      ["policyVersion", result.policyVersion],
+      ["model.provider", result.model?.provider],
+      ["model.modelId", result.model?.modelId],
+      ["model.requestId", result.model?.requestId],
+      ["routerVersion", result.routerVersion],
+      ["consentEvidenceRef", result.consentEvidenceRef],
+      ["authorizationRef", result.authorizationRef],
+    ] as const) nonEmpty(value, `${prefix} ${path}`, errors);
+    if (result.recipeVersion !== null) nonEmpty(result.recipeVersion, `${prefix} recipeVersion`, errors);
+    if (!GIT_SHA.test(result.repositoryCommit)) errors.push(`${prefix} repositoryCommit must be a git sha`);
+    if (!GIT_SHA.test(result.productionRevision)) errors.push(`${prefix} productionRevision must be a git sha`);
+    if (!SHA256.test(result.snapshotDigest)) errors.push(`${prefix} snapshotDigest must be sha256`);
+    if (!SHA256.test(result.fixtureManifestDigest)) errors.push(`${prefix} fixtureManifestDigest must be sha256`);
+    if (!SHA256.test(result.executionDigest)) errors.push(`${prefix} executionDigest must be sha256`);
+    if (!SHA256.test(result.sandboxReceiptDigest)) errors.push(`${prefix} sandboxReceiptDigest must be sha256`);
+    if (!SHA256.test(result.trustedProductionReceiptAuthorityDigest)) errors.push(`${prefix} trustedProductionReceiptAuthorityDigest must be sha256`);
+    const trustedRun = trustedRuns.get(result.trustedProductionReceiptAuthorityDigest);
+    if (trustedRun === undefined) {
+      if (SHA256.test(result.trustedProductionReceiptAuthorityDigest)) {
+        errors.push(`${prefix} trustedProductionReceiptAuthorityDigest is not present in the trusted authority registry`);
+      }
+    } else {
+      const { receipt: trustedReceipt, authority } = trustedRun;
+      const receiptErrors = validateExecutionReceipt(trustedReceipt);
+      if (receiptErrors.length > 0) errors.push(`${prefix} trusted production receipt is invalid: ${receiptErrors.join("|")}`);
+      const receiptBindings: Array<[string, unknown, unknown]> = [
+        ["caseId", result.caseId, trustedReceipt.caseId],
+        ["product", result.product, trustedReceipt.product],
+        ["tenantId", result.tenantId, trustedReceipt.tenantId],
+        ["repositoryProvenanceId", result.repositoryProvenanceId, trustedReceipt.repositoryId],
+        ["repositoryCommit", result.repositoryCommit, trustedReceipt.repositoryCommit],
+        ["productionRevision", result.productionRevision, trustedReceipt.productionRevision],
+        ["snapshotDigest", result.snapshotDigest, trustedReceipt.snapshotDigest],
+        ["fixtureManifestDigest", result.fixtureManifestDigest, trustedReceipt.fixtureManifestDigest],
+        ["graphVersion", result.graphVersion, trustedReceipt.graphVersion],
+        ["policyVersion", result.policyVersion, trustedReceipt.policyVersion],
+        ["model.provider", result.model?.provider, trustedReceipt.model.provider],
+        ["model.modelId", result.model?.modelId, trustedReceipt.model.modelId],
+        ["model.requestId", result.model?.requestId, trustedReceipt.model.requestId],
+        ["routerVersion", result.routerVersion, trustedReceipt.routerVersion],
+        ["recipeVersion", result.recipeVersion, trustedReceipt.recipeVersion],
+        ["consentEvidenceRef", result.consentEvidenceRef, trustedReceipt.consent.evidenceRef],
+        ["authorizationRef", result.authorizationRef, trustedReceipt.authorizationRef],
+        ["sandboxReceiptDigest", result.sandboxReceiptDigest, trustedReceipt.sandbox.receiptDigest],
+        ["executionDigest", result.executionDigest, trustedReceipt.executionDigest],
+        ["budgetDigest", result.budgetDigest, createHash("sha256").update(JSON.stringify(trustedReceipt.budget)).digest("hex")],
+      ];
+      for (const [field, actual, expected] of receiptBindings) {
+        if (actual !== expected) errors.push(`${prefix} ${field} does not match the trusted production receipt`);
+      }
+      const authorityBindings: Array<[string, unknown, unknown]> = [
+        ["caseId", trustedReceipt.caseId, authority.caseId],
+        ["product", trustedReceipt.product, authority.product],
+        ["productionRevision", trustedReceipt.productionRevision, authority.productionRevision],
+        ["tenantId", trustedReceipt.tenantId, authority.tenantId],
+        ["repositoryId", trustedReceipt.repositoryId, authority.repositoryId],
+        ["repositoryCommit", trustedReceipt.repositoryCommit, authority.repositoryCommit],
+        ["snapshotDigest", trustedReceipt.snapshotDigest, authority.snapshotDigest],
+        ["fixtureManifestDigest", trustedReceipt.fixtureManifestDigest, authority.fixtureManifestDigest],
+        ["graphVersion", trustedReceipt.graphVersion, authority.graphVersion],
+        ["policyVersion", trustedReceipt.policyVersion, authority.policyVersion],
+        ["model.provider", trustedReceipt.model.provider, authority.modelProvider],
+        ["model.modelId", trustedReceipt.model.modelId, authority.modelId],
+        ["routerVersion", trustedReceipt.routerVersion, authority.routerVersion],
+        ["recipeVersion", trustedReceipt.recipeVersion, authority.recipeVersion],
+        ["consentEvidenceRef", trustedReceipt.consent.evidenceRef, authority.consentEvidenceRef],
+        ["authorizationRef", trustedReceipt.authorizationRef, authority.authorizationRef],
+        ["sandboxReceiptDigest", trustedReceipt.sandbox.receiptDigest, authority.sandboxReceiptDigest],
+        ["executionDigest", trustedReceipt.executionDigest, authority.executionDigest],
+      ];
+      for (const [field, actual, expected] of authorityBindings) {
+        if (actual !== expected) errors.push(`${prefix} production receipt ${field} does not match verified authority`);
+      }
+    }
     if (!SHA256.test(result.budgetDigest)) errors.push(`${result.caseId}/${result.arm} budgetDigest must be sha256`);
     if (!SHA256.test(result.predictionArtifactDigest)) errors.push(`${result.caseId}/${result.arm} predictionArtifactDigest must be sha256`);
     if (typeof result.expectedOutcomeIncludedInInput !== "boolean") {
@@ -121,8 +257,32 @@ export function validateCaseArmCohort(results: readonly CaseArmResult[]): string
     if (result.datasetSplit === "holdout" && result.answerKeyIncludedInInput !== false) {
       errors.push(`${result.caseId}/${result.arm} holdout answer key must remain sealed from the input`);
     }
+    for (const metric of BOOLEAN_METRICS) {
+      if (typeof result.metrics[metric] !== "boolean") errors.push(`${prefix} metrics.${metric} must be boolean`);
+    }
     for (const [name, value] of [["latencyMs", result.metrics.latencyMs], ["costUsd", result.metrics.costUsd]] as const) {
       if (!Number.isFinite(value) || value < 0) errors.push(`${result.caseId}/${result.arm} ${name} must be non-negative`);
+    }
+
+    const learningCase = casesById.get(result.caseId);
+    if (learningCase === undefined) {
+      errors.push(`${prefix} caseId is not present in the case registry`);
+    } else {
+      if (result.product !== learningCase.product || result.cohort !== learningCase.cohort || result.datasetSplit !== learningCase.datasetSplit) {
+        errors.push(`${prefix} metadata does not match the case registry`);
+      }
+      if (result.repositoryProvenanceId !== learningCase.repository.provenanceId) {
+        errors.push(`${prefix} repositoryProvenanceId does not match the case registry`);
+      }
+      if (result.fixtureManifestId !== learningCase.fixture.manifestId) {
+        errors.push(`${prefix} fixtureManifestId does not match the case registry`);
+      }
+    }
+    const repository = repositoriesById.get(result.repositoryProvenanceId);
+    if (repository === undefined) {
+      errors.push(`${prefix} repositoryProvenanceId is not present in the provenance registry`);
+    } else if (result.repositoryCommit !== repository.immutableCommit) {
+      errors.push(`${prefix} repositoryCommit does not match the provenance registry`);
     }
   }
 
@@ -136,6 +296,20 @@ export function validateCaseArmCohort(results: readonly CaseArmResult[]): string
     if (snapshots.size !== 1) errors.push(`${caseId} arms must use an identical snapshot`);
     const budgets = new Set(rows.map((row) => row.budgetDigest));
     if (budgets.size !== 1) errors.push(`${caseId} arms must use an identical budget`);
+    for (const [name, values] of [
+      ["tenant", rows.map((row) => row.tenantId)],
+      ["repository provenance", rows.map((row) => row.repositoryProvenanceId)],
+      ["repository commit", rows.map((row) => row.repositoryCommit)],
+      ["production revision", rows.map((row) => row.productionRevision)],
+      ["fixture manifest", rows.map((row) => row.fixtureManifestId)],
+      ["fixture manifest digest", rows.map((row) => row.fixtureManifestDigest)],
+      ["graph version", rows.map((row) => row.graphVersion)],
+      ["policy version", rows.map((row) => row.policyVersion)],
+      ["consent evidence", rows.map((row) => row.consentEvidenceRef)],
+      ["authorization", rows.map((row) => row.authorizationRef)],
+    ] as const) {
+      if (new Set(values).size !== 1) errors.push(`${caseId} arms must use an identical ${name}`);
+    }
     const products = new Set(rows.map((row) => row.product));
     const cohorts = new Set(rows.map((row) => row.cohort));
     const splits = new Set(rows.map((row) => row.datasetSplit));
@@ -151,8 +325,8 @@ function rate(values: readonly boolean[]): number | null {
   return values.filter(Boolean).length / values.length;
 }
 
-export function aggregateCaseArmResults(results: readonly CaseArmResult[]): AggregateMetrics {
-  const errors = validateCaseArmCohort(results);
+export function aggregateCaseArmResults(results: readonly CaseArmResult[], registry: EvaluationRegistry): AggregateMetrics {
+  const errors = validateCaseArmCohort(results, registry);
   if (errors.length > 0) throw new Error(`invalid_case_arm_cohort:${errors.join("|")}`);
   const byArm = Object.fromEntries(ARMS.map((arm) => {
     const rows = results.filter((row) => row.arm === arm);
