@@ -235,4 +235,4 @@
 ### 2026-08-29 — Make multi-Machine authority rotation transactional
 **Mistake:** The first sandbox authority fix updated Machines sequentially without preserving an immutable image identity or proving rollback and containment for a partial failure.
 **Correction:** Exact-head review required digest-pinned updates, exact configuration restoration, and fail-closed containment evidence before rotating protected secrets.
-**Rule:** For a stateful multi-Machine mutation, capture exact identities and configurations first, mutate only immutable targets, restore every attempted target on pre-commit failure, and stop plus inventory the full original set whenever rollback or post-commit authority cannot be proven.
+**Rule:** For a stateful multi-Machine mutation, capture exact identities and configurations first, mutate only immutable targets, restore every attempted target on pre-commit failure, and repeatedly re-inventory plus stop the complete current set whenever rollback or post-commit authority cannot be proven. The original inventory is rollback evidence, not a safe containment boundary after capacity may have changed.

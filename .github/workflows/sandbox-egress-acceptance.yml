@@ -347,23 +347,51 @@ jobs:
                 <<<"$machines_json" >"${machine_backup_dir}/${machine_id}.json"
             done < <(jq -r '.[].id' <<<"$machines_json")
 
-            contain_original_machines() {
+            contain_current_machines() {
               local reason="$1"
-              local stop_failed=false
               printf 'contain\t%s\n' "$reason" \
                 >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
-              while IFS= read -r original_machine_id; do
-                if ! flyctl machine stop "$original_machine_id" --app "$app"; then
-                  stop_failed=true
+              if ! containment_before_json="$(flyctl machine list --app "$app" --json)"; then
+                printf '[]\n' \
+                  >"test-results/sandbox-egress/containment-before-${app}.json"
+                printf 'containment_unproven\t%s\n' "$reason" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                return 1
+              fi
+              printf '%s\n' "$containment_before_json" \
+                >"test-results/sandbox-egress/containment-before-${app}.json"
+              if ! jq -e --argjson original "$machines_json" '
+                  ([.[].id] | sort) == ([$original[].id] | sort)
+                ' <<<"$containment_before_json" >/dev/null; then
+                printf 'containment_id_drift\t%s\n' "$reason" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+              fi
+              for containment_attempt in 1 2 3; do
+                if ! containment_pass_json="$(flyctl machine list --app "$app" --json)"; then
+                  break
                 fi
-              done < <(jq -r '.[].id' <<<"$machines_json")
-              contained_machines_json="$(flyctl machine list --app "$app" --json || printf '[]')"
+                printf '%s\n' "$containment_pass_json" \
+                  >"test-results/sandbox-egress/containment-pass-${containment_attempt}-${app}.json"
+                if jq -e 'all(.[]; .state == "stopped")' \
+                    <<<"$containment_pass_json" >/dev/null; then
+                  break
+                fi
+                while IFS= read -r current_machine_id; do
+                  flyctl machine stop "$current_machine_id" --app "$app" || true
+                done < <(jq -r '.[] | select(.state != "stopped") | .id' \
+                  <<<"$containment_pass_json")
+              done
+              if ! contained_machines_json="$(flyctl machine list --app "$app" --json)"; then
+                printf '[]\n' \
+                  >"test-results/sandbox-egress/contained-machines-${app}.json"
+                printf 'containment_unproven\t%s\n' "$reason" \
+                  >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
+                return 1
+              fi
               printf '%s\n' "$contained_machines_json" \
                 >"test-results/sandbox-egress/contained-machines-${app}.json"
-              if [ "$stop_failed" = true ] || ! jq -e --argjson original "$machines_json" '
-                  ([.[].id] | sort) == ([$original[].id] | sort)
-                  and all(.[]; .state != "started")
-                ' <<<"$contained_machines_json" >/dev/null; then
+              if ! jq -e 'all(.[]; .state == "stopped")' \
+                  <<<"$contained_machines_json" >/dev/null; then
                 printf 'containment_unproven\t%s\n' "$reason" \
                   >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
                 return 1
@@ -394,7 +422,7 @@ jobs:
                 fi
               fi
               if [ "$rollback_failed" = true ]; then
-                contain_original_machines "rollback_failed:${reason}"
+                contain_current_machines "rollback_failed:${reason}"
               fi
               return 1
             }
@@ -441,12 +469,12 @@ jobs:
                 MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID="$key_id" \
                 MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest" \
                 MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA="$schema"; then
-              contain_original_machines "secret_deploy_outcome_unknown"
+              contain_current_machines "secret_deploy_outcome_unknown"
               exit 1
             fi
             if ! flyctl secrets list --app "$app" --json \
                 | jq -e 'length > 0 and all(.[]; .status == "Deployed")' >/dev/null; then
-              contain_original_machines "secret_generation_not_deployed"
+              contain_current_machines "secret_generation_not_deployed"
               exit 1
             fi
             post_secret_machines_json="$(flyctl machine list --app "$app" --json)"
@@ -466,7 +494,7 @@ jobs:
                   and .config.env.MENDPOINT_SANDBOX_FLY_IMAGE == $expected_sandbox_image
                 )
               ' <<<"$post_secret_machines_json" >/dev/null; then
-              contain_original_machines "post_secret_invariant_failed"
+              contain_current_machines "post_secret_invariant_failed"
               exit 1
             fi
             healthy=false
@@ -483,7 +511,7 @@ jobs:
               sleep 5
             done
             if [ "$healthy" != true ]; then
-              contain_original_machines "post_rotation_health_failed"
+              contain_current_machines "post_rotation_health_failed"
               echo "The app $app did not become healthy after receipt rotation"
               exit 1
             fi
