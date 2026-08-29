@@ -7,6 +7,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { isTestPath } from "./evidence-reachability-check.js";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const OBSERVED_MAIN = "96801a319fc3d355cb2b28b4167b83023a192042";
@@ -223,13 +224,21 @@ function defaultGap(req: Requirement): string {
  * back to a test path. When no non-test production `.ts`/`.tsx` locator is
  * cited, the honest value is `null` — "no reachable production code path was
  * determined" — never the row's own test file dressed as production evidence.
+ *
+ * The test/source distinction MUST be the same judge the gate uses: the gate
+ * (`production-closure-execution-ledger.ts`) rejects any `reachableCodePath`
+ * for which `isTestPath` is true. If the generator judged "is this a test
+ * file?" with a second, narrower rule (for example a bare `.includes(".test.")`
+ * substring, which misses `.spec.ts` and `__tests__/` paths), it could emit a
+ * value the gate hard-rejects, and no regeneration could satisfy both. So this
+ * function filters non-test code locators through the exact same `isTestPath`.
  */
-function filePathFromLocator(locator: string): string {
+export function filePathFromLocator(locator: string): string {
   const hash = locator.indexOf("#");
   return hash === -1 ? locator : locator.slice(0, hash);
 }
 
-function firstCodeLocator(req: Requirement): string | null {
+export function firstCodeLocator(req: Requirement): string | null {
   const locators = req.acceptance.flatMap((criterion) =>
     criterion.evidence
       .filter((item) => item.type === "code" || item.type === "unit" || item.type === "integration" || item.type === "security")
@@ -240,9 +249,11 @@ function firstCodeLocator(req: Requirement): string | null {
   // `packages/codebase-index/src/index.ts#materializeCodebaseIndex` is a real
   // production file; treating the fragment as part of the extension would
   // record null and read as "no production path" when the register cited one.
+  // `isTestPath` is the single shared judge with the gate, so a `.spec.ts` or
+  // `__tests__/` locator is excluded here rather than emitted and then rejected.
   const code = locators
     .map(filePathFromLocator)
-    .find((path) => /\.(ts|tsx)$/.test(path) && !path.includes(".test."));
+    .find((path) => /\.(ts|tsx)$/.test(path) && !isTestPath(path));
   return code ?? null;
 }
 

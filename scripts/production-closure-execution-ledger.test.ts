@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   HANDOFF_WAVE_ASSIGNMENTS,
   buildExecutionLedger,
+  firstCodeLocator,
 } from "./generate-production-closure-execution-ledger.js";
 import { isTestPath } from "./evidence-reachability-check.js";
 import {
@@ -183,5 +184,62 @@ describe("production closure execution ledger", () => {
     const pathIssues = evaluateLedgerGate(serializeLedger(masquerade), masquerade);
     expect(pathIssues.map((issue) => issue.code)).toContain("LEDGER_REACHABLE_PATH_IS_TEST");
     expect(pathIssues[0]?.subject).toBe("ME-CGR-001");
+  });
+
+  it("firstCodeLocator excludes any test path the gate would reject (one shared judge)", () => {
+    // The generator that fills reachableCodePath and the gate that rejects a
+    // test reachableCodePath must use the SAME test/source judge. If the
+    // generator kept a `.spec.ts` or `__tests__/` locator (which a narrower
+    // `.includes(".test.")` substring lets through) the gate's isTestPath would
+    // hard-reject it and no regeneration could satisfy both. These cases each
+    // pass the `/\.(ts|tsx)$/` code filter, so only the shared isTestPath keeps
+    // them out.
+    const withEvidence = (
+      locators: Array<{ type: string; locator: string }>,
+    ): Parameters<typeof firstCodeLocator>[0] =>
+      ({
+        id: "ME-XXX-000",
+        title: "synthetic",
+        owner: "test",
+        implementationStatus: "partial",
+        availability: "internal",
+        claimState: "internal_only",
+        closureWorkstream: "FC-00",
+        acceptance: [
+          {
+            id: "AC-1",
+            assertion: "synthetic acceptance",
+            evidence: locators.map((entry, index) => ({
+              id: `EV-${index}`,
+              type: entry.type,
+              locator: entry.locator,
+            })),
+          },
+        ],
+        externalBlockers: null,
+      }) as unknown as Parameters<typeof firstCodeLocator>[0];
+
+    expect(firstCodeLocator(withEvidence([{ type: "unit", locator: "packages/foo/src/foo.spec.ts" }]))).toBeNull();
+    expect(firstCodeLocator(withEvidence([{ type: "code", locator: "packages/foo/__tests__/foo.ts" }]))).toBeNull();
+    expect(firstCodeLocator(withEvidence([{ type: "unit", locator: "packages/foo/src/foo.test.ts" }]))).toBeNull();
+    // A real production path is returned, and a `#symbol` fragment is stripped.
+    expect(
+      firstCodeLocator(withEvidence([{ type: "code", locator: "packages/foo/src/foo.ts#run" }])),
+    ).toBe("packages/foo/src/foo.ts");
+    // A spec locator ahead of a real production path must be skipped, not chosen.
+    expect(
+      firstCodeLocator(
+        withEvidence([
+          { type: "unit", locator: "packages/foo/src/foo.spec.ts" },
+          { type: "code", locator: "packages/foo/src/foo.ts" },
+        ]),
+      ),
+    ).toBe("packages/foo/src/foo.ts");
+
+    // Teeth: the retired narrower judge (`.includes(".test.")`) would NOT have
+    // excluded a `.spec.ts` path, so this test goes red if the generator ever
+    // regresses to that substring judge.
+    expect(isTestPath("packages/foo/src/foo.spec.ts")).toBe(true);
+    expect("packages/foo/src/foo.spec.ts".includes(".test.")).toBe(false);
   });
 });
