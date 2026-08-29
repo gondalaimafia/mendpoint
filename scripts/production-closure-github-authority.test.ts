@@ -1628,4 +1628,84 @@ describe("GitHub production closure authority", () => {
       ),
     ).toThrow(/multiple agent identities/);
   });
+
+  it("honors supersededBy for an in-flight bootstrap dependency", async () => {
+    // The in-flight PR depends on a closed record that was superseded by a
+    // merged pull request which reciprocally lists it; this must discharge the
+    // dependency exactly as a merged revision would, so the field is usable for
+    // the case it exists for.
+    const configured = matrix();
+    configured.releaseTrain.pullRequests.push(
+      {
+        number: 404,
+        state: "closed",
+        url: "https://github.com/gondalaimafia/mendpoint/pull/404",
+        title: "Superseded work",
+        headBranch: "codex/superseded-work",
+        baseBranch: "main",
+        headRevision: MERGE,
+        mergeRevision: null,
+        requirementIds: ["ME-FND-001"],
+        checkState: "stale_checks",
+        supersededBy: 383,
+      },
+      {
+        number: 383,
+        state: "merged",
+        url: "https://github.com/gondalaimafia/mendpoint/pull/383",
+        title: "Superseding work",
+        headBranch: "codex/superseding-work",
+        baseBranch: "main",
+        headRevision: "f".repeat(40),
+        mergeRevision: MERGED,
+        requirementIds: ["ME-FND-001"],
+        checkState: "stale_checks",
+        supersedes: [404],
+      },
+    );
+    configured.releaseTrain.currentPullRequestBootstrap.dependencies.pullRequests = [404];
+    const client = new FixtureClient();
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(codes(result)).not.toContain("CURRENT_PR_DEPENDENCY_UNSATISFIED");
+  });
+
+  it("still flags an in-flight bootstrap dependency whose superseder does not reciprocate", async () => {
+    const configured = matrix();
+    configured.releaseTrain.pullRequests.push(
+      {
+        number: 404,
+        state: "closed",
+        url: "https://github.com/gondalaimafia/mendpoint/pull/404",
+        title: "Superseded work",
+        headBranch: "codex/superseded-work",
+        baseBranch: "main",
+        headRevision: MERGE,
+        mergeRevision: null,
+        requirementIds: ["ME-FND-001"],
+        checkState: "stale_checks",
+        supersededBy: 383,
+      },
+      {
+        number: 383,
+        state: "merged",
+        url: "https://github.com/gondalaimafia/mendpoint/pull/383",
+        title: "Superseding work",
+        headBranch: "codex/superseding-work",
+        baseBranch: "main",
+        headRevision: "f".repeat(40),
+        mergeRevision: MERGED,
+        requirementIds: ["ME-FND-001"],
+        checkState: "stale_checks",
+        // No reciprocal supersedes: the discharge is not machine-checkable.
+      },
+    );
+    configured.releaseTrain.currentPullRequestBootstrap.dependencies.pullRequests = [404];
+    const client = new FixtureClient();
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(codes(result)).toContain("CURRENT_PR_DEPENDENCY_UNSATISFIED");
+  });
 });

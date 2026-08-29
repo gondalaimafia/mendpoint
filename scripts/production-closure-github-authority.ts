@@ -209,6 +209,10 @@ export interface StaticPullRequestRecord {
   mergeRevision: string | null;
   requirementIds: string[];
   reviewRemediationPullRequest?: number | null;
+  // See ReleaseTrainPullRequest in production-closure-matrix.ts: a closed record
+  // superseded by a merged pull request that reciprocally lists it in supersedes.
+  supersededBy?: number | null;
+  supersedes?: number[];
   checkState?: string;
   owner?: { actor: ReleaseOwnerActor };
   review?: {
@@ -691,14 +695,36 @@ export async function verifyGitHubClosureAuthority(
     const trackedPullRequests = new Map(
       matrix.releaseTrain.pullRequests.map((record) => [record.number, record]),
     );
+    // A closed record superseded by a merged pull request that reciprocally
+    // lists it discharges a dependency exactly as a merged revision does. This
+    // mirrors supersededByMerged in production-closure-matrix.ts so the two
+    // gates agree on what the same release-train data means.
+    const supersededByMerged = (record: StaticPullRequestRecord): boolean => {
+      const target = record.supersededBy ?? null;
+      if (target === null || record.state !== "closed") return false;
+      const superseder = trackedPullRequests.get(target);
+      return Boolean(
+        superseder &&
+          superseder.number !== record.number &&
+          superseder.state === "merged" &&
+          (superseder.supersededBy ?? null) === null &&
+          (superseder.supersedes ?? []).includes(record.number),
+      );
+    };
     for (const dependencyNumber of bootstrap.dependencies.pullRequests) {
       const dependency = trackedPullRequests.get(dependencyNumber);
-      if (!dependency || dependency.state !== "merged" || !dependency.mergeRevision) {
+      if (
+        !dependency ||
+        !(
+          (dependency.state === "merged" && dependency.mergeRevision) ||
+          supersededByMerged(dependency)
+        )
+      ) {
         add(
           issues,
           "CURRENT_PR_DEPENDENCY_UNSATISFIED",
           String(bootstrap.number),
-          `current pull request dependency ${dependencyNumber} is not a tracked merged revision`,
+          `current pull request dependency ${dependencyNumber} is not a tracked merged revision or a closed record superseded by a merged pull request`,
         );
       }
     }
