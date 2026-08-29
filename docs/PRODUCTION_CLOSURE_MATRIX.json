@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T03:13:54.620Z",
-    "observedMainRevision": "dc7141bd3877a443dda96026e809f4e4f45ccd55",
-    "observationDigest": "sha256:f27d392947fb485768b85105fc5ef8deadeb1cd197b5bca343fb4f6d71996707",
+    "observedAt": "2026-08-29T04:10:16.000Z",
+    "observedMainRevision": "37c3867111fb7083667e5422ebf9b383dba9190a",
+    "observationDigest": "sha256:ae575162aff928b334cb9a46ad4211f2a225a203687ee35f82654f64106688f9",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 518,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/518",
-      "title": "Add the 101-row production-closure execution ledger",
+      "number": 521,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/521",
+      "title": "closure authority: pre-authorize systemic-failure escalation successor template",
       "baseBranch": "main",
-      "headBranch": "cursor/101-execution-ledger-f457",
+      "headBranch": "mp-succ-esc-rot1",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2085,7 +2085,15 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": []
+      "remediatesPullRequests": [],
+      "authorityRotation": {
+        "rotationId": "rotation-20260828-004",
+        "kind": "runtime",
+        "issuedAt": "2026-08-29T04:10:16.000Z",
+        "expiresAt": "2026-08-30T04:10:16.000Z",
+        "basePolicySha256": "sha256:35d7654bed7c77dfe142cf2fde081b9681f92b62e5974683fe172efb87ab381c",
+        "proposedPolicySha256": "sha256:ed8002ff17703c04f119e12d33e1e370fdd8575aa89a2a86ae5fee07f2145ae6"
+      }
     },
     "pullRequests": [
       {
@@ -4702,6 +4710,41 @@
         "blockers": []
       },
       {
+        "number": 518,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/518",
+        "title": "Add the 101-row production-closure execution ledger",
+        "headBranch": "cursor/101-execution-ledger-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "412131581b52bc20ff55e2cad2f338ef1473db63",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
         "number": 519,
         "state": "open",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/519",
@@ -4757,41 +4800,6 @@
         "checkState": "stale_checks",
         "headRevision": "68f89748cf3755a453556b97a9e735547229944d",
         "mergeRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 521,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/521",
-        "title": "closure authority: pre-authorize systemic-failure escalation successor template",
-        "headBranch": "mp-succ-esc-rot1",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Claude",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "75854c7e4f9032f424e672c1ab3e38a788fac26d",
-        "mergeRevision": null,
         "checks": [],
         "review": {
           "state": "none",
