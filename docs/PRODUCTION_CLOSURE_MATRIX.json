@@ -2064,15 +2064,15 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-29T03:13:54.620Z",
     "observedMainRevision": "dc7141bd3877a443dda96026e809f4e4f45ccd55",
-    "observationDigest": "sha256:533cb165d11384ceab5e7e0a9c34f37f50b81d92b96f6e84e2b3c235864a1777",
+    "observationDigest": "sha256:5b067c0d630c399cababa8d9f1a9807ee6b5ee6c52ccf1e612ffaa454531107b",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 535,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/535",
-      "title": "Refresh issue authority from one live snapshot and clear the inherited rotation bootstrap",
+      "number": 523,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/523",
+      "title": "Raise a Mission policy exception on ReGauge pilot deny",
       "baseBranch": "main",
-      "headBranch": "codex/issue-authority-refresh-431",
+      "headBranch": "cursor/regauge-pilot-policy-exception-f457",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -4861,41 +4861,6 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "9bf93afca096952492c451227edf2bd0645b1ba9",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 523,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/523",
-        "title": "Raise a Mission policy exception on ReGauge pilot deny",
-        "headBranch": "cursor/regauge-pilot-policy-exception-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "66d4443cf15157b1f2dbae3fd02017f0cfc6e6fe",
         "mergeRevision": null,
         "checks": [],
         "review": {
