@@ -185,6 +185,44 @@ describe("assertBoundAgentRunMissionPolicy", () => {
       .toThrow("mission_policy_envelope_missing");
   });
 
+  // Non-vacuous reachability proof for the campaign path: a `.not.toThrow()`
+  // allow-case cannot distinguish "gate reached and allowed" from "gate skipped
+  // entirely", so this deny-case is what proves the campaign-bound run actually
+  // reaches the envelope evaluation. It throws only if the gate is reached; a
+  // reachability regression turns it red.
+  it("evaluates a campaign-bound agent.run and fails closed when the inherited envelope denies the edit", () => {
+    const db = fixture();
+    enrollFettlerCampaign(db, "campaign", "m1");
+    const restricted: PolicyEnvelope = {
+      ...defaultPolicyEnvelope({
+        tenantId: "t1",
+        policyEnvelopeId: "pe-restricted",
+        createdAt: at,
+      }),
+      repositoryScope: ["repo-other"],
+      allowedTools: ["read"],
+    };
+    createPolicyEnvelope(db, {
+      tenantId: "t1",
+      version: 1,
+      policyEnvelopeId: restricted.policyEnvelopeId,
+      envelopeJson: canonicalPolicyEnvelopeJson(restricted),
+      createdAt: at,
+    });
+    bindMissionToPolicyEnvelope(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      version: 1,
+      actorPrincipalId: "p1",
+      eventId: "e-bind",
+      idempotencyKey: "bind-1",
+      correlationId: "corr",
+      createdAt: at,
+    });
+    expect(() => assertBoundAgentRunMissionPolicy(db, agentRunJob({ fettlerCampaignId: "campaign" }), boundTask))
+      .toThrow(/mission_policy_denied/);
+  });
+
   it("allows a campaign-bound agent.run whose Mission inherited the default envelope", () => {
     const db = fixture();
     enrollFettlerCampaign(db, "campaign", "m1");

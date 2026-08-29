@@ -5,16 +5,32 @@
  * the concrete repair/feature attempt must be allowed before `runWardenAttempt`.
  *
  * A job is Mission-bound either by an explicit `missionId` claim OR by a
- * campaign hint (fettler/campaign/regauge) that resolves to a Mission — the
- * same resolver that enrolls the MissionTask (`resolveBoundMissionForJob`). A
- * campaign-bound job enrolls a MissionTask, so its envelope must be evaluated
- * too; gating on `missionId` alone would let a campaign-bound run appear on the
+ * campaign hint (fettler/campaign/regauge) that resolves to a Mission. Binding
+ * resolution is delegated to `resolveBoundMissionForJob` — the same resolver
+ * that enrolls the MissionTask — so the gate and enrollment never disagree
+ * about whether a job is bound. A campaign-bound job enrolls a MissionTask, so
+ * gating on `missionId` alone would let a campaign-bound run appear on the
  * Mission timeline with its Policy Envelope never evaluated.
  *
- * Unbound jobs (no claim, no linked campaign) are not evaluated — that
- * enrollment gap stays visible. A claimed missionId with a missing row, a
- * campaign whose FK dangles, a missing envelope, an invalid envelope, or an
- * explicit deny all fail closed.
+ * The failure modes are deliberately asymmetric:
+ *   - No binding at all (no claim, no campaign hint) is a no-op — the
+ *     enrollment gap stays visible.
+ *   - A campaign hint that resolves to NO linked Mission is ALSO a no-op, not a
+ *     throw. This is fail-open by design and it is safe precisely because the
+ *     same resolver skips an unlinked campaign for enrollment too
+ *     (mission-task-job-bridge `resolveBoundMissionForJob`): no MissionTask is
+ *     created, so there is no enrolled-but-unevaluated run to guard — the job is
+ *     genuinely unbound on both surfaces. Producers attach the hint only when
+ *     exactly one Mission-linked campaign covers the repo, so a dangling hint
+ *     here means the link was removed after enqueue, at which point unbound is
+ *     the truth. (An unparseable payload cannot reach this seam: the handler
+ *     already `JSON.parse`d it before calling in. A repo covered by zero or
+ *     many campaigns never gets a hint attached, so it arrives as "no binding".)
+ *   - An explicit `missionId` claim whose row is missing fails closed
+ *     (`mission_task_job_mission_not_found`): an unambiguous binding assertion
+ *     must never silently degrade to unbound.
+ *   - A resolved Mission with a missing envelope, an invalid envelope, or an
+ *     explicit deny fails closed.
  */
 import { getMission, type AppDb } from "@mendpoint/db";
 import {
@@ -83,8 +99,10 @@ export function assertAgentRunMissionPolicy(
  * either by an explicit `missionId` claim OR by a campaign hint. Resolution is
  * delegated to `resolveBoundMissionForJob` — the same resolver that enrolls the
  * job's MissionTask — so enrollment and policy evaluation can never diverge.
- * A no-op only when the job is genuinely unbound; every bound job (however it
- * is bound) has its envelope enforced, and every resolution fault fails closed.
+ * A no-op when the job is unbound: genuinely, or via a campaign hint that
+ * resolves to no linked Mission (no MissionTask is enrolled for it either — see
+ * the module header for why that is safe). A claimed-but-missing Mission and
+ * every envelope failure fail closed.
  */
 export function assertBoundAgentRunMissionPolicy(
   db: AppDb,

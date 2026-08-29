@@ -55,17 +55,21 @@ function safePath(path: string): boolean {
 }
 
 function campaignHint(payload: Record<string, unknown>): string | undefined {
-  const value = payload.fettlerCampaignId ?? payload.campaignId;
+  // Cover every campaign-hint key `resolveBoundMissionForJob` honours, so the
+  // guard cannot be dodged by a regauge-tagged replay even though this producer
+  // only sets `fettlerCampaignId` today.
+  const value = payload.fettlerCampaignId ?? payload.campaignId ?? payload.regaugeCampaignId;
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function withoutCampaignHint(payload: Record<string, unknown>): Record<string, unknown> {
   // Only the campaign hint is normalized out of the structural comparison; its
-  // divergence is judged separately below. `missionId` is deliberately NOT
-  // stripped: this file never sets it today, so leaving it in the deep-equal
+  // divergence is judged separately below. All three campaign-hint keys are
+  // stripped in lockstep with `campaignHint` above. `missionId` is deliberately
+  // NOT stripped: this file never sets it today, so leaving it in the deep-equal
   // means any future one-sided `missionId` is caught as a real payload
   // divergence rather than silently ignored.
-  const { fettlerCampaignId: _campaign, campaignId: _alias, ...rest } = payload;
+  const { fettlerCampaignId: _campaign, campaignId: _alias, regaugeCampaignId: _regauge, ...rest } = payload;
   return rest;
 }
 

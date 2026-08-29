@@ -280,7 +280,13 @@ describe("Fettler PR review dispatch", () => {
     expect(agentRunCount(db)).toBe(0);
   });
 
-  it("attaches the unambiguous enrolled Fettler campaign to the review agent.run", async () => {
+  it("does NOT bind the review agent.run to a campaign even when one is enrolled", async () => {
+    // The review agent.run sets no allowedChangedPaths, so it dead-ends at the
+    // worker's warden_allowed_changed_paths_required gate and never executes.
+    // Attaching a campaign hint would make the claim-time bridge enroll a
+    // MissionTask that then strands in agent_working forever. So this path must
+    // stay unbound until it can actually run. If the hint attachment is
+    // re-added, this assertion turns red.
     const { db, job, root } = fixture();
     enrollSingleRepoCampaign(db, root);
     const result = await runFettlerPrReviewDispatch({
@@ -298,14 +304,14 @@ describe("Fettler PR review dispatch", () => {
     expect(result.status).toBe("review_enqueued");
     if (result.status !== "review_enqueued") throw new Error("unreachable");
     const payload = JSON.parse(getJob(db, result.agentJobId, "tenant-a")!.payload_json) as Record<string, unknown>;
-    expect(payload.fettlerCampaignId).toBe("campaign-a");
+    expect(payload).not.toHaveProperty("fettlerCampaignId");
+    expect(payload).not.toHaveProperty("campaignId");
     expect(payload).not.toHaveProperty("missionId");
   });
 
   it("CONTROL: a PR-review enqueue with no enrolled campaign stays unbound", async () => {
-    // Real control for "attaches the unambiguous enrolled Fettler campaign":
-    // with the enrollment removed, the review agent.run must carry no hint. If
-    // the dispatch attached a hint unconditionally, this control would fail.
+    // Baseline companion to the enrolled-campaign case above: with no campaign
+    // present at all, the review agent.run likewise carries no hint.
     const { db, job, root } = fixture();
     const result = await runFettlerPrReviewDispatch({
       db,
