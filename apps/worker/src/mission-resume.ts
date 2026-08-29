@@ -32,6 +32,7 @@ import {
 } from "@mendpoint/db";
 import type { InheritedContextInjection } from "@mendpoint/agent";
 import type { ContextRef, InheritedContextEnvelope } from "@mendpoint/pipeline";
+import type { GraphLearnDb } from "@mendpoint/graph-learn";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 
 export type ResumeContextParams = Readonly<{
@@ -44,9 +45,16 @@ export type ResumeContextParams = Readonly<{
    * is an honest `no_mission_bound`, never fabricated into a mission.
    */
   missionId?: string | null;
-  task: Readonly<{ taskId: string; capability: string; riskClass: string; goal: string }>;
+  task: Readonly<{
+    taskId: string;
+    capability: string;
+    riskClass: string;
+    goal: string;
+    endpointKey?: string | null;
+  }>;
   fallback: Readonly<{ objective: string; repositoryId: string | null; snapshotId: string | null }>;
   evidenceRefs?: readonly string[];
+  graphDb?: GraphLearnDb | null;
 }>;
 
 export type ResumeContextStanding =
@@ -141,6 +149,7 @@ export function resolveResumeContext(db: AppDb, params: ResumeContextParams): Re
       task: params.task,
       fallback: params.fallback,
       ...(params.evidenceRefs ? { evidenceRefs: params.evidenceRefs } : {}),
+      ...(params.graphDb ? { graphDb: params.graphDb } : {}),
     });
   } catch (error) {
     return {

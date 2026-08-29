@@ -83,8 +83,29 @@ export type PollAllOptions = {
   sourceDocumentLoader?: (
     url: string,
     monorepoRoot: string,
+    signal?: AbortSignal,
   ) => Promise<FetchOpenApiResult>;
+  signal?: AbortSignal;
 };
+
+async function waitForAbortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) throw signal.reason;
+  return new Promise<T>((resolvePromise, rejectPromise) => {
+    const onAbort = () => rejectPromise(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolvePromise(value);
+      },
+      (cause) => {
+        signal.removeEventListener("abort", onAbort);
+        rejectPromise(cause);
+      },
+    );
+  });
+}
 
 function pipelineResult(
   report: FeedPipelineDispatchResult,
@@ -235,7 +256,7 @@ export async function pollOneFeed(
   });
   const tail = prior.then(() => gate);
   locks.set(feed.slug, tail);
-  await prior;
+  await waitForAbortable(prior, opts.signal);
   try {
     return await pollOneFeedUnlocked(feed, { ...opts, db });
   } finally {
@@ -265,8 +286,12 @@ async function pollOneFeedUnlocked(
   ensureProvider(db, feed);
 
   const load = opts.sourceDocumentLoader
-    ? () => opts.sourceDocumentLoader!(url, root)
-    : () => fetchOpenApiDocument(url, { monorepoRoot: root, provider: feed.name });
+    ? () => opts.sourceDocumentLoader!(url, root, opts.signal)
+    : () => fetchOpenApiDocument(url, {
+        monorepoRoot: root,
+        provider: feed.name,
+        signal: opts.signal,
+      });
   let sourceFetch = opts.sourceFetches?.get(url);
   if (!sourceFetch) {
     sourceFetch = load();

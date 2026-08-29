@@ -367,6 +367,54 @@ describe("mission handoff mapped onto MissionTask transitions", () => {
     });
   });
 
+  // CONTROL (Defect A, revision-qualified event identity): the state machine
+  // legally permits repeated agent<->human cycles on one task. Both the shared
+  // transitionBoundTask key and the claim-driver resume transition must fold the
+  // task revision into their event/idempotency identity. Reverting that turns the
+  // SECOND cycle RED here with `domain_event_idempotency_conflict`: cycle 2's
+  // transition to a status cycle 1 already visited reuses cycle 1's idempotency
+  // key with a revision-bearing (thus different) payload.
+  it("permits a second full open->resolve->resume cycle on one task", () => {
+    const db = fixture();
+    workingTask(db);
+
+    const runCycle = (n: number, openAt: string, resolveAt: string): string => {
+      const exception = openTaskHandoff(db, {
+        tenantId: "t1", missionId: "m1", taskId: "task-1", reason: "architecture_decision_required",
+        question: `Cycle ${n}: keep the public signature?`, context: `Cycle ${n} candidate changed the mapping.`,
+        ownerPrincipalId: "human-1", correlationId: "corr", createdAt: openAt,
+      });
+      expect(getMissionTask(db, "t1", "task-1")?.status).toBe("human_review_required");
+      resolveTaskHandoff(db, {
+        tenantId: "t1", priorExceptionId: exception.id, taskId: "task-1", resolutionNote: `Cycle ${n} resolved.`,
+        decision: `Cycle ${n} decision`, scope: `handoff_resolution:cycle-${n}`, authorPrincipalId: "human-1",
+        correlationId: "corr", createdAt: resolveAt,
+      });
+      expect(getMissionTask(db, "t1", "task-1")?.status).toBe("agent_resume");
+      // The claim-driver resume (agent_resume -> agent_working), revision-qualified
+      // exactly as the worker claim modules qualify it.
+      const resuming = getMissionTask(db, "t1", "task-1")!;
+      transitionMissionTask(db, {
+        tenantId: "t1", taskId: "task-1", expectedRevision: resuming.revision, to: "agent_working",
+        actorPrincipalId: "human-1", eventId: `task-1-claim-resume-r${resuming.revision}`,
+        idempotencyKey: `mission-task-claim-resume-task-1-r${resuming.revision}`,
+        correlationId: "corr", createdAt: resolveAt,
+      });
+      expect(getMissionTask(db, "t1", "task-1")?.status).toBe("agent_working");
+      return exception.id;
+    };
+
+    const first = runCycle(1, T0, T1);
+    // The second cycle is exactly where a static (correlationId, taskId, to) key collides.
+    const second = runCycle(2, T1, T2);
+
+    const evaluation = evaluateMissionExceptions(db, "t1", "m1");
+    expect(evaluation.missionBlocked).toBe(false);
+    const resolvedSupersedes = evaluation.resolved.map((row) => row.supersedesId);
+    expect(resolvedSupersedes).toContain(first);
+    expect(resolvedSupersedes).toContain(second);
+  });
+
   it("fails closed when the bound task is not in an agent-working state", () => {
     const db = fixture();
     createMissionTask(db, {

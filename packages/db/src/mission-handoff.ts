@@ -76,8 +76,8 @@ const HUMAN_HANDOFF_STATUSES: ReadonlySet<MissionTaskStatus> = new Set([
   "human_working",
 ]);
 
-function eventKey(correlationId: string, taskId: string, to: string): string {
-  return `${correlationId}:mission-task:${taskId}:${to}`;
+function eventKey(correlationId: string, taskId: string, to: string, revision: number): string {
+  return `${correlationId}:mission-task:${taskId}:${to}:r${revision}`;
 }
 
 function transitionBoundTask(
@@ -106,8 +106,8 @@ function transitionBoundTask(
     actorPrincipalId: input.actorPrincipalId,
     ...(input.assignedPrincipalId !== undefined ? { assignedPrincipalId: input.assignedPrincipalId } : {}),
     ...(input.handoffReason ? { handoffReason: input.handoffReason } : {}),
-    eventId: eventKey(input.correlationId, task.id, input.to),
-    idempotencyKey: eventKey(input.correlationId, task.id, input.to),
+    eventId: eventKey(input.correlationId, task.id, input.to, task.revision),
+    idempotencyKey: eventKey(input.correlationId, task.id, input.to, task.revision),
     correlationId: input.correlationId,
     causationId: input.causationId ?? null,
     createdAt: input.createdAt,

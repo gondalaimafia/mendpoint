@@ -38,15 +38,28 @@ import {
   type MissionContextInput,
   type VerificationInput,
 } from "@mendpoint/pipeline";
+import { queryFettlerEndpointImpact, type GraphLearnDb } from "@mendpoint/graph-learn";
 
 export type BuildMissionContextParams = Readonly<{
   tenantId: string;
   /** The resolved Mission, or null when the task is not mission-bound. */
   mission: Mission | null;
-  task: Readonly<{ taskId: string; capability: string; riskClass: string; goal: string }>;
+  task: Readonly<{
+    taskId: string;
+    capability: string;
+    riskClass: string;
+    goal: string;
+    /** Live Fettler endpoint key. Never invented; absent keeps graph not-consulted. */
+    endpointKey?: string | null;
+  }>;
   /** Fallback identity when no mission is bound (a Fettler repair on a snapshot). */
   fallback: Readonly<{ objective: string; repositoryId: string | null; snapshotId: string | null }>;
   evidenceRefs?: readonly string[];
+  /**
+   * Tenant Change Graph handle. Required to consult impact. Never created here
+   * (`getGraphLearnDb` is not a production graph). Tests inject `openGraphLearnMemory()`.
+   */
+  graphDb?: GraphLearnDb | null;
 }>;
 
 /** Map a per-scope verification standing to the compiler's carried-through input. */
@@ -89,6 +102,31 @@ function verificationInputsForStanding(
     state: "no_current_evidence",
     reason: standing.reason,
   };
+}
+
+function buildGraphSource(params: BuildMissionContextParams): MissionContextInput["graph"] {
+  const graphVersionId = params.mission?.graphVersionId ?? null;
+  if (!graphVersionId) return { consulted: false, reason: "graph_version_absent" };
+  const endpointKey = params.task.endpointKey?.trim() ?? "";
+  if (!endpointKey) return { consulted: false, reason: "endpoint_key_absent" };
+  const repositoryId = params.mission?.repositoryId ?? params.fallback.repositoryId;
+  if (!repositoryId) return { consulted: false, reason: "not_applicable_to_task" };
+  const graphDb = params.graphDb ?? null;
+  if (!graphDb) return { consulted: false, reason: "store_not_available" };
+  try {
+    const impact = queryFettlerEndpointImpact(graphDb, {
+      tenantId: params.tenantId,
+      repositoryId,
+      graphVersionId,
+      endpointKey,
+      maxHops: 6,
+      maxEntities: 50,
+      maxRelationships: 100,
+    });
+    return { consulted: true, impact };
+  } catch {
+    return { consulted: false, reason: "graph_projection_failed" };
+  }
 }
 
 /**
@@ -243,13 +281,9 @@ export function buildMissionContext(
     missionDecisions,
     organizationMemory,
     userPreferences: { consulted: false, reason: "store_not_available" },
-    // Impact-path projection requires an endpoint key (`queryFettlerEndpointImpact`).
-    // This producer does not invent one. A pinned graph version is still carried
-    // on mission identity; the graph section stays not-consulted until a real
-    // endpoint surface is available on the task.
-    graph: mission?.graphVersionId
-      ? { consulted: false, reason: "endpoint_key_absent" }
-      : { consulted: false, reason: "graph_version_absent" },
+    // Impact-path projection requires a real endpoint key from a live Fettler
+    // surface (`queryFettlerEndpointImpact`). This producer does not invent one.
+    graph: buildGraphSource(params),
     history,
     verification,
     exceptions,

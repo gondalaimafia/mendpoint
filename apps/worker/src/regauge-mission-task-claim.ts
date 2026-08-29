@@ -80,9 +80,22 @@ export function assignRegaugeMissionTaskOnClaim(
   const task = resolveClaimedTask(db, input);
   if (!task) return undefined;
   if (task.status === "agent_working") return task;
-  if (task.status !== "unassigned" && task.status !== "agent_assigned") return undefined;
-
   const agent = missionTaskAgentPrincipal(db, input.tenantId, input.createdAt);
+  if (task.status === "agent_resume") {
+    return transitionMissionTask(db, {
+      tenantId: input.tenantId,
+      taskId: task.id,
+      expectedRevision: task.revision,
+      to: "agent_working",
+      actorPrincipalId: agent.id,
+      assignedPrincipalId: agent.id,
+      eventId: `${task.id}-claim-resume-r${task.revision}`,
+      idempotencyKey: `mission-task-claim-resume-${task.id}-r${task.revision}`,
+      correlationId: input.campaignId,
+      createdAt: input.createdAt,
+    });
+  }
+  if (task.status !== "unassigned" && task.status !== "agent_assigned") return undefined;
   let current = task;
   if (current.status === "unassigned") {
     current = transitionMissionTask(db, {

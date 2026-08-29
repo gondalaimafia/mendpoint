@@ -30,6 +30,11 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
+import {
+  openGraphLearnMemory,
+  publishSoftwareGraphVersion,
+  type SoftwareGraphPublicationV1,
+} from "@mendpoint/graph-learn";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 
 const T0 = "2026-01-01T00:00:00.000Z";
@@ -411,5 +416,91 @@ describe("worker mission-context producer (real stores)", () => {
       artifactId: "art-patch",
       sha256,
     });
+  });
+
+  it("consults MissionGraphProjection only when a live endpoint key and graph handle are supplied", () => {
+    const db = fixture();
+    const graph = openGraphLearnMemory();
+    const extractor = Object.freeze({
+      id: "mendpoint.code-index",
+      version: "1.0.0",
+      digest: `sha256:${"1".repeat(64)}`,
+    });
+    const publication: SoftwareGraphPublicationV1 = {
+      schemaVersion: "mendpoint.software-graph.v1",
+      tenantId: "t1",
+      repositoryId: "r1",
+      repositorySnapshotId: "snapA",
+      repositoryRevision: SHA,
+      providerId: "provider-a",
+      providerSnapshotId: "provider-snapshot-1",
+      providerRevision: "2026-08-17",
+      observedAt: T0,
+      entities: [{
+        extractor,
+        derivation: "repository_usage",
+        confidenceBasis: "deterministic_exact",
+        validFrom: T0,
+        id: "endpoint:charges-create",
+        kind: "endpoint",
+        canonicalKey: "POST /v1/charges",
+        aliases: ["charges.create"],
+        label: "POST /v1/charges",
+        scope: "provider",
+        evidenceRefs: ["artifact:openapi:v1"],
+        status: "active",
+      }],
+      relationships: [],
+      coverage: [
+        { extractor, stage: "repository_discovery", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["manifest:r1:snapA"] },
+        { extractor, stage: "language_parsing", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["parser:typescript:v1"] },
+        { extractor, stage: "provider_specification", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["artifact:openapi:v1"] },
+        { extractor, stage: "sdk_resolution", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["artifact:sdk-map:1"] },
+        { extractor, stage: "call_resolution", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["call-graph:r1:snapA"] },
+        { extractor, stage: "test_resolution", basis: "complete", analyzed: 0, omitted: 0, evidenceRefs: ["source:test/none.ts:1"] },
+      ],
+    };
+    const published = publishSoftwareGraphVersion(graph, publication);
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      graphVersionId: published.versionId,
+      actorPrincipalId: "p1",
+      eventId: "e-graph-live",
+      idempotencyKey: "k-graph-live",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const withoutHandle = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: {
+        taskId: "task-1", capability: "code_migration", riskClass: "medium",
+        goal: "Do the migration", endpointKey: "POST /v1/charges",
+      },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    });
+    expect(withoutHandle.envelope.graphProjection).toEqual({
+      status: "not_consulted",
+      reason: "store_not_available",
+    });
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: {
+        taskId: "task-1", capability: "code_migration", riskClass: "medium",
+        goal: "Do the migration", endpointKey: "POST /v1/charges",
+      },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+      graphDb: graph,
+    });
+    expect(compiled.envelope.graphProjection.status).toBe("consulted");
+    if (compiled.envelope.graphProjection.status !== "consulted") throw new Error("unreachable");
+    expect(compiled.envelope.graphProjection.projection.graphVersionId).toBe(published.versionId);
+    expect(["impact", "no_impact", "unknown_impact"]).toContain(
+      compiled.envelope.graphProjection.projection.impact,
+    );
+    graph.raw.close();
   });
 });

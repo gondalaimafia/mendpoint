@@ -99,6 +99,10 @@ import {
   transformerAdaptiveGitHubDelivery,
   transformerAdaptiveProductionPorts,
   initializeWorkerDurableState,
+  initializeWorkerServiceDurableState,
+  parseReleasePollConfigurationsFromEnv,
+  releaseIngestionWorkerPath,
+  summarizeWorkerFeedScheduleRun,
   summarizeCustomerFeedEvidence,
   writeWorkerHeartbeat,
 } from "./cli.js";
@@ -550,12 +554,22 @@ describe("worker runtime", () => {
       jobs: { claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 },
       feedPollingEnabled: true,
       feedPollOk: true,
+      releasePollingConfigured: true,
+      releasePollConfigurationCount: 2,
+      feedScheduleStatus: "healthy",
+      releaseConfigurationStatus: "healthy",
+      releaseConfigurationFailed: 0,
     });
 
     expect(JSON.parse(readFileSync(heartbeatPath, "utf8"))).toMatchObject({
       ok: true,
       workerId: "worker-test",
       feedPollOk: true,
+      releasePollingConfigured: true,
+      releasePollConfigurationCount: 2,
+      feedScheduleStatus: "healthy",
+      releaseConfigurationStatus: "healthy",
+      releaseConfigurationFailed: 0,
     });
     expect(() =>
       writeWorkerHeartbeat("relative.json", {
@@ -565,8 +579,280 @@ describe("worker runtime", () => {
         jobs: { claimed: 0, succeeded: 0, failed: 0, retried: 0, inconclusive: 0 },
         feedPollingEnabled: false,
         feedPollOk: true,
+        releasePollingConfigured: false,
+        releasePollConfigurationCount: 0,
+        feedScheduleStatus: "not_started",
+        releaseConfigurationStatus: "not_configured",
+        releaseConfigurationFailed: 0,
       }),
     ).toThrow(/absolute/i);
+  });
+
+  it("parses frozen canonical release polling configurations from one bounded authority", () => {
+    const raw = [{
+      contractVersion: "release-poll.v1",
+      tenantId: "tenant-a",
+      provider: { slug: "stripe" },
+      adapter: "rss",
+      source: { url: "https://releases.example.com/feed", maxBytes: 4096 },
+    }];
+    const parsed = parseReleasePollConfigurationsFromEnv({
+      MENDPOINT_TENANT_ID: "tenant-a",
+      MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON: JSON.stringify(raw),
+    });
+
+    expect(parsed).toEqual(raw);
+    expect(Object.isFrozen(parsed)).toBe(true);
+    expect(Object.isFrozen(parsed[0])).toBe(true);
+    expect(Object.isFrozen(parsed[0]!.provider)).toBe(true);
+    expect(Object.isFrozen(parsed[0]!.source)).toBe(true);
+  });
+
+  it("keeps unset and blank release polling configuration frozen and disabled", () => {
+    for (const value of [undefined, "", "  \t "]) {
+      const parsed = parseReleasePollConfigurationsFromEnv({
+        MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON: value,
+      });
+      expect(parsed).toEqual([]);
+      expect(Object.isFrozen(parsed)).toBe(true);
+    }
+  });
+
+  it.each([
+    ["invalid JSON", "not-json"],
+    ["non-array", JSON.stringify({})],
+    ["unsupported version", JSON.stringify([{
+      contractVersion: "release-poll.v2",
+      tenantId: "tenant-a",
+      provider: { slug: "stripe" },
+      adapter: "rss",
+      source: { url: "https://releases.example.com/feed" },
+    }])],
+    ["invalid scope ID", JSON.stringify([{
+      contractVersion: "release-poll.v1",
+      tenantId: "tenant/a",
+      provider: { slug: "stripe" },
+      adapter: "rss",
+      source: { url: "https://releases.example.com/feed" },
+    }])],
+    ["unsupported adapter", JSON.stringify([{
+      contractVersion: "release-poll.v1",
+      tenantId: "tenant-a",
+      provider: { slug: "stripe" },
+      adapter: "html-with-credentials",
+      source: { url: "https://releases.example.com/feed" },
+    }])],
+    ["invalid byte limit", JSON.stringify([{
+      contractVersion: "release-poll.v1",
+      tenantId: "tenant-a",
+      provider: { slug: "stripe" },
+      adapter: "rss",
+      source: { url: "https://releases.example.com/feed", maxBytes: 2_000_000 },
+    }])],
+    ["invalid secret-bearing URL", JSON.stringify([{
+      contractVersion: "release-poll.v1",
+      tenantId: "tenant-a",
+      provider: { slug: "stripe" },
+      adapter: "rss",
+      source: { url: "https://releases.example.com/feed?token=recognizable-secret" },
+    }])],
+    ["duplicate binding", JSON.stringify([0, 1].map(() => ({
+      contractVersion: "release-poll.v1",
+      tenantId: "tenant-a",
+      provider: { slug: "stripe" },
+      adapter: "rss",
+      source: { url: "https://releases.example.com/feed" },
+    })))],
+  ])("rejects %s with one fixed redacted error", (_name, value) => {
+    expect(() => parseReleasePollConfigurationsFromEnv({
+      MENDPOINT_TENANT_ID: "tenant-a",
+      MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON: value,
+    })).toThrow("MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON is invalid");
+    try {
+      parseReleasePollConfigurationsFromEnv({
+        MENDPOINT_TENANT_ID: "tenant-a",
+        MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON: value,
+      });
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      expect(text).toBe("MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON is invalid");
+      expect(text).not.toContain("recognizable-secret");
+      expect(text).not.toContain("releases.example.com");
+      expect(text).not.toContain("release_poll_");
+    }
+  });
+
+  it("rejects more than 500 release configurations and a configured tenant mismatch", () => {
+    const configuration = {
+      contractVersion: "release-poll.v1",
+      tenantId: "tenant-a",
+      provider: { slug: "stripe" },
+      adapter: "rss",
+      source: { url: "https://releases.example.com/feed" },
+    };
+    expect(() => parseReleasePollConfigurationsFromEnv({
+      MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON: JSON.stringify(
+        Array.from({ length: 501 }, (_, index) => ({
+          ...configuration,
+          provider: { slug: `provider-${index}` },
+        })),
+      ),
+    })).toThrow("MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON is invalid");
+    expect(() => parseReleasePollConfigurationsFromEnv({
+      MENDPOINT_TENANT_ID: "tenant-b",
+      MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON: JSON.stringify([configuration]),
+    })).toThrow("MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON is invalid");
+  });
+
+  it("reports the same fixed release configuration defect during production validation", () => {
+    const errors = validateWorkerProductionEnv({
+      NODE_ENV: "production",
+      MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON:
+        '[{"source":{"url":"https://releases.example.com/?token=recognizable-secret"}}]',
+    });
+    expect(errors).toContain("MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON is invalid");
+    expect(errors.join("\n")).not.toContain("recognizable-secret");
+    expect(errors.join("\n")).not.toContain("releases.example.com");
+
+    const validConfiguration = JSON.stringify([{
+      contractVersion: "release-poll.v1",
+      tenantId: "tenant-a",
+      provider: { slug: "stripe" },
+      adapter: "rss",
+      source: { url: "https://releases.example.com/feed" },
+    }]);
+    expect(validateWorkerProductionEnv({
+      NODE_ENV: "production",
+      MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON: validConfiguration,
+    })).toContain(
+      "MENDPOINT_DATA_DIR must be absolute when release polling is configured",
+    );
+  });
+
+  it("uses only the stable release ingestion path under the data directory", () => {
+    expect(releaseIngestionWorkerPath(
+      { MENDPOINT_DATA_DIR: "C:\\mendpoint-data" },
+      "C:\\service",
+    )).toBe(resolve("C:\\mendpoint-data", "release-ingestion.sqlite"));
+    expect(releaseIngestionWorkerPath({}, "C:\\service"))
+      .toBe(resolve("C:\\service", "data", "release-ingestion.sqlite"));
+    expect(() => releaseIngestionWorkerPath({ NODE_ENV: "production" }, "C:\\service"))
+      .toThrow("MENDPOINT_DATA_DIR must be absolute when release polling is configured");
+    expect(() => releaseIngestionWorkerPath({
+      NODE_ENV: "production",
+      MENDPOINT_DATA_DIR: "relative-data",
+    }, "C:\\service")).toThrow(
+      "MENDPOINT_DATA_DIR must be absolute when release polling is configured",
+    );
+  });
+
+  it("fails readiness when configuration health degrades despite legacy schedule health", () => {
+    expect(summarizeWorkerFeedScheduleRun({
+      status: "degraded",
+      failed: 0,
+      health: { ok: true, status: "healthy" },
+      configurationFailed: 1,
+      configurationHealth: { ok: false, status: "degraded", failed: 1, failures: [] },
+    }, 1)).toEqual({
+      ok: false,
+      feedScheduleStatus: "degraded",
+      releaseConfigurationStatus: "degraded",
+      releaseConfigurationFailed: 1,
+    });
+    expect(summarizeWorkerFeedScheduleRun({
+      status: "healthy",
+      failed: 0,
+      health: { ok: true, status: "healthy" },
+      configurationFailed: 0,
+      configurationHealth: { ok: true, status: "healthy", failed: 0, failures: [] },
+      releaseReadiness: { ok: false, required: 1, succeeded: 0, missing: [] },
+    }, 1)).toEqual({
+      ok: false,
+      feedScheduleStatus: "healthy",
+      releaseConfigurationStatus: "degraded",
+      releaseConfigurationFailed: 0,
+    });
+    expect(summarizeWorkerFeedScheduleRun({
+      status: "healthy",
+      failed: 0,
+      health: { ok: true, status: "healthy" },
+      configurationFailed: 0,
+      configurationHealth: { ok: true, status: "healthy", failed: 0, failures: [] },
+      releaseReadiness: { ok: true, required: 0, succeeded: 0, missing: [] },
+    }, 0)).toEqual({
+      ok: true,
+      feedScheduleStatus: "healthy",
+      releaseConfigurationStatus: "not_configured",
+      releaseConfigurationFailed: 0,
+    });
+  });
+
+  it("closes every opened worker handle in reverse order when the release store fails", () => {
+    const events: string[] = [];
+    expect(() => initializeWorkerServiceDurableState({
+      jobConcurrency: 1,
+      releaseConfigurationCount: 1,
+      openFeedDb: () => ({ name: "feed", close: () => { events.push("close:feed"); } }),
+      openHeartbeatDb: () => ({ name: "heartbeat", close: () => { events.push("close:heartbeat"); } }),
+      openTransformerDb: () => ({
+        name: "transformer-db",
+        close: () => { events.push("close:transformer-db"); },
+      }),
+      openTransformerStore: () => ({
+        name: "transformer-store",
+        close: () => { events.push("close:transformer-store"); },
+      }),
+      openJobDb: () => ({ name: "job", close: () => { events.push("close:job"); } }),
+      openReleaseStore: () => { throw new Error("later open failed"); },
+      closeDb: (handle) => handle.close(),
+    }, {})).toThrow("later open failed");
+    expect(events).toEqual([
+      "close:job",
+      "close:transformer-store",
+      "close:transformer-db",
+      "close:heartbeat",
+      "close:feed",
+    ]);
+  });
+
+  it("opens one restartable release store only when release polling is configured", () => {
+    const events: string[] = [];
+    const open = () => initializeWorkerServiceDurableState({
+      jobConcurrency: 2,
+      releaseConfigurationCount: 1,
+      openFeedDb: () => ({ close: () => { events.push("feed"); } }),
+      openHeartbeatDb: () => ({ close: () => { events.push("heartbeat"); } }),
+      openTransformerDb: () => ({ close: () => { events.push("transformer-db"); } }),
+      openTransformerStore: () => ({ close: () => { events.push("transformer-store"); } }),
+      openJobDb: () => ({ close: () => { events.push("job"); } }),
+      openReleaseStore: () => ({ close: () => { events.push("release"); } }),
+      closeDb: (handle) => handle.close(),
+    }, {});
+    const first = open();
+    expect(first.jobDbs).toHaveLength(2);
+    expect(first.releaseStore).toBeDefined();
+    first.close();
+    first.close();
+    expect(events.filter((event) => event === "release")).toHaveLength(1);
+    const second = open();
+    second.close();
+    expect(events.filter((event) => event === "release")).toHaveLength(2);
+
+    let releaseOpens = 0;
+    const disabled = initializeWorkerServiceDurableState({
+      jobConcurrency: 1,
+      releaseConfigurationCount: 0,
+      openFeedDb: () => ({ close: () => undefined }),
+      openHeartbeatDb: () => ({ close: () => undefined }),
+      openTransformerDb: () => ({ close: () => undefined }),
+      openTransformerStore: () => ({ close: () => undefined }),
+      openJobDb: () => ({ close: () => undefined }),
+      openReleaseStore: () => { releaseOpens++; return { close: () => undefined }; },
+      closeDb: (handle) => handle.close(),
+    }, {});
+    expect(disabled.releaseStore).toBeUndefined();
+    disabled.close();
+    expect(releaseOpens).toBe(0);
   });
 
   it("binds model source to an explicit tenant and stable remote repository classification", () => {
@@ -596,6 +882,7 @@ describe("worker runtime", () => {
         enabled: 1,
         last_attempt_at: "2026-08-07T15:59:00.000Z",
         last_success_at: "2026-08-07T15:58:00.000Z",
+        release_last_success_at: null,
         consecutive_failures: 1,
         alert_state: "failed",
         last_error: "provider_unavailable",
