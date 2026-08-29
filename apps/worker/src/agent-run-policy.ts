@@ -156,6 +156,7 @@ export function assertAgentRunMissionPolicy(
     tenantId: input.tenantId,
     missionId: mission.id,
     task: agentRunPolicyTask(input),
+    observedAt: input.observedAt,
   });
   if (enforcement.status === "no_envelope") {
     recordPolicyException(db, mission, "mission_policy_envelope_missing", input.observedAt, input.observedAgainst);

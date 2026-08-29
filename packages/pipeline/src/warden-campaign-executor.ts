@@ -537,6 +537,7 @@ export function assertCampaignExecutePolicy(db: AppDb, input: {
   tenantId: string;
   campaignId: string;
   task: PolicyTaskRequest;
+  observedAt: string;
 }): void {
   const mission = resolveMissionForFettlerCampaign(db, input.tenantId, input.campaignId);
   if (!mission) throw new WardenCampaignExecutionError("warden_mission_not_bound", false);
@@ -544,6 +545,7 @@ export function assertCampaignExecutePolicy(db: AppDb, input: {
     tenantId: input.tenantId,
     missionId: mission.id,
     task: input.task,
+    observedAt: input.observedAt,
   });
   if (enforcement.status === "no_envelope") {
     throw new WardenCampaignExecutionError("warden_policy_envelope_missing", false);
@@ -878,6 +880,7 @@ export async function executeWardenCampaignTarget(input: {
       targetPaths: [],
       risk: rolloutRiskForTarget(decision, input.targetId),
     }),
+    observedAt: input.createdAt,
   });
   const snapshotPolicy = getRepositorySnapshotPolicy(input.db, input.tenantId, snapshot.id);
   if (!snapshotPolicy) throw new WardenCampaignExecutionError("warden_snapshot_policy_required", false);
@@ -984,6 +987,7 @@ export async function executeWardenCampaignTarget(input: {
         targetPaths: policyEdits.map((edit) => edit.targetPath),
         risk: rolloutRiskForTarget(decision, input.targetId),
       }),
+      observedAt: input.createdAt,
     });
     appendRun("analysis_completed", policyEdits, [artifactReference(sourceArtifact), artifactReference(baselineArtifact)]);
     assertRunning(input.db, input.tenantId, input.campaignId);
