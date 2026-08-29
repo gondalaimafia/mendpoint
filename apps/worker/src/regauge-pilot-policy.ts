@@ -18,7 +18,12 @@
  * is a single immutable pin that never moves. The exception counts as blocking
  * only while the mission is on that snapshot; once a later claim runs against a
  * newer unit snapshot the prior deny is STALE, surfaced for re-affirmation
- * rather than blocking forever (apps/api/src/warden-candidate-review.ts).
+ * rather than blocking forever. That staleness-against-current-snapshot
+ * evaluation is the same one the review handoff resolver applies
+ * (apps/api/src/warden-candidate-review.ts passes the run's snapshot as
+ * `current`); note that resolver does NOT clear these rows — it filters on
+ * `taskId`, which these do not carry — so only a snapshot advance stops one
+ * blocking.
  */
 import {
   evaluateMissionExceptions,
@@ -103,7 +108,11 @@ function recordPolicyException(
     reason,
     impact: "ReGauge pilot claim denied by the inherited Policy Envelope",
     ownerPrincipalId: mission.ownerPrincipalId,
-    resolutionPath: "adjust_task_or_rebind_policy_envelope",
+    // Truthful resolution: correcting the envelope stops the NEXT claim from
+    // re-denying; this recorded row stops blocking once a later claim supersedes
+    // this unit snapshot (it goes stale). There is no taskId-based resolver for
+    // these rows, so do not imply one.
+    resolutionPath: "rebind_policy_envelope; deny goes stale once a later claim supersedes this snapshot",
     blocking: true,
     observedAgainst,
     correlationId: `regauge-pilot-policy:${mission.id}`,
