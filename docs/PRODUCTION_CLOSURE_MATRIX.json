@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T22:25:59.778Z",
-    "observedMainRevision": "0ffdbe78975aabb011c4978481a18fa686d117f0",
-    "observationDigest": "sha256:8a719b81e60c37afca4c15a7794104579b545baac1514b6fa34f9a5c38f7e7da",
+    "observedAt": "2026-08-29T22:58:26.000Z",
+    "observedMainRevision": "09021e657d93f5013c4662b1208d0953548529ea",
+    "observationDigest": "sha256:32df71fc28cfa83861b5b9778ef8d232648fe0f317a865e359955507946b5e8c",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 548,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/548",
-      "title": "Close the customer backup privilege boundary",
+      "number": 546,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/546",
+      "title": "Deploy the customer production app from main",
       "baseBranch": "main",
-      "headBranch": "codex/customer-backup-privilege-boundary",
+      "headBranch": "codex/fettler-production-deploy",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2085,7 +2085,15 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": []
+      "remediatesPullRequests": [],
+      "authorityRotation": {
+        "rotationId": "rotation-20260828-006",
+        "kind": "runtime",
+        "issuedAt": "2026-08-29T22:58:26.000Z",
+        "expiresAt": "2026-08-30T22:58:26.000Z",
+        "basePolicySha256": "sha256:830e8511ad3d686227991f77e1aa67149ece2a3467c852fca7318b2b4aca0f7b",
+        "proposedPolicySha256": "sha256:2bff9bc2eabf2123cd829b2930834b83afff8a40e599995f7cef65e1c37a89e0"
+      }
     },
     "pullRequests": [
       {
