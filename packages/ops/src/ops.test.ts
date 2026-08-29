@@ -678,9 +678,9 @@ describe("ops GA", () => {
     try {
       process.env.MENDPOINT_DEPLOYMENT_PROFILE = "regauge_production";
       expect(liveness().release.product).toBe("Regauge");
-      expect(liveness().release.banner).toBe("Mendpoint / Regauge 1.0.0 (ga)");
+      expect(liveness().release.banner).toBe("Mendpoint / Regauge 1.0.0 (internal)");
       expect(readiness().release.product).toBe("Regauge");
-      expect(readiness().release.banner).toBe("Mendpoint / Regauge 1.0.0 (ga)");
+      expect(readiness().release.banner).toBe("Mendpoint / Regauge 1.0.0 (internal)");
 
       process.env.MENDPOINT_DEPLOYMENT_PROFILE = "transformer_pilot";
       expect(liveness().release.product).toBe(RELEASE.product);

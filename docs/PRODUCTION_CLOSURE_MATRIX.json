@@ -2062,9 +2062,9 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T20:17:40.076Z",
-    "observedMainRevision": "301956d048a535b7cf493141d677da0b9172a5bc",
-    "observationDigest": "sha256:d3a7da172f57cbf96099d7307342e33dc2163645aefc3ff1640161a47337f59d",
+    "observedAt": "2026-08-29T20:48:51.779Z",
+    "observedMainRevision": "8dbac0437efea360daec7a9733267ee3c89f4040",
+    "observationDigest": "sha256:8e54fb882fc97f8ae67ddb5ac2d07821f8103cbf3957474839e36c24c2e3d732",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
@@ -5072,6 +5072,41 @@
         "checkState": "stale_checks",
         "headRevision": "3b29d86c2a24f55f3ea4c06e8de5ef375554baa9",
         "mergeRevision": "301956d048a535b7cf493141d677da0b9172a5bc",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 544,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/544",
+        "title": "Derive product identity from deployment profile",
+        "headBranch": "codex/product-identity-from-profile",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "405ca70581182c6591d1d8af25299bedf8a6882c",
+        "mergeRevision": "8dbac0437efea360daec7a9733267ee3c89f4040",
         "checks": [],
         "review": {
           "state": "none",
