@@ -26,6 +26,7 @@ import {
   pinPublishedGraphVersionForSingleRepository,
   pinPublishedGraphVersionOnSingleRepoFettlerMissions,
   pinPublishedGraphVersionToMission,
+  resolveUnambiguousSingleRepoFettlerCampaign,
 } from "./mission-graph-binding.js";
 
 const opened: Array<{ db: AppDb; dir: string }> = [];
@@ -250,6 +251,128 @@ describe("pinPublishedGraphVersionForSingleRepository", () => {
     });
     expect(result.reason).toBe("multi_repository_scope");
     expect(getMission(db, "t1", "m1")?.graphVersionId).toBeNull();
+  });
+});
+
+function enrollSingleRepoCampaign(db: AppDb, input: {
+  campaignId: string;
+  missionId: string;
+  repositoryId: string;
+  snapshotId: string;
+  targetId: string;
+}) {
+  createWardenCampaign(db, {
+    id: input.campaignId, tenantId: "t1", name: input.campaignId, ownerPrincipalId: "p1",
+    concurrencyLimit: 1, completionPolicy: "all", eventId: `e-${input.campaignId}`,
+    idempotencyKey: `k-${input.campaignId}`, correlationId: "c", createdAt: at,
+  });
+  addWardenCampaignTarget(db, {
+    id: input.targetId, tenantId: "t1", campaignId: input.campaignId, repositoryId: input.repositoryId,
+    snapshotId: input.snapshotId, ownerPrincipalId: "p1", eventId: `e-${input.targetId}`,
+    idempotencyKey: `k-${input.targetId}`, correlationId: "c", createdAt: at,
+  });
+  if (input.missionId !== "m1") {
+    createMission(db, {
+      id: input.missionId, tenantId: "t1", product: "fettler", triggerKind: "provider_change",
+      objective: "Migrate", ownerPrincipalId: "p1", eventId: `e-${input.missionId}`,
+      idempotencyKey: `create-${input.missionId}`, correlationId: "c", createdAt: at,
+    });
+  }
+  linkFettlerCampaignToMission(db, {
+    tenantId: "t1", campaignId: input.campaignId, missionId: input.missionId, actorPrincipalId: "p1",
+    eventId: `e-link-${input.campaignId}`, idempotencyKey: `k-link-${input.campaignId}`,
+    correlationId: "c", createdAt: at,
+  });
+}
+
+describe("resolveUnambiguousSingleRepoFettlerCampaign", () => {
+  it("resolves the unique campaign-linked Mission for a single-repo campaign", () => {
+    const { db } = fixture();
+    seedConnectedRepo(db, "repo-a", "snapshot-a");
+    enrollSingleRepoCampaign(db, {
+      campaignId: "campaign-a", missionId: "m1", repositoryId: "repo-a",
+      snapshotId: "snapshot-a", targetId: "target-a",
+    });
+    expect(resolveUnambiguousSingleRepoFettlerCampaign(db, "t1", "repo-a")).toEqual({
+      campaignId: "campaign-a",
+      missionId: "m1",
+    });
+  });
+
+  it("stays unbound when the campaign has more than one repository", () => {
+    const { db } = fixture();
+    seedConnectedRepo(db, "repo-a", "snapshot-a");
+    db.raw.prepare(`INSERT INTO connected_repositories
+      (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch,
+       environment, retention_days, status, created_at, updated_at)
+      VALUES ('repo-b', 't1', 'connection-a', '100', 'acme', 'other', 'main', 'main',
+        'production', 30, 'ready', ?, ?)`).run(at, at);
+    db.raw.prepare(`INSERT INTO repository_snapshots
+      (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+       submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+      VALUES ('snapshot-b', 't1', 'repo-b', 'main', ?, ?, '/snapshots/b', 'reject',
+        'pointer_only', '[]', 1, ?, '2026-08-15T17:00:00.000Z')`)
+      .run("c".repeat(40), "d".repeat(64), at);
+    createWardenCampaign(db, {
+      id: "campaign-multi", tenantId: "t1", name: "Multi", ownerPrincipalId: "p1",
+      concurrencyLimit: 1, completionPolicy: "all", eventId: "e-camp",
+      idempotencyKey: "k-camp", correlationId: "c", createdAt: at,
+    });
+    addWardenCampaignTarget(db, {
+      id: "target-a", tenantId: "t1", campaignId: "campaign-multi", repositoryId: "repo-a",
+      snapshotId: "snapshot-a", ownerPrincipalId: "p1", eventId: "e-ta",
+      idempotencyKey: "k-ta", correlationId: "c", createdAt: at,
+    });
+    addWardenCampaignTarget(db, {
+      id: "target-b", tenantId: "t1", campaignId: "campaign-multi", repositoryId: "repo-b",
+      snapshotId: "snapshot-b", ownerPrincipalId: "p1", eventId: "e-tb",
+      idempotencyKey: "k-tb", correlationId: "c", createdAt: at,
+    });
+    linkFettlerCampaignToMission(db, {
+      tenantId: "t1", campaignId: "campaign-multi", missionId: "m1", actorPrincipalId: "p1",
+      eventId: "e-link", idempotencyKey: "k-link", correlationId: "c", createdAt: at,
+    });
+    expect(resolveUnambiguousSingleRepoFettlerCampaign(db, "t1", "repo-a")).toBeUndefined();
+  });
+
+  it("stays unbound when two single-repo campaigns share the repository", () => {
+    const { db } = fixture();
+    seedConnectedRepo(db, "repo-a", "snapshot-a");
+    enrollSingleRepoCampaign(db, {
+      campaignId: "campaign-a", missionId: "m1", repositoryId: "repo-a",
+      snapshotId: "snapshot-a", targetId: "target-a",
+    });
+    enrollSingleRepoCampaign(db, {
+      campaignId: "campaign-b", missionId: "m2", repositoryId: "repo-a",
+      snapshotId: "snapshot-a", targetId: "target-b",
+    });
+    expect(resolveUnambiguousSingleRepoFettlerCampaign(db, "t1", "repo-a")).toBeUndefined();
+  });
+
+  it("stays unbound when the campaign has no linked Mission", () => {
+    const { db } = fixture();
+    seedConnectedRepo(db, "repo-a", "snapshot-a");
+    createWardenCampaign(db, {
+      id: "campaign-a", tenantId: "t1", name: "Stripe upgrade", ownerPrincipalId: "p1",
+      concurrencyLimit: 1, completionPolicy: "all", eventId: "e-camp",
+      idempotencyKey: "k-camp", correlationId: "c", createdAt: at,
+    });
+    addWardenCampaignTarget(db, {
+      id: "target-a", tenantId: "t1", campaignId: "campaign-a", repositoryId: "repo-a",
+      snapshotId: "snapshot-a", ownerPrincipalId: "p1", eventId: "e-target",
+      idempotencyKey: "k-target", correlationId: "c", createdAt: at,
+    });
+    expect(resolveUnambiguousSingleRepoFettlerCampaign(db, "t1", "repo-a")).toBeUndefined();
+  });
+
+  it("is tenant-scoped: t2 cannot resolve t1's campaign", () => {
+    const { db } = fixture();
+    seedConnectedRepo(db, "repo-a", "snapshot-a");
+    enrollSingleRepoCampaign(db, {
+      campaignId: "campaign-a", missionId: "m1", repositoryId: "repo-a",
+      snapshotId: "snapshot-a", targetId: "target-a",
+    });
+    expect(resolveUnambiguousSingleRepoFettlerCampaign(db, "t2", "repo-a")).toBeUndefined();
   });
 });
 

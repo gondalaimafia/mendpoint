@@ -66,6 +66,7 @@ const representative: MissionContextInput = {
   history: { consulted: true, records: [{ tenantId: "t1", trajectoryRef: "traj-9", outcome: "candidate_ready", summary: "prior attempt migrated 3 of 4 call sites" }] },
   verification: { consulted: true, records: [{ tenantId: "t1", id: "v1", statement: "integration suite green", verdict: "passed", state: "current_evidence", reason: null, boundSnapshotId: "s1" }] },
   exceptions: { consulted: true, records: [] },
+  artifacts: { consulted: false, reason: "store_not_available" },
 };
 const repCompiled = compileAndRenderMissionContext(representative);
 console.log(`representative envelope injection bytes: ${repCompiled.injection.byteLength}`);

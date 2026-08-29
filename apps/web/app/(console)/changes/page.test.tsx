@@ -94,5 +94,79 @@ describe("/changes page — a failed change-detail fetch is unknown, not empty",
     expect(html).toContain("POST /v1/charges");
     expect(html).not.toContain("Changes unavailable");
     expect(html).not.toContain("No structural change is staged yet");
+    // Successful fetch without a coverage channel is unknown, not clean.
+    expect(html).toContain("Coverage not recorded");
+    expect(html).not.toContain("No impact — verified");
+  });
+
+  it("renders analyzed empty findings as verified no-impact, never as unknown", async () => {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path === "/changes") return [CHANGE_LIST_ITEM];
+      if (path === "/providers") return [PROVIDER];
+      if (path === "/changes/chg1") {
+        return {
+          ...CHANGE_LIST_ITEM,
+          diff: {
+            entries: [
+              { op: "method_removed", method: "post", path: "/v1/charges", breaking: true },
+            ],
+            risk: "breaking",
+            summary: "charge() removed",
+          },
+          findings: [],
+          prs: [{ id: "pr1", status: "low_confidence" }],
+          impactCoverage: {
+            impact: "no_impact",
+            coverageBasis: "analyzed",
+            reason: null,
+            findingCount: 0,
+            prCount: 1,
+          },
+        };
+      }
+      if (path === "/providers/payments") return { ...PROVIDER, versions: [] };
+      throw new Error(`unexpected ${path}`);
+    });
+
+    const html = renderToStaticMarkup(await ChangesPage());
+    expect(html).toContain("No impact — verified");
+    expect(html).toContain("IMPACT COVERAGE");
+    expect(html).not.toContain("Coverage not recorded");
+    expect(html).not.toContain("Not analyzed — no basis");
+  });
+
+  it("does not treat partial or missing coverage as verified no-impact", async () => {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path === "/changes") return [CHANGE_LIST_ITEM];
+      if (path === "/providers") return [PROVIDER];
+      if (path === "/changes/chg1") {
+        return {
+          ...CHANGE_LIST_ITEM,
+          diff: {
+            entries: [
+              { op: "method_removed", method: "post", path: "/v1/charges", breaking: true },
+            ],
+            risk: "breaking",
+            summary: "charge() removed",
+          },
+          findings: [],
+          prs: [{ id: "pr1", status: "low_confidence" }],
+          impactCoverage: {
+            impact: "unknown_impact",
+            coverageBasis: "partial",
+            reason: "partial_or_unknown_coverage",
+            findingCount: 0,
+            prCount: 1,
+          },
+        };
+      }
+      if (path === "/providers/payments") return { ...PROVIDER, versions: [] };
+      throw new Error(`unexpected ${path}`);
+    });
+
+    const html = renderToStaticMarkup(await ChangesPage());
+    expect(html).toContain("No known impact — partial coverage");
+    expect(html).not.toContain("No impact — verified");
+    expect(html).toContain("0 repos · 0 calls");
   });
 });

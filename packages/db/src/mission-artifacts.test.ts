@@ -112,6 +112,29 @@ describe("mission artifact registry", () => {
     expect(listMissionArtifactLineage(db, "t1", "m1")).toHaveLength(2);
   });
 
+  // CONTROL: the optional list `limit` is validated to a safe 1..1000 integer
+  // BEFORE any query runs. Dropping or widening the guard would let a caller pass
+  // 0, a negative, a non-integer, or an unbounded page size straight into SQL
+  // LIMIT. A valid bound still returns rows; only the bound itself is policed.
+  it("rejects an out-of-range list limit and honours a valid one", () => {
+    const db = fixture();
+    manifest(db, "t1", "art-1", "impact-report", "body one");
+    manifest(db, "t1", "art-2", "candidate-edit", "body two");
+    registerMissionArtifact(db, { tenantId: "t1", missionId: "m1", role: "impact_report",
+      artifactId: "art-1", label: "one", producerPrincipalId: "p1", correlationId: "corr", createdAt: at(1) });
+    registerMissionArtifact(db, { tenantId: "t1", missionId: "m1", role: "candidate_patch",
+      artifactId: "art-2", label: "two", producerPrincipalId: "p1", correlationId: "corr", createdAt: at(2) });
+
+    // A valid bound caps the page; omitting the limit is unbounded and still valid.
+    expect(listMissionArtifacts(db, "t1", "m1", undefined, 1)).toHaveLength(1);
+    expect(listMissionArtifacts(db, "t1", "m1")).toHaveLength(2);
+    // Out-of-range and non-integer bounds are rejected before any query runs.
+    for (const bad of [0, -1, 1001, 1.5, Number.NaN]) {
+      expect(() => listMissionArtifacts(db, "t1", "m1", undefined, bad))
+        .toThrow("mission_artifact_list_limit_invalid");
+    }
+  });
+
   // CONTROL: cross-tenant reads and writes are impossible. The composite FK and
   // requireTenantArtifact enforce same-tenant references; dropping the tenant
   // predicate would let these leak or succeed.

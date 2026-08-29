@@ -1484,7 +1484,8 @@
       "pullRequests": [
         284,
         333,
-        337
+        337,
+        461
       ],
       "testEvidenceIds": [
         "ME-GTM-003-AC01-EV01"
@@ -1823,8 +1824,8 @@
   "issueAuthority": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-26T04:06:40.824Z",
-    "observationDigest": "sha256:29d74e2d40365bdbbeea9bd297e148129267d1843bddb5d4edc211469a1bb5e1",
+    "observedAt": "2026-08-29T03:38:44.422Z",
+    "observationDigest": "sha256:9df7c3c3f4d672e14c81047e33326cc9cb64356b570e24f5c885a5778fc1b133",
     "issues": [
       {
         "number": 350,
@@ -1900,7 +1901,7 @@
         "owner": "gondalaimafia",
         "title": "Production closure FC 03: ingestion and Change Graph maturity",
         "url": "https://github.com/gondalaimafia/mendpoint/issues/431",
-        "updatedAt": "2026-08-26T03:04:14.000Z",
+        "updatedAt": "2026-08-29T03:18:34.000Z",
         "requirementIds": [
           "ME-CGR-001",
           "ME-FET-015",
@@ -2061,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-28T23:23:23.350Z",
-    "observedMainRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
-    "observationDigest": "sha256:15980c5a6756d9a6f61bd4e7714b5c75895dd0140efb1aa618c756e01e349b56",
+    "observedAt": "2026-08-29T03:13:54.620Z",
+    "observedMainRevision": "dc7141bd3877a443dda96026e809f4e4f45ccd55",
+    "observationDigest": "sha256:533cb165d11384ceab5e7e0a9c34f37f50b81d92b96f6e84e2b3c235864a1777",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 521,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/521",
-      "title": "closure authority: pre-authorize systemic-failure escalation successor template",
+      "number": 535,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/535",
+      "title": "Refresh issue authority from one live snapshot and clear the inherited rotation bootstrap",
       "baseBranch": "main",
-      "headBranch": "mp-succ-esc-rot1",
+      "headBranch": "codex/issue-authority-refresh-431",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2084,20 +2085,12 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "rotation-20260828-002",
-        "kind": "runtime",
-        "issuedAt": "2026-08-28T23:23:23.350Z",
-        "expiresAt": "2026-08-29T23:23:23.350Z",
-        "basePolicySha256": "sha256:86585f7d707b5b28276b663660533068f936ccd3243557541168253ae70d3466",
-        "proposedPolicySha256": "sha256:cb74b8b35f107a58d987a4444b6968f916d6e8babc815fe38e42550ef1dec93d"
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
         "number": 284,
-        "state": "open",
+        "state": "closed",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/284",
         "title": "Make the public claims gate able to fail",
         "headBranch": "claude/claims-gate-drift",
@@ -2107,7 +2100,7 @@
           "source": "branch_prefix",
           "provisional": true
         },
-        "disposition": "extract_smaller_replacement",
+        "disposition": "superseded",
         "dependencies": {
           "pullRequests": [
             461
@@ -2117,7 +2110,7 @@
         "requirementIds": [
           "ME-GTM-003"
         ],
-        "checkState": "behind",
+        "checkState": "stale_checks",
         "headRevision": "7ea868393c310214c70b341856686eed3b64ef9a",
         "mergeRevision": null,
         "checks": [],
@@ -3613,7 +3606,7 @@
         },
         "requirementIds": [],
         "checkState": "behind",
-        "headRevision": "d24319a0b86395af5e16f74eb935fcfccbf6465d",
+        "headRevision": "842ad1c7f7e76172b4a8177d9c437891ccd57a98",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -3686,7 +3679,9 @@
           "pullRequests": [],
           "branches": []
         },
-        "requirementIds": [],
+        "requirementIds": [
+          "ME-GTM-003"
+        ],
         "checkState": "behind",
         "headRevision": "a025063315e570c3ea6b16eec7c9838274bfa84f",
         "mergeRevision": null,
@@ -4548,7 +4543,7 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "9c4c8c587b922a30f46c9c6f2796622d5e571cc6",
+        "headRevision": "e143f50c4b954ff7e5babd2df83134cb6c3e52d9",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -4690,7 +4685,7 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "631a585aac0af0fb45a30eeccdb582bb91812330",
+        "headRevision": "01cba0ddd362c78bd757d1f33ce2a2bfcf2aed29",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -4725,7 +4720,7 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "9fed054a0bc6c6a11acae112747d29bab08aeb2b",
+        "headRevision": "412131581b52bc20ff55e2cad2f338ef1473db63",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -4760,7 +4755,77 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "4366c749908f711e68a45428c09cc846a5a03796",
+        "headRevision": "0eb6ebb9a9599a08239b3cd95890669438bd719c",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 520,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/520",
+        "title": "Resync release train matrix to current main and open pull requests",
+        "headBranch": "codex/release-train-matrix-resync",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "68f89748cf3755a453556b97a9e735547229944d",
+        "mergeRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 521,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/521",
+        "title": "closure authority: pre-authorize systemic-failure escalation successor template",
+        "headBranch": "mp-succ-esc-rot1",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Claude",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "75854c7e4f9032f424e672c1ab3e38a788fac26d",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -4795,7 +4860,7 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "8d5d71858952535a9fa62c7689118066b571b5a3",
+        "headRevision": "9bf93afca096952492c451227edf2bd0645b1ba9",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -4830,7 +4895,7 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "af996bc68055692339d3d0e4f87bb08f90b36808",
+        "headRevision": "66d4443cf15157b1f2dbae3fd02017f0cfc6e6fe",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -4865,7 +4930,7 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "2372027681a7050c9a00400da97a2195e8ffc53c",
+        "headRevision": "1c7aa60338cdb4c74159ddaeca897dff2d16389c",
         "mergeRevision": null,
         "checks": [],
         "review": {
@@ -4901,6 +4966,181 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "c0c9c4b9c2f2fcd9bdb07cd38bafff22415e7130",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 526,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/526",
+        "title": "Surface Fettler impact lineage on the live PR review console",
+        "headBranch": "cursor/fettler-pr-impact-lineage-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "f869dcf0e53184316f109b395040ae01c2925eef",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 527,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/527",
+        "title": "Surface FET-017 coverage standing on the console /changes page",
+        "headBranch": "cursor/changes-impact-coverage-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "e405d9fcf60233e2dfaf4e0d04a284fe07f4099c",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 528,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/528",
+        "title": "Show FET-017 coverage standing on the consumer pending-PR list",
+        "headBranch": "cursor/consumer-pr-coverage-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "1e5f5d2f15ce74946b4c88e2cd14061f1b9fdf9d",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 530,
+        "state": "merged",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/530",
+        "title": "authority: relax cross-PR completeness and revision-equality to ancestry; state-scope sibling metadata mirror; live-open closure-path guard",
+        "headBranch": "mp-trustroot-completeness",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merged",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "00c55e895d31620f340c91e1ac180ebceb788d1d",
+        "mergeRevision": "a2d4654c5b22a25304d5ebfdd22d5686a5f86560",
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 532,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/532",
+        "title": "Define Fettler and ReGauge learning contracts",
+        "headBranch": "codex/529-fettler-regauge-learning-program",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Codex",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "26384452eb8b2fbd435d591c8d6f57402a0fea2d",
         "mergeRevision": null,
         "checks": [],
         "review": {
