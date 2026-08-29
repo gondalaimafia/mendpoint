@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
-import { apiGet, type Provider } from "../../../lib/api";
+import { apiGet, type ChangeImpactCoverage, type Provider } from "../../../lib/api";
+import { changeImpactCoverageSummary } from "../../components/console/change-impact-coverage";
 import { ChangesView } from "../../components/console/changes-view";
+import type { CoverageSummary } from "../../components/console/pr-map";
 import type { ChangesData, Severity, SpecChange, Stat } from "../../components/console/fixtures";
 
 export const dynamic = "force-dynamic";
@@ -42,6 +44,7 @@ type ChangeDetail = ChangeListItem & {
   diff: { entries: DiffEntry[]; risk: string; summary: string };
   findings: Finding[];
   prs: Array<{ id: string; status: string }>;
+  impactCoverage?: ChangeImpactCoverage;
 };
 
 type ProviderDetail = Provider & {
@@ -138,6 +141,7 @@ export default async function ChangesPage() {
     changes.find((c) => c.risk === "breaking") ?? changes[0] ?? null;
 
   let data: ChangesData | null = null;
+  let coverage: CoverageSummary | null = null;
   if (selected) {
     const provider = providers.find((p) => p.id === selected.providerId) ?? null;
     const [detailResult, providerDetailResult] = await Promise.allSettled([
@@ -187,8 +191,12 @@ export default async function ChangesPage() {
         stats,
         changes: specChanges,
       };
+      // Always derive standing from the channel (or its absence). Dropping
+      // impactCoverage here is the FET-017 collapse: empty findings then read
+      // as "0 repos · 0 calls" with no "I do not know" state.
+      coverage = changeImpactCoverageSummary(detail.impactCoverage);
     }
   }
 
-  return <ChangesView data={data} />;
+  return <ChangesView data={data} coverage={coverage} />;
 }

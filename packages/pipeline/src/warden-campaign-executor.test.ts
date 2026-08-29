@@ -32,7 +32,9 @@ import {
   createWardenCampaignReviewPackage,
   createWardenSourceEnvelope,
   executeWardenCampaignTarget,
+  fettlerCampaignExecuteVerificationScope,
   recoverWardenCampaignTarget,
+  tryRecordFettlerCampaignMissionVerification,
   validateCheck,
   WardenCampaignExecutionError,
   type WardenCampaignExecutionDependencies,
@@ -437,11 +439,10 @@ describe("Warden campaign executor", () => {
     expect(source).toContain('role: "pull_request"');
   });
 
-  it("records a snapshot-bound Mission verification after a passing comparison", async () => {
-    // The default fixture already binds campaign-a to mission-a, so this test
-    // exercises the bound path directly rather than re-creating the mission.
+  it("records a candidate-scoped Mission verification after review, not against the source snapshot alone", async () => {
     const value = fixture();
     await executeWardenCampaignTarget(executionInput(value));
+    const candidateDigest = digest("export const amount = String(input.amount);\n");
     const records = listMissionVerifications(value.db, "tenant-a", "mission-a");
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
@@ -450,9 +451,63 @@ describe("Warden campaign executor", () => {
       snapshotId: "snapshot-a",
       resolvedSha,
       manifestSha256,
-      scope: "warden.campaign.execute:campaign-a:target-a",
+      scope: fettlerCampaignExecuteVerificationScope("campaign-a", "target-a", candidateDigest),
       verifierPrincipalId: "worker",
     });
+    expect(listWardenCampaignTargets(value.db, "tenant-a", "campaign-a")[0]?.stage).toBe("review");
+  });
+
+  // FAILURE: comparison.ok is true when no NEW failures appear, even if
+  // post-edit checks are still failing. That must be inconclusive, not passed.
+  it("records inconclusive when comparison is clean but post-edit checks still fail", async () => {
+    const value = fixture();
+    const preexisting = digest("preexisting failure");
+    const deps = dependencies(value, async (input) => [
+      check(input.commands[0]!, "failed", [preexisting]),
+    ]);
+    const result = await executeWardenCampaignTarget(executionInput(value, { dependencies: deps }));
+    expect(result.stage).toBe("review");
+    const records = listMissionVerifications(value.db, "tenant-a", "mission-a");
+    expect(records).toHaveLength(1);
+    expect(records[0]?.status).toBe("inconclusive");
+  });
+
+  // Edge: missing / wrong stage is not determined — do not write evidence
+  // for an attempt that never reached review.
+  it("skips verification write when the target is not in review", () => {
+    const value = fixture();
+    tryRecordFettlerCampaignMissionVerification(value.db, {
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      targetId: "target-a",
+      snapshotId: "snapshot-a",
+      resolvedSha,
+      manifestSha256,
+      candidateDigest: "c".repeat(64),
+      postEditChecks: [check("node check.mjs", "passed")],
+      targetStage: "verifying",
+      verifierPrincipalId: "worker",
+      createdAt,
+    });
+    expect(listMissionVerifications(value.db, "tenant-a", "mission-a")).toHaveLength(0);
+  });
+
+  it("skips verification write when the candidate digest is not a sha256", () => {
+    const value = fixture();
+    tryRecordFettlerCampaignMissionVerification(value.db, {
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      targetId: "target-a",
+      snapshotId: "snapshot-a",
+      resolvedSha,
+      manifestSha256,
+      candidateDigest: "not-a-digest",
+      postEditChecks: [check("node check.mjs", "passed")],
+      targetStage: "review",
+      verifierPrincipalId: "worker",
+      createdAt,
+    });
+    expect(listMissionVerifications(value.db, "tenant-a", "mission-a")).toHaveLength(0);
   });
 
   // The behavioral test above ("records a snapshot-bound Mission verification

@@ -11,6 +11,8 @@ import {
   missionVerificationStanding,
   recordMissionVerification,
   resolveMissionSnapshotIdentity,
+  selectCurrentVerificationRecords,
+  verificationScopeFamily,
   type AppDb,
 } from "./index.js";
 
@@ -152,5 +154,68 @@ describe("mission verification history", () => {
       scope: "stage-2", snapshotId: "snapT2", resolvedSha: "3".repeat(40), manifestSha256: MANIFEST_A, status: "passed",
       verifierPrincipalId: "p1", correlationId: "corr", createdAt: T0 })).toThrow(/snapshot_not_found/);
     expect(listMissionVerifications(db, "t1", "m1").map((x) => x.id)).not.toContain(v2.id);
+  });
+
+  it("keeps only the newest candidate-scoped record in a scope family", () => {
+    const db = fixture();
+    const older = record(
+      db, "snapA", "1".repeat(40), MANIFEST_A, "passed", T0,
+      `warden.campaign.execute:c1:t1:candidate:${"a".repeat(64)}`,
+    );
+    const newer = record(
+      db, "snapA", "1".repeat(40), MANIFEST_A, "inconclusive", "2026-01-02T00:00:00.000Z",
+      `warden.campaign.execute:c1:t1:candidate:${"b".repeat(64)}`,
+    );
+    const selected = selectCurrentVerificationRecords(listMissionVerifications(db, "t1", "m1"));
+    expect(selected).toHaveLength(1);
+    expect(selected[0].standing).toBe("current");
+    if (selected[0].standing !== "current") throw new Error("unreachable");
+    expect(selected[0].record.id).toBe(newer.id);
+    expect(selected[0].record.status).toBe("inconclusive");
+    expect(verificationScopeFamily(older.scope)).toBe(verificationScopeFamily(newer.scope));
+    expect(verificationScopeFamily(older.scope)).toBe("warden.campaign.execute:c1:t1");
+  });
+
+  // CONTROL: an unresolvable createdAt tie between two candidates of the same
+  // family is refused, not guessed by content-digest order. Restoring the
+  // `record.id >` digest tie-break (which could select the older candidate's
+  // passed row) fails this test.
+  it("refuses to select a current record when candidates in a family tie on createdAt", () => {
+    const db = fixture();
+    const passedOlderCandidate = record(
+      db, "snapA", "1".repeat(40), MANIFEST_A, "passed", T0,
+      `warden.campaign.execute:c1:t1:candidate:${"a".repeat(64)}`,
+    );
+    const inconclusiveOtherCandidate = record(
+      db, "snapA", "1".repeat(40), MANIFEST_A, "inconclusive", T0,
+      `warden.campaign.execute:c1:t1:candidate:${"b".repeat(64)}`,
+    );
+    const selected = selectCurrentVerificationRecords(listMissionVerifications(db, "t1", "m1"));
+    expect(selected).toHaveLength(1);
+    expect(selected[0].standing).toBe("ambiguous");
+    if (selected[0].standing !== "ambiguous") throw new Error("unreachable");
+    expect(selected[0].family).toBe("warden.campaign.execute:c1:t1");
+    expect(selected[0].contenders.map((row) => row.id).sort())
+      .toEqual([passedOlderCandidate.id, inconclusiveOtherCandidate.id].sort());
+  });
+
+  it("does not collapse unrelated scopes into the same family", () => {
+    const db = fixture();
+    record(db, "snapA", "1".repeat(40), MANIFEST_A, "passed", T0, "stage-2");
+    record(db, "snapA", "1".repeat(40), MANIFEST_A, "failed", "2026-01-02T00:00:00.000Z", "stage-3");
+    const selected = selectCurrentVerificationRecords(listMissionVerifications(db, "t1", "m1"));
+    const scopes = selected.map((s) => (s.standing === "current" ? s.record.scope : s.family)).sort();
+    expect(scopes).toEqual(["stage-2", "stage-3"]);
+    expect(selected.every((s) => s.standing === "current")).toBe(true);
+  });
+
+  // Direct guard on the family reducer itself. A candidate-suffixed scope is
+  // stripped to its base; a non-candidate scope is its own family. Replacing
+  // verificationScopeFamily with the identity function fails the first assertion.
+  it("strips the trailing candidate digest to a shared family", () => {
+    const base = "warden.campaign.execute:c1:t1";
+    expect(verificationScopeFamily(`${base}:candidate:${"a".repeat(64)}`)).toBe(base);
+    expect(verificationScopeFamily(`${base}:candidate:${"b".repeat(64)}`)).toBe(base);
+    expect(verificationScopeFamily("stage-2")).toBe("stage-2");
   });
 });
