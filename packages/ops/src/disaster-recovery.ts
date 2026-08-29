@@ -610,8 +610,17 @@ function snapshotSqliteDatabase(source: string, destination: string): void {
 
 function assertJsonConfiguration(path: string): void {
   if (!statSync(path).isFile()) throw new Error("backup_configuration_file_required");
+  // Reading and parsing are separate failures. Folding the read into the parse handler reports a
+  // file the process could not open as malformed JSON, which sends operators to look at content
+  // that was never inspected.
+  let contents: string;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    contents = readFileSync(path, "utf8");
+  } catch {
+    throw new Error("backup_configuration_unreadable");
+  }
+  try {
+    const parsed = JSON.parse(contents) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid");
   } catch {
     throw new Error("backup_configuration_json_required");
