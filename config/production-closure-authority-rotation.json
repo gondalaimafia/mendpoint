@@ -400,6 +400,111 @@
           "toMode": "100644"
         }
       ]
+    },
+    {
+      "rotationId": "rotation-20260828-003",
+      "kind": "runtime",
+      "issuedAt": "2026-08-29T03:13:54.620Z",
+      "expiresAt": "2026-08-30T03:13:54.757Z",
+      "basePolicySha256": "sha256:86585f7d707b5b28276b663660533068f936ccd3243557541168253ae70d3466",
+      "proposedPolicySha256": "sha256:35d7654bed7c77dfe142cf2fde081b9681f92b62e5974683fe172efb87ab381c",
+      "previousRotationId": "rotation-20260828-001",
+      "baseRevision": "dc7141bd3877a443dda96026e809f4e4f45ccd55",
+      "baseLedgerSha256": "sha256:b1a52000b6325cf4d2c0809845ca193f433c5c57976ac9faf54716aa75333324",
+      "successor": null,
+      "changes": [
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:86585f7d707b5b28276b663660533068f936ccd3243557541168253ae70d3466",
+          "toSha256": "sha256:35d7654bed7c77dfe142cf2fde081b9681f92b62e5974683fe172efb87ab381c",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:cc9db3a2cbcb3a46cdf95fd08215a462c70be48559f9836d3d96d3a54269c086",
+          "toSha256": "sha256:8cb0c900f7c00b3f32702dacbe1793939902f45f957fcdfff794b8e1b96f13f7",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-github-authority.test.ts",
+          "fromSha256": "sha256:0eb51927c08f28ac91ec94b705e4179d9863d0516294a8cadcb432e0c6c6a944",
+          "toSha256": "sha256:a4ff7fad75bdfd0062555ec7fd588f1253438b332940081561a97e1acb1cf998",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-github-authority.ts",
+          "fromSha256": "sha256:da77bc9a1a8b1f336e2002c0284753c038880d51845360e1b856e2314f1cef59",
+          "toSha256": "sha256:9644b2b8306fdf33d31a928af93e4dcd08006ba9868d139cd8d9ab0432bf0003",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-matrix.ts",
+          "fromSha256": "sha256:3a11f017b1f29d89a3c9234a8fa708c00d997ae63de8576fb6295175b7cbb1e2",
+          "toSha256": "sha256:6a7ab2670f0338b16fcc71045e5f87965ac6567422245c640c90574ed422cb8c",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-proposal-authority.test.ts",
+          "fromSha256": "sha256:9341106c6d9d537dd85df0e192fc17d89ea74bb23da1d31a84f8dd7a1c55e036",
+          "toSha256": "sha256:25b0e2ee130972b5ba7df995f0cf851eae7870cfbc5f729f061f057f721d5691",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-proposal-authority.ts",
+          "fromSha256": "sha256:933e961fc74128870e29783500db5bed338c816def3dcffbaf9876c429002500",
+          "toSha256": "sha256:84b6fd2d5e5118dd13c4ac2d14be4bb4294e8cbdad7f60386c3a1ed677868c35",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
+    },
+    {
+      "kind": "runtime",
+      "rotationId": "rotation-20260828-004",
+      "previousRotationId": "rotation-20260828-003",
+      "baseRevision": "a2d4654c5b22a25304d5ebfdd22d5686a5f86560",
+      "issuedAt": "2026-08-29T03:39:42.288Z",
+      "expiresAt": "2026-08-30T03:39:42.288Z",
+      "baseLedgerSha256": "sha256:94bb962c0f28373df4313ea930a4bb5e7d6f7b3256dd6811e1eef223f1b8f8a9",
+      "basePolicySha256": "sha256:35d7654bed7c77dfe142cf2fde081b9681f92b62e5974683fe172efb87ab381c",
+      "proposedPolicySha256": "sha256:106d813902e46843717b2ed1ac06ad45c3da663473c73868a85a3cb8f01f8b5b",
+      "successor": null,
+      "changes": [
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:35d7654bed7c77dfe142cf2fde081b9681f92b62e5974683fe172efb87ab381c",
+          "toSha256": "sha256:106d813902e46843717b2ed1ac06ad45c3da663473c73868a85a3cb8f01f8b5b",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:8cb0c900f7c00b3f32702dacbe1793939902f45f957fcdfff794b8e1b96f13f7",
+          "toSha256": "sha256:0aabeb7d43b76522d172b4497cdc0e0d1340b0fc1a6eada97bf7f87a52a9c828",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-matrix.test.ts",
+          "fromSha256": "sha256:17fff2e567ed4c64f769d930cb330dc26ac2a07ba8d3d871ed706a82cf056afe",
+          "toSha256": "sha256:a506b91a93dc866fcd8f670859554244d60c88e77c0f447f869a95a993c70b7c",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-matrix.ts",
+          "fromSha256": "sha256:6a7ab2670f0338b16fcc71045e5f87965ac6567422245c640c90574ed422cb8c",
+          "toSha256": "sha256:bee436028046690d551d1708fb123cfff6910211281cd891a9311b288a5e1eff",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
     }
   ]
 }
