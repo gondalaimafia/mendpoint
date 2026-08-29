@@ -37,11 +37,10 @@ const BUCKET = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 const PREFIX = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$/;
 const BACKUP_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 // rclone resolves its configuration file from HOME when it is not told otherwise.
-// scripts/customer-backup.ts builds this config as root and then drops to uid 1000, while
-// customerObjectStoreProcessEnv forwards the captured HOME, so rclone runs as uid 1000 and
-// reads /root/.rclone.conf: it fails with EACCES on a file it does not need, because
-// connectionArgs already specify the remote inline. Pointing --config at the null device
-// removes the configuration file, and with it the HOME dependency, for every rclone call.
+// scripts/customer-backup.ts builds this config before dropping to uid 1000. The remote is fully
+// specified inline, so rclone must never discover configuration from the constructing identity.
+// Pointing --config at the null device removes that implicit file dependency for every call;
+// customerObjectStoreProcessEnv separately omits HOME and caller-supplied rclone configuration.
 const RCLONE_NO_CONFIG_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
 const DEFAULT_OPERATION_TIMEOUT_MS = 4 * 60 * 60 * 1_000;
 const MIN_OPERATION_TIMEOUT_MS = 60_000;
