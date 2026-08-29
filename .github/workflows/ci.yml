@@ -8,6 +8,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual dispatch exists so the customer-production deploy below can be
+  # exercised deliberately on main after merge, rather than first proving itself
+  # on an unrelated push. The mendpoint-talal deploy job stays push-only, so
+  # dispatching this workflow re-runs the gates and can ship only the customer
+  # app -- never mendpoint-talal.
+  workflow_dispatch: {}
 
 jobs:
   test:
@@ -409,6 +415,156 @@ jobs:
             sleep 5
           done
           echo "::error::Production verification failed for revision ${expected} (deployed, but not confirmed live on current main)."
+          echo "  /version -> http ${ver_code}, ${ver_bytes} bytes, revision=$([ -n "${revision}" ] && echo "${revision}" || echo "<absent>")"
+          echo "  /livez   -> http ${live_code}, ${live_bytes} bytes"
+          echo "  /healthz -> http ${health_code}, ${health_bytes} bytes"
+          if [ -z "${revision}" ]; then
+            echo "  Deployed revision could not be determined (absent). This is a FAILURE, not a match."
+          elif [ "${revision}" != "${expected}" ]; then
+            echo "  Deployed revision ${revision} does not match expected ${expected}."
+          else
+            echo "  Revision matched but the app never reported healthy (/livez and /healthz must both be 200)."
+          fi
+          exit 1
+
+  # mendpoint-fettler-production is the customer-profile app. Until this job it
+  # had NO deploy automation of any kind: the only flyctl deploy invocations in
+  # this repo target mendpoint-talal (above) and mendpoint-regauge-production.
+  # The app was therefore deployed by hand and drifted -- it still serves an
+  # image built for mendpoint-talal whose error strings no longer exist in
+  # source, which is why the customer backup cron fails every run. This job
+  # gives that app the same gated push-to-main deploy path mendpoint-talal has.
+  #
+  # It is deliberately NOT gated on /readyz. Customer readiness depends on
+  # backup evidence this deploy cannot itself produce, so asserting it here
+  # would make the job permanently red for a reason outside a deploy's control.
+  # The job proves the right code is running and the process is alive; readiness
+  # remains the backup workflow's business.
+  deploy-customer-production:
+    # Runs on merges to main and on deliberate dispatch, never on pull_request:
+    # a PR that deployed would ship unreviewed code to a customer app. The
+    # workflow_dispatch arm exists so this path can be exercised once on purpose
+    # after merge instead of waiting for the next push to prove itself.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
+    needs: [test, release-gates, container-builds, deployment-e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Its own group, not mendpoint-production: this is a different app and must
+    # not serialise behind (or cancel) the mendpoint-talal deploy.
+    concurrency:
+      group: customer-production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      # Same supersession guard as the deploy job above: a run that waited in the
+      # concurrency queue can start after newer commits merged, and shipping a
+      # superseded commit would silently overwrite newer main with older code.
+      #
+      # Three outcomes, three behaviours -- "could not determine" is NOT folded
+      # into "current". When supersession cannot be established we skip, because
+      # the two failure modes are not symmetric: skipping means this run does not
+      # deploy, which the next merge to main fixes on its own and a dispatch run
+      # fixes immediately -- self-healing, bounded, and visible in the log.
+      # Deploying blind means an older commit can silently overwrite newer main
+      # in production, which is not self-healing and stays invisible until
+      # someone notices /version going backwards.
+      - name: Re-assert this run deploys current main head
+        id: head
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${{ github.sha }}"
+          head_sha="$(git ls-remote origin refs/heads/main 2>/dev/null | awk 'NR==1 {print $1}' || true)"
+          if [ -z "$head_sha" ]; then
+            echo "::warning::Deploy skipped: could not determine the current main head, so it is unknown whether commit ${expected} is still current. Refusing to deploy on an unestablished check rather than risk overwriting newer main with older code. The next merge to main will deploy; to ship this commit now, re-run this workflow via workflow_dispatch on main once the repository is reachable."
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+          elif [ "$head_sha" != "$expected" ]; then
+            echo "::notice::Deploy skipped: commit ${expected} was superseded by newer main head ${head_sha}. The newer commit's deploy run is responsible for shipping it."
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "This run deploys the current main head ${expected}."
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        if: steps.head.outputs.superseded != 'true'
+        with:
+          version: "0.4.79"
+      # Prove this credential actually has authority over the customer app
+      # BEFORE mutating anything. FLY_API_TOKEN is the established deploy secret
+      # (it deploys mendpoint-talal above), but nothing in this repo previously
+      # exercised it against mendpoint-fettler-production, so its scope over this
+      # app is asserted here rather than assumed. Read-only: `status` mutates
+      # nothing. The token is never echoed -- only its presence is tested.
+      - name: Prove deploy authority over the customer app
+        if: steps.head.outputs.superseded != 'true'
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$FLY_API_TOKEN" || { echo "::error::FLY_API_TOKEN is empty; cannot deploy the customer app."; exit 1; }
+          if ! flyctl status --app mendpoint-fettler-production >/dev/null 2>&1; then
+            echo "::error::FLY_API_TOKEN cannot read mendpoint-fettler-production. The repository-level deploy token does not cover this app; scope a token to it rather than widening this job."
+            exit 1
+          fi
+          echo "Deploy credential has authority over mendpoint-fettler-production."
+      # --config is required because fly.customer-warden.toml is the ONLY fly
+      # config in this repo with no `app =` line (it is a reusable customer
+      # profile), so the app name must be passed explicitly with --app.
+      # --ha=false is load-bearing, not cosmetic: the profile is bounded to
+      # exactly one machine (MENDPOINT_CUSTOMER_MAX_MACHINES=1) and the app pins
+      # itself to an approved machine id, so letting Fly add a second machine
+      # would boot a node that fails closed.
+      # MENDPOINT_RELEASE_REVISION stamps the immutable git sha onto the running
+      # app so /version reports exactly what is deployed; without it the revision
+      # is null and the drift this job exists to fix stays invisible.
+      - name: Deploy customer production
+        if: steps.head.outputs.superseded != 'true'
+        run: >-
+          flyctl deploy --remote-only --ha=false --app mendpoint-fettler-production
+          --config fly.customer-warden.toml
+          --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      # Bounded verification, mirroring the mendpoint-talal deploy: every curl
+      # carries --max-time and the loop has an explicit deadline, so an
+      # unresponsive app fails fast rather than burning the job timeout. An
+      # absent revision is treated as a FAILURE, never a match.
+      - name: Verify deployed revision and customer production health
+        if: steps.head.outputs.superseded != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${{ github.sha }}"
+          base="https://mendpoint-fettler-production.fly.dev"
+          revision=""
+          ver_code=000
+          ver_bytes=0
+          live_code=000
+          live_bytes=0
+          health_code=000
+          health_bytes=0
+          deadline=$(( $(date +%s) + 300 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            ver_code="$(curl -sS -o version.json -w '%{http_code}' --max-time 10 "$base/version" || echo 000)"
+            ver_bytes="$(wc -c <version.json 2>/dev/null || echo 0)"
+            live_code="$(curl -sS -o livez.json -w '%{http_code}' --max-time 10 "$base/livez" || echo 000)"
+            live_bytes="$(wc -c <livez.json 2>/dev/null || echo 0)"
+            health_code="$(curl -sS -o healthz.json -w '%{http_code}' --max-time 10 "$base/healthz" || echo 000)"
+            health_bytes="$(wc -c <healthz.json 2>/dev/null || echo 0)"
+            revision=""
+            if [ "$ver_code" = "200" ]; then
+              revision="$(jq -r '.revision // empty' version.json 2>/dev/null || true)"
+            fi
+            if [ "$revision" = "$expected" ] && [ "$live_code" = "200" ] && [ "$health_code" = "200" ]; then
+              echo "Customer production is live and serving the expected revision ${expected}."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Customer production verification failed for revision ${expected} (deployed, but not confirmed live on current main)."
           echo "  /version -> http ${ver_code}, ${ver_bytes} bytes, revision=$([ -n "${revision}" ] && echo "${revision}" || echo "<absent>")"
           echo "  /livez   -> http ${live_code}, ${live_bytes} bytes"
           echo "  /healthz -> http ${health_code}, ${health_bytes} bytes"
