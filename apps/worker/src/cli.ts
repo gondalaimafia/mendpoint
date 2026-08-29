@@ -190,7 +190,7 @@ import {
 } from "./warden-model-accounting.js";
 import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
 import { persistWardenTrajectory } from "./warden-trajectory.js";
-import { assertAgentRunMissionPolicy } from "./agent-run-policy.js";
+import { assertBoundAgentRunMissionPolicy } from "./agent-run-policy.js";
 import { resolveBoundMission } from "./job-bound-mission.js";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 import { resolveResumeContext } from "./mission-resume.js";
@@ -3372,17 +3372,18 @@ if (job.type === "warden.candidate.cleanup") {
         }
         const repository = getConnectedRepository(db, binding.repositoryId, job.tenant_id);
         if (!repository) throw new Error("warden_connected_repository_not_found");
-        if (payload.missionId) {
-          assertAgentRunMissionPolicy(db, {
-            tenantId: job.tenant_id,
-            missionId: payload.missionId,
-            repositoryId: binding.repositoryId,
-            branch: repository.selected_branch || repository.default_branch || "main",
-            targetPaths: allowedChangedPaths,
-            useLlm,
-            risk: payload.ciFailure ? "high" : "medium",
-          });
-        }
+        // Enforce the Mission Policy Envelope for any Mission-bound run —
+        // whether bound by an explicit `missionId` claim or by a campaign hint
+        // that resolves to a Mission. The resolver is the same one that enrolls
+        // the MissionTask, so a campaign-bound run cannot appear on the Mission
+        // timeline with its envelope left unevaluated. Unbound jobs stay a no-op.
+        assertBoundAgentRunMissionPolicy(db, job, {
+          repositoryId: binding.repositoryId,
+          branch: repository.selected_branch || repository.default_branch || "main",
+          targetPaths: allowedChangedPaths,
+          useLlm,
+          risk: payload.ciFailure ? "high" : "medium",
+        });
         const repositoryClassification = modelSourcePolicy
           ? resolveWardenRepositoryClassification(job.tenant_id, repository.remote_id, workerEnv)
           : "restricted";
