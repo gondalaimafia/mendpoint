@@ -1,21 +1,19 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  bindMissionScope,
   bindMissionToPolicyEnvelope,
   createDb,
   createMission,
   createPolicyEnvelope,
   evaluateMissionExceptions,
-  insertConnectedRepository,
+  getMission,
   insertPrincipal,
-  insertRepositorySnapshot,
   listMissionExceptions,
   resolveMissionException,
-  upsertScmConnection,
   type AppDb,
+  type SnapshotIdentity,
 } from "@mendpoint/db";
 import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
 import {
@@ -54,6 +52,11 @@ function fixture(input: { tenantId?: string; missionId?: string } = {}): AppDb {
     displayName: "Owner",
     createdAt: at,
   });
+  // The Mission is created exactly as the Fettler enrollment path creates it
+  // (warden-campaign-enrollment): no repository/snapshot scope is ever bound.
+  // `bindMissionScope` is a ReGauge-only launch step, so on the Fettler path
+  // `mission.snapshotId` stays null. The deny's snapshot binding therefore must
+  // come from the caller's execution snapshot, not from the Mission row.
   createMission(db, {
     id: missionId,
     tenantId,
@@ -66,7 +69,31 @@ function fixture(input: { tenantId?: string; missionId?: string } = {}): AppDb {
     correlationId: "corr",
     createdAt: at,
   });
+  // Seed the repo and two immutable snapshots the agent.run could execute
+  // against. NOTE: we deliberately do NOT call bindMissionScope here — the real
+  // Fettler path never does, and faking it is what let a mission-derived binding
+  // (undefined on this path) look green while being a no-op in production.
+  db.raw.prepare(
+    `INSERT INTO scm_connections (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+     VALUES ('c1', ?, 'github', 'me://ref', 'acct', 'Acme', ?, ?)`,
+  ).run(tenantId, at, at);
+  db.raw.prepare(
+    `INSERT INTO connected_repositories
+       (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch, environment, retention_days, status, created_at, updated_at)
+     VALUES ('repo-a', ?, 'c1', '1', 'acme', 'svc', 'main', 'main', 'production', 30, 'ready', ?, ?)`,
+  ).run(tenantId, at, at);
+  seedSnapshot(db, tenantId, "snapA", "a".repeat(40));
+  seedSnapshot(db, tenantId, "snapB", "c".repeat(40));
   return db;
+}
+
+function seedSnapshot(db: AppDb, tenantId: string, snapshotId: string, sha: string): void {
+  db.raw.prepare(
+    `INSERT INTO repository_snapshots
+       (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+        submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+     VALUES (?, ?, 'repo-a', 'main', ?, ?, ?, 'reject', 'reject', '[]', 1, ?, '2026-09-01T00:00:00.000Z')`,
+  ).run(snapshotId, tenantId, sha, "b".repeat(64), `C:/tmp/${snapshotId}`, at);
 }
 
 function bindRestricted(db: AppDb): void {
@@ -98,64 +125,8 @@ function bindRestricted(db: AppDb): void {
   });
 }
 
-function bindMissionSnapshot(db: AppDb, input: {
-  snapshotId?: string;
-  resolvedSha?: string;
-  repositoryId?: string;
-} = {}) {
-  const dir = opened.find((item) => item.db === db)?.dir;
-  if (!dir) throw new Error("test_fixture_dir_missing");
-  const snapshotId = input.snapshotId ?? "snap-1";
-  const resolvedSha = input.resolvedSha ?? "a".repeat(40);
-  const repositoryId = input.repositoryId ?? "repo-a";
-  const storage = join(dir, "snapshot");
-  mkdirSync(storage, { recursive: true });
-  upsertScmConnection(db, {
-    id: "scm-1",
-    tenantId: "t1",
-    provider: "github",
-    credentialRef: "github-app://installation/1",
-    externalAccountId: "1",
-    displayName: "Acme",
-    createdAt: at,
-    updatedAt: at,
-  });
-  insertConnectedRepository(db, {
-    id: repositoryId,
-    tenantId: "t1",
-    connectionId: "scm-1",
-    remoteId: "200",
-    owner: "acme",
-    name: "payments",
-    defaultBranch: "main",
-    status: "ready",
-    createdAt: at,
-    updatedAt: at,
-  });
-  insertRepositorySnapshot(db, {
-    id: snapshotId,
-    tenantId: "t1",
-    repositoryId,
-    requestedRef: "main",
-    resolvedSha,
-    manifestSha256: "b".repeat(64),
-    storagePath: storage,
-    createdAt: at,
-    expiresAt: "2027-01-01T00:00:00.000Z",
-  });
-  bindMissionScope(db, {
-    tenantId: "t1",
-    missionId: "m1",
-    repositoryId,
-    snapshotId,
-    actorPrincipalId: "p1",
-    eventId: "e-scope",
-    idempotencyKey: "scope-1",
-    correlationId: "corr",
-    createdAt: at,
-  });
-  return { snapshotId, resolvedSha } as const;
-}
+const snapA: SnapshotIdentity = { snapshotId: "snapA", resolvedSha: "a".repeat(40) };
+const snapB: SnapshotIdentity = { snapshotId: "snapB", resolvedSha: "c".repeat(40) };
 
 const claim = {
   tenantId: "t1",
@@ -165,10 +136,11 @@ const claim = {
   targetPaths: ["src/pay.ts"],
   useLlm: false,
   risk: "medium",
+  observedAgainst: snapA,
 } as const;
 
 describe("assertAgentRunMissionPolicy records policy_exception", () => {
-  it("records a blocking policy_exception when no envelope is bound", () => {
+  it("records a blocking policy_exception bound to the execution snapshot when no envelope is bound", () => {
     const db = fixture();
     expect(() => assertAgentRunMissionPolicy(db, { ...claim, observedAt: at }))
       .toThrow("mission_policy_envelope_missing");
@@ -182,10 +154,10 @@ describe("assertAgentRunMissionPolicy records policy_exception", () => {
       blocking: true,
       resolutionPath: "adjust_task_or_rebind_policy_envelope",
       createdAt: at,
-      observedSnapshotId: null,
-      observedResolvedSha: null,
+      observedSnapshotId: "snapA",
+      observedResolvedSha: "a".repeat(40),
     });
-    expect(evaluateMissionExceptions(db, "t1", "m1").missionBlocked).toBe(true);
+    expect(evaluateMissionExceptions(db, "t1", "m1", snapA).missionBlocked).toBe(true);
   });
 
   it("records a blocking policy_exception when the envelope denies the edit", () => {
@@ -260,7 +232,7 @@ describe("assertAgentRunMissionPolicy records policy_exception", () => {
     expect(listMissionExceptions(db, "t2", "m1")).toEqual([]);
   });
 
-  it("does not duplicate a still-blocking policy_exception on replay", () => {
+  it("does not duplicate a still-blocking policy_exception on replay against the same snapshot", () => {
     const db = fixture();
     expect(() => assertAgentRunMissionPolicy(db, { ...claim, observedAt: at }))
       .toThrow("mission_policy_envelope_missing");
@@ -290,7 +262,7 @@ describe("assertAgentRunMissionPolicy records policy_exception", () => {
       ...claim,
       observedAt: "2026-08-28T22:43:00.000Z",
     })).toThrow("mission_policy_envelope_missing");
-    const evaluation = evaluateMissionExceptions(db, "t1", "m1");
+    const evaluation = evaluateMissionExceptions(db, "t1", "m1", snapA);
     expect(evaluation.missionBlocked).toBe(true);
     expect(evaluation.blocking).toHaveLength(1);
     expect(evaluation.blocking[0]?.createdAt).toBe("2026-08-28T22:43:00.000Z");
@@ -309,37 +281,32 @@ describe("assertAgentRunMissionPolicy records policy_exception", () => {
     expect(listMissionExceptions(db, "t1", "m1")).toEqual([]);
   });
 
-  it("binds a scoped Mission deny to that snapshot so a later snapshot leaves it stale", () => {
+  it("binds the deny to the caller snapshot on the real Fettler path (no Mission scope) and goes stale on a later snapshot", () => {
     const db = fixture();
     bindRestricted(db);
-    const snap = bindMissionSnapshot(db);
+    // Guard the premise: the Fettler Mission has NO bound scope, so a binding
+    // derived from mission.snapshotId would be undefined here (a no-op that
+    // blocks forever). The binding must come from the caller instead.
+    expect(getMission(db, "t1", "m1")?.snapshotId).toBeNull();
+    expect(getMission(db, "t1", "m1")?.repositoryId).toBeNull();
     expect(() => assertAgentRunMissionPolicy(db, { ...claim, observedAt: at }))
       .toThrow(/mission_policy_denied:repository_out_of_scope:repo-a/);
     const rows = listMissionExceptions(db, "t1", "m1");
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.observedSnapshotId).toBe(snap.snapshotId);
-    expect(rows[0]?.observedResolvedSha).toBe(snap.resolvedSha);
-    const againstBound = evaluateMissionExceptions(db, "t1", "m1", snap);
-    expect(againstBound.missionBlocked).toBe(true);
-    expect(againstBound.blocking).toHaveLength(1);
-    const againstLater = evaluateMissionExceptions(db, "t1", "m1", {
-      snapshotId: "snap-later",
-      resolvedSha: "c".repeat(40),
-    });
-    expect(againstLater.missionBlocked).toBe(false);
-    expect(againstLater.stale).toHaveLength(1);
-    expect(againstLater.blocking).toHaveLength(0);
-  });
-
-  it("does not duplicate a snapshot-bound policy_exception on replay against the same snapshot", () => {
-    const db = fixture();
-    bindMissionSnapshot(db);
-    expect(() => assertAgentRunMissionPolicy(db, { ...claim, observedAt: at }))
-      .toThrow("mission_policy_envelope_missing");
-    expect(() => assertAgentRunMissionPolicy(db, {
-      ...claim,
-      observedAt: "2026-08-28T22:41:00.000Z",
-    })).toThrow("mission_policy_envelope_missing");
-    expect(listMissionExceptions(db, "t1", "m1")).toHaveLength(1);
+    // Bound to the execution snapshot the caller threaded, NOT null.
+    expect(rows[0]?.observedSnapshotId).toBe("snapA");
+    expect(rows[0]?.observedResolvedSha).toBe("a".repeat(40));
+    // On that snapshot the deny still blocks the mission...
+    const current = evaluateMissionExceptions(db, "t1", "m1", snapA);
+    expect(current.missionBlocked).toBe(true);
+    expect(current.blocking).toHaveLength(1);
+    // ...but once a later agent.run runs against a newer snapshot the prior deny
+    // is STALE, not blocking: it does not pin the mission forever. Reverting the
+    // observedAgainst binding (context-independent, as the mission-derived path
+    // collapses to here) turns this back to blocking — the mutation guard.
+    const advanced = evaluateMissionExceptions(db, "t1", "m1", snapB);
+    expect(advanced.missionBlocked).toBe(false);
+    expect(advanced.blocking).toHaveLength(0);
+    expect(advanced.stale).toHaveLength(1);
   });
 });

@@ -9,11 +9,26 @@
  * invalid envelope, or explicit deny fails closed. Those blockers are also
  * raised as Mission exceptions (category `policy_exception`) so the same deny
  * is not rediscovered on the next `agent.run` (ME-MSN-002).
+ *
+ * The deny is observed in the context of the exact immutable snapshot this
+ * `agent.run` executes against, so the exception is bound to THAT snapshot
+ * (`observedAgainst`), threaded from the caller. It must NOT be derived from
+ * `mission.snapshotId`: the Fettler enrollment path (warden-campaign-enrollment)
+ * creates the Mission with no snapshot scope and never calls `bindMissionScope`
+ * (only the ReGauge launch does), so on the live Fettler path `mission.snapshotId`
+ * is null. A mission-derived binding would yield no snapshot there and raise the
+ * exception unbound — blocking the mission forever, the exact defect this seam
+ * exists to avoid. The execution snapshot is always present here (this path is
+ * only reached for an immutable snapshot). The exception counts as blocking only
+ * while the mission is on that snapshot; once a later `agent.run` runs against a
+ * newer snapshot the prior deny is STALE and surfaced for re-affirmation rather
+ * than blocking forever. This matches how the review handoff resolver treats
+ * blocking mission exceptions (apps/api/src/warden-candidate-review.ts) and the
+ * existing convention at apps/worker/src/fettler-mission-task-claim.ts.
  */
 import {
   evaluateMissionExceptions,
   getMission,
-  listRepositorySnapshots,
   raiseMissionException,
   type AppDb,
   type Mission,
@@ -35,6 +50,11 @@ export type AgentRunMissionPolicyInput = Readonly<{
   targetPaths: readonly string[];
   useLlm: boolean;
   risk: string;
+  // The immutable snapshot this agent.run executes against. A raised policy
+  // exception is bound to it so it goes stale when the mission moves past it,
+  // instead of blocking the mission forever. Threaded from the caller because
+  // the Fettler Mission row carries no snapshot scope.
+  observedAgainst: SnapshotIdentity;
   observedAt?: string;
 }>;
 
@@ -62,29 +82,19 @@ export function agentRunPolicyTask(input: {
   });
 }
 
-/** Bind to the Mission's snapshot when one exists. Missing snapshot id is context-independent; a dangling snapshot id fails closed. */
-function missionObservedAgainst(db: AppDb, mission: Mission): SnapshotIdentity | undefined {
-  if (!mission.snapshotId) return undefined;
-  if (!mission.repositoryId) throw new Error("mission_exception_snapshot_not_found");
-  const row = listRepositorySnapshots(db, mission.tenantId, mission.repositoryId)
-    .find((item) => item.id === mission.snapshotId);
-  if (!row) throw new Error("mission_exception_snapshot_not_found");
-  return { snapshotId: row.id, resolvedSha: row.resolved_sha };
-}
-
 function recordPolicyException(
   db: AppDb,
   mission: Mission,
   reason: string,
   createdAt: string,
+  observedAgainst: SnapshotIdentity,
 ): void {
-  const observedAgainst = missionObservedAgainst(db, mission);
-  const already = evaluateMissionExceptions(
-    db,
-    mission.tenantId,
-    mission.id,
-    observedAgainst,
-  ).blocking.some((item) => item.category === "policy_exception" && item.reason === reason);
+  // Dedup against the CURRENT snapshot: a still-blocking policy_exception with
+  // the same reason on this snapshot means the deny was already recorded. A
+  // matching exception bound to a superseded snapshot is stale here, so a fresh
+  // deny on the new snapshot is recorded (and re-affirmed) rather than skipped.
+  const already = evaluateMissionExceptions(db, mission.tenantId, mission.id, observedAgainst).blocking
+    .some((item) => item.category === "policy_exception" && item.reason === reason);
   if (already) return;
   raiseMissionException(db, {
     tenantId: mission.tenantId,
@@ -94,7 +104,7 @@ function recordPolicyException(
     ownerPrincipalId: mission.ownerPrincipalId,
     resolutionPath: "adjust_task_or_rebind_policy_envelope",
     blocking: true,
-    ...(observedAgainst ? { observedAgainst } : {}),
+    observedAgainst,
     correlationId: `agent-run-policy:${mission.id}`,
     createdAt,
     category: "policy_exception",
@@ -114,12 +124,12 @@ export function assertAgentRunMissionPolicy(
     task: agentRunPolicyTask(input),
   });
   if (enforcement.status === "no_envelope") {
-    recordPolicyException(db, mission, "mission_policy_envelope_missing", observedAt);
+    recordPolicyException(db, mission, "mission_policy_envelope_missing", observedAt, input.observedAgainst);
     throw new Error("mission_policy_envelope_missing");
   }
   const reasons = missionPolicyDenialReasons(enforcement);
   if (reasons) {
-    recordPolicyException(db, mission, reasons.join(";"), observedAt);
+    recordPolicyException(db, mission, reasons.join(";"), observedAt, input.observedAgainst);
     throw new Error(`mission_policy_denied:${reasons.join(";")}`);
   }
 }
