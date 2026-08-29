@@ -3500,3 +3500,28 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Safety evidence: only HTTPS uses the legacy formula. FTP, file, and custom hierarchical identifiers retain the domain-separated literal digest, while opaque IDs and URNs remain unchanged; the complete ingestion suite re-proves returned and durable secret redaction.
 - Verification evidence: the focused upgrade regression passes 2 of 2, the complete ingestion file passes 33 of 33, and the full Catalog suite passes 158 of 158 across eight files. Full-workspace typecheck passes, `npm audit --omit=dev` reports zero vulnerabilities, the changed production source secret scan has no matches, and the CRLF-aware diff check is clean.
 - EOL and scope evidence: the two Catalog files remain LF, the worker CLI remains `i/crlf w/crlf`, and only the two Catalog files plus `tasks/todo.md` and `tasks/lessons.md` changed. No remote mutation occurred.
+## 2026-08-28 Mendpoint Fettler and ReGauge production app cutover
+
+- [ ] Refresh `origin/main`, GitHub coordination comments, open PR overlap, Fly app inventory, current revisions, health, secret-name inventory, and volume inventory.
+- [ ] Preserve exact pre-cutover evidence and create immutable on-demand snapshots for `mendpoint-talal` and `mendpoint-transformer-pilot` without exposing secret values.
+- [ ] Add canonical production manifests for `mendpoint-fettler-production` and `mendpoint-regauge-production`, using the exact current-main revision and no demo, mock, pilot, shadow, or seed behavior.
+- [ ] Provision `mendpoint-fettler-production`, restore the current Fettler volume, stage protected bindings, deploy exact current main, and verify real-SCM customer-production boot and health.
+- [ ] Restore the authenticated ReGauge state into `mendpoint-regauge-production`, stage protected bindings, deploy coordinator then worker from exact current main, and verify database integrity, ledger continuity, readiness, and bounded advisory authority.
+- [ ] Prove Fettler and ReGauge live paths, including current revision, production profile, exact host binding, sandbox authority, one-draft/no-merge guard, durable consent-before-processing evidence, and a five-minute readiness soak.
+- [ ] Scale `mendpoint-talal` and `mendpoint-transformer-pilot` to zero only after their respective production replacements pass every gate; retain legacy volumes and snapshots for rollback and do not delete either app.
+- [ ] Verify `mendpoint-sandbox` remains an up-to-date digest-pinned ephemeral authority rather than a permanently running product app.
+- [ ] Run focused tests, full workspace typecheck, optimized build, dependency audit, production manifest validation, source and secret scans, live HTTP checks, and authenticated browser verification.
+- [ ] Inspect the complete diff, document exact commits, deployments, rollback evidence, unresolved external gates, and production proof in this review section.
+
+### Cutover invariants
+
+- The target Fly IDs are `mendpoint-fettler-production`, `mendpoint-regauge-production`, and the existing ephemeral `mendpoint-sandbox`; the user-facing product names are Mendpoint Fettler and Mendpoint ReGauge.
+- "Up to date" means both product apps run the exact deployed `origin/main` revision. It does not include unmerged PR heads. Sandbox freshness means the current reviewed immutable image digest and signed policy receipt.
+- No plaintext secret is read, copied through logs, committed, or printed. Bindings move only through protected environments or a non-logging server-side transfer.
+- No historical authenticated ReGauge checkpoint, model execution, authorization, or source capture is rematerialized. Restoration preserves the ordered ledger and resumes from the first missing transition.
+- No old app is stopped before its replacement passes live checks. Rollback stops the new worker/app and restarts the unchanged old authority. No app or volume is deleted.
+- ReGauge delivery remains draft PR only, at most one open draft, with no merge or customer deployment authority. DeepSeek remains tenant-scoped advisory only and fails closed without durable consent and processing evidence.
+
+### Review
+
+- Pending implementation and live verification.

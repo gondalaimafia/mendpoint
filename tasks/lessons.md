@@ -207,3 +207,7 @@
 **Mistake:** Expanding URI redaction also changed the established HTTPS digest formula, so an upgrade could create duplicate artifacts and dispatches for the same release.
 **Correction:** Quality re-review required exact legacy HTTPS identity compatibility while applying the new domain-separated digest only to other hierarchical URI schemes.
 **Rule:** Treat persisted identity formulas as versioned compatibility contracts; extend safety behavior around them without changing existing canonical inputs or digests.
+### 2026-08-28 — Inventory deployed identities before declaring a production surface absent
+**Mistake:** I treated the empty `mendpoint-regauge-production` app as evidence that ReGauge had no deployed production surface and failed to distinguish it from the live legacy `mendpoint-transformer-pilot` coordinator.
+**Correction:** Talal pointed out that an app was already in production and required all app identities to be named correctly, production configured, and current.
+**Rule:** Before any topology or readiness claim, enumerate every app, its role, state, deployed revision, profile, processes, hostname, and attached volumes. Distinguish created, deployed, running, production configured, and production proven; never infer one from another.
