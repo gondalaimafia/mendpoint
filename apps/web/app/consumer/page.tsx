@@ -1,5 +1,7 @@
 import Link from "next/link";
 import React from "react";
+import { CoverageBadge } from "../components/console/coverage";
+import { coverageSummary } from "../components/console/pr-map";
 import { apiGet, type Consumer, type MigrationPr } from "../../lib/api";
 import { selfServeWardenEnabled } from "../../lib/proxy-auth";
 import { DetectButton } from "./detect-button";
@@ -96,6 +98,7 @@ export default async function ConsumerPage() {
         <thead>
           <tr>
             <th>Status</th>
+            <th>Coverage</th>
             <th>Risk</th>
             <th>Title</th>
             <th></th>
@@ -106,6 +109,15 @@ export default async function ConsumerPage() {
             <tr key={p.id}>
               <td>
                 <span className={`badge ${p.status}`}>{p.status}</span>
+              </td>
+              <td>
+                {/*
+                  low_confidence is the pipeline's empty-findings signal. Without
+                  coverage.basis the status badge alone collapses verified
+                  no-impact into the same "weak" pill as never-analyzed (FET-017).
+                  coverageSummary treats a missing channel as unknown, never clean.
+                */}
+                <CoverageBadge summary={coverageSummary(p.status, p.coverage)} />
               </td>
               <td>
                 <span className={`badge ${p.risk}`}>{p.risk}</span>
@@ -127,7 +139,7 @@ export default async function ConsumerPage() {
           ))}
           {!pending.length && (
             <tr>
-              <td colSpan={4} className="muted">
+              <td colSpan={5} className="muted">
                 {selfServeWarden ? (
                   <>No pending PRs yet — use <strong>Scan for impact</strong> above to start a run.</>
                 ) : (

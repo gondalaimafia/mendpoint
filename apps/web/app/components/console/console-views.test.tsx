@@ -42,6 +42,8 @@ import {
 } from "./interactions";
 import { reviewDialogStore, openReviewDialog } from "./review-dialog-store";
 import { coverageSummary } from "./pr-map";
+import { changeImpactCoverageSummary } from "./change-impact-coverage";
+import type { ChangeImpactCoverage } from "../../../lib/api";
 
 function countGlow(markup: string): number {
   return markup.match(/indigo-glow/g)?.length ?? 0;
@@ -58,7 +60,7 @@ describe("DS4 console — the one real CTA is the PR approve action", () => {
     // The only console primary action is the PR review "Approve" in the shell
     // topbar, so no view authors an indigo button. The detail view's secondary
     // review controls are outline buttons, not indigo.
-    expect(countGlow(renderToStaticMarkup(<ChangesView data={SAMPLE_CHANGES_DATA} />))).toBe(0);
+    expect(countGlow(renderToStaticMarkup(<ChangesView data={SAMPLE_CHANGES_DATA} coverage={null} />))).toBe(0);
     expect(countGlow(renderToStaticMarkup(<PrsView prs={PULL_REQUESTS} />))).toBe(0);
     expect(
       countGlow(renderToStaticMarkup(<PrDetailView pr={SAMPLE_PR_DETAIL} />)),
@@ -69,7 +71,7 @@ describe("DS4 console — the one real CTA is the PR approve action", () => {
   it("shows the single indigo CTA only on the PR review screen", () => {
     // The removed fake CTAs (Analyze a change / Open all PRs / Save) left their
     // screens with no fabricated primary; only the PR review screen keeps one.
-    expect(countGlow(renderScreen("/changes", <ChangesView data={SAMPLE_CHANGES_DATA} />))).toBe(0);
+    expect(countGlow(renderScreen("/changes", <ChangesView data={SAMPLE_CHANGES_DATA} coverage={null} />))).toBe(0);
     expect(countGlow(renderScreen("/prs", <PrsView prs={PULL_REQUESTS} />))).toBe(0);
     expect(
       countGlow(renderScreen("/prs/4821", <PrDetailView pr={SAMPLE_PR_DETAIL} />)),
@@ -112,7 +114,7 @@ describe("DS4 console — the one real CTA is the PR approve action", () => {
 
 describe("DS3 console views — content fidelity", () => {
   it("renders the Warden overview: eyebrow, version, stats, and severities", () => {
-    const html = renderToStaticMarkup(<ChangesView data={SAMPLE_CHANGES_DATA} />);
+    const html = renderToStaticMarkup(<ChangesView data={SAMPLE_CHANGES_DATA} coverage={null} />);
     expect(html).toContain("FETTLER");
     expect(html).toContain("payments-api");
     expect(html).toContain("v2.9.4");
@@ -166,7 +168,7 @@ describe("DS console views — honest empty states", () => {
     // data === null means the fetch failed OR nothing is staged; the view must
     // not claim "No breaking changes", which would present a fetch failure as a
     // clean result (the §11.7 silent-zero bug in the UI).
-    const html = renderToStaticMarkup(<ChangesView data={null} />);
+    const html = renderToStaticMarkup(<ChangesView data={null} coverage={null} />);
     expect(html).toContain("FETTLER");
     expect(html).toContain("Changes unavailable");
     expect(html).not.toContain("No breaking changes");
@@ -176,7 +178,10 @@ describe("DS console views — honest empty states", () => {
 
   it("renders an analyzed-but-empty diff without conflating it with a load failure", () => {
     const html = renderToStaticMarkup(
-      <ChangesView data={{ target: "acme · v1 → v2", stats: [], changes: [] }} />,
+      <ChangesView
+        data={{ target: "acme · v1 → v2", stats: [], changes: [] }}
+        coverage={null}
+      />,
     );
     expect(html).toContain("acme · v1 → v2");
     expect(html).toContain("No structural change is staged yet");
@@ -262,6 +267,72 @@ describe("DS console views — honest empty states", () => {
     const counts = [...html.matchAll(/ds-tab__count">(\d+)</g)].map((m) => m[1]);
     // 5 total, 3 needs-review (open+draft), 1 failing, 1 merged.
     expect(counts).toEqual(["5", "3", "1", "1"]);
+  });
+});
+
+describe("changes view — impact coverage is coverage-aware, not blanket emerald", () => {
+  const impact = (
+    overrides: Partial<ChangeImpactCoverage>,
+  ): ChangeImpactCoverage => ({
+    impact: "impact",
+    coverageBasis: "analyzed",
+    reason: null,
+    findingCount: 2,
+    prCount: 1,
+    ...overrides,
+  });
+
+  it("renders emerald covered only for fully-analyzed impact findings", () => {
+    const html = renderToStaticMarkup(
+      <ChangesView
+        data={SAMPLE_CHANGES_DATA}
+        coverage={changeImpactCoverageSummary(impact({ coverageBasis: "analyzed" }))}
+      />,
+    );
+    expect(html).toContain("ds-coverage--covered");
+    expect(html).toContain("complete set of impacted sites");
+  });
+
+  it("renders amber, not covered, when impact findings had only partial coverage", () => {
+    const html = renderToStaticMarkup(
+      <ChangesView
+        data={SAMPLE_CHANGES_DATA}
+        coverage={changeImpactCoverageSummary(impact({ coverageBasis: "partial" }))}
+      />,
+    );
+    // The FET-017 blocker: a partial-coverage finding list must not read as the
+    // emerald "verified" covered card.
+    expect(html).toContain("ds-coverage--no_known_impact");
+    expect(html).not.toContain("ds-coverage--covered");
+    expect(html).toContain("finding list may be incomplete");
+  });
+
+  it("renders amber for raw-retrieval impact findings, never covered", () => {
+    const html = renderToStaticMarkup(
+      <ChangesView
+        data={SAMPLE_CHANGES_DATA}
+        coverage={changeImpactCoverageSummary(
+          impact({ coverageBasis: "analyzed", fallback: "raw_retrieval" }),
+        )}
+      />,
+    );
+    expect(html).toContain("ds-coverage--no_known_impact");
+    expect(html).not.toContain("ds-coverage--covered");
+    expect(html).toContain("not a graph-authoritative");
+  });
+
+  it("keeps the coverage card on a zero-change view instead of dropping standing", () => {
+    // A change with staged PRs but no diff entries still gets a coverage standing;
+    // the early empty-state return must not swallow it.
+    const html = renderToStaticMarkup(
+      <ChangesView
+        data={{ target: "acme · v1 → v2", stats: [], changes: [] }}
+        coverage={changeImpactCoverageSummary(impact({ coverageBasis: "partial" }))}
+      />,
+    );
+    expect(html).toContain("No structural change is staged yet");
+    expect(html).toContain("IMPACT COVERAGE");
+    expect(html).toContain("ds-coverage--no_known_impact");
   });
 });
 

@@ -15,7 +15,7 @@ is bounded, not complete.
 | Piece | Location | Role |
 |---|---|---|
 | Compiler + renderer | `packages/pipeline/src/mission-context-compiler.ts` | Pure. Assembles the envelope from already-fetched inputs, resolves precedence, bounds, three-states, and renders the injection + context refs. |
-| Worker producer | `apps/worker/src/mission-context.ts` | Reads the live stores (org memory, decisions, exceptions, verification, history) and calls the compiler. Reads only; tenant is the authenticated job principal. |
+| Worker producer | `apps/worker/src/mission-context.ts` | Reads the live stores (org memory, decisions, exceptions, verification, history, mission artifacts by reference) and calls the compiler. Reads only; tenant is the authenticated job principal. |
 | Agent injection | `packages/agent/src/inherited-context.ts` + the seam in `packages/agent/src/agent.ts` | Pure renderer that wraps the compiled block in an untrusted-data frame and injects it into the system prompt, gated by a default-off switch. |
 
 ## The envelope
@@ -25,13 +25,13 @@ Conceptual shape (`InheritedContextEnvelope`):
     schemaVersion, tenantId,
     missionIdentity, task,
     graphProjection, relevantHistory, activeDecisions, relevantOrgMemory,
-    policyConstraints, verificationState, unresolvedExceptions,
+    policyConstraints, verificationState, unresolvedExceptions, missionArtifacts,
     evidenceRefs, precedence, bounds
 
 ### Bounds per section
 
 - `maxSectionItems = 32` items per list section (history, decisions, memory,
-  policy, exceptions, verification).
+  policy, exceptions, verification, mission artifacts).
 - `maxText = 2000` chars per free-text field (truncated, not rejected — the
   stores allow up to 4000).
 - `maxIdentifier = 200` chars per identifier (rejected if over).
@@ -119,7 +119,7 @@ trajectory. On current main most Fettler `agent.run` jobs are not bound to a
 - tenant **organization memory** is compiled and can reach the Fettler prompt
   (this is the headline change: today no tenant context reaches the prompt at
   all); and
-- mission-scoped sections (decisions, exceptions, verification, history) report
+- mission-scoped sections (decisions, exceptions, verification, history, artifacts) report
   `no_mission_bound` on that path. Binding a Fettler job to a mission is a
   separate, acknowledged gap; the mission-bound path is fully implemented and
   covered end-to-end by `apps/worker/src/mission-context.test.ts`, but is not
@@ -153,12 +153,12 @@ From `packages/pipeline/src/mission-context-measure.ts` (run with
 | Quantity | Bytes |
 |---|---|
 | Today's constant prompt (`wardenPlaybook()`, no tenant/task context) | 4089 |
-| Representative compiled envelope (2 applied + 1 overridden memory, 1 decision, current verification, 1 history) | 1025 |
+| Representative compiled envelope (2 applied + 1 overridden memory, 1 decision, current verification, 1 history) | 1093 |
 | Unbounded dump of an oversized input (500 memories + 500 history entries) | 100196 |
-| Same input, compiled (bounded) | 6215 |
+| Same input, compiled (bounded) | 6283 |
 
 Repeated/excess-information reduction of the bounded selection versus the
-unbounded dump: **93.8%**, with the 32 KB ceiling honoured (here via 32-item
+unbounded dump: **93.7%**, with the 32 KB ceiling honoured (here via 32-item
 section caps; `sectionItemsCapped = true`). A representative real envelope is
 ~1 KB. The compiler adds task-specific inherited context that the constant prompt
 never carried, while capping total size hard.

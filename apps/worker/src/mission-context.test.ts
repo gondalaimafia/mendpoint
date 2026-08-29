@@ -9,6 +9,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   bindMissionGraphVersion,
@@ -19,11 +20,13 @@ import {
   createPolicyEnvelope,
   getMission,
   getTrajectory,
+  insertArtifactManifest,
   insertPrincipal,
   raiseMissionException,
   recordMissionDecision,
   recordMissionVerification,
   recordTrajectory,
+  registerMissionArtifact,
   type AppDb,
 } from "@mendpoint/db";
 import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
@@ -161,6 +164,9 @@ describe("worker mission-context producer (real stores)", () => {
     expect(compiled.envelope.activeDecisions.status).toBe("consulted");
     expect(compiled.envelope.unresolvedExceptions.status).toBe("consulted");
     expect(compiled.envelope.verificationState.status).toBe("consulted");
+    expect(compiled.envelope.missionArtifacts.status).toBe("consulted");
+    if (compiled.envelope.missionArtifacts.status !== "consulted") throw new Error("unreachable");
+    expect(compiled.envelope.missionArtifacts.entries).toEqual([]);
     // The passing verification against the current snapshot is current evidence.
     if (compiled.envelope.verificationState.status !== "consulted") throw new Error("unreachable");
     expect(compiled.envelope.verificationState.entries.some((entry) => entry.state === "current_evidence")).toBe(true);
@@ -196,6 +202,197 @@ describe("worker mission-context producer (real stores)", () => {
     expect(kinds.has("mission_decision")).toBe(true);
     expect(kinds.has("verification")).toBe(true);
     expect(kinds.has("exception")).toBe(true);
+  });
+
+  // An older candidate's passed row on the same source snapshot must not
+  // survive as current_evidence next to a later attempt. Deleting
+  // selectCurrentVerificationRecords in the producer turns this RED.
+  it("surfaces only the latest candidate-scoped verification as current evidence", () => {
+    const db = fixture();
+    recordMissionVerification(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      verification: "older candidate green",
+      scope: `warden.campaign.execute:c1:t1:candidate:${"a".repeat(64)}`,
+      snapshotId: "snapA",
+      resolvedSha: SHA,
+      manifestSha256: MANIFEST,
+      status: "passed",
+      verifierPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    recordMissionVerification(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      verification: "newer candidate still failing preexisting checks",
+      scope: `warden.campaign.execute:c1:t1:candidate:${"b".repeat(64)}`,
+      snapshotId: "snapA",
+      resolvedSha: SHA,
+      manifestSha256: MANIFEST,
+      status: "inconclusive",
+      verifierPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: "2026-01-02T00:00:00.000Z",
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    });
+    if (compiled.envelope.verificationState.status !== "consulted") throw new Error("unreachable");
+    expect(compiled.envelope.verificationState.entries).toHaveLength(1);
+    expect(compiled.envelope.verificationState.entries[0]).toMatchObject({
+      state: "no_current_evidence",
+      reason: "current_verification_inconclusive",
+    });
+    expect(compiled.envelope.verificationState.entries.some((entry) => entry.state === "current_evidence"))
+      .toBe(false);
+  });
+
+  // When two candidate attempts in one family share the caller-supplied
+  // createdAt, the current record cannot be determined. The producer must refuse
+  // rather than credit the older candidate's passed row. Restoring the
+  // content-digest tie-break in selectCurrentVerificationRecords turns this RED.
+  it("refuses to credit a candidate as current when two attempts tie on createdAt", () => {
+    const db = fixture();
+    recordMissionVerification(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      verification: "candidate A green",
+      scope: `warden.campaign.execute:c1:t1:candidate:${"a".repeat(64)}`,
+      snapshotId: "snapA",
+      resolvedSha: SHA,
+      manifestSha256: MANIFEST,
+      status: "passed",
+      verifierPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    recordMissionVerification(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      verification: "candidate B still failing preexisting checks",
+      scope: `warden.campaign.execute:c1:t1:candidate:${"b".repeat(64)}`,
+      snapshotId: "snapA",
+      resolvedSha: SHA,
+      manifestSha256: MANIFEST,
+      status: "inconclusive",
+      verifierPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    });
+    if (compiled.envelope.verificationState.status !== "consulted") throw new Error("unreachable");
+    // The family is refused: exactly one entry, and it never reads as current.
+    expect(compiled.envelope.verificationState.entries).toHaveLength(1);
+    expect(compiled.envelope.verificationState.entries[0]).toMatchObject({
+      state: "no_current_evidence",
+      reason: "ambiguous_current_candidate",
+    });
+    expect(compiled.envelope.verificationState.entries.some((entry) => entry.state === "current_evidence"))
+      .toBe(false);
+  });
+
+  // Production candidate scopes are long: campaignId is `fettler-campaign-<32 hex>`
+  // (49 chars) and targetId is `wct_<64 hex>` (68 chars), so the execute scope
+  // `warden.campaign.execute:<campaignId>:<targetId>:candidate:<64 hex>` is 217
+  // chars. On the absence paths the entry id is derived from the scope; a raw
+  // `verification:<scope>` id (230 chars) overflows the compiler's identifier
+  // ceiling (200), which THROWS rather than clips. Reverting the sha256-keyed id in
+  // mission-context.ts makes both of the following die with
+  // `mission_context_verification_id_invalid`, collapsing the whole mission context
+  // to `context_not_loaded` on exactly these missions. Fixtures use the REAL id
+  // shapes, not the 2-char ids the other tests use.
+  const PROD_CAMPAIGN_ID = `fettler-campaign-${"c".repeat(32)}`; // 49 chars, matches warden-campaign-enrollment.ts
+  const PROD_TARGET_ID = `wct_${"d".repeat(64)}`; // 68 chars, matches warden-campaign.ts
+  const PROD_CANDIDATE_SCOPE =
+    `warden.campaign.execute:${PROD_CAMPAIGN_ID}:${PROD_TARGET_ID}:candidate:${"e".repeat(64)}`;
+
+  it("compiles a production-shaped candidate scope on the no_current_evidence path (bounded id)", () => {
+    // The raw scope would overflow the identifier ceiling once prefixed.
+    expect(`verification:${PROD_CANDIDATE_SCOPE}`.length).toBeGreaterThan(200);
+    const db = fixture();
+    // Inconclusive against the CURRENT snapshot -> no_current_evidence with the
+    // current_verification_inconclusive reason (an absence path, no record id).
+    recordMissionVerification(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      verification: "campaign execute post-edit checks were not all passed",
+      scope: PROD_CANDIDATE_SCOPE,
+      snapshotId: "snapA",
+      resolvedSha: SHA,
+      manifestSha256: MANIFEST,
+      status: "inconclusive",
+      verifierPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    });
+    if (compiled.envelope.verificationState.status !== "consulted") throw new Error("unreachable");
+    expect(compiled.envelope.verificationState.entries).toHaveLength(1);
+    const entry = compiled.envelope.verificationState.entries[0];
+    expect(entry).toMatchObject({ state: "no_current_evidence", reason: "current_verification_inconclusive" });
+    // The absence id is a bounded digest, well under the 200-char ceiling.
+    expect(entry.id).toMatch(/^verification:[0-9a-f]{64}$/);
+    expect(entry.id.length).toBeLessThanOrEqual(200);
+  });
+
+  it("compiles a production-shaped candidate scope on the only_stale_evidence path (bounded id)", () => {
+    const db = fixture();
+    // A second immutable snapshot the mission is NOT currently bound to.
+    const SHA_B = "2".repeat(40);
+    const MANIFEST_B = "b".repeat(64);
+    db.raw
+      .prepare(
+        `INSERT INTO repository_snapshots
+          (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+           submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+         VALUES ('snapB','t1','r1','main',?,?, 'C:/tmp/snapB','reject','reject','[]',1,?, '2026-02-01T00:00:00.000Z')`,
+      )
+      .run(SHA_B, MANIFEST_B, T0);
+    // Non-passing evidence bound to a DIFFERENT snapshot: no current-identity
+    // record and no passing record -> no_current_evidence / only_stale_evidence.
+    recordMissionVerification(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      verification: "campaign execute checks were not all passed on a superseded snapshot",
+      scope: PROD_CANDIDATE_SCOPE,
+      snapshotId: "snapB",
+      resolvedSha: SHA_B,
+      manifestSha256: MANIFEST_B,
+      status: "failed",
+      verifierPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!; // still bound to snapA
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    });
+    if (compiled.envelope.verificationState.status !== "consulted") throw new Error("unreachable");
+    expect(compiled.envelope.verificationState.entries).toHaveLength(1);
+    const entry = compiled.envelope.verificationState.entries[0];
+    expect(entry).toMatchObject({ state: "no_current_evidence", reason: "only_stale_evidence" });
+    expect(entry.id).toMatch(/^verification:[0-9a-f]{64}$/);
+    expect(entry.id.length).toBeLessThanOrEqual(200);
   });
 
   it("renders the mission's inherited Policy Envelope as consulted hard-policy constraints", () => {
@@ -277,6 +474,9 @@ describe("worker mission-context producer (real stores)", () => {
     expect(compiled.envelope.activeDecisions.status).toBe("not_consulted");
     if (compiled.envelope.activeDecisions.status !== "not_consulted") throw new Error("unreachable");
     expect(compiled.envelope.activeDecisions.reason).toBe("no_mission_bound");
+    expect(compiled.envelope.missionArtifacts.status).toBe("not_consulted");
+    if (compiled.envelope.missionArtifacts.status !== "not_consulted") throw new Error("unreachable");
+    expect(compiled.envelope.missionArtifacts.reason).toBe("no_mission_bound");
     expect(compiled.injection.promptBody).toContain("use the internal auth client");
   });
 
@@ -350,6 +550,62 @@ describe("worker mission-context producer (real stores)", () => {
       repositoryId: "r1",
       snapshotId: "snapA",
       graphVersionId: "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+  });
+
+  it("lists registered mission artifacts by reference after insertArtifactManifest", () => {
+    const db = fixture();
+    const body = "the candidate patch bytes must never appear in context";
+    const sha256 = createHash("sha256").update(body).digest("hex");
+    insertArtifactManifest(db, {
+      id: "art-patch",
+      tenantId: "t1",
+      kind: "candidate-edit",
+      schemaVersion: 1,
+      sha256,
+      mediaType: "text/plain",
+      sizeBytes: Buffer.byteLength(body, "utf8"),
+      storageRef: "mem://art-patch",
+      content: body,
+      createdAt: T0,
+    });
+    const registered = registerMissionArtifact(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      role: "candidate_patch",
+      artifactId: "art-patch",
+      label: "payments patch",
+      producerPrincipalId: "p1",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    });
+    expect(compiled.envelope.missionArtifacts.status).toBe("consulted");
+    if (compiled.envelope.missionArtifacts.status !== "consulted") throw new Error("unreachable");
+    expect(compiled.envelope.missionArtifacts.entries).toEqual([{
+      id: registered.id,
+      role: "candidate_patch",
+      artifactId: "art-patch",
+      artifactSha256: sha256,
+      label: "payments patch",
+      createdAt: T0,
+      taskId: null,
+    }]);
+    expect(compiled.injection.promptBody).toContain("[candidate_patch] art-patch");
+    expect(compiled.injection.promptBody).toContain(`sha256=${sha256}`);
+    expect(compiled.injection.promptBody).not.toContain("the candidate patch bytes must never appear in context");
+    expect(compiled.refs).toContainEqual({
+      kind: "mission_artifact",
+      id: registered.id,
+      role: "candidate_patch",
+      artifactId: "art-patch",
+      sha256,
     });
   });
 
