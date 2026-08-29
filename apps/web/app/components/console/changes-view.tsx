@@ -1,16 +1,21 @@
 import React from "react";
 import Link from "next/link";
 import { ArrowRightIcon, Badge, SectionLabel, type BadgeTone } from "../ds/index.js";
+import { CoverageCard } from "./coverage.js";
 import type { ChangesData, Severity } from "./fixtures.js";
+import type { CoverageSummary } from "./pr-map.js";
 
 /**
- * `/changes` — Warden's breaking-change overview. Presentational server
+ * `/changes` — Fettler's breaking-change overview. Presentational server
  * component driven by live data (`ChangesData`) fetched in the page: eyebrow +
- * version title, a four-stat grid, then the spec-diff table. Amber is confined
- * to the breaking-changes stat and the "N BREAKING" header badge (Step-7: amber
- * only on breaking). The per-row severity badges map breaking -> danger, safe ->
- * emerald; deprecated is neutral rather than amber so amber stays exclusive to
- * breaking. When the API has no change to show, an honest empty state renders.
+ * version title, a four-stat grid, optional impact-coverage card, then the
+ * spec-diff table. Amber is confined to the breaking-changes stat and the
+ * "N BREAKING" header badge (Step-7: amber only on breaking). The per-row
+ * severity badges map breaking -> danger, safe -> emerald; deprecated is
+ * neutral rather than amber so amber stays exclusive to breaking. When the
+ * API has no change to show, an honest empty state renders. Coverage standing
+ * is a separate prop so a missing `impactCoverage` channel cannot hide inside
+ * `ChangesData` and read as verified no-impact.
  */
 const SEVERITY_TONE: Record<Severity, BadgeTone> = {
   breaking: "danger",
@@ -18,7 +23,13 @@ const SEVERITY_TONE: Record<Severity, BadgeTone> = {
   safe: "emerald",
 };
 
-export function ChangesView({ data }: { data: ChangesData | null }) {
+export function ChangesView({
+  data,
+  coverage,
+}: {
+  data: ChangesData | null;
+  coverage?: CoverageSummary | null;
+}) {
   // `data` is null when the upstream change/provider fetch failed OR nothing is
   // staged. Either way we do NOT know the spec is unchanged, so we must not print
   // "No breaking changes": that certifies a fetch failure as a clean result. The
@@ -87,6 +98,8 @@ export function ChangesView({ data }: { data: ChangesData | null }) {
           </div>
         ))}
       </div>
+
+      {coverage ? <CoverageCard summary={coverage} /> : null}
 
       <section className="ds-panel">
         <div className="ds-panel__head">
