@@ -137,6 +137,7 @@ const claim = {
   useLlm: false,
   risk: "medium",
   observedAgainst: snapA,
+  observedAt: at,
 } as const;
 
 describe("assertAgentRunMissionPolicy records policy_exception", () => {
@@ -152,7 +153,7 @@ describe("assertAgentRunMissionPolicy records policy_exception", () => {
       category: "policy_exception",
       reason: "mission_policy_envelope_missing",
       blocking: true,
-      resolutionPath: "adjust_task_or_rebind_policy_envelope",
+      resolutionPath: "rebind_policy_envelope; deny goes stale once a later agent.run supersedes this snapshot",
       createdAt: at,
       observedSnapshotId: "snapA",
       observedResolvedSha: "a".repeat(40),
@@ -170,7 +171,7 @@ describe("assertAgentRunMissionPolicy records policy_exception", () => {
     expect(rows[0]?.category).toBe("policy_exception");
     expect(rows[0]?.blocking).toBe(true);
     expect(rows[0]?.reason).toContain("repository_out_of_scope:repo-a");
-    expect(rows[0]?.resolutionPath).toBe("adjust_task_or_rebind_policy_envelope");
+    expect(rows[0]?.resolutionPath).toBe("rebind_policy_envelope; deny goes stale once a later agent.run supersedes this snapshot");
   });
 
   it("records a policy_exception when the pinned envelope is invalid", () => {

@@ -22,9 +22,12 @@
  * only reached for an immutable snapshot). The exception counts as blocking only
  * while the mission is on that snapshot; once a later `agent.run` runs against a
  * newer snapshot the prior deny is STALE and surfaced for re-affirmation rather
- * than blocking forever. This matches how the review handoff resolver treats
- * blocking mission exceptions (apps/api/src/warden-candidate-review.ts) and the
- * existing convention at apps/worker/src/fettler-mission-task-claim.ts.
+ * than blocking forever. The staleness-against-current-snapshot evaluation is the
+ * same one the review handoff resolver applies (apps/api/src/warden-candidate-
+ * review.ts passes the run's snapshot as `current`); note that resolver does NOT
+ * clear these rows — it filters on `taskId`, which these do not carry — so the
+ * only thing that stops one blocking is a snapshot advance. The caller-supplied
+ * snapshot/createdAt convention matches apps/worker/src/fettler-mission-task-claim.ts.
  */
 import {
   evaluateMissionExceptions,
@@ -55,7 +58,9 @@ export type AgentRunMissionPolicyInput = Readonly<{
   // instead of blocking the mission forever. Threaded from the caller because
   // the Fettler Mission row carries no snapshot scope.
   observedAgainst: SnapshotIdentity;
-  observedAt?: string;
+  // Observation timestamp, taken from the caller's attempt clock. Required so
+  // the evidence timestamp is the attempt's, not the worker wall clock.
+  observedAt: string;
 }>;
 
 export function agentRunPolicyTask(input: {
@@ -102,7 +107,11 @@ function recordPolicyException(
     reason,
     impact: "Fettler agent.run denied by the inherited Policy Envelope",
     ownerPrincipalId: mission.ownerPrincipalId,
-    resolutionPath: "adjust_task_or_rebind_policy_envelope",
+    // Truthful resolution: correcting the envelope stops the NEXT attempt from
+    // re-denying; this recorded row stops blocking once a later agent.run
+    // supersedes this snapshot (it goes stale). There is no taskId-based resolver
+    // for these rows, so do not imply one.
+    resolutionPath: "rebind_policy_envelope; deny goes stale once a later agent.run supersedes this snapshot",
     blocking: true,
     observedAgainst,
     correlationId: `agent-run-policy:${mission.id}`,
@@ -117,19 +126,18 @@ export function assertAgentRunMissionPolicy(
 ): void {
   const mission = getMission(db, input.tenantId, input.missionId);
   if (!mission) throw new Error(`mission_not_found:${input.missionId}`);
-  const observedAt = input.observedAt ?? new Date().toISOString();
   const enforcement = evaluateMissionTaskPolicy(db, {
     tenantId: input.tenantId,
     missionId: mission.id,
     task: agentRunPolicyTask(input),
   });
   if (enforcement.status === "no_envelope") {
-    recordPolicyException(db, mission, "mission_policy_envelope_missing", observedAt, input.observedAgainst);
+    recordPolicyException(db, mission, "mission_policy_envelope_missing", input.observedAt, input.observedAgainst);
     throw new Error("mission_policy_envelope_missing");
   }
   const reasons = missionPolicyDenialReasons(enforcement);
   if (reasons) {
-    recordPolicyException(db, mission, reasons.join(";"), observedAt, input.observedAgainst);
+    recordPolicyException(db, mission, reasons.join(";"), input.observedAt, input.observedAgainst);
     throw new Error(`mission_policy_denied:${reasons.join(";")}`);
   }
 }

@@ -3382,6 +3382,7 @@ if (job.type === "warden.candidate.cleanup") {
             useLlm,
             risk: payload.ciFailure ? "high" : "medium",
             observedAgainst: { snapshotId: binding.snapshotId, resolvedSha: binding.revision },
+            observedAt: started,
           });
         }
         const repositoryClassification = modelSourcePolicy

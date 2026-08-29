@@ -89,6 +89,7 @@ const allowed = {
   useLlm: false,
   risk: "medium",
   observedAgainst: snapA,
+  observedAt: at,
 } as const;
 
 describe("assertAgentRunMissionPolicy", () => {

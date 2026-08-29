@@ -24,8 +24,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
   bindConsumerRepoSnapshot,
+  bindMissionToPolicyEnvelope,
   claimNextJob,
   createExplicitMemory,
+  createMission,
+  createPolicyEnvelope,
   enqueueJob,
   failJob,
   enqueueAdaptiveDelivery,
@@ -48,6 +51,7 @@ import {
   insertProvider,
   insertRepositorySnapshot,
   insertRepositorySnapshotPolicy,
+  listMissionExceptions,
   recordAdaptiveCandidate,
   retryJob,
   reviewAdaptiveCandidate,
@@ -59,6 +63,7 @@ import {
 import { nowIso } from "@mendpoint/shared";
 import type { AgentPlanner } from "@mendpoint/agent";
 import type { PipelineReport } from "@mendpoint/pipeline";
+import { canonicalPolicyEnvelopeJson, defaultPolicyEnvelope } from "@mendpoint/policy";
 import {
   GitHubAppDelivery,
   OctokitGitHubDelivery,
@@ -296,6 +301,7 @@ function setupWardenSnapshotJob(options: {
   sourceBody?: string;
   mode?: "repair" | "feature";
   goal?: string;
+  missionId?: string;
 }) {
   const {
     parent,
@@ -305,6 +311,7 @@ function setupWardenSnapshotJob(options: {
     sourceBody = "export const path = '/v1/chargess';\n",
     mode,
     goal = "Fix the API path typo from chargess to charges.",
+    missionId,
   } = options;
   const snapshotRoot = join(parent, "repositories", "tenant_test", "snapshot-a");
   const dataRoot = join(parent, "data");
@@ -395,6 +402,7 @@ function setupWardenSnapshotJob(options: {
       maxSteps: 20,
       useLlm,
       ...(mode ? { mode } : {}),
+      ...(missionId ? { missionId } : {}),
     },
   });
   return {
@@ -4319,4 +4327,107 @@ describe("job-drain outcome counters (third-state)", () => {
       classifyWardenCiRepairDispatch({ status: "budget_exhausted", cycleId: "cycle-x" }),
     ).toBe("inconclusive");
   });
+});
+
+describe("Fettler agent.run policy seam (behavioral, through the job loop)", () => {
+  // The live agent.run loop threads the execution snapshot binding into
+  // `assertAgentRunMissionPolicy` at cli.ts, so a Policy Envelope deny is
+  // recorded as a Mission exception BOUND to the exact snapshot the attempt ran
+  // against. Nothing else in the repo exercises that caller line, so a wrong
+  // binding there (e.g. a hardcoded/bogus snapshot id) would otherwise ship
+  // green. This drives the REAL job loop to a policy deny and asserts the
+  // recorded exception is bound to the job's actual snapshot. Replacing the
+  // caller's `{ snapshotId: binding.snapshotId, resolvedSha: binding.revision }`
+  // with a bogus snapshot makes the raise fail closed (snapshot_not_found), so
+  // NO exception is recorded and the length assertion below goes red — the
+  // delete-the-check that pins the wiring.
+  it("records the deny as a Mission exception bound to the attempt's real snapshot", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-agent-run-policy-seam-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      missionId: "mission-policy-seam",
+    });
+    fixture.db.raw
+      .prepare(
+        `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+         VALUES ('tenant_test','tenant-test','Tenant Test','team','active',10,?)`,
+      )
+      .run(nowIso());
+    insertPrincipal(fixture.db, {
+      id: "owner-policy-seam",
+      tenantId: "tenant_test",
+      kind: "human",
+      subject: "owner@tenant-test.example",
+      displayName: "Owner",
+      createdAt: nowIso(),
+    });
+    // A Fettler Mission with NO snapshot scope (the real enrollment shape),
+    // bound to an envelope that excludes the attempt's repository so the seam
+    // denies before any Warden work.
+    createMission(fixture.db, {
+      id: "mission-policy-seam",
+      tenantId: "tenant_test",
+      product: "fettler",
+      triggerKind: "provider_change",
+      objective: "Guard the agent.run policy seam wiring",
+      ownerPrincipalId: "owner-policy-seam",
+      eventId: "mission-policy-seam-created",
+      idempotencyKey: "mission-policy-seam-create",
+      correlationId: "corr-policy-seam",
+      createdAt: nowIso(),
+    });
+    const restricted = {
+      ...defaultPolicyEnvelope({
+        tenantId: "tenant_test",
+        policyEnvelopeId: "pe-policy-seam",
+        createdAt: nowIso(),
+      }),
+      repositoryScope: ["some-other-repository"],
+      allowedTools: ["read"],
+    };
+    createPolicyEnvelope(fixture.db, {
+      tenantId: "tenant_test",
+      version: 1,
+      policyEnvelopeId: restricted.policyEnvelopeId,
+      envelopeJson: canonicalPolicyEnvelopeJson(restricted),
+      createdAt: nowIso(),
+    });
+    bindMissionToPolicyEnvelope(fixture.db, {
+      tenantId: "tenant_test",
+      missionId: "mission-policy-seam",
+      version: 1,
+      actorPrincipalId: "owner-policy-seam",
+      eventId: "mission-policy-seam-bound",
+      idempotencyKey: "mission-policy-seam-bind",
+      correlationId: "corr-policy-seam",
+      createdAt: nowIso(),
+    });
+
+    const result = await processJobsOnce(fixture.db, {
+      tenantId: "tenant_test",
+      workerId: "worker-policy-seam",
+      leaseMs: 30_000,
+      wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
+    });
+
+    // The deny fails the job before any attempt runs.
+    expect(result.claimed).toBe(1);
+    expect(result.failed).toBe(1);
+    expect(result.succeeded).toBe(0);
+    // The blocker is recorded AND bound to the attempt's real execution
+    // snapshot (snapshot-warden-a / revision a*40), not the wall clock and not a
+    // stray/absent snapshot. This is the assertion the caller-wiring mutation
+    // turns red.
+    const rows = listMissionExceptions(fixture.db, "tenant_test", "mission-policy-seam");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.category).toBe("policy_exception");
+    expect(rows[0]?.blocking).toBe(true);
+    expect(rows[0]?.reason).toContain("repository_out_of_scope");
+    expect(rows[0]?.observedSnapshotId).toBe("snapshot-warden-a");
+    expect(rows[0]?.observedResolvedSha).toBe("a".repeat(40));
+    fixture.db.raw.close();
+  }, 30_000);
 });
