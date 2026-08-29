@@ -134,7 +134,7 @@ describe("change detail — FET-017 empty findings", () => {
     const html = renderToStaticMarkup(
       await ChangeDetailPage({ params: Promise.resolve({ id: "chg1" }) }),
     );
-    expect(html).toContain("No known impact under partial coverage");
+    expect(html).toContain("No known impact — partial coverage");
     expect(html).not.toContain("No impact — verified");
   });
 });
