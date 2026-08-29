@@ -22,6 +22,7 @@ import {
   type TransformerVerifiedCandidateCompletion,
   type TransformerPilotExecutionStore,
 } from "@mendpoint/transformer";
+import { persistAndRegisterRegaugeCompleteAttemptArtifacts } from "@mendpoint/pipeline";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
 import { resolveRenamedEnv } from "@mendpoint/shared";
 import { assertRegaugePilotMissionPolicy } from "./regauge-pilot-policy.js";
@@ -387,8 +388,27 @@ function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): Transformer
     reserveAdaptiveModelCall: (input) => store.reserveAdaptiveModelCall(input),
     settleAdaptiveModelCall: (input) => store.settleAdaptiveModelCall(input),
     recordAdaptiveCandidateHandoff: (input) => store.recordAdaptiveCandidateHandoff(input),
-    completeAttempt: (input) => {
+      completeAttempt: (input) => {
       const completed = store.completeAttempt(input);
+      try {
+        const unit = completed.units.find((item) => item.id === input.unitId);
+        persistAndRegisterRegaugeCompleteAttemptArtifacts(db, {
+          tenantId: input.tenantId,
+          campaignId: input.campaignId,
+          unitId: input.unitId,
+          candidateDigest: input.candidateDigest,
+          candidateRevision: input.candidateRevision,
+          sourceSnapshot: unit?.snapshot.snapshotId ?? null,
+          evidenceRefs: input.evidenceRefs,
+          createdAt: input.observedAt,
+        });
+      } catch (error) {
+        console.error(
+          `  regauge mission artifact register failed campaign=${input.campaignId} unit=${input.unitId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
       try {
         // Verification passing is still review-first, not delivery. Hand the
         // launch MissionTask to humans on the same complete that closed the
