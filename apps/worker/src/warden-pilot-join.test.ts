@@ -23,7 +23,8 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import type { PipelineReport } from "@mendpoint/pipeline";
-import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
+import type { ImpactableSurface } from "@mendpoint/shared";
+import { enqueuePipelineWardenRuns, liveFettlerEndpointKey } from "./warden-pilot-join.js";
 
 const opened: Array<{ db: AppDb; root: string }> = [];
 const observedAt = "2026-08-10T18:00:00.000Z";
@@ -166,7 +167,24 @@ function enrollSingleRepoCampaign(db: AppDb, input: {
   });
 }
 
-function report(paths: readonly string[], confidence: "high" | "medium" | "low" = "high"): PipelineReport {
+function httpSurface(id: string, canonicalId: string): ImpactableSurface {
+  return {
+    id,
+    canonicalId,
+    kind: "http_path",
+    op: "method_changed",
+    severity: "breaking",
+    migrationStrategy: "update callers",
+    explanation: "Endpoint changed",
+    searchTokens: [canonicalId],
+  };
+}
+
+function report(
+  paths: readonly string[],
+  confidence: "high" | "medium" | "low" = "high",
+  surfaces: ImpactableSurface[] = [],
+): PipelineReport {
   return {
     changeId: "change-a",
     risk: "breaking",
@@ -186,7 +204,7 @@ function report(paths: readonly string[], confidence: "high" | "medium" | "low" 
       overallConfidence: confidence,
       prStatus: "notification_only",
       impactReport: {
-        surfaces: [],
+        surfaces,
         sites: paths.map((filePath, index) => ({
           filePath,
           lineStart: index + 1,
@@ -266,6 +284,7 @@ describe("joined Warden pilot intake", () => {
     expect(payload).not.toHaveProperty("verifyCommand");
     expect(payload).not.toHaveProperty("fettlerCampaignId");
     expect(payload).not.toHaveProperty("missionId");
+    expect(payload).not.toHaveProperty("endpointKey");
     expect(getAgentRun(db, first[0]!.runId!, "tenant-a")).toMatchObject({
       status: "queued",
       repo_path: expect.stringContaining("snapshot"),
@@ -424,5 +443,87 @@ describe("joined Warden pilot intake", () => {
       observedAt,
       useLlm: false,
     })).toThrow("warden_pilot_join_idempotency_conflict");
+  });
+
+  it("threads a unique live HTTP surface as endpointKey on the agent.run payload", () => {
+    const { db } = fixture();
+    const queued = enqueuePipelineWardenRuns(db, {
+      tenantId: "tenant-a",
+      pipelineJobId: "pipeline-endpoint",
+      providerSlug: "stripe",
+      report: report(
+        ["src/charges.ts"],
+        "high",
+        [httpSurface("surface-charges", "POST /v1/charges")],
+      ),
+      observedAt,
+      useLlm: false,
+    });
+    expect(queued[0]).toMatchObject({ status: "queued" });
+    const payload = JSON.parse(getJob(db, queued[0]!.jobId!, "tenant-a")!.payload_json) as Record<string, unknown>;
+    expect(payload.endpointKey).toBe("POST /v1/charges");
+  });
+
+  it("omits endpointKey when impact names more than one HTTP surface", () => {
+    const { db } = fixture();
+    const queued = enqueuePipelineWardenRuns(db, {
+      tenantId: "tenant-a",
+      pipelineJobId: "pipeline-multi-endpoint",
+      providerSlug: "stripe",
+      report: report(
+        ["src/charges.ts"],
+        "high",
+        [
+          httpSurface("surface-charges", "POST /v1/charges"),
+          httpSurface("surface-refunds", "POST /v1/refunds"),
+        ],
+      ),
+      observedAt,
+      useLlm: false,
+    });
+    const payload = JSON.parse(getJob(db, queued[0]!.jobId!, "tenant-a")!.payload_json) as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("endpointKey");
+  });
+});
+
+describe("liveFettlerEndpointKey", () => {
+  it("returns the unique HTTP canonicalId and otherwise stays absent", () => {
+    expect(liveFettlerEndpointKey(undefined)).toBeUndefined();
+    expect(liveFettlerEndpointKey({
+      surfaces: [],
+      sites: [],
+      overallRisk: "breaking",
+      overallConfidence: "high",
+      strategySummary: "none",
+      candidateCount: 0,
+      confirmedCount: 0,
+      lowConfidenceNotifications: [],
+    })).toBeUndefined();
+    expect(liveFettlerEndpointKey({
+      surfaces: [
+        httpSurface("a", "POST /v1/charges"),
+        { ...httpSurface("b", "amount_cents"), kind: "request_field" },
+      ],
+      sites: [],
+      overallRisk: "breaking",
+      overallConfidence: "high",
+      strategySummary: "one endpoint",
+      candidateCount: 0,
+      confirmedCount: 0,
+      lowConfidenceNotifications: [],
+    })).toBe("POST /v1/charges");
+    expect(liveFettlerEndpointKey({
+      surfaces: [
+        httpSurface("a", "POST /v1/charges"),
+        httpSurface("b", "POST /v1/refunds"),
+      ],
+      sites: [],
+      overallRisk: "breaking",
+      overallConfidence: "high",
+      strategySummary: "two endpoints",
+      candidateCount: 0,
+      confirmedCount: 0,
+      lowConfidenceNotifications: [],
+    })).toBeUndefined();
   });
 });

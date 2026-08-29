@@ -17,6 +17,7 @@ import {
   resolveUnambiguousSingleRepoFettlerCampaign,
   type PipelineReport,
 } from "@mendpoint/pipeline";
+import type { ImpactReport } from "@mendpoint/shared";
 
 const EXACT_REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const MAX_CHANGED_PATHS = 40;
@@ -52,6 +53,23 @@ function safePath(path: string): boolean {
     !path.split("/").some((part) => !part || part === "." || part === "..") &&
     !verificationControlPath(path) &&
     !pathBlocked(path);
+}
+
+/**
+ * Thread a live Fettler endpoint key only when the impact report already
+ * names exactly one HTTP surface. Zero or many surfaces stay absent so
+ * MissionGraphProjection reports `endpoint_key_absent` instead of inventing
+ * a key.
+ */
+export function liveFettlerEndpointKey(report: ImpactReport | undefined): string | undefined {
+  if (!report) return undefined;
+  const keys = [...new Set(
+    report.surfaces
+      .filter((surface) => surface.kind === "http_path" || surface.kind === "http_method")
+      .map((surface) => surface.canonicalId.trim())
+      .filter(Boolean),
+  )];
+  return keys.length === 1 ? keys[0] : undefined;
 }
 
 function campaignHint(payload: Record<string, unknown>): string | undefined {
@@ -207,6 +225,7 @@ export function enqueuePipelineWardenRuns(
       input.tenantId,
       repo.connected_repository_id,
     );
+    const endpointKey = liveFettlerEndpointKey(result.impactReport);
     const payload = {
       goal,
       consumerId: consumer.id,
@@ -216,6 +235,7 @@ export function enqueuePipelineWardenRuns(
       allowNetwork: false,
       sessionId: runId,
       ...(campaign ? { fettlerCampaignId: campaign.campaignId } : {}),
+      ...(endpointKey ? { endpointKey } : {}),
       source: {
         pipelineJobId: input.pipelineJobId,
         changeId: input.report.changeId,
