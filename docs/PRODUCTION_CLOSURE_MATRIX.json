@@ -2064,15 +2064,15 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-29T04:10:16.000Z",
     "observedMainRevision": "37c3867111fb7083667e5422ebf9b383dba9190a",
-    "observationDigest": "sha256:ae575162aff928b334cb9a46ad4211f2a225a203687ee35f82654f64106688f9",
+    "observationDigest": "sha256:7909ab90384013ac769d20efe20111652749ee98f53cc7cb68ce46703e355b31",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 521,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/521",
-      "title": "closure authority: pre-authorize systemic-failure escalation successor template",
+      "number": 519,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/519",
+      "title": "Persist Mission Policy Envelope evaluation evidence",
       "baseBranch": "main",
-      "headBranch": "mp-succ-esc-rot1",
+      "headBranch": "cursor/mission-policy-evaluation-evidence-f457",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2085,15 +2085,7 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "rotation-20260828-004",
-        "kind": "runtime",
-        "issuedAt": "2026-08-29T04:10:16.000Z",
-        "expiresAt": "2026-08-30T04:10:16.000Z",
-        "basePolicySha256": "sha256:35d7654bed7c77dfe142cf2fde081b9681f92b62e5974683fe172efb87ab381c",
-        "proposedPolicySha256": "sha256:ed8002ff17703c04f119e12d33e1e370fdd8575aa89a2a86ae5fee07f2145ae6"
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
@@ -4729,41 +4721,6 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "412131581b52bc20ff55e2cad2f338ef1473db63",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 519,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/519",
-        "title": "Persist Mission Policy Envelope evaluation evidence",
-        "headBranch": "cursor/mission-policy-evaluation-evidence-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "0eb6ebb9a9599a08239b3cd95890669438bd719c",
         "mergeRevision": null,
         "checks": [],
         "review": {
