@@ -310,15 +310,22 @@ jobs:
           printf '%s\n' "$targets" > test-results/sandbox-egress/rotation-targets.txt
           while IFS= read -r app; do
             test -n "$app" || continue
-            # Stage first. A direct Machines-API app with a volume is not a Fly
-            # Launch process group; an unstaged `fly secrets set` asks Launch to
-            # create another Machine and fails because the only volume is already
-            # attached. Adopt the exact existing Machines into Launch v2 before
-            # deploying the staged vault generation. The secrets deployment then
-            # updates the current release in place instead of inferring capacity.
+            # A direct Machines-API app with a volume is unsafe to rotate through
+            # Launch because it can infer new capacity while the only volume is
+            # attached. Require an existing Launch process group before staging
+            # anything, preserve that group while updating the exact Machines,
+            # and prove Launch v2 ownership before deploying the vault generation.
             machines_json="$(flyctl machine list --app "$app" --json)"
-            jq -e 'length > 0 and all(.[]; .state == "started" and (.config.image | type == "string" and length > 0))' \
+            jq -e 'length > 0 and all(.[];
+              .state == "started"
+              and (.config.image | type == "string" and length > 0)
+              and (.config.metadata.fly_process_group | type == "string" and length > 0)
+            )' \
               <<<"$machines_json" >/dev/null
+            launch_groups_before="$(jq -cS '[.[] | {
+              id,
+              processGroup: .config.metadata.fly_process_group
+            }] | sort_by(.id)' <<<"$machines_json")"
             flyctl secrets set --stage --app "$app" \
               MENDPOINT_SANDBOX_FLY_IMAGE="$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
               MENDPOINT_SANDBOX_EGRESS_ATTESTATION_BASE64="$attestation" \
@@ -326,15 +333,29 @@ jobs:
               MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID="$key_id" \
               MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST="$policy_digest" \
               MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA="$schema"
-            while IFS=$'\t' read -r machine_id machine_image; do
+            while IFS=$'\t' read -r machine_id machine_image machine_process_group; do
               test -n "$machine_id"
               test -n "$machine_image"
+              test -n "$machine_process_group"
               flyctl machine update "$machine_id" --app "$app" \
                 --image "$machine_image" \
                 --env "MENDPOINT_SANDBOX_FLY_IMAGE=$MENDPOINT_SANDBOX_EGRESS_IMAGE" \
                 --metadata fly_platform_version=v2 \
+                --metadata "fly_process_group=$machine_process_group" \
                 --skip-health-checks --yes
-            done < <(jq -r '.[] | [.id, .config.image] | @tsv' <<<"$machines_json")
+            done < <(jq -r '.[] | [
+              .id,
+              .config.image,
+              .config.metadata.fly_process_group
+            ] | @tsv' <<<"$machines_json")
+            updated_machines_json="$(flyctl machine list --app "$app" --json)"
+            jq -e --argjson expected "$launch_groups_before" '
+              ([.[] | {
+                id,
+                processGroup: .config.metadata.fly_process_group
+              }] | sort_by(.id)) == $expected
+              and all(.[]; .config.metadata.fly_platform_version == "v2")
+            ' <<<"$updated_machines_json" >/dev/null
             flyctl secrets deploy --app "$app"
             flyctl secrets list --app "$app" --json \
               | jq -e 'length > 0 and all(.[]; .status == "Deployed")' >/dev/null

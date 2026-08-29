@@ -458,9 +458,18 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in {1..60}; do
-            revision="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/version | jq -r '.revision')" || true
-            ready="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/ready | jq -r '.status')" || true
-            if test "$revision" = "$GITHUB_SHA" && test "$ready" = "ok"; then exit 0; fi
+            version_json="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/version)" || true
+            ready_json="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/ready)" || true
+            if jq -e --arg revision "$GITHUB_SHA" '
+                .revision == $revision
+                and .product == "Regauge"
+                and ([.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "ga" and .enabled == true)] | length) == 1
+              ' <<<"$version_json" >/dev/null \
+              && jq -e '
+                .status == "ok"
+                and .release.product == "Regauge"
+                and ([.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "ga" and .enabled == true)] | length) == 1
+              ' <<<"$ready_json" >/dev/null; then exit 0; fi
             test "$attempt" -lt 60
             sleep 2
           done
@@ -474,11 +483,34 @@ jobs:
         run: |
           set -euo pipefail
           flyctl status --app mendpoint-regauge-production --json | tee test-results/regauge-production/fly-status.json
-          flyctl scale count coordinator=1 worker=1 --app mendpoint-regauge-production --yes
+          volume_id="$(jq -r '.id' test-results/regauge-production/coordinator-volume.json)"
+          test -n "$volume_id"
+          machines_json="$(flyctl machines list --app mendpoint-regauge-production --json)"
+          jq -e --arg volume_id "$volume_id" '
+            ([.[] | select(.state == "started")] | length) == 2
+            and ([.[] | select(
+              .state == "started"
+              and .config.metadata.fly_process_group == "coordinator"
+              and .config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA
+              and .image_ref.labels.GH_SHA == env.GITHUB_SHA
+              and ([.config.mounts[] | select(.volume == $volume_id)] | length) == 1
+            )] | length) == 1
+            and ([.[] | select(
+              .state == "started"
+              and .config.metadata.fly_process_group == "worker"
+              and .config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA
+              and .image_ref.labels.GH_SHA == env.GITHUB_SHA
+              and (.config.mounts // [] | length) == 0
+            )] | length) == 1
+          ' <<<"$machines_json" >/dev/null
+          printf '%s\n' "$machines_json" > test-results/regauge-production/machine-topology.json
           for attempt in {1..60}; do
-            revision="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/version | jq -r '.revision')" || true
-            ready="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/ready | jq -r '.status')" || true
-            if test "$revision" = "$GITHUB_SHA" && test "$ready" = "ok"; then break; fi
+            version_json="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/version)" || true
+            ready_json="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/ready)" || true
+            if jq -e --arg revision "$GITHUB_SHA" '.revision == $revision and .product == "Regauge"' \
+                <<<"$version_json" >/dev/null \
+              && jq -e '.status == "ok" and .release.product == "Regauge"' \
+                <<<"$ready_json" >/dev/null; then break; fi
             test "$attempt" -lt 60
             sleep 2
           done

@@ -257,8 +257,8 @@ import {
   liveness,
   readiness,
   RELEASE,
+  resolveRelease,
   resolveReleaseRevision,
-  resolveReleaseProduct,
   releaseBanner,
   featureMatrix,
   isProduction,
@@ -945,22 +945,23 @@ try {
   /* */
 }
 
-app.get("/health", (c) =>
-  c.json({
+app.get("/health", (c) => {
+  const release = resolveRelease();
+  return c.json({
     ok: true,
     service: "mendpoint-api",
-    product: resolveReleaseProduct(),
-    platform: RELEASE.platform,
-    version: RELEASE.version,
-    channel: RELEASE.channel,
+    product: release.product,
+    platform: release.platform,
+    version: release.version,
+    channel: release.channel,
     banner: releaseBanner(),
     auth: effectiveAuthMode(),
     graphNative: true,
     rbac: true,
     production: isProduction(),
     uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
-  }),
-);
+  });
+});
 
 /** Kubernetes-style probes */
 app.get("/live", (c) => c.json(liveness()));
@@ -975,25 +976,26 @@ app.get("/ready", (c) => {
   return c.json(r, r.status === "fail" ? 503 : 200);
 });
 
-app.get("/version", (c) =>
-  c.json({
-    ...RELEASE,
-    product: resolveReleaseProduct(),
+app.get("/version", (c) => {
+  const release = resolveRelease();
+  return c.json({
+    ...release,
     revision: resolveReleaseRevision(),
     banner: releaseBanner(),
     features: featureMatrix(),
-  }),
-);
+  });
+});
 
 app.get("/status", (c) => {
   const r = apiReadiness();
+  const release = resolveRelease();
   return c.json({
     ...r,
     ga: {
-      version: RELEASE.version,
-      channel: RELEASE.channel,
-      gaFeatures: RELEASE.gaFeatures,
-      experimental: RELEASE.experimentalFeatures,
+      version: release.version,
+      channel: release.channel,
+      gaFeatures: release.gaFeatures,
+      experimental: release.experimentalFeatures,
     },
     endpoints: {
       health: "/health",

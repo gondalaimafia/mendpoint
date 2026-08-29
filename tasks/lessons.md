@@ -226,3 +226,8 @@
 **Mistake:** Stale-marker recovery deleted the marker before appending its audit record, so an audit permission failure could erase the only recoverable evidence.
 **Correction:** A production recovery attempt reproduced that ordering failure and required restoration from the exact captured marker bytes.
 **Rule:** Move recoverable state to a transaction hold, persist and verify its audit evidence, then delete the hold. On any audit failure, restore the original state byte for byte and fail closed.
+
+### 2026-08-29 — Enumerate the complete failure chain before retrying
+**Mistake:** Earlier production closure work peeled one failing layer per CI cycle and treated each newly exposed failure as a separate surprise.
+**Correction:** Talal required Codex to learn from that delay: after a second hidden layer or a retry that adds no evidence, stop retrying and enumerate every authority, identity, state, deployment, health, and evidence predicate locally.
+**Rule:** A second hidden failure triggers a full-chain audit before the next mutation. Close every discoverable layer in one reviewed increment, then retry once with explicit evidence for each predicate.

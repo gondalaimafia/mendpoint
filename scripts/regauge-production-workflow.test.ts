@@ -317,9 +317,32 @@ describe("Regauge production workflow", () => {
     expect(steps[coordinatorHealthIndex].run).toContain(
       "https://mendpoint-regauge-production.fly.dev/ready",
     );
+    expect(steps[coordinatorHealthIndex].run).toContain('.product == "Regauge"');
+    expect(steps[coordinatorHealthIndex].run).toContain(
+      '.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "ga" and .enabled == true)',
+    );
     expect(
       steps.some((step) => step.name === "Deploy one coordinator and one worker"),
     ).toBe(false);
+  });
+
+  it("proves exact post-deploy machine, revision, role, and volume topology", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const steps = workflow.jobs.deploy.steps as Record<string, any>[];
+    const proof = steps.find(
+      (step) => step.name === "Verify exact deployed revision and process health",
+    )!.run as string;
+
+    expect(proof).toContain("coordinator-volume.json");
+    expect(proof).toContain(".config.metadata.fly_process_group == \"coordinator\"");
+    expect(proof).toContain(".config.metadata.fly_process_group == \"worker\"");
+    expect(proof).toContain(".config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA");
+    expect(proof).toContain(".image_ref.labels.GH_SHA == env.GITHUB_SHA");
+    expect(proof).toContain(".config.mounts[] | select(.volume == $volume_id)");
+    expect(proof).toContain("(.config.mounts // [] | length) == 0");
+    expect(proof).toContain("machine-topology.json");
   });
 
   it("requires a fresh exact-volume restore attestation before target credentials or processes can start", () => {

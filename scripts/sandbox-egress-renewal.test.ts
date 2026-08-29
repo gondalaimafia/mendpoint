@@ -136,15 +136,40 @@ describe("sandbox egress engine — rotation reaches every configured app", () =
     expect(rotate).toContain('--image "$machine_image"');
     expect(rotate).toContain('--env "MENDPOINT_SANDBOX_FLY_IMAGE=$MENDPOINT_SANDBOX_EGRESS_IMAGE"');
     expect(rotate).toContain("--metadata fly_platform_version=v2");
+    expect(rotate).toContain('--metadata "fly_process_group=$machine_process_group"');
     expect(rotate).toContain('flyctl secrets deploy --app "$app"');
     expect(rotate).toContain('flyctl secrets list --app "$app" --json');
     expect(rotate).toContain('all(.[]; .status == "Deployed")');
-    expect(rotate).toContain("length > 0 and all(.[]; .state == \"started\"");
+    expect(rotate).toContain("length > 0 and all(.[];");
+    expect(rotate).toContain('.state == "started"');
     // The old single-app rotation is gone.
     expect(rotate).not.toContain('flyctl secrets set --stage --app "$SANDBOX_VERIFYING_APP"');
     // Health is verified per app, not once.
     expect(rotate).toContain('"https://${app}.fly.dev/livez"');
     expect(rotate).toContain('"https://${app}.fly.dev/healthz"');
+  });
+
+  it("fails before staging when a started image-bearing Machine has no Launch process group", () => {
+    const rotate = step(
+      engine(),
+      "accept",
+      "Rotate the egress authority to every consuming app",
+    ).run as string;
+    const guard = rotate.indexOf(
+      '.config.metadata.fly_process_group | type == "string" and length > 0',
+    );
+    const stage = rotate.indexOf('flyctl secrets set --stage --app "$app"');
+    const postUpdateProof = rotate.indexOf(
+      '.config.metadata.fly_platform_version == "v2"',
+    );
+    const deploy = rotate.indexOf('flyctl secrets deploy --app "$app"');
+
+    expect(guard).toBeGreaterThanOrEqual(0);
+    expect(guard).toBeLessThan(stage);
+    expect(rotate).toContain('launch_groups_before=');
+    expect(rotate).toContain('processGroup: .config.metadata.fly_process_group');
+    expect(postUpdateProof).toBeGreaterThan(stage);
+    expect(postUpdateProof).toBeLessThan(deploy);
   });
 });
 
