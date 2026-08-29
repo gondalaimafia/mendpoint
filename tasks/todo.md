@@ -3566,7 +3566,7 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - [x] Restore the app binding to its existing private bucket and prove the remaining credential denial.
 - [x] Add safe readiness state events plus pre-containment machine, check, and log capture.
 - [x] Distinguish missing-bucket and access-denied failures without exposing provider bodies or credentials.
-- [ ] Run focused tests, worker tests, workspace typecheck, production build, closure gates, and diff integrity.
+- [x] Run focused tests, worker tests, workspace typecheck, production build, closure gates, and diff integrity.
 - [ ] Obtain independent exact-head review and current-base protected CI.
 - [ ] Merge, deploy, and rerun the bounded ReGauge activation proof.
 
@@ -3575,3 +3575,4 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Run `33279520458` passed protected authority, dedicated app, encrypted volume, checkpoint storage, secret staging, coordinator deployment, and exact coordinator health. The volume-free worker bound port 9465 but remained unready until Fly timed out; failure containment then stopped it.
 - Live localhost inspection proved the worker listener was bound and the coordinator probe passed. Signed Tigris GET and PUT calls first returned `NoSuchBucket`; after restoring `BUCKET_NAME` to the attached private bucket, both returned 403, proving the failed create attempt had also replaced the bucket credentials. The worker remains stopped while replacement scoped credentials are pending.
 - The code now emits only structured, allowlisted readiness stage and error codes, and the protected workflow captures worker inventory, checks, and scoped logs before containment. S3 access denial and missing-bucket failures are distinct without retaining provider response bodies.
+- Local verification is green on the rebased code: 23 affected tests; the full Worker suite with 67 files, 648 passes, and one intentional skip; full workspace typecheck; optimized production build; all GA gates across 101 registered requirements; zero production dependency vulnerabilities; and clean diff integrity. Independent exact-head review found no P0, P1, or P2 defects before the provider-resolved PR #549 bootstrap was added; final-head review and protected CI remain required.
