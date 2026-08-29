@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T19:12:58.000Z",
-    "observedMainRevision": "f8df0e131aa11eec00946cbce5d26aea35fd145d",
-    "observationDigest": "sha256:357cdda0f95fe7d5542fceb1f7d28c2114110fc351336c4d406ca6667fd8158e",
+    "observedAt": "2026-08-29T19:32:37.000Z",
+    "observedMainRevision": "5ba88a0e3f7a12a9b34b519eea2dd94b80bc108f",
+    "observationDigest": "sha256:8ab4eaa842b10910d6df530b2c6db103212e4651d0c61b41ec2f3c9acfe388c5",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 524,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/524",
-      "title": "Raise a Mission policy exception on Fettler agent.run deny",
+      "number": 523,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/523",
+      "title": "Raise a Mission policy exception on ReGauge pilot deny",
       "baseBranch": "main",
-      "headBranch": "cursor/fettler-agent-run-policy-exception-f457",
+      "headBranch": "cursor/regauge-pilot-policy-exception-f457",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -4756,41 +4756,6 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "9bf93afca096952492c451227edf2bd0645b1ba9",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 523,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/523",
-        "title": "Raise a Mission policy exception on ReGauge pilot deny",
-        "headBranch": "cursor/regauge-pilot-policy-exception-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "66d4443cf15157b1f2dbae3fd02017f0cfc6e6fe",
         "mergeRevision": null,
         "checks": [],
         "review": {

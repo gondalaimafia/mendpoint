@@ -5,9 +5,34 @@
  *
  * Unbound campaigns (no Mission) are not evaluated here — that enrollment gap
  * stays visible. A bound Mission with a missing envelope, invalid envelope, or
- * explicit deny fails closed and does not claim.
+ * explicit deny fails closed and does not claim. Those blockers are also raised
+ * as Mission exceptions (category `policy_exception`) so the same deny is not
+ * rediscovered on the next claim (ME-MSN-002).
+ *
+ * The deny is observed in the context of the exact immutable snapshot this unit
+ * would execute against, so the exception is bound to THAT snapshot
+ * (`observedAgainst`), threaded from the caller (the runnable campaign unit's
+ * taskSnapshotId/expectedBaseRevision). It is NOT derived from
+ * `mission.snapshotId`: the unit snapshot advances per wave and is the precise
+ * context this claim was denied against, whereas the mission's launch snapshot
+ * is a single immutable pin that never moves. The exception counts as blocking
+ * only while the mission is on that snapshot; once a later claim runs against a
+ * newer unit snapshot the prior deny is STALE, surfaced for re-affirmation
+ * rather than blocking forever. That staleness-against-current-snapshot
+ * evaluation is the same one the review handoff resolver applies
+ * (apps/api/src/warden-candidate-review.ts passes the run's snapshot as
+ * `current`); note that resolver does NOT clear these rows — it filters on
+ * `taskId`, which these do not carry — so only a snapshot advance stops one
+ * blocking.
  */
-import { resolveMissionForRegaugeCampaign, type AppDb } from "@mendpoint/db";
+import {
+  evaluateMissionExceptions,
+  raiseMissionException,
+  resolveMissionForRegaugeCampaign,
+  type AppDb,
+  type Mission,
+  type SnapshotIdentity,
+} from "@mendpoint/db";
 import { isTrainingTierModel } from "@mendpoint/agent";
 import {
   evaluateMissionTaskPolicy,
@@ -27,7 +52,17 @@ export type RegaugePilotPolicyInput = Readonly<{
    * to derive whether the attempt routes to a training-capturing tier.
    */
   adaptiveModelId?: string;
-  /** Caller-supplied evaluation timestamp; the evidence fact's createdAt. */
+  /**
+   * The immutable snapshot this unit would execute against. A raised policy
+   * exception is bound to it so it goes stale when the mission moves past it,
+   * instead of blocking the mission forever.
+   */
+  observedAgainst: SnapshotIdentity;
+  /**
+   * Caller-supplied evaluation timestamp, taken from the lane's injected clock;
+   * it is the evidence fact's createdAt. Required so tests and replays agree —
+   * the seam never reads the wall clock itself.
+   */
   observedAt: string;
 }>;
 
@@ -54,6 +89,39 @@ function regaugePilotPolicyTask(input: RegaugePilotPolicyInput) {
   });
 }
 
+function recordPolicyException(
+  db: AppDb,
+  mission: Mission,
+  reason: string,
+  createdAt: string,
+  observedAgainst: SnapshotIdentity,
+): void {
+  // Dedup against the CURRENT snapshot: a still-blocking policy_exception with
+  // the same reason on this snapshot means the deny was already recorded. A
+  // matching exception bound to a superseded snapshot is stale here, so a fresh
+  // deny on the new snapshot is recorded (and re-affirmed) rather than skipped.
+  const already = evaluateMissionExceptions(db, mission.tenantId, mission.id, observedAgainst).blocking
+    .some((item) => item.category === "policy_exception" && item.reason === reason);
+  if (already) return;
+  raiseMissionException(db, {
+    tenantId: mission.tenantId,
+    missionId: mission.id,
+    reason,
+    impact: "ReGauge pilot claim denied by the inherited Policy Envelope",
+    ownerPrincipalId: mission.ownerPrincipalId,
+    // Truthful resolution: correcting the envelope stops the NEXT claim from
+    // re-denying; this recorded row stops blocking once a later claim supersedes
+    // this unit snapshot (it goes stale). There is no taskId-based resolver for
+    // these rows, so do not imply one.
+    resolutionPath: "rebind_policy_envelope; deny goes stale once a later claim supersedes this snapshot",
+    blocking: true,
+    observedAgainst,
+    correlationId: `regauge-pilot-policy:${mission.id}`,
+    createdAt,
+    category: "policy_exception",
+  });
+}
+
 /**
  * Evaluate the campaign's bound Mission envelope. No-op when unbound.
  */
@@ -67,10 +135,12 @@ export function assertRegaugePilotMissionPolicy(db: AppDb, input: RegaugePilotPo
     observedAt: input.observedAt,
   });
   if (enforcement.status === "no_envelope") {
+    recordPolicyException(db, mission, "mission_policy_envelope_missing", input.observedAt, input.observedAgainst);
     throw new Error("mission_policy_envelope_missing");
   }
   const reasons = missionPolicyDenialReasons(enforcement);
   if (reasons) {
+    recordPolicyException(db, mission, reasons.join(";"), input.observedAt, input.observedAgainst);
     throw new Error(`mission_policy_denied:${reasons.join(";")}`);
   }
 }
