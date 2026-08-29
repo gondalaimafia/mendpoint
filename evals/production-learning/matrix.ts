@@ -57,6 +57,12 @@ export interface CaseExecutionReceipt {
   executionState: "planned" | "completed" | "failed";
 }
 
+declare const VERIFIED_CASE_EXECUTION_RECEIPT: unique symbol;
+export type VerifiedCaseExecutionReceipt = Readonly<CaseExecutionReceipt> & {
+  readonly [VERIFIED_CASE_EXECUTION_RECEIPT]: true;
+};
+const verifiedCaseExecutionReceipts = new WeakSet<object>();
+
 export function flattenRequirementRegister(register: RequirementRegister): RequirementRecord[] {
   return [
     ...register.requirements,
@@ -68,10 +74,12 @@ export function buildRequirementCaseTraceability(input: {
   requirements: readonly RequirementRecord[];
   closureRows: readonly ClosureRow[];
   cases: readonly LearningCase[];
-  executionReceipts?: readonly CaseExecutionReceipt[];
+  executionReceipts?: readonly VerifiedCaseExecutionReceipt[];
 }): RequirementCaseTrace[] {
   const closureByRequirement = new Map(input.closureRows.map((row) => [row.requirementId, row]));
   const admittedExecutionReceipts = (input.executionReceipts ?? []).filter((receipt) =>
+    verifiedCaseExecutionReceipts.has(receipt)
+    &&
     receipt.admissionState === "admitted"
     && receipt.executionState === "completed"
     && receipt.oracleEvidenceIds.length > 0
@@ -97,7 +105,7 @@ export function buildRequirementCaseTraceability(input: {
       plannedCaseIds: plannedCases.map((item) => item.id),
       plannedOracleIds: [...new Set(plannedCases.filter((item) => item.datasetSplit === "development").flatMap((item) => item.expected.oracleIds))],
       verificationState,
-      verificationGapReason: verificationState === "verified" ? null : "No admitted completed execution receipt verifies this requirement.",
+      verificationGapReason: verificationState === "verified" ? null : "No protected-verifier-authenticated completed execution receipt verifies this requirement.",
       executionReceiptIds: verifiedReceipts.map((receipt) => receipt.id),
       verifiedCaseIds: [...new Set(verifiedReceipts.map((receipt) => receipt.caseId))],
       verifiedOracleEvidenceIds: [...new Set(verifiedReceipts.flatMap((receipt) => receipt.oracleEvidenceIds))],

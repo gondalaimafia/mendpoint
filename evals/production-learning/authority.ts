@@ -10,14 +10,38 @@ export interface SignedAuthorityEnvelope<T> {
   signature: string;
 }
 
-export interface TrustedAuthorityVerifierConfig {
+export type AuthorityPurpose =
+  | "production_learning"
+  | "external_provider_transmission"
+  | "evaluation_grading";
+
+interface PinnedAuthorityTrustRoot {
   issuer: string;
   keyId: string;
-  publicKeyDerBase64: string;
-  publicKeySha256: string;
-  currentProductionRevision: string;
-  now: string;
+  publicKeyEnv: string;
+  publicKeyDigestEnv: string;
 }
+
+const PINNED_AUTHORITY_TRUST_ROOTS: Readonly<Record<AuthorityPurpose, PinnedAuthorityTrustRoot>> = Object.freeze({
+  production_learning: Object.freeze({
+    issuer: "mendpoint-production-learning-control-plane",
+    keyId: "production-learning-ed25519-v1",
+    publicKeyEnv: "MENDPOINT_PRODUCTION_LEARNING_PUBLIC_KEY_SPKI_BASE64",
+    publicKeyDigestEnv: "MENDPOINT_PRODUCTION_LEARNING_TRUSTED_KEY_SHA256",
+  }),
+  external_provider_transmission: Object.freeze({
+    issuer: "mendpoint-external-provider-control-plane",
+    keyId: "external-provider-ed25519-v1",
+    publicKeyEnv: "MENDPOINT_EXTERNAL_PROVIDER_PUBLIC_KEY_SPKI_BASE64",
+    publicKeyDigestEnv: "MENDPOINT_EXTERNAL_PROVIDER_TRUSTED_KEY_SHA256",
+  }),
+  evaluation_grading: Object.freeze({
+    issuer: "mendpoint-evaluation-grading-control-plane",
+    keyId: "evaluation-grading-ed25519-v1",
+    publicKeyEnv: "MENDPOINT_EVALUATION_GRADING_PUBLIC_KEY_SPKI_BASE64",
+    publicKeyDigestEnv: "MENDPOINT_EVALUATION_GRADING_TRUSTED_KEY_SHA256",
+  }),
+});
 
 export function canonicalAuthorityBytes<T>(envelope: Omit<SignedAuthorityEnvelope<T>, "signature">): Buffer {
   function canonicalJson(value: unknown): string {
@@ -44,21 +68,31 @@ export function signedAuthorityEnvelopeDigest<T>(envelope: SignedAuthorityEnvelo
 
 export function verifySignedAuthorityEnvelope<T extends { productionRevision: string }>(
   envelope: SignedAuthorityEnvelope<T>,
-  config: TrustedAuthorityVerifierConfig,
+  purpose: AuthorityPurpose,
 ): Readonly<T> {
+  const trustRoot = PINNED_AUTHORITY_TRUST_ROOTS[purpose];
   if (envelope.schemaVersion !== "mendpoint.signed-authority.v1") throw new Error("authority_schema_invalid");
-  if (envelope.issuer !== config.issuer || envelope.keyId !== config.keyId) throw new Error("authority_issuer_not_trusted");
-  const publicKeyDer = Buffer.from(config.publicKeyDerBase64, "base64");
-  if (createHash("sha256").update(publicKeyDer).digest("hex") !== config.publicKeySha256) {
+  if (envelope.issuer !== trustRoot.issuer || envelope.keyId !== trustRoot.keyId) throw new Error("authority_issuer_not_trusted");
+  const publicKeyDerBase64 = process.env[trustRoot.publicKeyEnv];
+  const pinnedPublicKeyDigest = process.env[trustRoot.publicKeyDigestEnv];
+  if (publicKeyDerBase64 === undefined || pinnedPublicKeyDigest === undefined || !/^[0-9a-f]{64}$/.test(pinnedPublicKeyDigest)) {
+    throw new Error("authority_trust_root_unavailable");
+  }
+  const publicKeyDer = Buffer.from(publicKeyDerBase64, "base64");
+  if (createHash("sha256").update(publicKeyDer).digest("hex") !== pinnedPublicKeyDigest) {
     throw new Error("authority_public_key_digest_mismatch");
   }
   const issuedAt = Date.parse(envelope.issuedAt);
   const expiresAt = Date.parse(envelope.expiresAt);
-  const now = Date.parse(config.now);
+  const now = Date.now();
   if (![issuedAt, expiresAt, now].every(Number.isFinite) || issuedAt > now || expiresAt <= now) {
     throw new Error("authority_time_window_invalid");
   }
-  if (envelope.payload.productionRevision !== config.currentProductionRevision) {
+  const currentProductionRevision = process.env.MENDPOINT_PRODUCTION_REVISION;
+  if (currentProductionRevision === undefined || !/^[0-9a-f]{40}$/.test(currentProductionRevision)) {
+    throw new Error("authority_current_production_revision_unavailable");
+  }
+  if (envelope.payload.productionRevision !== currentProductionRevision) {
     throw new Error("authority_production_revision_not_current");
   }
   const signature = Buffer.from(envelope.signature, "base64");

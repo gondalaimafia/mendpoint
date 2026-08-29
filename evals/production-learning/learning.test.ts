@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { canonicalAuthorityBytes, type SignedAuthorityEnvelope, type TrustedAuthorityVerifierConfig } from "./authority.js";
+import {
+  PREFLIGHT_REVISION,
+  PROVIDER_AUTHORITY_ENVELOPE,
+  PROVIDER_EXPIRED_AUTHORITY_ENVELOPE,
+  PROVIDER_MISMATCH_AUTHORITY_ENVELOPE,
+  installTestAuthorityTrustRoots,
+} from "./authority-fixtures.test-support.js";
 import {
   assertExternalProviderTransmissionAllowed,
   validateBenchmarkLearningEvent,
@@ -8,21 +13,12 @@ import {
   type BenchmarkLearningEvent,
   type BenchmarkLearningOutcome,
   type ExternalProviderTransmissionAuthority,
-  type ExternalProviderTransmissionAuthorityPayload,
 } from "./learning.js";
 
 const SHA = "a".repeat(64);
-const REVISION = "b".repeat(40);
-const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-const publicKeyDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
-const verifierConfig: TrustedAuthorityVerifierConfig = {
-  issuer: "mendpoint-production-authority",
-  keyId: "provider-egress-key-1",
-  publicKeyDerBase64: publicKeyDer.toString("base64"),
-  publicKeySha256: createHash("sha256").update(publicKeyDer).digest("hex"),
-  currentProductionRevision: REVISION,
-  now: "2026-08-28T23:30:00.000Z",
-};
+const REVISION = PREFLIGHT_REVISION;
+installTestAuthorityTrustRoots();
+process.env.MENDPOINT_PRODUCTION_REVISION = REVISION;
 
 function event(outcome: BenchmarkLearningOutcome = "accepted"): BenchmarkLearningEvent {
   return {
@@ -66,38 +62,10 @@ function event(outcome: BenchmarkLearningOutcome = "accepted"): BenchmarkLearnin
   };
 }
 
-function authorityEnvelope(
-  value: BenchmarkLearningEvent,
-  options: { expiresAt?: string; payload?: Partial<ExternalProviderTransmissionAuthorityPayload> } = {},
-): SignedAuthorityEnvelope<ExternalProviderTransmissionAuthorityPayload> {
-  const payload: ExternalProviderTransmissionAuthorityPayload = {
-    schemaVersion: "mendpoint.external-provider-transmission-authority.v1",
-    productionRevision: value.lineage.productionRevision,
-    tenantId: value.governance.tenantId,
-    repositoryId: value.lineage.repositoryId,
-    repositoryCommit: value.lineage.repositoryCommit,
-    repositorySnapshotDigest: value.lineage.repositorySnapshotDigest,
-    providerId: "provider-a",
-    purpose: "case_execution",
-    consentEvidenceRef: value.governance.consent.evidenceRef,
-    licenseEvidenceRef: value.governance.license.evidenceRef,
-    sharedTrainingAllowed: false,
-    repositoryContentAllowed: false,
-    ...options.payload,
-  };
-  const unsigned = {
-    schemaVersion: "mendpoint.signed-authority.v1" as const,
-    issuer: verifierConfig.issuer,
-    keyId: verifierConfig.keyId,
-    issuedAt: "2026-08-28T23:00:00.000Z",
-    expiresAt: options.expiresAt ?? "2026-08-29T00:00:00.000Z",
-    payload,
-  };
-  return { ...unsigned, signature: sign(null, canonicalAuthorityBytes(unsigned), privateKey).toString("base64") };
-}
-
 function authority(value: BenchmarkLearningEvent): ExternalProviderTransmissionAuthority {
-  return verifyExternalProviderTransmissionAuthority(authorityEnvelope(value), verifierConfig);
+  void value;
+  process.env.MENDPOINT_PRODUCTION_REVISION = REVISION;
+  return verifyExternalProviderTransmissionAuthority(PROVIDER_AUTHORITY_ENVELOPE);
 }
 
 describe("governed benchmark learning lineage", () => {
@@ -157,12 +125,9 @@ describe("governed benchmark learning lineage", () => {
   it("rejects an unverified or mismatched provider authority and any shared-training permission", () => {
     const value = event();
     value.governance.externalProvider = { decision: "allowed", providerId: "provider-a", purpose: "case_execution", sharedTrainingAllowed: false, repositoryContentAllowed: false, retention: "none" };
-    const selfAuthorized = authorityEnvelope(value).payload as unknown as ExternalProviderTransmissionAuthority;
+    const selfAuthorized = PROVIDER_AUTHORITY_ENVELOPE.payload as unknown as ExternalProviderTransmissionAuthority;
     expect(() => assertExternalProviderTransmissionAllowed(value, selfAuthorized)).toThrow("external_provider_authority_not_verified");
-    const mismatched = verifyExternalProviderTransmissionAuthority(
-      authorityEnvelope(value, { payload: { repositorySnapshotDigest: "c".repeat(64) } }),
-      verifierConfig,
-    );
+    const mismatched = verifyExternalProviderTransmissionAuthority(PROVIDER_MISMATCH_AUTHORITY_ENVELOPE);
     expect(() => assertExternalProviderTransmissionAllowed(value, mismatched)).toThrow("external_provider_authority_mismatch:snapshot");
     (value.governance.externalProvider as unknown as { sharedTrainingAllowed: boolean }).sharedTrainingAllowed = true;
     expect(validateBenchmarkLearningEvent(value)).toContain("external provider shared training must be exactly denied");
@@ -170,13 +135,26 @@ describe("governed benchmark learning lineage", () => {
 
   it("rejects tampered, foreign, expired, wrong-key, wrong-digest, and stale-revision authorities", () => {
     const value = event();
-    const tampered = authorityEnvelope(value);
+    const tampered = structuredClone(PROVIDER_AUTHORITY_ENVELOPE);
     tampered.payload = { ...tampered.payload, providerId: "provider-b" };
-    expect(() => verifyExternalProviderTransmissionAuthority(tampered, verifierConfig)).toThrow("authority_signature_invalid");
-    expect(() => verifyExternalProviderTransmissionAuthority(authorityEnvelope(value), { ...verifierConfig, issuer: "foreign-authority" })).toThrow("authority_issuer_not_trusted");
-    expect(() => verifyExternalProviderTransmissionAuthority(authorityEnvelope(value), { ...verifierConfig, keyId: "foreign-key" })).toThrow("authority_issuer_not_trusted");
-    expect(() => verifyExternalProviderTransmissionAuthority(authorityEnvelope(value), { ...verifierConfig, publicKeySha256: "0".repeat(64) })).toThrow("authority_public_key_digest_mismatch");
-    expect(() => verifyExternalProviderTransmissionAuthority(authorityEnvelope(value, { expiresAt: "2026-08-28T23:10:00.000Z" }), verifierConfig)).toThrow("authority_time_window_invalid");
-    expect(() => verifyExternalProviderTransmissionAuthority(authorityEnvelope(value), { ...verifierConfig, currentProductionRevision: "c".repeat(40) })).toThrow("authority_production_revision_not_current");
+    expect(() => verifyExternalProviderTransmissionAuthority(tampered)).toThrow("authority_signature_invalid");
+    const foreignIssuer = structuredClone(PROVIDER_AUTHORITY_ENVELOPE);
+    foreignIssuer.issuer = "foreign-authority";
+    expect(() => verifyExternalProviderTransmissionAuthority(foreignIssuer)).toThrow("authority_issuer_not_trusted");
+    const foreignKey = structuredClone(PROVIDER_AUTHORITY_ENVELOPE);
+    foreignKey.keyId = "foreign-key";
+    expect(() => verifyExternalProviderTransmissionAuthority(foreignKey)).toThrow("authority_issuer_not_trusted");
+    process.env.MENDPOINT_EXTERNAL_PROVIDER_TRUSTED_KEY_SHA256 = "0".repeat(64);
+    expect(() => verifyExternalProviderTransmissionAuthority(PROVIDER_AUTHORITY_ENVELOPE)).toThrow("authority_public_key_digest_mismatch");
+    installTestAuthorityTrustRoots();
+    expect(() => verifyExternalProviderTransmissionAuthority(PROVIDER_EXPIRED_AUTHORITY_ENVELOPE)).toThrow("authority_time_window_invalid");
+    process.env.MENDPOINT_PRODUCTION_REVISION = "c".repeat(40);
+    expect(() => verifyExternalProviderTransmissionAuthority(PROVIDER_AUTHORITY_ENVELOPE)).toThrow("authority_production_revision_not_current");
+    delete process.env.MENDPOINT_PRODUCTION_REVISION;
+    expect(() => verifyExternalProviderTransmissionAuthority(PROVIDER_AUTHORITY_ENVELOPE)).toThrow("authority_current_production_revision_unavailable");
+    process.env.MENDPOINT_PRODUCTION_REVISION = REVISION;
+    delete process.env.MENDPOINT_EXTERNAL_PROVIDER_PUBLIC_KEY_SPKI_BASE64;
+    expect(() => verifyExternalProviderTransmissionAuthority(PROVIDER_AUTHORITY_ENVELOPE)).toThrow("authority_trust_root_unavailable");
+    installTestAuthorityTrustRoots();
   });
 });

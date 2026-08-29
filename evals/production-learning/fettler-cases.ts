@@ -904,6 +904,13 @@ function toLearningCase(seed: CaseSeed): LearningCase {
   const sourceId = `${seed.id.toLowerCase()}-source-1`;
   const source = sourceLibrary[seed.source];
   const repository = repositories[seed.repository];
+  const repositoryBinding = seed.repository === "openaiClient" && seed.source.startsWith("slack")
+    ? {
+      mode: "synthetic_substrate" as const,
+      originalResearchCandidate: "repo-slackapi-node-slack-sdk",
+      rationale: "The OpenAI client repository is only a controlled TypeScript fixture host; it is not evidence of native Slack API semantics.",
+    }
+    : repository.binding;
   const numericId = Number(seed.id.slice(-3));
   const uncertainty = `${seed.family} ${seed.title}`.toLowerCase();
   const requirementIds = ["ME-WAR-001", "ME-WAR-002", "ME-WAR-005", "ME-FET-015", "ME-FET-016"];
@@ -928,7 +935,7 @@ function toLearningCase(seed: CaseSeed): LearningCase {
       provenanceId: repository.provenanceId,
       languages: [...repository.languages],
       frameworks: [...repository.frameworks],
-      binding: repository.binding,
+      binding: repositoryBinding,
     },
     planning: { requirementIds },
     pattern: {

@@ -3,7 +3,7 @@ import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from 
 import type { Stats } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
-import type { AdmittedFixture } from "./fixture.js";
+import { requireAdmittedFixture, type AdmittedFixture } from "./fixture.js";
 
 export interface MutationApplication {
   caseId: string;
@@ -256,7 +256,7 @@ export function applyFixtureMutation(input: {
   patchRoot: string;
   admission: AdmittedFixture;
 }): MutationApplication {
-  const manifest = input.admission.manifest;
+  const manifest = requireAdmittedFixture(input.admission).manifest;
   const repositoryPath = safeInside(input.benchmarkRoot, input.repositoryPath);
   const patchPath = safeInside(input.patchRoot, resolve(input.patchRoot, manifest.mutation.patchPath));
   const head = git(repositoryPath, ["rev-parse", "HEAD"]).trim();
@@ -312,7 +312,7 @@ export function rollbackFixtureMutation(input: {
   patchRoot: string;
   admission: AdmittedFixture;
 }): { rolledBack: true; pristineSnapshotSha256: string } {
-  const manifest = input.admission.manifest;
+  const manifest = requireAdmittedFixture(input.admission).manifest;
   const repositoryPath = safeInside(input.benchmarkRoot, input.repositoryPath);
   const patchPath = safeInside(input.patchRoot, resolve(input.patchRoot, manifest.mutation.patchPath));
   const patch = readFileSync(patchPath);

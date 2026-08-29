@@ -1,6 +1,6 @@
 # Fettler and ReGauge production learning catalog
 
-Generated: 2026-08-29T03:05:16.963Z
+Generated: 2026-08-29T03:45:25.324Z
 
 Program base revision: `96801a319fc3d355cb2b28b4167b83023a192042`
 
@@ -12,7 +12,7 @@ This artifact contains 150 source-referenced cases: 50 common and 25 edge cases 
 - Requirement bindings planned: 15; verified by admitted execution receipts: 0.
 - Holdout candidates: 30 assigned; protected seals: 0.
 - Repository candidates: 10; production admitted: 0.
-- Native case bindings: 55; synthetic substrate case bindings: 95.
+- Native case bindings: 52; synthetic substrate case bindings: 98.
 - Fixture plans: 150; admitted exact mutation manifests: 0.
 - Required equal arm runs: 750; completed production runs: 0.
 - Customer readiness: not claimed.
@@ -35,9 +35,9 @@ This artifact contains 150 source-referenced cases: 50 common and 25 edge cases 
 | FET-C012 | fettler | common | development | Acknowledge Stripe webhooks before long-running work | webhook-retry | [Stripe](https://docs.stripe.com/webhooks) | repo-stripe-stripe-node | native | repo-stripe-stripe-node |
 | FET-C013 | fettler | common | development | Align Stripe webhook API and SDK versions | sdk-schema-versioning | [Stripe](https://docs.stripe.com/webhooks/versioning) | repo-stripe-stripe-node | native | repo-stripe-stripe-node |
 | FET-C014 | fettler | common | development | Reject stale Stripe webhook replays | webhook-replay-protection | [Stripe](https://docs.stripe.com/webhooks) | repo-stripe-stripe-node | native | repo-stripe-stripe-node |
-| FET-C015 | fettler | common | holdout | Replace Slack files.upload with the asynchronous upload flow | api-retirement | [Slack](https://docs.slack.dev/changelog/2024-04-a-better-way-to-upload-files-is-here-to-stay/) | repo-openai-openai-node | native | repo-openai-openai-node |
-| FET-C016 | fettler | common | development | Update Slack upload parameters and result shape | sdk-response-shape | [Slack](https://docs.slack.dev/changelog/2024-04-a-better-way-to-upload-files-is-here-to-stay/) | repo-openai-openai-node | native | repo-openai-openai-node |
-| FET-C017 | fettler | common | development | Honor Slack Retry-After per workspace and method | rate-limit-remediation | [Slack](https://docs.slack.dev/apis/web-api/rate-limits) | repo-openai-openai-node | native | repo-openai-openai-node |
+| FET-C015 | fettler | common | holdout | Replace Slack files.upload with the asynchronous upload flow | api-retirement | [Slack](https://docs.slack.dev/changelog/2024-04-a-better-way-to-upload-files-is-here-to-stay/) | repo-openai-openai-node | synthetic_substrate | repo-slackapi-node-slack-sdk |
+| FET-C016 | fettler | common | development | Update Slack upload parameters and result shape | sdk-response-shape | [Slack](https://docs.slack.dev/changelog/2024-04-a-better-way-to-upload-files-is-here-to-stay/) | repo-openai-openai-node | synthetic_substrate | repo-slackapi-node-slack-sdk |
+| FET-C017 | fettler | common | development | Honor Slack Retry-After per workspace and method | rate-limit-remediation | [Slack](https://docs.slack.dev/apis/web-api/rate-limits) | repo-openai-openai-node | synthetic_substrate | repo-slackapi-node-slack-sdk |
 | FET-C018 | fettler | common | development | Acknowledge Slack events within three seconds | webhook-acknowledgement | [Slack](https://docs.slack.dev/apis/events-api/) | repo-octokit-webhooks-js | synthetic_substrate | repo-slackapi-node-slack-sdk |
 | FET-C019 | fettler | common | development | Preserve Slack retry number and reason | webhook-retry-lineage | [Slack](https://docs.slack.dev/apis/events-api/) | repo-octokit-webhooks-js | synthetic_substrate | repo-slackapi-node-slack-sdk |
 | FET-C020 | fettler | common | holdout | Handle Slack URL verification separately from events | webhook-handshake | [Slack](https://docs.slack.dev/apis/events-api/) | repo-octokit-webhooks-js | synthetic_substrate | repo-slackapi-node-slack-sdk |

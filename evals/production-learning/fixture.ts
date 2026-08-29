@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { EvidenceState, LearningCase, RepositoryProvenance } from "./schema.js";
+import { validateRepositoryProvenance, type EvidenceState, type LearningCase, type RepositoryProvenance } from "./schema.js";
 
 export interface FixtureManifest {
   schemaVersion: "mendpoint.fixture-manifest.v1";
@@ -150,6 +150,7 @@ export function validateFixtureManifest(
 }
 
 const ADMITTED_FIXTURE: unique symbol = Symbol("admitted-fixture");
+const admittedFixtures = new WeakSet<object>();
 export type AdmittedFixture = Readonly<{
   manifest: FixtureManifest;
   learningCase: LearningCase;
@@ -162,19 +163,44 @@ export type FixtureAdmission =
   | { admitted: true; errors: []; admission: AdmittedFixture }
   | { admitted: false; errors: string[]; admission: null };
 
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+export function requireAdmittedFixture(admission: AdmittedFixture): AdmittedFixture {
+  if (!admittedFixtures.has(admission)) throw new Error("fixture_admission_not_verified");
+  if (fixtureManifestDigest(admission.manifest) !== admission.manifestDigest) {
+    throw new Error("fixture_admission_manifest_digest_mismatch");
+  }
+  const errors = [
+    ...validateRepositoryProvenance(admission.repository),
+    ...validateFixtureManifest(admission.manifest, admission.learningCase, admission.repository),
+  ];
+  if (errors.length > 0) throw new Error(`fixture_admission_binding_invalid:${errors.join("|")}`);
+  return admission;
+}
+
 export function admitFixture(
   manifest: FixtureManifest,
   learningCase: LearningCase,
   repository: RepositoryProvenance,
 ): FixtureAdmission {
-  const errors = validateFixtureManifest(manifest, learningCase, repository);
+  const errors = [
+    ...validateRepositoryProvenance(repository),
+    ...validateFixtureManifest(manifest, learningCase, repository),
+  ];
   if (errors.length > 0) return { admitted: false, errors, admission: null };
-  const admission = Object.freeze({
+  const admission = deepFreeze({
     manifest: structuredClone(manifest),
     learningCase: structuredClone(learningCase),
     repository: structuredClone(repository),
     manifestDigest: fixtureManifestDigest(manifest),
     [ADMITTED_FIXTURE]: true as const,
   }) as AdmittedFixture;
+  admittedFixtures.add(admission);
   return { admitted: true, errors: [], admission };
 }

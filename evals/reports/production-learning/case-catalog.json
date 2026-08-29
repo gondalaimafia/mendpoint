@@ -1,6 +1,6 @@
 {
   "schemaVersion": "mendpoint.case-catalog.v1",
-  "generatedAt": "2026-08-29T03:05:16.963Z",
+  "generatedAt": "2026-08-29T03:45:25.324Z",
   "programBaseRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
   "cases": [
     {
@@ -1281,9 +1281,9 @@
           "pnpm workspace"
         ],
         "binding": {
-          "mode": "native",
-          "originalResearchCandidate": "repo-openai-openai-node",
-          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+          "rationale": "The OpenAI client repository is only a controlled TypeScript fixture host; it is not evidence of native Slack API semantics."
         }
       },
       "planning": {
@@ -1366,9 +1366,9 @@
           "pnpm workspace"
         ],
         "binding": {
-          "mode": "native",
-          "originalResearchCandidate": "repo-openai-openai-node",
-          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+          "rationale": "The OpenAI client repository is only a controlled TypeScript fixture host; it is not evidence of native Slack API semantics."
         }
       },
       "planning": {
@@ -1457,9 +1457,9 @@
           "pnpm workspace"
         ],
         "binding": {
-          "mode": "native",
-          "originalResearchCandidate": "repo-openai-openai-node",
-          "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+          "mode": "synthetic_substrate",
+          "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+          "rationale": "The OpenAI client repository is only a controlled TypeScript fixture host; it is not evidence of native Slack API semantics."
         }
       },
       "planning": {

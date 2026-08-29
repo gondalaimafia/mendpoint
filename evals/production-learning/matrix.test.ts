@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { learningCases } from "./catalog.js";
-import { buildRequirementCaseTraceability, flattenRequirementRegister, validateRequirementCaseTraceability, type ClosureRow, type RequirementRegister } from "./matrix.js";
+import { buildRequirementCaseTraceability, flattenRequirementRegister, validateRequirementCaseTraceability, type ClosureRow, type RequirementRegister, type VerifiedCaseExecutionReceipt } from "./matrix.js";
 
 const register = JSON.parse(readFileSync("docs/PRODUCT_REQUIREMENTS.json", "utf8")) as RequirementRegister;
 const requirements = flattenRequirementRegister(register);
@@ -28,7 +28,7 @@ describe("requirement to case to test to production evidence traceability", () =
     expect(traces.every((trace) => trace.productionEvidenceState === "unknown")).toBe(true);
   });
 
-  it("verifies only an explicitly planned requirement with an admitted completed receipt", () => {
+  it("does not promote a caller-asserted completed receipt", () => {
     const learningCase = learningCases[0]!;
     const requirementId = learningCase.planning.requirementIds[0]!;
     const baseReceipt = {
@@ -43,7 +43,7 @@ describe("requirement to case to test to production evidence traceability", () =
       requirements,
       closureRows: closure.requirements,
       cases: learningCases,
-      executionReceipts: [{ ...baseReceipt, admissionState: "blocked" }],
+      executionReceipts: [{ ...baseReceipt, admissionState: "blocked" } as unknown as VerifiedCaseExecutionReceipt],
     });
     expect(blocked.every((trace) => trace.verificationState === "unverified")).toBe(true);
 
@@ -51,13 +51,10 @@ describe("requirement to case to test to production evidence traceability", () =
       requirements,
       closureRows: closure.requirements,
       cases: learningCases,
-      executionReceipts: [{ ...baseReceipt, admissionState: "admitted" }],
+      executionReceipts: [{ ...baseReceipt, admissionState: "admitted" } as unknown as VerifiedCaseExecutionReceipt],
     });
-    const verified = admitted.find((trace) => trace.requirementId === requirementId)!;
-    expect(verified.verificationState).toBe("verified");
-    expect(verified.executionReceiptIds).toEqual([baseReceipt.id]);
-    expect(verified.verifiedCaseIds).toEqual([learningCase.id]);
-    expect(verified.productionEvidenceState).toBe("verified");
+    expect(admitted.every((trace) => trace.verificationState === "unverified")).toBe(true);
+    expect(admitted.every((trace) => trace.productionEvidenceState === "unknown")).toBe(true);
   });
 
   it("preserves register blockers and statuses instead of promoting them", () => {

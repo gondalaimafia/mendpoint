@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { signedAuthorityEnvelopeDigest, verifySignedAuthorityEnvelope, type SignedAuthorityEnvelope } from "./authority.js";
 import { validateExecutionReceipt } from "./schema.js";
 import type { LearningCase, ProductionExecutionReceipt, RepositoryProvenance } from "./schema.js";
 import { requireVerifiedProductionLearningAuthority, type VerifiedProductionLearningAuthority } from "./preflight.js";
@@ -9,6 +10,20 @@ export type EvaluationArm =
   | "configured_model_router"
   | "advisory_verifier"
   | "oracle";
+
+export interface EvaluationMetrics {
+  success: boolean;
+  correctAbstention: boolean;
+  falseRepairOrMigration: boolean;
+  falseNoImpact: boolean;
+  deterministicVerificationPass: boolean;
+  rollbackPass: boolean;
+  tenantIsolationPass: boolean;
+  replayIdempotencyPass: boolean;
+  severeRegression: boolean;
+  latencyMs: number;
+  costUsd: number;
+}
 
 export interface CaseArmResult {
   schemaVersion: "mendpoint.case-arm-result.v1";
@@ -40,22 +55,38 @@ export interface CaseArmResult {
   answerKeyOpenedAt: string | null;
   answerKeyAccessReceiptDigest: string | null;
   gradedAt: string;
+  gradingAuthorityDigest: string;
   expectedOutcomeIncludedInInput: boolean;
   answerKeyIncludedInInput: boolean;
-  metrics: {
-    success: boolean;
-    correctAbstention: boolean;
-    falseRepairOrMigration: boolean;
-    falseNoImpact: boolean;
-    deterministicVerificationPass: boolean;
-    rollbackPass: boolean;
-    tenantIsolationPass: boolean;
-    replayIdempotencyPass: boolean;
-    severeRegression: boolean;
-    latencyMs: number;
-    costUsd: number;
-  };
+  metrics: EvaluationMetrics;
 }
+
+export interface EvaluationGradeAuthorityPayload {
+  schemaVersion: "mendpoint.evaluation-grade-authority.v1";
+  productionRevision: string;
+  caseId: string;
+  arm: EvaluationArm;
+  tenantId: string;
+  repositoryProvenanceId: string;
+  repositoryCommit: string;
+  snapshotDigest: string;
+  fixtureManifestDigest: string;
+  executionDigest: string;
+  productionReceiptAuthorityDigest: string;
+  predictionArtifactDigest: string;
+  predictionSealedAt: string;
+  answerKeyOpenedAt: string;
+  answerKeyAccessReceiptDigest: string;
+  gradedAt: string;
+  metricsDigest: string;
+}
+
+const VERIFIED_EVALUATION_GRADE_AUTHORITY: unique symbol = Symbol("verified-evaluation-grade-authority");
+const verifiedEvaluationGradeAuthorities = new WeakSet<object>();
+export type VerifiedEvaluationGradeAuthority = Readonly<EvaluationGradeAuthorityPayload> & {
+  readonly authorityEnvelopeDigest: string;
+  readonly [VERIFIED_EVALUATION_GRADE_AUTHORITY]: true;
+};
 
 export interface EvaluationRegistry {
   cases: readonly LearningCase[];
@@ -64,6 +95,7 @@ export interface EvaluationRegistry {
     authority: VerifiedProductionLearningAuthority;
     receipt: ProductionExecutionReceipt;
   }[];
+  trustedEvaluationGrades: readonly VerifiedEvaluationGradeAuthority[];
 }
 
 export interface AggregateMetrics {
@@ -107,6 +139,73 @@ const BOOLEAN_METRICS = [
   "severeRegression",
 ] as const;
 
+export function evaluationMetricsDigest(metrics: EvaluationMetrics): string {
+  const canonicalMetrics = {
+    success: metrics.success,
+    correctAbstention: metrics.correctAbstention,
+    falseRepairOrMigration: metrics.falseRepairOrMigration,
+    falseNoImpact: metrics.falseNoImpact,
+    deterministicVerificationPass: metrics.deterministicVerificationPass,
+    rollbackPass: metrics.rollbackPass,
+    tenantIsolationPass: metrics.tenantIsolationPass,
+    replayIdempotencyPass: metrics.replayIdempotencyPass,
+    severeRegression: metrics.severeRegression,
+    latencyMs: metrics.latencyMs,
+    costUsd: metrics.costUsd,
+  };
+  return createHash("sha256").update(JSON.stringify(canonicalMetrics)).digest("hex");
+}
+
+export function verifyEvaluationGradeAuthority(
+  envelope: SignedAuthorityEnvelope<EvaluationGradeAuthorityPayload>,
+): VerifiedEvaluationGradeAuthority {
+  const payload = verifySignedAuthorityEnvelope(envelope, "evaluation_grading");
+  const errors: string[] = [];
+  if (payload.schemaVersion !== "mendpoint.evaluation-grade-authority.v1") errors.push("grading authority schema is invalid");
+  if (!ARMS.includes(payload.arm)) errors.push("grading authority arm is invalid");
+  if (!GIT_SHA.test(payload.productionRevision) || !GIT_SHA.test(payload.repositoryCommit)) {
+    errors.push("grading authority revisions must be git shas");
+  }
+  for (const [field, value] of [
+    ["snapshotDigest", payload.snapshotDigest],
+    ["fixtureManifestDigest", payload.fixtureManifestDigest],
+    ["executionDigest", payload.executionDigest],
+    ["productionReceiptAuthorityDigest", payload.productionReceiptAuthorityDigest],
+    ["predictionArtifactDigest", payload.predictionArtifactDigest],
+    ["answerKeyAccessReceiptDigest", payload.answerKeyAccessReceiptDigest],
+    ["metricsDigest", payload.metricsDigest],
+  ] as const) if (!SHA256.test(value)) errors.push(`grading authority ${field} must be sha256`);
+  for (const [field, value] of [
+    ["caseId", payload.caseId],
+    ["tenantId", payload.tenantId],
+    ["repositoryProvenanceId", payload.repositoryProvenanceId],
+  ] as const) nonEmpty(value, `grading authority ${field}`, errors);
+  const sealedAt = Date.parse(payload.predictionSealedAt);
+  const openedAt = Date.parse(payload.answerKeyOpenedAt);
+  const gradedAt = Date.parse(payload.gradedAt);
+  if (![payload.predictionSealedAt, payload.answerKeyOpenedAt, payload.gradedAt].every((value) => UTC_TIMESTAMP.test(value))) {
+    errors.push("grading authority chronology must use canonical UTC timestamps");
+  }
+  if (![sealedAt, openedAt, gradedAt].every(Number.isFinite) || openedAt <= sealedAt || gradedAt <= openedAt) {
+    errors.push("grading authority chronology is invalid");
+  }
+  if (errors.length > 0) throw new Error(`evaluation_grade_authority_invalid:${errors.join("|")}`);
+  const token = Object.freeze({
+    ...payload,
+    authorityEnvelopeDigest: signedAuthorityEnvelopeDigest(envelope),
+    [VERIFIED_EVALUATION_GRADE_AUTHORITY]: true,
+  }) as VerifiedEvaluationGradeAuthority;
+  verifiedEvaluationGradeAuthorities.add(token);
+  return token;
+}
+
+export function requireVerifiedEvaluationGradeAuthority(
+  authority: VerifiedEvaluationGradeAuthority,
+): VerifiedEvaluationGradeAuthority {
+  if (!verifiedEvaluationGradeAuthorities.has(authority)) throw new Error("evaluation_grade_authority_not_verified");
+  return authority;
+}
+
 function nonEmpty(value: unknown, path: string, errors: string[]): void {
   if (typeof value !== "string" || value.trim().length === 0) errors.push(`${path} must be a non-empty string`);
 }
@@ -123,6 +222,15 @@ export function validateCaseArmCohort(results: readonly CaseArmResult[], registr
       trustedRuns.set(authority.authorityEnvelopeDigest, { authority, receipt: run.receipt });
     } catch {
       errors.push("evaluation registry contains an unverified production authority");
+    }
+  }
+  const trustedGrades = new Map<string, VerifiedEvaluationGradeAuthority>();
+  for (const candidate of registry.trustedEvaluationGrades) {
+    try {
+      const grade = requireVerifiedEvaluationGradeAuthority(candidate);
+      trustedGrades.set(grade.authorityEnvelopeDigest, grade);
+    } catch {
+      errors.push("evaluation registry contains an unverified grading authority");
     }
   }
   for (const result of results) {
@@ -254,6 +362,37 @@ export function validateCaseArmCohort(results: readonly CaseArmResult[], registr
     if (result.answerKeyAccessReceiptDigest === null || !SHA256.test(result.answerKeyAccessReceiptDigest)) {
       errors.push(`${result.caseId}/${result.arm} graded result requires an answer-key access receipt digest`);
     }
+    if (!SHA256.test(result.gradingAuthorityDigest)) {
+      errors.push(`${prefix} gradingAuthorityDigest must be sha256`);
+    }
+    const trustedGrade = trustedGrades.get(result.gradingAuthorityDigest);
+    if (trustedGrade === undefined) {
+      if (SHA256.test(result.gradingAuthorityDigest)) {
+        errors.push(`${prefix} gradingAuthorityDigest is not present in the trusted grading registry`);
+      }
+    } else {
+      const gradeBindings: Array<[string, unknown, unknown]> = [
+        ["caseId", result.caseId, trustedGrade.caseId],
+        ["arm", result.arm, trustedGrade.arm],
+        ["tenantId", result.tenantId, trustedGrade.tenantId],
+        ["repositoryProvenanceId", result.repositoryProvenanceId, trustedGrade.repositoryProvenanceId],
+        ["repositoryCommit", result.repositoryCommit, trustedGrade.repositoryCommit],
+        ["productionRevision", result.productionRevision, trustedGrade.productionRevision],
+        ["snapshotDigest", result.snapshotDigest, trustedGrade.snapshotDigest],
+        ["fixtureManifestDigest", result.fixtureManifestDigest, trustedGrade.fixtureManifestDigest],
+        ["executionDigest", result.executionDigest, trustedGrade.executionDigest],
+        ["trustedProductionReceiptAuthorityDigest", result.trustedProductionReceiptAuthorityDigest, trustedGrade.productionReceiptAuthorityDigest],
+        ["predictionArtifactDigest", result.predictionArtifactDigest, trustedGrade.predictionArtifactDigest],
+        ["predictionSealedAt", result.predictionSealedAt, trustedGrade.predictionSealedAt],
+        ["answerKeyOpenedAt", result.answerKeyOpenedAt, trustedGrade.answerKeyOpenedAt],
+        ["answerKeyAccessReceiptDigest", result.answerKeyAccessReceiptDigest, trustedGrade.answerKeyAccessReceiptDigest],
+        ["gradedAt", result.gradedAt, trustedGrade.gradedAt],
+        ["metricsDigest", evaluationMetricsDigest(result.metrics), trustedGrade.metricsDigest],
+      ];
+      for (const [field, actual, expected] of gradeBindings) {
+        if (actual !== expected) errors.push(`${prefix} ${field} does not match the trusted grading authority`);
+      }
+    }
     if (result.datasetSplit === "holdout" && result.answerKeyIncludedInInput !== false) {
       errors.push(`${result.caseId}/${result.arm} holdout answer key must remain sealed from the input`);
     }
@@ -286,12 +425,15 @@ export function validateCaseArmCohort(results: readonly CaseArmResult[], registr
     }
   }
 
-  for (const [caseId, rows] of byCase) {
+  for (const learningCase of registry.cases) {
+    const caseId = learningCase.id;
+    const rows = byCase.get(caseId) ?? [];
     const arms = new Set(rows.map((row) => row.arm));
     for (const arm of ARMS) if (!arms.has(arm)) errors.push(`${caseId} missing evaluation arm: ${arm}`);
     for (const arm of ARMS) {
       if (rows.filter((row) => row.arm === arm).length > 1) errors.push(`${caseId} duplicate evaluation arm: ${arm}`);
     }
+    if (rows.length === 0) continue;
     const snapshots = new Set(rows.map((row) => row.snapshotDigest));
     if (snapshots.size !== 1) errors.push(`${caseId} arms must use an identical snapshot`);
     const budgets = new Set(rows.map((row) => row.budgetDigest));

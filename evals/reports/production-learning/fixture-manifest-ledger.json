@@ -1,6 +1,6 @@
 {
   "schemaVersion": "mendpoint.fixture-manifest-ledger.v1",
-  "generatedAt": "2026-08-29T03:05:16.963Z",
+  "generatedAt": "2026-08-29T03:45:25.324Z",
   "manifests": [
     {
       "schemaVersion": "mendpoint.fixture-manifest-plan.v1",
@@ -583,9 +583,9 @@
       "caseId": "FET-C015",
       "repositoryProvenanceId": "repo-openai-openai-node",
       "repositoryBinding": {
-        "mode": "native",
-        "originalResearchCandidate": "repo-openai-openai-node",
-        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+        "rationale": "The OpenAI client repository is only a controlled TypeScript fixture host; it is not evidence of native Slack API semantics."
       },
       "manifestId": "fixture-fet-c015-manifest-v1",
       "mutationId": "mutation-fet-c015-seed-v1",
@@ -619,9 +619,9 @@
       "caseId": "FET-C016",
       "repositoryProvenanceId": "repo-openai-openai-node",
       "repositoryBinding": {
-        "mode": "native",
-        "originalResearchCandidate": "repo-openai-openai-node",
-        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+        "rationale": "The OpenAI client repository is only a controlled TypeScript fixture host; it is not evidence of native Slack API semantics."
       },
       "manifestId": "fixture-fet-c016-manifest-v1",
       "mutationId": "mutation-fet-c016-seed-v1",
@@ -661,9 +661,9 @@
       "caseId": "FET-C017",
       "repositoryProvenanceId": "repo-openai-openai-node",
       "repositoryBinding": {
-        "mode": "native",
-        "originalResearchCandidate": "repo-openai-openai-node",
-        "rationale": "The reviewed immutable repository is the same public repository family named by the research candidate."
+        "mode": "synthetic_substrate",
+        "originalResearchCandidate": "repo-slackapi-node-slack-sdk",
+        "rationale": "The OpenAI client repository is only a controlled TypeScript fixture host; it is not evidence of native Slack API semantics."
       },
       "manifestId": "fixture-fet-c017-manifest-v1",
       "mutationId": "mutation-fet-c017-seed-v1",

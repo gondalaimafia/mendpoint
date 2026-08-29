@@ -36,8 +36,8 @@ describe("repository provenance candidates", () => {
     const reviewedIds = new Set(admissionCandidates.map((candidate) => candidate.id));
     const nativeBindings = learningCases.filter((item) => item.repository.binding.mode === "native");
     const syntheticBindings = learningCases.filter((item) => item.repository.binding.mode === "synthetic_substrate");
-    expect(nativeBindings).toHaveLength(55);
-    expect(syntheticBindings).toHaveLength(95);
+    expect(nativeBindings).toHaveLength(52);
+    expect(syntheticBindings).toHaveLength(98);
     expect(nativeBindings.length + syntheticBindings.length).toBe(150);
     for (const item of learningCases) {
       expect(reviewedIds.has(item.repository.provenanceId)).toBe(true);

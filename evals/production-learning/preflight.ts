@@ -6,7 +6,7 @@ import {
   type RepositoryProvenance,
 } from "./schema.js";
 import { fixtureManifestDigest, validateFixtureManifest, type FixtureManifest } from "./fixture.js";
-import { signedAuthorityEnvelopeDigest, verifySignedAuthorityEnvelope, type SignedAuthorityEnvelope, type TrustedAuthorityVerifierConfig } from "./authority.js";
+import { signedAuthorityEnvelopeDigest, verifySignedAuthorityEnvelope, type SignedAuthorityEnvelope } from "./authority.js";
 
 export interface ProductionLearningAuthorityPayload {
   caseId: string;
@@ -38,9 +38,8 @@ export type VerifiedProductionLearningAuthority = Readonly<ProductionLearningAut
 
 export function verifyProductionLearningAuthority(
   envelope: SignedAuthorityEnvelope<ProductionLearningAuthorityPayload>,
-  config: TrustedAuthorityVerifierConfig,
 ): VerifiedProductionLearningAuthority {
-  const payload = verifySignedAuthorityEnvelope(envelope, config);
+  const payload = verifySignedAuthorityEnvelope(envelope, "production_learning");
   const errors: string[] = [];
   const sha256 = /^[0-9a-f]{64}$/;
   const gitSha = /^[0-9a-f]{40}$/;

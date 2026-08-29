@@ -1,29 +1,38 @@
 import { describe, expect, it } from "vitest";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { canonicalAuthorityBytes, type SignedAuthorityEnvelope, type TrustedAuthorityVerifierConfig } from "./authority.js";
-import { aggregateCaseArmResults, validateCaseArmCohort, type CaseArmResult, type EvaluationArm, type EvaluationRegistry } from "./evaluation.js";
+import { createHash } from "node:crypto";
+import {
+  EVALUATION_ARMS,
+  EVALUATION_PRODUCTION_REVISION,
+  EVALUATION_REPOSITORY_COMMIT,
+  SHA,
+  evaluationGradeAuthorityEnvelope,
+  evaluationMetrics,
+  evaluationProductionAuthorityEnvelope,
+  installTestAuthorityTrustRoots,
+} from "./authority-fixtures.test-support.js";
+import {
+  aggregateCaseArmResults,
+  validateCaseArmCohort,
+  verifyEvaluationGradeAuthority,
+  type CaseArmResult,
+  type EvaluationArm,
+  type EvaluationRegistry,
+} from "./evaluation.js";
 import type { LearningCase, ProductionExecutionReceipt, RepositoryProvenance } from "./schema.js";
-import { verifyProductionLearningAuthority, type ProductionLearningAuthorityPayload } from "./preflight.js";
+import { verifyProductionLearningAuthority } from "./preflight.js";
 
-const SHA = "a".repeat(64);
 const RUN_BUDGET = { maximumUsd: 1, maximumLatencyMs: 60_000, maximumAttempts: 1 };
 const BUDGET = createHash("sha256").update(JSON.stringify(RUN_BUDGET)).digest("hex");
-const REPOSITORY_COMMIT = "e".repeat(40);
-const PRODUCTION_REVISION = "f".repeat(40);
-const ARMS: EvaluationArm[] = ["production_baseline", "deterministic_recipe", "configured_model_router", "advisory_verifier", "oracle"];
-const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-const publicKeyDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
-const verifierConfig: TrustedAuthorityVerifierConfig = {
-  issuer: "mendpoint-production-authority",
-  keyId: "production-learning-key-1",
-  publicKeyDerBase64: publicKeyDer.toString("base64"),
-  publicKeySha256: createHash("sha256").update(publicKeyDer).digest("hex"),
-  currentProductionRevision: PRODUCTION_REVISION,
-  now: "2026-08-28T23:30:00.000Z",
-};
+const REPOSITORY_COMMIT = EVALUATION_REPOSITORY_COMMIT;
+const PRODUCTION_REVISION = EVALUATION_PRODUCTION_REVISION;
+const ARMS: EvaluationArm[] = [...EVALUATION_ARMS];
+installTestAuthorityTrustRoots();
+process.env.MENDPOINT_PRODUCTION_REVISION = PRODUCTION_REVISION;
 
 function cohort(): CaseArmResult[] {
   return ARMS.map((arm) => {
+    const productionEnvelope = evaluationProductionAuthorityEnvelope(arm);
+    const gradeEnvelope = evaluationGradeAuthorityEnvelope(arm);
     const row: CaseArmResult = {
     schemaVersion: "mendpoint.case-arm-result.v1",
     caseId: "REG-E001",
@@ -45,70 +54,29 @@ function cohort(): CaseArmResult[] {
     recipeVersion: arm === "deterministic_recipe" ? "recipe-v1" : null,
     consentEvidenceRef: "consent://benchmark-tenant-a/evaluation/v1",
     authorizationRef: "authorization://benchmark-tenant-a/REG-E001/v1",
-    executionDigest: "2".repeat(64),
+    executionDigest: productionEnvelope.payload.executionDigest,
     sandboxReceiptDigest: "8".repeat(64),
     trustedProductionReceiptAuthorityDigest: "0".repeat(64),
     budgetDigest: BUDGET,
-    predictionArtifactDigest: "c".repeat(64),
+    predictionArtifactDigest: gradeEnvelope.payload.predictionArtifactDigest,
     predictionSealedAt: "2026-08-28T23:00:00.000Z",
     answerKeyOpenedAt: "2026-08-28T23:01:00.000Z",
     answerKeyAccessReceiptDigest: "d".repeat(64),
     gradedAt: "2026-08-28T23:02:00.000Z",
+    gradingAuthorityDigest: "0".repeat(64),
     expectedOutcomeIncludedInInput: false,
     answerKeyIncludedInInput: false,
-    metrics: {
-      success: arm === "oracle",
-      correctAbstention: false,
-      falseRepairOrMigration: false,
-      falseNoImpact: false,
-      deterministicVerificationPass: arm === "oracle",
-      rollbackPass: true,
-      tenantIsolationPass: true,
-      replayIdempotencyPass: true,
-      severeRegression: false,
-      latencyMs: arm === "oracle" ? 10 : 100,
-      costUsd: arm === "oracle" ? 0 : 0.1,
-    },
+    metrics: evaluationMetrics(arm),
     };
     row.trustedProductionReceiptAuthorityDigest = productionAuthority(row).authorityEnvelopeDigest;
+    row.gradingAuthorityDigest = verifyEvaluationGradeAuthority(gradeEnvelope).authorityEnvelopeDigest;
     return row;
   });
 }
 
 function productionAuthority(row: CaseArmResult) {
-  const payload: ProductionLearningAuthorityPayload = {
-    caseId: row.caseId,
-    product: row.product,
-    productionRevision: row.productionRevision,
-    tenantId: row.tenantId,
-    repositoryId: row.repositoryProvenanceId,
-    repositoryCommit: row.repositoryCommit,
-    snapshotDigest: row.snapshotDigest,
-    fixtureManifestDigest: row.fixtureManifestDigest,
-    graphVersion: row.graphVersion,
-    policyVersion: row.policyVersion,
-    modelProvider: row.model.provider,
-    modelId: row.model.modelId,
-    routerVersion: row.routerVersion,
-    recipeVersion: row.recipeVersion,
-    consentEvidenceRef: row.consentEvidenceRef,
-    authorizationRef: row.authorizationRef,
-    sandboxReceiptDigest: row.sandboxReceiptDigest,
-    executionDigest: row.executionDigest,
-  };
-  const unsigned = {
-    schemaVersion: "mendpoint.signed-authority.v1" as const,
-    issuer: verifierConfig.issuer,
-    keyId: verifierConfig.keyId,
-    issuedAt: "2026-08-28T23:00:00.000Z",
-    expiresAt: "2026-08-29T00:00:00.000Z",
-    payload,
-  };
-  const envelope: SignedAuthorityEnvelope<ProductionLearningAuthorityPayload> = {
-    ...unsigned,
-    signature: sign(null, canonicalAuthorityBytes(unsigned), privateKey).toString("base64"),
-  };
-  return verifyProductionLearningAuthority(envelope, verifierConfig);
+  process.env.MENDPOINT_PRODUCTION_REVISION = row.productionRevision;
+  return verifyProductionLearningAuthority(evaluationProductionAuthorityEnvelope(row.arm));
 }
 
 function productionReceipt(row: CaseArmResult): ProductionExecutionReceipt {
@@ -176,10 +144,16 @@ function registry(): EvaluationRegistry {
       authority: productionAuthority(row),
       receipt: productionReceipt(row),
     })),
+    trustedEvaluationGrades: ARMS.map((arm) => verifyEvaluationGradeAuthority(evaluationGradeAuthorityEnvelope(arm))),
   };
 }
 
 describe("case arm evaluation", () => {
+  it("rejects an empty or partial cohort against the complete case registry", () => {
+    expect(validateCaseArmCohort([], registry())).toEqual(ARMS.map((arm) => `REG-E001 missing evaluation arm: ${arm}`));
+    expect(() => aggregateCaseArmResults([], registry())).toThrow("invalid_case_arm_cohort");
+  });
+
   it("requires all five arms under an identical snapshot and budget", () => {
     expect(validateCaseArmCohort(cohort(), registry())).toEqual([]);
     const rows = cohort().slice(0, -1);
@@ -257,6 +231,20 @@ describe("case arm evaluation", () => {
         `REG-E001/production_baseline metrics.${metric} must be boolean`,
       );
     }
+  });
+
+  it("rejects self-attested grading tokens and metrics that differ from the signed grade", () => {
+    const rows = cohort();
+    rows[0]!.metrics.success = true;
+    expect(validateCaseArmCohort(rows, registry())).toContain(
+      "REG-E001/production_baseline metricsDigest does not match the trusted grading authority",
+    );
+    const trusted = registry();
+    const forged = { ...trusted.trustedEvaluationGrades[0] } as typeof trusted.trustedEvaluationGrades[number];
+    const forgedRegistry = { ...trusted, trustedEvaluationGrades: [forged, ...trusted.trustedEvaluationGrades.slice(1)] };
+    expect(validateCaseArmCohort(cohort(), forgedRegistry)).toContain(
+      "evaluation registry contains an unverified grading authority",
+    );
   });
 
   it("reports all requested rates without inventing confidence intervals", () => {

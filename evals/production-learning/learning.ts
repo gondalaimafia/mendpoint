@@ -1,6 +1,6 @@
 import type { Product } from "./schema.js";
 import { verifySignedAuthorityEnvelope } from "./authority.js";
-import type { SignedAuthorityEnvelope, TrustedAuthorityVerifierConfig } from "./authority.js";
+import type { SignedAuthorityEnvelope } from "./authority.js";
 
 export type BenchmarkLearningOutcome =
   | "accepted"
@@ -220,9 +220,8 @@ export function validateBenchmarkLearningEvent(event: BenchmarkLearningEvent): s
 
 export function verifyExternalProviderTransmissionAuthority(
   envelope: SignedAuthorityEnvelope<ExternalProviderTransmissionAuthorityPayload>,
-  config: TrustedAuthorityVerifierConfig,
 ): ExternalProviderTransmissionAuthority {
-  const payload = verifySignedAuthorityEnvelope(envelope, config);
+  const payload = verifySignedAuthorityEnvelope(envelope, "external_provider_transmission");
   const errors: string[] = [];
   if (payload.schemaVersion !== "mendpoint.external-provider-transmission-authority.v1") {
     errors.push("external authority schemaVersion must be mendpoint.external-provider-transmission-authority.v1");

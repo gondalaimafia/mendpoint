@@ -1,6 +1,6 @@
 {
   "schemaVersion": "mendpoint.production-learning-status.v1",
-  "generatedAt": "2026-08-29T03:05:16.963Z",
+  "generatedAt": "2026-08-29T03:45:25.324Z",
   "programBaseRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
   "catalog": {
     "total": 150,
@@ -37,8 +37,8 @@
     "admitted": 0,
     "rejected": 3,
     "evidenceState": "unknown",
-    "nativeCaseBindings": 55,
-    "syntheticSubstrateCaseBindings": 95
+    "nativeCaseBindings": 52,
+    "syntheticSubstrateCaseBindings": 98
   },
   "fixtures": {
     "planned": 150,
