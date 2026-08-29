@@ -931,6 +931,14 @@ export async function verifyProductionClosureProposal(
     issues.push(
       ...releaseTrainObservationIssues(matrix, {
         revisionExists: (revision) => revisionResults.get(revision) === true,
+        // #490: this proposal authority resolves revisions against the post-#486
+        // local Git object database (closure:proposal:check reads the checked-out
+        // repo), which cannot see OTHER open PRs' force-pushed heads — "absent
+        // locally" is not "absent on GitHub". Skip the strict open-PR head
+        // reachability report here; the live-API PR_METADATA_MISMATCH verification in
+        // github-authority full_release_train scope remains the oracle for open-PR
+        // head accuracy. Merge/deploy revisions are on main and stay locally checked.
+        openPullRequestHeadsVerifiable: false,
         revisionIsAncestor: (revision, descendant) => ancestryResults.get(`${revision}:${descendant}`) === true,
         readArtifact: (locator) => bytesByPath.get(normalizedPath(locator) ?? "") ?? null,
         now: new Date(observedAt),
