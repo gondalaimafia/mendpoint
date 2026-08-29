@@ -76,6 +76,7 @@ export function assertAgentRunMissionPolicy(
     targetPaths: readonly string[];
     useLlm: boolean;
     risk: string;
+    observedAt: string;
   }>,
 ): void {
   const mission = getMission(db, input.tenantId, input.missionId);
@@ -84,6 +85,7 @@ export function assertAgentRunMissionPolicy(
     tenantId: input.tenantId,
     missionId: mission.id,
     task: agentRunPolicyTask(input),
+    observedAt: input.observedAt,
   });
   if (enforcement.status === "no_envelope") {
     throw new Error("mission_policy_envelope_missing");
@@ -113,6 +115,7 @@ export function assertBoundAgentRunMissionPolicy(
     targetPaths: readonly string[];
     useLlm: boolean;
     risk: string;
+    observedAt: string;
   }>,
 ): void {
   const mission = resolveBoundMissionForJob(db, job);

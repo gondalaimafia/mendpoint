@@ -2064,15 +2064,15 @@
     "repository": "gondalaimafia/mendpoint",
     "observedAt": "2026-08-29T04:10:16.000Z",
     "observedMainRevision": "37c3867111fb7083667e5422ebf9b383dba9190a",
-    "observationDigest": "sha256:9bc839b4ee3e8d0819bf8e47b257be9a9b932f956a8107b60ef7034f9a7a6c0c",
+    "observationDigest": "sha256:7909ab90384013ac769d20efe20111652749ee98f53cc7cb68ce46703e355b31",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 518,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/518",
-      "title": "Add the 101-row production-closure execution ledger",
+      "number": 519,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/519",
+      "title": "Persist Mission Policy Envelope evaluation evidence",
       "baseBranch": "main",
-      "headBranch": "cursor/101-execution-ledger-f457",
+      "headBranch": "cursor/mission-policy-evaluation-evidence-f457",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -4702,11 +4702,11 @@
         "blockers": []
       },
       {
-        "number": 519,
+        "number": 518,
         "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/519",
-        "title": "Persist Mission Policy Envelope evaluation evidence",
-        "headBranch": "cursor/mission-policy-evaluation-evidence-f457",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/518",
+        "title": "Add the 101-row production-closure execution ledger",
+        "headBranch": "cursor/101-execution-ledger-f457",
         "baseBranch": "main",
         "owner": {
           "actor": "Cursor",
@@ -4720,7 +4720,7 @@
         },
         "requirementIds": [],
         "checkState": "stale_checks",
-        "headRevision": "0eb6ebb9a9599a08239b3cd95890669438bd719c",
+        "headRevision": "412131581b52bc20ff55e2cad2f338ef1473db63",
         "mergeRevision": null,
         "checks": [],
         "review": {

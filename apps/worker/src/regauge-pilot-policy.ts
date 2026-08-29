@@ -27,6 +27,8 @@ export type RegaugePilotPolicyInput = Readonly<{
    * to derive whether the attempt routes to a training-capturing tier.
    */
   adaptiveModelId?: string;
+  /** Caller-supplied evaluation timestamp; the evidence fact's createdAt. */
+  observedAt: string;
 }>;
 
 function regaugePilotPolicyTask(input: RegaugePilotPolicyInput) {
@@ -62,6 +64,7 @@ export function assertRegaugePilotMissionPolicy(db: AppDb, input: RegaugePilotPo
     tenantId: input.tenantId,
     missionId: mission.id,
     task: regaugePilotPolicyTask(input),
+    observedAt: input.observedAt,
   });
   if (enforcement.status === "no_envelope") {
     throw new Error("mission_policy_envelope_missing");
