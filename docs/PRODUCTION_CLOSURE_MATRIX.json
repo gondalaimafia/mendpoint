@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T03:13:54.620Z",
-    "observedMainRevision": "dc7141bd3877a443dda96026e809f4e4f45ccd55",
-    "observationDigest": "sha256:110e19b9027c3d3da3bcd8f9423f1202c2534e0b7be560ce4160a8558fc758a9",
+    "observedAt": "2026-08-29T04:10:16.000Z",
+    "observedMainRevision": "37c3867111fb7083667e5422ebf9b383dba9190a",
+    "observationDigest": "sha256:ae575162aff928b334cb9a46ad4211f2a225a203687ee35f82654f64106688f9",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 524,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/524",
-      "title": "Raise a Mission policy exception on Fettler agent.run deny",
+      "number": 521,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/521",
+      "title": "closure authority: pre-authorize systemic-failure escalation successor template",
       "baseBranch": "main",
-      "headBranch": "cursor/fettler-agent-run-policy-exception-f457",
+      "headBranch": "mp-succ-esc-rot1",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2085,7 +2085,15 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": []
+      "remediatesPullRequests": [],
+      "authorityRotation": {
+        "rotationId": "rotation-20260828-004",
+        "kind": "runtime",
+        "issuedAt": "2026-08-29T04:10:16.000Z",
+        "expiresAt": "2026-08-30T04:10:16.000Z",
+        "basePolicySha256": "sha256:35d7654bed7c77dfe142cf2fde081b9681f92b62e5974683fe172efb87ab381c",
+        "proposedPolicySha256": "sha256:ed8002ff17703c04f119e12d33e1e370fdd8575aa89a2a86ae5fee07f2145ae6"
+      }
     },
     "pullRequests": [
       {
@@ -4807,41 +4815,6 @@
         "blockers": []
       },
       {
-        "number": 521,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/521",
-        "title": "closure authority: pre-authorize systemic-failure escalation successor template",
-        "headBranch": "mp-succ-esc-rot1",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Claude",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "75854c7e4f9032f424e672c1ab3e38a788fac26d",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
         "number": 522,
         "state": "open",
         "url": "https://github.com/gondalaimafia/mendpoint/pull/522",
@@ -4896,6 +4869,41 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "66d4443cf15157b1f2dbae3fd02017f0cfc6e6fe",
+        "mergeRevision": null,
+        "checks": [],
+        "review": {
+          "state": "none",
+          "reviewedHeadRevision": null,
+          "reviewer": null,
+          "reviewerAgent": null,
+          "source": null,
+          "reviewId": null,
+          "url": null,
+          "submittedAt": null,
+          "attributable": false
+        },
+        "blockers": []
+      },
+      {
+        "number": 524,
+        "state": "open",
+        "url": "https://github.com/gondalaimafia/mendpoint/pull/524",
+        "title": "Raise a Mission policy exception on Fettler agent.run deny",
+        "headBranch": "cursor/fettler-agent-run-policy-exception-f457",
+        "baseBranch": "main",
+        "owner": {
+          "actor": "Cursor",
+          "source": "branch_prefix",
+          "provisional": true
+        },
+        "disposition": "merge_after_rebase_and_review",
+        "dependencies": {
+          "pullRequests": [],
+          "branches": []
+        },
+        "requirementIds": [],
+        "checkState": "stale_checks",
+        "headRevision": "1c7aa60338cdb4c74159ddaeca897dff2d16389c",
         "mergeRevision": null,
         "checks": [],
         "review": {
