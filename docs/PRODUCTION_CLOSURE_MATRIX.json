@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T04:10:16.000Z",
-    "observedMainRevision": "37c3867111fb7083667e5422ebf9b383dba9190a",
-    "observationDigest": "sha256:10f888cd102b5bf34f278a0f00c09a04a450e289263e2b4215a6820ffedd973d",
+    "observedAt": "2026-08-29T19:12:58.000Z",
+    "observedMainRevision": "f8df0e131aa11eec00946cbce5d26aea35fd145d",
+    "observationDigest": "sha256:357cdda0f95fe7d5542fceb1f7d28c2114110fc351336c4d406ca6667fd8158e",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 518,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/518",
-      "title": "Add the 101-row production-closure execution ledger",
+      "number": 524,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/524",
+      "title": "Raise a Mission policy exception on Fettler agent.run deny",
       "baseBranch": "main",
-      "headBranch": "cursor/101-execution-ledger-f457",
+      "headBranch": "cursor/fettler-agent-run-policy-exception-f457",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -4791,41 +4791,6 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "66d4443cf15157b1f2dbae3fd02017f0cfc6e6fe",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 524,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/524",
-        "title": "Raise a Mission policy exception on Fettler agent.run deny",
-        "headBranch": "cursor/fettler-agent-run-policy-exception-f457",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Cursor",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "1c7aa60338cdb4c74159ddaeca897dff2d16389c",
         "mergeRevision": null,
         "checks": [],
         "review": {

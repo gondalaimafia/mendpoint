@@ -12,6 +12,7 @@ import {
   listMissionPolicyEvaluations,
   linkFettlerCampaignToMission,
   type AppDb,
+  type SnapshotIdentity,
 } from "@mendpoint/db";
 import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
 import {
@@ -62,8 +63,28 @@ function fixture(): AppDb {
     correlationId: "corr",
     createdAt: at,
   });
+  // A raised policy exception binds to the agent.run snapshot the caller threads;
+  // seed the repo and that snapshot. The Fettler Mission itself has no bound
+  // scope, matching the real enrollment path.
+  db.raw.prepare(
+    `INSERT INTO scm_connections (id, tenant_id, provider, credential_ref, external_account_id, display_name, created_at, updated_at)
+     VALUES ('c1', 't1', 'github', 'me://ref', 'acct', 'Acme', ?, ?)`,
+  ).run(at, at);
+  db.raw.prepare(
+    `INSERT INTO connected_repositories
+       (id, tenant_id, connection_id, remote_id, owner, name, default_branch, selected_branch, environment, retention_days, status, created_at, updated_at)
+     VALUES ('repo-a', 't1', 'c1', '1', 'acme', 'svc', 'main', 'main', 'production', 30, 'ready', ?, ?)`,
+  ).run(at, at);
+  db.raw.prepare(
+    `INSERT INTO repository_snapshots
+       (id, tenant_id, repository_id, requested_ref, resolved_sha, manifest_sha256, storage_path,
+        submodules_policy, lfs_policy, sparse_paths_json, file_manifest_version, created_at, expires_at)
+     VALUES ('snapA', 't1', 'repo-a', 'main', ?, ?, 'C:/tmp/snapA', 'reject', 'reject', '[]', 1, ?, '2026-09-01T00:00:00.000Z')`,
+  ).run("a".repeat(40), "b".repeat(64), at);
   return db;
 }
+
+const snapA: SnapshotIdentity = { snapshotId: "snapA", resolvedSha: "a".repeat(40) };
 
 const allowed = {
   tenantId: "t1",
@@ -73,6 +94,7 @@ const allowed = {
   targetPaths: ["src/pay.ts"],
   useLlm: false,
   risk: "medium",
+  observedAgainst: snapA,
   observedAt: at,
 } as const;
 
@@ -191,6 +213,7 @@ const boundTask = {
   targetPaths: ["src/pay.ts"],
   useLlm: false,
   risk: "medium",
+  observedAgainst: snapA,
   observedAt: at,
 } as const;
 
