@@ -163,8 +163,11 @@ class FixtureClient implements GitHubAuthorityClient {
   pullRequestReads: number[] = [];
   issueReads: number[] = [];
   mainRevisions = [MAIN, MAIN];
+  ancestorRevisions: string[] = [];
+  ancestorPairs: string[] = [];
   openPullRequests = [pullRequest()];
   trackedPullRequest = pullRequest();
+  pullRequestsByNumber = new Map<number, GitHubPullRequest>();
   trackedChecks = checks();
   trackedWorkflowRuns: GitHubWorkflowRun[] = [{
     id: 101,
@@ -190,6 +193,14 @@ class FixtureClient implements GitHubAuthorityClient {
     if (this.failure) throw this.failure;
     return this.mainRevisions[Math.min(this.mainReads++, this.mainRevisions.length - 1)];
   }
+  async revisionIsAncestor(revision: string, descendant: string): Promise<boolean> {
+    if (this.failure) throw this.failure;
+    return (
+      revision === descendant ||
+      this.ancestorPairs.includes(`${revision}:${descendant}`) ||
+      this.ancestorRevisions.includes(revision)
+    );
+  }
   async listOpenPullRequests(): Promise<GitHubPullRequest[]> {
     if (this.failure) throw this.failure;
     return this.openPullRequests;
@@ -197,7 +208,7 @@ class FixtureClient implements GitHubAuthorityClient {
   async getPullRequest(number: number): Promise<GitHubPullRequest> {
     if (this.failure) throw this.failure;
     this.pullRequestReads.push(number);
-    return this.trackedPullRequest;
+    return this.pullRequestsByNumber.get(number) ?? this.trackedPullRequest;
   }
   async listCheckRuns(): Promise<GitHubCheckRun[]> {
     if (this.failure) throw this.failure;
@@ -637,13 +648,344 @@ describe("GitHub production closure authority", () => {
     expect(codes(wrongControllerProducer)).toContain("AUTHORITY_SUCCESSOR_LIVE_PROOF_REQUIRED");
   });
 
-  it("fails closed when the live open PR set is incomplete", async () => {
+  it("accepts a matrix that omits a newer live-open pull request", async () => {
+    // Cross-PR completeness is unsatisfiable by a PR-authored snapshot: PR #441 was
+    // opened after this matrix was authored, so the matrix cannot enumerate it. The
+    // snapshot omitting a live-open sibling must not fail.
     const client = new FixtureClient();
     client.openPullRequests = [pullRequest(), pullRequest({ number: 441 })];
 
     const result = await verifyGitHubClosureAuthority(matrix(), context(), client);
 
-    expect(codes(result)).toContain("OPEN_PR_COMPLETENESS_MISMATCH");
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(codes(result)).not.toContain("OPEN_PR_COMPLETENESS_MISMATCH");
+  });
+
+  it("accepts a matrix that still lists a pull request that has since merged", async () => {
+    // The matrix records #439 as open; it has since merged and left the live open set.
+    // Dropping completeness means this stale-but-honest snapshot passes. #439 carries no
+    // green check state, so only the (now open-relaxed) metadata mirror would have fired.
+    const configured = matrix();
+    configured.releaseTrain.pullRequests.push({
+      number: 439,
+      state: "open",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+      title: "Prior release work",
+      headBranch: "codex/prior-release-work",
+      baseBranch: "main",
+      headRevision: MERGE,
+      mergeRevision: null,
+      requirementIds: ["ME-FND-001"],
+      checkState: "stale_checks",
+    });
+    const client = new FixtureClient();
+    client.openPullRequests = [pullRequest()];
+    client.pullRequestsByNumber.set(
+      439,
+      pullRequest({ number: 439, state: "closed", merged: true, merge_commit_sha: MERGED }),
+    );
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(codes(result)).not.toContain("OPEN_PR_COMPLETENESS_MISMATCH");
+  });
+
+  it("relaxes the metadata mirror for an open sibling that drifted, retitled or closed", async () => {
+    // The live sibling has been retitled and re-pushed and its state moved on since the
+    // snapshot; because the record is open (not the bootstrap), the mirror is not judged.
+    const configured = matrix();
+    configured.releaseTrain.pullRequests.push({
+      number: 439,
+      state: "open",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+      title: "Prior release work",
+      headBranch: "codex/prior-release-work",
+      baseBranch: "main",
+      headRevision: MERGE,
+      mergeRevision: null,
+      requirementIds: ["ME-FND-001"],
+      checkState: "stale_checks",
+    });
+    const client = new FixtureClient();
+    client.pullRequestsByNumber.set(
+      439,
+      pullRequest({
+        number: 439,
+        state: "closed",
+        title: "Prior release work (renamed)",
+        html_url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+        head: { ref: "codex/prior-release-work", sha: "e".repeat(40) },
+        body: "## Requirement mapping\n\n- ME-FND-777\n",
+      }),
+    );
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(result.issues).not.toContainEqual(
+      expect.objectContaining({ code: "PR_METADATA_MISMATCH", subject: "439" }),
+    );
+    expect(result.issues).not.toContainEqual(
+      expect.objectContaining({ code: "PR_REQUIREMENT_MAPPING_MISMATCH", subject: "439" }),
+    );
+  });
+
+  it("still fails a matrix that records a pull request number that never existed", async () => {
+    // A fabricated open sibling number resolves to nothing on GitHub; the live read
+    // throws and the observation fails closed. Dropping completeness does not open a
+    // hole for fabricated numbers in a full-release-train sweep.
+    const configured = matrix();
+    configured.releaseTrain.pullRequests.push({
+      number: 999999,
+      state: "open",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/999999",
+      title: "Fabricated",
+      headBranch: "codex/fabricated",
+      baseBranch: "main",
+      headRevision: MERGE,
+      mergeRevision: null,
+      requirementIds: ["ME-FND-001"],
+      checkState: "stale_checks",
+    });
+    const notFound = new (class extends FixtureClient {
+      async getPullRequest(number: number): Promise<GitHubPullRequest> {
+        this.pullRequestReads.push(number);
+        if (number === 999999) throw new Error("GitHub API request failed with HTTP 404");
+        return super.getPullRequest(number);
+      }
+    })();
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), notFound);
+
+    expect(result.verdict).toBe("fail");
+    expect(codes(result)).toContain("GITHUB_AUTHORITY_UNAVAILABLE");
+  });
+
+  it("accepts a matrix observed revision that is an ancestor of main but not the tip", async () => {
+    // The snapshot was taken at an earlier main; main advanced afterward. Ancestry holds,
+    // so both the start- and end-of-observation revision checks pass. Exact equality (the
+    // prior behavior at both sites) would have failed this.
+    const client = new FixtureClient();
+    const configured = matrix();
+    const earlierMain = "e".repeat(40);
+    configured.releaseTrain.observedMainRevision = earlierMain;
+    client.ancestorRevisions = [earlierMain];
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.verdict, JSON.stringify(result.issues, null, 2)).toBe("pass");
+    expect(codes(result)).not.toContain("MATRIX_MAIN_REVISION_MISMATCH");
+  });
+
+  it("still fails a matrix observed revision that is not an ancestor of main", async () => {
+    // A forked or fabricated revision is not an ancestor of live main; the ancestry guard
+    // still rejects it at both emission sites.
+    const client = new FixtureClient();
+    const configured = matrix();
+    configured.releaseTrain.observedMainRevision = "f".repeat(40);
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(codes(result)).toContain("MATRIX_MAIN_REVISION_MISMATCH");
+  });
+
+  it("still fails a matrix claiming a merged sibling at a revision that is not its merge commit", async () => {
+    // The load-bearing dependency binding. #439 is recorded merged at MERGE (a real
+    // ancestor of main), but its actual merge_commit_sha is MERGED. Merged records stay
+    // strictly mirrored, so this fabricated merge revision is caught. This is the only
+    // live proof a claimed-merged dependency actually merged at the recorded revision.
+    const configured = matrix();
+    configured.releaseTrain.observedMainRevision = MAIN;
+    configured.releaseTrain.pullRequests.push({
+      number: 439,
+      state: "merged",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+      title: "Merged dependency",
+      headBranch: "codex/merged-dependency",
+      baseBranch: "main",
+      headRevision: HEAD,
+      mergeRevision: MERGE,
+      requirementIds: ["ME-FND-001"],
+      checkState: "stale_checks",
+    });
+    const client = new FixtureClient();
+    client.ancestorRevisions = [MERGE];
+    client.pullRequestsByNumber.set(
+      439,
+      pullRequest({
+        number: 439,
+        state: "closed",
+        merged: true,
+        merge_commit_sha: MERGED,
+        title: "Merged dependency",
+        html_url: "https://github.com/gondalaimafia/mendpoint/pull/439",
+        head: { ref: "codex/merged-dependency", sha: HEAD },
+      }),
+    );
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ code: "PR_METADATA_MISMATCH", subject: "439" }),
+    );
+  });
+
+  // Reconstruction of the #284 case (its live instance has since been corrected on
+  // main): an unfinished requirement whose sole closure path cites a pull request the
+  // matrix records as open but which is absent from the live open set. This is the
+  // durable evidence the live-open closure-path guard works.
+  function me284Matrix(): GitHubAuthorityMatrix {
+    const configured = matrix();
+    configured.requirements = [
+      { requirementId: "ME-GTM-003", issues: [], pullRequests: [284] },
+    ];
+    configured.releaseTrain.pullRequests.push({
+      number: 284,
+      state: "open",
+      url: "https://github.com/gondalaimafia/mendpoint/pull/284",
+      title: "Make the public claims gate able to fail",
+      headBranch: "claude/claims-gate-drift",
+      baseBranch: "main",
+      headRevision: MERGE,
+      mergeRevision: null,
+      requirementIds: ["ME-GTM-003"],
+      checkState: "behind",
+    });
+    return configured;
+  }
+
+  it("fails an unfinished requirement whose only closure-path PR is absent from the live open set", async () => {
+    const client = new FixtureClient();
+    client.openPullRequests = [pullRequest()]; // live open = {440}; #284 has closed
+
+    const result = await verifyGitHubClosureAuthority(
+       me284Matrix(),
+      context({ canonicalRequirementStatuses: { "ME-GTM-003": "partial" } }),
+      client,
+    );
+
+    expect(codes(result)).toContain("REQUIREMENT_CLOSURE_PATH_PR_NOT_LIVE_OPEN");
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({
+        code: "REQUIREMENT_CLOSURE_PATH_PR_NOT_LIVE_OPEN",
+        subject: "ME-GTM-003",
+      }),
+    );
+  });
+
+  it("accepts the same requirement when its closure-path PR is still in the live open set", async () => {
+    const client = new FixtureClient();
+    client.openPullRequests = [pullRequest(), pullRequest({ number: 284 })];
+
+    const result = await verifyGitHubClosureAuthority(
+       me284Matrix(),
+      context({ canonicalRequirementStatuses: { "ME-GTM-003": "partial" } }),
+      client,
+    );
+
+    expect(codes(result)).not.toContain("REQUIREMENT_CLOSURE_PATH_PR_NOT_LIVE_OPEN");
+  });
+
+  it("does not apply the live-open closure-path check to a verified requirement", async () => {
+    const client = new FixtureClient();
+    client.openPullRequests = [pullRequest()];
+
+    const result = await verifyGitHubClosureAuthority(
+      me284Matrix(),
+      context({ canonicalRequirementStatuses: { "ME-GTM-003": "verified" } }),
+      client,
+    );
+
+    expect(codes(result)).not.toContain("REQUIREMENT_CLOSURE_PATH_PR_NOT_LIVE_OPEN");
+  });
+
+  it("rejects a non-ancestor observed revision on push (start-of-observation site)", async () => {
+    // On push only the start-of-observation site runs; this isolates site A so it is
+    // individually killable rather than only when both revision sites are removed.
+    const client = new FixtureClient();
+    client.trackedPullRequest = pullRequest({
+      state: "closed",
+      merged: true,
+      merge_commit_sha: MERGED,
+    });
+    client.openPullRequests = [];
+    client.mainRevisions = [MERGED, MERGED];
+    const configured = matrix();
+    configured.releaseTrain.observedMainRevision = "f".repeat(40); // not ancestor of parent
+
+    const result = await verifyGitHubClosureAuthority(
+      configured,
+      context({
+        eventName: "push",
+        githubSha: MERGED,
+        checkout: { headRevision: MERGED, parentRevisions: [MAIN] },
+        pullRequest: undefined,
+      }),
+      client,
+    );
+
+    expect(codes(result)).toContain("MATRIX_MAIN_REVISION_MISMATCH");
+  });
+
+  it("rejects an observed revision that is not an ancestor of the final main (end-of-observation site)", async () => {
+    // Main diverges between the two reads: the observed revision is an ancestor of the
+    // start revision but not of the divergent end revision. Only the end-of-observation
+    // site fires MATRIX_MAIN_REVISION_MISMATCH here, isolating site B.
+    const startMain = MAIN;
+    const endMain = "e".repeat(40);
+    const observed = "1".repeat(40);
+    const client = new FixtureClient();
+    client.mainRevisions = [startMain, endMain];
+    client.ancestorPairs = [`${observed}:${startMain}`]; // ancestor of start, not of end
+    const configured = matrix();
+    configured.releaseTrain.observedMainRevision = observed;
+
+    const result = await verifyGitHubClosureAuthority(configured, context(), client);
+
+    expect(codes(result)).toContain("MATRIX_MAIN_REVISION_MISMATCH");
+    expect(codes(result)).toContain("MAIN_CHANGED_DURING_OBSERVATION");
+  });
+
+  it("maps GitHub compare status onto ancestry in the real REST client", async () => {
+    const base = "a".repeat(40);
+    const head = "b".repeat(40);
+    const makeClient = (status: string) =>
+      new GitHubRestClient(
+        "gondalaimafia/mendpoint",
+        "token-value",
+        (async (url: string | URL) => {
+          expect(String(url)).toContain(`/compare/${base}...${head}`);
+          return new Response(JSON.stringify({ status }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }) as unknown as typeof fetch,
+      );
+
+    await expect(makeClient("ahead").revisionIsAncestor(base, head)).resolves.toBe(true);
+    await expect(makeClient("identical").revisionIsAncestor(base, head)).resolves.toBe(true);
+    await expect(makeClient("behind").revisionIsAncestor(base, head)).resolves.toBe(false);
+    await expect(makeClient("diverged").revisionIsAncestor(base, head)).resolves.toBe(false);
+  });
+
+  it("rejects non-SHA arguments to the real REST ancestry check before calling GitHub", async () => {
+    let fetched = false;
+    const client = new GitHubRestClient(
+      "gondalaimafia/mendpoint",
+      "token-value",
+      (async () => {
+        fetched = true;
+        return new Response(JSON.stringify({ status: "ahead" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    );
+
+    await expect(client.revisionIsAncestor("HEAD", "b".repeat(40))).rejects.toThrow();
+    await expect(client.revisionIsAncestor("a".repeat(40), "origin/main")).rejects.toThrow();
+    expect(fetched).toBe(false);
   });
 
   it("binds event base and head while executing immutable base authority", async () => {

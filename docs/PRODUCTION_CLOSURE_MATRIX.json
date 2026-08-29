@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T01:56:40.289Z",
-    "observedMainRevision": "96801a319fc3d355cb2b28b4167b83023a192042",
-    "observationDigest": "sha256:755d9b899ef20f4f47613675a3dbec7dd0c1e8e1f30bb1f070fd4de2a507f9b6",
+    "observedAt": "2026-08-29T03:13:54.620Z",
+    "observedMainRevision": "dc7141bd3877a443dda96026e809f4e4f45ccd55",
+    "observationDigest": "sha256:6d83e2906de277506a68108ffdf81cd2ab47bcc025de78c26795ef0642ebf0d7",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 531,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/531",
-      "title": "Resync release train matrix: close #284 and bind ME-GTM-003 to #461",
+      "number": 530,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/530",
+      "title": "authority: relax cross-PR completeness and revision-equality to ancestry; state-scope sibling metadata mirror; live-open closure-path guard",
       "baseBranch": "main",
-      "headBranch": "codex/matrix-resync-gtm003",
+      "headBranch": "mp-trustroot-completeness",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2085,7 +2085,15 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": []
+      "remediatesPullRequests": [],
+      "authorityRotation": {
+        "rotationId": "rotation-20260828-003",
+        "kind": "runtime",
+        "issuedAt": "2026-08-29T03:13:54.620Z",
+        "expiresAt": "2026-08-30T03:13:54.757Z",
+        "basePolicySha256": "sha256:86585f7d707b5b28276b663660533068f936ccd3243557541168253ae70d3466",
+        "proposedPolicySha256": "sha256:35d7654bed7c77dfe142cf2fde081b9681f92b62e5974683fe172efb87ab381c"
+      }
     },
     "pullRequests": [
       {
@@ -5071,41 +5079,6 @@
         "requirementIds": [],
         "checkState": "stale_checks",
         "headRevision": "1e5f5d2f15ce74946b4c88e2cd14061f1b9fdf9d",
-        "mergeRevision": null,
-        "checks": [],
-        "review": {
-          "state": "none",
-          "reviewedHeadRevision": null,
-          "reviewer": null,
-          "reviewerAgent": null,
-          "source": null,
-          "reviewId": null,
-          "url": null,
-          "submittedAt": null,
-          "attributable": false
-        },
-        "blockers": []
-      },
-      {
-        "number": 530,
-        "state": "open",
-        "url": "https://github.com/gondalaimafia/mendpoint/pull/530",
-        "title": "authority: relax cross-PR completeness and revision-equality to ancestry; state-scope sibling metadata mirror",
-        "headBranch": "mp-trustroot-completeness",
-        "baseBranch": "main",
-        "owner": {
-          "actor": "Claude",
-          "source": "branch_prefix",
-          "provisional": true
-        },
-        "disposition": "merge_after_rebase_and_review",
-        "dependencies": {
-          "pullRequests": [],
-          "branches": []
-        },
-        "requirementIds": [],
-        "checkState": "stale_checks",
-        "headRevision": "c5fd530c5ef767b219688d6b956ad0e8538b407a",
         "mergeRevision": null,
         "checks": [],
         "review": {
