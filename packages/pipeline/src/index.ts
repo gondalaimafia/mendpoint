@@ -41,6 +41,7 @@ import {
   analyzeImpact,
   analyzeImpactWithSoftwareGraph,
   reportToFindings,
+  resolveBoundedRawRetrievalFallback,
 } from "@mendpoint/code-impact";
 import { notifyCapabilityAdoptionOpportunity } from "@mendpoint/notify";
 import { generateMigration } from "@mendpoint/generation";
@@ -107,6 +108,7 @@ import {
   ingestSpecDiff,
   ingestImpactFindings,
   labelPrOutcome,
+  getSoftwareGraphHead,
   runGraphQuery,
   formatQueryForPlanner,
   type GraphLearnDb,
@@ -121,6 +123,12 @@ import {
 type IndexMaterializationEvidence = NonNullable<
   Awaited<ReturnType<typeof analyzeImpactWithSoftwareGraph>>["indexReuse"]
 >;
+
+const RAW_RETRIEVAL_BOUNDS = Object.freeze({
+  maxFiles: 10_000,
+  maxBytes: 1_000_000_000,
+  maxCandidates: 50_000,
+});
 
 function trustId(prefix: string, ...parts: string[]): string {
   return `${prefix}_${createHash("sha256").update(parts.join("\0")).digest("hex")}`;
@@ -966,6 +974,11 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           impact: {
             persistIndex: input.persistIndex ?? true,
             indexStorageRoot,
+            indexLimits: {
+              maxFiles: RAW_RETRIEVAL_BOUNDS.maxFiles,
+              maxTotalBytes: RAW_RETRIEVAL_BOUNDS.maxBytes,
+            },
+            maxCandidates: RAW_RETRIEVAL_BOUNDS.maxCandidates,
           },
         });
         impactReport = graphAnalysis.impactReport;
@@ -1060,6 +1073,125 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           },
           createdAt: graphObservedAt,
         });
+        const fallback = resolveBoundedRawRetrievalFallback({
+          graphImpact: graphAnalysis.graphImpact,
+          rawReport: graphAnalysis.impactReport,
+          authority: {
+            tenantId: input.tenantId,
+            repositoryId: repo.connected_repository_id ?? repo.id,
+            repositorySnapshotId: graphAnalysis.repositorySnapshotId,
+            repositoryRevision: graphAnalysis.repositoryRevision,
+            providerId: provider.id,
+            providerSnapshotId: to.id,
+            providerRevision: to.version_label,
+            parentGraphVersionId: graphAnalysis.graphVersion.versionId,
+            parentGraphContentDigest: graphAnalysis.graphVersion.contentDigest,
+          },
+          observedAt: graphObservedAt,
+          retrieval: {
+            ...RAW_RETRIEVAL_BOUNDS,
+            ...graphAnalysis.rawRetrievalUsage,
+          },
+        });
+        const currentHead = getSoftwareGraphHead(
+          gldb,
+          input.tenantId,
+          repo.connected_repository_id ?? repo.id,
+          provider.id,
+        );
+        if (
+          currentHead?.versionId !== graphAnalysis.graphVersion.versionId ||
+          currentHead.contentDigest !== graphAnalysis.graphVersion.contentDigest
+        ) {
+          throw new Error("raw_retrieval_fallback_mutated_graph_head");
+        }
+        if (fallback.decision.outcome !== "not_required") {
+          const fallbackArtifact = persistJsonArtifact(db, {
+            tenantId: input.tenantId,
+            kind: "fettler-raw-retrieval-fallback",
+            mediaType: "application/vnd.mendpoint.fettler-raw-retrieval-fallback+json",
+            value: {
+              schemaVersion: "mendpoint.fettler-raw-retrieval-fallback.v1",
+              decision: fallback.decision,
+              relationshipCandidates: fallback.relationshipCandidates,
+            },
+            producerPrincipalId: pipelinePrincipal.id,
+            createdAt: graphObservedAt,
+          });
+          insertEvidenceRecord(db, {
+            id: trustId(
+              "evidence",
+              input.tenantId,
+              consumer.id,
+              fallback.decision.decisionDigest,
+              fallbackArtifact.id,
+            ),
+            tenantId: input.tenantId,
+            subjectType: "api_change",
+            subjectId: changeId,
+            artifactId: fallbackArtifact.id,
+            inputArtifactId: graphArtifact.id,
+            producerPrincipalId: pipelinePrincipal.id,
+            tool: "mendpoint-raw-retrieval-fallback",
+            toolVersion: "1",
+            verdict: fallback.decision.outcome === "completed" ? "passed" : "failed",
+            createdAt: graphObservedAt,
+          });
+          recordAudit(db, {
+            tenantId: input.tenantId,
+            actor: "pipeline",
+            action: "graph.raw_retrieval_fallback_recorded",
+            resourceType: "consumer",
+            resourceId: consumer.id,
+            metadata: {
+              graphVersionId,
+              decisionDigest: fallback.decision.decisionDigest,
+              outcome: fallback.decision.outcome,
+              reasonCodes: fallback.decision.reasonCodes,
+              candidateDigests: fallback.decision.candidateDigests,
+              artifactId: fallbackArtifact.id,
+            },
+          });
+          appendDomainEvent(db, {
+            id: trustId(
+              "event",
+              input.tenantId,
+              changeId,
+              consumer.id,
+              "raw-retrieval",
+              fallback.decision.decisionDigest,
+            ),
+            tenantId: input.tenantId,
+            schemaVersion: 1,
+            eventType: "change_graph.raw_retrieval_recorded",
+            aggregateType: "api_change",
+            aggregateId: changeId,
+            actorPrincipalId: pipelinePrincipal.id,
+            correlationId: changeId,
+            causationId: trustId("event", input.tenantId, changeId, consumer.id, graphVersionId),
+            idempotencyKey:
+              `api_change:${changeId}:raw_retrieval:${consumer.id}:${fallback.decision.decisionDigest}`,
+            payload: {
+              consumerId: consumer.id,
+              graphVersionId,
+              decisionDigest: fallback.decision.decisionDigest,
+              artifactId: fallbackArtifact.id,
+              outcome: fallback.decision.outcome,
+              reasonCodes: fallback.decision.reasonCodes,
+              candidateDigests: fallback.decision.candidateDigests,
+              learningDestination: "graph_candidate_validation",
+              modelWeightEligible: false,
+            },
+            createdAt: graphObservedAt,
+          });
+          if (fallback.decision.outcome === "abstained") {
+            throw new Error(
+              fallback.decision.failureCode ?? "raw_retrieval_fallback_abstained",
+            );
+          }
+          impactReport = fallback.impactReport!;
+          rawRetrievalFallback = true;
+        }
       } catch (error) {
         const code = error instanceof Error && /^[a-z0-9._:-]{1,160}$/i.test(error.message)
           ? error.message

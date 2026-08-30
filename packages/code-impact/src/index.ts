@@ -9,10 +9,13 @@ import {
   materializeCodebaseIndex,
   type CodebaseIndex,
   type CodebaseIndexAuthority,
+  type CodebaseIndexLimits,
   type CodebaseIndexReuseEvidence,
   type SdkDetectionContext,
 } from "@mendpoint/codebase-index";
 import { createHash } from "node:crypto";
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import {
   compileFettlerImpactContext,
   getSoftwareGraphHead,
@@ -80,6 +83,7 @@ export {
   consumerUsesCapability,
   type CapabilityConsumerInput,
 } from "./capability-adoption.js";
+export * from "./raw-retrieval-fallback.js";
 
 export type AnalyzeOptions = {
   minConfidence?: Confidence;
@@ -90,6 +94,10 @@ export type AnalyzeOptions = {
   useLlm?: boolean;
   surfaces?: ImpactableSurface[];
   sdkHints?: string[];
+  /** Hard repository-discovery bounds for this analysis. */
+  indexLimits?: Partial<CodebaseIndexLimits>;
+  /** Hard cap applied before candidate expansion and confirmation. */
+  maxCandidates?: number;
   /** Tenant and stable repository identity required before persisted reuse. */
   indexAuthority?: CodebaseIndexAuthority;
   /** Receives digest-only evidence for each persisted index decision. */
@@ -111,7 +119,12 @@ function analysisIndex(
   if (options.index) return { index: options.index };
   const sdkContext = sdkContextFromSurfaces(surfaces, options.sdkHints);
   if (!options.persistIndex) {
-    return { index: buildIndexIncremental(repoRoot, null, { sdkContext }) };
+    return {
+      index: buildIndexIncremental(repoRoot, null, {
+        sdkContext,
+        limits: options.indexLimits,
+      }),
+    };
   }
   const authority = authorityOverride ?? options.indexAuthority;
   if (!authority) throw new Error("codebase_index_authority_required");
@@ -121,10 +134,40 @@ function analysisIndex(
     authority,
     storageRoot,
     sdkContext,
+    limits: options.indexLimits,
     persist: true,
   });
   options.onIndexMaterialized?.(materialized.evidence);
   return materialized;
+}
+
+function assertCandidateBudget(candidateCount: number, maxCandidates?: number): void {
+  if (maxCandidates === undefined) return;
+  if (!Number.isSafeInteger(maxCandidates) || maxCandidates < 1 || maxCandidates > 50_000) {
+    throw new Error("raw_retrieval_candidate_budget_invalid");
+  }
+  if (candidateCount > maxCandidates) {
+    throw new Error("raw_retrieval_candidate_budget_exceeded");
+  }
+}
+
+function rawRetrievalUsage(index: CodebaseIndex): {
+  filesInspected: number;
+  bytesInspected: number;
+} {
+  const paths = [...new Set([
+    ...index.files.map((file) => file.path),
+    ...(index.structuredFiles ?? []).map((file) => file.path),
+  ])];
+  let bytesInspected = 0;
+  for (const path of paths) {
+    const size = statSync(join(index.repoRoot, path)).size;
+    if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(bytesInspected + size)) {
+      throw new Error("raw_retrieval_usage_invalid");
+    }
+    bytesInspected += size;
+  }
+  return { filesInspected: paths.length, bytesInspected };
 }
 
 /**
@@ -549,6 +592,7 @@ export async function analyzeImpact(
 
   const provider: ProviderReachability = computeProviderReachability(index, surfaces);
   const candidates = discoverCandidates(index, surfaces, provider);
+  assertCandidateBudget(candidates.length, options.maxCandidates);
   const expanded = expandContexts(index, candidates);
   const confirmed = await confirmImpacts(expanded, surfaces, {
     useLlm: options.useLlm,
@@ -581,6 +625,7 @@ export function analyzeRepo(
     buildIndex(repoRoot, { sdkContext: sdkContextFromSurfaces(surfaces, options.sdkHints) });
   const provider: ProviderReachability = computeProviderReachability(index, surfaces);
   const candidates = discoverCandidates(index, surfaces, provider);
+  assertCandidateBudget(candidates.length, options.maxCandidates);
   const expanded = expandContexts(index, candidates);
   const confirmed = staticConfirmAll(expanded, surfaces);
   const report = buildReport(
@@ -694,8 +739,11 @@ export async function analyzeImpactWithSoftwareGraph(
   return {
     impactReport,
     graphVersion,
+    repositorySnapshotId,
+    repositoryRevision,
     graphImpact,
     context,
+    rawRetrievalUsage: rawRetrievalUsage(index),
     ...(materialized.evidence ? { indexReuse: materialized.evidence } : {}),
   };
 }

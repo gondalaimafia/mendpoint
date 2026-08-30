@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { openGraphLearnMemory } from "./store.js";
 import {
+  assertRawRetrievalRelationshipCandidateAuthority,
   compileFettlerImpactContext,
   compileMissionGraphProjection,
+  createRawRetrievalRelationshipCandidate,
   classifyChangeGraphFailure,
   diffSoftwareGraphVersions,
   getSoftwareGraphHead,
@@ -652,5 +654,137 @@ describe("foundational software intelligence graph", () => {
       category: "generator",
       modelWeightEligible: true,
     });
+  });
+
+  it("creates a deterministic pending relationship candidate without advancing the graph head", () => {
+    const db = openGraphLearnMemory();
+    const version = publishSoftwareGraphVersion(db, publication());
+    const input = {
+      tenantId: "tenant-a",
+      repositoryId: "repo-a",
+      repositorySnapshotId: "snapshot-1",
+      repositoryRevision: "a".repeat(40),
+      providerId: "provider-a",
+      providerSnapshotId: "provider-snapshot-1",
+      providerRevision: "2026-08-17",
+      parentGraphVersionId: version.versionId,
+      parentGraphContentDigest: version.contentDigest,
+      observedAt: "2026-08-17T12:00:00.000Z",
+      retrieval: {
+        reasonCodes: ["language_parsing:partial"],
+        maxFiles: 100,
+        maxBytes: 1_000_000,
+        maxCandidates: 50,
+        filesInspected: 4,
+        bytesInspected: 4_096,
+        candidatesInspected: 2,
+      },
+      discovery: {
+        filePath: "src/payments/client.ts",
+        lineStart: 10,
+        lineEnd: 11,
+        symbol: "createCharge",
+        surfaceIds: ["surface:charges-create"],
+        evidenceRefs: ["source:src/payments/client.ts:10"],
+        confidence: "high" as const,
+      },
+    };
+
+    const first = createRawRetrievalRelationshipCandidate(input);
+    const second = createRawRetrievalRelationshipCandidate(input);
+
+    expect(second).toEqual(first);
+    expect(first.schemaVersion).toBe("mendpoint.raw-retrieval-relationship-candidate.v1");
+    expect(first.status).toBe("pending_validation");
+    expect(first.candidateDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(getSoftwareGraphHead(db, "tenant-a", "repo-a", "provider-a")).toEqual({
+      versionId: version.versionId,
+      contentDigest: version.contentDigest,
+    });
+    expect(assertRawRetrievalRelationshipCandidateAuthority(first, {
+      tenantId: "tenant-a",
+      repositoryId: "repo-a",
+      repositorySnapshotId: "snapshot-1",
+      repositoryRevision: "a".repeat(40),
+      providerId: "provider-a",
+      providerSnapshotId: "provider-snapshot-1",
+      providerRevision: "2026-08-17",
+      parentGraphVersionId: version.versionId,
+      parentGraphContentDigest: version.contentDigest,
+    })).toEqual(first);
+  });
+
+  it("rejects stale, cross-scope, tampered, unbounded, and evidence-free fallback candidates", () => {
+    const db = openGraphLearnMemory();
+    const version = publishSoftwareGraphVersion(db, publication());
+    const valid = createRawRetrievalRelationshipCandidate({
+      tenantId: "tenant-a",
+      repositoryId: "repo-a",
+      repositorySnapshotId: "snapshot-1",
+      repositoryRevision: "a".repeat(40),
+      providerId: "provider-a",
+      providerSnapshotId: "provider-snapshot-1",
+      providerRevision: "2026-08-17",
+      parentGraphVersionId: version.versionId,
+      parentGraphContentDigest: version.contentDigest,
+      observedAt: "2026-08-17T12:00:00.000Z",
+      retrieval: {
+        reasonCodes: ["query_truncated"],
+        maxFiles: 10,
+        maxBytes: 10_000,
+        maxCandidates: 5,
+        filesInspected: 1,
+        bytesInspected: 100,
+        candidatesInspected: 1,
+      },
+      discovery: {
+        filePath: "src/payments/client.ts",
+        lineStart: 10,
+        lineEnd: 10,
+        symbol: "createCharge",
+        surfaceIds: ["surface:charges-create"],
+        evidenceRefs: ["source:src/payments/client.ts:10"],
+        confidence: "high",
+      },
+    });
+    const authority = {
+      tenantId: "tenant-a",
+      repositoryId: "repo-a",
+      repositorySnapshotId: "snapshot-1",
+      repositoryRevision: "a".repeat(40),
+      providerId: "provider-a",
+      providerSnapshotId: "provider-snapshot-1",
+      providerRevision: "2026-08-17",
+      parentGraphVersionId: version.versionId,
+      parentGraphContentDigest: version.contentDigest,
+    };
+
+    expect(() => assertRawRetrievalRelationshipCandidateAuthority(valid, {
+      ...authority,
+      tenantId: "tenant-b",
+    })).toThrow("raw_retrieval_candidate_scope_mismatch");
+    expect(() => assertRawRetrievalRelationshipCandidateAuthority(valid, {
+      ...authority,
+      repositorySnapshotId: "snapshot-2",
+    })).toThrow("raw_retrieval_candidate_snapshot_mismatch");
+    expect(() => assertRawRetrievalRelationshipCandidateAuthority(valid, {
+      ...authority,
+      parentGraphVersionId: `sgv1:${"f".repeat(64)}`,
+      parentGraphContentDigest: `sha256:${"f".repeat(64)}`,
+    })).toThrow("raw_retrieval_candidate_parent_mismatch");
+    expect(() => assertRawRetrievalRelationshipCandidateAuthority({
+      ...valid,
+      discovery: { ...valid.discovery, symbol: "tampered" },
+    }, authority)).toThrow("raw_retrieval_candidate_digest_mismatch");
+    expect(() => createRawRetrievalRelationshipCandidate({
+      ...valid,
+      retrieval: { ...valid.retrieval, filesInspected: valid.retrieval.maxFiles + 1 },
+    })).toThrow("raw_retrieval_candidate_budget_exceeded");
+    expect(() => createRawRetrievalRelationshipCandidate({
+      ...valid,
+      discovery: { ...valid.discovery, evidenceRefs: [] },
+    })).toThrow("raw_retrieval_candidate_evidence_invalid");
+    expect(getSoftwareGraphHead(db, "tenant-a", "repo-a", "provider-a")?.versionId)
+      .toBe(version.versionId);
   });
 });

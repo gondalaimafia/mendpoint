@@ -26,6 +26,7 @@ import {
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
 import { MockGitHubDelivery } from "@mendpoint/github";
+import { analyzeImpactWithSoftwareGraph } from "@mendpoint/code-impact";
 import {
   changeSubjectDigest,
   issueVerificationWaiver,
@@ -316,6 +317,121 @@ describe("pipeline", () => {
       code: "software_graph_materializer_entity_collision",
     });
   });
+
+  it("records a bounded raw-retrieval fallback without advancing the current graph", async () => {
+    const dir = join(tmpdir(), `mendpoint-pipe-raw-fallback-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    dirs.push(dir);
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    const consumerId = addMonitoredConsumer(db, provider.id, {
+      name: "Fallback Shop",
+      repo: "fallback-shop",
+      localPath: shop,
+    });
+    const repositoryId = getConsumerRepo(db, consumerId, "tenant_default")!.id;
+    const graphDb = testGraphDb();
+    let headAtFallback: ReturnType<typeof getSoftwareGraphHead>;
+    const incompleteAnalyzer: typeof analyzeImpactWithSoftwareGraph = async (...args) => {
+      const result = await analyzeImpactWithSoftwareGraph(...args);
+      headAtFallback = getSoftwareGraphHead(
+        graphDb,
+        "tenant_default",
+        repositoryId,
+        provider.id,
+      );
+      return {
+        ...result,
+        graphImpact: {
+          ...result.graphImpact,
+          impact: "unknown_impact" as const,
+          coverage: {
+            basis: "partial" as const,
+            reasons: ["language_parsing:partial"],
+            truncated: false,
+          },
+        },
+      };
+    };
+    const common = {
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      db,
+      graphDb,
+      github: new MockGitHubDelivery(join(dir, "delivery")),
+      persistIndex: false,
+      softwareGraphAnalyzer: incompleteAnalyzer,
+      contractCases: [{
+        id: "fixture",
+        name: "fixture",
+        requiredKeys: ["id"],
+        responseBody: { id: "ok" },
+      }],
+      securityScanAttested: true,
+    };
+
+    const first = await runChangePipeline(common);
+
+    expect(first.consumers[0]?.prStatus).toBe("draft");
+    expect(getSoftwareGraphHead(
+      graphDb,
+      "tenant_default",
+      repositoryId,
+      provider.id,
+    )).toEqual(headAtFallback);
+    const fallbackArtifacts = listArtifactManifests(
+      db,
+      "tenant_default",
+      "fettler-raw-retrieval-fallback",
+    );
+    expect(fallbackArtifacts).toHaveLength(1);
+    const fallback = JSON.parse(fallbackArtifacts[0]!.content_text!) as {
+      decision: { outcome: string; reasonCodes: string[]; decisionDigest: string };
+      relationshipCandidates: Array<{ status: string; parentGraphVersionId: string }>;
+    };
+    expect(fallback.decision).toMatchObject({
+      outcome: "completed",
+      reasonCodes: ["language_parsing:partial"],
+    });
+    expect(fallback.relationshipCandidates).not.toHaveLength(0);
+    expect(fallback.relationshipCandidates.every(
+      (candidate) => candidate.status === "pending_validation" &&
+        candidate.parentGraphVersionId === headAtFallback?.versionId,
+    )).toBe(true);
+    expect(listAudit(db, "tenant_default").some(
+      (entry) => entry.action === "graph.raw_retrieval_fallback_recorded",
+    )).toBe(true);
+    const fallbackEvents = listDomainEvents(
+      db,
+      "tenant_default",
+      "api_change",
+      first.changeId,
+    ).filter((event) => event.event_type === "change_graph.raw_retrieval_recorded");
+    expect(fallbackEvents).toHaveLength(1);
+
+    await runChangePipeline(common);
+
+    expect(listArtifactManifests(
+      db,
+      "tenant_default",
+      "fettler-raw-retrieval-fallback",
+    )).toHaveLength(1);
+    expect(listDomainEvents(
+      db,
+      "tenant_default",
+      "api_change",
+      first.changeId,
+    ).filter((event) => event.event_type === "change_graph.raw_retrieval_recorded"))
+      .toHaveLength(1);
+    expect(getSoftwareGraphHead(
+      graphDb,
+      "tenant_default",
+      repositoryId,
+      provider.id,
+    )).toEqual(headAtFallback);
+  }, 15_000);
 
   it("does not invent a graph when no tenant handle is ready", async () => {
     const db = seedProviderVersions();

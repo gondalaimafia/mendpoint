@@ -82,6 +82,55 @@ export type SoftwareGraphPublicationV1 = {
   coverage: SoftwareGraphCoverageStageV1[];
 };
 export type PublishedSoftwareGraphVersionV1 = SoftwareGraphPublicationV1 & { versionId: string; contentDigest: string };
+export type RawRetrievalRelationshipCandidateV1 = Readonly<{
+  schemaVersion: "mendpoint.raw-retrieval-relationship-candidate.v1";
+  status: "pending_validation";
+  tenantId: string;
+  repositoryId: string;
+  repositorySnapshotId: string;
+  repositoryRevision: string;
+  providerId: string;
+  providerSnapshotId: string;
+  providerRevision: string;
+  parentGraphVersionId: string;
+  parentGraphContentDigest: string;
+  observedAt: string;
+  retrieval: Readonly<{
+    reasonCodes: string[];
+    maxFiles: number;
+    maxBytes: number;
+    maxCandidates: number;
+    filesInspected: number;
+    bytesInspected: number;
+    candidatesInspected: number;
+  }>;
+  discovery: Readonly<{
+    filePath: string;
+    lineStart: number;
+    lineEnd: number;
+    symbol: string;
+    surfaceIds: string[];
+    evidenceRefs: string[];
+    confidence: "high" | "medium" | "low";
+  }>;
+  candidateDigest: string;
+}>;
+export type RawRetrievalRelationshipCandidateInput = Omit<
+  RawRetrievalRelationshipCandidateV1,
+  "schemaVersion" | "status" | "candidateDigest"
+>;
+export type RawRetrievalRelationshipCandidateAuthority = Pick<
+  RawRetrievalRelationshipCandidateV1,
+  | "tenantId"
+  | "repositoryId"
+  | "repositorySnapshotId"
+  | "repositoryRevision"
+  | "providerId"
+  | "providerSnapshotId"
+  | "providerRevision"
+  | "parentGraphVersionId"
+  | "parentGraphContentDigest"
+>;
 export type SoftwareEntityResolution =
   | { status: "exact" | "alias"; entity: SoftwareGraphEntityV1 }
   | { status: "ambiguous" | "collision"; candidates: SoftwareGraphEntityV1[] }
@@ -166,6 +215,166 @@ function validateEvidence(refs: string[], code: string): void {
     if (seen.has(ref)) throw new Error(code);
     seen.add(ref);
   }
+}
+
+function boundedInteger(
+  value: number,
+  minimum: number,
+  maximum: number,
+  code: string,
+): void {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(code);
+  }
+}
+
+/**
+ * Seal one raw-retrieval discovery as non-authoritative evidence for a later
+ * graph version. This function deliberately has no database parameter: creating
+ * a candidate cannot publish or advance the current graph head.
+ */
+export function createRawRetrievalRelationshipCandidate(
+  input: RawRetrievalRelationshipCandidateInput,
+): RawRetrievalRelationshipCandidateV1 {
+  for (const [value, code] of [
+    [input.tenantId, "raw_retrieval_candidate_scope_invalid"],
+    [input.repositoryId, "raw_retrieval_candidate_scope_invalid"],
+    [input.repositorySnapshotId, "raw_retrieval_candidate_snapshot_invalid"],
+    [input.providerId, "raw_retrieval_candidate_scope_invalid"],
+    [input.providerSnapshotId, "raw_retrieval_candidate_snapshot_invalid"],
+    [input.providerRevision, "raw_retrieval_candidate_snapshot_invalid"],
+  ] as const) boundedString(value, code, 1_024);
+  if (!REVISION_RE.test(input.repositoryRevision)) {
+    throw new Error("raw_retrieval_candidate_snapshot_invalid");
+  }
+  if (
+    !/^sgv1:[a-f0-9]{64}$/.test(input.parentGraphVersionId) ||
+    !DIGEST_RE.test(input.parentGraphContentDigest) ||
+    input.parentGraphVersionId !== `sgv1:${input.parentGraphContentDigest.slice(7)}`
+  ) {
+    throw new Error("raw_retrieval_candidate_parent_invalid");
+  }
+  exactUtc(input.observedAt, "raw_retrieval_candidate_observed_at_invalid");
+
+  const retrieval = input.retrieval;
+  boundedInteger(retrieval.maxFiles, 1, 10_000, "raw_retrieval_candidate_budget_invalid");
+  boundedInteger(retrieval.maxBytes, 1, 1_000_000_000, "raw_retrieval_candidate_budget_invalid");
+  boundedInteger(retrieval.maxCandidates, 1, 50_000, "raw_retrieval_candidate_budget_invalid");
+  boundedInteger(retrieval.filesInspected, 0, retrieval.maxFiles, "raw_retrieval_candidate_budget_exceeded");
+  boundedInteger(retrieval.bytesInspected, 0, retrieval.maxBytes, "raw_retrieval_candidate_budget_exceeded");
+  boundedInteger(
+    retrieval.candidatesInspected,
+    0,
+    retrieval.maxCandidates,
+    "raw_retrieval_candidate_budget_exceeded",
+  );
+  if (!Array.isArray(retrieval.reasonCodes) || retrieval.reasonCodes.length < 1 || retrieval.reasonCodes.length > 32) {
+    throw new Error("raw_retrieval_candidate_reason_invalid");
+  }
+  const reasonCodes = [...new Set(retrieval.reasonCodes.map((reason) => {
+    boundedString(reason, "raw_retrieval_candidate_reason_invalid", 256);
+    return reason;
+  }))].sort(compareCodeUnits);
+
+  const discovery = input.discovery;
+  boundedString(discovery.filePath, "raw_retrieval_candidate_discovery_invalid", 2_048);
+  boundedString(discovery.symbol, "raw_retrieval_candidate_discovery_invalid", 1_024);
+  boundedInteger(discovery.lineStart, 1, 10_000_000, "raw_retrieval_candidate_discovery_invalid");
+  boundedInteger(
+    discovery.lineEnd,
+    discovery.lineStart,
+    10_000_000,
+    "raw_retrieval_candidate_discovery_invalid",
+  );
+  if (!Array.isArray(discovery.surfaceIds) || discovery.surfaceIds.length < 1 || discovery.surfaceIds.length > 128) {
+    throw new Error("raw_retrieval_candidate_discovery_invalid");
+  }
+  const surfaceIds = [...new Set(discovery.surfaceIds.map((surfaceId) => {
+    boundedString(surfaceId, "raw_retrieval_candidate_discovery_invalid", 1_024);
+    return surfaceId;
+  }))].sort(compareCodeUnits);
+  validateEvidence(discovery.evidenceRefs, "raw_retrieval_candidate_evidence_invalid");
+  if (!["high", "medium", "low"].includes(discovery.confidence)) {
+    throw new Error("raw_retrieval_candidate_discovery_invalid");
+  }
+
+  const unsigned = {
+    schemaVersion: "mendpoint.raw-retrieval-relationship-candidate.v1" as const,
+    status: "pending_validation" as const,
+    tenantId: input.tenantId,
+    repositoryId: input.repositoryId,
+    repositorySnapshotId: input.repositorySnapshotId,
+    repositoryRevision: input.repositoryRevision,
+    providerId: input.providerId,
+    providerSnapshotId: input.providerSnapshotId,
+    providerRevision: input.providerRevision,
+    parentGraphVersionId: input.parentGraphVersionId,
+    parentGraphContentDigest: input.parentGraphContentDigest,
+    observedAt: input.observedAt,
+    retrieval: {
+      ...retrieval,
+      reasonCodes,
+    },
+    discovery: {
+      ...discovery,
+      surfaceIds,
+      evidenceRefs: [...new Set(discovery.evidenceRefs)].sort(compareCodeUnits),
+    },
+  };
+  return Object.freeze({
+    ...unsigned,
+    retrieval: Object.freeze(unsigned.retrieval),
+    discovery: Object.freeze(unsigned.discovery),
+    candidateDigest: sha256(canonicalJson(unsigned)),
+  });
+}
+
+/** Revalidate a stored candidate at the exact tenant, snapshot, and graph head where it is consumed. */
+export function assertRawRetrievalRelationshipCandidateAuthority(
+  candidate: RawRetrievalRelationshipCandidateV1,
+  authority: RawRetrievalRelationshipCandidateAuthority,
+): RawRetrievalRelationshipCandidateV1 {
+  if (
+    candidate.tenantId !== authority.tenantId ||
+    candidate.repositoryId !== authority.repositoryId ||
+    candidate.providerId !== authority.providerId
+  ) throw new Error("raw_retrieval_candidate_scope_mismatch");
+  if (
+    candidate.repositorySnapshotId !== authority.repositorySnapshotId ||
+    candidate.repositoryRevision !== authority.repositoryRevision ||
+    candidate.providerSnapshotId !== authority.providerSnapshotId ||
+    candidate.providerRevision !== authority.providerRevision
+  ) throw new Error("raw_retrieval_candidate_snapshot_mismatch");
+  if (
+    candidate.parentGraphVersionId !== authority.parentGraphVersionId ||
+    candidate.parentGraphContentDigest !== authority.parentGraphContentDigest
+  ) throw new Error("raw_retrieval_candidate_parent_mismatch");
+  let normalized: RawRetrievalRelationshipCandidateV1;
+  try {
+    normalized = createRawRetrievalRelationshipCandidate({
+      tenantId: candidate.tenantId,
+      repositoryId: candidate.repositoryId,
+      repositorySnapshotId: candidate.repositorySnapshotId,
+      repositoryRevision: candidate.repositoryRevision,
+      providerId: candidate.providerId,
+      providerSnapshotId: candidate.providerSnapshotId,
+      providerRevision: candidate.providerRevision,
+      parentGraphVersionId: candidate.parentGraphVersionId,
+      parentGraphContentDigest: candidate.parentGraphContentDigest,
+      observedAt: candidate.observedAt,
+      retrieval: candidate.retrieval,
+      discovery: candidate.discovery,
+    });
+  } catch {
+    throw new Error("raw_retrieval_candidate_digest_mismatch");
+  }
+  if (
+    candidate.schemaVersion !== normalized.schemaVersion ||
+    candidate.status !== normalized.status ||
+    candidate.candidateDigest !== normalized.candidateDigest ||
+    canonicalJson(candidate) !== canonicalJson(normalized)
+  ) throw new Error("raw_retrieval_candidate_digest_mismatch");
+  return candidate;
 }
 
 function normalizedPublication(input: SoftwareGraphPublicationV1): SoftwareGraphPublicationV1 {
