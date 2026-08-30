@@ -774,4 +774,143 @@ describe("Gate 7 policy router", () => {
     if (!("action" in unavailable)) throw new Error("expected handoff");
     expect(unavailable.reason).toBe("fallback_exhausted");
   });
+
+  it("rejects a fallback route spliced from another task plan", () => {
+    const sharedRegistry = registry(
+      executor("primary", { qualityScore: 0.95 }),
+      executor("fallback", { qualityScore: 0.9 }),
+    );
+    const first = routeTask({
+      task: task({ taskId: "task-a", idempotencyKey: "task-a" }),
+      policy: policy(),
+      registry: sharedRegistry,
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    const second = routeTask({
+      task: task({ taskId: "task-b", idempotencyKey: "task-b" }),
+      policy: policy(),
+      registry: sharedRegistry,
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    if (first.action !== "execute" || second.action !== "execute") {
+      throw new Error("expected execution");
+    }
+
+    const fallback = selectPolicyBoundFallback({
+      plan: { ...first.plan, fallbacks: [second.plan.fallbacks[0]!] },
+      failedExecutorIds: ["primary"],
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      at: decidedAt,
+      tenantId: "tenant-1",
+    });
+
+    expect("action" in fallback && fallback.action).toBe("human_handoff");
+    if (!("action" in fallback)) throw new Error("expected handoff");
+    expect(fallback.reason).toBe("route_invalid");
+  });
+
+  it("rejects a cross-plan fallback that violates task capabilities", () => {
+    const sharedRegistry = registry(
+      executor("typescript-only", { capabilities: ["typescript"] }),
+      executor("python-only", { capabilities: ["python"] }),
+    );
+    const typescript = routeTask({
+      task: task({ requiredCapabilities: ["typescript"] }),
+      policy: policy(),
+      registry: sharedRegistry,
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    const python = routeTask({
+      task: task({
+        taskId: "task-python",
+        idempotencyKey: "task-python",
+        requiredCapabilities: ["python"],
+      }),
+      policy: policy(),
+      registry: sharedRegistry,
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    if (typescript.action !== "execute" || python.action !== "execute") {
+      throw new Error("expected execution");
+    }
+
+    const fallback = selectPolicyBoundFallback({
+      plan: { ...typescript.plan, fallbacks: [python.plan.primary] },
+      failedExecutorIds: ["typescript-only"],
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      at: decidedAt,
+      tenantId: "tenant-1",
+    });
+
+    expect("action" in fallback && fallback.action).toBe("human_handoff");
+    if (!("action" in fallback)) throw new Error("expected handoff");
+    expect(fallback.reason).toBe("route_invalid");
+  });
+
+  it("rejects reordered policy-bound fallbacks", () => {
+    const outcome = routeTask({
+      task: task(),
+      policy: policy(),
+      registry: registry(
+        executor("primary", { qualityScore: 0.95 }),
+        executor("fallback-a", { qualityScore: 0.9 }),
+        executor("fallback-b", { qualityScore: 0.85 }),
+      ),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    if (outcome.action !== "execute") throw new Error("expected execution");
+
+    const fallback = selectPolicyBoundFallback({
+      plan: { ...outcome.plan, fallbacks: [...outcome.plan.fallbacks].reverse() },
+      failedExecutorIds: ["primary"],
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      at: decidedAt,
+      tenantId: "tenant-1",
+    });
+
+    expect("action" in fallback && fallback.action).toBe("human_handoff");
+    if (!("action" in fallback)) throw new Error("expected handoff");
+    expect(fallback.reason).toBe("route_invalid");
+  });
+
+  it("rejects a tampered plan budget ceiling", () => {
+    const outcome = routeTask({
+      task: task(),
+      policy: policy(),
+      registry: registry(
+        executor("primary", { qualityScore: 0.95 }),
+        executor("fallback", { qualityScore: 0.9 }),
+      ),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    if (outcome.action !== "execute") throw new Error("expected execution");
+
+    const fallback = selectPolicyBoundFallback({
+      plan: { ...outcome.plan, maximumCostUsd: 50 },
+      failedExecutorIds: ["primary"],
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 50,
+      at: decidedAt,
+      tenantId: "tenant-1",
+    });
+
+    expect("action" in fallback && fallback.action).toBe("human_handoff");
+    if (!("action" in fallback)) throw new Error("expected handoff");
+    expect(fallback.reason).toBe("route_invalid");
+  });
 });

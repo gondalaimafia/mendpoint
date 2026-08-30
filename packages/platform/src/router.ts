@@ -391,6 +391,7 @@ const POLICY_BOUND_ROUTE: unique symbol = Symbol("policy-bound-route");
 
 export type PolicyBoundExecutorRoute = Readonly<{
   tenantId: string;
+  taskFingerprint: string;
   executorId: string;
   providerId: string;
   executorKind: ExecutorKind;
@@ -400,6 +401,8 @@ export type PolicyBoundExecutorRoute = Readonly<{
   policySnapshotId: string;
   policyFingerprint: string;
   registryFingerprint: string;
+  maximumCostUsd: number;
+  routePosition: number;
   routeFingerprint: string;
   expectedQualityScore: number;
   expectedLatencyMs: number;
@@ -410,12 +413,14 @@ export type PolicyBoundExecutorRoute = Readonly<{
 export type RoutingPlan = Readonly<{
   taskId: string;
   tenantId: string;
+  taskFingerprint: string;
   policySnapshotId: string;
   policyFingerprint: string;
   registry: ExecutorRegistryBinding;
   maximumCostUsd: number;
   primary: PolicyBoundExecutorRoute;
   fallbacks: readonly PolicyBoundExecutorRoute[];
+  planFingerprint: string;
 }>;
 
 export type HumanHandoffReason =
@@ -592,24 +597,33 @@ export function routeTask(input: RouteTaskInput): RoutingOutcome {
   }
 
   const registry = input.registry.binding();
-  const routes = eligible.map((evaluation) =>
+  const taskFingerprint = fingerprint(routingTaskIdentity(input.task));
+  const routes = eligible.map((evaluation, routePosition) =>
     bindRoute(
       evaluation,
       input.task.tenantId,
+      taskFingerprint,
       input.policy.snapshotId,
       policyFingerprint,
       registry.fingerprint,
+      effectiveBudget,
+      routePosition,
     ),
   );
-  const plan: RoutingPlan = Object.freeze({
+  const unsignedPlan: Omit<RoutingPlan, "planFingerprint"> = {
     taskId: input.task.taskId,
     tenantId: input.task.tenantId,
+    taskFingerprint,
     policySnapshotId: input.policy.snapshotId,
     policyFingerprint,
     registry,
     maximumCostUsd: effectiveBudget,
     primary: routes[0],
     fallbacks: Object.freeze(routes.slice(1)),
+  };
+  const plan: RoutingPlan = Object.freeze({
+    ...unsignedPlan,
+    planFingerprint: routingPlanFingerprint(unsignedPlan),
   });
   const decision = decisionRecord(
     input,
@@ -708,13 +722,15 @@ function isValidRoutingPlan(plan: RoutingPlan): boolean {
   if (
     !plan.taskId?.trim() ||
     !plan.tenantId?.trim() ||
+    !/^[a-f0-9]{64}$/.test(plan.taskFingerprint) ||
     !plan.policySnapshotId?.trim() ||
     !/^[a-f0-9]{64}$/.test(plan.policyFingerprint) ||
     !Number.isFinite(plan.maximumCostUsd) ||
     plan.maximumCostUsd < 0 ||
     !plan.registry ||
     !/^[a-f0-9]{64}$/.test(plan.registry.fingerprint) ||
-    !Array.isArray(plan.fallbacks)
+    !Array.isArray(plan.fallbacks) ||
+    !/^[a-f0-9]{64}$/.test(plan.planFingerprint)
   ) {
     return false;
   }
@@ -723,16 +739,24 @@ function isValidRoutingPlan(plan: RoutingPlan): boolean {
   } catch {
     return false;
   }
-  return [plan.primary, ...plan.fallbacks].every(
-    (candidate) =>
+  const routes = [plan.primary, ...plan.fallbacks];
+  if (plan.planFingerprint !== routingPlanFingerprint(plan)) return false;
+  return routes.every(
+    (candidate, routePosition) =>
       candidate?.[POLICY_BOUND_ROUTE] === true &&
       candidate.tenantId === plan.tenantId &&
+      candidate.taskFingerprint === plan.taskFingerprint &&
       candidate.policySnapshotId === plan.policySnapshotId &&
       candidate.policyFingerprint === plan.policyFingerprint &&
       candidate.registryFingerprint === plan.registry.fingerprint &&
+      candidate.maximumCostUsd === plan.maximumCostUsd &&
+      candidate.routePosition === routePosition &&
       candidate.routeFingerprint === routeFingerprint(candidate) &&
+      typeof candidate.executorId === "string" &&
       candidate.executorId.trim().length > 0 &&
+      typeof candidate.providerId === "string" &&
       candidate.providerId.trim().length > 0 &&
+      typeof candidate.executionRegion === "string" &&
       candidate.executionRegion.trim().length > 0 &&
       Number.isFinite(candidate.expectedQualityScore) &&
       candidate.expectedQualityScore >= 0 &&
@@ -901,15 +925,19 @@ function chooseRegion(
 function bindRoute(
   evaluation: ExecutorEvaluation,
   tenantId: string,
+  taskFingerprint: string,
   policySnapshotId: string,
   policyFingerprint: string,
   registryFingerprint: string,
+  maximumCostUsd: number,
+  routePosition: number,
 ): PolicyBoundExecutorRoute {
   if (!evaluation.eligible || !evaluation.executionRegion) {
     throw new Error("Cannot bind an ineligible executor");
   }
   const route = {
     tenantId,
+    taskFingerprint,
     executorId: evaluation.executorId,
     providerId: evaluation.providerId,
     executorKind: evaluation.executorKind,
@@ -919,6 +947,8 @@ function bindRoute(
     policySnapshotId,
     policyFingerprint,
     registryFingerprint,
+    maximumCostUsd,
+    routePosition,
     expectedQualityScore: evaluation.expectedQualityScore,
     expectedLatencyMs: evaluation.expectedLatencyMs,
     expectedCostUsd: evaluation.expectedCostUsd,
@@ -933,6 +963,7 @@ function bindRoute(
 function routeFingerprint(route: PolicyBoundExecutorRoute): string {
   return fingerprint({
     tenantId: route.tenantId,
+    taskFingerprint: route.taskFingerprint,
     executorId: route.executorId,
     providerId: route.providerId,
     executorKind: route.executorKind,
@@ -942,9 +973,28 @@ function routeFingerprint(route: PolicyBoundExecutorRoute): string {
     policySnapshotId: route.policySnapshotId,
     policyFingerprint: route.policyFingerprint,
     registryFingerprint: route.registryFingerprint,
+    maximumCostUsd: route.maximumCostUsd,
+    routePosition: route.routePosition,
     expectedQualityScore: route.expectedQualityScore,
     expectedLatencyMs: route.expectedLatencyMs,
     expectedCostUsd: route.expectedCostUsd,
+  });
+}
+
+function routingPlanFingerprint(
+  plan: Omit<RoutingPlan, "planFingerprint"> | RoutingPlan,
+): string {
+  return fingerprint({
+    taskId: plan.taskId,
+    tenantId: plan.tenantId,
+    taskFingerprint: plan.taskFingerprint,
+    policySnapshotId: plan.policySnapshotId,
+    policyFingerprint: plan.policyFingerprint,
+    registry: plan.registry,
+    maximumCostUsd: plan.maximumCostUsd,
+    routeFingerprints: [plan.primary, ...plan.fallbacks].map(
+      (route) => route.routeFingerprint,
+    ),
   });
 }
 
