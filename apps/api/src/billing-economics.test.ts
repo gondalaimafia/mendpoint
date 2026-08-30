@@ -1,4 +1,10 @@
-import { createHmac } from "node:crypto";
+import {
+  createHash,
+  createPublicKey,
+  generateKeyPairSync,
+  sign as signBytes,
+  verify as verifyBytes,
+} from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +34,26 @@ const NOW = "2026-08-01T15:00:00.000Z";
 const directories: string[] = [];
 const databases: AppDb[] = [];
 const originalAuth = process.env.API_AUTH;
+const testInvoiceKeyPair = generateKeyPairSync("ed25519");
+const testInvoicePublicKeySpkiBase64 = Buffer.from(testInvoiceKeyPair.publicKey.export({
+  format: "der",
+  type: "spki",
+})).toString("base64");
+
+function serializedSigningKey(keyId: string) {
+  const pair = generateKeyPairSync("ed25519");
+  return {
+    keyId,
+    privateKeyPkcs8Base64: Buffer.from(pair.privateKey.export({
+      format: "der",
+      type: "pkcs8",
+    })).toString("base64"),
+    publicKeySpkiBase64: Buffer.from(pair.publicKey.export({
+      format: "der",
+      type: "spki",
+    })).toString("base64"),
+  };
+}
 
 afterEach(() => {
   if (originalAuth === undefined) delete process.env.API_AUTH;
@@ -87,14 +113,25 @@ function appFor(
 }
 
 function invoiceSigner(): InvoiceExportSigner {
-  const secret = "test-only-api-invoice-signing-secret";
   return {
     keyId: "invoice-api-key-1",
     authorize: ({ tenantId }) => tenantId === "billing-tenant-a",
-    sign: (payload) => createHmac("sha256", secret).update(payload).digest("hex"),
+    sign: (payload) => signBytes(
+      null,
+      Buffer.from(payload, "utf8"),
+      testInvoiceKeyPair.privateKey,
+    ).toString("base64"),
     verifyForKey: (keyId, payload, signature) =>
       keyId === "invoice-api-key-1" &&
-      createHmac("sha256", secret).update(payload).digest("hex") === signature,
+      verifyBytes(
+        null,
+        Buffer.from(payload, "utf8"),
+        testInvoiceKeyPair.publicKey,
+        Buffer.from(signature, "base64"),
+      ),
+    verificationMaterialForKey: (keyId) => keyId === "invoice-api-key-1"
+      ? { algorithm: "ed25519", publicKeySpkiBase64: testInvoicePublicKeySpkiBase64 }
+      : null,
   };
 }
 
@@ -221,14 +258,12 @@ describe("billing economics API routes", () => {
         taxPolicyVersion: "tax-2026-08",
       }],
     });
+    const signingKey = serializedSigningKey("invoice-key-1");
     const env = {
       MENDPOINT_INVOICE_EXPORT_SIGNING_KEY_ID: "invoice-key-1",
       MENDPOINT_INVOICE_EXPORT_SIGNING_KEYS_JSON: JSON.stringify({
-        schemaVersion: "invoice-export-signing-keyring/1",
-        keys: [{
-          keyId: "invoice-key-1",
-          keyBase64: Buffer.alloc(32, 7).toString("base64"),
-        }],
+        schemaVersion: "invoice-export-signing-keyring/2",
+        keys: [signingKey],
       }),
       MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON: authority,
     };
@@ -255,8 +290,11 @@ describe("billing economics API routes", () => {
     expect(invoiceExportSignerFromEnv({
       ...env,
       MENDPOINT_INVOICE_EXPORT_SIGNING_KEYS_JSON: JSON.stringify({
-        schemaVersion: "invoice-export-signing-keyring/1",
-        keys: [{ keyId: "invoice-key-1", keyBase64: "short" }],
+        schemaVersion: "invoice-export-signing-keyring/2",
+        keys: [{
+          ...signingKey,
+          privateKeyPkcs8Base64: "short",
+        }],
       }),
     })).toBeUndefined();
     expect(invoiceExportSignerFromEnv({ ...env, MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON: "{}" })).toBeUndefined();
@@ -291,21 +329,21 @@ describe("billing economics API routes", () => {
         taxPolicyVersion: "tax-policy-zero-v1",
       }],
     });
-    const oldKey = Buffer.alloc(32, 7).toString("base64");
-    const newKey = Buffer.alloc(32, 8).toString("base64");
-    const signerFor = (keyId: string, keys: readonly Record<string, string>[]) =>
+    const oldKey = serializedSigningKey("invoice-key-old");
+    const newKey = serializedSigningKey("invoice-key-new");
+    const signerFor = (keyId: string, keys: readonly ReturnType<typeof serializedSigningKey>[]) =>
       invoiceExportSignerFromEnv({
         MENDPOINT_INVOICE_EXPORT_SIGNING_KEY_ID: keyId,
         MENDPOINT_INVOICE_EXPORT_SIGNING_KEYS_JSON: JSON.stringify({
-          schemaVersion: "invoice-export-signing-keyring/1",
-          keys: keys.map((key) => ({ keyId: key.keyId, keyBase64: key.keyBase64 })),
+          schemaVersion: "invoice-export-signing-keyring/2",
+          keys,
         }),
         MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON: authority,
       })!;
     const issuedApp = appFor(
       db,
       () => "2026-09-02T12:00:00.000Z",
-      signerFor("invoice-key-old", [{ keyId: "invoice-key-old", keyBase64: oldKey }]),
+      signerFor("invoice-key-old", [oldKey]),
     );
     const created = await issuedApp.request("/billing/invoice-exports", {
       method: "POST",
@@ -319,8 +357,8 @@ describe("billing economics API routes", () => {
       db,
       () => "2026-09-03T00:00:00.000Z",
       signerFor("invoice-key-new", [
-        { keyId: "invoice-key-old", keyBase64: oldKey },
-        { keyId: "invoice-key-new", keyBase64: newKey },
+        oldKey,
+        newKey,
       ]),
     );
     const reconciliation = await rotatedApp.request(
@@ -529,6 +567,35 @@ describe("billing economics API routes", () => {
     expect(lines[0]).not.toHaveProperty("usageEntryHash");
 
     const id = createdBody.data.id as string;
+    const signedDocument = await app.request(`/billing/invoice-exports/${id}/signed-document`, {
+      headers: headers(tenantA, "invoice-signed-document-a"),
+    });
+    expect(signedDocument.status).toBe(200);
+    const signedBody = await signedDocument.json() as {
+      data: {
+        canonicalPayload: string;
+        payloadDigest: string;
+        signature: {
+          algorithm: string;
+          keyId: string;
+          valueBase64: string;
+          publicKeySpkiBase64: string;
+        };
+      };
+    };
+    expect(signedBody.data.signature.algorithm).toBe("ed25519");
+    expect(createHash("sha256").update(signedBody.data.canonicalPayload).digest("hex"))
+      .toBe(signedBody.data.payloadDigest);
+    expect(verifyBytes(
+      null,
+      Buffer.from(signedBody.data.canonicalPayload, "utf8"),
+      createPublicKey({
+        key: Buffer.from(signedBody.data.signature.publicKeySpkiBase64, "base64"),
+        format: "der",
+        type: "spki",
+      }),
+      Buffer.from(signedBody.data.signature.valueBase64, "base64"),
+    )).toBe(true);
     const tenantBRead = await app.request(`/billing/invoice-exports/${id}`, {
       headers: headers(tenantB, "invoice-read-b"),
     });

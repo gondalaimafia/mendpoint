@@ -26,6 +26,10 @@ export type InvoiceExportSigner = Readonly<{
   }>): boolean;
   sign(canonicalPayload: string): string;
   verifyForKey(keyId: string, canonicalPayload: string, signature: string): boolean;
+  verificationMaterialForKey?(keyId: string): Readonly<{
+    algorithm: "ed25519";
+    publicKeySpkiBase64: string;
+  }> | null;
 }>;
 
 export type InvoiceExportLine = Readonly<{
@@ -250,18 +254,6 @@ function canonicalJson(value: unknown): string {
   const record = value as Record<string, unknown>;
   return `{${Object.keys(record).sort().map((key) =>
     `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
-}
-
-function assertActor(db: AppDb, tenantId: string, actorPrincipalId: string): void {
-  const actor = one<{ tenant_id: string; revoked_at: string | null }>(
-    db,
-    "SELECT tenant_id, revoked_at FROM principals WHERE id = ?",
-    [actorPrincipalId],
-  );
-  if (!actor) throw new Error("invoice_export_actor_required");
-  if (actor.tenant_id !== tenantId || actor.revoked_at !== null) {
-    throw new Error("invoice_export_actor_tenant_mismatch");
-  }
 }
 
 function actorAuthorizedAt(
@@ -588,7 +580,6 @@ export function createInvoiceExport(
   if (tax.basisPoints > 10_000) throw new Error("invoice_export_tax_basis_points_invalid");
   if (!input.signer) throw new Error("invoice_export_signer_required");
   const signingKeyId = text("invoice_export_signing_key", input.signer.keyId);
-  assertActor(db, tenantId, actorPrincipalId);
   if (!input.signer.authorize({
     tenantId,
     actorPrincipalId,
@@ -600,6 +591,9 @@ export function createInvoiceExport(
   }
   db.raw.exec("BEGIN IMMEDIATE");
   try {
+    if (!actorAuthorizedAt(db, tenantId, actorPrincipalId, issuedAt)) {
+      throw new Error("invoice_export_actor_inactive");
+    }
     const idOwner = one<{ tenant_id: string; idempotency_key: string }>(
       db,
       "SELECT tenant_id, idempotency_key FROM invoice_exports WHERE id = ?",
@@ -756,7 +750,6 @@ export function transitionInvoiceExportState(
   }
   const invoice = exportRow(db, tenantId, invoiceId);
   if (!invoice) throw new Error("invoice_export_not_found");
-  assertActor(db, tenantId, actorPrincipalId);
   if (!input.authority) throw new Error("invoice_export_state_authority_required");
   if (!input.authority.authorize({
     tenantId,
@@ -773,6 +766,9 @@ export function transitionInvoiceExportState(
   }
   db.raw.exec("BEGIN IMMEDIATE");
   try {
+    if (!actorAuthorizedAt(db, tenantId, actorPrincipalId, occurredAt)) {
+      throw new Error("invoice_export_actor_inactive");
+    }
     const reconciliation = reconcileInvoiceExport(db, tenantId, invoiceId, input.authority);
     if (!reconciliation.complete) throw new Error("invoice_export_reconciliation_incomplete");
     const replay = one<EventRow>(

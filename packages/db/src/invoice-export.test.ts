@@ -225,6 +225,20 @@ describe("signed invoice exports", () => {
   it("rejects changed replay, cross-tenant authority, missing signing authority, and invalid tax", () => {
     const { db } = open();
     seed(db);
+    db.raw.prepare("UPDATE principals SET expires_at = ? WHERE id = ?")
+      .run("2026-09-02T11:59:59.000Z", "actor-a");
+    expect(() => createInvoiceExport(db, createInput({
+      id: "invoice-expired-actor",
+      idempotencyKey: "expired-actor",
+    }))).toThrow("invoice_export_actor_inactive");
+    db.raw.prepare("UPDATE principals SET expires_at = NULL, created_at = ? WHERE id = ?")
+      .run("2026-09-02T12:00:01.000Z", "actor-a");
+    expect(() => createInvoiceExport(db, createInput({
+      id: "invoice-future-actor",
+      idempotencyKey: "future-actor",
+    }))).toThrow("invoice_export_actor_inactive");
+    db.raw.prepare("UPDATE principals SET created_at = ? WHERE id = ?")
+      .run(PERIOD_START, "actor-a");
     expect(() => createInvoiceExport(db, createInput({
       id: "invoice-bad-signature",
       idempotencyKey: "bad-signature",
@@ -277,6 +291,20 @@ describe("signed invoice exports", () => {
     const { db } = open();
     seed(db);
     createInvoiceExport(db, createInput());
+    db.raw.prepare("UPDATE principals SET expires_at = ? WHERE id = ?")
+      .run("2026-09-02T12:04:59.000Z", "actor-a");
+    expect(() => transitionInvoiceExportState(db, {
+      tenantId: "tenant-a",
+      invoiceId: "invoice-a",
+      idempotencyKey: "state-expired-actor",
+      state: "exported",
+      policyVersion: "dunning-policy-v1",
+      reason: "expired actor cannot export",
+      actorPrincipalId: "actor-a",
+      occurredAt: "2026-09-02T12:05:00.000Z",
+      authority: hmacSigner(),
+    })).toThrow("invoice_export_actor_inactive");
+    db.raw.prepare("UPDATE principals SET expires_at = NULL WHERE id = ?").run("actor-a");
     const exported = transitionInvoiceExportState(db, {
       tenantId: "tenant-a",
       invoiceId: "invoice-a",
