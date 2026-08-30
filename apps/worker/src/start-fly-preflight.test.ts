@@ -85,7 +85,7 @@ afterEach(() => {
 });
 
 describe("customer launcher preflight", () => {
-  it("blocks bootstrap and child startup while a customer backup is exclusive", () => {
+  it("permits absent optional SCIM bindings before blocking startup on an exclusive backup", () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-start-fence-"));
     temporaryRoots.push(parent);
     const dataRoot = join(parent, "data");
@@ -132,6 +132,8 @@ describe("customer launcher preflight", () => {
       MENDPOINT_BACKUP_ARTIFACTS_PATH: ".",
       MENDPOINT_BACKUP_CONFIGURATION_PATH: "recovery.json",
     };
+    delete env.MENDPOINT_SCIM_BINDINGS_JSON;
+    delete env.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON;
     delete env.DATABASE_URL;
     expect(() => customerBackupInputFromEnv(env)).not.toThrow();
     expect(validateApiEnv({
