@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { validateScimBindings } from "./scim.js";
 
 const TOKEN = /^me_[A-Za-z0-9_-]{32,}$/;
+const MAX_LIFETIME_MS = 90 * 24 * 60 * 60 * 1_000;
 
 type BootstrapAuthority = Readonly<{
   tenantId: string;
@@ -114,7 +115,8 @@ export function bootstrapScimAuthorities(
         authority.principalId !== binding.principalId ||
         !Number.isFinite(Date.parse(authority.expiresAt)) ||
         new Date(authority.expiresAt).toISOString() !== authority.expiresAt ||
-        authority.expiresAt <= observedAt
+        Date.parse(authority.expiresAt) <= Date.parse(observedAt) ||
+        Date.parse(authority.expiresAt) - Date.parse(observedAt) > MAX_LIFETIME_MS
       ) throw new Error("scim_bootstrap_authority_mismatch");
 
       let principal = getPrincipal(db, binding.tenantId, binding.principalId);

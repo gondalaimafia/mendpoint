@@ -128,4 +128,19 @@ describe("protected SCIM authority bootstrap", () => {
     expect(listAudit(db, "tenant_default").filter((event) => event.action === "scim.authority.bootstrap"))
       .toHaveLength(0);
   });
+
+  it("rejects bootstrap authority outside the service-principal lifetime boundary", () => {
+    const { db } = open("lifetime");
+    const configured = env();
+    const authority = JSON.parse(configured.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON) as {
+      schemaVersion: number;
+      authorities: Array<Record<string, unknown>>;
+    };
+    authority.authorities[0]!.expiresAt = "2026-11-28T12:00:00.001Z";
+    expect(() => bootstrapScimAuthorities(db, {
+      ...configured,
+      MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON: JSON.stringify(authority),
+    }, NOW)).toThrow("scim_bootstrap_authority_mismatch");
+    expect(getPrincipal(db, "tenant_default", "principal-scim-tenant_default")).toBeUndefined();
+  });
 });
