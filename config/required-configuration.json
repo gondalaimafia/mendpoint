@@ -19,6 +19,15 @@
       "status": "required"
     },
     {
+      "name": "FLY_API_TOKEN_CUSTOMER",
+      "type": "secret",
+      "scope": {
+        "kind": "repo"
+      },
+      "status": "required",
+      "note": "deploy-customer-production in ci.yml; a Fly deploy token scoped to mendpoint-fettler-production alone, deliberately separate from the repository-wide FLY_API_TOKEN"
+    },
+    {
       "name": "MENDPOINT_APPLICATION_DATA_KEY",
       "type": "secret",
       "scope": {
