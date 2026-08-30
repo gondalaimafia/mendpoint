@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import type { SecretProvider, SecretReference } from "./credentials.js";
 
 export const ENVELOPE_SECRET_SCHEMA_VERSION = 1 as const;
 
@@ -70,6 +71,33 @@ export interface KeyEncryptionKeyProvider {
     wrappedDataKey: string,
   ): Promise<Uint8Array>;
 }
+
+export type DurableEnvelopeSecretVersion = Readonly<{
+  credentialId: string;
+  generation: number;
+  state: EnvelopeKeyState;
+  key: EnvelopeKeyReference;
+  envelope: EnvelopeSecret;
+  issuedAt: string;
+  retiredAt?: string;
+  revokedAt?: string;
+  revocationReason?: string;
+}>;
+
+export type DurableEnvelopeSecretProviderOptions = Readonly<{
+  tenantId: string;
+  actorId: string;
+  correlationId: string;
+  purpose: string;
+  at?: () => string;
+  keyProviders: readonly KeyEncryptionKeyProvider[];
+  resolve: (input: Readonly<{
+    tenantId: string;
+    credentialId: string;
+    generation: number;
+  }>) => DurableEnvelopeSecretVersion | undefined | Promise<DurableEnvelopeSecretVersion | undefined>;
+  audit: (event: EnvelopeAccessAuditEvent) => void | Promise<void>;
+}>;
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 
@@ -331,5 +359,62 @@ export class EnvelopeSecretVault {
     } catch {
       throw new Error("vault_access_audit_failed");
     }
+  }
+}
+
+/**
+ * Request scoped bridge from CredentialBroker to durable envelope metadata.
+ * It deliberately retains no plaintext cache: every read reloads the exact
+ * generation and therefore observes rotation or incident revocation immediately.
+ */
+export class DurableEnvelopeSecretProvider implements SecretProvider {
+  readonly provider = "durable-envelope";
+
+  constructor(private readonly options: DurableEnvelopeSecretProviderOptions) {}
+
+  async read(reference: SecretReference): Promise<string | undefined> {
+    if (reference.provider !== this.provider) return undefined;
+    if (!ID.test(reference.id) || !reference.version || !/^[1-9][0-9]*$/.test(reference.version)) {
+      throw new Error("vault_secret_reference_invalid");
+    }
+    const generation = Number(reference.version);
+    if (!Number.isSafeInteger(generation)) throw new Error("vault_secret_reference_invalid");
+    const version = await this.options.resolve({
+      tenantId: this.options.tenantId,
+      credentialId: reference.id,
+      generation,
+    });
+    if (!version) return undefined;
+    if (
+      version.credentialId !== reference.id ||
+      version.generation !== generation ||
+      version.envelope.tenantId !== this.options.tenantId ||
+      version.envelope.secretId !== reference.id ||
+      keyIdentity(this.options.tenantId, version.envelope.key) !==
+        keyIdentity(this.options.tenantId, version.key)
+    ) {
+      throw new Error("vault_secret_binding_invalid");
+    }
+    if (version.state !== "active") throw new Error("vault_secret_generation_inactive");
+
+    const lifecycle = new EnvelopeKeyLifecycleRegistry();
+    lifecycle.register({
+      tenantId: this.options.tenantId,
+      key: version.key,
+      generation: version.generation,
+      state: version.state,
+      createdAt: version.issuedAt,
+      rotatedAt: version.retiredAt,
+      revokedAt: version.revokedAt,
+      revocationReason: version.revocationReason,
+    });
+    const vault = new EnvelopeSecretVault(lifecycle, this.options.keyProviders, this.options.audit);
+    return vault.decrypt(version.envelope, {
+      tenantId: this.options.tenantId,
+      actorId: this.options.actorId,
+      correlationId: this.options.correlationId,
+      purpose: this.options.purpose,
+      at: this.options.at?.() ?? new Date().toISOString(),
+    });
   }
 }

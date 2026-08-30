@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   DisabledExternalVaultProvider,
+  DurableEnvelopeSecretProvider,
   EnvelopeKeyLifecycleRegistry,
   EnvelopeSecretVault,
   LocalEnvelopeKeyProvider,
   type EnvelopeAccessAuditEvent,
   type EnvelopeKeyLifecycle,
   type EnvelopeKeyReference,
+  type DurableEnvelopeSecretVersion,
 } from "./vault-envelope.js";
 
 const at = "2026-08-02T00:00:00.000Z";
@@ -117,5 +119,98 @@ describe("envelope secret lifecycle", () => {
     await expect(vault.encrypt("github-token", "secret", key1, context)).rejects.toThrow(
       "vault_access_audit_failed",
     );
+  });
+});
+
+describe("durable envelope secret provider", () => {
+  it("reloads lifecycle state for every read so rotation and revocation invalidate material", async () => {
+    const { vault, provider } = setup();
+    const envelope = await vault.encrypt("scm-credential-a", "customer-secret", key1, context);
+    let stored: DurableEnvelopeSecretVersion = {
+      credentialId: "scm-credential-a",
+      generation: 1,
+      state: "active",
+      key: key1,
+      envelope,
+      issuedAt: at,
+    };
+    const durable = new DurableEnvelopeSecretProvider({
+      tenantId: "tenant-a",
+      actorId: "service:api",
+      correlationId: "request-1",
+      purpose: "materialize_read_only_repository_snapshot",
+      at: () => at,
+      keyProviders: [provider],
+      resolve: async () => stored,
+      audit: () => undefined,
+    });
+
+    await expect(durable.read({
+      provider: "durable-envelope",
+      id: "scm-credential-a",
+      version: "1",
+    })).resolves.toBe("customer-secret");
+
+    stored = { ...stored, state: "revoked", revokedAt: at, revocationReason: "incident" };
+    await expect(durable.read({
+      provider: "durable-envelope",
+      id: "scm-credential-a",
+      version: "1",
+    })).rejects.toThrow("vault_secret_generation_inactive");
+  });
+
+  it("fails closed when the configured provider is absent, disabled, wrong-version, or unauditable", async () => {
+    const { vault } = setup();
+    const envelope = await vault.encrypt("scm-credential-a", "customer-secret", key1, context);
+    const stored: DurableEnvelopeSecretVersion = {
+      credentialId: "scm-credential-a",
+      generation: 1,
+      state: "active",
+      key: key1,
+      envelope,
+      issuedAt: at,
+    };
+    const options = {
+      tenantId: "tenant-a",
+      actorId: "service:api",
+      correlationId: "request-1",
+      purpose: "materialize_read_only_repository_snapshot",
+      at: () => at,
+      resolve: async () => stored,
+    };
+
+    await expect(new DurableEnvelopeSecretProvider({
+      ...options,
+      keyProviders: [],
+      audit: () => undefined,
+    }).read({ provider: "durable-envelope", id: "scm-credential-a", version: "1" }))
+      .rejects.toThrow("vault_decrypt_denied");
+
+    await expect(new DurableEnvelopeSecretProvider({
+      ...options,
+      keyProviders: [new DisabledExternalVaultProvider("local-envelope")],
+      audit: () => undefined,
+    }).read({ provider: "durable-envelope", id: "scm-credential-a", version: "1" }))
+      .rejects.toThrow("vault_decrypt_denied");
+
+    const wrongVersion = new LocalEnvelopeKeyProvider();
+    wrongVersion.putKey("tenant-a", { ...key1, version: "2" }, Buffer.alloc(32, 2));
+    await expect(new DurableEnvelopeSecretProvider({
+      ...options,
+      keyProviders: [wrongVersion],
+      audit: () => undefined,
+    }).read({ provider: "durable-envelope", id: "scm-credential-a", version: "1" }))
+      .rejects.toThrow("vault_decrypt_denied");
+
+    const configured = new LocalEnvelopeKeyProvider();
+    configured.putKey("tenant-a", key1, Buffer.alloc(32, 1));
+    await expect(new DurableEnvelopeSecretProvider({
+      ...options,
+      keyProviders: [configured],
+      audit: () => {
+        throw new Error("audit unavailable");
+      },
+    }).read({ provider: "durable-envelope", id: "scm-credential-a", version: "1" }))
+      .rejects.toThrow("vault_access_audit_failed");
   });
 });

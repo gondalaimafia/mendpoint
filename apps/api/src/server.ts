@@ -182,7 +182,7 @@ import {
   can,
   canMutateSystemCatalog,
   permissionForRoute,
-  CredentialBroker,
+  DisabledExternalVaultProvider,
   EnvSecretProvider,
   estimateCost,
   MCU_VERSION,
@@ -277,6 +277,7 @@ import {
 import { canonicalRepoPath, resolveRepoKey } from "./repo-path.js";
 import {
   materializeConnectedRepository,
+  createRepositoryCredentialDependencies,
   purgeExpiredSnapshots,
   registerConnectedRepository,
   registerScmConnection,
@@ -677,13 +678,19 @@ function withRequestGraphHandle<T>(
 function repositoryCredentialDependencies(c: Context<ApiEnv>) {
   const principal = c.get("principal");
   if (!principal) throw new Error("authenticated_principal_required");
-  const credentialBroker = new CredentialBroker({
-    providers: [
+  return createRepositoryCredentialDependencies(db, {
+    tenantId: principal.tenantId,
+    actorId: principal.id,
+    requestId: c.get("requestId") ?? undefined,
+    // Provider-specific KEK activation is intentionally external to this slice.
+    // Durable records fail closed until a matching enabled provider is configured.
+    keyProviders: [new DisabledExternalVaultProvider()],
+    fallbackProviders: [
       new EnvSecretProvider({
         GITHUB_TOKEN: process.env.GITHUB_TOKEN,
       }),
     ],
-    audit: (event) =>
+    credentialAudit: (event) =>
       requestAudit(c, {
         actor: "system",
         action: `credential.access.${event.outcome}`,
@@ -698,12 +705,22 @@ function repositoryCredentialDependencies(c: Context<ApiEnv>) {
           rotationDue: event.rotation.due,
         },
       }),
+    envelopeAudit: (event) =>
+      requestAudit(c, {
+        actor: "system",
+        action: `secret.envelope.${event.operation}.${event.outcome}`,
+        resourceType: "scm_credential",
+        resourceId: event.secretId,
+        metadata: {
+          purpose: event.purpose,
+          reason: event.reason,
+          keyProvider: event.key.provider,
+          keyId: event.key.keyId,
+          keyVersion: event.key.version,
+          customerManaged: event.key.customerManaged,
+        },
+      }),
   });
-  return {
-    credentialBroker,
-    actorId: principal.id,
-    requestId: c.get("requestId") ?? undefined,
-  };
 }
 
 function tenantConsumerRepo(consumerId: string, tenantId: string) {

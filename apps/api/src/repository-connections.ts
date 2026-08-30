@@ -1,12 +1,20 @@
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, readlink, readdir, realpath, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
-import type { AppDb, RepositorySnapshotFileRow, RepositorySnapshotRow } from "@mendpoint/db";
+import type {
+  AppDb,
+  RepositorySnapshotFileRow,
+  RepositorySnapshotRow,
+  SecretLifecycleVersionRow,
+} from "@mendpoint/db";
 import {
   bindConsumerRepoSnapshot,
   getRepositorySnapshotPolicy,
   getScmConnection,
   getScmConnectionHealth,
+  getActiveSecretLifecycleByReference,
+  getLatestSecretLifecycleByReference,
+  getSecretLifecycleVersion,
   getRepositorySnapshotDeletionStatus,
   insertConnectedRepository,
   insertRepositorySnapshot,
@@ -21,17 +29,24 @@ import {
   revokeScmConnection,
   recordRepositorySnapshotDeletion,
   setScmConnectionHealth,
+  secretLifecycleCredentialDescriptor,
   updateConnectedRepositoryStatus,
   upsertScmConnection,
 } from "@mendpoint/db";
 import {
+  CredentialBroker,
   CredentialAccessError,
+  DurableEnvelopeSecretProvider,
   RepositorySourceError,
   createGitHubRepositorySource,
   createLocalGitRepositorySource,
-  type CredentialBroker,
+  type CredentialAccessAudit,
   type CredentialDescriptor,
+  type DurableEnvelopeSecretVersion,
+  type EnvelopeAccessAuditEvent,
   type GitHubRepositoryTransport,
+  type KeyEncryptionKeyProvider,
+  type SecretProvider,
   type SnapshotFile,
   type RepositorySource,
 } from "@mendpoint/platform";
@@ -61,6 +76,99 @@ export type RepositoryConnectionDependencies = Readonly<{
   actorId?: string;
   requestId?: string;
 }>;
+
+export type RepositoryCredentialDependenciesInput = Readonly<{
+  tenantId: string;
+  actorId: string;
+  requestId?: string;
+  keyProviders: readonly KeyEncryptionKeyProvider[];
+  credentialAudit: CredentialAccessAudit;
+  envelopeAudit: (event: EnvelopeAccessAuditEvent) => void | Promise<void>;
+  fallbackProviders?: readonly SecretProvider[];
+  githubTransport?: GitHubRepositoryTransport;
+  now?: () => Date;
+}>;
+
+function durableEnvelopeVersion(row: SecretLifecycleVersionRow): DurableEnvelopeSecretVersion {
+  return Object.freeze({
+    credentialId: row.credential_id,
+    generation: row.generation,
+    state: row.state,
+    key: Object.freeze({
+      provider: row.key_provider,
+      keyId: row.key_id,
+      version: row.key_version,
+      customerManaged: row.customer_managed === 1,
+    }),
+    envelope: Object.freeze({
+      schemaVersion: 1,
+      tenantId: row.tenant_id,
+      secretId: row.credential_id,
+      key: Object.freeze({
+        provider: row.key_provider,
+        keyId: row.key_id,
+        version: row.key_version,
+        customerManaged: row.customer_managed === 1,
+      }),
+      algorithm: "AES-256-GCM",
+      wrappedDataKey: row.wrapped_data_key,
+      iv: row.iv,
+      authTag: row.auth_tag,
+      ciphertext: row.ciphertext,
+      createdAt: row.created_at,
+    }),
+    issuedAt: row.issued_at,
+    retiredAt: row.retired_at ?? undefined,
+    revokedAt: row.revoked_at ?? undefined,
+    revocationReason: row.revocation_reason ?? undefined,
+  });
+}
+
+/** Production SCM bridge. Provider activation remains external to this provider-neutral seam. */
+export function createRepositoryCredentialDependencies(
+  db: AppDb,
+  input: RepositoryCredentialDependenciesInput,
+): RepositoryConnectionDependencies {
+  const durableProvider = new DurableEnvelopeSecretProvider({
+    tenantId: input.tenantId,
+    actorId: input.actorId,
+    correlationId: input.requestId ?? "repository-snapshot",
+    purpose: "materialize_read_only_repository_snapshot",
+    at: () => (input.now?.() ?? new Date()).toISOString(),
+    keyProviders: input.keyProviders,
+    resolve: ({ tenantId, credentialId, generation }) => {
+      const row = getSecretLifecycleVersion(db, tenantId, credentialId, generation);
+      return row ? durableEnvelopeVersion(row) : undefined;
+    },
+    audit: input.envelopeAudit,
+  });
+  const credentialBroker = new CredentialBroker({
+    providers: [...(input.fallbackProviders ?? []), durableProvider],
+    audit: input.credentialAudit,
+    now: input.now,
+  });
+  return Object.freeze({
+    credentialBroker,
+    githubTransport: input.githubTransport,
+    actorId: input.actorId,
+    requestId: input.requestId,
+    credentialDescriptor: ({ connection, tenantId }) => {
+      if (tenantId !== input.tenantId) throw new Error("scm_credential_tenant_mismatch");
+      const lifecycle = getActiveSecretLifecycleByReference(
+        db,
+        tenantId,
+        connection.credential_ref,
+      ) ?? getLatestSecretLifecycleByReference(
+        db,
+        tenantId,
+        connection.credential_ref,
+      );
+      return lifecycle
+        ? secretLifecycleCredentialDescriptor(lifecycle)
+        : githubCredentialDescriptor(connection);
+    },
+  });
+}
 
 function requireName(name: string, value: unknown): string {
   if (typeof value !== "string" || !NAME.test(value)) {
