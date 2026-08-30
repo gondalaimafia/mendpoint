@@ -157,8 +157,8 @@ describe("bounded raw-retrieval fallback", () => {
     expect(result.impactReport?.sites).toEqual([]);
     expect(result.impactReport?.overallConfidence).toBe("unknown");
     expect(result.impactReport?.coverage).toMatchObject({ basis: "partial" });
-    expect(result.impactReport?.coverage?.gaps.map((gap) => gap.reason))
-      .toContain("query_truncated");
+    expect(result.impactReport?.coverage?.gaps).toEqual([]);
+    expect(result.impactReport?.coverage?.reason).toContain("unresolved");
   });
 
   it("abstains before admitting findings when any retrieval bound is exceeded", () => {
@@ -180,6 +180,20 @@ describe("bounded raw-retrieval fallback", () => {
     });
     expect(result.impactReport).toBeUndefined();
     expect(result.relationshipCandidates).toEqual([]);
+  });
+
+  it.each([
+    ["files", { ...retrieval, filesInspected: retrieval.maxFiles + 1 }, "raw_retrieval_file_budget_exceeded"],
+    ["bytes", { ...retrieval, bytesInspected: retrieval.maxBytes + 1 }, "raw_retrieval_byte_budget_exceeded"],
+  ] as const)("records the exact %s budget that was exceeded", (_name, usage, failureCode) => {
+    const result = resolveBoundedRawRetrievalFallback({
+      graphImpact: graphImpact({ basis: "partial", reasons: ["language_parsing:partial"], truncated: false }),
+      rawReport: rawReport(),
+      authority,
+      observedAt: "2026-08-30T12:00:00.000Z",
+      retrieval: usage,
+    });
+    expect(result.decision).toMatchObject({ outcome: "abstained", failureCode });
   });
 
   it("rejects a graph observation outside the supplied authority", () => {

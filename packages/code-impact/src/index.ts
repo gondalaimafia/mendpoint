@@ -14,13 +14,14 @@ import {
   type SdkDetectionContext,
 } from "@mendpoint/codebase-index";
 import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   compileFettlerImpactContext,
   getSoftwareGraphHead,
   publishSoftwareGraphVersion,
   queryFettlerEndpointImpact,
+  type FettlerEndpointImpactResult,
   type GraphLearnDb,
 } from "@mendpoint/graph-learn";
 import type {
@@ -57,6 +58,8 @@ import {
   materializeFettlerSoftwareGraph,
   type FettlerSoftwareGraphMaterializationInput,
 } from "./software-graph-materializer.js";
+
+const compareCodeUnits = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
 
 export { detectGeneratedFiles, isGeneratedFile } from "./generated.js";
 export { detectVendoredFiles } from "./vendored.js";
@@ -147,7 +150,22 @@ function assertCandidateBudget(candidateCount: number, maxCandidates?: number): 
     throw new Error("raw_retrieval_candidate_budget_invalid");
   }
   if (candidateCount > maxCandidates) {
-    throw new Error("raw_retrieval_candidate_budget_exceeded");
+    throw new RawRetrievalBudgetError(
+      "raw_retrieval_candidate_budget_exceeded",
+      maxCandidates,
+      candidateCount,
+    );
+  }
+}
+
+export class RawRetrievalBudgetError extends Error {
+  constructor(
+    readonly code: "raw_retrieval_candidate_budget_exceeded",
+    readonly limit: number,
+    readonly actual: number,
+  ) {
+    super(code);
+    this.name = "RawRetrievalBudgetError";
   }
 }
 
@@ -168,6 +186,20 @@ function rawRetrievalUsage(index: CodebaseIndex): {
     bytesInspected += size;
   }
   return { filesInspected: paths.length, bytesInspected };
+}
+
+function repositoryManifestRevision(repoRoot: string, index: CodebaseIndex): string {
+  const paths = [...new Set([
+    ...index.files.map((file) => file.path),
+    ...(index.structuredFiles ?? []).map((file) => file.path),
+  ])].sort(compareCodeUnits);
+  const manifest = paths.map((path) => {
+    const contentDigest = createHash("sha256")
+      .update(readFileSync(join(repoRoot, path)))
+      .digest("hex");
+    return `${path}\0${contentDigest}`;
+  }).join("\n");
+  return createHash("sha256").update(manifest, "utf8").digest("hex");
 }
 
 /**
@@ -622,7 +654,10 @@ export function analyzeRepo(
   const surfaces = options.surfaces ?? surfacesFromDiff(change, options.sdkHints);
   const index =
     options.index ??
-    buildIndex(repoRoot, { sdkContext: sdkContextFromSurfaces(surfaces, options.sdkHints) });
+    buildIndex(repoRoot, {
+      sdkContext: sdkContextFromSurfaces(surfaces, options.sdkHints),
+      limits: options.indexLimits,
+    });
   const provider: ProviderReachability = computeProviderReachability(index, surfaces);
   const candidates = discoverCandidates(index, surfaces, provider);
   assertCandidateBudget(candidates.length, options.maxCandidates);
@@ -686,20 +721,8 @@ export async function analyzeImpactWithSoftwareGraph(
     repositoryId: options.repositoryId,
   });
   const { index } = materialized;
-  const impactReport = await analyzeImpact(repoRoot, surfaces, {
-    ...options.impact,
-    index,
-    persistIndex: false,
-  });
-  const repositoryRevision = options.repositoryRevision ?? createHash("sha256")
-    .update(
-      index.files
-        .map((file) => `${file.path}\0${file.contentHash}`)
-        .sort()
-        .join("\n"),
-      "utf8",
-    )
-    .digest("hex");
+  const repositoryRevision = options.repositoryRevision ??
+    repositoryManifestRevision(repoRoot, index);
   const repositorySnapshotId = options.repositorySnapshotId ?? `repository-snapshot:${repositoryRevision}`;
   const head = getSoftwareGraphHead(
     options.graphDb,
@@ -735,6 +758,19 @@ export async function analyzeImpactWithSoftwareGraph(
     maxEntities: 500,
     maxRelationships: 1_000,
   });
+  // The graph query is the authority gate. A complete projection already
+  // answers the impact question, so running the raw candidate analyzer first
+  // would spend budget and then falsely report zero fallback usage. Only an
+  // incomplete graph is allowed to invoke bounded raw retrieval.
+  const graphComplete = graphImpact.coverage.basis === "complete" &&
+    !graphImpact.coverage.truncated;
+  const impactReport = graphComplete
+    ? impactReportFromCompleteGraph(surfaces, graphImpact)
+    : await analyzeImpact(repoRoot, surfaces, {
+        ...options.impact,
+        index,
+        persistIndex: false,
+      });
   const context = compileFettlerImpactContext(graphImpact, { maxBytes: options.maxContextBytes });
   return {
     impactReport,
@@ -743,9 +779,57 @@ export async function analyzeImpactWithSoftwareGraph(
     repositoryRevision,
     graphImpact,
     context,
-    rawRetrievalUsage: rawRetrievalUsage(index),
+    rawRetrievalUsage: graphComplete
+      ? { filesInspected: 0, bytesInspected: 0 }
+      : rawRetrievalUsage(index),
     ...(materialized.evidence ? { indexReuse: materialized.evidence } : {}),
   };
+}
+
+function impactReportFromCompleteGraph(
+  surfaces: ImpactableSurface[],
+  graphImpact: FettlerEndpointImpactResult,
+): ImpactReport {
+  const sites: ConfirmedImpact[] = [];
+  const seen = new Set<string>();
+  for (const entity of graphImpact.entities) {
+    if (entity.scope !== "repository" || entity.kind !== "internal_sdk_method") continue;
+    for (const evidence of entity.evidenceRefs) {
+      const match = /^source:(.+):(\d+)$/.exec(evidence);
+      if (!match) continue;
+      const filePath = match[1]!;
+      const line = Number(match[2]);
+      const key = `${filePath}\0${line}\0${entity.label}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      sites.push({
+        filePath,
+        lineStart: line,
+        lineEnd: line,
+        symbol: entity.label,
+        confidence: entity.confidenceBasis === "static_analysis_low"
+          ? "low"
+          : entity.confidenceBasis === "static_analysis_medium"
+            ? "medium"
+            : "high",
+        evidence,
+        impactType: "direct_call",
+        surfaceIds: surfaces.map((surface) => surface.id),
+        relatedOps: surfaces.map((surface) => surface.op),
+        confirmationPath: "static",
+      });
+    }
+  }
+  return buildReport(
+    surfaces,
+    sites.length,
+    sites,
+    "medium",
+    {
+      basis: "analyzed",
+      gaps: [],
+    },
+  );
 }
 
 export * from "./software-graph-materializer.js";

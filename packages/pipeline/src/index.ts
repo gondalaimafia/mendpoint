@@ -130,6 +130,89 @@ const RAW_RETRIEVAL_BOUNDS = Object.freeze({
   maxCandidates: 50_000,
 });
 
+type RawRetrievalBounds = Readonly<{
+  maxFiles: number;
+  maxBytes: number;
+  maxCandidates: number;
+}>;
+
+function resolveRawRetrievalBounds(input?: Partial<RawRetrievalBounds>): RawRetrievalBounds {
+  if (input && Object.keys(input).some(
+    (name) => !["maxFiles", "maxBytes", "maxCandidates"].includes(name),
+  )) {
+    throw new Error("raw_retrieval_bounds_invalid");
+  }
+  const bounds = { ...RAW_RETRIEVAL_BOUNDS, ...input };
+  for (const [name, value] of Object.entries(bounds)) {
+    const ceiling = RAW_RETRIEVAL_BOUNDS[name as keyof RawRetrievalBounds];
+    if (!Number.isSafeInteger(value) || value < 1 || value > ceiling) {
+      throw new Error("raw_retrieval_bounds_invalid");
+    }
+  }
+  return Object.freeze(bounds);
+}
+
+type RawRetrievalBudgetFailure = Readonly<{
+  failureCode:
+    | "raw_retrieval_file_budget_exceeded"
+    | "raw_retrieval_byte_budget_exceeded"
+    | "raw_retrieval_candidate_budget_exceeded";
+  sourceCode: string;
+  metric: "files" | "bytes" | "candidates";
+  limit: number;
+  actual: number;
+}>;
+
+function classifyRawRetrievalBudgetFailure(
+  error: unknown,
+  bounds: RawRetrievalBounds,
+): RawRetrievalBudgetFailure | undefined {
+  const value = error && typeof error === "object"
+    ? error as { code?: unknown; message?: unknown; limit?: unknown; actual?: unknown; diagnostic?: unknown }
+    : undefined;
+  const sourceCode = typeof value?.code === "string"
+    ? value.code
+    : typeof value?.message === "string"
+      ? value.message
+      : "";
+  const diagnostic = value?.diagnostic && typeof value.diagnostic === "object"
+    ? value.diagnostic as { limit?: unknown; actual?: unknown }
+    : undefined;
+  const numeric = (candidate: unknown, fallback: number) =>
+    Number.isSafeInteger(candidate) && Number(candidate) >= 0 ? Number(candidate) : fallback;
+  if (sourceCode === "codebase_index_file_count_limit") {
+    return Object.freeze({
+      failureCode: "raw_retrieval_file_budget_exceeded",
+      sourceCode,
+      metric: "files",
+      limit: numeric(diagnostic?.limit, bounds.maxFiles),
+      actual: numeric(diagnostic?.actual, bounds.maxFiles + 1),
+    });
+  }
+  if (
+    sourceCode === "codebase_index_total_bytes_limit" ||
+    sourceCode === "codebase_index_file_bytes_limit"
+  ) {
+    return Object.freeze({
+      failureCode: "raw_retrieval_byte_budget_exceeded",
+      sourceCode,
+      metric: "bytes",
+      limit: numeric(diagnostic?.limit, bounds.maxBytes),
+      actual: numeric(diagnostic?.actual, bounds.maxBytes + 1),
+    });
+  }
+  if (sourceCode === "raw_retrieval_candidate_budget_exceeded") {
+    return Object.freeze({
+      failureCode: "raw_retrieval_candidate_budget_exceeded",
+      sourceCode,
+      metric: "candidates",
+      limit: numeric(value?.limit, bounds.maxCandidates),
+      actual: numeric(value?.actual, bounds.maxCandidates + 1),
+    });
+  }
+  return undefined;
+}
+
 function trustId(prefix: string, ...parts: string[]): string {
   return `${prefix}_${createHash("sha256").update(parts.join("\0")).digest("hex")}`;
 }
@@ -241,6 +324,8 @@ export type PipelineInput = {
    * authoritative: analysis failure abstains rather than falling back to raw
    * impact as if the graph had succeeded. */
   softwareGraphAnalyzer?: typeof analyzeImpactWithSoftwareGraph;
+  /** Optional fail-closed narrowing of the production raw-retrieval ceilings. */
+  rawRetrievalBounds?: Partial<RawRetrievalBounds>;
   github?: GitHubDelivery;
   persistIndex?: boolean;
   /** Override the Mendpoint-owned persisted-index root (primarily for tests). */
@@ -555,6 +640,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     process.env.MENDPOINT_DATA_DIR?.trim() ??
     join(process.cwd(), "data");
   if (!input.tenantId.trim()) throw new Error("tenantId is required");
+  const rawRetrievalBounds = resolveRawRetrievalBounds(input.rawRetrievalBounds);
   const db = input.db ?? createDb();
   const deliveryFor = createPipelineDeliveryResolver(input, db);
   const pipelinePrincipal = insertPrincipal(db, {
@@ -955,6 +1041,114 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     let impactReport: ImpactReport;
     let indexMaterialization: IndexMaterializationEvidence | undefined;
     let rawRetrievalFallback = false;
+    const persistRawRetrievalBudgetFailure = (
+      error: unknown,
+      inputArtifactId: string,
+    ): RawRetrievalBudgetFailure | undefined => {
+      const failure = classifyRawRetrievalBudgetFailure(error, rawRetrievalBounds);
+      if (!failure) return undefined;
+      const graphHead = gldb
+        ? getSoftwareGraphHead(
+            gldb,
+            input.tenantId,
+            repo.connected_repository_id ?? repo.id,
+            provider.id,
+          )
+        : undefined;
+      const unsignedDecision = {
+        schemaVersion: "mendpoint.raw-retrieval-budget-decision.v1",
+        outcome: "abstained" as const,
+        tenantId: input.tenantId,
+        repositoryId: repo.connected_repository_id ?? repo.id,
+        providerId: provider.id,
+        providerSnapshotId: to.id,
+        observedAt: graphObservedAt,
+        bounds: rawRetrievalBounds,
+        usage: {
+          metric: failure.metric,
+          limit: failure.limit,
+          actual: failure.actual,
+        },
+        failureCode: failure.failureCode,
+        sourceCode: failure.sourceCode,
+        graphBinding: graphHead ?? null,
+      };
+      const decision = {
+        ...unsignedDecision,
+        decisionDigest: `sha256:${textDigest(JSON.stringify(unsignedDecision))}`,
+      };
+      const artifact = persistJsonArtifact(db, {
+        tenantId: input.tenantId,
+        kind: "fettler-raw-retrieval-fallback",
+        mediaType: "application/vnd.mendpoint.fettler-raw-retrieval-budget-decision+json",
+        value: {
+          schemaVersion: "mendpoint.fettler-raw-retrieval-fallback.v1",
+          decision,
+          relationshipCandidates: [],
+        },
+        producerPrincipalId: pipelinePrincipal.id,
+        createdAt: graphObservedAt,
+      });
+      insertEvidenceRecord(db, {
+        id: trustId("evidence", input.tenantId, consumer.id, decision.decisionDigest, artifact.id),
+        tenantId: input.tenantId,
+        subjectType: "api_change",
+        subjectId: changeId,
+        artifactId: artifact.id,
+        inputArtifactId,
+        producerPrincipalId: pipelinePrincipal.id,
+        tool: "mendpoint-raw-retrieval-fallback",
+        toolVersion: "1",
+        verdict: "failed",
+        createdAt: graphObservedAt,
+      });
+      recordAudit(db, {
+        tenantId: input.tenantId,
+        actor: "pipeline",
+        action: "graph.raw_retrieval_fallback_recorded",
+        resourceType: "consumer",
+        resourceId: consumer.id,
+        metadata: {
+          decisionDigest: decision.decisionDigest,
+          outcome: decision.outcome,
+          failureCode: decision.failureCode,
+          usage: decision.usage,
+          artifactId: artifact.id,
+        },
+      });
+      appendDomainEvent(db, {
+        id: trustId(
+          "event",
+          input.tenantId,
+          changeId,
+          consumer.id,
+          "raw-retrieval",
+          decision.decisionDigest,
+        ),
+        tenantId: input.tenantId,
+        schemaVersion: 1,
+        eventType: "change_graph.raw_retrieval_recorded",
+        aggregateType: "api_change",
+        aggregateId: changeId,
+        actorPrincipalId: pipelinePrincipal.id,
+        correlationId: changeId,
+        causationId: trustId("event", input.tenantId, changeId, "normalized"),
+        idempotencyKey:
+          `api_change:${changeId}:raw_retrieval:${consumer.id}:${decision.decisionDigest}`,
+        payload: {
+          consumerId: consumer.id,
+          decisionDigest: decision.decisionDigest,
+          artifactId: artifact.id,
+          outcome: decision.outcome,
+          failureCode: decision.failureCode,
+          usage: decision.usage,
+          learningDestination: "graph_candidate_validation",
+          modelWeightEligible: false,
+        },
+        createdAt: graphObservedAt,
+      });
+      return failure;
+    };
     const endpointSurface = surfaces.find((surface) => surface.path);
     if (endpointSurface && gldb) {
       try {
@@ -975,10 +1169,10 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
             persistIndex: input.persistIndex ?? true,
             indexStorageRoot,
             indexLimits: {
-              maxFiles: RAW_RETRIEVAL_BOUNDS.maxFiles,
-              maxTotalBytes: RAW_RETRIEVAL_BOUNDS.maxBytes,
+              maxFiles: rawRetrievalBounds.maxFiles,
+              maxTotalBytes: rawRetrievalBounds.maxBytes,
             },
-            maxCandidates: RAW_RETRIEVAL_BOUNDS.maxCandidates,
+            maxCandidates: rawRetrievalBounds.maxCandidates,
           },
         });
         impactReport = graphAnalysis.impactReport;
@@ -1089,7 +1283,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           },
           observedAt: graphObservedAt,
           retrieval: {
-            ...RAW_RETRIEVAL_BOUNDS,
+            ...rawRetrievalBounds,
             ...graphAnalysis.rawRetrievalUsage,
           },
         });
@@ -1193,9 +1387,14 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           rawRetrievalFallback = true;
         }
       } catch (error) {
-        const code = error instanceof Error && /^[a-z0-9._:-]{1,160}$/i.test(error.message)
+        const budgetFailure = persistRawRetrievalBudgetFailure(
+          error,
+          graphContextArtifactId ?? sourceArtifacts[1]!.id,
+        );
+        const code = budgetFailure?.failureCode ??
+          (error instanceof Error && /^[a-z0-9._:-]{1,160}$/i.test(error.message)
           ? error.message
-          : "change_graph_analysis_failed";
+          : "change_graph_analysis_failed");
         try {
           recordAudit(db, {
             tenantId: input.tenantId,
@@ -1223,18 +1422,49 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       // FET-018: no endpoint surface or no tenant graph handle. The existing
       // Index→Candidates→Expand→Confirm analyzer is the raw-retrieval path —
       // stamp that fact rather than inventing a second retriever.
-      impactReport = await analyzeImpact(repo.local_path, surfaces, {
-        persistIndex: input.persistIndex ?? true,
-        indexStorageRoot,
-        indexAuthority: {
+      try {
+        impactReport = await analyzeImpact(repo.local_path, surfaces, {
+          persistIndex: input.persistIndex ?? true,
+          indexStorageRoot,
+          indexAuthority: {
+            tenantId: input.tenantId,
+            repositoryId: repo.connected_repository_id ?? repo.id,
+          },
+          onIndexMaterialized: (evidence) => {
+            indexMaterialization = evidence;
+          },
+          indexLimits: {
+            maxFiles: rawRetrievalBounds.maxFiles,
+            maxTotalBytes: rawRetrievalBounds.maxBytes,
+          },
+          maxCandidates: rawRetrievalBounds.maxCandidates,
+        });
+        rawRetrievalFallback = true;
+      } catch (error) {
+        const budgetFailure = persistRawRetrievalBudgetFailure(error, sourceArtifacts[1]!.id);
+        const code = budgetFailure?.failureCode ??
+          (error instanceof Error && /^[a-z0-9._:-]{1,160}$/i.test(error.message)
+            ? error.message
+            : "raw_retrieval_analysis_failed");
+        recordAudit(db, {
           tenantId: input.tenantId,
-          repositoryId: repo.connected_repository_id ?? repo.id,
-        },
-        onIndexMaterialized: (evidence) => {
-          indexMaterialization = evidence;
-        },
-      });
-      rawRetrievalFallback = true;
+          actor: "pipeline",
+          action: "graph.analysis_failed",
+          resourceType: "consumer",
+          resourceId: consumer.id,
+          metadata: { code },
+        });
+        report.consumers.push({
+          consumerId: consumer.id,
+          name: consumer.name,
+          findings: 0,
+          candidates: 0,
+          confirmed: 0,
+          prStatus: "package_failed",
+          deliveryError: code,
+        });
+        continue;
+      }
     }
     if (indexMaterialization) {
       const evidence = indexMaterialization;

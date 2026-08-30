@@ -24,7 +24,10 @@ export type RawRetrievalFallbackDecision = Readonly<{
   graphResultDigest: string;
   retrieval: RawRetrievalBoundsAndUsage & Readonly<{ candidatesInspected: number }>;
   candidateDigests: string[];
-  failureCode?: "raw_retrieval_candidate_budget_exceeded";
+  failureCode?:
+    | "raw_retrieval_file_budget_exceeded"
+    | "raw_retrieval_byte_budget_exceeded"
+    | "raw_retrieval_candidate_budget_exceeded";
   decisionDigest: string;
 }>;
 
@@ -88,20 +91,28 @@ function unknownEmptyReport(
   reasons: string[],
 ): ImpactReport {
   const priorGaps = report.coverage?.gaps ?? [];
-  const fallbackGap = {
-    reason: "query_truncated" as const,
-    detail: `Graph coverage was insufficient (${reasons.join(", ")}); an empty bounded raw retrieval is no known impact, not verified clean.`,
-  };
+  const detail = `Graph coverage was insufficient (${reasons.join(", ")}); an empty bounded raw retrieval is no known impact, not verified clean.`;
+  // Map only causes represented by the shared typed vocabulary. In particular,
+  // unresolved graph identity is not a truncated query and must never be
+  // fabricated as one merely to populate `gaps`.
+  const mappedReason = reasons.includes("query_truncated")
+    ? "query_truncated" as const
+    : reasons.some((reason) => reason.startsWith("language_parsing:"))
+      ? "unsupported_language" as const
+      : reasons.some((reason) => reason.startsWith("repository_discovery:"))
+        ? "skipped_directory" as const
+        : undefined;
+  const fallbackGap = mappedReason ? { reason: mappedReason, detail } : undefined;
   return {
     ...report,
     overallConfidence: "unknown",
     coverage: {
       ...(report.coverage ?? { gaps: [] }),
       basis: "partial",
-      reason: fallbackGap.detail,
-      gaps: priorGaps.some((gap) => gap.reason === "query_truncated")
-        ? priorGaps
-        : [...priorGaps, fallbackGap],
+      reason: detail,
+      gaps: fallbackGap && !priorGaps.some((gap) => gap.reason === fallbackGap.reason)
+        ? [...priorGaps, fallbackGap]
+        : priorGaps,
     },
   };
 }
@@ -141,16 +152,21 @@ export function resolveBoundedRawRetrievalFallback(
 
   const reasons = retrievalReasons(input.graphImpact);
   const candidatesInspected = input.rawReport.candidateCount;
-  const exceeded =
+  const invalid =
     !Number.isSafeInteger(input.retrieval.maxFiles) || input.retrieval.maxFiles < 1 ||
     !Number.isSafeInteger(input.retrieval.maxBytes) || input.retrieval.maxBytes < 1 ||
     !Number.isSafeInteger(input.retrieval.maxCandidates) || input.retrieval.maxCandidates < 1 ||
     !Number.isSafeInteger(input.retrieval.filesInspected) || input.retrieval.filesInspected < 0 ||
-    !Number.isSafeInteger(input.retrieval.bytesInspected) || input.retrieval.bytesInspected < 0 ||
-    input.retrieval.filesInspected > input.retrieval.maxFiles ||
-    input.retrieval.bytesInspected > input.retrieval.maxBytes ||
-    candidatesInspected > input.retrieval.maxCandidates;
-  if (exceeded) {
+    !Number.isSafeInteger(input.retrieval.bytesInspected) || input.retrieval.bytesInspected < 0;
+  if (invalid) throw new Error("raw_retrieval_bounds_invalid");
+  const failureCode = input.retrieval.filesInspected > input.retrieval.maxFiles
+    ? "raw_retrieval_file_budget_exceeded" as const
+    : input.retrieval.bytesInspected > input.retrieval.maxBytes
+      ? "raw_retrieval_byte_budget_exceeded" as const
+      : candidatesInspected > input.retrieval.maxCandidates
+        ? "raw_retrieval_candidate_budget_exceeded" as const
+        : undefined;
+  if (failureCode) {
     return Object.freeze({
       decision: decision({
         outcome: "abstained",
@@ -160,7 +176,7 @@ export function resolveBoundedRawRetrievalFallback(
         graphResultDigest: input.graphImpact.resultDigest,
         retrieval: { ...input.retrieval, candidatesInspected },
         candidateDigests: [],
-        failureCode: "raw_retrieval_candidate_budget_exceeded",
+        failureCode,
       }),
       relationshipCandidates: [],
     });

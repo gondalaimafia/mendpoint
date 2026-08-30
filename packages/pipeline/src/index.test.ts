@@ -469,6 +469,138 @@ describe("pipeline", () => {
     }
   });
 
+  for (const budgetCase of [
+    {
+      name: "file",
+      bounds: { maxFiles: 1 },
+      failureCode: "raw_retrieval_file_budget_exceeded",
+      metric: "files",
+    },
+    {
+      name: "byte",
+      bounds: { maxBytes: 1 },
+      failureCode: "raw_retrieval_byte_budget_exceeded",
+      metric: "bytes",
+    },
+    {
+      name: "candidate",
+      bounds: { maxCandidates: 1 },
+      failureCode: "raw_retrieval_candidate_budget_exceeded",
+      metric: "candidates",
+    },
+  ] as const) {
+    it(`persists an idempotent abstention before delivery on ${budgetCase.name} budget exhaustion`, async () => {
+      const db = seedProviderVersions();
+      const provider = db.raw
+        .prepare("SELECT id FROM providers WHERE slug = ?")
+        .get("acme-payments") as { id: string };
+      addMonitoredConsumer(db, provider.id, {
+        name: `${budgetCase.name} budget shop`,
+        repo: `${budgetCase.name}-budget-shop`,
+        localPath: shop,
+      });
+      const deliveryRoot = join(
+        tmpdir(),
+        `mendpoint-pipe-${budgetCase.name}-budget-${Date.now()}-${Math.random()}`,
+      );
+      dirs.push(deliveryRoot);
+      const priorGraphPath = process.env.GRAPH_LEARN_DB;
+      delete process.env.GRAPH_LEARN_DB;
+      try {
+        const common = {
+          tenantId: "tenant_default",
+          providerSlug: "acme-payments",
+          db,
+          github: new MockGitHubDelivery(deliveryRoot),
+          persistIndex: false,
+          rawRetrievalBounds: budgetCase.bounds,
+          contractCases: [{
+            id: "fixture",
+            name: "fixture",
+            requiredKeys: ["id"],
+            responseBody: { id: "ok" },
+          }],
+          securityScanAttested: true,
+        };
+        const first = await runChangePipeline(common);
+        const second = await runChangePipeline(common);
+
+        expect(first.consumers[0]?.prStatus).toBe("package_failed");
+        expect(first.consumers[0]?.deliveryError).toBe(budgetCase.failureCode);
+        expect(second.consumers[0]?.deliveryError).toBe(budgetCase.failureCode);
+        expect(existsSync(join(deliveryRoot, "org"))).toBe(false);
+        const artifacts = listArtifactManifests(
+          db,
+          "tenant_default",
+          "fettler-raw-retrieval-fallback",
+        );
+        expect(artifacts).toHaveLength(1);
+        const stored = JSON.parse(artifacts[0]!.content_text!) as {
+          decision: {
+            outcome: string;
+            failureCode: string;
+            decisionDigest: string;
+            usage: { metric: string; limit: number; actual: number };
+          };
+          relationshipCandidates: unknown[];
+        };
+        expect(stored.decision).toMatchObject({
+          outcome: "abstained",
+          failureCode: budgetCase.failureCode,
+          usage: { metric: budgetCase.metric },
+        });
+        expect(stored.decision.usage.actual).toBeGreaterThan(stored.decision.usage.limit);
+        expect(stored.relationshipCandidates).toEqual([]);
+        expect(listEvidenceRecords(db, "tenant_default", "api_change", first.changeId).filter(
+          (evidence) => evidence.tool === "mendpoint-raw-retrieval-fallback" &&
+            evidence.verdict === "failed",
+        )).toHaveLength(1);
+        expect(listDomainEvents(db, "tenant_default", "api_change", first.changeId).filter(
+          (event) => event.event_type === "change_graph.raw_retrieval_recorded",
+        )).toHaveLength(1);
+      } finally {
+        if (priorGraphPath === undefined) delete process.env.GRAPH_LEARN_DB;
+        else process.env.GRAPH_LEARN_DB = priorGraphPath;
+      }
+    }, 15_000);
+  }
+
+  it("applies the same bounds when a change has no endpoint surface", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    addMonitoredConsumer(db, provider.id, {
+      name: "No endpoint shop",
+      repo: "no-endpoint-shop",
+      localPath: shop,
+    });
+    const v1 = readFileSync(join(acme, "openapi-v1.json"), "utf8");
+    db.raw.prepare(
+      "UPDATE api_versions SET openapi_json = ? WHERE provider_id = ? AND version_label = ?",
+    ).run(`${v1}\n`, provider.id, "2.0.0");
+    const priorGraphPath = process.env.GRAPH_LEARN_DB;
+    delete process.env.GRAPH_LEARN_DB;
+    try {
+      const report = await runChangePipeline({
+        tenantId: "tenant_default",
+        providerSlug: "acme-payments",
+        db,
+        graphDb: testGraphDb(),
+        github: new MockGitHubDelivery(join(tmpdir(), `mendpoint-no-endpoint-${Date.now()}`)),
+        persistIndex: false,
+        rawRetrievalBounds: { maxFiles: 1 },
+        contractCases: [],
+        securityScanAttested: true,
+      });
+      expect(report.surfaces).toBe(0);
+      expect(report.consumers[0]?.deliveryError).toBe("raw_retrieval_file_budget_exceeded");
+    } finally {
+      if (priorGraphPath === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = priorGraphPath;
+    }
+  });
+
   it("fails closed before SCM delivery when reviewer ownership is incomplete", async () => {
     const db = seedProviderVersions();
     const provider = db.raw

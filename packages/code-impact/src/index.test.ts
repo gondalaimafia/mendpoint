@@ -87,6 +87,18 @@ describe("hybrid impact pipeline", () => {
     expect(findings.every((f) => f.confidence !== "low")).toBe(true);
   });
 
+  it("applies the same repository bounds to the synchronous analyzer", () => {
+    const { diff, surfaces } = loadSurfaces();
+    expect(() => analyzeRepo(consumerDir, diff, {
+      surfaces,
+      indexLimits: { maxFiles: 1 },
+    })).toThrow("codebase_index_file_count_limit");
+    expect(() => analyzeRepo(consumerDir, diff, {
+      surfaces,
+      indexLimits: { maxTotalBytes: 1 },
+    })).toThrow("codebase_index_total_bytes_limit");
+  });
+
   it("attaches a provider->code graph_path additively without changing the finding set (FET-016)", () => {
     const { diff, surfaces } = loadSurfaces();
     const findings = analyzeRepo(consumerDir, diff, { surfaces });

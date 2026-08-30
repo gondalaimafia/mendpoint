@@ -249,7 +249,7 @@ describe("Fettler software graph materializer", () => {
     expect(impact.coverage.basis).toBe("complete");
   });
 
-  it("returns the existing impact report and a compact exact-version Fettler context together", async () => {
+  it("returns a graph-derived impact report and a compact exact-version Fettler context together", async () => {
     const repoRoot = makeRepository();
     const db = openGraphLearnMemory();
     const result = await analyzeImpactWithSoftwareGraph(repoRoot, [surface], {
@@ -267,13 +267,69 @@ describe("Fettler software graph materializer", () => {
       maxContextBytes: 8_192,
     });
 
-    expect(result.impactReport.sites.some((site) => site.symbol.includes("messages.create"))).toBe(true);
+    expect(result.impactReport.sites.some((site) => site.symbol === "sendMessage")).toBe(true);
     expect(result.graphVersion.versionId).toBe(
       getSoftwareGraphHead(db, "tenant-a", "repo-a", "twilio")?.versionId,
     );
     expect(result.graphImpact.impact).toBe("impact");
     expect(result.context.content).toContain(result.graphVersion.versionId);
     expect(result.context.byteLength).toBeLessThanOrEqual(8_192);
+  });
+
+  it("queries complete graph coverage before raw analysis and records truthful zero usage", async () => {
+    const repoRoot = makeRepository();
+    const db = openGraphLearnMemory();
+    const result = await analyzeImpactWithSoftwareGraph(repoRoot, [surface], {
+      graphDb: db,
+      tenantId: "tenant-a",
+      repositoryId: "repo-a",
+      providerId: "twilio",
+      providerSnapshotId: "twilio-openapi-2026-08-17",
+      providerRevision: "2026-08-17",
+      providerSdkPackage: "twilio",
+      providerSdkVersion: "4.0.0",
+      observedAt: "2026-08-17T12:00:00.000Z",
+      maxCallerHops: 4,
+      maxContextBytes: 8_192,
+      // This is invalid if the raw candidate analyzer is invoked. Complete
+      // graph coverage must bypass that path entirely.
+      impact: { maxCandidates: 0 },
+    });
+
+    expect(result.graphImpact.coverage.basis).toBe("complete");
+    expect(result.rawRetrievalUsage).toEqual({ filesInspected: 0, bytesInspected: 0 });
+    expect(result.impactReport.coverage).toMatchObject({ basis: "analyzed", gaps: [] });
+    db.raw.close();
+  });
+
+  it("binds derived repository identity to structured files as well as source files", async () => {
+    const firstRoot = makeRepository();
+    const secondRoot = makeRepository();
+    writeFileSync(
+      join(secondRoot, "package.json"),
+      JSON.stringify({ name: "consumer", dependencies: { twilio: "5.0.0" } }),
+    );
+    const analyze = (repoRoot: string, repositoryId: string) => {
+      const db = openGraphLearnMemory();
+      return analyzeImpactWithSoftwareGraph(repoRoot, [surface], {
+        graphDb: db,
+        tenantId: "tenant-a",
+        repositoryId,
+        providerId: "twilio",
+        providerSnapshotId: "twilio-openapi-2026-08-17",
+        providerRevision: "2026-08-17",
+        providerSdkPackage: "twilio",
+        providerSdkVersion: "4.0.0",
+        observedAt: "2026-08-17T12:00:00.000Z",
+        maxCallerHops: 4,
+        maxContextBytes: 8_192,
+      });
+    };
+
+    const first = await analyze(firstRoot, "repo-a");
+    const second = await analyze(secondRoot, "repo-b");
+    expect(first.repositoryRevision).not.toBe(second.repositoryRevision);
+    expect(first.repositorySnapshotId).not.toBe(second.repositorySnapshotId);
   });
 
   it("keeps the analysed endpoint's provider coverage complete when the diff also touches sibling endpoints", async () => {
