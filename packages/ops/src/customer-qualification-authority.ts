@@ -238,9 +238,21 @@ export async function loadCustomerQualificationAuthority(
       throw new QualificationAuthorityError("release_revision_mismatch");
     }
 
-    const artifactEntries = await Promise.all(ARTIFACT_KEYS.map(async (name) => {
+    const artifactFiles = await Promise.all(ARTIFACT_KEYS.map(async (name) => {
       const reference = bundle.artifacts[name];
       const file = await safeFilePath(root, reference.path, "artifact");
+      return [name, file] as const;
+    }));
+    for (let left = 0; left < artifactFiles.length; left += 1) {
+      for (let right = left + 1; right < artifactFiles.length; right += 1) {
+        if (sameFilesystemPath(artifactFiles[left]![1], artifactFiles[right]![1])) {
+          throw new QualificationAuthorityError("artifact_path_invalid");
+        }
+      }
+    }
+
+    const artifactEntries = await Promise.all(artifactFiles.map(async ([name, file]) => {
+      const reference = bundle.artifacts[name];
       let bytes: Buffer;
       try {
         bytes = await readFile(file);

@@ -399,3 +399,9 @@
 **Mistake:** An externally gated SCIM integration became an unconditional customer-profile requirement without proving that production could boot while the binding was absent.
 **Correction:** Keep the integration optional until its protected bindings exist, and test the SCIM-free customer launcher path before release.
 **Rule:** Every optional external integration needs an absent-binding customer-profile deployment regression, and qualification must inventory every newly required runtime binding before merge.
+
+### 2026-08-30 — Compare canonical authority paths, not locator strings
+
+**Mistake:** The qualification loader compared raw artifact locator strings, so Windows slash aliases could assign two authority roles to the same file.
+**Correction:** Resolve every protected artifact through the safe path boundary first, then reject duplicate canonical filesystem paths before reading or hashing bytes.
+**Rule:** Security-sensitive file identity checks must compare canonical filesystem identities and include platform-specific alias regressions; raw path-string uniqueness is not an authority boundary.

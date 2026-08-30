@@ -173,6 +173,34 @@ describe("protected customer qualification authority", () => {
     })).resolves.toMatchObject({ status: "indeterminate", reason: "bundle_schema_invalid" });
   });
 
+  it("rejects Windows separator aliases that collapse artifact roles onto one file", async () => {
+    if (process.platform !== "win32") return;
+    const { root, bundle, writeBundle } = await fixture();
+    const sharedBytes = Buffer.from("{\"shared\":true}\n");
+    await mkdir(join(root, "artifacts"));
+    await writeFile(join(root, "artifacts", "shared.json"), sharedBytes);
+    const sharedDigest = digest(sharedBytes);
+    await writeBundle({
+      ...bundle,
+      attestation: {
+        ...bundle.attestation,
+        requirementRegisterDigest: sharedDigest,
+        publicClaimsRegistryDigest: sharedDigest,
+      },
+      artifacts: {
+        ...bundle.artifacts,
+        requirementRegister: { path: "artifacts/shared.json", sha256: sharedDigest },
+        publicClaimsRegistry: { path: "artifacts\\shared.json", sha256: sharedDigest },
+      },
+    });
+
+    await expect(loadCustomerQualificationAuthority({
+      authorityRoot: root,
+      bundlePath: "qualification.json",
+      releaseRevision: REVISION,
+    })).resolves.toMatchObject({ status: "indeterminate", reason: "artifact_path_invalid" });
+  });
+
   it("rejects incomplete or ambiguous revocation state", async () => {
     const { root, bundle, writeBundle } = await fixture();
     for (const revokedEvidenceIds of [[""], [" revoked"], ["revoked", "revoked"]]) {
