@@ -1,3 +1,9 @@
+### 2026-08-30 — Key version labels are not cryptographic identity
+
+**Mistake:** Material lineage trusted a configured key ID without durably binding that label to the original key bytes, so a restarted process could reuse the ID with different material and compute a new lineage identity for revoked plaintext.
+**Correction:** Persist an immutable, domain-separated fingerprint for every lineage key ID before lifecycle work and reject same-ID/different-key configuration at startup.
+**Rule:** Any durable record that names cryptographic authority by key ID must also have protected, authenticated continuity of that ID-to-key binding. Rotation changes the active ID; it never redefines an existing ID.
+
 ### 2026-08-30 — Operation commitments are not material lineage
 
 **Mistake:** Credential material lineage reused the complete operation commitment, so rotating A to B to A assigned the second A a different identity and let compromised material escape lineage revocation.

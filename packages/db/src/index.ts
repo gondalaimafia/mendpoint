@@ -1792,6 +1792,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS secret_lifecycle_one_active_source_ref_idx
 CREATE INDEX IF NOT EXISTS secret_lifecycle_source_ref_idx
   ON secret_lifecycle_versions(tenant_id, source_ref, generation);
 
+-- Immutable protected-state binding between a lineage key's versioned ID and
+-- a domain-separated commitment of its random key bytes. The commitment is
+-- safe to retain; key material never enters the database.
+CREATE TABLE IF NOT EXISTS secret_lineage_key_bindings (
+  key_id TEXT PRIMARY KEY,
+  key_fingerprint TEXT NOT NULL CHECK (length(key_fingerprint) = 64),
+  bound_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS secret_lineage_key_bindings_no_update
+BEFORE UPDATE ON secret_lineage_key_bindings BEGIN
+  SELECT RAISE(ABORT, 'secret_lineage_key_binding_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS secret_lineage_key_bindings_no_delete
+BEFORE DELETE ON secret_lineage_key_bindings BEGIN
+  SELECT RAISE(ABORT, 'secret_lineage_key_binding_delete_forbidden');
+END;
+
 CREATE TABLE IF NOT EXISTS secret_lifecycle_operations (
   tenant_id TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,

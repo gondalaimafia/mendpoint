@@ -88,6 +88,8 @@ const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "secret_rewrap_key_material_unchanged", status: 409 },
   { internalCode: "secret_material_lineage_missing", status: 409 },
   { internalCode: "secret_material_lineage_key_unavailable", status: 503 },
+  { internalCode: "secret_material_lineage_key_binding_unavailable", status: 503 },
+  { internalCode: "secret_material_lineage_key_binding_mismatch", status: 503 },
   { internalCode: "secret_material_lineage_key_id_invalid", status: 503 },
   { internalCode: "secret_break_glass_generation_inactive", status: 409 },
   { internalCode: "vault_access_audit_failed", status: 503 },

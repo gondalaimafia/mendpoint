@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import {
+  bindSecretLineageKeyAuthorities,
   completeSecretBreakGlassOperation,
   createSecretLifecycle,
   getActiveSecretLifecycle,
@@ -9,6 +10,7 @@ import {
   getSecretRewrapOperation,
   getSecretLifecycleVersion,
   listSecretLifecycleVersions,
+  listSecretLineageKeyIds,
   revokeSecretLifecycle,
   rewrapSecretLifecycle,
   rotateSecretLifecycle,
@@ -379,6 +381,27 @@ export class DurableSecretLifecycleService {
     if (options.requestCommitment && options.materialLineageCommitment) {
       this.requestCommitments = normalizeCommitmentKeyring(options.requestCommitment);
       this.materialLineageCommitments = normalizeCommitmentKeyring(options.materialLineageCommitment);
+      const historicalIds = ID.test(options.tenantId)
+        ? listSecretLineageKeyIds(options.db, options.tenantId)
+        : [];
+      if (historicalIds.includes(null)) {
+        throw new Error("secret_material_lineage_key_binding_unavailable");
+      }
+      const authorities = new Map<string, Buffer>(this.materialLineageCommitments.keys);
+      for (const keyId of historicalIds as readonly string[]) {
+        if (authorities.has(keyId)) continue;
+        const legacyKey = this.requestCommitments.keys.get(keyId);
+        if (!legacyKey) throw new Error("secret_material_lineage_key_binding_unavailable");
+        authorities.set(keyId, legacyKey);
+      }
+      bindSecretLineageKeyAuthorities(
+        options.db,
+        [...authorities].map(([keyId, key]) => Object.freeze({
+          keyId,
+          keyFingerprint: cryptographicKeyMaterialFingerprint(key),
+        })),
+        this.#now(),
+      );
     }
   }
 

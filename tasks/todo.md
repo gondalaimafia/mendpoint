@@ -4,6 +4,10 @@
 
 ### Exact-head follow-up for `9b882204`
 
+- [x] RED: prove a restarted process cannot substitute new lineage key bytes under an already-bound key ID and revive revoked material.
+- [x] GREEN: persist an immutable, domain-separated fingerprint for every configured lineage key ID before lifecycle operations begin.
+- [x] GREEN: reject same-ID/different-key substitution, missing historical lineage authority, and unattributable legacy rows before material mutation.
+- [x] Verify clean restart, pre-binding upgrade, fingerprint secrecy, focused database and API behavior, and affected typechecks.
 - [x] RED: prove exact replay survives request-key rotation only while the operation's stored historical key remains retained.
 - [x] RED: prove revoked material cannot be revived after independent replay and lineage-key rotation.
 - [x] RED: prove missing historical lineage authority fails closed and tenant or credential boundaries produce distinct fingerprints.
@@ -14,6 +18,8 @@
 
 #### Follow-up review
 
+- Lineage key IDs now have durable cryptographic identity. Startup transactionally establishes immutable key-ID bindings from protected keyring material, accepts exact repeats, and rejects a reused ID with different bytes before create, rotate, revoke, rewrap, or break-glass behavior can run.
+- Existing deployments establish the binding once from their protected retained keyring. Historical rows must still identify an available retained authority; unknown historical identity remains fail closed. Stored fingerprints are domain separated hashes of random 256-bit key material, not plaintext, reversible material, or credential fingerprints.
 - Every replay computes its commitment with the exact key ID stored on the immutable operation. Rotation selects the active key only for new operations; removing a historical replay key makes the old operation unavailable rather than conflicting or silently reauthorizing it.
 - New material fingerprints use a separate retained lineage keyring. Each version persists the lineage key ID, and every replacement is compared under every retained lineage key inside the rotation transaction before the current generation can retire.
 - Upgrade migration binds pre-split lineage rows to the request key recorded by the last material-changing create or rotate operation. Retained replay keys can recognize those legacy fingerprints but cannot mint new lineage identities. Unattributable legacy rows and missing retained keys fail closed.

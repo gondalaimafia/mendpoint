@@ -75,6 +75,12 @@ export type SecretLifecycleOperationRow = Readonly<{
   completed_at: string;
 }>;
 
+export type SecretLineageKeyBindingRow = Readonly<{
+  key_id: string;
+  key_fingerprint: string;
+  bound_at: string;
+}>;
+
 function one<T>(db: AppDb, sql: string, params: SQLInputValue[] = []): T | undefined {
   return db.raw.prepare(sql).get(...params) as T | undefined;
 }
@@ -153,6 +159,56 @@ function validateOperation(operation: SecretLifecycleOperationIdentity): void {
     throw new Error("secret_lifecycle_commitment_key_id_invalid");
   }
   if (!ID.test(operation.actorId)) throw new Error("secret_lifecycle_actor_invalid");
+}
+
+export function listSecretLineageKeyIds(
+  db: AppDb,
+  tenantId: string,
+): readonly (string | null)[] {
+  if (!ID.test(tenantId)) throw new Error("secret_tenant_invalid");
+  return Object.freeze(many<{ material_lineage_key_id: string | null }>(
+    db,
+    `SELECT DISTINCT material_lineage_key_id FROM secret_lifecycle_versions
+     WHERE tenant_id = ? ORDER BY material_lineage_key_id`,
+    [tenantId],
+  ).map((row) => row.material_lineage_key_id));
+}
+
+export function bindSecretLineageKeyAuthorities(
+  db: AppDb,
+  bindings: readonly Readonly<{ keyId: string; keyFingerprint: string }>[],
+  boundAt: string,
+): void {
+  validTimestamp("secret_lineage_key_bound_at", boundAt);
+  if (bindings.length === 0 || bindings.length > 256) {
+    throw new Error("secret_lineage_key_binding_invalid");
+  }
+  const seen = new Set<string>();
+  for (const binding of bindings) {
+    if (!ID.test(binding.keyId) || !/^[a-f0-9]{64}$/.test(binding.keyFingerprint) ||
+        seen.has(binding.keyId)) {
+      throw new Error("secret_lineage_key_binding_invalid");
+    }
+    seen.add(binding.keyId);
+  }
+  transaction(db, () => {
+    for (const binding of bindings) {
+      const existing = one<SecretLineageKeyBindingRow>(
+        db,
+        "SELECT * FROM secret_lineage_key_bindings WHERE key_id = ?",
+        [binding.keyId],
+      );
+      if (existing) {
+        if (existing.key_fingerprint !== binding.keyFingerprint) {
+          throw new Error("secret_material_lineage_key_binding_mismatch");
+        }
+        continue;
+      }
+      db.raw.prepare(`INSERT INTO secret_lineage_key_bindings (
+        key_id, key_fingerprint, bound_at
+      ) VALUES (?, ?, ?)`).run(binding.keyId, binding.keyFingerprint, boundAt);
+    }
+  });
 }
 
 function replayedOperation(

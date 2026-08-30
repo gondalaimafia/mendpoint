@@ -16,6 +16,7 @@ import {
 } from "@mendpoint/db";
 import {
   ConfiguredEnvelopeKeyProvider,
+  cryptographicKeyMaterialFingerprint,
   DisabledExternalVaultProvider,
   type KeyEncryptionKeyProvider,
   LocalEnvelopeKeyProvider,
@@ -374,20 +375,75 @@ describe("durable secret lifecycle service", () => {
       .toMatchObject({ state: "active" });
   });
 
-  it("fails closed when a historical material-lineage key is not retained", async () => {
-    const { db, provider } = fixture();
-    await service(db, provider).create(createInput);
-    await expect(service(db, provider, {
-      materialLineageCommitment: keyring("secret-lineage-v2", [
-        { keyId: "secret-lineage-v2", key: LINEAGE_KEY_V2 },
-      ]),
-    }).rotate({
-      idempotencyKey: "rotation-with-missing-lineage-key",
+  it("rejects lineage key-ID substitution across restart before material can be revived", async () => {
+    const { db, path, provider } = fixture();
+    const initial = service(db, provider);
+    await initial.create(createInput);
+    await initial.rotate({
+      idempotencyKey: "rotate-a-to-b-before-key-substitution",
       credentialId: "credential-a",
       expectedGeneration: 1,
       plaintext: "customer-secret-b",
       key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
-    })).rejects.toThrow("secret_material_lineage_key_unavailable");
+    });
+    initial.revoke({
+      idempotencyKey: "revoke-a-before-key-substitution",
+      credentialId: "credential-a",
+      generation: 1,
+      reason: "material A compromised",
+    });
+    expect(db.raw.prepare("SELECT * FROM secret_lineage_key_bindings WHERE key_id = ?")
+      .get(LINEAGE_KEY_ID)).toMatchObject({
+        key_id: LINEAGE_KEY_ID,
+        key_fingerprint: cryptographicKeyMaterialFingerprint(LINEAGE_KEY),
+      });
+
+    db.raw.close();
+    open.splice(open.indexOf(db), 1);
+    const reopened = createDb(path);
+    open.push(reopened);
+    expect(() => service(reopened, provider, {
+      materialLineageCommitment: keyring(LINEAGE_KEY_ID, [
+        { keyId: LINEAGE_KEY_ID, key: LINEAGE_KEY_V2 },
+      ]),
+    })).toThrow("secret_material_lineage_key_binding_mismatch");
+    expect(getSecretLifecycleVersion(reopened, "tenant-a", "credential-a", 2))
+      .toMatchObject({ state: "active" });
+    expect(getSecretLifecycleVersion(reopened, "tenant-a", "credential-a", 3)).toBeUndefined();
+  });
+
+  it("establishes one immutable protected binding when upgrading an existing deployment", async () => {
+    const { db, path, provider } = fixture();
+    await service(db, provider).create(createInput);
+    db.raw.exec("DROP TABLE secret_lineage_key_bindings");
+    db.raw.close();
+    open.splice(open.indexOf(db), 1);
+
+    const reopened = createDb(path);
+    open.push(reopened);
+    expect(() => service(reopened, provider)).not.toThrow();
+    expect(() => service(reopened, provider)).not.toThrow();
+    const bindings = reopened.raw.prepare("SELECT * FROM secret_lineage_key_bindings").all() as Array<{
+      key_id: string; key_fingerprint: string;
+    }>;
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toMatchObject({
+      key_id: LINEAGE_KEY_ID,
+      key_fingerprint: cryptographicKeyMaterialFingerprint(LINEAGE_KEY),
+    });
+    const durable = JSON.stringify(bindings);
+    expect(durable).not.toContain(LINEAGE_KEY.toString("base64"));
+    expect(durable).not.toContain(LINEAGE_KEY.toString("hex"));
+  });
+
+  it("fails closed when a historical material-lineage key is not retained", async () => {
+    const { db, provider } = fixture();
+    await service(db, provider).create(createInput);
+    expect(() => service(db, provider, {
+      materialLineageCommitment: keyring("secret-lineage-v2", [
+        { keyId: "secret-lineage-v2", key: LINEAGE_KEY_V2 },
+      ]),
+    })).toThrow("secret_material_lineage_key_binding_unavailable");
   });
 
   it("domain-separates material fingerprints by tenant and credential without storing plaintext", async () => {
