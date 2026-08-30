@@ -1824,8 +1824,8 @@
   "issueAuthority": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T20:05:00.000Z",
-    "observationDigest": "sha256:c21960df74d74caba72369b43cc1ec1e1b87a111f65a84e2d79e87f00e7ef8df",
+    "observedAt": "2026-08-30T20:10:07.593Z",
+    "observationDigest": "sha256:750323bffce211c02bdd51d3133e0c0c3f8596c79ca675b80c2068bd96c48502",
     "issues": [
       {
         "number": 350,
@@ -2002,7 +2002,7 @@
         "owner": "gondalaimafia",
         "title": "Production closure FC 01: production human identity",
         "url": "https://github.com/gondalaimafia/mendpoint/issues/437",
-        "updatedAt": "2026-08-25T09:23:17.000Z",
+        "updatedAt": "2026-08-30T20:07:33.000Z",
         "requirementIds": [
           "ME-ENT-001",
           "ME-ENT-002"
