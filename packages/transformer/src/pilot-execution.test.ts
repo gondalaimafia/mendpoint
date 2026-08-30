@@ -53,6 +53,24 @@ function gateConfig(): string {
   });
 }
 
+function deliveryGateConfig(
+  acceptanceEvidenceRef: string,
+  productionDeliveryApprovalRefs: readonly string[],
+): string {
+  return JSON.stringify({
+    schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION,
+    tenantAllowlist: ["tenant-a"],
+    environmentAllowlist: ["staging"],
+    grants: [{
+      tenantId: "tenant-a",
+      environment: "staging",
+      boundaries: ["worker_action", "delivery"],
+      acceptanceEvidenceRefs: [acceptanceEvidenceRef],
+      productionDeliveryApprovalRefs,
+    }],
+  });
+}
+
 function constraints(repositoryIds = ["repo-a", "repo-b"]) {
   return createOrganizationConstraintContract({
     tenantId: "tenant-a",
@@ -910,7 +928,14 @@ describe("Transformer pilot execution coordinator", () => {
     });
     const terminal = checkpointHead(lease, 2, "a");
     const candidate = store.getCampaign("tenant-a", "campaign-a")!.units[0]!;
-    const authorization = gateConfig();
+    const authorization = deliveryGateConfig(
+      "evidence:github:run:9:attempt:1:revision:exact-head",
+      ["approval:run-a", "approval:run-b"],
+    );
+    const reauthorization = deliveryGateConfig(
+      "evidence:github:run:10:attempt:1:revision:next-head",
+      ["approval:run-a", "approval:run-b"],
+    );
     expect(() => store.completeAttempt({
       ...mutation(3, "complete-checkpoint-terminal-legacy"),
       unitId: lease.unitId,
@@ -1128,6 +1153,7 @@ describe("Transformer pilot execution coordinator", () => {
     store.authorizeCurrentWaveDrafts({
       ...mutation(4, "authorize-checkpoint-draft"),
       gateConfig: authorization,
+      productionDeliveryApprovalRefs: ["approval:run-a"],
     });
     const deliveryToken = "delivery-lease-token-checkpoint-terminal-01";
     const deliveryClaim = {
@@ -1208,6 +1234,12 @@ describe("Transformer pilot execution coordinator", () => {
       status: "delivered",
       commitSha: revision("1"),
       pullRequestNumber: 42,
+      productionDeliveryApprovalRefs: ["approval:run-a"],
+    });
+    store.authorizeCurrentWaveDrafts({
+      ...mutation(7, "reauthorize-checkpoint-draft"),
+      gateConfig: reauthorization,
+      productionDeliveryApprovalRefs: ["approval:run-b"],
     });
     expect(store.listCurrentWaveDeliveredDrafts({
       tenantId: "tenant-a",
@@ -1219,7 +1251,14 @@ describe("Transformer pilot execution coordinator", () => {
       baseRevision: candidate.snapshot.revision,
       commitSha: revision("1"),
       pullRequestNumber: 42,
+      evidenceRefs: expect.arrayContaining([
+        "evidence:github:run:9:attempt:1:revision:exact-head",
+        "evidence:github:run:10:attempt:1:revision:next-head",
+      ]),
+      productionDeliveryApprovalRefs: ["approval:run-a", "approval:run-b"],
     })]);
+    expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
+      event.type === "delivery.drafts_reauthorized")).toHaveLength(1);
     const observed = store.reconcileWave({
       ...mutation(7, "observe-checkpoint-draft"),
       wave: 1,

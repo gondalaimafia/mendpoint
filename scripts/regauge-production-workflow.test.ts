@@ -10,6 +10,11 @@ describe("Regauge production workflow", () => {
     const workflow = parse(source) as Record<string, any>;
     expect(workflow.on).toHaveProperty("workflow_dispatch");
     expect(workflow.on).not.toHaveProperty("push");
+    expect(workflow.concurrency).toEqual({
+      group: "regauge-production",
+      "cancel-in-progress": false,
+    });
+    expect(workflow.jobs.deploy.concurrency).toBeUndefined();
     expect(workflow.jobs.deploy.environment).toBe("regauge-production");
     expect(source).toContain("REGAUGE_DRAFT_ONLY");
     expect(source).toContain("REGAUGE_CANARY_OWNER");
@@ -48,7 +53,10 @@ describe("Regauge production workflow", () => {
     expect(source).toContain("flyctl auth whoami");
     expect(source).toContain("flyctl orgs list --json");
     expect(source).toContain("flyctl status --app mendpoint-regauge-production --json");
-    expect(source).toContain("regauge-fly-preflight-${{ github.sha }}");
+    expect(source.match(/name: regauge-fly-preflight-\$\{\{ github\.sha \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/g)).toHaveLength(3);
+    expect(source).toContain(
+      "name: regauge-production-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+    );
     expect(preflightRun).not.toMatch(/flyctl (?:apps create|deploy|scale|secrets set|volumes create)/);
   });
 
@@ -163,7 +171,8 @@ describe("Regauge production workflow", () => {
     expect(authority).toContain("MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF=");
     expect(authority).toContain("MENDPOINT_REGAUGE_GATE=");
     expect(authority).toContain("MENDPOINT_REGAUGE_EVIDENCE_REFS=");
-    expect(authority).toContain("date -u -d '+70 minutes'");
+    expect(authority).toContain("date -u -d '+75 minutes'");
+    expect(authority).toContain("MENDPOINT_REGAUGE_ACTIVATION_DEADLINE_EPOCH=");
     expect(authority).toContain("MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT=");
     expect(authority).toContain("MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT=2026-08-24T00:00:00.000Z");
     expect(authority).toContain("MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT=2026-11-20T23:59:59.000Z");
@@ -250,7 +259,7 @@ describe("Regauge production workflow", () => {
       "MENDPOINT_AGENT_VERIFIER_PIVOTS=1",
       "MENDPOINT_AGENT_VERIFIER_MAXIMUM_CANDIDATES=1",
       "MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD=0.05",
-      "MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS=660000",
+      "MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS=300000",
       "MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES=0",
       "MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON=\"$MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON\"",
       "MENDPOINT_AGENT_VERIFIER_PRICING_JSON=\"$MENDPOINT_AGENT_VERIFIER_PRICING_JSON\"",
@@ -270,7 +279,7 @@ describe("Regauge production workflow", () => {
     ) as Record<string, any>;
     const steps = workflow.jobs.deploy.steps as Record<string, any>[];
     const continuous = steps.find(
-      (step) => step.name === "Preserve continuous production after activation",
+      (step) => step.name === "Preserve continuous internal production activation",
     )!;
     const uploadIndex = steps.findIndex(
       (step) => step.name === "Upload Regauge production evidence",
@@ -280,9 +289,21 @@ describe("Regauge production workflow", () => {
     expect(continuous).toBeDefined();
     expect(continuous.if).toBe("${{ success() }}");
     expect(continuous.run).toContain("flyctl machines list --app mendpoint-regauge-production --json");
-    expect(continuous.run).toContain("flyctl scale count coordinator=1 worker=1");
-    expect(continuous.run).toContain("continuous-production.json");
+    expect(continuous.run).toContain("coordinator-volume.json");
+    expect(continuous.run).toContain("worker-id.txt");
+    expect(continuous.run).toContain("--mode=machine-continuity");
+    expect(continuous.run).toContain("--expected=test-results/regauge-production/runtime-identity.json");
+    expect(continuous.run).toContain("continuous-machine-proof.json");
+    expect(continuous.run).toContain(
+      '.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "experimental" and .enabled == true)',
+    );
+    expect(continuous.run).toContain("continuous-internal-activation.json");
+    expect(continuous.run).not.toContain("continuous-production.json");
+    expect(continuous.run).toContain("continuousInternalActivation: true");
+    expect(continuous.run).toContain('availability: "internal"');
+    expect(continuous.run).not.toContain("continuousProduction: true");
     expect(continuous.run).not.toContain("worker=0");
+    expect(continuous.run).not.toContain("flyctl scale count");
     expect(continuousIndex).toBeGreaterThan(-1);
     expect(uploadIndex).toBeGreaterThan(continuousIndex);
   });
@@ -311,6 +332,19 @@ describe("Regauge production workflow", () => {
       "insufficient resources to create new machine with existing volume",
     );
     expect(steps[workerIndex].run).toContain("--process-groups worker");
+    expect(steps[workerIndex].run).toContain("--mode=worker-start-plan");
+    expect(steps[workerIndex].run).toContain("prestart-machines.json");
+    expect(steps[workerIndex].run).toContain("worker-start-plan.json");
+    expect(steps[workerIndex].run).toContain('worker_action="$(jq -er');
+    const planIndex = (steps[workerIndex].run as string).indexOf("--mode=worker-start-plan");
+    const startIndex = (steps[workerIndex].run as string).indexOf('flyctl machine start "$worker_id"');
+    expect(planIndex).toBeGreaterThan(-1);
+    expect(startIndex).toBeGreaterThan(planIndex);
+    expect(steps[workerIndex].run).toContain("observe|wait)");
+    expect(steps[workerIndex].run).toContain("start)");
+    expect(steps[workerIndex].run).toContain("timeout --kill-after=5s 60s flyctl machine start");
+    expect(steps[workerIndex].run).toContain("worker-id.txt");
+    expect(steps[workerIndex].run).not.toContain("flyctl scale count");
     expect(steps[coordinatorHealthIndex].run).toContain(
       "https://mendpoint-regauge-production.fly.dev/version",
     );
@@ -337,12 +371,13 @@ describe("Regauge production workflow", () => {
     )!.run as string;
 
     expect(proof).toContain("coordinator-volume.json");
-    expect(proof).toContain(".config.metadata.fly_process_group == \"coordinator\"");
-    expect(proof).toContain(".config.metadata.fly_process_group == \"worker\"");
-    expect(proof).toContain(".config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA");
-    expect(proof).toContain(".image_ref.labels.GH_SHA == env.GITHUB_SHA");
-    expect(proof).toContain(".config.mounts[] | select(.volume == $volume_id)");
-    expect(proof).toContain("(.config.mounts // [] | length) == 0");
+    expect(proof).toContain("--mode=machine-establish");
+    expect(proof).toContain("runtime-identity.json");
+    expect(proof).toContain(".coordinator.machineId");
+    expect(proof).toContain(".worker.machineId");
+    expect(proof).toContain('worker_id="$(cat test-results/regauge-production/worker-id.txt)"');
+    expect(proof).toContain("for attempt in {1..60}");
+    expect(proof).toContain('test "$attempt" -lt 60');
     expect(proof).toContain("machine-topology.json");
   });
 
@@ -383,14 +418,44 @@ describe("Regauge production workflow", () => {
     expect(diagnostics.run).toContain('timeout --kill-after=2s 10s flyctl logs --app mendpoint-regauge-production');
     expect(diagnostics.run).toContain('> "test-results/regauge-production/worker-${machine_id}.log" 2>&1 || true) &');
     expect(diagnostics.run).toContain("wait || true");
+    const continuous = steps.find((step) => step.name === "Preserve continuous internal production activation")!;
     expect(steps.indexOf(diagnostics)).toBeLessThan(steps.indexOf(failure));
+    expect(steps.indexOf(continuous)).toBeLessThan(steps.indexOf(diagnostics));
     expect(failure.if).toBe("${{ failure() }}");
-    expect(failure.run).toContain("flyctl machines list --app mendpoint-regauge-production --json");
-    expect(failure.run).toContain('flyctl machine stop "$machine_id"');
-    expect(failure.run).toContain('test "$remaining_started_workers" = "0"');
+    expect(failure.run).toContain("timeout --kill-after=2s 10s flyctl machines list");
+    expect(failure.run).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ID");
+    expect(failure.run).toContain('state != "stopped" and .state != "destroyed"');
+    expect(failure.run).toContain('(timeout --kill-after=5s 15s flyctl machine stop');
+    expect(failure.run).toContain('stop_pids+=("$!")');
+    expect(failure.run).toContain('if ! wait "$stop_pid"');
+    expect(failure.run).toContain('stop_failures="$((stop_failures + 1))"');
+    expect(failure.run).toContain('test "$containment_verified" = true');
+    expect(failure.run).toContain('test "$remaining_unsafe_workers" = "0"');
+    expect(failure.run).not.toContain("|| true");
     expect(failure.run).toContain("failure-containment.json");
     expect(failure.run).not.toContain("flyctl scale count worker=0");
     expect(failure.run).not.toContain("volumes delete");
+    const upload = steps.find((step) => step.name === "Upload Regauge production evidence")!;
+    const publicationContainment = steps.find(
+      (step) => step.name === "Contain target after evidence publication failure",
+    )!;
+    const publicationEnforcement = steps.find(
+      (step) => step.name === "Enforce production evidence publication",
+    )!;
+    expect(steps.indexOf(failure)).toBeLessThan(steps.indexOf(upload));
+    expect(upload.id).toBe("evidence_upload");
+    expect(upload["continue-on-error"]).toBe(true);
+    expect(publicationContainment.if).toBe("${{ steps.evidence_upload.outcome == 'failure' }}");
+    expect(steps.indexOf(publicationContainment)).toBeGreaterThan(steps.indexOf(upload));
+    expect(publicationContainment.run).toContain('state != "stopped" and .state != "destroyed"');
+    expect(publicationContainment.run).toContain('(timeout --kill-after=5s 15s flyctl machine stop');
+    expect(publicationContainment.run).toContain('stop_pids+=("$!")');
+    expect(publicationContainment.run).toContain('if ! wait "$stop_pid"');
+    expect(publicationContainment.run).toContain('test "$containment_verified" = true');
+    expect(publicationContainment.run).not.toContain("|| true");
+    expect(steps.indexOf(publicationEnforcement)).toBeGreaterThan(
+      steps.indexOf(publicationContainment),
+    );
     // Transfer authority is enforced only when a transfer is configured, but a
     // partial transfer config (id set, key or fence missing) still hard-fails.
     const validation = steps.find(
@@ -429,9 +494,172 @@ describe("Regauge production workflow", () => {
       (step) => step.name === "Validate exact authority before mutation",
     )!.run as string;
 
-    expect(workflow.jobs.deploy["timeout-minutes"]).toBe(60);
-    expect(validation).toContain('test "$READINESS_SOAK_SECONDS" -le 1800');
+    expect(workflow.jobs.deploy["timeout-minutes"]).toBe(85);
+    expect(validation).toContain('test "$LIVE_EVAL_REPETITIONS" = 3');
+    expect(validation).toContain('test "$READINESS_SOAK_SECONDS" -le 600');
     expect(validation).not.toContain('test "$READINESS_SOAK_SECONDS" -le 21600');
+    const liveEvaluation = (workflow.jobs.deploy.steps as Record<string, any>[]).find(
+      (step) => step.name === "Run budget bounded live Regauge evaluation",
+    )!.run as string;
+    expect(liveEvaluation).toContain("MENDPOINT_REGAUGE_ACTIVATION_DEADLINE_EPOCH");
+    expect(liveEvaluation).toContain("required_seconds=");
+    expect(liveEvaluation).toContain("1230 + 610 + 610");
+    expect(liveEvaluation).toContain("regauge_activation_budget_insufficient");
+    expect(liveEvaluation).toContain("timeout --kill-after=30s 1200s");
+    const draftPoll = (workflow.jobs.deploy.steps as Record<string, any>[]).find(
+      (step) => step.name === "Wait for exact real draft canary",
+    )!.run as string;
+    const verifierPoll = (workflow.jobs.deploy.steps as Record<string, any>[]).find(
+      (step) => step.name === "Wait for durable DeepSeek advisory evidence",
+    )!.run as string;
+    for (const poll of [draftPoll, verifierPoll]) {
+      expect(poll).toContain("timeout --kill-after=10s 600s bash");
+      expect(poll).toContain("timeout --kill-after=5s 20s npm run regauge:production:proof");
+    }
+  });
+
+  it("quiesces an immutable topology and gives every production mutation exact run ownership", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const preflight = workflow.jobs.preflight.steps as Record<string, any>[];
+    const deploy = workflow.jobs.deploy.steps as Record<string, any>[];
+    const discovery = preflight.find(
+      (step) => step.name === "Prove Fly authority without mutation",
+    )!.run as string;
+    const quiesceIndex = deploy.findIndex(
+      (step) => step.name === "Quiesce and snapshot the existing worker",
+    );
+    const stageIndex = deploy.findIndex((step) => step.name === "Stage production secrets");
+    const coordinator = deploy.find((step) => step.name === "Deploy coordinator")!.run as string;
+    const worker = deploy.find((step) => step.name === "Deploy worker")!.run as string;
+
+    expect(discovery).toContain("pre-mutation-machines.json");
+    expect(deploy.some((step) => step.name === "Download pre-mutation topology")).toBe(true);
+    expect(quiesceIndex).toBeGreaterThan(-1);
+    expect(quiesceIndex).toBeLessThan(stageIndex);
+    const quiesce = deploy[quiesceIndex]!.run as string;
+    expect(quiesce).toContain("regauge_pre_mutation_topology_drift");
+    expect(quiesce).toContain("pre-mutation-worker-config.json");
+    expect(quiesce).toContain("quiesce-worker-config.json");
+    expect(quiesce).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ID");
+    expect(quiesce).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ATTEMPT");
+    expect(quiesce).toContain('--machine-config test-results/regauge-production/quiesce-worker-config.json');
+    expect(quiesce).toContain('timeout --kill-after=10s 180s flyctl machine update "$worker_id"');
+    expect(quiesce).toContain("--skip-health-checks --skip-start --yes");
+    expect(quiesce).toContain('flyctl machine stop "$worker_id"');
+    expect(coordinator).toContain("MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ID");
+    expect(coordinator).toContain("MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ATTEMPT");
+    expect(worker).toContain("MENDPOINT_REGAUGE_ACTIVATION_RUN_ID");
+    expect(worker).toContain("MENDPOINT_REGAUGE_ACTIVATION_RUN_ATTEMPT");
+  });
+
+  it("runs independent exact rollback or containment after failed and cancelled mutations", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const cleanup = workflow.jobs.cleanup;
+    expect(cleanup.needs).toEqual(["preflight", "deploy"]);
+    expect(cleanup.if).toContain("always()");
+    expect(cleanup.if).toContain("needs.deploy.result != 'success'");
+    expect(cleanup.if).toContain("needs.deploy.result != 'skipped'");
+    expect(cleanup["timeout-minutes"]).toBe(20);
+    const restore = cleanup.steps.find(
+      (step: Record<string, unknown>) => step.name === "Restore or contain the exact activation worker",
+    ).run as string;
+    expect(restore).toContain("pre-mutation-machines.json");
+    expect(restore).toContain('[[ "$live_coordinator" == "$prior_coordinator" ]]');
+    expect(restore).toContain("--machine-config test-results/regauge-cleanup/prior-worker-config.json");
+    expect(restore).toContain("--skip-health-checks --skip-start --yes");
+    expect(restore).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ID");
+    expect(restore).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ATTEMPT");
+    expect(restore).toContain('action="no_owned_mutation"');
+    expect(restore).toContain('action="contained_all_workers_after_coordinator_commit"');
+    expect(restore).toContain('action="contained_all_workers_after_topology_drift"');
+    expect(restore).toContain('action="contained_all_workers_after_restore_failure"');
+    expect(restore).toContain('action="contained_all_workers_after_restore_drift"');
+    expect(restore).toContain('action="contained_all_workers_after_restore_health_failure"');
+    expect(restore).toContain('action="contained_all_workers_after_restore_instance_failure"');
+    expect(restore).toContain('action="contained_all_workers_after_restore_timeout"');
+    expect(restore.indexOf('if [[ "$quiesce_markers" == "1" ]]')).toBeLessThan(
+      restore.indexOf('--machine-config test-results/regauge-cleanup/prior-worker-config.json'),
+    );
+    expect(restore.indexOf('elif [[ "$quiesce_markers" == "0" ]]')).toBeLessThan(
+      restore.indexOf('action="no_owned_mutation"'),
+    );
+    expect(restore).toContain("for attempt in {1..15}");
+    expect(restore).toContain('state != "stopped" and .state != "destroyed"');
+    expect(restore).toContain('(timeout --kill-after=5s 15s flyctl machine stop');
+    expect(restore).toContain('if ! timeout --kill-after=10s 180s flyctl machine update');
+    expect(restore).toContain('timeout --kill-after=5s 60s flyctl machine start');
+    expect(restore).toContain('timeout --kill-after=5s 60s flyctl machine stop');
+    expect(restore).toContain('restore_transition_ok=false');
+    expect(restore).toContain('stop_pids+=("$!")');
+    expect(restore).toContain('if ! wait "$stop_pid"');
+    expect(restore).toContain('stop_failures="$((stop_failures + 1))"');
+    expect(restore).not.toContain("|| true");
+    expect(restore).toContain('{id, state, config, image_ref}');
+    expect(restore).toContain('{id, config, image_ref}');
+    expect(restore).toContain('flyctl checks list');
+    expect(restore).toContain('--app mendpoint-regauge-production --json');
+    expect(restore).toContain('.name == "regauge_worker" and .status == "passing"');
+    expect(restore).toContain('restoredInstanceId: $restoredInstanceId');
+    expect(restore).toContain('restoreHealthStatus: $restoreHealthStatus');
+    expect(restore).toContain('if [[ "$cleanup_verified" != true && "$action" == contained_all_workers_* ]]');
+    expect(restore).toContain('remaining_unsafe_workers=');
+    expect(restore).toContain('test "$cleanup_verified" = true');
+    expect(cleanup.steps.some(
+      (step: Record<string, unknown>) => step.name === "Upload cleanup evidence",
+    )).toBe(true);
+  });
+
+  it("keeps all global containment retries inside their independent watchdogs", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const deploySteps = workflow.jobs.deploy.steps as Record<string, any>[];
+    const containmentRuns = [
+      deploySteps.find((step) => step.name === "Contain target after activation failure")!.run,
+      deploySteps.find(
+        (step) => step.name === "Contain target after evidence publication failure",
+      )!.run,
+      workflow.jobs.cleanup.steps.find(
+        (step: Record<string, unknown>) => step.name === "Restore or contain the exact activation worker",
+      ).run,
+    ] as string[];
+
+    expect(workflow.jobs.cleanup["timeout-minutes"]).toBe(20);
+    for (const run of containmentRuns) {
+      expect(run).toContain("for attempt in {1..15}");
+      expect(run).toContain("timeout --kill-after=2s 10s flyctl machines list");
+      expect(run).toContain('(timeout --kill-after=5s 15s flyctl machine stop');
+      expect(run).toContain('stop_pids+=("$!")');
+      expect(run).toContain('if ! wait "$stop_pid"');
+    }
+    // Bounded inventory, parallel stops, and the retry delay keep 15 rounds
+    // under the cleanup job's independent 20 minute watchdog with headroom.
+    const worstCaseSeconds = 12 + 190 + 12 + 65 + 15 * (12 + 20) + 14 * 2 + 12;
+    expect(worstCaseSeconds).toBe(799);
+    expect(worstCaseSeconds).toBeLessThan(20 * 60);
+  });
+
+  it("samples the exact worker identity and health throughout the readiness soak", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const soak = (workflow.jobs.deploy.steps as Record<string, any>[]).find(
+      (step) => step.name === "Run read only production readiness soak",
+    )!.run as string;
+
+    expect(soak).toContain("flyctl machines list");
+    expect(soak).toContain("--app mendpoint-regauge-production --json");
+    expect(soak).toContain("coordinator-volume.json");
+    expect(soak).toContain("worker-id.txt");
+    expect(soak).toContain("--mode=machine-continuity");
+    expect(soak).toContain("--expected=test-results/regauge-production/runtime-identity.json");
+    expect(soak).toContain("${sample}-validated.json");
+    expect(soak).toContain("runtime-soak.json");
+    expect(soak).toContain('wait "$runtime_soak_pid"');
   });
 
   it("retains workflow context even when activation fails before deployment", () => {

@@ -24,6 +24,8 @@ afterEach(() => { while (services.length) services.pop()?.close(); while (roots.
 const revision = (character: string) => character.repeat(40);
 const draftApproval = "approval:regauge:exact";
 const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["test"], grants: [{ tenantId: "tenant-a", environment: "test", boundaries: ["api_control_plane", "worker_action", "delivery", "ui"], acceptanceEvidenceRefs: ["acceptance:transformer-pilot:v1"], productionDeliveryApprovalRefs: [draftApproval] }] });
+const nextDraftApproval = "approval:regauge:next-run";
+const nextGate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["test"], grants: [{ tenantId: "tenant-a", environment: "test", boundaries: ["api_control_plane", "worker_action", "delivery", "ui"], acceptanceEvidenceRefs: ["acceptance:transformer-next-run:v1"], productionDeliveryApprovalRefs: [nextDraftApproval] }] });
 
 describe("real Transformer multi-node coordinator", () => {
   it("exposes only server-produced verifier observations to the authenticated worker scope", async () => {
@@ -187,6 +189,80 @@ describe("real Transformer multi-node coordinator", () => {
           campaignId: "campaign-a",
           evidenceRefs: ["evidence:runner"],
           idempotencyKey: "regauge-draft-authorize-expired",
+        }),
+      },
+    );
+    expect(response.status).toBe(403);
+    expect(authorize).not.toHaveBeenCalled();
+  });
+
+  it("rejects a previously unseen authority epoch on an expired authorized draft", async () => {
+    const service = new TransformerPilotExecutionService(":memory:", {
+      rawGateConfig: nextGate,
+      environment: "test",
+    });
+    services.push(service);
+    const authorize = vi.spyOn(service.store, "authorizeCurrentWaveDrafts").mockReturnValue([]);
+    vi.spyOn(service.store, "getCampaign").mockReturnValue({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      environment: "test",
+      units: [{
+        id: "unit-a",
+        state: "draft",
+        snapshot: {
+          repositoryId: "repository-a",
+          snapshotId: "snapshot-a",
+          revision: revision("a"),
+        },
+        draftDelivery: {
+          status: "delivered",
+          authorizationEvidenceRefs: ["acceptance:transformer-pilot:v1"],
+          productionDeliveryApprovalRefs: [draftApproval],
+        },
+      }],
+    } as never);
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("principal", { id: "api-key:worker", tenantId: "tenant-a", role: "agent" });
+      c.set("authScopes", ["transformer:worker"]);
+      await next();
+    });
+    app.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+      enabled: true,
+      store: service.store,
+      now: () => "2026-08-22T05:10:00.000Z",
+      gateConfig: nextGate,
+      draftAuthorization: {
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        remoteRepositoryId: 84,
+        sourceRevision: revision("a"),
+        environment: "test",
+        productionApprovalRef: nextDraftApproval,
+        activationExpiresAt: "2026-08-22T05:10:00.000Z",
+        maximumDrafts: 1,
+      },
+      loadExactSource: () => { throw new Error("must_not_load"); },
+      resolveDraftRepository: () => ({
+        owner: "acme",
+        repo: "repo-a",
+        baseBranch: "main",
+        installationId: 42,
+        remoteRepositoryId: 84,
+      }),
+    }));
+
+    const response = await app.request(
+      "/v1/regauge/attempt-coordinator/operations/authorizeCurrentWaveDrafts",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tenantId: "tenant-a",
+          campaignId: "campaign-a",
+          evidenceRefs: ["evidence:runner-next-authority"],
+          idempotencyKey: "regauge-draft-authorize-next-expired",
         }),
       },
     );
@@ -411,7 +487,78 @@ describe("real Transformer multi-node coordinator", () => {
     expect(loseDraftCompletionResponse).toBe(false);
     expect(draftCalls).toBe(2);
     expect(draftBranches[1]).toBe(draftBranches[0]);
-    expect(service.store.getCampaign("tenant-a", "campaign-a")?.units[0]?.draftDelivery).toMatchObject({ status: "delivered", pullRequestNumber: 7, commitSha: revision("d") });
+    expect(service.store.getCampaign("tenant-a", "campaign-a")?.units[0]?.draftDelivery).toMatchObject({
+      status: "delivered",
+      pullRequestNumber: 7,
+      commitSha: revision("d"),
+      productionDeliveryApprovalRefs: [draftApproval],
+    });
+    const draftObservationResponse = await app.request(
+      "/v1/regauge/attempt-coordinator/draft-observations",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-test-tenant": "tenant-a" },
+        body: JSON.stringify({ tenantId: "tenant-a", campaignId: "campaign-a" }),
+      },
+    );
+    expect(draftObservationResponse.status).toBe(200);
+    expect(await draftObservationResponse.json()).toMatchObject({
+      result: [{ draft: { productionDeliveryApprovalRefs: [draftApproval] } }],
+    });
+    const nextApp = new Hono<ApiEnv>();
+    nextApp.use("*", async (c, next) => {
+      c.set("requestId", "request-next-authority");
+      c.set("principal", { id: "api-key:worker", tenantId: "tenant-a", role: "agent" });
+      c.set("authScopes", ["transformer:worker"]);
+      await next();
+    });
+    nextApp.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+      enabled: true,
+      store: service.store,
+      now: () => coordinatorNow,
+      gateConfig: nextGate,
+      draftAuthorization: {
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        environment: "test",
+        remoteRepositoryId: 84,
+        sourceRevision: revision("a"),
+        productionApprovalRef: nextDraftApproval,
+        activationExpiresAt: new Date(Date.parse(coordinatorNow) + 60 * 60_000).toISOString(),
+        maximumDrafts: 1,
+      },
+      loadExactSource: () => ({ repositoryId: "repo-a", revision: revision("a"), digest: snapshotDigest, files, fileModes: { "package.json": "100644" } }),
+      resolveDraftRepository: () => ({ owner: "acme", repo: "repo-a", baseBranch: "main", installationId: 42, remoteRepositoryId: 84 }),
+    }));
+    const nextTransport: TransformerMultinodeTransport = {
+      request: async ({ path, body }) => {
+        const response = await nextApp.request(path, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const parsed = await response.json() as Record<string, unknown>;
+        if (!response.ok) throw new Error(String(parsed.error));
+        return parsed;
+      },
+    };
+    const nextRunner = createTransformerMultinodeService({
+      ...runnerConfig,
+      workerId: "worker-next-authority",
+      gateConfig: nextGate,
+      evidenceRefs: ["evidence:runner-next-authority"],
+      deliverDraft: async () => { throw new Error("must_not_redeliver"); },
+    }, nextTransport, artifactBackend);
+    await expect(nextRunner.runDeliveryOnce()).resolves.toEqual({ status: "idle" });
+    expect(draftCalls).toBe(2);
+    expect(service.store.getCampaign("tenant-a", "campaign-a")?.units[0]?.draftDelivery).toMatchObject({
+      status: "delivered",
+      productionDeliveryApprovalRefs: [draftApproval, nextDraftApproval],
+      authorizationEvidenceRefs: expect.arrayContaining([
+        "acceptance:transformer-pilot:v1",
+        "acceptance:transformer-next-run:v1",
+      ]),
+    });
     await expect(replacement.runDeliveryOnce()).resolves.toEqual({ status: "idle" });
     expect(draftCalls).toBe(2);
     await expect(replacement.runObservationOnce()).resolves.toEqual({ status: "observed", wave: 1, campaignState: "paused" });

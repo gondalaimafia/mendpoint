@@ -256,3 +256,104 @@
 **Mistake:** I initially blamed the repeated readiness sentinel because it used `createOnly`, without checking that the backend contract explicitly returns `exists` as a successful idempotent outcome.
 **Correction:** Live status-only probes showed the real chain: listener bound, coordinator passed, Tigris returned `NoSuchBucket`, then 403 after the bucket name was corrected because the failed create attempt had also replaced credentials.
 **Rule:** Before changing code, inspect every called contract and test the complete live failure chain. A plausible explanation is not a root cause. On the second hidden layer, enumerate configuration, authentication, transport, provider status, and containment evidence before another retry.
+
+### 2026-08-29 — Prove the runtime state transition after deployment
+**Mistake:** The protected workflow treated a successful worker deployment as if it started an existing stopped non-service Machine.
+**Correction:** The exact live evidence showed the worker image and revision updated successfully while the Machine remained stopped and its only check reported that it had not started.
+**Rule:** Deployment success proves configuration publication, not runtime state. For every required process, select the exact intended Machine, perform any required start transition explicitly, and wait for its named health check before declaring deployment healthy or advancing the release.
+
+### 2026-08-30 — Bind production proof to the current run authority
+
+**Mistake:** The ReGauge draft proof established exact remote PR state but accepted any nonempty durable authorization references, so an older run's draft could satisfy a new activation.
+**Correction:** Require the current protected run's independently derived approval and evidence references on the durable delivery before remote state can count.
+**Rule:** Every production proof must bind both the live object and its durable lineage to the exact current authority. Remote state alone cannot promote stale authorization.
+
+### 2026-08-30 — Enumerate the entire activation failure chain before retrying
+
+**Mistake:** The first stopped-worker repair focused on the observed state transition but left later containment ordering, pre-mutation topology, process restart continuity, and feature-state proof as separate hidden layers.
+**Correction:** Review every mutation, proof, failure edge, and terminal step as one state machine before sending another protected run.
+**Rule:** After a second activation defect appears, stop patching individual symptoms. Model preconditions, allowed transitions, continuous identity, all late failures, evidence publication, and containment together, then test adversarial fixtures for each edge.
+
+### 2026-08-30 — Persist approval lineage separately from execution evidence
+
+**Mistake:** The production gate validated the current delivery approval, but the durable draft record retained only execution and acceptance evidence, so a later proof could not establish which protected run authorized the existing draft.
+**Correction:** Carry the configured approval allowlist through the gate decision, persist the exact matched approval on the draft, and append later-run authority without changing or redelivering the live pull request.
+**Rule:** Authorization evidence is its own durable contract. Keep it distinct from execution and SCM evidence, update it idempotently on replay, and make the production proof consume the exact stored field rather than inferring authority from adjacent evidence.
+
+### 2026-08-30 — Rotate idempotency with trusted authority epochs
+
+**Mistake:** The worker reused one campaign-stable authorization idempotency key even when a later protected run supplied a new production approval and acceptance evidence, causing the durable store to reject legitimate reauthorization as a conflict.
+**Correction:** Derive the effective mutation key at the trusted coordinator from the client operation key plus the exact server-validated approval and acceptance evidence.
+**Rule:** Idempotency must be stable within one authority epoch and distinct across authority epochs. Never let an untrusted client select the authority component of a privileged mutation key.
+
+### 2026-08-30 — Put production rollback outside the mutation job
+
+**Mistake:** ReGauge activation relied on late steps in the same timeout-bounded job to contain failure, without an immutable pre-mutation snapshot or exact run ownership.
+**Correction:** Snapshot and revalidate topology before mutation, quiesce the prior worker, mark every committed process with the exact activation run, and run rollback or containment in a separate always-evaluated job.
+**Rule:** A production mutation job cannot be its own only watchdog. Preserve an exact rollback boundary before mutation, make the commit boundary machine-readable, and independently prove either exact restoration or run-scoped containment after failure or cancellation.
+
+### 2026-08-30 — Hold one lease through cleanup and prove mutation ownership
+
+**Mistake:** The activation serialized only its deploy job, so a later run could start while the earlier cleanup still held a stale snapshot; cleanup also restored that snapshot without proving the failed run had mutated the worker.
+**Correction:** Move concurrency to the complete workflow lifecycle and make an exact run-and-attempt Machine marker the first owned mutation before quiescence.
+**Rule:** A production lease covers preflight through terminal cleanup. Roll back only state carrying the current mutation marker; if no marker exists, report drift without overwriting it.
+
+### 2026-08-30 — Containment proves safe terminal state globally
+
+**Mistake:** Containment counted only current-run workers in the `started` state, so an untagged or `starting` worker could remain capable of becoming active after cleanup passed.
+**Correction:** After coordinator commit, enumerate every worker regardless of tag, repeatedly stop every nonterminal worker, and pass only when all workers are `stopped` or destroyed.
+**Rule:** Failure containment is global after the commit boundary and state based, not tag based. A failed stop can be retried, but success requires a fresh terminal-state inventory.
+
+### 2026-08-30 — Keep activation evidence inside its proven availability boundary
+
+**Mistake:** The final artifact called an internal experimental ReGauge canary continuous production even though the release contract had not passed GA acceptance.
+**Correction:** Label the artifact as continuous internal activation and preserve the exact internal availability and experimental feature tier.
+**Rule:** Deployment location does not determine product availability. Evidence and public claims must use the narrowest state actually proven; promote to GA only in a later evidence-bound change.
+
+### 2026-08-30 — Fit recovery loops inside their independent watchdog
+
+**Mistake:** Sequential worker stops and unbounded inventory calls let the nominally bounded containment loop exceed the cleanup job's own timeout at maximum cardinality.
+**Correction:** Bound every external call, stop independent workers in parallel, wait for every result, and prove worst-case retry arithmetic stays below the watchdog with headroom.
+**Rule:** A retry count is not a time bound. For every recovery loop, calculate inventory, mutation, delay, and final-proof time under maximum cardinality and reject any design that cannot complete before its independent watchdog.
+
+### 2026-08-30 — Restore the whole topology or contain it
+
+**Mistake:** Rollback verified the prior coordinator and target worker records but did not compare the complete Machine set, so an extra active worker could escape restoration proof.
+**Correction:** Require exact full-snapshot equality across cardinality, Machine IDs, states, configurations, and images; record and health-check the new process incarnation when rollback legitimately restarts a worker; switch any incompatible drift to global worker containment.
+**Rule:** Production rollback is a topology assertion, not a pair of object checks. Restoration passes only when the entire configurable topology and expected state are exact and any restarted process is healthy; otherwise fail closed and contain every unsafe worker.
+
+### 2026-08-30 — Make control-plane state transitions explicit
+
+**Mistake:** A configuration-only Fly Machine update relied on default start behavior, so marking or restoring a stopped worker could briefly execute it before the workflow issued a stop.
+**Correction:** Use `--skip-start` for every configuration mutation and issue a separate start only when the recorded transition contract requires it.
+**Rule:** Never assume a deployment or configuration command preserves runtime state. Suppress implicit starts, then perform and verify the exact intended state transition as a separate operation.
+
+### 2026-08-30 — A failed rollback operation must enter containment
+
+**Mistake:** The first exact-restore path ran under `set -e`, so a failed update, inventory, start, or stop could terminate cleanup before global containment ran.
+**Correction:** Check every restore operation explicitly, preserve a transition result, and switch any failure to the bounded global containment path.
+**Rule:** Rollback failure is an expected safety transition, not an unhandled shell error. Every rollback operation must have a bounded failure edge that reaches containment and terminal-state proof.
+
+### 2026-08-30 — Scope workflow artifacts to the exact attempt
+
+**Mistake:** ReGauge preflight and production evidence artifact names used only the commit SHA, so a GitHub rerun could collide with attempt-one artifacts or consume stale topology.
+**Correction:** Bind every upload and matching download to commit SHA, workflow run ID, and run attempt.
+**Rule:** Any artifact that carries production authority or rollback state must be uniquely named by the exact execution attempt. A rerun may reuse source, but it must never reuse mutable control evidence.
+
+### 2026-08-30 — Expiry permits exact replay, never new authority
+
+**Mistake:** The coordinator treated any already-authorized draft state as replayable after expiry, even when a later request introduced a previously unseen approval and acceptance set.
+**Correction:** After expiry, require the exact current approval and every current acceptance reference to already be durable on every draft before calling the idempotent store path.
+**Rule:** Expiry freezes authority. A post-expiry request may read or repeat an exact durable result, but it may not add, replace, or widen authorization evidence.
+
+### 2026-08-30 — Budget the executable timeout, including kill grace
+
+**Mistake:** Workflow timing arithmetic counted nominal command timeouts and sleeps but omitted `--kill-after` grace, proof-command latency, and a final terminal inventory.
+**Correction:** Give live evaluation and each proof poll a whole-step hard bound, include those bounds in the authority guard, and calculate cleanup from timeout plus kill grace for every external call and retry round.
+**Rule:** Production budget proofs use executable worst-case time, not optimistic latency. Include kill grace, retry delay, final proof, and fixed transition costs, then retain explicit watchdog headroom.
+
+### 2026-08-30 — Compatibility namespaces must work as exact targets
+
+**Mistake:** The remote proof counted legacy ReGauge branches for cardinality but required the exact expected branch to use only the new canonical prefix.
+**Correction:** Accept the expected branch from either the canonical prefix or an explicitly validated compatibility prefix, while continuing to count every compatible namespace as one shared campaign boundary.
+**Rule:** A compatibility alias cannot be observation-only. If durable state may legally retain the old identifier, every exact read, replay, proof, and cardinality check must accept that identifier without creating new work.
