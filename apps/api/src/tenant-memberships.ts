@@ -43,6 +43,7 @@ const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "tenant_membership_payload_too_large", status: 413, publicMessage: "Tenant membership payload is too large", responseShape: "nested" },
   ...[
     "tenant_membership_content_type_invalid",
+    "tenant_membership_content_length_invalid",
     "tenant_membership_payload_invalid",
     "tenant_membership_field_invalid",
     "tenant_membership_issuer_invalid",
@@ -79,13 +80,41 @@ async function jsonBody(c: Context<ApiEnv>, allowed: ReadonlySet<string>): Promi
   if (!contentType.startsWith("application/json")) {
     throw new Error("tenant_membership_content_type_invalid");
   }
-  const declared = Number(c.req.header("Content-Length") ?? 0);
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
-    throw new Error("tenant_membership_payload_too_large");
+  const declaredHeader = c.req.header("Content-Length");
+  if (declaredHeader !== undefined) {
+    const declared = declaredHeader.trim();
+    if (!/^\d+$/.test(declared)) {
+      await c.req.raw.body?.cancel("tenant_membership_content_length_invalid");
+      throw new Error("tenant_membership_content_length_invalid");
+    }
+    if (BigInt(declared) > BigInt(MAX_BODY_BYTES)) {
+      await c.req.raw.body?.cancel("tenant_membership_payload_too_large");
+      throw new Error("tenant_membership_payload_too_large");
+    }
   }
-  const raw = await c.req.text();
-  if (Buffer.byteLength(raw, "utf8") > MAX_BODY_BYTES) {
-    throw new Error("tenant_membership_payload_too_large");
+  const reader = c.req.raw.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_BODY_BYTES) {
+        await reader.cancel("tenant_membership_payload_too_large");
+        throw new Error("tenant_membership_payload_too_large");
+      }
+      chunks.push(value);
+    }
+  }
+  let raw: string;
+  try {
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("tenant_membership_payload_invalid");
   }
   let parsed: unknown;
   try {

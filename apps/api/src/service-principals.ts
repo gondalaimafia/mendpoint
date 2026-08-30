@@ -219,13 +219,13 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
       if (requestedAudience === "mendpoint-api" && grantedScopes.includes("identity:provision")) {
         throw new Error("service_principal_scim_audience_required");
       }
-      const observedAt = now();
-      const expiresAt = expiration(input.expiresAt, observedAt);
       const requestKey = idempotency(c);
       const principalId = deterministicId("principal-service", [claimed.tenantId, subject]);
       const apiKeyId = deterministicId("key-service", [claimed.tenantId, principalId, requestKey]);
       const created = transact(options.db, () => {
+        const observedAt = now();
         const identity = liveManager(c, options, observedAt);
+        const expiresAt = expiration(input.expiresAt, observedAt);
         const replay = listApiKeys(options.db, identity.tenantId).find((key) => key.id === apiKeyId);
         if (replay) throw new Error("service_principal_credential_already_issued");
         const principal = insertPrincipal(options.db, {
@@ -277,10 +277,10 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
       const currentCredentialId = text(input.currentCredentialId, "service_principal_credential_invalid", 96);
       const grantedScopes = scopes(input.scopes);
       const requestKey = idempotency(c);
-      const observedAt = now();
-      const observedAtIso = observedAt.toISOString();
       const nextCredentialId = deterministicId("key-service", [claimed.tenantId, principalId, requestKey]);
       const credential = transact(options.db, () => {
+        const observedAt = now();
+        const observedAtIso = observedAt.toISOString();
         const identity = liveManager(c, options, observedAt);
         const principal = getPrincipal(options.db, identity.tenantId, principalId);
         if (!principal || principal.kind !== "service") throw new Error("service_principal_not_found");
@@ -335,9 +335,9 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
     try {
       const claimed = actor(c);
       const principalId = text(c.req.param("principalId"), "service_principal_id_invalid", 96);
-      const observedAt = now();
-      const observedAtIso = observedAt.toISOString();
       const revoked = transact(options.db, () => {
+        const observedAt = now();
+        const observedAtIso = observedAt.toISOString();
         const identity = liveManager(c, options, observedAt);
         const current = getPrincipal(options.db, identity.tenantId, principalId);
         if (!current || current.kind !== "service") throw new Error("service_principal_not_found");

@@ -2,6 +2,7 @@ import {
   claimIdentitySession,
   createApiKey,
   createDb,
+  getPrincipal,
   insertPrincipal,
   listApiKeys,
   listAudit,
@@ -16,6 +17,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it } from "vitest";
 import { can, permissionsFor } from "@mendpoint/platform";
 import { createAuthMiddleware, scopeAllows, type ApiEnv } from "./auth.js";
@@ -30,9 +32,14 @@ const ISSUER = "https://identity.example";
 const opened: Array<{ db: AppDb; directory: string }> = [];
 const savedAuth = process.env.API_AUTH;
 
-function fixture() {
+function fixture(options: Readonly<{
+  managerExpiresAt?: string;
+  sessionExpiresAt?: string;
+  now?: (db: AppDb) => Date;
+}> = {}) {
   const directory = mkdtempSync(join(tmpdir(), "mendpoint-service-principal-"));
-  const db = createDb(join(directory, "identity.sqlite"));
+  const databasePath = join(directory, "identity.sqlite");
+  const db = createDb(databasePath);
   opened.push({ db, directory });
   db.raw.prepare(
     `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
@@ -46,6 +53,7 @@ function fixture() {
     subject: "https://identity.example|owner-a",
     displayName: "Owner A",
     audience: "https://identity.example",
+    expiresAt: options.managerExpiresAt,
     createdAt: NOW,
   });
   putTenantMembership(db, {
@@ -112,7 +120,7 @@ function fixture() {
     authStrength: "amr:mfa",
     token: `token-${tenantId}-${subject}`,
     issuedAt: "2026-08-30T11:59:00.000Z",
-    expiresAt: "2026-08-30T13:00:00.000Z",
+    expiresAt: options.sessionExpiresAt ?? "2026-08-30T13:00:00.000Z",
     observedAt: NOW,
   });
   const identities = {
@@ -152,9 +160,9 @@ function fixture() {
   });
   app.route("/tenants/service-principals", createServicePrincipalRoutes({
     db,
-    now: () => new Date(NOW),
+    now: () => options.now?.(db) ?? new Date(NOW),
   }));
-  return { app, db };
+  return { app, db, databasePath };
 }
 
 afterEach(() => {
@@ -208,6 +216,47 @@ async function delayedJsonRequest(
   bodyController.enqueue(new TextEncoder().encode(JSON.stringify(payload)));
   bodyController.close();
   return pending;
+}
+
+async function holdSecondConnectionWriteLock(
+  databasePath: string,
+  mutation?: Readonly<{ sql: string; params?: readonly (string | null)[] }>,
+): Promise<{ committed: Promise<void>; worker: Worker }> {
+  const worker = new Worker(`
+    const { parentPort, workerData } = require("node:worker_threads");
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(workerData.databasePath);
+    db.exec("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE");
+    parentPort.postMessage("locked");
+    setTimeout(() => {
+      try {
+        if (workerData.mutation) {
+          db.prepare(workerData.mutation.sql).run(...(workerData.mutation.params || []));
+        }
+        db.exec("COMMIT");
+        db.close();
+        parentPort.postMessage("committed");
+      } catch (error) {
+        try { if (db.isTransaction) db.exec("ROLLBACK"); } catch {}
+        parentPort.postMessage({ error: error instanceof Error ? error.message : String(error) });
+      }
+    }, 75);
+  `, { eval: true, workerData: { databasePath, mutation } });
+  const first = await new Promise<unknown>((resolve, reject) => {
+    worker.once("message", resolve);
+    worker.once("error", reject);
+  });
+  if (first !== "locked") throw new Error(`second_connection_lock_failed:${JSON.stringify(first)}`);
+  const committed = new Promise<void>((resolve, reject) => {
+    worker.on("message", (message) => {
+      if (message === "committed") resolve();
+      else if (message && typeof message === "object" && "error" in message) {
+        reject(new Error(String((message as { error: unknown }).error)));
+      }
+    });
+    worker.once("error", reject);
+  });
+  return { committed, worker };
 }
 
 describe("service principal administration", () => {
@@ -484,6 +533,60 @@ describe("service principal administration", () => {
       });
       expect(invalid.status).toBe(422);
     }
+  });
+
+  it.each([
+    { boundary: "session expiry", fixture: { sessionExpiresAt: "2026-08-30T12:00:00.500Z" } },
+    { boundary: "principal expiry", fixture: { managerExpiresAt: "2026-08-30T12:00:00.500Z" } },
+  ])("reads mutation time after a second-connection write wait at $boundary", async ({ fixture: expiry }) => {
+    const prepared = fixture({
+      ...expiry,
+      now: (db) => new Date(db.raw.isTransaction
+        ? "2026-08-30T12:00:01.000Z"
+        : "2026-08-30T12:00:00.000Z"),
+    });
+    const auditBefore = listAudit(prepared.db, "tenant-a");
+    const lock = await holdSecondConnectionWriteLock(prepared.databasePath);
+    const response = await prepared.app.request("/tenants/service-principals", {
+      method: "POST",
+      headers: mutationHeaders(`wait-${expiry.sessionExpiresAt ? "session" : "principal"}`),
+      body: JSON.stringify({
+        subject: "wait-boundary",
+        displayName: "Wait boundary",
+        scopes: ["graph:read"],
+        expiresAt: EXPIRES,
+      }),
+    });
+    await lock.committed;
+    await lock.worker.terminate();
+
+    expect(response.status).toBe(401);
+    expect(prepared.db.raw.prepare("SELECT * FROM principals WHERE kind = 'service'").all()).toEqual([]);
+    expect(listAudit(prepared.db, "tenant-a")).toEqual(auditBefore);
+  });
+
+  it("revalidates API-key authority after a second-connection write wait", async () => {
+    const prepared = fixture();
+    const created = await createPrincipal(prepared.app, "wait-key-create");
+    const targetBefore = getPrincipal(prepared.db, "tenant-a", created.payload.data.id);
+    const auditBefore = listAudit(prepared.db, "tenant-a");
+    const lock = await holdSecondConnectionWriteLock(prepared.databasePath, {
+      sql: "UPDATE api_keys SET revoked_at = ? WHERE tenant_id = ? AND id = ?",
+      params: ["2026-08-30T12:00:00.500Z", "tenant-a", "key-manager-a"],
+    });
+    const response = await prepared.app.request(
+      `/tenants/service-principals/${created.payload.data.id}/revoke`,
+      {
+        method: "POST",
+        headers: { ...mutationHeaders("wait-api-key"), "x-test-auth-method": "api_key" },
+      },
+    );
+    await lock.committed;
+    await lock.worker.terminate();
+
+    expect(response.status).toBe(401);
+    expect(getPrincipal(prepared.db, "tenant-a", created.payload.data.id)).toEqual(targetBefore);
+    expect(listAudit(prepared.db, "tenant-a")).toEqual(auditBefore);
   });
 
   it("revokes the service and every credential while remaining tenant scoped and idempotent", async () => {

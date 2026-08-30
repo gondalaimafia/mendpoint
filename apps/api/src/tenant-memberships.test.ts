@@ -337,6 +337,37 @@ describe("tenant membership administration API", () => {
     expect(await failed.json()).toEqual({ error: "internal_error", requestId: "request-owner-a" });
   });
 
+  it("cancels streamed overflow and rejects malformed lengths without mutation or audit", async () => {
+    const { app, db } = fixture();
+    const auditBefore = listAudit(db, "tenant-a");
+    let cancelled = false;
+    const oversized = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array(32 * 1_024 + 1)); },
+      cancel() { cancelled = true; },
+    });
+    const overflow = await app.request("/tenants/memberships/bootstrap", {
+      method: "POST",
+      headers: headers("owner-a"),
+      body: oversized,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    expect(overflow.status).toBe(413);
+    expect(cancelled).toBe(true);
+    expect(listTenantMembershipsForTest(db, "tenant-a")).toEqual([]);
+    expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
+
+    for (const declared of ["-1", "+1", "1.5", "not-a-number"]) {
+      const malformed = await app.request("/tenants/memberships/bootstrap", {
+        method: "POST",
+        headers: { ...headers("owner-a"), "Content-Length": declared },
+        body: JSON.stringify(identity("owner-a")),
+      });
+      expect(malformed.status).toBe(422);
+      expect(listTenantMembershipsForTest(db, "tenant-a")).toEqual([]);
+      expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
+    }
+  });
+
   it("revalidates a revoked bootstrap credential inside the mutation transaction", async () => {
     const { app, db } = fixture();
     const auditBefore = listAudit(db, "tenant-a");

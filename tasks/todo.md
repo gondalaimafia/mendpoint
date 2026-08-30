@@ -3877,3 +3877,21 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Multiple role entries marked primary are invalid regardless of attribute casing. POST, PUT, and PATCH all return SCIM 400 without mutation.
 - Red-first evidence reproduced nine unauthorized or ambiguous writes on the rejected head. The repaired focused suites pass 34 of 34 tests; the wider API and database identity matrix passes 60 of 60 tests. API and database typechecks plus diff integrity pass.
 - No push, merge, deployment, or production claim was performed. Fresh immutable-head independent review remains required.
+
+## 2026-08-30 Plan 10-01 final P1 repair
+
+- [x] Add an atomic protected pre-start SCIM authority bootstrap for fresh and populated current-schema volumes.
+- [x] Keep the bootstrap credential out of every long-lived child process and require it at the customer production boundary.
+- [x] Read service-principal mutation time only after the write transaction has acquired its lock.
+- [x] Prove second-connection write waits cannot outlive session, principal, or delegated API-key authority.
+- [x] Replace tenant-membership body buffering with a strict incremental reader that cancels overflow and rejects malformed content lengths.
+- [x] Prove overflow and malformed lengths cannot mutate membership or audit state.
+- [x] Run the focused identity and launcher matrix, API and Worker typechecks, scripts typecheck, and diff integrity.
+- [x] Inspect and commit the repair without pushing.
+
+### Review
+
+- The production launcher now materializes the exact tenant, service principal, dedicated key, issuer, expiry, and `identity:provision` scope under one `BEGIN IMMEDIATE` transaction before the API starts. Replays require exact persisted identity and credential bytes; any mismatch rolls the complete bootstrap back. The bootstrap token is supplied only to the setup process and is removed from the API, Worker, Web, and backup child environments.
+- Service-principal create, rotate, and revoke obtain the authoritative clock only after `BEGIN IMMEDIATE` succeeds. Real two-connection SQLite regressions hold the write lock past session and principal expiry, and revoke delegated API-key authority before releasing it. All three requests fail without principal, credential, target, or audit mutation.
+- Tenant-membership JSON is decoded from bounded byte chunks with fatal UTF-8 validation. Invalid content lengths cancel immediately; a streamed body crossing 32 KiB cancels its reader and returns 413. Hostile regressions prove no membership or audit entry is created.
+- Verification passes: 36 of 36 focused API, launcher, and customer-profile tests; API and Worker typechecks; scripts typecheck; and `git diff --check`. No push, merge, deployment, enterprise IdP drill, or production claim was performed. Fresh immutable-head independent review remains required.

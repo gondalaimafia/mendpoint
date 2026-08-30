@@ -44,6 +44,20 @@ function customerRuntime(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
       }],
     });
   }
+  if (overrides.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON === undefined) {
+    env.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON = JSON.stringify({
+      schemaVersion: 1,
+      authorities: [{
+        tenantId: "tenant-default",
+        principalId: "principal-scim-default",
+        keyId: "key-scim-default",
+        subject: "enterprise-scim",
+        displayName: "Enterprise SCIM",
+        expiresAt: "2026-11-28T12:00:00.000Z",
+        token: `me_${"s".repeat(48)}`,
+      }],
+    });
+  }
   env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA =
     SANDBOX_EGRESS_ATTESTATION_SCHEMA;
   env.MENDPOINT_ALLOWED_MACHINE_ID = overrides.MENDPOINT_ALLOWED_MACHINE_ID ?? env.FLY_MACHINE_ID;
@@ -114,6 +128,7 @@ describe("Fettler-only customer Fly profile", () => {
       "OIDC_CLIENT_SECRET",
       "OIDC_REDIRECT_URI",
       "MENDPOINT_SCIM_BINDINGS_JSON",
+      "MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON",
       "MENDPOINT_BACKUP_KEY",
       "MENDPOINT_BACKUP_KEY_ID",
       "MENDPOINT_ALLOWED_MACHINE_ID",
@@ -204,6 +219,7 @@ describe("Fettler-only customer Fly profile", () => {
     expect(api.GITHUB_APP_PRIVATE_KEY).toBe(env.GITHUB_APP_PRIVATE_KEY);
     expect(api.MENDPOINT_BACKUP_KEY).toBe(env.MENDPOINT_BACKUP_KEY);
     expect(api.MENDPOINT_SCIM_BINDINGS_JSON).toBe(env.MENDPOINT_SCIM_BINDINGS_JSON);
+    expect(api.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON).toBeUndefined();
     expect(api.OPENAI_API_KEY).toBeUndefined();
     expect(api.MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON).toBeUndefined();
     expect(api.AWS_SECRET_ACCESS_KEY).toBeUndefined();
@@ -223,6 +239,7 @@ describe("Fettler-only customer Fly profile", () => {
     expect(worker.GITHUB_APP_PRIVATE_KEY).toBe(env.GITHUB_APP_PRIVATE_KEY);
     expect(worker.MENDPOINT_BACKUP_KEY).toBeUndefined();
     expect(worker.MENDPOINT_SCIM_BINDINGS_JSON).toBeUndefined();
+    expect(worker.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON).toBeUndefined();
     expect(worker.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(worker.MENDPOINT_SANDBOX_FLY_TOKEN).toBe(env.MENDPOINT_SANDBOX_FLY_TOKEN);
     expect(worker.MENDPOINT_SANDBOX_KIND).toBe(env.MENDPOINT_SANDBOX_KIND);
