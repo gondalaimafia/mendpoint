@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-30T08:43:52.527Z",
-    "observedMainRevision": "cf236a9adcc9a5d547e0fb0758ad54ad2331ae54",
-    "observationDigest": "sha256:00a15b02e728f50afa52fa5c64023d9ffffa8437b7b0d8ec2746e82495a0d3b2",
+    "observedAt": "2026-08-30T22:22:50.000Z",
+    "observedMainRevision": "ef5ea1be6807040023541ac74ebdec42a2d75f91",
+    "observationDigest": "sha256:43e172a02cd88f75872d570ea1e28beedb2be169f4e74e8380472ed02e581553",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 555,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/555",
-      "title": "Scope the customer deploy gate to what a deploy controls",
+      "number": 580,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/580",
+      "title": "Retire obsolete legacy deployment",
       "baseBranch": "main",
-      "headBranch": "claude/deploy-gate-drop-healthz",
+      "headBranch": "codex/retire-legacy-deploy",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2087,12 +2087,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260828-010",
+        "rotationId": "rotation-20260830-011",
         "kind": "runtime",
-        "issuedAt": "2026-08-30T08:43:52.527Z",
-        "expiresAt": "2026-08-31T08:43:52.527Z",
-        "basePolicySha256": "sha256:465a91d74119edaaa8a0bf8f81281856ac3428b9ff389b40f7c3794b524b00d9",
-        "proposedPolicySha256": "sha256:e1c13a09fd9b00b2b0f0a509f7ffec56649676a08379931508d5dadeb4f62215"
+        "issuedAt": "2026-08-30T22:22:50.000Z",
+        "expiresAt": "2026-08-31T22:22:50.000Z",
+        "basePolicySha256": "sha256:e1c13a09fd9b00b2b0f0a509f7ffec56649676a08379931508d5dadeb4f62215",
+        "proposedPolicySha256": "sha256:0046a61eb99c61eb05a7330d305e18f919f7a3326d20c6ec84a2dcb953e69fe2"
       }
     },
     "pullRequests": [
