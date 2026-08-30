@@ -92,7 +92,8 @@ function invoiceSigner(): InvoiceExportSigner {
     keyId: "invoice-api-key-1",
     authorize: ({ tenantId }) => tenantId === "billing-tenant-a",
     sign: (payload) => createHmac("sha256", secret).update(payload).digest("hex"),
-    verify: (payload, signature) =>
+    verifyForKey: (keyId, payload, signature) =>
+      keyId === "invoice-api-key-1" &&
       createHmac("sha256", secret).update(payload).digest("hex") === signature,
   };
 }
@@ -222,7 +223,13 @@ describe("billing economics API routes", () => {
     });
     const env = {
       MENDPOINT_INVOICE_EXPORT_SIGNING_KEY_ID: "invoice-key-1",
-      MENDPOINT_INVOICE_EXPORT_HMAC_KEY_BASE64: Buffer.alloc(32, 7).toString("base64"),
+      MENDPOINT_INVOICE_EXPORT_SIGNING_KEYS_JSON: JSON.stringify({
+        schemaVersion: "invoice-export-signing-keyring/1",
+        keys: [{
+          keyId: "invoice-key-1",
+          keyBase64: Buffer.alloc(32, 7).toString("base64"),
+        }],
+      }),
       MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON: authority,
     };
     const signer = invoiceExportSignerFromEnv(env);
@@ -242,14 +249,88 @@ describe("billing economics API routes", () => {
     })).toBe(false);
     const payload = "signed invoice payload";
     const signature = signer!.sign(payload);
-    expect(signer?.verify(payload, signature)).toBe(true);
-    expect(signer?.verify(`${payload}.`, signature)).toBe(false);
-    expect(invoiceExportSignerFromEnv({ ...env, MENDPOINT_INVOICE_EXPORT_HMAC_KEY_BASE64: "short" })).toBeUndefined();
+    expect(signer?.verifyForKey("invoice-key-1", payload, signature)).toBe(true);
+    expect(signer?.verifyForKey("invoice-key-1", `${payload}.`, signature)).toBe(false);
+    expect(signer?.verifyForKey("invoice-key-missing", payload, signature)).toBe(false);
+    expect(invoiceExportSignerFromEnv({
+      ...env,
+      MENDPOINT_INVOICE_EXPORT_SIGNING_KEYS_JSON: JSON.stringify({
+        schemaVersion: "invoice-export-signing-keyring/1",
+        keys: [{ keyId: "invoice-key-1", keyBase64: "short" }],
+      }),
+    })).toBeUndefined();
     expect(invoiceExportSignerFromEnv({ ...env, MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON: "{}" })).toBeUndefined();
     expect(invoiceExportSignerFromEnv({
       ...env,
       MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON: authority.replace("tenant-a", " tenant-a"),
     })).toBeUndefined();
+  });
+
+  it("retains historical verification keys across signing-key rotation", async () => {
+    const { db, tenantA } = fixture();
+    seedInvoiceUsage(db);
+    const bootstrap = await appFor(db).request("/billing/gross-margin", {
+      headers: headers(tenantA, "invoice-key-rotation-bootstrap"),
+    });
+    expect(bootstrap.status).toBe(200);
+    const principal = getPrincipalBySubject(
+      db,
+      "billing-tenant-a",
+      "api_key",
+      "billing-key-a",
+    )!;
+    const authority = JSON.stringify({
+      schemaVersion: "invoice-export-authority/1",
+      grants: [{
+        tenantId: "billing-tenant-a",
+        actorPrincipalId: principal.id,
+        currency: "USD",
+        contractReference: "invoice-contract-a",
+        taxBasisPoints: 0,
+        taxJurisdiction: "US-IL",
+        taxPolicyVersion: "tax-policy-zero-v1",
+      }],
+    });
+    const oldKey = Buffer.alloc(32, 7).toString("base64");
+    const newKey = Buffer.alloc(32, 8).toString("base64");
+    const signerFor = (keyId: string, keys: readonly Record<string, string>[]) =>
+      invoiceExportSignerFromEnv({
+        MENDPOINT_INVOICE_EXPORT_SIGNING_KEY_ID: keyId,
+        MENDPOINT_INVOICE_EXPORT_SIGNING_KEYS_JSON: JSON.stringify({
+          schemaVersion: "invoice-export-signing-keyring/1",
+          keys: keys.map((key) => ({ keyId: key.keyId, keyBase64: key.keyBase64 })),
+        }),
+        MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON: authority,
+      })!;
+    const issuedApp = appFor(
+      db,
+      () => "2026-09-02T12:00:00.000Z",
+      signerFor("invoice-key-old", [{ keyId: "invoice-key-old", keyBase64: oldKey }]),
+    );
+    const created = await issuedApp.request("/billing/invoice-exports", {
+      method: "POST",
+      headers: headers(tenantA, "invoice-key-rotation"),
+      body: JSON.stringify(invoiceBody()),
+    });
+    expect(created.status).toBe(201);
+    const invoice = await created.json() as { data: { id: string } };
+
+    const rotatedApp = appFor(
+      db,
+      () => "2026-09-03T00:00:00.000Z",
+      signerFor("invoice-key-new", [
+        { keyId: "invoice-key-old", keyBase64: oldKey },
+        { keyId: "invoice-key-new", keyBase64: newKey },
+      ]),
+    );
+    const reconciliation = await rotatedApp.request(
+      `/billing/invoice-exports/${invoice.data.id}/reconciliation`,
+      { headers: headers(tenantA, "invoice-key-rotation-reconcile") },
+    );
+    expect(reconciliation.status).toBe(200);
+    await expect(reconciliation.json()).resolves.toMatchObject({
+      data: { complete: true, signature: { keyId: "invoice-key-old", ok: true } },
+    });
   });
   it("requires authentication and forces tenant and actor from the authenticated principal", async () => {
     const { db, tenantA, tenantB } = fixture();
@@ -471,6 +552,17 @@ describe("billing economics API routes", () => {
     await expect(reconciliation.json()).resolves.toMatchObject({
       data: { complete: true, issues: [] },
     });
+    db.raw.exec("DROP TRIGGER invoice_export_state_events_append_only_update");
+    db.raw.prepare(
+      "UPDATE invoice_export_state_events SET authority_signature = ? WHERE invoice_id = ? AND sequence = 2",
+    ).run("0".repeat(64), id);
+    const corruptedRead = await app.request(`/billing/invoice-exports/${id}`, {
+      headers: headers(tenantA, "invoice-corrupted-read"),
+    });
+    expect(corruptedRead.status).toBe(409);
+    await expect(corruptedRead.json()).resolves.toMatchObject({
+      error: { code: "invoice_export_reconciliation_incomplete" },
+    });
     expect((await app.request("/billing/charges", {
       method: "POST",
       headers: headers(tenantA, "no-charge-path"),
@@ -504,8 +596,17 @@ describe("billing economics API routes", () => {
     await expect(changed.json()).resolves.toMatchObject({
       error: { code: "invoice_export_idempotency_conflict" },
     });
+    const duplicateSource = await app.request("/billing/invoice-exports", {
+      method: "POST",
+      headers: headers(tenantA, "invoice-second-request"),
+      body: JSON.stringify(invoiceBody()),
+    });
+    expect(duplicateSource.status).toBe(409);
+    await expect(duplicateSource.json()).resolves.toMatchObject({
+      error: { code: "invoice_export_source_already_invoiced" },
+    });
 
-    const missingSignerApp = appFor(db);
+    const missingSignerApp = appFor(db, () => current);
     const missingSigner = await missingSignerApp.request("/billing/invoice-exports", {
       method: "POST",
       headers: headers(tenantA, "invoice-no-signer"),

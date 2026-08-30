@@ -51,7 +51,8 @@ function hmacSigner(authorized = true): InvoiceExportSigner {
     authorize: ({ tenantId, actorPrincipalId }) =>
       authorized && actorPrincipalId === `actor-${tenantId.at(-1)}`,
     sign: (payload) => createHmac("sha256", secret).update(payload).digest("hex"),
-    verify: (payload, signature) =>
+    verifyForKey: (keyId, payload, signature) =>
+      keyId === "invoice-key-1" &&
       createHmac("sha256", secret).update(payload).digest("hex") === signature,
   });
 }
@@ -224,6 +225,11 @@ describe("signed invoice exports", () => {
   it("rejects changed replay, cross-tenant authority, missing signing authority, and invalid tax", () => {
     const { db } = open();
     seed(db);
+    expect(() => createInvoiceExport(db, createInput({
+      id: "invoice-bad-signature",
+      idempotencyKey: "bad-signature",
+      signer: { ...hmacSigner(), verifyForKey: () => false },
+    }))).toThrow("invoice_export_signature_invalid");
     createInvoiceExport(db, createInput());
     expect(() => createInvoiceExport(db, createInput({
       tax: { basisPoints: 0, jurisdiction: "US-IL", policyVersion: "tax-policy-2026-08" },
@@ -238,11 +244,6 @@ describe("signed invoice exports", () => {
       .toThrow("invoice_export_signer_required");
     expect(() => createInvoiceExport(db, createInput({ id: "invoice-denied", idempotencyKey: "denied", signer: hmacSigner(false) })))
       .toThrow("invoice_export_signing_not_authorized");
-    expect(() => createInvoiceExport(db, createInput({
-      id: "invoice-bad-signature",
-      idempotencyKey: "bad-signature",
-      signer: { ...hmacSigner(), verify: () => false },
-    }))).toThrow("invoice_export_signature_invalid");
     expect(() => createInvoiceExport(db, createInput({ id: "invoice-tax", idempotencyKey: "tax", tax: undefined })))
       .toThrow("invoice_export_tax_required");
     expect(() => createInvoiceExport(db, createInput({
@@ -255,25 +256,27 @@ describe("signed invoice exports", () => {
       idempotencyKey: "currency",
       currency: "EUR",
     }))).toThrow("invoice_export_price_contract_mismatch");
+    expect(() => createInvoiceExport(db, createInput({
+      id: "invoice-open-period",
+      idempotencyKey: "open-period",
+      issuedAt: "2026-08-31T23:59:59.000Z",
+    }))).toThrow("invoice_export_period_open");
+  });
+
+  it("prevents a source entry from appearing on a second signed invoice", () => {
+    const { db } = open();
+    seed(db);
+    createInvoiceExport(db, createInput());
+    expect(() => createInvoiceExport(db, createInput({
+      id: "invoice-a-duplicate",
+      idempotencyKey: "invoice-request-a-duplicate",
+    }))).toThrow("invoice_export_source_already_invoiced");
   });
 
   it("detects late ledger changes, tampering, and invalid or replayed state transitions", () => {
     const { db } = open();
     seed(db);
     createInvoiceExport(db, createInput());
-    creditUsage(db, {
-      id: "late-credit",
-      tenantId: "tenant-a",
-      idempotencyKey: "late-credit",
-      taskId: "task-a",
-      mcuMicrosDelta: -100_000,
-      reason: "late refund",
-      actorPrincipalId: "actor-a",
-      createdAt: "2026-08-31T23:59:00.000Z",
-    });
-    expect(() => createInvoiceExport(db, createInput()))
-      .toThrow("invoice_export_idempotency_conflict");
-
     const exported = transitionInvoiceExportState(db, {
       tenantId: "tenant-a",
       invoiceId: "invoice-a",
@@ -370,6 +373,19 @@ describe("signed invoice exports", () => {
       occurredAt: "2026-09-03T00:00:00.000Z",
       authority: hmacSigner(),
     })).toThrow("invoice_export_not_found");
+
+    creditUsage(db, {
+      id: "late-credit",
+      tenantId: "tenant-a",
+      idempotencyKey: "late-credit",
+      taskId: "task-a",
+      mcuMicrosDelta: -100_000,
+      reason: "late refund",
+      actorPrincipalId: "actor-a",
+      createdAt: "2026-08-31T23:59:00.000Z",
+    });
+    expect(() => createInvoiceExport(db, createInput()))
+      .toThrow("invoice_export_idempotency_conflict");
 
     db.raw.exec("DROP TRIGGER invoice_exports_append_only_update");
     db.raw.prepare("UPDATE invoice_exports SET payload_digest = ? WHERE id = ?")

@@ -35,6 +35,38 @@ type InvoiceExportAuthorityGrant = Readonly<{
 }>;
 
 const INVOICE_EXPORT_AUTHORITY_SCHEMA = "invoice-export-authority/1" as const;
+const INVOICE_EXPORT_KEYRING_SCHEMA = "invoice-export-signing-keyring/1" as const;
+
+function invoiceExportSigningKeys(value: string): ReadonlyMap<string, Buffer> | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    if (record.schemaVersion !== INVOICE_EXPORT_KEYRING_SCHEMA || !Array.isArray(record.keys)) return null;
+    if (Object.keys(record).sort().join(",") !== "keys,schemaVersion") return null;
+    const keys = new Map<string, Buffer>();
+    for (const valueKey of record.keys) {
+      if (!valueKey || typeof valueKey !== "object" || Array.isArray(valueKey)) return null;
+      const keyRecord = valueKey as Record<string, unknown>;
+      if (Object.keys(keyRecord).sort().join(",") !== "keyBase64,keyId") return null;
+      if (
+        typeof keyRecord.keyId !== "string" ||
+        !keyRecord.keyId ||
+        keyRecord.keyId.trim() !== keyRecord.keyId ||
+        keyRecord.keyId.length > 200 ||
+        typeof keyRecord.keyBase64 !== "string"
+      ) return null;
+      const key = Buffer.from(keyRecord.keyBase64, "base64");
+      if (key.length < 32 || key.toString("base64") !== keyRecord.keyBase64 || keys.has(keyRecord.keyId)) {
+        return null;
+      }
+      keys.set(keyRecord.keyId, key);
+    }
+    return keys.size > 0 ? keys : null;
+  } catch {
+    return null;
+  }
+}
 
 function invoiceExportAuthorityGrants(value: string): readonly InvoiceExportAuthorityGrant[] | null {
   try {
@@ -78,14 +110,16 @@ export function invoiceExportSignerFromEnv(
   env: Readonly<Record<string, string | undefined>>,
 ): InvoiceExportSigner | undefined {
   const keyId = env.MENDPOINT_INVOICE_EXPORT_SIGNING_KEY_ID?.trim();
-  const encodedKey = env.MENDPOINT_INVOICE_EXPORT_HMAC_KEY_BASE64?.trim();
+  const keyringJson = env.MENDPOINT_INVOICE_EXPORT_SIGNING_KEYS_JSON?.trim();
   const authorityJson = env.MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON?.trim();
-  if (!keyId || !encodedKey || !authorityJson || keyId.length > 200) return undefined;
-  const key = Buffer.from(encodedKey, "base64");
-  if (key.length < 32 || key.toString("base64") !== encodedKey) return undefined;
+  if (!keyId || !keyringJson || !authorityJson || keyId.length > 200) return undefined;
+  const keys = invoiceExportSigningKeys(keyringJson);
+  const currentKey = keys?.get(keyId);
+  if (!keys || !currentKey) return undefined;
   const grants = invoiceExportAuthorityGrants(authorityJson);
   if (!grants) return undefined;
-  const signatureFor = (payload: string) => createHmac("sha256", key).update(payload, "utf8").digest();
+  const signatureFor = (key: Buffer, payload: string) =>
+    createHmac("sha256", key).update(payload, "utf8").digest();
   return Object.freeze({
     keyId,
     authorize: (input) => grants.some((grant) =>
@@ -96,11 +130,13 @@ export function invoiceExportSignerFromEnv(
       grant.taxBasisPoints === input.tax.basisPoints &&
       grant.taxJurisdiction === input.tax.jurisdiction &&
       grant.taxPolicyVersion === input.tax.policyVersion),
-    sign: (payload) => signatureFor(payload).toString("hex"),
-    verify: (payload, signature) => {
+    sign: (payload) => signatureFor(currentKey, payload).toString("hex"),
+    verifyForKey: (verificationKeyId, payload, signature) => {
       if (!/^[a-f0-9]{64}$/u.test(signature)) return false;
+      const verificationKey = keys.get(verificationKeyId);
+      if (!verificationKey) return false;
       const supplied = Buffer.from(signature, "hex");
-      const expected = signatureFor(payload);
+      const expected = signatureFor(verificationKey, payload);
       return supplied.length === expected.length && timingSafeEqual(supplied, expected);
     },
   });
@@ -318,7 +354,9 @@ function handleInvoiceError(c: Context<ApiEnv>, error: unknown) {
     return errorResponse(c, code, "The authenticated principal is not authorized", 403);
   }
   if (code.includes("conflict") || code === "invoice_export_id_tenant_mismatch" ||
-      code === "invoice_export_state_transition_invalid") {
+      code === "invoice_export_state_transition_invalid" ||
+      code === "invoice_export_source_already_invoiced" ||
+      code === "invoice_export_reconciliation_incomplete") {
     return errorResponse(c, code, "The request conflicts with the invoice export", 409);
   }
   return errorResponse(c, code, "The invoice export request is invalid", 400);
@@ -419,6 +457,14 @@ export function createBillingEconomicsRoutes({
     try {
       const invoice = getInvoiceExport(db, identity.tenantId, c.req.param("id"));
       if (!invoice) return errorResponse(c, "invoice_export_not_found", "The invoice export was not found", 404);
+      if (!reconcileInvoiceExport(db, identity.tenantId, invoice.id, invoiceSigner).complete) {
+        return errorResponse(
+          c,
+          "invoice_export_reconciliation_incomplete",
+          "The invoice export failed integrity reconciliation",
+          409,
+        );
+      }
       return c.json({ data: publicInvoice(invoice) });
     } catch (error) {
       return handleInvoiceError(c, error);

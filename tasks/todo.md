@@ -3655,7 +3655,7 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - [x] Add negative coverage for missing, malformed, mismatched, expired, revoked, unhealthy, and incomplete evidence.
 - [x] Run focused readiness tests, the Ops typecheck, and diff integrity.
 - [x] Repair exact-head review P1 so absent or malformed revocation state is indeterminate and only an explicit array can prove the revocation boundary.
-- [ ] Obtain independent exact-head review, current-base CI, protected merge, and exact-revision deployment proof.
+- [x] Obtain independent exact-head review, current-base CI, protected merge, and exact-revision deployment proof.
 
 ### Review
 
@@ -3663,6 +3663,7 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The focused matrix passes 30 of 30 tests. Root review added a fail-closed `critical_health_indeterminate` result so omitted health evidence cannot qualify a deployment.
 - Runtime packaging and injection of the qualification attestation and expected digests remain a separate activation increment; this slice does not enable required mode in production.
 - Exact-head review found that missing revocation state was normalized to an empty list. Required mode now distinguishes missing or malformed state from the authoritative empty array, includes that distinction in the readiness digest, and fails closed as indeterminate.
+- Exact head `846a679b4c67fe0bb06a8569d7feeb2f284907b7` passed independent review and all six protected checks, then merged as `5b3ff73717a1e18784a288472d7121d8d89dc23c` with `enforce_admins: true`. The exact revision is deployed on `mendpoint-fettler-production`; `/version`, `/livez`, `/healthz`, and `/readyz` all return HTTP 200 after protected backup run `33307659797` refreshed the overdue authenticated recovery evidence.
 
 ## 2026-08-30 GSD Plan 09-02 signed invoice export tracer
 
@@ -3680,4 +3681,7 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - An injected signer authorizes the exact tenant, actor, currency, contract, and tax policy, then signs the canonical payload. Only its key identifier and signature are stored. State changes require the same injected finance authority and append policy-versioned events; no card, charge, processor, or external-account path exists.
 - Authenticated `/billing/invoice-exports` create, read, transition, and reconciliation routes force tenant and actor from identity. Public responses exclude canonical payload, source hashes, source sequence, actor, tenant, idempotency, and event-chain fields.
 - Verification passed: 4 focused database tests, 5 focused authenticated API tests, DB typecheck, API typecheck, fresh and reopen database convergence, and `git diff --check`. No live charging or external-account claim was added.
-- The existing billing runtime now mounts invoice routes with a versioned exact-grant signer derived only from a protected key ID, canonical base64 HMAC key, and tenant, actor, currency, contract, and tax authority document. Partial or malformed bindings leave signing unavailable and return 503; a signer that cannot verify its own result cannot persist an invoice.
+- The existing billing runtime now mounts invoice routes with a versioned exact-grant signer derived only from a protected current key ID, canonical versioned HMAC keyring, and tenant, actor, currency, contract, and tax authority document. Partial or malformed bindings leave signing unavailable and return 503; a signer that cannot verify its own result cannot persist an invoice.
+- Independent exact-head review found two P1 boundaries and one P2 boundary: the same usage entry could be covered by multiple signed invoices under different request IDs, public hash recomputation could make impossible or unauthorized state events reconcile, and a single current key made historical invoices unverifiable after rotation.
+- The repair gives every tenant usage entry one immutable invoice owner, authenticates every state event with its authority key, validates the exact initial event, allowed transition graph, monotonic time, historical actor validity, and signature chain, and refuses public reads or further transitions when reconciliation is incomplete. A versioned keyring signs with the active key while retaining exact historical verification keys. Invoice issuance also rejects an open billing period.
+- The repaired focused matrix passes 12 of 12 tests, including duplicate-source rejection, state-signature corruption, fail-closed public reads, closed-period enforcement, and historical verification after key rotation. DB and API typechecks pass. Exact-head re-review, protected CI, merge, and deployment remain pending.

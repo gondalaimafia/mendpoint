@@ -753,7 +753,7 @@ CREATE TABLE IF NOT EXISTS invoice_export_lines (
   money_micros INTEGER NOT NULL,
   reason TEXT NOT NULL,
   UNIQUE (tenant_id, invoice_id, ordinal),
-  UNIQUE (tenant_id, invoice_id, usage_entry_id)
+  UNIQUE (tenant_id, usage_entry_id)
 );
 CREATE INDEX IF NOT EXISTS invoice_export_lines_source_idx
   ON invoice_export_lines(tenant_id, usage_entry_id, invoice_id);
@@ -770,6 +770,8 @@ CREATE TABLE IF NOT EXISTS invoice_export_state_events (
   actor_principal_id TEXT NOT NULL REFERENCES principals(id),
   prev_hash TEXT,
   event_hash TEXT NOT NULL,
+  authority_key_id TEXT NOT NULL,
+  authority_signature TEXT NOT NULL,
   occurred_at TEXT NOT NULL,
   UNIQUE (tenant_id, invoice_id, idempotency_key),
   UNIQUE (tenant_id, invoice_id, sequence)

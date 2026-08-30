@@ -25,10 +25,8 @@ export type InvoiceExportSigner = Readonly<{
     tax: Readonly<{ basisPoints: number; jurisdiction: string; policyVersion: string }>;
   }>): boolean;
   sign(canonicalPayload: string): string;
-  verify(canonicalPayload: string, signature: string): boolean;
+  verifyForKey(keyId: string, canonicalPayload: string, signature: string): boolean;
 }>;
-
-export type InvoiceExportAuthority = Pick<InvoiceExportSigner, "authorize">;
 
 export type InvoiceExportLine = Readonly<{
   id: string;
@@ -57,6 +55,8 @@ export type InvoiceExportStateEvent = Readonly<{
   actorPrincipalId: string;
   previousHash: string | null;
   eventHash: string;
+  authorityKeyId: string;
+  authoritySignature: string;
   occurredAt: string;
 }>;
 
@@ -151,6 +151,8 @@ type EventRow = {
   actor_principal_id: string;
   prev_hash: string | null;
   event_hash: string;
+  authority_key_id: string;
+  authority_signature: string;
   occurred_at: string;
 };
 
@@ -262,6 +264,34 @@ function assertActor(db: AppDb, tenantId: string, actorPrincipalId: string): voi
   }
 }
 
+function actorAuthorizedAt(
+  db: AppDb,
+  tenantId: string,
+  actorPrincipalId: string,
+  occurredAt: string,
+): boolean {
+  const actor = one<{
+    tenant_id: string;
+    created_at: string;
+    expires_at: string | null;
+    revoked_at: string | null;
+  }>(
+    db,
+    "SELECT tenant_id, created_at, expires_at, revoked_at FROM principals WHERE id = ?",
+    [actorPrincipalId],
+  );
+  if (!actor || actor.tenant_id !== tenantId) return false;
+  const occurredAtMs = Date.parse(occurredAt);
+  const createdAtMs = Date.parse(actor.created_at);
+  const expiresAtMs = actor.expires_at === null ? null : Date.parse(actor.expires_at);
+  const revokedAtMs = actor.revoked_at === null ? null : Date.parse(actor.revoked_at);
+  return Number.isFinite(occurredAtMs) &&
+    Number.isFinite(createdAtMs) &&
+    occurredAtMs >= createdAtMs &&
+    (expiresAtMs === null || (Number.isFinite(expiresAtMs) && occurredAtMs < expiresAtMs)) &&
+    (revokedAtMs === null || (Number.isFinite(revokedAtMs) && occurredAtMs < revokedAtMs));
+}
+
 function sourceRows(
   db: AppDb,
   tenantId: string,
@@ -319,6 +349,8 @@ function eventFromRow(row: EventRow): InvoiceExportStateEvent {
     actorPrincipalId: row.actor_principal_id,
     previousHash: row.prev_hash,
     eventHash: row.event_hash,
+    authorityKeyId: row.authority_key_id,
+    authoritySignature: row.authority_signature,
     occurredAt: row.occurred_at,
   });
 }
@@ -541,6 +573,9 @@ export function createInvoiceExport(
     throw new Error("invoice_export_period_invalid");
   }
   const issuedAt = utcTime("invoice_export_issued_at", input.issuedAt);
+  if (Date.parse(issuedAt) < Date.parse(periodEnd)) {
+    throw new Error("invoice_export_period_open");
+  }
   const currency = text("invoice_export_currency", input.currency).toUpperCase();
   if (!/^[A-Z]{3}$/.test(currency)) throw new Error("invoice_export_currency_invalid");
   const contractReference = text("invoice_export_contract", input.contractReference);
@@ -595,16 +630,26 @@ export function createInvoiceExport(
       if (existing.id !== id || existing.payload_digest !== draft.payloadDigest) {
         throw new Error("invoice_export_idempotency_conflict");
       }
+      const reconciliation = reconcileInvoiceExport(db, tenantId, id, input.signer);
+      if (!reconciliation.complete) throw new Error("invoice_export_reconciliation_incomplete");
       const replay = invoiceFromRow(db, existing);
       db.raw.exec("COMMIT");
       return replay;
+    }
+    const existingSource = db.raw.prepare(
+      "SELECT invoice_id FROM invoice_export_lines WHERE tenant_id = ? AND usage_entry_id = ? LIMIT 1",
+    );
+    for (const line of draft.lines) {
+      if (existingSource.get(tenantId, line.usageEntryId)) {
+        throw new Error("invoice_export_source_already_invoiced");
+      }
     }
     const signature = text(
       "invoice_export_signature",
       input.signer.sign(draft.canonicalPayload),
     );
     if (signature.length > 8_192) throw new Error("invoice_export_signature_invalid");
-    if (!input.signer.verify(draft.canonicalPayload, signature)) {
+    if (!input.signer.verifyForKey(signingKeyId, draft.canonicalPayload, signature)) {
       throw new Error("invoice_export_signature_invalid");
     }
     const initialEventId = `${id}:state:1`;
@@ -620,6 +665,13 @@ export function createInvoiceExport(
       previousHash: null,
       occurredAt: issuedAt,
     });
+    const initialAuthoritySignature = text(
+      "invoice_export_state_authority_signature",
+      input.signer.sign(initialEventHash),
+    );
+    if (!input.signer.verifyForKey(signingKeyId, initialEventHash, initialAuthoritySignature)) {
+      throw new Error("invoice_export_state_signature_invalid");
+    }
     db.raw.prepare(
       `INSERT INTO invoice_exports
        (id, tenant_id, idempotency_key, period_start, period_end, currency,
@@ -654,11 +706,12 @@ export function createInvoiceExport(
     db.raw.prepare(
       `INSERT INTO invoice_export_state_events
        (id, invoice_id, tenant_id, idempotency_key, sequence, state,
-        policy_version, reason, actor_principal_id, prev_hash, event_hash, occurred_at)
-       VALUES (?, ?, ?, ?, 1, 'issued', 'invoice-export/1', 'signed invoice issued', ?, NULL, ?, ?)`,
+        policy_version, reason, actor_principal_id, prev_hash, event_hash,
+        authority_key_id, authority_signature, occurred_at)
+       VALUES (?, ?, ?, ?, 1, 'issued', 'invoice-export/1', 'signed invoice issued', ?, NULL, ?, ?, ?, ?)`,
     ).run(
       initialEventId, id, tenantId, `${idempotencyKey}:issued`,
-      actorPrincipalId, initialEventHash, issuedAt,
+      actorPrincipalId, initialEventHash, signingKeyId, initialAuthoritySignature, issuedAt,
     );
     db.raw.exec("COMMIT");
   } catch (error) {
@@ -688,7 +741,7 @@ export function transitionInvoiceExportState(
     reason: string;
     actorPrincipalId: string;
     occurredAt: string;
-    authority?: InvoiceExportAuthority;
+    authority?: InvoiceExportSigner;
   }>,
 ): InvoiceExport {
   const tenantId = text("invoice_export_tenant", input.tenantId);
@@ -720,6 +773,8 @@ export function transitionInvoiceExportState(
   }
   db.raw.exec("BEGIN IMMEDIATE");
   try {
+    const reconciliation = reconcileInvoiceExport(db, tenantId, invoiceId, input.authority);
+    if (!reconciliation.complete) throw new Error("invoice_export_reconciliation_incomplete");
     const replay = one<EventRow>(
       db,
       `SELECT * FROM invoice_export_state_events
@@ -768,15 +823,25 @@ export function transitionInvoiceExportState(
       previousHash,
       occurredAt,
     });
+    const authorityKeyId = text("invoice_export_state_authority_key", input.authority.keyId);
+    const authoritySignature = text(
+      "invoice_export_state_authority_signature",
+      input.authority.sign(hash),
+    );
+    if (!input.authority.verifyForKey(authorityKeyId, hash, authoritySignature)) {
+      throw new Error("invoice_export_state_signature_invalid");
+    }
     const id = `${invoiceId}:state:${digest(idempotencyKey).slice(0, 24)}`;
     db.raw.prepare(
       `INSERT INTO invoice_export_state_events
        (id, invoice_id, tenant_id, idempotency_key, sequence, state,
-        policy_version, reason, actor_principal_id, prev_hash, event_hash, occurred_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        policy_version, reason, actor_principal_id, prev_hash, event_hash,
+        authority_key_id, authority_signature, occurred_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id, invoiceId, tenantId, idempotencyKey, sequence, input.state,
-      policyVersion, reason, actorPrincipalId, previousHash, hash, occurredAt,
+      policyVersion, reason, actorPrincipalId, previousHash, hash,
+      authorityKeyId, authoritySignature, occurredAt,
     );
     const result = getInvoiceExport(db, tenantId, invoiceId)!;
     db.raw.exec("COMMIT");
@@ -869,18 +934,10 @@ export function reconcileInvoiceExport(
   let signatureOk = false;
   if (!signer) {
     issues.push("invoice_signature_authority_unavailable");
-  } else if (signer.keyId !== row.signing_key_id) {
-    issues.push("invoice_signature_key_mismatch");
   } else {
     try {
-      const authorized = signer.authorize({
-        tenantId,
-        actorPrincipalId: row.actor_principal_id,
-        currency: row.currency,
-        contractReference: row.contract_reference,
-        tax: invoice.tax,
-      });
-      signatureOk = authorized && signer.verify(row.canonical_payload, row.signature);
+      signatureOk = actorAuthorizedAt(db, tenantId, row.actor_principal_id, row.issued_at) &&
+        signer.verifyForKey(row.signing_key_id, row.canonical_payload, row.signature);
     } catch {
       signatureOk = false;
     }
@@ -895,6 +952,7 @@ export function reconcileInvoiceExport(
     [tenantId, invoiceId],
   );
   let stateEventsOk = rawEvents.length > 0;
+  let previousEvent: EventRow | null = null;
   for (let index = 0; index < rawEvents.length; index += 1) {
     const event = rawEvents[index]!;
     const expected = eventHash({
@@ -909,15 +967,44 @@ export function reconcileInvoiceExport(
       previousHash,
       occurredAt: event.occurred_at,
     });
+    const initial = index === 0;
+    const initialValid = !initial || (
+      event.state === "issued" &&
+      event.policy_version === "invoice-export/1" &&
+      event.reason === "signed invoice issued" &&
+      event.actor_principal_id === row.actor_principal_id &&
+      event.idempotency_key === `${row.idempotency_key}:issued` &&
+      event.occurred_at === row.issued_at &&
+      event.prev_hash === null
+    );
+    const transitionValid = initial || (
+      previousEvent !== null &&
+      (ALLOWED_STATE_TRANSITIONS[previousEvent.state] as readonly InvoiceExportState[])
+        .includes(event.state) &&
+      Date.parse(event.occurred_at) >= Date.parse(previousEvent.occurred_at)
+    );
+    const actorValid = actorAuthorizedAt(
+      db,
+      tenantId,
+      event.actor_principal_id,
+      event.occurred_at,
+    );
+    const authorityValid = signer !== undefined &&
+      signer.verifyForKey(event.authority_key_id, expected, event.authority_signature);
     if (
       event.sequence !== index + 1 ||
       event.prev_hash !== previousHash ||
-      event.event_hash !== expected
+      event.event_hash !== expected ||
+      !initialValid ||
+      !transitionValid ||
+      !actorValid ||
+      !authorityValid
     ) {
       stateEventsOk = false;
       break;
     }
     previousHash = event.event_hash;
+    previousEvent = event;
   }
   if (!stateEventsOk) issues.push("invoice_state_event_chain_invalid");
 
