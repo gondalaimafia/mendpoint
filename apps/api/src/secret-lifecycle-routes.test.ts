@@ -73,14 +73,14 @@ describe("secret lifecycle routes", () => {
 
     const breakGlassDenied = await app.request("/platform/secrets/credential-a/break-glass", {
       method: "POST",
-      headers: headers(),
+      headers: headers({ "Idempotency-Key": "break-glass-admin-denied" }),
       body: JSON.stringify({ reason: "incident" }),
     });
     expect(breakGlassDenied.status).toBe(403);
 
     const breakGlass = await app.request("/platform/secrets/credential-a/break-glass", {
       method: "POST",
-      headers: headers({ "X-Role": "owner" }),
+      headers: headers({ "X-Role": "owner", "Idempotency-Key": "break-glass-owner-one" }),
       body: JSON.stringify({ reason: "incident" }),
     });
     expect(breakGlass.status).toBe(200);

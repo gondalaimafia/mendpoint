@@ -47,6 +47,42 @@ function setup() {
 }
 
 describe("envelope secret lifecycle", () => {
+  it("persists provider attestation in outer AAD and rejects authority drift after restart", async () => {
+    const configured = (attestation: string) => ConfiguredEnvelopeKeyProvider.fromJson(JSON.stringify({
+      schemaVersion: 1,
+      keys: [{
+        tenantId: "tenant-a",
+        provider: "external-vault",
+        keyId: "tenant-key",
+        version: "1",
+        customerManaged: true,
+        attestation,
+        materialBase64: Buffer.alloc(32, 7).toString("base64"),
+      }],
+    }));
+    const key = {
+      provider: "external-vault",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: true,
+    } as const;
+    const registry = new EnvelopeKeyLifecycleRegistry();
+    registry.register(lifecycle(key, 1));
+    const original = configured("kms:key/tenant-key:attestation-one");
+    const envelope = await new EnvelopeSecretVault(registry, [original], () => undefined)
+      .encrypt("github-token", "customer-secret", key, context);
+    expect(envelope.keyAttestationSha256).toMatch(/^[a-f0-9]{64}$/);
+
+    const restarted = new EnvelopeSecretVault(registry, [configured(
+      "kms:key/tenant-key:attestation-two",
+    )], () => undefined);
+    await expect(restarted.decrypt(envelope, context)).rejects.toThrow("vault_decrypt_denied");
+    await expect(new EnvelopeSecretVault(registry, [original], () => undefined).decrypt({
+      ...envelope,
+      keyAttestationSha256: "f".repeat(64),
+    }, context)).rejects.toThrow("vault_decrypt_denied");
+  });
+
   it("derives customer managed classification from provider attestation", async () => {
     const provider = ConfiguredEnvelopeKeyProvider.fromJson(JSON.stringify({
       schemaVersion: 1,

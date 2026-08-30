@@ -6,6 +6,7 @@ import {
   createDb,
   getSecretLifecycleVersion,
   listSecretLifecycleVersions,
+  listAudit,
   recordAudit,
   type AppDb,
 } from "@mendpoint/db";
@@ -116,9 +117,95 @@ describe("durable secret lifecycle service", () => {
       credentialId: "credential-a",
       expectedGeneration: 1,
       key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
-    })).rejects.toThrow("audit unavailable");
+    })).rejects.toThrow("vault_access_audit_failed");
     expect(getSecretLifecycleVersion(db, "tenant-a", "credential-a", 1)?.state).toBe("active");
     expect(listSecretLifecycleVersions(db, "tenant-a", "credential-a")).toHaveLength(1);
+  });
+
+  it("durably audits rotation source unwrap outcomes without publishing a denied rotation", async () => {
+    const { db, provider } = fixture();
+    await service(db, provider).create(createInput);
+    await service(db, provider).rotate({
+      idempotencyKey: "rotate-source-granted",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    });
+    expect(listAudit(db, "tenant-a").map((event) => event.action))
+      .toContain("secret.lifecycle.rotation_source.granted");
+
+    const second = fixture();
+    await service(second.db, second.provider).create(createInput);
+    second.provider.removeKey("tenant-a", {
+      provider: "local-envelope",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: true,
+    });
+    await expect(service(second.db, second.provider).rotate({
+      idempotencyKey: "rotate-source-denied",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    })).rejects.toThrow("vault_decrypt_denied");
+    expect(listAudit(second.db, "tenant-a").map((event) => event.action))
+      .toContain("secret.lifecycle.rotation_source.denied");
+    expect(listSecretLifecycleVersions(second.db, "tenant-a", "credential-a"))
+      .toHaveLength(1);
+  });
+
+  it("retains a granted source-access audit when replacement attestation fails", async () => {
+    const { db, provider } = fixture();
+    await service(db, provider).create(createInput);
+    provider.removeKey("tenant-a", {
+      provider: "local-envelope",
+      keyId: "tenant-key",
+      version: "2",
+      customerManaged: true,
+    });
+    await expect(service(db, provider).rotate({
+      idempotencyKey: "rotate-replacement-denied",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    })).rejects.toThrow("local_envelope_key_missing");
+    expect(listAudit(db, "tenant-a").map((event) => event.action))
+      .toContain("secret.lifecycle.rotation_source.granted");
+    expect(listSecretLifecycleVersions(db, "tenant-a", "credential-a"))
+      .toHaveLength(1);
+  });
+
+  it("audits denied break glass and distinguishes new attempts from exact replay", async () => {
+    const { db, provider } = fixture();
+    await service(db, provider).create(createInput);
+    provider.removeKey("tenant-a", {
+      provider: "local-envelope",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: true,
+    });
+    await expect(service(db, provider, { role: "owner" }).breakGlass({
+      credentialId: "credential-a",
+      reason: "incident",
+      idempotencyKey: "break-glass-denied-one",
+    })).rejects.toThrow("vault_decrypt_denied");
+    expect(listAudit(db, "tenant-a").map((event) => event.action))
+      .toContain("secret.break_glass.denied");
+
+    const successful = fixture();
+    const owner = service(successful.db, successful.provider, { role: "owner" });
+    await owner.create(createInput);
+    const request = {
+      credentialId: "credential-a",
+      reason: "incident",
+      idempotencyKey: "break-glass-attempt-one",
+    };
+    await owner.breakGlass(request);
+    await owner.breakGlass(request);
+    await owner.breakGlass({ ...request, idempotencyKey: "break-glass-attempt-two" });
+    expect(listAudit(successful.db, "tenant-a").filter(
+      (event) => event.action === "secret.break_glass.granted",
+    )).toHaveLength(2);
   });
 
   it("fails closed for disabled providers and unauthorized actors", async () => {
@@ -138,7 +225,9 @@ describe("durable secret lifecycle service", () => {
       expectedGeneration: 1,
       key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
     })).rejects.toThrow("secret_lifecycle_not_found");
-    await expect(service(db, provider).breakGlass({ credentialId: "credential-a", reason: "incident" }))
+    await expect(service(db, provider).breakGlass({
+      credentialId: "credential-a", reason: "incident", idempotencyKey: "break-glass-admin",
+    }))
       .rejects.toThrow("secret_break_glass_owner_required");
     await expect(new DurableSecretLifecycleService({
       db,
@@ -148,11 +237,14 @@ describe("durable secret lifecycle service", () => {
       providers: [provider],
       breakGlassEnabled: false,
       audit: () => undefined,
-    }).breakGlass({ credentialId: "credential-a", reason: "incident" }))
+    }).breakGlass({
+      credentialId: "credential-a", reason: "incident", idempotencyKey: "break-glass-disabled",
+    }))
       .rejects.toThrow("secret_break_glass_disabled");
     await expect(service(db, provider, { role: "owner" }).breakGlass({
       credentialId: "credential-a",
       reason: "incident",
+      idempotencyKey: "break-glass-owner",
     })).resolves.toBe("customer-secret");
     expect(service(db, provider).revoke({
       credentialId: "credential-a",

@@ -35,6 +35,38 @@ function agedDb(): AppDb {
   return db;
 }
 
+function legacySecretDb(): AppDb {
+  const path = join(mkdtempSync(join(tmpdir(), "mp-secret-legacy-")), "db.sqlite");
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    CREATE TABLE secret_lifecycle_versions (
+      tenant_id TEXT NOT NULL, credential_id TEXT NOT NULL, source_ref TEXT NOT NULL,
+      generation INTEGER NOT NULL, state TEXT NOT NULL, audiences_json TEXT NOT NULL,
+      expires_at TEXT, issued_at TEXT NOT NULL, rotate_after TEXT, retired_at TEXT,
+      revoked_at TEXT, revocation_reason TEXT, key_provider TEXT NOT NULL,
+      key_id TEXT NOT NULL, key_version TEXT NOT NULL, customer_managed INTEGER NOT NULL,
+      envelope_schema_version INTEGER NOT NULL, algorithm TEXT NOT NULL,
+      wrapped_data_key TEXT NOT NULL, iv TEXT NOT NULL, auth_tag TEXT NOT NULL,
+      ciphertext TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY (tenant_id, credential_id, generation),
+      UNIQUE (tenant_id, source_ref, generation)
+    );
+    CREATE TRIGGER secret_lifecycle_versions_guard_update
+    BEFORE UPDATE ON secret_lifecycle_versions
+    BEGIN SELECT RAISE(ABORT, 'secret_lifecycle_transition_invalid'); END;
+    INSERT INTO secret_lifecycle_versions VALUES (
+      'tenant-a', 'legacy-credential', 'vault://legacy/credential', 1, 'active',
+      '["legacy"]', NULL, '2026-08-01T00:00:00.000Z', NULL, NULL, NULL, NULL,
+      'external-vault', 'legacy-key', '1', 1, 1, 'AES-256-GCM', 'wrapped',
+      'iv', 'tag', 'ciphertext', '2026-08-01T00:00:00.000Z'
+    );
+  `);
+  legacy.close();
+  const db = createDb(path);
+  open.push(db);
+  return db;
+}
+
 function version(generation: number, ciphertext = `ciphertext-${generation}`) {
   return {
     tenantId: "tenant-a",
@@ -59,6 +91,7 @@ function version(generation: number, ciphertext = `ciphertext-${generation}`) {
       authTag: `tag-${generation}`,
       ciphertext,
       createdAt: `2026-08-0${generation}T00:00:00.000Z`,
+      keyAttestationSha256: "f".repeat(64),
     },
   };
 }
@@ -79,6 +112,7 @@ describe.each([
       key_provider: "external-vault",
       key_version: "1",
       customer_managed: 1,
+      key_attestation_sha256: "f".repeat(64),
     });
     expect(getActiveSecretLifecycleByReference(
       db,
@@ -95,11 +129,22 @@ describe.each([
       name: string;
     }>;
     expect(columns.map((column) => column.name)).not.toContain("plaintext");
+    expect(columns.map((column) => column.name)).toContain("key_attestation_sha256");
     expect(JSON.stringify(created)).not.toContain("customer-secret");
   });
 });
 
 describe("secret lifecycle transitions", () => {
+  it("adds nullable attestation evidence to legacy rows and keeps it immutable", () => {
+    const db = legacySecretDb();
+    const row = getSecretLifecycleVersion(db, "tenant-a", "legacy-credential", 1);
+    expect(row?.key_attestation_sha256).toBeNull();
+    expect(() => db.raw.prepare(`
+      UPDATE secret_lifecycle_versions SET key_attestation_sha256 = ?
+      WHERE tenant_id = 'tenant-a' AND credential_id = 'legacy-credential' AND generation = 1
+    `).run("a".repeat(64))).toThrow("secret_lifecycle_transition_invalid");
+  });
+
   it("replays completed create and rotate operations but rejects mismatched identities", () => {
     const db = freshDb();
     const created = createSecretLifecycle(db, version(1), {

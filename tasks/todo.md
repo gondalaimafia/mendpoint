@@ -11,6 +11,11 @@
 - [x] GREEN: replace caller-asserted KEK metadata and split in-memory lifecycle publication with one durable provider-attested lifecycle service.
 - [x] GREEN: expose tenant-admin create, rotate, revoke, and break-glass operations with policy-bound audit and fail-closed replay.
 - [x] Verify focused Platform, DB, and API suites, affected typechecks, diff integrity, and commit the final repair locally without pushing.
+- [x] RED: prove attestation drift, restart, generation transplant, and legacy-schema migration fail closed.
+- [x] RED: prove denied break glass and rotation unwrap outcomes are durable and request-attempt identities distinguish new authority from exact replay.
+- [x] RED: prove tenant-created SCM connections cannot select deployment-global environment secrets or another tenant's lifecycle reference.
+- [x] GREEN: persist and AAD-bind provider attestation, make lifecycle access audit outcome-aware, remove tenant-selectable env fallback, and bind break-glass replay identity.
+- [x] Re-run Platform, DB, API, and SCM suites, affected typechecks, diff integrity, and commit the audit repair locally without pushing.
 
 ### Review
 
@@ -20,6 +25,10 @@
 - Durable reads no longer rebuild an in-memory lifecycle registry. Create and rotation stage provider-attested envelopes, then commit required durable audit, immutable replay identity, and the visible lifecycle generation in one SQLite transaction. Failed audit or operation persistence leaves the previous active generation exact.
 - Tenant-admin HTTP entry points cover create, rotate, and revoke. Break glass additionally requires owner role, an explicit production policy flag, and a nonempty audited reason. Tenant and actor always come from the authenticated principal; responses never return envelope material, and only the gated break-glass response can return plaintext with `Cache-Control: no-store`.
 - Verification passes all 252 Platform tests; 30 focused DB, lifecycle API, route, and SCM tests; Platform, DB, and API typechecks; and `git diff --check`. The regressions include false customer-managed relabeling, missing and malformed provider configuration, failed-audit rollback, process-restart create and rotation replay, replay mismatch, non-admin denial, cross-tenant denial, disabled break glass, and all four authorized lifecycle entry points.
+- Provider attestation is now persisted beside each lifecycle envelope, included in outer AAD, and compared exactly with current provider evidence before unwrap. Migrated rows without that evidence remain present but unreadable, and both attestation drift and generation transplants fail closed after restart.
+- Secret access audit records the actual grant or denial. Rotation source unwrap is durably audited before a replacement generation can publish, while break-glass attempts use caller-supplied idempotency keys so exact retries reuse one record and new authorized attempts receive distinct identities.
+- Production SCM resolution accepts only tenant-scoped lifecycle records. Caller-supplied environment fallback providers are ignored, and both deployment-global references and another tenant's lifecycle reference are denied before transport.
+- Final audit-repair evidence passes all 253 Platform tests and 35 focused DB, lifecycle service, route, and SCM tests. Platform, DB, and API typechecks pass, and `git diff --check` is clean.
 
 
 Observed `origin/main`: `96801a319fc3d355cb2b28b4167b83023a192042`.

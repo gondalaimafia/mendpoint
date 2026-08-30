@@ -30,8 +30,10 @@ import {
 } from "@mendpoint/db";
 import {
   CredentialBroker,
+  DisabledExternalVaultProvider,
   EnvelopeKeyLifecycleRegistry,
   EnvelopeSecretVault,
+  EnvSecretProvider,
   LocalEnvelopeKeyProvider,
   MemorySecretProvider,
   type CredentialAccessAuditEvent,
@@ -166,6 +168,7 @@ async function durableCredential(
       authTag: envelope.authTag,
       ciphertext: envelope.ciphertext,
       createdAt: envelope.createdAt,
+      keyAttestationSha256: envelope.keyAttestationSha256,
     },
   };
   if (input.rotate) {
@@ -810,6 +813,76 @@ describe("repository connection service", () => {
     }, dependencies)).rejects.toThrow("github_credential_revoked");
     expect(transport.requests).toHaveLength(0);
     expect(credentialAudits.at(-1)).toMatchObject({ outcome: "denied", reason: "revoked" });
+  });
+
+  it("denies tenant-selected deployment env secrets and another tenant lifecycle reference before transport", async () => {
+    const { db } = fixture();
+    const envConnection = registerScmConnection(db, {
+      tenantId: "tenant-a",
+      provider: "github",
+      credentialRef: "env://GITHUB_TOKEN",
+      externalAccountId: "12345",
+      displayName: "Tenant A GitHub",
+    });
+    const envRepository = registerConnectedRepository(db, {
+      tenantId: "tenant-a",
+      connectionId: envConnection.id,
+      remoteId: "98765",
+      owner: "acme",
+      name: "service",
+      defaultBranch: "main",
+    });
+    const envTransport = new FakeGitHubTransport();
+    const dependencies = createRepositoryCredentialDependencies(db, {
+      tenantId: "tenant-a",
+      actorId: "operator-a",
+      keyProviders: [new DisabledExternalVaultProvider("local-envelope")],
+      fallbackProviders: [new EnvSecretProvider({ GITHUB_TOKEN: "deployment-global-token" })],
+      githubTransport: envTransport,
+      credentialAudit: () => undefined,
+      envelopeAudit: () => undefined,
+    } as any);
+    await expect(materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: envRepository.id,
+    }, dependencies)).rejects.toThrow("github_credential_lifecycle_required");
+    expect(envTransport.requests).toHaveLength(0);
+
+    const provider = new LocalEnvelopeKeyProvider();
+    await durableCredential(db, provider, {
+      credentialId: "tenant-a-credential",
+      sourceRef: "vault://github/installations/tenant-a",
+      generation: 1,
+      value: "tenant-a-token",
+    });
+    const tenantBConnection = registerScmConnection(db, {
+      tenantId: "tenant-b",
+      provider: "github",
+      credentialRef: "vault://github/installations/tenant-a",
+      externalAccountId: "67890",
+      displayName: "Tenant B GitHub",
+    });
+    const tenantBRepository = registerConnectedRepository(db, {
+      tenantId: "tenant-b",
+      connectionId: tenantBConnection.id,
+      remoteId: "45678",
+      owner: "other",
+      name: "service",
+      defaultBranch: "main",
+    });
+    const tenantBTransport = new FakeGitHubTransport();
+    await expect(materializeConnectedRepository(db, {
+      tenantId: "tenant-b",
+      repositoryId: tenantBRepository.id,
+    }, createRepositoryCredentialDependencies(db, {
+      tenantId: "tenant-b",
+      actorId: "operator-b",
+      keyProviders: [provider],
+      githubTransport: tenantBTransport,
+      credentialAudit: () => undefined,
+      envelopeAudit: () => undefined,
+    }))).rejects.toThrow("github_credential_lifecycle_required");
+    expect(tenantBTransport.requests).toHaveLength(0);
   });
 
   it("denies plaintext before GitHub transport when canonical access audit fails", async () => {

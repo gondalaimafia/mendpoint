@@ -44,6 +44,7 @@ export type EnvelopeSecret = Readonly<{
   secretId: string;
   generation: number;
   key: EnvelopeKeyReference;
+  keyAttestationSha256: string;
   algorithm: "AES-256-GCM";
   wrappedDataKey: string;
   iv: string;
@@ -86,7 +87,12 @@ export type DurableEnvelopeSecretVersion = Readonly<{
   generation: number;
   state: EnvelopeKeyState;
   key: EnvelopeKeyReference;
-  envelope: Readonly<Omit<EnvelopeSecret, "generation"> & { generation?: number }>;
+  envelope: Readonly<
+    Omit<EnvelopeSecret, "generation" | "keyAttestationSha256"> & {
+      generation?: number;
+      keyAttestationSha256?: string;
+    }
+  >;
   issuedAt: string;
   retiredAt?: string;
   revokedAt?: string;
@@ -173,12 +179,18 @@ export async function sealEnvelopeSecret(
   }
   const provider = providers.find((candidate) => candidate.provider === key.provider);
   if (!provider?.enabled) throw new Error("vault_provider_disabled");
-  await assertProviderAttestation(provider, context.tenantId, key);
+  const attested = await assertProviderAttestation(provider, context.tenantId, key);
   const dataKey = randomBytes(32);
   const wrappedDataKey = await provider.wrapDataKey(key, context.tenantId, dataKey);
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", dataKey, iv);
-  cipher.setAAD(envelopeAad(context.tenantId, secretId, generation, key));
+  cipher.setAAD(envelopeAad(
+    context.tenantId,
+    secretId,
+    generation,
+    key,
+    attested.attestationSha256,
+  ));
   const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   return Object.freeze({
     schemaVersion: ENVELOPE_SECRET_SCHEMA_VERSION,
@@ -186,6 +198,7 @@ export async function sealEnvelopeSecret(
     secretId,
     generation,
     key: Object.freeze({ ...key }),
+    keyAttestationSha256: attested.attestationSha256,
     algorithm: "AES-256-GCM" as const,
     wrappedDataKey,
     iv: iv.toString("base64"),
@@ -217,14 +230,26 @@ export async function openEnvelopeSecret(
   try {
     const provider = providers.find((candidate) => candidate.provider === envelope.key.provider);
     if (!provider?.enabled) throw new Error("vault_provider_disabled");
-    await assertProviderAttestation(provider, context.tenantId, envelope.key);
+    if (!/^[a-f0-9]{64}$/.test(envelope.keyAttestationSha256)) {
+      throw new Error("vault_key_attestation_invalid");
+    }
+    const attested = await assertProviderAttestation(provider, context.tenantId, envelope.key);
+    if (attested.attestationSha256 !== envelope.keyAttestationSha256) {
+      throw new Error("vault_key_attestation_drift");
+    }
     const dataKey = await provider.unwrapDataKey(
       envelope.key,
       context.tenantId,
       envelope.wrappedDataKey,
     );
     const decipher = createDecipheriv("aes-256-gcm", dataKey, Buffer.from(envelope.iv, "base64"));
-    decipher.setAAD(envelopeAad(context.tenantId, envelope.secretId, envelope.generation, envelope.key));
+    decipher.setAAD(envelopeAad(
+      context.tenantId,
+      envelope.secretId,
+      envelope.generation,
+      envelope.key,
+      envelope.keyAttestationSha256,
+    ));
     decipher.setAuthTag(Buffer.from(envelope.authTag, "base64"));
     const plaintext = Buffer.concat([
       decipher.update(Buffer.from(envelope.ciphertext, "base64")),
@@ -266,9 +291,10 @@ function envelopeAad(
   secretId: string,
   generation: number,
   key: EnvelopeKeyReference,
+  keyAttestationSha256: string,
 ): Buffer {
   return Buffer.from(
-    `${tenantId}\0${secretId}\0${generation}\0${key.provider}\0${key.keyId}\0${key.version}\0${key.customerManaged ? "1" : "0"}`,
+    `${tenantId}\0${secretId}\0${generation}\0${key.provider}\0${key.keyId}\0${key.version}\0${key.customerManaged ? "1" : "0"}\0${keyAttestationSha256}`,
   );
 }
 
@@ -575,12 +601,18 @@ export class EnvelopeSecretVault {
       throw new Error("vault_provider_disabled");
     }
     try {
-      await assertProviderAttestation(provider, context.tenantId, key);
+      const attested = await assertProviderAttestation(provider, context.tenantId, key);
       const dataKey = randomBytes(32);
       const wrappedDataKey = await provider.wrapDataKey(key, context.tenantId, dataKey);
       const iv = randomBytes(12);
       const cipher = createCipheriv("aes-256-gcm", dataKey, iv);
-      cipher.setAAD(envelopeAad(context.tenantId, secretId, generation, key));
+      cipher.setAAD(envelopeAad(
+        context.tenantId,
+        secretId,
+        generation,
+        key,
+        attested.attestationSha256,
+      ));
       const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
       const result = Object.freeze({
         schemaVersion: ENVELOPE_SECRET_SCHEMA_VERSION,
@@ -588,6 +620,7 @@ export class EnvelopeSecretVault {
         secretId,
         generation,
         key: Object.freeze({ ...key }),
+        keyAttestationSha256: attested.attestationSha256,
         algorithm: "AES-256-GCM" as const,
         wrappedDataKey,
         iv: iv.toString("base64"),
@@ -621,10 +654,22 @@ export class EnvelopeSecretVault {
       }
       const provider = this.#providers.get(envelope.key.provider);
       if (!provider || !provider.enabled) throw new Error("vault_provider_disabled");
-      await assertProviderAttestation(provider, context.tenantId, envelope.key);
+      if (!/^[a-f0-9]{64}$/.test(envelope.keyAttestationSha256)) {
+        throw new Error("vault_key_attestation_invalid");
+      }
+      const attested = await assertProviderAttestation(provider, context.tenantId, envelope.key);
+      if (attested.attestationSha256 !== envelope.keyAttestationSha256) {
+        throw new Error("vault_key_attestation_drift");
+      }
       const dataKey = await provider.unwrapDataKey(envelope.key, context.tenantId, envelope.wrappedDataKey);
       const decipher = createDecipheriv("aes-256-gcm", dataKey, Buffer.from(envelope.iv, "base64"));
-      decipher.setAAD(envelopeAad(context.tenantId, envelope.secretId, envelope.generation, envelope.key));
+      decipher.setAAD(envelopeAad(
+        context.tenantId,
+        envelope.secretId,
+        envelope.generation,
+        envelope.key,
+        envelope.keyAttestationSha256,
+      ));
       decipher.setAuthTag(Buffer.from(envelope.authTag, "base64"));
       const plaintext = Buffer.concat([
         decipher.update(Buffer.from(envelope.ciphertext, "base64")),
@@ -715,6 +760,8 @@ export class DurableEnvelopeSecretProvider implements SecretProvider {
       version.envelope.tenantId !== this.options.tenantId ||
       version.envelope.secretId !== reference.id ||
       (version.envelope.generation !== undefined && version.envelope.generation !== generation) ||
+      !version.envelope.keyAttestationSha256 ||
+      !/^[a-f0-9]{64}$/.test(version.envelope.keyAttestationSha256) ||
       keyIdentity(this.options.tenantId, version.envelope.key) !==
         keyIdentity(this.options.tenantId, version.key)
     ) {
@@ -722,7 +769,11 @@ export class DurableEnvelopeSecretProvider implements SecretProvider {
     }
     if (version.state !== "active") throw new Error("vault_secret_generation_inactive");
 
-    return openEnvelopeSecret(Object.freeze({ ...version.envelope, generation }), {
+    return openEnvelopeSecret(Object.freeze({
+      ...version.envelope,
+      generation,
+      keyAttestationSha256: version.envelope.keyAttestationSha256,
+    }), {
       tenantId: this.options.tenantId,
       actorId: this.options.actorId,
       correlationId: this.options.correlationId,

@@ -1765,6 +1765,7 @@ CREATE TABLE IF NOT EXISTS secret_lifecycle_versions (
   key_id TEXT NOT NULL,
   key_version TEXT NOT NULL,
   customer_managed INTEGER NOT NULL CHECK (customer_managed IN (0, 1)),
+  key_attestation_sha256 TEXT NOT NULL CHECK (length(key_attestation_sha256) = 64),
   envelope_schema_version INTEGER NOT NULL CHECK (envelope_schema_version = 1),
   algorithm TEXT NOT NULL CHECK (algorithm = 'AES-256-GCM'),
   wrapped_data_key TEXT NOT NULL,
@@ -1832,6 +1833,7 @@ WHEN
   NEW.key_id IS NOT OLD.key_id OR
   NEW.key_version IS NOT OLD.key_version OR
   NEW.customer_managed IS NOT OLD.customer_managed OR
+  NEW.key_attestation_sha256 IS NOT OLD.key_attestation_sha256 OR
   NEW.envelope_schema_version IS NOT OLD.envelope_schema_version OR
   NEW.algorithm IS NOT OLD.algorithm OR
   NEW.wrapped_data_key IS NOT OLD.wrapped_data_key OR
@@ -2364,6 +2366,7 @@ export function createDb(urlOrPath?: string): AppDb {
     migrateProvidersFeedColumns({ raw });
     migrateAuditIntegrity({ raw });
     migrateArtifactContent({ raw });
+    migrateSecretLifecycleAttestation({ raw });
     migrateWardenTransformerTableNames({ raw });
     migrateWardenCiAwaitingReview({ raw });
     installTrustImmutability({ raw });
@@ -2412,6 +2415,52 @@ function migrateTenantMembershipUserNameUniqueness(db: AppDb): void {
     if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
     throw error;
   }
+}
+
+function migrateSecretLifecycleAttestation(db: AppDb): void {
+  const columns = all<{ name: string }>(
+    db,
+    "PRAGMA table_info(secret_lifecycle_versions)",
+  ).map((column) => column.name);
+  if (!columns.includes("key_attestation_sha256")) {
+    run(db, "ALTER TABLE secret_lifecycle_versions ADD COLUMN key_attestation_sha256 TEXT");
+  }
+  db.raw.exec(`
+    DROP TRIGGER IF EXISTS secret_lifecycle_versions_guard_update;
+    CREATE TRIGGER secret_lifecycle_versions_guard_update
+    BEFORE UPDATE ON secret_lifecycle_versions
+    WHEN
+      NEW.tenant_id IS NOT OLD.tenant_id OR
+      NEW.credential_id IS NOT OLD.credential_id OR
+      NEW.source_ref IS NOT OLD.source_ref OR
+      NEW.generation IS NOT OLD.generation OR
+      NEW.audiences_json IS NOT OLD.audiences_json OR
+      NEW.expires_at IS NOT OLD.expires_at OR
+      NEW.issued_at IS NOT OLD.issued_at OR
+      NEW.rotate_after IS NOT OLD.rotate_after OR
+      NEW.key_provider IS NOT OLD.key_provider OR
+      NEW.key_id IS NOT OLD.key_id OR
+      NEW.key_version IS NOT OLD.key_version OR
+      NEW.customer_managed IS NOT OLD.customer_managed OR
+      NEW.key_attestation_sha256 IS NOT OLD.key_attestation_sha256 OR
+      NEW.envelope_schema_version IS NOT OLD.envelope_schema_version OR
+      NEW.algorithm IS NOT OLD.algorithm OR
+      NEW.wrapped_data_key IS NOT OLD.wrapped_data_key OR
+      NEW.iv IS NOT OLD.iv OR
+      NEW.auth_tag IS NOT OLD.auth_tag OR
+      NEW.ciphertext IS NOT OLD.ciphertext OR
+      NEW.created_at IS NOT OLD.created_at OR
+      NOT (
+        (OLD.state = 'active' AND NEW.state = 'retired' AND
+          NEW.retired_at IS NOT NULL AND NEW.revoked_at IS NULL AND NEW.revocation_reason IS NULL) OR
+        (OLD.state IN ('active', 'retired') AND NEW.state = 'revoked' AND
+          NEW.retired_at IS OLD.retired_at AND NEW.revoked_at IS NOT NULL AND
+          length(trim(NEW.revocation_reason)) > 0)
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'secret_lifecycle_transition_invalid');
+    END;
+  `);
 }
 
 function migrateWardenCiAwaitingReview(db: AppDb): void {

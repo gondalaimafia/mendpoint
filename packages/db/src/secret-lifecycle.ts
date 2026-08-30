@@ -28,6 +28,7 @@ export type SecretLifecycleInput = Readonly<{
     authTag: string;
     ciphertext: string;
     createdAt: string;
+    keyAttestationSha256: string;
   }>;
 }>;
 
@@ -105,6 +106,7 @@ function validateInput(input: SecretLifecycleInput): void {
     !input.envelope.iv ||
     !input.envelope.authTag ||
     !input.envelope.ciphertext
+    || !/^[a-f0-9]{64}$/.test(input.envelope.keyAttestationSha256)
   ) {
     throw new Error("secret_envelope_invalid");
   }
@@ -188,8 +190,8 @@ function insertVersion(db: AppDb, input: SecretLifecycleInput): SecretLifecycleV
       tenant_id, credential_id, source_ref, generation, state, audiences_json,
       expires_at, issued_at, rotate_after, retired_at, revoked_at, revocation_reason,
       key_provider, key_id, key_version, customer_managed, envelope_schema_version,
-      algorithm, wrapped_data_key, iv, auth_tag, ciphertext, created_at
-    ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      key_attestation_sha256, algorithm, wrapped_data_key, iv, auth_tag, ciphertext, created_at
+    ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.tenantId,
     input.credentialId,
@@ -204,6 +206,7 @@ function insertVersion(db: AppDb, input: SecretLifecycleInput): SecretLifecycleV
     input.key.version,
     input.key.customerManaged ? 1 : 0,
     input.envelope.schemaVersion,
+    input.envelope.keyAttestationSha256,
     input.envelope.algorithm,
     input.envelope.wrappedDataKey,
     input.envelope.iv,

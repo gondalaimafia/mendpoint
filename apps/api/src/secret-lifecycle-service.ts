@@ -15,6 +15,7 @@ import {
   openEnvelopeSecret,
   sealEnvelopeSecret,
   type EnvelopeKeyLocator,
+  type EnvelopeAccessAuditEvent,
   type EnvelopeSecret,
   type KeyEncryptionKeyProvider,
   type Role,
@@ -27,7 +28,14 @@ export type SecretLifecycleAudit = Readonly<{
   tenantId: string;
   actorId: string;
   idempotencyKey: string;
-  action: "secret.lifecycle.created" | "secret.lifecycle.rotated" | "secret.lifecycle.revoked" | "secret.break_glass.granted";
+  action:
+    | "secret.lifecycle.created"
+    | "secret.lifecycle.rotated"
+    | "secret.lifecycle.revoked"
+    | "secret.lifecycle.rotation_source.granted"
+    | "secret.lifecycle.rotation_source.denied"
+    | "secret.break_glass.granted"
+    | "secret.break_glass.denied";
   credentialId: string;
   metadata: Readonly<Record<string, unknown>>;
 }>;
@@ -77,6 +85,7 @@ function envelopeFromRow(row: SecretLifecycleVersionRow): EnvelopeSecret {
       version: row.key_version,
       customerManaged: row.customer_managed === 1,
     }),
+    keyAttestationSha256: row.key_attestation_sha256 ?? "",
     algorithm: "AES-256-GCM",
     wrappedDataKey: row.wrapped_data_key,
     iv: row.iv,
@@ -146,9 +155,10 @@ export class DurableSecretLifecycleService {
     idempotencyKey: string,
     credentialId: string,
     metadata: Readonly<Record<string, unknown>>,
+    identity: string = action,
   ): void {
     this.options.audit(Object.freeze({
-      id: digest({ tenantId: this.options.tenantId, idempotencyKey, action }),
+      id: digest({ tenantId: this.options.tenantId, idempotencyKey, identity }),
       tenantId: this.options.tenantId,
       actorId: this.options.actorId,
       idempotencyKey,
@@ -233,13 +243,35 @@ export class DurableSecretLifecycleService {
     if (!current) throw new Error("secret_lifecycle_not_found");
     if (current.generation !== input.expectedGeneration) throw new Error("secret_rotation_generation_conflict");
     const at = this.#now();
+    let sourceAccess: EnvelopeAccessAuditEvent | undefined;
     const plaintext = await openEnvelopeSecret(envelopeFromRow(current), {
       tenantId: this.options.tenantId,
       actorId: this.options.actorId,
       correlationId: input.idempotencyKey,
       purpose: "stage durable secret rotation",
       at,
-    }, this.options.providers, () => undefined);
+    }, this.options.providers, (event) => {
+      sourceAccess = event;
+      this.#audit(
+        event.outcome === "granted"
+          ? "secret.lifecycle.rotation_source.granted"
+          : "secret.lifecycle.rotation_source.denied",
+        input.idempotencyKey,
+        input.credentialId,
+        {
+          generation: current.generation,
+          reason: event.reason,
+          outcome: event.outcome,
+          keyProvider: event.key.provider,
+          keyId: event.key.keyId,
+          keyVersion: event.key.version,
+          attestationSha256: current.key_attestation_sha256,
+        },
+      );
+    });
+    if (!sourceAccess || sourceAccess.outcome !== "granted") {
+      throw new Error("secret_rotation_source_audit_missing");
+    }
     const attested = await attestEnvelopeKey(this.options.providers, this.options.tenantId, input.key);
     const envelope = await sealEnvelopeSecret(input.credentialId, plaintext, nextGeneration, attested, {
       tenantId: this.options.tenantId,
@@ -266,15 +298,17 @@ export class DurableSecretLifecycleService {
       next,
     }, {
       operation: { idempotencyKey: input.idempotencyKey, requestDigest, actorId: this.options.actorId },
-      audit: () => this.#audit("secret.lifecycle.rotated", input.idempotencyKey, input.credentialId, {
-        previousGeneration: input.expectedGeneration,
-        generation: nextGeneration,
-        keyProvider: attested.provider,
-        keyId: attested.keyId,
-        keyVersion: attested.version,
-        customerManaged: attested.customerManaged,
-        attestationSha256: attested.attestationSha256,
-      }),
+      audit: () => {
+        this.#audit("secret.lifecycle.rotated", input.idempotencyKey, input.credentialId, {
+          previousGeneration: input.expectedGeneration,
+          generation: nextGeneration,
+          keyProvider: attested.provider,
+          keyId: attested.keyId,
+          keyVersion: attested.version,
+          customerManaged: attested.customerManaged,
+          attestationSha256: attested.attestationSha256,
+        });
+      },
     });
     return publicResult(row);
   }
@@ -297,24 +331,40 @@ export class DurableSecretLifecycleService {
     return publicResult(row);
   }
 
-  async breakGlass(input: Readonly<{ credentialId: string; reason: string }>): Promise<string> {
+  async breakGlass(input: Readonly<{
+    credentialId: string;
+    reason: string;
+    idempotencyKey: string;
+  }>): Promise<string> {
     this.#authorizeAdmin();
     if (this.options.role !== "owner") throw new Error("secret_break_glass_owner_required");
     if (!this.options.breakGlassEnabled) throw new Error("secret_break_glass_disabled");
     if (!input.reason.trim()) throw new Error("secret_break_glass_reason_required");
+    if (!ID.test(input.idempotencyKey)) throw new Error("secret_lifecycle_idempotency_key_invalid");
     const current = getActiveSecretLifecycle(this.options.db, this.options.tenantId, input.credentialId);
     if (!current) throw new Error("secret_lifecycle_not_found");
     const at = this.#now();
-    const auditId = `break-glass:${input.credentialId}:${current.generation}:${digest(input.reason).slice(0, 16)}`;
     return openEnvelopeSecret(envelopeFromRow(current), {
       tenantId: this.options.tenantId,
       actorId: this.options.actorId,
-      correlationId: auditId,
+      correlationId: input.idempotencyKey,
       purpose: `break glass: ${input.reason.trim()}`,
       at,
-    }, this.options.providers, () => this.#audit("secret.break_glass.granted", auditId, input.credentialId, {
-      generation: current.generation,
-      reason: input.reason.trim(),
-    }));
+    }, this.options.providers, (event) => this.#audit(
+      event.outcome === "granted" ? "secret.break_glass.granted" : "secret.break_glass.denied",
+      input.idempotencyKey,
+      input.credentialId,
+      {
+        generation: current.generation,
+        reason: input.reason.trim(),
+        accessReason: event.reason,
+        outcome: event.outcome,
+        keyProvider: event.key.provider,
+        keyId: event.key.keyId,
+        keyVersion: event.key.version,
+        attestationSha256: current.key_attestation_sha256,
+      },
+      "secret.break_glass.attempt",
+    ));
   }
 }

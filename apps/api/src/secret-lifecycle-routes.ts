@@ -103,7 +103,11 @@ export function createSecretLifecycleRoutes(options: Readonly<{
   routes.post("/:id/break-glass", async (c) => {
     try {
       const body = await c.req.json<{ reason: string }>();
-      const plaintext = await service(c).breakGlass({ credentialId: c.req.param("id"), reason: body.reason });
+      const plaintext = await service(c).breakGlass({
+        credentialId: c.req.param("id"),
+        reason: body.reason,
+        idempotencyKey: c.req.header("Idempotency-Key") ?? "",
+      });
       c.header("Cache-Control", "no-store");
       return c.json({ secret: plaintext });
     } catch (error) {

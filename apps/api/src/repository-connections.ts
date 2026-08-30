@@ -46,7 +46,6 @@ import {
   type EnvelopeAccessAuditEvent,
   type GitHubRepositoryTransport,
   type KeyEncryptionKeyProvider,
-  type SecretProvider,
   type SnapshotFile,
   type RepositorySource,
 } from "@mendpoint/platform";
@@ -84,7 +83,6 @@ export type RepositoryCredentialDependenciesInput = Readonly<{
   keyProviders: readonly KeyEncryptionKeyProvider[];
   credentialAudit: CredentialAccessAudit;
   envelopeAudit: (event: EnvelopeAccessAuditEvent) => void | Promise<void>;
-  fallbackProviders?: readonly SecretProvider[];
   githubTransport?: GitHubRepositoryTransport;
   now?: () => Date;
 }>;
@@ -110,6 +108,7 @@ function durableEnvelopeVersion(row: SecretLifecycleVersionRow): DurableEnvelope
         version: row.key_version,
         customerManaged: row.customer_managed === 1,
       }),
+      keyAttestationSha256: row.key_attestation_sha256 ?? undefined,
       algorithm: "AES-256-GCM",
       wrappedDataKey: row.wrapped_data_key,
       iv: row.iv,
@@ -143,7 +142,7 @@ export function createRepositoryCredentialDependencies(
     audit: input.envelopeAudit,
   });
   const credentialBroker = new CredentialBroker({
-    providers: [...(input.fallbackProviders ?? []), durableProvider],
+    providers: [durableProvider],
     audit: input.credentialAudit,
     now: input.now,
   });
@@ -163,9 +162,8 @@ export function createRepositoryCredentialDependencies(
         tenantId,
         connection.credential_ref,
       );
-      return lifecycle
-        ? secretLifecycleCredentialDescriptor(lifecycle)
-        : githubCredentialDescriptor(connection);
+      if (!lifecycle) throw new Error("github_credential_lifecycle_required");
+      return secretLifecycleCredentialDescriptor(lifecycle);
     },
   });
 }

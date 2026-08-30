@@ -183,7 +183,6 @@ import {
   canMutateSystemCatalog,
   permissionForRoute,
   envelopeKeyProvidersFromEnvironment,
-  EnvSecretProvider,
   estimateCost,
   MCU_VERSION,
   selfServeBillingEnabled,
@@ -450,6 +449,7 @@ const SCM_SNAPSHOT_ERRORS = [
     status: 404,
   },
   { internalCode: "scm_connection_revoked", status: 409 },
+  { internalCode: "github_credential_lifecycle_required", status: 409 },
   { internalCode: "consumer_repository_tenant_mismatch", publicCode: "not_found", status: 404 },
 ] satisfies readonly PublicErrorRule[];
 const REPO_KEY_ERRORS = publicErrorRules(
@@ -687,11 +687,6 @@ function repositoryCredentialDependencies(c: Context<ApiEnv>) {
     actorId: principal.id,
     requestId: c.get("requestId") ?? undefined,
     keyProviders: envelopeKeyProviders,
-    fallbackProviders: [
-      new EnvSecretProvider({
-        GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-      }),
-    ],
     credentialAudit: (event) =>
       requestAudit(c, {
         actor: "system",

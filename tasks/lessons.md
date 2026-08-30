@@ -363,7 +363,6 @@
 **Mistake:** I kept the skipped ReGauge activation lane in the active execution path instead of immediately advancing the next dependency-ready wave.
 **Correction:** Talal told me to skip that lane and start from the next wave.
 **Rule:** When a lane is explicitly parked, preserve it unchanged, remove it from the active critical path, and immediately move build and review capacity to the next dependency-ready engineering plan.
-
 ### 2026-08-30 — Optional boolean fields still require strict present-value validation
 
 **Mistake:** SCIM POST and PUT treated every `active` value except boolean `false` as active, collapsing malformed strings, nulls, and numbers into the omitted-field default.
@@ -405,3 +404,27 @@
 **Mistake:** The qualification loader compared raw artifact locator strings, so Windows slash aliases could assign two authority roles to the same file.
 **Correction:** Resolve every protected artifact through the safe path boundary first, then reject duplicate canonical filesystem paths before reading or hashing bytes.
 **Rule:** Security-sensitive file identity checks must compare canonical filesystem identities and include platform-specific alias regressions; raw path-string uniqueness is not an authority boundary.
+
+### 2026-08-30 — Persist authority evidence at the encrypted boundary
+
+**Mistake:** The secret envelope trusted current provider classification but discarded the provider attestation after audit, so provider-authority drift was not cryptographically bound to durable ciphertext.
+**Correction:** Persist the exact attestation digest in both the envelope and lifecycle row, include it in outer AAD, and require an exact current provider-attestation match before unwrap.
+**Rule:** Provider authority evidence must survive restart and be verified at every ciphertext consumption point; an audit-only digest is not a durable cryptographic binding.
+
+### 2026-08-30 — Audit attempted secret access by actual outcome
+
+**Mistake:** Break-glass emitted only a granted audit after successful unwrap, while unwrap denials could be unaudited or mislabeled through a granted-only callback. Rotation also staged source unwrap with a no-op audit.
+**Correction:** Persist both granted and denied access outcomes, and place rotation source-access evidence inside the same fail-closed publication boundary as the replacement generation.
+**Rule:** Secret-access audit callbacks carry the actual outcome. Never name an attempted access granted until the operation succeeds, and never suppress denied or staging access evidence.
+
+### 2026-08-30 — Tenant references cannot select deployment-global secrets
+
+**Mistake:** A tenant-created SCM connection could choose `env://GITHUB_TOKEN`, causing the request-scoped credential broker to fall back to one deployment-global token.
+**Correction:** Require tenant-created connections to resolve a tenant-scoped durable lifecycle record unless an immutable server-owned tenant binding exists.
+**Rule:** A tenant-controlled credential locator may never address process-global secret material. Compatibility fallback must be server-owned, tenant-specific, and impossible to select through request data.
+
+### 2026-08-30 — New break-glass authority needs a new identity
+
+**Mistake:** Break-glass audit IDs were derived from credential, generation, and reason, collapsing a later authorized attempt into an earlier event.
+**Correction:** Bind the operation to an explicit request or attempt identity and use exact replay comparison for deliberate retries.
+**Rule:** Security-sensitive idempotency identities distinguish exact replay from new authority. Similar payloads do not make separate access attempts the same event.
