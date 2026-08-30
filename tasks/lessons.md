@@ -291,3 +291,21 @@
 **Mistake:** ReGauge activation relied on late steps in the same timeout-bounded job to contain failure, without an immutable pre-mutation snapshot or exact run ownership.
 **Correction:** Snapshot and revalidate topology before mutation, quiesce the prior worker, mark every committed process with the exact activation run, and run rollback or containment in a separate always-evaluated job.
 **Rule:** A production mutation job cannot be its own only watchdog. Preserve an exact rollback boundary before mutation, make the commit boundary machine-readable, and independently prove either exact restoration or run-scoped containment after failure or cancellation.
+
+### 2026-08-30 — Hold one lease through cleanup and prove mutation ownership
+
+**Mistake:** The activation serialized only its deploy job, so a later run could start while the earlier cleanup still held a stale snapshot; cleanup also restored that snapshot without proving the failed run had mutated the worker.
+**Correction:** Move concurrency to the complete workflow lifecycle and make an exact run-and-attempt Machine marker the first owned mutation before quiescence.
+**Rule:** A production lease covers preflight through terminal cleanup. Roll back only state carrying the current mutation marker; if no marker exists, report drift without overwriting it.
+
+### 2026-08-30 — Containment proves safe terminal state globally
+
+**Mistake:** Containment counted only current-run workers in the `started` state, so an untagged or `starting` worker could remain capable of becoming active after cleanup passed.
+**Correction:** After coordinator commit, enumerate every worker regardless of tag, repeatedly stop every nonterminal worker, and pass only when all workers are `stopped` or destroyed.
+**Rule:** Failure containment is global after the commit boundary and state based, not tag based. A failed stop can be retried, but success requires a fresh terminal-state inventory.
+
+### 2026-08-30 — Keep activation evidence inside its proven availability boundary
+
+**Mistake:** The final artifact called an internal experimental ReGauge canary continuous production even though the release contract had not passed GA acceptance.
+**Correction:** Label the artifact as continuous internal activation and preserve the exact internal availability and experimental feature tier.
+**Rule:** Deployment location does not determine product availability. Evidence and public claims must use the narrowest state actually proven; promote to GA only in a later evidence-bound change.

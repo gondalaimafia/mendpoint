@@ -18,6 +18,7 @@ const currentEvidenceRefs = [runEvidenceRef] as const;
 const releaseRevision = "d".repeat(40);
 const volumeId = "vol_regauge";
 const activationRunId = "33293506997";
+const activationRunAttempt = "2";
 
 function machinePair(workerState = "started") {
   return [{
@@ -29,6 +30,7 @@ function machinePair(workerState = "started") {
       env: {
         MENDPOINT_RELEASE_REVISION: releaseRevision,
         MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ID: activationRunId,
+        MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ATTEMPT: activationRunAttempt,
       },
       mounts: [{ volume: volumeId, path: "/data" }],
     },
@@ -43,6 +45,7 @@ function machinePair(workerState = "started") {
       env: {
         MENDPOINT_RELEASE_REVISION: releaseRevision,
         MENDPOINT_REGAUGE_ACTIVATION_RUN_ID: activationRunId,
+        MENDPOINT_REGAUGE_ACTIVATION_RUN_ATTEMPT: activationRunAttempt,
       },
       mounts: [],
     },
@@ -103,18 +106,21 @@ describe("Regauge production proof", () => {
       expectedRevision: releaseRevision,
       expectedVolumeId: volumeId,
       expectedRunId: activationRunId,
+      expectedRunAttempt: activationRunAttempt,
     })).toMatchObject({ workerId: "worker-a", workerState: "stopped", action: "start" });
     expect(planRegaugeWorkerStart({
       machines: machinePair("starting"),
       expectedRevision: releaseRevision,
       expectedVolumeId: volumeId,
       expectedRunId: activationRunId,
+      expectedRunAttempt: activationRunAttempt,
     })).toMatchObject({ workerState: "starting", action: "wait" });
     expect(planRegaugeWorkerStart({
       machines: machinePair("started"),
       expectedRevision: releaseRevision,
       expectedVolumeId: volumeId,
       expectedRunId: activationRunId,
+      expectedRunAttempt: activationRunAttempt,
     })).toMatchObject({ workerState: "started", action: "observe" });
 
     expect(() => planRegaugeWorkerStart({
@@ -122,13 +128,25 @@ describe("Regauge production proof", () => {
       expectedRevision: releaseRevision,
       expectedVolumeId: volumeId,
       expectedRunId: activationRunId,
+      expectedRunAttempt: activationRunAttempt,
     })).toThrow("regauge_production_machine_topology_invalid");
     expect(() => planRegaugeWorkerStart({
       machines: machinePair("stopping"),
       expectedRevision: releaseRevision,
       expectedVolumeId: volumeId,
       expectedRunId: activationRunId,
+      expectedRunAttempt: activationRunAttempt,
     })).toThrow("regauge_production_worker_state_invalid");
+    const staleAttempt = machinePair("started");
+    staleAttempt[0]!.config.env.MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ATTEMPT = "1";
+    staleAttempt[1]!.config.env.MENDPOINT_REGAUGE_ACTIVATION_RUN_ATTEMPT = "1";
+    expect(() => planRegaugeWorkerStart({
+      machines: staleAttempt,
+      expectedRevision: releaseRevision,
+      expectedVolumeId: volumeId,
+      expectedRunId: activationRunId,
+      expectedRunAttempt: activationRunAttempt,
+    })).toThrow("regauge_production_machine_topology_invalid");
   });
 
   it("rejects machine replacement, restart, or worker health drift during continuity", () => {
@@ -137,6 +155,7 @@ describe("Regauge production proof", () => {
       expectedRevision: releaseRevision,
       expectedVolumeId: volumeId,
       expectedRunId: activationRunId,
+      expectedRunAttempt: activationRunAttempt,
     });
     expect(verifyRegaugeMachineContinuity({ machines: machinePair(), expected })).toEqual(expected);
 

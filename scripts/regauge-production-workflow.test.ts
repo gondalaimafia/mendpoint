@@ -10,6 +10,11 @@ describe("Regauge production workflow", () => {
     const workflow = parse(source) as Record<string, any>;
     expect(workflow.on).toHaveProperty("workflow_dispatch");
     expect(workflow.on).not.toHaveProperty("push");
+    expect(workflow.concurrency).toEqual({
+      group: "regauge-production",
+      "cancel-in-progress": false,
+    });
+    expect(workflow.jobs.deploy.concurrency).toBeUndefined();
     expect(workflow.jobs.deploy.environment).toBe("regauge-production");
     expect(source).toContain("REGAUGE_DRAFT_ONLY");
     expect(source).toContain("REGAUGE_CANARY_OWNER");
@@ -271,7 +276,7 @@ describe("Regauge production workflow", () => {
     ) as Record<string, any>;
     const steps = workflow.jobs.deploy.steps as Record<string, any>[];
     const continuous = steps.find(
-      (step) => step.name === "Preserve continuous production after activation",
+      (step) => step.name === "Preserve continuous internal production activation",
     )!;
     const uploadIndex = steps.findIndex(
       (step) => step.name === "Upload Regauge production evidence",
@@ -289,7 +294,11 @@ describe("Regauge production workflow", () => {
     expect(continuous.run).toContain(
       '.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "experimental" and .enabled == true)',
     );
-    expect(continuous.run).toContain("continuous-production.json");
+    expect(continuous.run).toContain("continuous-internal-activation.json");
+    expect(continuous.run).not.toContain("continuous-production.json");
+    expect(continuous.run).toContain("continuousInternalActivation: true");
+    expect(continuous.run).toContain('availability: "internal"');
+    expect(continuous.run).not.toContain("continuousProduction: true");
     expect(continuous.run).not.toContain("worker=0");
     expect(continuous.run).not.toContain("flyctl scale count");
     expect(continuousIndex).toBeGreaterThan(-1);
@@ -406,13 +415,18 @@ describe("Regauge production workflow", () => {
     expect(diagnostics.run).toContain('timeout --kill-after=2s 10s flyctl logs --app mendpoint-regauge-production');
     expect(diagnostics.run).toContain('> "test-results/regauge-production/worker-${machine_id}.log" 2>&1 || true) &');
     expect(diagnostics.run).toContain("wait || true");
-    const continuous = steps.find((step) => step.name === "Preserve continuous production after activation")!;
+    const continuous = steps.find((step) => step.name === "Preserve continuous internal production activation")!;
     expect(steps.indexOf(diagnostics)).toBeLessThan(steps.indexOf(failure));
     expect(steps.indexOf(continuous)).toBeLessThan(steps.indexOf(diagnostics));
     expect(failure.if).toBe("${{ failure() }}");
     expect(failure.run).toContain("flyctl machines list --app mendpoint-regauge-production --json");
-    expect(failure.run).toContain('flyctl machine stop "$machine_id"');
-    expect(failure.run).toContain('test "$remaining_started_workers" = "0"');
+    expect(failure.run).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ID");
+    expect(failure.run).toContain('state != "stopped" and .state != "destroyed"');
+    expect(failure.run).toContain('if ! timeout --kill-after=5s 60s flyctl machine stop');
+    expect(failure.run).toContain('stop_failures="$((stop_failures + 1))"');
+    expect(failure.run).toContain('test "$containment_verified" = true');
+    expect(failure.run).toContain('test "$remaining_unsafe_workers" = "0"');
+    expect(failure.run).not.toContain("|| true");
     expect(failure.run).toContain("failure-containment.json");
     expect(failure.run).not.toContain("flyctl scale count worker=0");
     expect(failure.run).not.toContain("volumes delete");
@@ -428,7 +442,10 @@ describe("Regauge production workflow", () => {
     expect(upload["continue-on-error"]).toBe(true);
     expect(publicationContainment.if).toBe("${{ steps.evidence_upload.outcome == 'failure' }}");
     expect(steps.indexOf(publicationContainment)).toBeGreaterThan(steps.indexOf(upload));
-    expect(publicationContainment.run).toContain('flyctl machine stop "$machine_id"');
+    expect(publicationContainment.run).toContain('state != "stopped" and .state != "destroyed"');
+    expect(publicationContainment.run).toContain('if ! timeout --kill-after=5s 60s flyctl machine stop');
+    expect(publicationContainment.run).toContain('test "$containment_verified" = true');
+    expect(publicationContainment.run).not.toContain("|| true");
     expect(steps.indexOf(publicationEnforcement)).toBeGreaterThan(
       steps.indexOf(publicationContainment),
     );
@@ -506,6 +523,10 @@ describe("Regauge production workflow", () => {
     const quiesce = deploy[quiesceIndex]!.run as string;
     expect(quiesce).toContain("regauge_pre_mutation_topology_drift");
     expect(quiesce).toContain("pre-mutation-worker-config.json");
+    expect(quiesce).toContain("quiesce-worker-config.json");
+    expect(quiesce).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ID");
+    expect(quiesce).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ATTEMPT");
+    expect(quiesce).toContain('--machine-config test-results/regauge-production/quiesce-worker-config.json');
     expect(quiesce).toContain('flyctl machine stop "$worker_id"');
     expect(coordinator).toContain("MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ID");
     expect(coordinator).toContain("MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ATTEMPT");
@@ -529,11 +550,21 @@ describe("Regauge production workflow", () => {
     expect(restore).toContain("pre-mutation-machines.json");
     expect(restore).toContain('[[ "$live_coordinator" == "$prior_coordinator" ]]');
     expect(restore).toContain("--machine-config test-results/regauge-cleanup/prior-worker-config.json");
-    expect(restore).toContain('if [[ "$prior_state" == "started" ]]');
-    expect(restore).toContain("MENDPOINT_REGAUGE_ACTIVATION_RUN_ID");
-    expect(restore).toContain("MENDPOINT_REGAUGE_ACTIVATION_RUN_ATTEMPT");
+    expect(restore).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ID");
+    expect(restore).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ATTEMPT");
+    expect(restore).toContain('action="no_owned_mutation"');
+    expect(restore).toContain('action="contained_all_workers_after_coordinator_commit"');
+    expect(restore.indexOf('if [[ "$quiesce_markers" == "1" ]]')).toBeLessThan(
+      restore.indexOf('--machine-config test-results/regauge-cleanup/prior-worker-config.json'),
+    );
+    expect(restore.indexOf('elif [[ "$quiesce_markers" == "0" ]]')).toBeLessThan(
+      restore.indexOf('action="no_owned_mutation"'),
+    );
     expect(restore).toContain("for attempt in {1..30}");
-    expect(restore).toContain('if [[ "$remaining_owned_started" == "0" ]]');
+    expect(restore).toContain('state != "stopped" and .state != "destroyed"');
+    expect(restore).toContain('if ! timeout --kill-after=5s 60s flyctl machine stop');
+    expect(restore).toContain('stop_failures="$((stop_failures + 1))"');
+    expect(restore).not.toContain("|| true");
     expect(restore).toContain('test "$cleanup_verified" = true');
     expect(cleanup.steps.some(
       (step: Record<string, unknown>) => step.name === "Upload cleanup evidence",
