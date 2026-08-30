@@ -437,9 +437,10 @@ jobs:
             })
           ' test-results/regauge-production/pre-mutation-worker-config.json \
             > test-results/regauge-production/quiesce-worker-config.json
-          flyctl machine update "$worker_id" --app mendpoint-regauge-production \
+          timeout --kill-after=10s 180s flyctl machine update "$worker_id" \
+            --app mendpoint-regauge-production \
             --machine-config test-results/regauge-production/quiesce-worker-config.json \
-            --skip-health-checks --yes
+            --skip-health-checks --skip-start --yes
           marked="$(flyctl machines list --app mendpoint-regauge-production --json)"
           jq -e --arg id "$worker_id" --arg run "$GITHUB_RUN_ID" \
             --arg attempt "$GITHUB_RUN_ATTEMPT" '
@@ -834,7 +835,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p test-results/regauge-production
-          machines="$(flyctl machines list --app mendpoint-regauge-production --json)"
+          machines="$(timeout --kill-after=2s 10s flyctl machines list \
+            --app mendpoint-regauge-production --json)"
           mutation_markers="$(jq --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" '[.[] | select(
             (.config.metadata.fly_process_group == "coordinator"
               and .config.env.MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ID == $run
@@ -851,8 +853,9 @@ jobs:
           if [[ "$mutation_markers" == "0" ]]; then
             containment_verified=true
           else
-            for attempt in {1..30}; do
-              machines="$(flyctl machines list --app mendpoint-regauge-production --json)"
+            for attempt in {1..20}; do
+              machines="$(timeout --kill-after=2s 10s flyctl machines list \
+                --app mendpoint-regauge-production --json)"
               mapfile -t unsafe_worker_ids < <(jq -r '.[] | select(
                 .config.metadata.fly_process_group == "worker"
                 and .state != "stopped" and .state != "destroyed"
@@ -862,18 +865,24 @@ jobs:
                 containment_verified=true
                 break
               fi
+              stop_pids=()
               for machine_id in "${unsafe_worker_ids[@]}"; do
-                if ! timeout --kill-after=5s 60s flyctl machine stop "$machine_id" \
-                  --app mendpoint-regauge-production; then
+                (timeout --kill-after=5s 15s flyctl machine stop "$machine_id" \
+                  --app mendpoint-regauge-production) &
+                stop_pids+=("$!")
+              done
+              for stop_pid in "${stop_pids[@]}"; do
+                if ! wait "$stop_pid"; then
                   stop_failures="$((stop_failures + 1))"
                 fi
               done
-              test "$attempt" -lt 30
+              test "$attempt" -lt 20
               sleep 2
             done
           fi
           test "$containment_verified" = true
-          remaining_unsafe_workers="$(flyctl machines list --app mendpoint-regauge-production --json \
+          remaining_unsafe_workers="$(timeout --kill-after=2s 10s flyctl machines list \
+            --app mendpoint-regauge-production --json \
             | jq '[.[] | select(.config.metadata.fly_process_group == "worker"
               and .state != "stopped" and .state != "destroyed")] | length')"
           if [[ "$mutation_markers" != "0" ]]; then test "$remaining_unsafe_workers" = "0"; fi
@@ -902,8 +911,10 @@ jobs:
         run: |
           set -euo pipefail
           containment_verified=false
-          for attempt in {1..30}; do
-            machines="$(flyctl machines list --app mendpoint-regauge-production --json)"
+          stop_failures=0
+          for attempt in {1..20}; do
+            machines="$(timeout --kill-after=2s 10s flyctl machines list \
+              --app mendpoint-regauge-production --json)"
             mapfile -t unsafe_worker_ids < <(jq -r '.[] | select(
               .config.metadata.fly_process_group == "worker"
               and .state != "stopped" and .state != "destroyed"
@@ -912,17 +923,23 @@ jobs:
               containment_verified=true
               break
             fi
+            stop_pids=()
             for machine_id in "${unsafe_worker_ids[@]}"; do
-              if ! timeout --kill-after=5s 60s flyctl machine stop "$machine_id" \
-                --app mendpoint-regauge-production; then
-                printf 'worker stop retry required: %s\n' "$machine_id" >&2
+              (timeout --kill-after=5s 15s flyctl machine stop "$machine_id" \
+                --app mendpoint-regauge-production) &
+              stop_pids+=("$!")
+            done
+            for stop_pid in "${stop_pids[@]}"; do
+              if ! wait "$stop_pid"; then
+                stop_failures="$((stop_failures + 1))"
               fi
             done
-            test "$attempt" -lt 30
+            test "$attempt" -lt 20
             sleep 2
           done
           test "$containment_verified" = true
-          remaining_unsafe_workers="$(flyctl machines list --app mendpoint-regauge-production --json \
+          remaining_unsafe_workers="$(timeout --kill-after=2s 10s flyctl machines list \
+            --app mendpoint-regauge-production --json \
             | jq '[.[] | select(.config.metadata.fly_process_group == "worker"
               and .state != "stopped" and .state != "destroyed")] | length')"
           test "$remaining_unsafe_workers" = "0"
@@ -954,7 +971,8 @@ jobs:
           snapshot="test-results/regauge-production/preflight/pre-mutation-machines.json"
           test -s "$snapshot"
           live="test-results/regauge-cleanup/live-machines.json"
-          flyctl machines list --app mendpoint-regauge-production --json > "$live"
+          timeout --kill-after=2s 10s flyctl machines list \
+            --app mendpoint-regauge-production --json > "$live"
           prior_coordinator="$(jq -cS '
             .[] | select(.config.metadata.fly_process_group == "coordinator")
             | {id, config, image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")}
@@ -974,22 +992,51 @@ jobs:
             )] | length' "$live")"
           if [[ "$live_coordinator" == "$prior_coordinator" ]]; then
             if [[ "$quiesce_markers" == "1" ]]; then
-              jq -c --arg id "$worker_id" '
-                .[] | select(.id == $id)
-                | (.image_ref | "\(.registry)/\(.repository)@\(.digest)") as $image
-                | (.config + {image: $image})
-              ' "$snapshot" > test-results/regauge-cleanup/prior-worker-config.json
-              flyctl machine update "$worker_id" --app mendpoint-regauge-production \
-                --machine-config test-results/regauge-cleanup/prior-worker-config.json \
-                --skip-health-checks --yes
-              restored_state="$(flyctl machines list --app mendpoint-regauge-production --json \
-                | jq -er --arg id "$worker_id" '.[] | select(.id == $id) | .state')"
-              if [[ "$prior_state" == "started" && "$restored_state" != "started" ]]; then
-                flyctl machine start "$worker_id" --app mendpoint-regauge-production
-              elif [[ "$prior_state" == "stopped" && "$restored_state" != "stopped" ]]; then
-                flyctl machine stop "$worker_id" --app mendpoint-regauge-production
+              if jq -e --slurpfile expected "$snapshot" '
+                ([.[] | .id] | sort)
+                == ([$expected[0][] | .id] | sort)
+              ' "$live" >/dev/null; then
+                jq -c --arg id "$worker_id" '
+                  .[] | select(.id == $id)
+                  | (.image_ref | "\(.registry)/\(.repository)@\(.digest)") as $image
+                  | (.config + {image: $image})
+                ' "$snapshot" > test-results/regauge-cleanup/prior-worker-config.json
+                restore_transition_ok=true
+                if ! timeout --kill-after=10s 180s flyctl machine update "$worker_id" \
+                  --app mendpoint-regauge-production \
+                  --machine-config test-results/regauge-cleanup/prior-worker-config.json \
+                  --skip-health-checks --skip-start --yes; then
+                  restore_transition_ok=false
+                fi
+                restored_state=""
+                if [[ "$restore_transition_ok" == true ]] && ! restored_state="$(
+                  timeout --kill-after=2s 10s flyctl machines list \
+                    --app mendpoint-regauge-production --json \
+                    | jq -er --arg id "$worker_id" '.[] | select(.id == $id) | .state'
+                )"; then
+                  restore_transition_ok=false
+                fi
+                if [[ "$restore_transition_ok" == true \
+                  && "$prior_state" == "started" && "$restored_state" != "started" ]]; then
+                  if ! timeout --kill-after=5s 60s flyctl machine start "$worker_id" \
+                    --app mendpoint-regauge-production; then
+                    restore_transition_ok=false
+                  fi
+                elif [[ "$restore_transition_ok" == true \
+                  && "$prior_state" == "stopped" && "$restored_state" != "stopped" ]]; then
+                  if ! timeout --kill-after=5s 60s flyctl machine stop "$worker_id" \
+                    --app mendpoint-regauge-production; then
+                    restore_transition_ok=false
+                  fi
+                fi
+                if [[ "$restore_transition_ok" == true ]]; then
+                  action="restored_prior_worker"
+                else
+                  action="contained_all_workers_after_restore_failure"
+                fi
+              else
+                action="contained_all_workers_after_topology_drift"
               fi
-              action="restored_prior_worker"
             elif [[ "$quiesce_markers" == "0" ]]; then
               action="no_owned_mutation"
             else
@@ -999,27 +1046,25 @@ jobs:
           else
             action="contained_all_workers_after_coordinator_commit"
           fi
-          prior_worker="$(jq -cS --arg id "$worker_id" '
-            .[] | select(.id == $id)
-            | {id, state, config, image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")}
-          ' "$snapshot")"
           cleanup_verified=false
           stop_failures=0
-          for attempt in {1..30}; do
-            after="$(flyctl machines list --app mendpoint-regauge-production --json)"
+          for attempt in {1..20}; do
+            after="$(timeout --kill-after=2s 10s flyctl machines list \
+              --app mendpoint-regauge-production --json)"
             printf '%s\n' "$after" > test-results/regauge-cleanup/after-machines.json
             if [[ "$action" == "restored_prior_worker" ]]; then
-              after_coordinator="$(jq -cS '
-                .[] | select(.config.metadata.fly_process_group == "coordinator")
-                | {id, config, image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")}
-              ' <<<"$after")"
-              after_worker="$(jq -cS --arg id "$worker_id" '
-                .[] | select(.id == $id)
-                | {id, state, config, image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")}
-              ' <<<"$after")"
-              if [[ "$after_coordinator" == "$prior_coordinator" && "$after_worker" == "$prior_worker" ]]; then
+              if jq -e --slurpfile expected "$snapshot" '
+                ([.[] | {id, instance_id, state, config, image_ref}] | sort_by(.id))
+                == ([$expected[0][] | {id, instance_id, state, config, image_ref}] | sort_by(.id))
+              ' <<<"$after" >/dev/null; then
                 cleanup_verified=true
                 break
+              fi
+              if ! jq -e --slurpfile expected "$snapshot" '
+                ([.[] | {id, instance_id, config, image_ref}] | sort_by(.id))
+                == ([$expected[0][] | {id, instance_id, config, image_ref}] | sort_by(.id))
+              ' <<<"$after" >/dev/null; then
+                action="contained_all_workers_after_restore_drift"
               fi
             elif [[ "$action" == "no_owned_mutation" ]]; then
               if jq -e --slurpfile expected "$snapshot" '
@@ -1029,7 +1074,8 @@ jobs:
                 cleanup_verified=true
                 break
               fi
-            else
+            fi
+            if [[ "$action" == contained_all_workers_* ]]; then
               mapfile -t unsafe_worker_ids < <(jq -r '.[] | select(
                 .config.metadata.fly_process_group == "worker"
                 and .state != "stopped" and .state != "destroyed"
@@ -1038,14 +1084,19 @@ jobs:
                 cleanup_verified=true
                 break
               fi
+              stop_pids=()
               for unsafe_worker_id in "${unsafe_worker_ids[@]}"; do
-                if ! timeout --kill-after=5s 60s flyctl machine stop "$unsafe_worker_id" \
-                  --app mendpoint-regauge-production; then
+                (timeout --kill-after=5s 15s flyctl machine stop "$unsafe_worker_id" \
+                  --app mendpoint-regauge-production) &
+                stop_pids+=("$!")
+              done
+              for stop_pid in "${stop_pids[@]}"; do
+                if ! wait "$stop_pid"; then
                   stop_failures="$((stop_failures + 1))"
                 fi
               done
             fi
-            test "$attempt" -lt 30
+            test "$attempt" -lt 20
             sleep 2
           done
           jq -n --arg action "$action" --arg runId "$GITHUB_RUN_ID" \

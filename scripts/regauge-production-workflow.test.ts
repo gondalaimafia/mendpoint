@@ -419,10 +419,12 @@ describe("Regauge production workflow", () => {
     expect(steps.indexOf(diagnostics)).toBeLessThan(steps.indexOf(failure));
     expect(steps.indexOf(continuous)).toBeLessThan(steps.indexOf(diagnostics));
     expect(failure.if).toBe("${{ failure() }}");
-    expect(failure.run).toContain("flyctl machines list --app mendpoint-regauge-production --json");
+    expect(failure.run).toContain("timeout --kill-after=2s 10s flyctl machines list");
     expect(failure.run).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ID");
     expect(failure.run).toContain('state != "stopped" and .state != "destroyed"');
-    expect(failure.run).toContain('if ! timeout --kill-after=5s 60s flyctl machine stop');
+    expect(failure.run).toContain('(timeout --kill-after=5s 15s flyctl machine stop');
+    expect(failure.run).toContain('stop_pids+=("$!")');
+    expect(failure.run).toContain('if ! wait "$stop_pid"');
     expect(failure.run).toContain('stop_failures="$((stop_failures + 1))"');
     expect(failure.run).toContain('test "$containment_verified" = true');
     expect(failure.run).toContain('test "$remaining_unsafe_workers" = "0"');
@@ -443,7 +445,9 @@ describe("Regauge production workflow", () => {
     expect(publicationContainment.if).toBe("${{ steps.evidence_upload.outcome == 'failure' }}");
     expect(steps.indexOf(publicationContainment)).toBeGreaterThan(steps.indexOf(upload));
     expect(publicationContainment.run).toContain('state != "stopped" and .state != "destroyed"');
-    expect(publicationContainment.run).toContain('if ! timeout --kill-after=5s 60s flyctl machine stop');
+    expect(publicationContainment.run).toContain('(timeout --kill-after=5s 15s flyctl machine stop');
+    expect(publicationContainment.run).toContain('stop_pids+=("$!")');
+    expect(publicationContainment.run).toContain('if ! wait "$stop_pid"');
     expect(publicationContainment.run).toContain('test "$containment_verified" = true');
     expect(publicationContainment.run).not.toContain("|| true");
     expect(steps.indexOf(publicationEnforcement)).toBeGreaterThan(
@@ -527,6 +531,8 @@ describe("Regauge production workflow", () => {
     expect(quiesce).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ID");
     expect(quiesce).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ATTEMPT");
     expect(quiesce).toContain('--machine-config test-results/regauge-production/quiesce-worker-config.json');
+    expect(quiesce).toContain('timeout --kill-after=10s 180s flyctl machine update "$worker_id"');
+    expect(quiesce).toContain("--skip-health-checks --skip-start --yes");
     expect(quiesce).toContain('flyctl machine stop "$worker_id"');
     expect(coordinator).toContain("MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ID");
     expect(coordinator).toContain("MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ATTEMPT");
@@ -550,25 +556,65 @@ describe("Regauge production workflow", () => {
     expect(restore).toContain("pre-mutation-machines.json");
     expect(restore).toContain('[[ "$live_coordinator" == "$prior_coordinator" ]]');
     expect(restore).toContain("--machine-config test-results/regauge-cleanup/prior-worker-config.json");
+    expect(restore).toContain("--skip-health-checks --skip-start --yes");
     expect(restore).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ID");
     expect(restore).toContain("MENDPOINT_REGAUGE_QUIESCE_RUN_ATTEMPT");
     expect(restore).toContain('action="no_owned_mutation"');
     expect(restore).toContain('action="contained_all_workers_after_coordinator_commit"');
+    expect(restore).toContain('action="contained_all_workers_after_topology_drift"');
+    expect(restore).toContain('action="contained_all_workers_after_restore_failure"');
+    expect(restore).toContain('action="contained_all_workers_after_restore_drift"');
     expect(restore.indexOf('if [[ "$quiesce_markers" == "1" ]]')).toBeLessThan(
       restore.indexOf('--machine-config test-results/regauge-cleanup/prior-worker-config.json'),
     );
     expect(restore.indexOf('elif [[ "$quiesce_markers" == "0" ]]')).toBeLessThan(
       restore.indexOf('action="no_owned_mutation"'),
     );
-    expect(restore).toContain("for attempt in {1..30}");
+    expect(restore).toContain("for attempt in {1..20}");
     expect(restore).toContain('state != "stopped" and .state != "destroyed"');
-    expect(restore).toContain('if ! timeout --kill-after=5s 60s flyctl machine stop');
+    expect(restore).toContain('(timeout --kill-after=5s 15s flyctl machine stop');
+    expect(restore).toContain('if ! timeout --kill-after=10s 180s flyctl machine update');
+    expect(restore).toContain('timeout --kill-after=5s 60s flyctl machine start');
+    expect(restore).toContain('timeout --kill-after=5s 60s flyctl machine stop');
+    expect(restore).toContain('restore_transition_ok=false');
+    expect(restore).toContain('stop_pids+=("$!")');
+    expect(restore).toContain('if ! wait "$stop_pid"');
     expect(restore).toContain('stop_failures="$((stop_failures + 1))"');
     expect(restore).not.toContain("|| true");
+    expect(restore).toContain('{id, instance_id, state, config, image_ref}');
+    expect(restore).toContain('{id, instance_id, config, image_ref}');
     expect(restore).toContain('test "$cleanup_verified" = true');
     expect(cleanup.steps.some(
       (step: Record<string, unknown>) => step.name === "Upload cleanup evidence",
     )).toBe(true);
+  });
+
+  it("keeps all global containment retries inside their independent watchdogs", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const deploySteps = workflow.jobs.deploy.steps as Record<string, any>[];
+    const containmentRuns = [
+      deploySteps.find((step) => step.name === "Contain target after activation failure")!.run,
+      deploySteps.find(
+        (step) => step.name === "Contain target after evidence publication failure",
+      )!.run,
+      workflow.jobs.cleanup.steps.find(
+        (step: Record<string, unknown>) => step.name === "Restore or contain the exact activation worker",
+      ).run,
+    ] as string[];
+
+    expect(workflow.jobs.cleanup["timeout-minutes"]).toBe(15);
+    for (const run of containmentRuns) {
+      expect(run).toContain("for attempt in {1..20}");
+      expect(run).toContain("timeout --kill-after=2s 10s flyctl machines list");
+      expect(run).toContain('(timeout --kill-after=5s 15s flyctl machine stop');
+      expect(run).toContain('stop_pids+=("$!")');
+      expect(run).toContain('if ! wait "$stop_pid"');
+    }
+    // Bounded inventory, parallel stops, and the retry delay keep 20 rounds
+    // under the cleanup job's independent 15 minute watchdog with headroom.
+    expect(10 + 180 + 10 + 60 + 20 * (10 + 15 + 2)).toBeLessThan(15 * 60);
   });
 
   it("samples the exact worker identity and health throughout the readiness soak", () => {

@@ -309,3 +309,27 @@
 **Mistake:** The final artifact called an internal experimental ReGauge canary continuous production even though the release contract had not passed GA acceptance.
 **Correction:** Label the artifact as continuous internal activation and preserve the exact internal availability and experimental feature tier.
 **Rule:** Deployment location does not determine product availability. Evidence and public claims must use the narrowest state actually proven; promote to GA only in a later evidence-bound change.
+
+### 2026-08-30 — Fit recovery loops inside their independent watchdog
+
+**Mistake:** Sequential worker stops and unbounded inventory calls let the nominally bounded containment loop exceed the cleanup job's own timeout at maximum cardinality.
+**Correction:** Bound every external call, stop independent workers in parallel, wait for every result, and prove worst-case retry arithmetic stays below the watchdog with headroom.
+**Rule:** A retry count is not a time bound. For every recovery loop, calculate inventory, mutation, delay, and final-proof time under maximum cardinality and reject any design that cannot complete before its independent watchdog.
+
+### 2026-08-30 — Restore the whole topology or contain it
+
+**Mistake:** Rollback verified the prior coordinator and target worker records but did not compare the complete Machine set, so an extra active worker could escape restoration proof.
+**Correction:** Require exact full-snapshot equality across cardinality, IDs, instances, states, configurations, and images; switch any incompatible drift to global worker containment.
+**Rule:** Production rollback is a topology assertion, not a pair of object checks. Restoration passes only when the entire pre-mutation topology is exact; otherwise fail closed and contain every unsafe worker.
+
+### 2026-08-30 — Make control-plane state transitions explicit
+
+**Mistake:** A configuration-only Fly Machine update relied on default start behavior, so marking or restoring a stopped worker could briefly execute it before the workflow issued a stop.
+**Correction:** Use `--skip-start` for every configuration mutation and issue a separate start only when the recorded transition contract requires it.
+**Rule:** Never assume a deployment or configuration command preserves runtime state. Suppress implicit starts, then perform and verify the exact intended state transition as a separate operation.
+
+### 2026-08-30 — A failed rollback operation must enter containment
+
+**Mistake:** The first exact-restore path ran under `set -e`, so a failed update, inventory, start, or stop could terminate cleanup before global containment ran.
+**Correction:** Check every restore operation explicitly, preserve a transition result, and switch any failure to the bounded global containment path.
+**Rule:** Rollback failure is an expected safety transition, not an unhandled shell error. Every rollback operation must have a bounded failure edge that reaches containment and terminal-state proof.
