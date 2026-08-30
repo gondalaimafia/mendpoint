@@ -51,6 +51,7 @@ function fixture(audience = "mendpoint-scim") {
     createdAt: NOW,
   });
   const bindings = scimBindingsFromEnv({
+    OIDC_ISSUER: ISSUER,
     MENDPOINT_SCIM_BINDINGS_JSON: JSON.stringify({
       schemaVersion: 1,
       bindings: [{ tenantId: "tenant-a", principalId: service.id, issuer: ISSUER }],
@@ -89,6 +90,32 @@ function user(overrides: Record<string, unknown> = {}) {
 }
 
 describe("SCIM tenant lifecycle", () => {
+  it("binds provisioned identities to the exact configured OIDC issuer", () => {
+    const equivalent = scimBindingsFromEnv({
+      OIDC_ISSUER: `${ISSUER}/`,
+      MENDPOINT_SCIM_BINDINGS_JSON: JSON.stringify({
+        schemaVersion: 1,
+        bindings: [{ tenantId: "tenant-a", principalId: "principal-scim-a", issuer: ISSUER }],
+      }),
+    });
+    expect(equivalent.get("tenant-a")?.issuer).toBe(`${ISSUER}/`);
+
+    expect(() => scimBindingsFromEnv({
+      OIDC_ISSUER: "https://other-identity.example",
+      MENDPOINT_SCIM_BINDINGS_JSON: JSON.stringify({
+        schemaVersion: 1,
+        bindings: [{ tenantId: "tenant-a", principalId: "principal-scim-a", issuer: ISSUER }],
+      }),
+    })).toThrow("scim_oidc_issuer_mismatch");
+
+    expect(() => scimBindingsFromEnv({
+      MENDPOINT_SCIM_BINDINGS_JSON: JSON.stringify({
+        schemaVersion: 1,
+        bindings: [{ tenantId: "tenant-a", principalId: "principal-scim-a", issuer: ISSUER }],
+      }),
+    })).toThrow("scim_oidc_issuer_required");
+  });
+
   it("requires an exact bound service principal and an explicit non-wildcard provisioning scope", async () => {
     expect(permissionForRoute("POST", "/scim/v2/Users")).toBe("identity:provision");
     expect(scopeAllows(["*"], "identity:provision")).toBe(false);
@@ -153,7 +180,10 @@ describe("SCIM tenant lifecycle", () => {
         UserName: "Azure.User@example.com",
         DisplayName: "Azure User",
         Active: true,
-        Roles: [{ value: "Engineer", primary: true }],
+        Roles: [
+          { VALUE: "Viewer" },
+          { VALUE: "Engineer", PRIMARY: true },
+        ],
       }),
     });
     expect(created.status).toBe(201);
@@ -179,6 +209,81 @@ describe("SCIM tenant lifecycle", () => {
       body: JSON.stringify({ ...user(), schemas: [] }),
     });
     expect(missingSchema.status).toBe(400);
+  });
+
+  it("rejects empty PATCH operations without advancing the resource version", async () => {
+    const { app, db, key } = fixture();
+    const created = await app.request("/scim/v2/Users", {
+      method: "POST", headers: headers(key.token), body: JSON.stringify(user()),
+    });
+    const value = await created.json() as { id: string; meta: { version: string } };
+    const before = getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")!;
+
+    const rejected = await app.request(`/scim/v2/Users/${value.id}`, {
+      method: "PATCH",
+      headers: headers(key.token, { "if-match": value.meta.version }),
+      body: JSON.stringify({
+        schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+        Operations: [],
+      }),
+    });
+
+    expect(rejected.status).toBe(400);
+    expect(getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")?.updated_at).toBe(before.updated_at);
+    expect(listAudit(db, "tenant-a").filter((row) => row.action === "scim.user.patch")).toHaveLength(0);
+  });
+
+  it("rejects case-insensitive duplicate pathless attributes without mutation", async () => {
+    const { app, db, key } = fixture();
+    const created = await app.request("/scim/v2/Users", {
+      method: "POST", headers: headers(key.token), body: JSON.stringify(user()),
+    });
+    const value = await created.json() as { id: string; meta: { version: string } };
+    const before = getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")!;
+
+    const rejected = await app.request(`/scim/v2/Users/${value.id}`, {
+      method: "PATCH",
+      headers: headers(key.token, { "if-match": value.meta.version }),
+      body: JSON.stringify({
+        schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+        Operations: [{ op: "Replace", value: { active: true, ACTIVE: false } }],
+      }),
+    });
+
+    expect(rejected.status).toBe(400);
+    expect(getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")).toMatchObject({
+      status: before.status,
+      updated_at: before.updated_at,
+    });
+    expect(listAudit(db, "tenant-a").filter((row) => row.action === "scim.user.patch")).toHaveLength(0);
+  });
+
+  it.each([
+    [{ value: "engineer", VALUE: "viewer", primary: true }],
+    [{ value: "engineer", primary: true, PRIMARY: false }],
+  ])("rejects case-insensitive duplicate role subattributes without mutation", async (ambiguousRole) => {
+    const { app, db, key } = fixture();
+    const created = await app.request("/scim/v2/Users", {
+      method: "POST", headers: headers(key.token), body: JSON.stringify(user()),
+    });
+    const value = await created.json() as { id: string; meta: { version: string } };
+    const before = getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")!;
+
+    const rejected = await app.request(`/scim/v2/Users/${value.id}`, {
+      method: "PATCH",
+      headers: headers(key.token, { "if-match": value.meta.version }),
+      body: JSON.stringify({
+        schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+        Operations: [{ op: "Replace", path: "roles", value: [ambiguousRole] }],
+      }),
+    });
+
+    expect(rejected.status).toBe(400);
+    expect(getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")).toMatchObject({
+      role: before.role,
+      updated_at: before.updated_at,
+    });
+    expect(listAudit(db, "tenant-a").filter((row) => row.action === "scim.user.patch")).toHaveLength(0);
   });
 
   it("enforces case-insensitive userName uniqueness inside one tenant provisioning domain", async () => {

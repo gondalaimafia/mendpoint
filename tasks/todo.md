@@ -3809,3 +3809,21 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - A transactional expression index enforces case-insensitive userName uniqueness per tenant and issuer. Upgrade convergence detects pre-existing duplicates before creating the index, fails with a named conflict, closes the failed database handle, and preserves both legacy rows for operator resolution. SCIM translates write conflicts into the standard 409 uniqueness response.
 - Session claims now prove the exact human principal audience and canonical issuer-subject binding in storage, enforce the same rule on raw inserts, and reject mismatched historical rows during database convergence. `MENDPOINT_SCIM_BINDINGS_JSON` is required by the customer profile, passed only to the API process, and checked at API startup against an active service principal plus one or more exact `identity:provision` credentials.
 - The repaired affected matrix passes 92 of 92 identity, authorization, production-startup, platform, and cross-tenant tests. The corrected worker launcher preflight passes 3 of 3 tests. The complete repository suite, full workspace typecheck, optimized 50-route production build, every GA gate, dependency audit with zero vulnerabilities, and diff integrity all pass. A fresh immutable-head review, protected CI, merge, deployment, and the separate enterprise IdP drill remain required.
+
+## 2026-08-30 Plan 10-01 exact-head review repair
+
+- [x] RED: prove startup rejects a SCIM provisioning issuer that cannot be canonicalized to the exact configured OIDC issuer while accepting standards-compliant equivalent URL spelling.
+- [x] RED: prove an empty SCIM PATCH operation list is invalid and cannot advance the resource ETag.
+- [x] RED: prove pathless Replace rejects case-insensitive duplicate attributes before mutation.
+- [x] RED: prove role subattributes `value` and `primary` are case-insensitive and duplicate-safe.
+- [x] GREEN: make the smallest startup and PATCH-boundary repairs that satisfy the hostile regressions.
+- [x] Run focused identity suites, affected and full typechecks, full tests, build, GA, dependency audit, and diff integrity.
+- [x] Inspect the complete repair diff and commit atomically without pushing.
+
+### Review
+
+- `scimBindingsFromEnv` now accepts only a trailing-slash spelling difference, stores the exact configured OIDC issuer used by JWT verification, and rejects missing or arbitrary issuer mismatches before provisioning authority can be constructed.
+- PATCH requires at least one operation. Pathless Replace rejects case-insensitive duplicate attributes. Role `value` and `primary` subattributes are read case-insensitively and duplicates fail closed across every supplied role object.
+- Red-first evidence: the original focused suite failed six hostile assertions at the expected seams. The repaired focused SCIM suite passes 12 of 12 tests; the wider API and database identity matrix passes 52 of 52 tests.
+- Verification passes: complete repository tests, affected and full workspace typechecks, optimized 50-route production build, every GA gate, zero production dependency vulnerabilities, and diff integrity.
+- No push, merge, deployment, enterprise IdP drill, or production claim was performed. Fresh immutable-head independent review and protected CI remain required.

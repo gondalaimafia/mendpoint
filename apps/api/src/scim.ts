@@ -46,13 +46,17 @@ function text(value: unknown, code: string, maximum: number): string {
 }
 
 function httpsIssuer(value: unknown): string {
-  const issuer = text(value, "scim_issuer_invalid", 2_048).replace(/\/$/, "");
+  const issuer = text(value, "scim_issuer_invalid", 2_048);
   let url: URL;
   try { url = new URL(issuer); } catch { throw new Error("scim_issuer_invalid"); }
   if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
     throw new Error("scim_issuer_invalid");
   }
   return issuer;
+}
+
+function issuerWithoutTrailingSlash(issuer: string): string {
+  return issuer.endsWith("/") ? issuer.slice(0, -1) : issuer;
 }
 
 export function scimBindingsFromEnv(
@@ -65,6 +69,9 @@ export function scimBindingsFromEnv(
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("scim_bindings_invalid");
   const document = value as { schemaVersion?: unknown; bindings?: unknown };
   if (document.schemaVersion !== 1 || !Array.isArray(document.bindings)) throw new Error("scim_bindings_invalid");
+  const oidcIssuerValue = env.OIDC_ISSUER?.trim();
+  if (document.bindings.length > 0 && !oidcIssuerValue) throw new Error("scim_oidc_issuer_required");
+  const oidcIssuer = oidcIssuerValue ? httpsIssuer(oidcIssuerValue) : null;
   const result = new Map<string, ScimBinding>();
   for (const item of document.bindings) {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("scim_bindings_invalid");
@@ -74,7 +81,12 @@ export function scimBindingsFromEnv(
     }
     const tenantId = text(row.tenantId, "scim_bindings_invalid", 255);
     const principalId = text(row.principalId, "scim_bindings_invalid", 128);
-    const issuer = httpsIssuer(row.issuer);
+    const configuredIssuer = httpsIssuer(row.issuer);
+    if (!oidcIssuer) throw new Error("scim_oidc_issuer_required");
+    if (issuerWithoutTrailingSlash(configuredIssuer) !== issuerWithoutTrailingSlash(oidcIssuer)) {
+      throw new Error("scim_oidc_issuer_mismatch");
+    }
+    const issuer = oidcIssuer;
     if (result.has(tenantId)) throw new Error("scim_bindings_invalid");
     result.set(tenantId, Object.freeze({ tenantId, principalId, issuer }));
   }
@@ -189,10 +201,17 @@ function memberById(db: AppDb, binding: ScimBinding, id: string): TenantMembersh
 }
 
 function role(value: unknown): ScimRole {
-  const candidate = Array.isArray(value)
-    ? (value.find((item) => item && typeof item === "object" && (item as { primary?: unknown }).primary === true) ?? value[0])
-    : value;
-  const raw = typeof candidate === "object" && candidate !== null ? (candidate as { value?: unknown }).value : candidate;
+  const entry = (candidate: unknown) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return { primary: false, value: candidate };
+    }
+    const record = candidate as Record<string, unknown>;
+    const primary = attribute(record, "primary");
+    if (primary !== undefined && typeof primary !== "boolean") throw new Error("scim_role_invalid");
+    return { primary: primary === true, value: attribute(record, "value") };
+  };
+  const candidates = Array.isArray(value) ? value.map(entry) : [entry(value)];
+  const raw = (candidates.find((candidate) => candidate.primary) ?? candidates[0])?.value;
   const normalized = text(raw, "scim_role_invalid", 32).toLowerCase() as ScimRole;
   if (!SCIM_ROLES.has(normalized)) throw new Error("scim_role_invalid");
   return normalized;
@@ -257,6 +276,12 @@ function applyReplace(next: MutableScimUser, path: unknown, value: unknown): voi
   }
   const entries = Object.entries(value as Record<string, unknown>);
   if (entries.length === 0) throw new Error("scim_patch_invalid");
+  const names = new Set<string>();
+  for (const [attributeName] of entries) {
+    const normalized = attributeName.toLowerCase();
+    if (names.has(normalized)) throw new Error("scim_patch_invalid");
+    names.add(normalized);
+  }
   for (const [attributeName, attributeValue] of entries) {
     replaceAttribute(next, attributeName, attributeValue);
   }
@@ -429,7 +454,7 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
       const input = await jsonBody(c);
       requireSchema(input, PATCH_SCHEMA, "scim_patch_invalid");
       const operations = attribute(input, "Operations");
-      if (!Array.isArray(operations)) {
+      if (!Array.isArray(operations) || operations.length === 0) {
         throw new Error("scim_patch_invalid");
       }
       const row = transact(options.db, () => {
