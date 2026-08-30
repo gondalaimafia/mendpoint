@@ -168,6 +168,8 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
   token: string;
   tenantId: string;
   campaignId: string;
+  expectedApprovalRef: string;
+  expectedEvidenceRefs: readonly string[];
   expectedOwner: string;
   expectedRepository: string;
   expectedInstallationId: number;
@@ -178,6 +180,20 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
   if (!API_KEY.test(input.token)) throw new Error("regauge_production_token_invalid");
   const tenantId = requiredId(input.tenantId, "regauge_production_tenant_invalid");
   const campaignId = requiredId(input.campaignId, "regauge_production_campaign_invalid");
+  const expectedApprovalRef = requiredEvidenceRef(
+    input.expectedApprovalRef,
+    "regauge_production_draft_canary_authority_invalid",
+  );
+  if (!Array.isArray(input.expectedEvidenceRefs)) {
+    throw new Error("regauge_production_draft_canary_authority_invalid");
+  }
+  const expectedEvidenceRefs = Object.freeze(input.expectedEvidenceRefs.map((value) =>
+    requiredEvidenceRef(value, "regauge_production_draft_canary_authority_invalid")));
+  if (expectedEvidenceRefs.length === 0 ||
+      new Set(expectedEvidenceRefs).size !== expectedEvidenceRefs.length ||
+      !expectedEvidenceRefs.includes(expectedApprovalRef)) {
+    throw new Error("regauge_production_draft_canary_authority_invalid");
+  }
   const expectedOwner = requiredId(input.expectedOwner, "regauge_production_repository_invalid");
   const expectedRepository = requiredId(input.expectedRepository, "regauge_production_repository_invalid");
   if (!Number.isSafeInteger(input.expectedInstallationId) || input.expectedInstallationId < 1 ||
@@ -215,6 +231,9 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
     }
     const { draft, target } = value as Record<string, any>;
     const match = GITHUB_DRAFT.exec(String(draft?.pullRequestUrl ?? ""));
+    const draftEvidenceRefs = Array.isArray(draft?.evidenceRefs)
+      ? draft.evidenceRefs as unknown[]
+      : [];
     if (!draft || !target || draft.tenantId !== tenantId || draft.campaignId !== campaignId ||
         !ID.test(String(draft.unitId ?? "")) || !match || target.owner !== expectedOwner ||
         target.repo !== expectedRepository || target.owner !== match[1] || target.repo !== match[2] ||
@@ -224,8 +243,9 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
         target.remoteRepositoryId !== input.expectedRepositoryId ||
         Number(draft.pullRequestNumber) !== Number(match[3]) ||
         !REVISION.test(String(draft.baseRevision ?? "")) || !REVISION.test(String(draft.commitSha ?? "")) ||
-        !Array.isArray(draft.evidenceRefs) ||
-        draft.evidenceRefs.length === 0 || draft.evidenceRefs.some((item: unknown) => typeof item !== "string" || !item)) {
+        draftEvidenceRefs.length === 0 ||
+        draftEvidenceRefs.some((item: unknown) => typeof item !== "string" || !item) ||
+        expectedEvidenceRefs.some((reference) => !draftEvidenceRefs.includes(reference))) {
       throw new Error("regauge_production_draft_canary_invalid");
     }
     const observation = await observeDraft({
@@ -263,7 +283,7 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
       headBranch: draft.branchName as string,
       matchingOpenDrafts: 1 as const,
       evidenceRefs: Object.freeze([
-        ...new Set([...(draft.evidenceRefs as string[]), ...observation.evidenceRefs]),
+        ...new Set([...(draftEvidenceRefs as string[]), ...observation.evidenceRefs]),
       ].sort()),
     });
   }));
@@ -432,6 +452,14 @@ function option(name: string): string | undefined {
   return process.argv.find((value) => value.startsWith(prefix))?.slice(prefix.length);
 }
 
+function requiredEvidenceRef(value: unknown, code: string): string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 2_048 ||
+      value.trim() !== value || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(code);
+  }
+  return value;
+}
+
 async function main(): Promise<void> {
   const mode = option("mode");
   const output = option("output");
@@ -442,6 +470,10 @@ async function main(): Promise<void> {
       token: process.env.MENDPOINT_REGAUGE_COORDINATOR_TOKEN ?? "",
       tenantId: process.env.MENDPOINT_REGAUGE_TENANT_ID ?? "",
       campaignId: process.env.MENDPOINT_REGAUGE_CAMPAIGN_ID ?? "",
+      expectedApprovalRef: process.env.MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF ?? "",
+      expectedEvidenceRefs: (process.env.MENDPOINT_REGAUGE_EVIDENCE_REFS ?? "")
+        .split(",")
+        .filter((value) => value.length > 0),
       expectedOwner: process.env.MENDPOINT_REGAUGE_CANARY_OWNER ?? "",
       expectedRepository: process.env.MENDPOINT_REGAUGE_CANARY_REPOSITORY ?? "",
       expectedInstallationId: Number(process.env.MENDPOINT_REGAUGE_GITHUB_INSTALLATION_ID),

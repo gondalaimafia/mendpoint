@@ -261,3 +261,9 @@
 **Mistake:** The protected workflow treated a successful worker deployment as if it started an existing stopped non-service Machine.
 **Correction:** The exact live evidence showed the worker image and revision updated successfully while the Machine remained stopped and its only check reported that it had not started.
 **Rule:** Deployment success proves configuration publication, not runtime state. For every required process, select the exact intended Machine, perform any required start transition explicitly, and wait for its named health check before declaring deployment healthy or advancing the release.
+
+### 2026-08-30 — Bind production proof to the current run authority
+
+**Mistake:** The ReGauge draft proof established exact remote PR state but accepted any nonempty durable authorization references, so an older run's draft could satisfy a new activation.
+**Correction:** Require the current protected run's independently derived approval and evidence references on the durable delivery before remote state can count.
+**Rule:** Every production proof must bind both the live object and its durable lineage to the exact current authority. Remote state alone cannot promote stale authorization.

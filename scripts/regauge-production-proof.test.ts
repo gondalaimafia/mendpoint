@@ -9,6 +9,9 @@ const installationId = 151_614_362;
 const repositoryId = 84;
 const baseRevision = "b".repeat(40);
 const headRevision = "a".repeat(40);
+const approvalRef = "approval:regauge:tenant-a:campaign-a:repository:84:revision:baseline:draft:1:run:9:attempt:1";
+const runEvidenceRef = "evidence:github:run:9:attempt:1:revision:exact-head";
+const currentEvidenceRefs = [approvalRef, runEvidenceRef] as const;
 
 function deliveredDraftResult() {
   return {
@@ -24,7 +27,7 @@ function deliveredDraftResult() {
       baseRevision,
       branchName: "mendpoint/regauge-unit-a",
       commitSha: headRevision,
-      evidenceRefs: ["github:draft:17"],
+      evidenceRefs: [...currentEvidenceRefs, "github:draft:17"],
     },
     target: { owner: "acme", repo: "repo", baseBranch: "main", installationId, remoteRepositoryId: repositoryId },
   };
@@ -67,6 +70,8 @@ describe("Regauge production proof", () => {
       token: `me_${"a".repeat(40)}`,
       tenantId: "tenant-a",
       campaignId: "campaign-a",
+      expectedApprovalRef: approvalRef,
+      expectedEvidenceRefs: currentEvidenceRefs,
       expectedOwner: "acme",
       expectedRepository: "repo",
       expectedInstallationId: installationId,
@@ -110,6 +115,8 @@ describe("Regauge production proof", () => {
       token: `me_${"a".repeat(40)}`,
       tenantId: "tenant-a",
       campaignId: "campaign-a",
+      expectedApprovalRef: approvalRef,
+      expectedEvidenceRefs: currentEvidenceRefs,
       expectedOwner: "acme",
       expectedRepository: "repo",
       expectedInstallationId: installationId,
@@ -129,7 +136,7 @@ describe("Regauge production proof", () => {
         draft: {
           tenantId: "tenant-a", campaignId: "campaign-a", unitId: "unit-a",
           pullRequestNumber: 17, pullRequestUrl: "https://github.com/acme/repo/pull/17",
-          commitSha: "a".repeat(40), evidenceRefs: ["github:draft:17"],
+          commitSha: "a".repeat(40), evidenceRefs: [...currentEvidenceRefs, "github:draft:17"],
         },
         target: { owner: "acme", repo: "repo" },
       }]),
@@ -143,6 +150,8 @@ describe("Regauge production proof", () => {
       token: `me_${"a".repeat(40)}`,
       tenantId: "tenant-a",
       campaignId: "campaign-a",
+      expectedApprovalRef: approvalRef,
+      expectedEvidenceRefs: currentEvidenceRefs,
       expectedOwner: "acme",
       expectedRepository: "repo",
       expectedInstallationId: installationId,
@@ -162,6 +171,8 @@ describe("Regauge production proof", () => {
       token: `me_${"a".repeat(40)}`,
       tenantId: "tenant-a",
       campaignId: "campaign-a",
+      expectedApprovalRef: approvalRef,
+      expectedEvidenceRefs: currentEvidenceRefs,
       expectedOwner: "acme",
       expectedRepository: "repo",
       expectedInstallationId: installationId,
@@ -179,6 +190,40 @@ describe("Regauge production proof", () => {
       ...input,
       observeDraft: vi.fn(async () => exactDraftObservation({ matchingOpenDrafts: 2 })),
     })).rejects.toThrow("regauge_production_draft_canary_remote_invalid");
+  });
+
+  it("rejects a durable draft authorized by a prior protected run", async () => {
+    const stale = deliveredDraftResult();
+    stale.draft.evidenceRefs = [
+      "approval:regauge:tenant-a:campaign-a:repository:84:revision:baseline:draft:1:run:8:attempt:1",
+      "evidence:github:run:8:attempt:1:revision:old-head",
+      "github:draft:17",
+    ];
+    const baseInput = {
+      coordinatorUrl: "https://mendpoint-regauge-production.fly.dev/",
+      token: `me_${"a".repeat(40)}`,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      expectedApprovalRef: approvalRef,
+      expectedEvidenceRefs: currentEvidenceRefs,
+      expectedOwner: "acme",
+      expectedRepository: "repo",
+      expectedInstallationId: installationId,
+      expectedRepositoryId: repositoryId,
+      observeDraft: vi.fn(async () => exactDraftObservation()),
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+        result: [stale],
+        serverTime: "2026-08-14T12:00:00.000Z",
+      }), { status: 200, headers: { "content-type": "application/json" } })),
+    };
+    await expect(observeRegaugeDraftCanary(baseInput))
+      .rejects.toThrow("regauge_production_draft_canary_invalid");
+    expect(baseInput.observeDraft).not.toHaveBeenCalled();
+
+    await expect(observeRegaugeDraftCanary({
+      ...baseInput,
+      expectedApprovalRef: "",
+    })).rejects.toThrow("regauge_production_draft_canary_authority_invalid");
   });
 
   it("requires exact durable DeepSeek advisory provider evidence", async () => {
