@@ -129,11 +129,14 @@ function scimError(c: Context<ApiEnv>, status: number, detail: string, scimType?
   return c.json({ schemas: [ERROR_SCHEMA], status: String(status), detail, ...(scimType ? { scimType } : {}) }, status as 400);
 }
 
-function authority(c: Context<ApiEnv>, options: Options): ScimBinding {
+function authority(c: Context<ApiEnv>, options: Options, observedAt: Date): ScimBinding {
   const principal = c.get("principal");
   const trustPrincipalId = c.get("trustPrincipalId");
+  const apiKeyId = c.get("apiKeyId");
   const scopes = c.get("authScopes") ?? [];
-  if (!principal || !trustPrincipalId || c.get("authMethod") !== "api_key") throw new Error("scim_authentication_required");
+  if (!principal || !trustPrincipalId || !apiKeyId || c.get("authMethod") !== "api_key") {
+    throw new Error("scim_authentication_required");
+  }
   const binding = options.bindings.get(principal.tenantId);
   if (
     !binding ||
@@ -143,9 +146,32 @@ function authority(c: Context<ApiEnv>, options: Options): ScimBinding {
   ) {
     throw new Error("scim_binding_required");
   }
+  const observedAtMs = observedAt.getTime();
+  if (!Number.isFinite(observedAtMs)) throw new Error("scim_observed_at_invalid");
   const trust = getPrincipal(options.db, principal.tenantId, trustPrincipalId);
-  if (!trust || trust.kind !== "service" || trust.audience !== "mendpoint-scim" || trust.revoked_at) {
+  if (
+    !trust ||
+    trust.kind !== "service" ||
+    trust.audience !== "mendpoint-scim" ||
+    trust.created_at > observedAt.toISOString() ||
+    trust.revoked_at !== null ||
+    (trust.expires_at !== null && Date.parse(trust.expires_at) <= observedAtMs)
+  ) {
     throw new Error("scim_principal_invalid");
+  }
+  const key = listApiKeys(options.db, principal.tenantId).find((candidate) => candidate.id === apiKeyId);
+  let liveScopes: unknown;
+  try { liveScopes = key ? JSON.parse(key.scopes_json) : null; } catch { liveScopes = null; }
+  if (
+    !key ||
+    key.principal_id !== trustPrincipalId ||
+    key.created_at > observedAt.toISOString() ||
+    key.revoked_at !== null ||
+    !Array.isArray(liveScopes) ||
+    liveScopes.length !== 1 ||
+    liveScopes[0] !== "identity:provision"
+  ) {
+    throw new Error("scim_binding_required");
   }
   return binding;
 }
@@ -211,7 +237,9 @@ function role(value: unknown): ScimRole {
     return { primary: primary === true, value: attribute(record, "value") };
   };
   const candidates = Array.isArray(value) ? value.map(entry) : [entry(value)];
-  const raw = (candidates.find((candidate) => candidate.primary) ?? candidates[0])?.value;
+  const primary = candidates.filter((candidate) => candidate.primary);
+  if (primary.length > 1) throw new Error("scim_role_invalid");
+  const raw = (primary[0] ?? candidates[0])?.value;
   const normalized = text(raw, "scim_role_invalid", 32).toLowerCase() as ScimRole;
   if (!SCIM_ROLES.has(normalized)) throw new Error("scim_role_invalid");
   return normalized;
@@ -353,7 +381,7 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
 
   routes.get("/Users", (c) => {
     try {
-      const binding = authority(c, options);
+      const binding = authority(c, options, now());
       let rows = listTenantMemberships(options.db, binding.tenantId).filter((row) => row.issuer === binding.issuer);
       const filter = c.req.query("filter");
       if (filter) {
@@ -372,7 +400,7 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
 
   routes.get("/Users/:id", (c) => {
     try {
-      const binding = authority(c, options);
+      const binding = authority(c, options, now());
       const row = memberById(options.db, binding, c.req.param("id"));
       if (!row) throw new Error("scim_not_found");
       c.header("ETag", version(row.updated_at));
@@ -382,7 +410,7 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
 
   routes.post("/Users", async (c) => {
     try {
-      const binding = authority(c, options);
+      authority(c, options, now());
       const input = await jsonBody(c);
       requireSchema(input, USER_SCHEMA, "scim_user_schema_invalid");
       const subject = text(attribute(input, "externalId"), "scim_external_id_invalid", 512);
@@ -393,6 +421,7 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
         status: active(attribute(input, "active"), true) ? "active" as const : "offboarded" as const,
       };
       const result = transact(options.db, () => {
+        const binding = authority(c, options, now());
         const existing = getTenantMembership(options.db, binding.tenantId, binding.issuer, subject);
         if (existing) {
           if (
@@ -424,10 +453,11 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
 
   routes.put("/Users/:id", async (c) => {
     try {
-      const binding = authority(c, options);
+      authority(c, options, now());
       const input = await jsonBody(c);
       requireSchema(input, USER_SCHEMA, "scim_user_schema_invalid");
       const row = transact(options.db, () => {
+        const binding = authority(c, options, now());
         const current = memberById(options.db, binding, c.req.param("id"));
         if (!current) throw new Error("scim_not_found");
         if (current.role === "owner") throw new Error("scim_owner_managed_outside_scim");
@@ -458,7 +488,7 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
 
   routes.patch("/Users/:id", async (c) => {
     try {
-      const binding = authority(c, options);
+      authority(c, options, now());
       const input = await jsonBody(c);
       requireSchema(input, PATCH_SCHEMA, "scim_patch_invalid");
       const operations = attribute(input, "Operations");
@@ -466,6 +496,7 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
         throw new Error("scim_patch_invalid");
       }
       const row = transact(options.db, () => {
+        const binding = authority(c, options, now());
         const current = memberById(options.db, binding, c.req.param("id"));
         if (!current) throw new Error("scim_not_found");
         if (current.role === "owner") throw new Error("scim_owner_managed_outside_scim");
@@ -499,7 +530,7 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
 
   routes.delete("/Users/:id", (c) => {
     try {
-      const binding = authority(c, options);
+      const binding = authority(c, options, now());
       transact(options.db, () => {
         const current = memberById(options.db, binding, c.req.param("id"));
         if (!current) throw new Error("scim_not_found");

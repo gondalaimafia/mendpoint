@@ -3842,3 +3842,20 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Red-first evidence reproduced six state-changing failures: malformed POST created an active membership, and malformed PUT advanced the ETag. The repaired regressions prove membership rows, audit history, and versions remain unchanged.
 - Verification passes: 19 focused SCIM tests, the 59-test API and database identity matrix, both affected workspace typechecks, and diff integrity.
 - No push, merge, deployment, or production claim was performed. Fresh immutable-head independent review remains required.
+
+## 2026-08-30 Plan 10-01 live authority repair
+
+- [x] RED: prove delayed-body API-key and trust-principal revocation blocks SCIM POST, PUT, and PATCH without membership, audit, or version mutation.
+- [x] RED: prove delayed-body trust-principal or manager-membership revocation blocks service-principal creation and credential rotation without principal, credential, audit, or prior-key mutation.
+- [x] RED: prove SCIM POST, PUT, and PATCH reject multiple primary roles without mutation.
+- [x] GREEN: revalidate complete live authority inside the same database transaction as every affected mutation and reject ambiguous primary role selection.
+- [x] Run focused and wider identity tests, affected typechecks, and diff integrity.
+- [x] Inspect and commit the isolated repair without pushing.
+
+### Review
+
+- SCIM now revalidates the exact live API key, dedicated provisioning scope, protected binding, and active service trust principal inside each POST, PUT, and PATCH transaction after body parsing. Revocation during a delayed body read returns 403 without changing membership bytes, audit history, or resource version.
+- Service-principal creation and rotation now revalidate the canonical human trust principal, active owner or admin membership, membership evidence, and either the durable OIDC session or delegated API key inside the mutation transaction. Delayed manager offboarding, trust-principal revocation, and API-key revocation leave principals, credentials, prior-key status, and audit history unchanged.
+- Multiple role entries marked primary are invalid regardless of attribute casing. POST, PUT, and PATCH all return SCIM 400 without mutation.
+- Red-first evidence reproduced nine unauthorized or ambiguous writes on the rejected head. The repaired focused suites pass 34 of 34 tests; the wider API and database identity matrix passes 60 of 60 tests. API and database typechecks plus diff integrity pass.
+- No push, merge, deployment, or production claim was performed. Fresh immutable-head independent review remains required.

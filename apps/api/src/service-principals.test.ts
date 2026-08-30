@@ -1,11 +1,18 @@
 import {
+  claimIdentitySession,
+  createApiKey,
   createDb,
   insertPrincipal,
   listApiKeys,
   listAudit,
+  putTenantMembership,
+  revokePrincipal,
+  revokeApiKey,
+  setTenantMembershipStatus,
   type AppDb,
 } from "@mendpoint/db";
 import { Hono } from "hono";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +26,7 @@ import {
 
 const NOW = "2026-08-30T12:00:00.000Z";
 const EXPIRES = "2026-09-29T12:00:00.000Z";
+const ISSUER = "https://identity.example";
 const opened: Array<{ db: AppDb; directory: string }> = [];
 const savedAuth = process.env.API_AUTH;
 
@@ -40,6 +48,23 @@ function fixture() {
     audience: "https://identity.example",
     createdAt: NOW,
   });
+  putTenantMembership(db, {
+    tenantId: "tenant-a",
+    issuer: ISSUER,
+    subject: "owner-a",
+    email: "owner-a@example.com",
+    displayName: "Owner A",
+    role: "owner",
+    status: "active",
+    updatedAt: NOW,
+  });
+  createApiKey(db, {
+    id: "key-manager-a",
+    name: "Manager delegation key",
+    tenantId: "tenant-a",
+    scopes: ["tenant:admin"],
+    createdAt: NOW,
+  });
   insertPrincipal(db, {
     id: "human-owner-b",
     tenantId: "tenant-b",
@@ -49,10 +74,60 @@ function fixture() {
     audience: "https://identity.example",
     createdAt: NOW,
   });
+  putTenantMembership(db, {
+    tenantId: "tenant-b",
+    issuer: ISSUER,
+    subject: "owner-b",
+    email: "owner-b@example.com",
+    displayName: "Owner B",
+    role: "owner",
+    status: "active",
+    updatedAt: NOW,
+  });
+  insertPrincipal(db, {
+    id: "human-viewer-a",
+    tenantId: "tenant-a",
+    kind: "human",
+    subject: `${ISSUER}|viewer-a`,
+    displayName: "Viewer A",
+    audience: ISSUER,
+    createdAt: NOW,
+  });
+  putTenantMembership(db, {
+    tenantId: "tenant-a",
+    issuer: ISSUER,
+    subject: "viewer-a",
+    email: "viewer-a@example.com",
+    displayName: "Viewer A",
+    role: "viewer",
+    status: "active",
+    updatedAt: NOW,
+  });
+  const session = (tenantId: string, principalId: string, subject: string) => claimIdentitySession(db, {
+    tenantId,
+    principalId,
+    issuer: ISSUER,
+    subject,
+    membershipUpdatedAt: NOW,
+    authStrength: "amr:mfa",
+    token: `token-${tenantId}-${subject}`,
+    issuedAt: "2026-08-30T11:59:00.000Z",
+    expiresAt: "2026-08-30T13:00:00.000Z",
+    observedAt: NOW,
+  });
   const identities = {
-    owner: { id: "human:owner-a", tenantId: "tenant-a", role: "owner" as const, trust: "human-owner-a" },
-    owner_b: { id: "human:owner-b", tenantId: "tenant-b", role: "owner" as const, trust: "human-owner-b" },
-    viewer: { id: "human:viewer-a", tenantId: "tenant-a", role: "viewer" as const, trust: "human-owner-a" },
+    owner: {
+      id: `human:${ISSUER}|owner-a`, tenantId: "tenant-a", role: "owner" as const,
+      trust: "human-owner-a", session: session("tenant-a", "human-owner-a", "owner-a").id, subject: "owner-a",
+    },
+    owner_b: {
+      id: `human:${ISSUER}|owner-b`, tenantId: "tenant-b", role: "owner" as const,
+      trust: "human-owner-b", session: session("tenant-b", "human-owner-b", "owner-b").id, subject: "owner-b",
+    },
+    viewer: {
+      id: `human:${ISSUER}|viewer-a`, tenantId: "tenant-a", role: "viewer" as const,
+      trust: "human-viewer-a", session: session("tenant-a", "human-viewer-a", "viewer-a").id, subject: "viewer-a",
+    },
   };
   const app = new Hono<ApiEnv>();
   app.use("*", async (c, next) => {
@@ -60,6 +135,17 @@ function fixture() {
     if (identity) {
       c.set("principal", { id: identity.id, tenantId: identity.tenantId, role: identity.role });
       c.set("trustPrincipalId", identity.trust);
+      if (c.req.header("x-test-auth-method") === "api_key") {
+        c.set("authMethod", "api_key");
+        c.set("apiKeyId", "key-manager-a");
+        c.set("authScopes", ["tenant:admin"]);
+      } else {
+        c.set("authMethod", "oidc");
+        c.set("identitySessionId", identity.session);
+        c.set("membershipEvidenceId", `membership:${createHash("sha256")
+          .update(`${identity.tenantId}\n${ISSUER}\n${identity.subject}`, "utf8")
+          .digest("hex")}`);
+      }
       c.set("requestId", c.req.header("x-request-id") ?? "request");
     }
     await next();
@@ -103,6 +189,25 @@ async function createPrincipal(app: Hono<ApiEnv>, idempotencyKey = "create-1") {
     data: { id: string; credential: { id: string; token: string; prefix: string; scopes: string[] } };
   };
   return { response, payload };
+}
+
+async function delayedJsonRequest(
+  app: Hono<ApiEnv>,
+  path: string,
+  init: Omit<RequestInit, "body">,
+  payload: unknown,
+  revoke: () => void,
+): Promise<Response> {
+  let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) { bodyController = controller; },
+  });
+  const pending = app.request(path, { ...init, body, duplex: "half" } as RequestInit & { duplex: "half" });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  revoke();
+  bodyController.enqueue(new TextEncoder().encode(JSON.stringify(payload)));
+  bodyController.close();
+  return pending;
 }
 
 describe("service principal administration", () => {
@@ -217,7 +322,9 @@ describe("service principal administration", () => {
     expect(rotation.status).toBe(201);
     const rotated = await rotation.json() as { data: { id: string; token: string } };
     expect(rotated.data.token).not.toBe(prior.token);
-    expect(listApiKeys(db, "tenant-a").filter((key) => !key.revoked_at)).toHaveLength(1);
+    expect(listApiKeys(db, "tenant-a").filter(
+      (key) => key.principal_id === created.payload.data.id && !key.revoked_at,
+    )).toHaveLength(1);
 
     process.env.API_AUTH = "required";
     const authApp = new Hono<ApiEnv>();
@@ -235,7 +342,90 @@ describe("service principal administration", () => {
       },
     );
     expect(replay.status).toBe(409);
-    expect(listApiKeys(db, "tenant-a")).toHaveLength(2);
+    expect(listApiKeys(db, "tenant-a").filter(
+      (key) => key.principal_id === created.payload.data.id,
+    )).toHaveLength(2);
+  });
+
+  it("blocks delayed creation after manager membership revocation without state mutation", async () => {
+    const { app, db } = fixture();
+    const principalsBefore = db.raw.prepare("SELECT * FROM principals ORDER BY id").all();
+    const keysBefore = listApiKeys(db, "tenant-a");
+    const auditBefore = listAudit(db, "tenant-a");
+
+    const rejected = await delayedJsonRequest(app, "/tenants/service-principals", {
+      method: "POST",
+      headers: mutationHeaders("delayed-create"),
+    }, {
+      subject: "delayed-worker",
+      displayName: "Delayed worker",
+      scopes: ["graph:read"],
+      expiresAt: EXPIRES,
+    }, () => {
+      setTenantMembershipStatus(db, {
+        tenantId: "tenant-a",
+        issuer: ISSUER,
+        subject: "owner-a",
+        status: "offboarded",
+        updatedAt: "2026-08-30T12:00:01.000Z",
+      });
+    });
+
+    expect(rejected.status).toBe(403);
+    expect(db.raw.prepare("SELECT * FROM principals ORDER BY id").all()).toEqual(principalsBefore);
+    expect(listApiKeys(db, "tenant-a")).toEqual(keysBefore);
+    expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
+  });
+
+  it("blocks delayed creation after delegated API-key revocation without state mutation", async () => {
+    const { app, db } = fixture();
+    const principalsBefore = db.raw.prepare("SELECT * FROM principals ORDER BY id").all();
+    const keysBefore = listApiKeys(db, "tenant-a");
+    const auditBefore = listAudit(db, "tenant-a");
+
+    const rejected = await delayedJsonRequest(app, "/tenants/service-principals", {
+      method: "POST",
+      headers: { ...mutationHeaders("delayed-key-create"), "x-test-auth-method": "api_key" },
+    }, {
+      subject: "delayed-key-worker",
+      displayName: "Delayed key worker",
+      scopes: ["graph:read"],
+      expiresAt: EXPIRES,
+    }, () => {
+      revokeApiKey(db, "key-manager-a", "2026-08-30T12:00:01.000Z", "tenant-a");
+    });
+
+    expect(rejected.status).toBe(401);
+    expect(db.raw.prepare("SELECT * FROM principals ORDER BY id").all()).toEqual(principalsBefore);
+    expect(listApiKeys(db, "tenant-a").filter((key) => key.id !== "key-manager-a"))
+      .toEqual(keysBefore.filter((key) => key.id !== "key-manager-a"));
+    expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
+  });
+
+  it("blocks delayed rotation after trust-principal revocation without credential mutation", async () => {
+    const { app, db } = fixture();
+    const created = await createPrincipal(app, "delayed-rotate-create");
+    const prior = created.payload.data.credential;
+    const keysBefore = listApiKeys(db, "tenant-a");
+    const auditBefore = listAudit(db, "tenant-a");
+
+    const rejected = await delayedJsonRequest(
+      app,
+      `/tenants/service-principals/${created.payload.data.id}/credentials/rotate`,
+      { method: "POST", headers: mutationHeaders("delayed-rotate") },
+      { currentCredentialId: prior.id, scopes: ["graph:read"] },
+      () => {
+        revokePrincipal(db, {
+          tenantId: "tenant-a",
+          principalId: "human-owner-a",
+          revokedAt: "2026-08-30T12:00:01.000Z",
+        });
+      },
+    );
+
+    expect(rejected.status).toBe(401);
+    expect(listApiKeys(db, "tenant-a")).toEqual(keysBefore);
+    expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
   });
 
   it("revokes the service and every credential while remaining tenant scoped and idempotent", async () => {
@@ -262,7 +452,9 @@ describe("service principal administration", () => {
       headers: mutationHeaders("revoke-a-again"),
     });
     expect(replay.status).toBe(200);
-    expect(listApiKeys(db, "tenant-a").every((key) => Boolean(key.revoked_at))).toBe(true);
+    expect(listApiKeys(db, "tenant-a")
+      .filter((key) => key.principal_id === principalId)
+      .every((key) => Boolean(key.revoked_at))).toBe(true);
 
     process.env.API_AUTH = "required";
     const authApp = new Hono<ApiEnv>();

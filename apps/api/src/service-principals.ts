@@ -1,6 +1,8 @@
 import {
   createApiKey,
+  getIdentitySession,
   getPrincipal,
+  getTenantMembership,
   insertPrincipal,
   listApiKeys,
   listPrincipals,
@@ -35,6 +37,70 @@ function actor(c: Context<ApiEnv>) {
     throw new Error("service_principal_manager_required");
   }
   return { ...principal, trustPrincipalId };
+}
+
+function liveManager(c: Context<ApiEnv>, options: Options, observedAt: Date) {
+  const claimed = actor(c);
+  const observedAtMs = observedAt.getTime();
+  if (!Number.isFinite(observedAtMs)) throw new Error("service_principal_observed_at_invalid");
+  const trust = getPrincipal(options.db, claimed.tenantId, claimed.trustPrincipalId);
+  if (
+    !trust ||
+    trust.kind !== "human" ||
+    trust.created_at > observedAt.toISOString() ||
+    trust.revoked_at !== null ||
+    (trust.expires_at !== null && Date.parse(trust.expires_at) <= observedAtMs) ||
+    !trust.audience ||
+    !trust.subject.startsWith(`${trust.audience}|`)
+  ) throw new Error("service_principal_authentication_required");
+  const subject = trust.subject.slice(trust.audience.length + 1);
+  const membership = subject
+    ? getTenantMembership(options.db, claimed.tenantId, trust.audience, subject)
+    : undefined;
+  if (
+    !membership ||
+    membership.status !== "active" ||
+    (membership.role !== "owner" && membership.role !== "admin") ||
+    claimed.id !== `human:${trust.subject}`
+  ) throw new Error("service_principal_manager_required");
+  const authMethod = c.get("authMethod");
+  if (authMethod === "api_key") {
+    const apiKeyId = c.get("apiKeyId");
+    const key = apiKeyId
+      ? listApiKeys(options.db, claimed.tenantId).find((candidate) => candidate.id === apiKeyId)
+      : undefined;
+    let liveScopes: unknown;
+    try { liveScopes = key ? JSON.parse(key.scopes_json) : null; } catch { liveScopes = null; }
+    if (
+      !key ||
+      key.created_at > observedAt.toISOString() ||
+      key.revoked_at !== null ||
+      !Array.isArray(liveScopes) ||
+      (!liveScopes.includes("tenant:admin") && !liveScopes.includes("*"))
+    ) throw new Error("service_principal_authentication_required");
+  } else if (authMethod === "oidc") {
+    const sessionId = c.get("identitySessionId");
+    const session = sessionId
+      ? getIdentitySession(options.db, claimed.tenantId, sessionId)
+      : undefined;
+    const evidenceId = `membership:${createHash("sha256")
+      .update(`${claimed.tenantId}\n${trust.audience}\n${subject}`, "utf8")
+      .digest("hex")}`;
+    if (
+      !session ||
+      session.principal_id !== trust.id ||
+      session.issuer !== trust.audience ||
+      session.subject !== subject ||
+      session.membership_updated_at !== membership.updated_at ||
+      session.issued_at > observedAt.toISOString() ||
+      session.expires_at <= observedAt.toISOString() ||
+      session.revoked_at !== null ||
+      c.get("membershipEvidenceId") !== evidenceId
+    ) throw new Error("service_principal_authentication_required");
+  } else {
+    throw new Error("service_principal_authentication_required");
+  }
+  return { ...claimed, role: membership.role };
 }
 
 async function body(c: Context<ApiEnv>): Promise<Record<string, unknown>> {
@@ -166,7 +232,7 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
 
   routes.post("/", async (c) => {
     try {
-      const identity = actor(c);
+      const claimed = actor(c);
       const input = await body(c);
       if (Object.keys(input).some((key) => !["subject", "displayName", "scopes", "expiresAt", "audience"].includes(key))) {
         throw new Error("service_principal_payload_invalid");
@@ -186,9 +252,10 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
       const observedAt = now();
       const expiresAt = expiration(input.expiresAt, observedAt);
       const requestKey = idempotency(c);
-      const principalId = deterministicId("principal-service", [identity.tenantId, subject]);
-      const apiKeyId = deterministicId("key-service", [identity.tenantId, principalId, requestKey]);
+      const principalId = deterministicId("principal-service", [claimed.tenantId, subject]);
+      const apiKeyId = deterministicId("key-service", [claimed.tenantId, principalId, requestKey]);
       const created = transact(options.db, () => {
+        const identity = liveManager(c, options, observedAt);
         const replay = listApiKeys(options.db, identity.tenantId).find((key) => key.id === apiKeyId);
         if (replay) throw new Error("service_principal_credential_already_issued");
         const principal = insertPrincipal(options.db, {
@@ -231,7 +298,7 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
 
   routes.post("/:principalId/credentials/rotate", async (c) => {
     try {
-      const identity = actor(c);
+      const claimed = actor(c);
       const input = await body(c);
       if (Object.keys(input).some((key) => !["currentCredentialId", "scopes"].includes(key))) {
         throw new Error("service_principal_payload_invalid");
@@ -240,9 +307,11 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
       const currentCredentialId = text(input.currentCredentialId, "service_principal_credential_invalid", 96);
       const grantedScopes = scopes(input.scopes);
       const requestKey = idempotency(c);
-      const observedAt = now().toISOString();
-      const nextCredentialId = deterministicId("key-service", [identity.tenantId, principalId, requestKey]);
+      const observedAt = now();
+      const observedAtIso = observedAt.toISOString();
+      const nextCredentialId = deterministicId("key-service", [claimed.tenantId, principalId, requestKey]);
       const credential = transact(options.db, () => {
+        const identity = liveManager(c, options, observedAt);
         const principal = getPrincipal(options.db, identity.tenantId, principalId);
         if (!principal || principal.kind !== "service") throw new Error("service_principal_not_found");
         if (
@@ -252,7 +321,7 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
         if (principal.audience !== "mendpoint-scim" && grantedScopes.includes("identity:provision")) {
           throw new Error("service_principal_scim_audience_required");
         }
-        if (principal.revoked_at || (principal.expires_at && Date.parse(principal.expires_at) <= Date.parse(observedAt))) {
+        if (principal.revoked_at || (principal.expires_at && Date.parse(principal.expires_at) <= observedAt.getTime())) {
           throw new Error("service_principal_inactive_conflict");
         }
         const replay = listApiKeys(options.db, identity.tenantId).find((key) => key.id === nextCredentialId);
@@ -261,7 +330,7 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
           `SELECT * FROM api_keys WHERE tenant_id = ? AND id = ? AND principal_id = ? AND revoked_at IS NULL`,
         ).get(identity.tenantId, currentCredentialId, principalId) as ApiKeyRow | undefined;
         if (!current) throw new Error("service_principal_credential_not_found");
-        if (!revokeApiKey(options.db, currentCredentialId, observedAt, identity.tenantId)) {
+        if (!revokeApiKey(options.db, currentCredentialId, observedAtIso, identity.tenantId)) {
           throw new Error("service_principal_credential_conflict");
         }
         const next = createApiKey(options.db, {
@@ -270,7 +339,7 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
           tenantId: identity.tenantId,
           principalId,
           scopes: grantedScopes,
-          createdAt: observedAt,
+          createdAt: observedAtIso,
         });
         recordAudit(options.db, {
           id: deterministicId("audit-service", [identity.tenantId, nextCredentialId]),

@@ -7,6 +7,8 @@ import {
   insertPrincipal,
   listAudit,
   putTenantMembership,
+  revokeApiKey,
+  revokePrincipal,
   type AppDb,
 } from "@mendpoint/db";
 import { permissionForRoute } from "@mendpoint/platform";
@@ -87,6 +89,25 @@ function user(overrides: Record<string, unknown> = {}) {
     roles: [{ value: "engineer", primary: true }],
     ...overrides,
   };
+}
+
+async function delayedJsonRequest(
+  app: Hono<ApiEnv>,
+  path: string,
+  init: Omit<RequestInit, "body">,
+  payload: unknown,
+  revoke: () => void,
+): Promise<Response> {
+  let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) { bodyController = controller; },
+  });
+  const pending = app.request(path, { ...init, body, duplex: "half" } as RequestInit & { duplex: "half" });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  revoke();
+  bodyController.enqueue(new TextEncoder().encode(JSON.stringify(payload)));
+  bodyController.close();
+  return pending;
 }
 
 describe("SCIM tenant lifecycle", () => {
@@ -235,6 +256,104 @@ describe("SCIM tenant lifecycle", () => {
     expect(replaced.status).toBe(200);
     await expect(replaced.json()).resolves.toMatchObject({ active: true });
   });
+
+  it.each(["POST", "PUT", "PATCH"] as const)(
+    "revalidates a revoked API key inside the %s mutation transaction",
+    async (method) => {
+      const { app, db, key } = fixture();
+      let path = "/scim/v2/Users";
+      let payload: unknown = user();
+      let versionHeader: Record<string, string> = {};
+      if (method !== "POST") {
+        const created = await app.request(path, {
+          method: "POST", headers: headers(key.token), body: JSON.stringify(user()),
+        });
+        const value = await created.json() as { id: string; meta: { version: string } };
+        path = `/scim/v2/Users/${value.id}`;
+        versionHeader = { "if-match": value.meta.version };
+        payload = method === "PUT"
+          ? user({ displayName: "Changed after revocation" })
+          : {
+              schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+              Operations: [{ op: "Replace", path: "displayName", value: "Changed after revocation" }],
+            };
+      }
+      const membershipBefore = getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1");
+      const auditBefore = listAudit(db, "tenant-a");
+
+      const rejected = await delayedJsonRequest(app, path, {
+        method,
+        headers: headers(key.token, versionHeader),
+      }, payload, () => {
+        revokeApiKey(db, key.id, "2026-08-30T12:00:01.000Z", "tenant-a");
+      });
+
+      expect(rejected.status).toBe(403);
+      expect(getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")).toEqual(membershipBefore);
+      expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
+    },
+  );
+
+  it("revalidates a revoked SCIM trust principal after a delayed POST body", async () => {
+    const { app, db, key, service } = fixture();
+    const auditBefore = listAudit(db, "tenant-a");
+
+    const rejected = await delayedJsonRequest(app, "/scim/v2/Users", {
+      method: "POST",
+      headers: headers(key.token),
+    }, user(), () => {
+      revokePrincipal(db, {
+        tenantId: "tenant-a",
+        principalId: service.id,
+        revokedAt: "2026-08-30T12:00:01.000Z",
+      });
+    });
+
+    expect(rejected.status).toBe(403);
+    expect(getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")).toBeUndefined();
+    expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
+  });
+
+  it.each(["POST", "PUT", "PATCH"] as const)(
+    "rejects multiple primary roles on %s without mutation",
+    async (method) => {
+      const { app, db, key } = fixture();
+      let path = "/scim/v2/Users";
+      let payload: Record<string, unknown> = user({
+        roles: [
+          { value: "viewer", primary: true },
+          { value: "engineer", PRIMARY: true },
+        ],
+      });
+      let versionHeader: Record<string, string> = {};
+      if (method !== "POST") {
+        const created = await app.request(path, {
+          method: "POST", headers: headers(key.token), body: JSON.stringify(user()),
+        });
+        const value = await created.json() as { id: string; meta: { version: string } };
+        path = `/scim/v2/Users/${value.id}`;
+        versionHeader = { "if-match": value.meta.version };
+        if (method === "PATCH") {
+          payload = {
+            schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+            Operations: [{ op: "Replace", path: "roles", value: payload.roles }],
+          };
+        }
+      }
+      const membershipBefore = getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1");
+      const auditBefore = listAudit(db, "tenant-a");
+
+      const rejected = await app.request(path, {
+        method,
+        headers: headers(key.token, versionHeader),
+        body: JSON.stringify(payload),
+      });
+
+      expect(rejected.status).toBe(400);
+      expect(getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")).toEqual(membershipBefore);
+      expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
+    },
+  );
 
   it("accepts Okta and Azure case variants plus pathless Replace while validating schemas", async () => {
     const { app, key } = fixture();

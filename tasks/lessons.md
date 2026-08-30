@@ -369,3 +369,9 @@
 **Mistake:** SCIM POST and PUT treated every `active` value except boolean `false` as active, collapsing malformed strings, nulls, and numbers into the omitted-field default.
 **Correction:** Preserve the existing default only when the attribute is absent. Reject every present non-boolean value before membership, audit, or version mutation.
 **Rule:** For optional typed fields, distinguish absence from invalid presence with one shared parser, and regression-test both acceptance and byte-for-byte non-mutation on every write path.
+
+### 2026-08-30 — Revalidate authority at the mutation boundary
+
+**Mistake:** SCIM and service-principal handlers trusted authority captured before an awaited body read, so revocation during upload could survive into a later write transaction.
+**Correction:** Revalidate the live credential, trust principal, and human manager membership after parsing and inside the exact transaction that performs the mutation.
+**Rule:** Authentication before an await is only an initial observation. Every security-sensitive write must prove the complete current authority again under the same transaction as its state change.
