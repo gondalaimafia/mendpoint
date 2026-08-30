@@ -21,6 +21,7 @@ const FLAGS = Object.freeze([
 
 export const RELEASE_DISPATCH_RECONCILIATION_PRINCIPAL_ENV =
   "MENDPOINT_RELEASE_DISPATCH_RECONCILIATION_PRINCIPAL_ID" as const;
+const MUTATION_FENCE_HELD = Symbol("release-dispatch-reconciliation-fence-held");
 
 function assertActiveReconciliationPrincipal(input: Readonly<{
   db: AppDb;
@@ -131,14 +132,19 @@ function parseExactFlags(argv: readonly string[]): Readonly<Record<string, strin
   return Object.freeze(parsed);
 }
 
-export function runReleaseDispatchReconciliationCommand(input: Readonly<{
+type ReconciliationCommandInput = Readonly<{
   argv: readonly string[];
   env: Readonly<Record<string, string | undefined>>;
   db: AppDb;
   store: ReleaseIngestionStore;
   mutationFenceRoot: string;
   write?: (value: string) => void;
-}>): Readonly<{ reconciliationId: string; dispatchId: string; action: ReleaseDispatchReconciliationAction }> {
+}>;
+
+function executeReleaseDispatchReconciliationCommand(
+  input: ReconciliationCommandInput,
+  fenceAuthority?: typeof MUTATION_FENCE_HELD,
+): Readonly<{ reconciliationId: string; dispatchId: string; action: ReleaseDispatchReconciliationAction }> {
   const flags = parseExactFlags(input.argv);
   const tenantId = flags["--tenant"]!;
   const action = flags["--action"];
@@ -164,8 +170,10 @@ export function runReleaseDispatchReconciliationCommand(input: Readonly<{
     actorPrincipalId === consumer.actorPrincipalId ||
     input.env[RELEASE_DISPATCH_RECONCILIATION_PRINCIPAL_ENV]?.trim() !== actorPrincipalId
   ) throw new Error("release_dispatch_reconciliation_authority_binding_required");
-  const mutationLease = tryAcquireMutationLease(input.mutationFenceRoot);
-  if (!mutationLease) {
+  const mutationLease = fenceAuthority === MUTATION_FENCE_HELD
+    ? null
+    : tryAcquireMutationLease(input.mutationFenceRoot);
+  if (fenceAuthority !== MUTATION_FENCE_HELD && !mutationLease) {
     throw new Error("release_dispatch_reconciliation_mutation_fence_unavailable");
   }
   let result: ReturnType<typeof reconcileReleaseDispatchFailure>;
@@ -215,7 +223,7 @@ export function runReleaseDispatchReconciliationCommand(input: Readonly<{
     if (input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
     throw error;
   } finally {
-    mutationLease.release();
+    mutationLease?.release();
   }
   const output = Object.freeze({
     reconciliationId: result.reconciliation.id,
@@ -224,4 +232,53 @@ export function runReleaseDispatchReconciliationCommand(input: Readonly<{
   });
   input.write?.(JSON.stringify(output));
   return output;
+}
+
+export function runReleaseDispatchReconciliationCommand(
+  input: ReconciliationCommandInput,
+): Readonly<{ reconciliationId: string; dispatchId: string; action: ReleaseDispatchReconciliationAction }> {
+  return executeReleaseDispatchReconciliationCommand(input);
+}
+
+/**
+ * Process boundary for the operator command. One writer lease covers database
+ * construction, migrations, the reconciliation transaction, and handle close,
+ * so an exclusive backup cannot enter between those phases.
+ */
+export function runReleaseDispatchReconciliationProcess(input: Readonly<{
+  argv: readonly string[];
+  env: Readonly<Record<string, string | undefined>>;
+  mutationFenceRoot: string;
+  openDb: () => AppDb;
+  openStore: () => ReleaseIngestionStore;
+  write?: (value: string) => void;
+}>): Readonly<{ reconciliationId: string; dispatchId: string; action: ReleaseDispatchReconciliationAction }> {
+  const mutationLease = tryAcquireMutationLease(input.mutationFenceRoot);
+  if (!mutationLease) {
+    throw new Error("release_dispatch_reconciliation_mutation_fence_unavailable");
+  }
+  let db: AppDb | undefined;
+  let store: ReleaseIngestionStore | undefined;
+  try {
+    db = input.openDb();
+    store = input.openStore();
+    return executeReleaseDispatchReconciliationCommand({
+      argv: input.argv,
+      env: input.env,
+      db,
+      store,
+      mutationFenceRoot: input.mutationFenceRoot,
+      write: input.write,
+    }, MUTATION_FENCE_HELD);
+  } finally {
+    try {
+      store?.close();
+    } finally {
+      try {
+        db?.raw.close();
+      } finally {
+        mutationLease.release();
+      }
+    }
+  }
 }

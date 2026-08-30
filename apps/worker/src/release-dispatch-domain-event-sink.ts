@@ -345,3 +345,33 @@ export function acceptReleaseDispatchDomainEvent(input: Readonly<{
     throw sinkError(RELEASE_DISPATCH_SINK_FAILURE_CODES.infrastructureUnavailable, true);
   }
 }
+
+/**
+ * Read-only crash reconciliation. Missing evidence returns null; mismatched or
+ * corrupt evidence fails closed. This function never appends a domain event.
+ */
+export function reconcileExactReleaseDispatchDomainEvent(input: Readonly<{
+  db: AppDb;
+  actorPrincipalId: string;
+  envelope: unknown;
+}>): Readonly<{ eventId: string }> | null {
+  const envelope = parseReleaseDispatchEnvelope(input.envelope);
+  const actorPrincipalId = requireIdentifier(input.actorPrincipalId);
+  const expectedEventId = eventId(envelope);
+  const expectedPayloadJson = JSON.stringify(envelope);
+  const row = existingReleaseDispatchEvent({
+    db: input.db,
+    tenantId: envelope.tenantId,
+    idempotencyKey: `catalog-release:${envelope.dispatchId}`,
+  });
+  if (!row) return null;
+  assertExactReplay({
+    db: input.db,
+    row,
+    envelope,
+    actorPrincipalId,
+    expectedEventId,
+    expectedPayloadJson,
+  });
+  return Object.freeze({ eventId: row.id });
+}

@@ -256,6 +256,53 @@ describe("public deployment health", () => {
     });
   });
 
+  it.each([
+    ["releaseDispatchFailureStage", "provider-secret-stage"],
+    ["releaseDispatchFailureCode", "RAW Provider Error"],
+  ])("rejects malformed non-null %s in an otherwise complete healthy dispatch heartbeat", async (field, value) => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-release-complete-malformed-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "worker-heartbeat.json");
+    writeFileSync(heartbeatPath, JSON.stringify({
+      ok: true,
+      recordedAt: new Date().toISOString(),
+      feedPollingEnabled: false,
+      feedPollOk: true,
+      releasePollingConfigured: false,
+      releasePollConfigurationCount: 0,
+      feedScheduleCount: 0,
+      feedScheduleStatus: "not_started",
+      releaseConfigurationStatus: "not_configured",
+      releaseConfigurationFailed: 0,
+      releaseDispatchConfigured: true,
+      releaseDispatchConsumerCount: 1,
+      releaseDispatchStatus: "healthy",
+      releaseDispatchPending: 0,
+      releaseDispatchClaimed: 0,
+      releaseDispatchFailed: 0,
+      releaseDispatchDue: 0,
+      releaseDispatchExpiredClaims: 0,
+      releaseDispatchFailureStage: null,
+      releaseDispatchFailureCode: null,
+      [field]: value,
+    }));
+    process.env.MENDPOINT_WORKER_HEARTBEAT_PATH = heartbeatPath;
+    process.env.MENDPOINT_API_KEY = `me_${"a".repeat(40)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+
+    const response = await GET();
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      checks: { worker: {
+        ok: false,
+        releaseDispatchStatus: "unknown",
+        releaseDispatchFailureStage: null,
+        releaseDispatchFailureCode: null,
+      } },
+    });
+  });
+
   it("accepts a legacy heartbeat when the release scheduler fields are absent", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-release-legacy-"));
     dirs.push(dir);

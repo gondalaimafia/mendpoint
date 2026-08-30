@@ -17,7 +17,11 @@ import {
   insertEvidenceRecord,
   insertPrincipal,
 } from "@mendpoint/db";
-import { runReleaseDispatchReconciliationCommand } from "./release-dispatch-reconcile-cli.js";
+import { inspectMutationFence } from "@mendpoint/ops";
+import {
+  runReleaseDispatchReconciliationCommand,
+  runReleaseDispatchReconciliationProcess,
+} from "./release-dispatch-reconcile-cli.js";
 
 const NOW = "2026-08-27T15:00:00.000Z";
 const OIDC_ISSUER = "https://identity.example.test";
@@ -432,5 +436,51 @@ describe("release dispatch reconciliation command", () => {
       value.store.close();
       value.db.raw.close();
     }
+  });
+
+  it("holds one mutation fence across both store opens, reconciliation, and close", () => {
+    const value = fixture();
+    const seenWriterCounts: number[] = [];
+    const input = commandInput(value, { idempotencyKey: "operator:ack:fence-span" });
+    const result = runReleaseDispatchReconciliationProcess({
+      argv: input.argv,
+      env: input.env,
+      mutationFenceRoot: value.mutationFenceRoot,
+      openDb: () => {
+        seenWriterCounts.push(inspectMutationFence(value.mutationFenceRoot).writers.length);
+        return value.db;
+      },
+      openStore: () => {
+        seenWriterCounts.push(inspectMutationFence(value.mutationFenceRoot).writers.length);
+        return value.store;
+      },
+      write: () => {
+        seenWriterCounts.push(inspectMutationFence(value.mutationFenceRoot).writers.length);
+      },
+    });
+    expect(result).toMatchObject({ dispatchId: value.failed.id, action: "acknowledge" });
+    expect(seenWriterCounts).toEqual([1, 1, 1]);
+    expect(inspectMutationFence(value.mutationFenceRoot).writers).toEqual([]);
+    expect(() => value.db.raw.prepare("SELECT 1")).toThrow();
+    expect(() => value.store.raw.prepare("SELECT 1")).toThrow();
+  });
+
+  it("closes a partially opened app store before releasing the mutation fence", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-reconcile-partial-open-"));
+    directories.push(directory);
+    const mutationFenceRoot = join(directory, "mutation-fence");
+    const db = createDb(join(directory, "app.sqlite"));
+    expect(() => runReleaseDispatchReconciliationProcess({
+      argv: [],
+      env: {},
+      mutationFenceRoot,
+      openDb: () => db,
+      openStore: () => {
+        expect(inspectMutationFence(mutationFenceRoot).writers).toHaveLength(1);
+        throw new Error("release_store_open_failed");
+      },
+    })).toThrow("release_store_open_failed");
+    expect(inspectMutationFence(mutationFenceRoot).writers).toEqual([]);
+    expect(() => db.raw.prepare("SELECT 1")).toThrow();
   });
 });

@@ -115,6 +115,7 @@ function run(input: Readonly<{
   maxClaimsPerConsumer?: number;
   now?: () => string;
   sink?: typeof acceptReleaseDispatchDomainEvent;
+  reconcile?: Parameters<typeof drainReleaseDispatchesOnce>[0]["reconcile"];
   rehydrate?: Parameters<typeof drainReleaseDispatchesOnce>[0]["rehydrate"];
   shouldContinue?: () => boolean;
 }>) {
@@ -309,6 +310,85 @@ describe("release dispatch drainer", () => {
       leaseGeneration: 2,
     });
     expect(listDomainEvents(appDb, "tenant-a")).toHaveLength(1);
+  });
+
+  it("recovers a fifth-attempt crash from the exact emitted event without a sixth attempt", () => {
+    let clock = NOW;
+    const releaseStore = store(() => clock);
+    const appDb = db();
+    ingest(releaseStore, "tenant-a");
+    addPrincipal(appDb, { tenantId: "tenant-a", id: "release-service-a" });
+    const retryableFailure = Object.assign(new Error("provider unavailable"), {
+      code: RELEASE_DISPATCH_SINK_FAILURE_CODES.infrastructureUnavailable,
+      retryable: true,
+    });
+    for (let attempt = 1; attempt < 5; attempt += 1) {
+      expect(run({
+        store: releaseStore,
+        db: appDb,
+        consumers: [consumer("tenant-a", "release-service-a")],
+        now: () => clock,
+        sink: (() => { throw retryableFailure; }) as typeof acceptReleaseDispatchDomainEvent,
+      })).toMatchObject({ claimed: 1, retried: 1, completed: 0 });
+      const pending = listReleaseDispatches(releaseStore, "tenant-a")[0]!;
+      expect(pending).toMatchObject({ status: "pending", attemptCount: attempt });
+      clock = new Date(Date.parse(pending.availableAt) + 1).toISOString();
+    }
+
+    let boundaryChecks = 0;
+    expect(run({
+      store: releaseStore,
+      db: appDb,
+      consumers: [consumer("tenant-a", "release-service-a")],
+      now: () => clock,
+      shouldContinue: () => ++boundaryChecks < 4,
+    })).toMatchObject({ claimed: 1, completed: 0 });
+    expect(listReleaseDispatches(releaseStore, "tenant-a")[0]).toMatchObject({
+      status: "claimed", attemptCount: 5, leaseGeneration: 5,
+    });
+    expect(listDomainEvents(appDb, "tenant-a")).toHaveLength(1);
+
+    clock = new Date(Date.parse(clock) + 1_001).toISOString();
+    expect(run({
+      store: releaseStore,
+      db: appDb,
+      consumers: [consumer("tenant-a", "release-service-a")],
+      now: () => clock,
+    })).toMatchObject({ claimed: 1, completed: 1, exhausted: 0 });
+    expect(listReleaseDispatches(releaseStore, "tenant-a")[0]).toMatchObject({
+      status: "completed", attemptCount: 5, leaseGeneration: 6,
+    });
+    expect(listDomainEvents(appDb, "tenant-a")).toHaveLength(1);
+  });
+
+  it("exhausts an expired final claim when no exact emitted event exists", () => {
+    let clock = NOW;
+    const releaseStore = store(() => clock);
+    const appDb = db();
+    ingest(releaseStore, "tenant-a");
+    addPrincipal(appDb, { tenantId: "tenant-a", id: "release-service-a" });
+    releaseStore.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'claimed', lease_owner = 'crashed-worker', claimed_at = ?,
+          lease_expires_at = ?, lease_generation = 5, attempt_count = max_attempts
+      WHERE tenant_id = 'tenant-a'`).run(
+        "2026-08-27T14:59:58.000Z",
+        "2026-08-27T14:59:59.000Z",
+      );
+
+    const summary = run({
+      store: releaseStore,
+      db: appDb,
+      consumers: [consumer("tenant-a", "release-service-a")],
+      now: () => clock,
+    });
+    expect(summary).toMatchObject({ claimed: 1, completed: 0, exhausted: 1 });
+    expect(listReleaseDispatches(releaseStore, "tenant-a")[0]).toMatchObject({
+      status: "failed",
+      attemptCount: 5,
+      leaseGeneration: 6,
+      failureCode: "dispatch_attempts_exhausted",
+    });
+    expect(listDomainEvents(appDb, "tenant-a")).toEqual([]);
   });
 
   it("fails a dispatch nonretryably when exact artifact rehydration detects a digest mismatch", () => {

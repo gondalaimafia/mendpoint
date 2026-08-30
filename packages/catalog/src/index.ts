@@ -74,6 +74,7 @@ export {
 
 export {
   claimReleaseDispatch,
+  claimExpiredFinalReleaseDispatchForRecovery,
   completeReleaseDispatch,
   failReleaseDispatch,
   ingestReleaseDocument,

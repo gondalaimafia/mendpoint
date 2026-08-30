@@ -265,9 +265,19 @@ export async function workerCheck(operational = true): Promise<{
         ? null
         : releaseDispatchFailureCode(heartbeat.releaseDispatchFailureCode)
       : releaseDispatchAnyFieldPresent ? undefined : null;
+    const releaseDispatchFailureStageShapeValid =
+      !hasOwn(heartbeat, "releaseDispatchFailureStage") ||
+      heartbeat.releaseDispatchFailureStage === null ||
+      currentReleaseDispatchFailureStage !== null;
+    const releaseDispatchFailureCodeShapeValid =
+      !hasOwn(heartbeat, "releaseDispatchFailureCode") ||
+      heartbeat.releaseDispatchFailureCode === null ||
+      currentReleaseDispatchFailureCode !== null;
     const releaseDispatchFailureValid =
       currentReleaseDispatchFailureStage !== undefined &&
       currentReleaseDispatchFailureCode !== undefined &&
+      releaseDispatchFailureStageShapeValid &&
+      releaseDispatchFailureCodeShapeValid &&
       ((currentReleaseDispatchFailureStage === null) === (currentReleaseDispatchFailureCode === null)) &&
       (currentReleaseDispatchStatus === "degraded" || currentReleaseDispatchStatus === "unknown"
         ? currentReleaseDispatchFailureStage !== null

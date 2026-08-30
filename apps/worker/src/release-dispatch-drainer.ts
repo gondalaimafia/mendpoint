@@ -1,4 +1,5 @@
 import {
+  claimExpiredFinalReleaseDispatchForRecovery,
   claimReleaseDispatch,
   completeReleaseDispatch,
   failReleaseDispatch,
@@ -13,6 +14,7 @@ import {
   RELEASE_DISPATCH_SINK_FAILURE_CODES,
   acceptReleaseDispatchDomainEvent,
   ensureReleaseDispatchPrincipal,
+  reconcileExactReleaseDispatchDomainEvent,
   type ReleaseDispatchSinkError,
 } from "./release-dispatch-domain-event-sink.js";
 
@@ -66,6 +68,7 @@ export class ReleaseDispatchRuntimeError extends Error {
 }
 
 type ReleaseDispatchSink = typeof acceptReleaseDispatchDomainEvent;
+type ReleaseDispatchReconciler = typeof reconcileExactReleaseDispatchDomainEvent;
 
 function configurationError(): never {
   throw new Error("release_dispatch_consumers_invalid");
@@ -195,6 +198,7 @@ export function drainReleaseDispatchesOnce(input: Readonly<{
   maxClaimsPerConsumer: number;
   now?: () => string;
   sink?: ReleaseDispatchSink;
+  reconcile?: ReleaseDispatchReconciler;
   rehydrate?: typeof rehydrateReleaseArtifact;
   shouldContinue?: () => boolean;
 }>): ReleaseDispatchDrainSummary {
@@ -211,6 +215,7 @@ export function drainReleaseDispatchesOnce(input: Readonly<{
   if (!Array.isArray(input.consumers) || input.consumers.length > MAX_CONSUMERS) configurationError();
   const now = input.now ?? (() => new Date().toISOString());
   const sink = input.sink ?? acceptReleaseDispatchDomainEvent;
+  const reconcile = input.reconcile ?? reconcileExactReleaseDispatchDomainEvent;
   const rehydrate = input.rehydrate ?? rehydrateReleaseArtifact;
   const shouldContinue = input.shouldContinue ?? (() => true);
   let configurationFailed = 0;
@@ -244,6 +249,78 @@ export function drainReleaseDispatchesOnce(input: Readonly<{
 
     for (let index = 0; index < input.maxClaimsPerConsumer; index += 1) {
       if (!shouldContinue()) break consumerLoop;
+      let recovery: ReleaseDispatch | null;
+      try {
+        recovery = claimExpiredFinalReleaseDispatchForRecovery(input.store, {
+          tenantId: parsedConsumer.tenantId,
+          workerId,
+          leaseDurationMs: input.leaseDurationMs,
+        });
+      } catch {
+        throw new ReleaseDispatchRuntimeError("claim", "release_dispatch_claim_unavailable");
+      }
+      if (recovery) {
+        claimed += 1;
+        if (!shouldContinue()) break consumerLoop;
+        const envelope = Object.freeze({
+          contractVersion: RELEASE_DISPATCH_CONTRACT_VERSION,
+          tenantId: recovery.tenantId,
+          dispatchId: recovery.id,
+          artifactId: recovery.artifactId,
+          artifactContentSha256: recovery.artifactContentSha256,
+        });
+        let exact: ReturnType<ReleaseDispatchReconciler>;
+        try {
+          exact = reconcile({
+            db: input.db,
+            actorPrincipalId: parsedConsumer.actorPrincipalId,
+            envelope,
+          });
+        } catch (error) {
+          const classification = classifyFailure(error);
+          failureStage = "event_append";
+          failureCode = classification.code;
+          const outcome = settleFailure({
+            store: input.store,
+            dispatch: recovery,
+            workerId,
+            code: classification.code,
+            retryable: classification.retryable,
+          });
+          if (outcome === "failed") failed += 1;
+          else if (outcome === "retried") retried += 1;
+          else exhausted += 1;
+          continue;
+        }
+        if (!exact) {
+          failureStage = "settlement";
+          failureCode = "dispatch_attempts_exhausted";
+          const outcome = settleFailure({
+            store: input.store,
+            dispatch: recovery,
+            workerId,
+            code: "dispatch_attempts_exhausted",
+            retryable: true,
+          });
+          if (outcome === "failed") failed += 1;
+          else if (outcome === "retried") retried += 1;
+          else exhausted += 1;
+          continue;
+        }
+        if (!shouldContinue()) break consumerLoop;
+        try {
+          completeReleaseDispatch(input.store, {
+            tenantId: recovery.tenantId,
+            dispatchId: recovery.id,
+            workerId,
+            leaseGeneration: recovery.leaseGeneration,
+          });
+          completed += 1;
+        } catch (error) {
+          normalizeLeaseFailure(error);
+        }
+        continue;
+      }
       let dispatch: ReleaseDispatch | null;
       try {
         dispatch = claimReleaseDispatch(input.store, {

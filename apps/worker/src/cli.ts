@@ -117,7 +117,7 @@ import {
   type ReleaseDispatchFailureStage,
   ReleaseDispatchRuntimeError,
 } from "./release-dispatch-drainer.js";
-import { runReleaseDispatchReconciliationCommand } from "./release-dispatch-reconcile-cli.js";
+import { runReleaseDispatchReconciliationProcess } from "./release-dispatch-reconcile-cli.js";
 
 export function initializeWorkerDurableState<T>(
   initialize: () => T,
@@ -5085,21 +5085,14 @@ async function main() {
       db.raw.close();
     }
   } else if (cmd === "reconcile-release-dispatch") {
-    const db = initializeWorkerDurableState(() => createDb());
-    const releaseStore = openReleaseIngestionStore(releaseIngestionWorkerPath(process.env));
-    try {
-      runReleaseDispatchReconciliationCommand({
-        argv: process.argv.slice(3),
-        env: process.env,
-        db,
-        store: releaseStore,
-        mutationFenceRoot: resolveMutationFenceRoot(),
-        write: (value) => console.log(value),
-      });
-    } finally {
-      releaseStore.close();
-      db.raw.close();
-    }
+    runReleaseDispatchReconciliationProcess({
+      argv: process.argv.slice(3),
+      env: process.env,
+      mutationFenceRoot: resolveMutationFenceRoot(),
+      openDb: () => createDb(),
+      openStore: () => openReleaseIngestionStore(releaseIngestionWorkerPath(process.env)),
+      write: (value) => console.log(value),
+    });
   } else if (cmd === "learning-corpus") {
     // H3: seal a governed learning dataset version through the existing
     // pipeline sealer. Does not train and does not invent organization-memory

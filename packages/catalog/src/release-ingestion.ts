@@ -1640,6 +1640,51 @@ export function claimReleaseDispatch(
   }
 }
 
+/**
+ * Claims only an expired final-attempt dispatch for read-only outcome recovery.
+ * The attempt count is deliberately unchanged: callers may reconcile an exact
+ * effect that was emitted before a crash, but must never dispatch new work.
+ */
+export function claimExpiredFinalReleaseDispatchForRecovery(
+  store: ReleaseIngestionStore,
+  input: Readonly<{ tenantId: string; workerId: string; leaseDurationMs: number }>,
+): ReleaseDispatch | null {
+  const tenantId = required("release_tenant_id", input.tenantId, 256);
+  const workerId = required("release_dispatch_worker_id", input.workerId, 256);
+  if (!Number.isSafeInteger(input.leaseDurationMs) || input.leaseDurationMs < 1 || input.leaseDurationMs > 86_400_000) {
+    throw new Error("release_dispatch_lease_duration_invalid");
+  }
+  if (store.raw.isTransaction) throw new Error("release_dispatch_transaction_active");
+  store.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const now = advanceReleaseClock(store);
+    const leaseExpiresAt = new Date(Date.parse(now) + input.leaseDurationMs).toISOString();
+    const candidate = one<{ id: string }>(store, `SELECT id FROM release_ingestion_dispatches
+      WHERE tenant_id = ? AND status = 'claimed' AND lease_expires_at <= ?
+        AND attempt_count >= max_attempts
+      ORDER BY available_at, id LIMIT 1`, [tenantId, now]);
+    if (!candidate) {
+      store.raw.exec("COMMIT");
+      return null;
+    }
+    const changed = store.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET lease_owner = ?, lease_expires_at = ?, lease_generation = lease_generation + 1,
+          claimed_at = ?
+      WHERE tenant_id = ? AND id = ? AND status = 'claimed' AND lease_expires_at <= ?
+        AND attempt_count >= max_attempts`)
+      .run(workerId, leaseExpiresAt, now, tenantId, candidate.id, now);
+    if (Number(changed.changes) !== 1) throw new Error("release_dispatch_recovery_claim_conflict");
+    const claimed = one<DispatchRow>(store,
+      "SELECT * FROM release_ingestion_dispatches WHERE tenant_id = ? AND id = ?", [tenantId, candidate.id]);
+    if (!claimed) throw new Error("release_dispatch_recovery_claim_failed");
+    store.raw.exec("COMMIT");
+    return dispatchFromRow(claimed);
+  } catch (error) {
+    if (store.raw.isTransaction) store.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function dispatchRetryDelayMs(attemptCount: number): number {
   const exponent = Math.max(0, Math.min(attemptCount - 1, 20));
   return Math.min(DISPATCH_RETRY_BASE_MS * (2 ** exponent), DISPATCH_RETRY_MAX_MS);
