@@ -20,6 +20,7 @@ export type SecretLifecycleInput = Readonly<{
     version: string;
     customerManaged: boolean;
   }>;
+  materialLineageId: string;
   envelope: Readonly<{
     schemaVersion: 1;
     algorithm: "AES-256-GCM";
@@ -100,6 +101,9 @@ function validateInput(input: SecretLifecycleInput): void {
   validTimestamp("secret_envelope_created_at", input.envelope.createdAt);
   if (!ID.test(input.key.provider) || !ID.test(input.key.keyId) || !ID.test(input.key.version)) {
     throw new Error("secret_key_reference_invalid");
+  }
+  if (!/^[a-f0-9]{64}$/.test(input.materialLineageId)) {
+    throw new Error("secret_material_lineage_invalid");
   }
   if (
     input.envelope.schemaVersion !== 1 ||
@@ -197,8 +201,9 @@ function insertVersion(db: AppDb, input: SecretLifecycleInput): SecretLifecycleV
       tenant_id, credential_id, source_ref, generation, state, audiences_json,
       expires_at, issued_at, rotate_after, retired_at, revoked_at, revocation_reason,
       key_provider, key_id, key_version, customer_managed, envelope_schema_version,
-      key_attestation_sha256, algorithm, wrapped_data_key, iv, auth_tag, ciphertext, created_at
-    ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      key_attestation_sha256, material_lineage_id, algorithm, wrapped_data_key, iv, auth_tag,
+      ciphertext, created_at
+    ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.tenantId,
     input.credentialId,
@@ -214,6 +219,7 @@ function insertVersion(db: AppDb, input: SecretLifecycleInput): SecretLifecycleV
     input.key.customerManaged ? 1 : 0,
     input.envelope.schemaVersion,
     input.envelope.keyAttestationSha256,
+    input.materialLineageId,
     input.envelope.algorithm,
     input.envelope.wrappedDataKey,
     input.envelope.iv,
@@ -291,6 +297,72 @@ export function rotateSecretLifecycle(
   });
 }
 
+export type SecretRewrapOperationRow = Readonly<{
+  tenant_id: string;
+  idempotency_key: string;
+  request_digest: string;
+  request_commitment_key_id: string;
+  actor_id: string;
+  credential_id: string;
+  result_generation: number;
+  completed_at: string;
+}>;
+
+export function getSecretRewrapOperation(
+  db: AppDb,
+  tenantId: string,
+  idempotencyKey: string,
+): SecretRewrapOperationRow | undefined {
+  return one(
+    db,
+    `SELECT * FROM secret_rewrap_operations WHERE tenant_id = ? AND idempotency_key = ?`,
+    [tenantId, idempotencyKey],
+  );
+}
+
+export function rewrapSecretLifecycle(
+  db: AppDb,
+  input: Readonly<{
+    expectedGeneration: number;
+    rotatedAt: string;
+    next: SecretLifecycleInput;
+  }>,
+  options: Readonly<{
+    operation: SecretLifecycleOperationIdentity;
+    audit?: (row: SecretLifecycleVersionRow) => void;
+  }>,
+): SecretLifecycleVersionRow {
+  validateOperation(options.operation);
+  return transaction(db, () => {
+    const existing = getSecretRewrapOperation(db, input.next.tenantId, options.operation.idempotencyKey);
+    if (existing) {
+      if (
+        existing.request_digest !== options.operation.requestDigest ||
+        existing.request_commitment_key_id !== options.operation.requestCommitmentKeyId ||
+        existing.actor_id !== options.operation.actorId ||
+        existing.credential_id !== input.next.credentialId ||
+        existing.result_generation !== input.next.generation
+      ) throw new Error("secret_lifecycle_idempotency_conflict");
+      const replay = getSecretLifecycleVersion(
+        db, input.next.tenantId, existing.credential_id, existing.result_generation,
+      );
+      if (!replay) throw new Error("secret_lifecycle_idempotency_corrupt");
+      return replay;
+    }
+    const row = rotateSecretLifecycle(db, input, { audit: options.audit });
+    db.raw.prepare(`INSERT INTO secret_rewrap_operations (
+      tenant_id, idempotency_key, request_digest, request_commitment_key_id, actor_id,
+      credential_id, result_generation, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        input.next.tenantId, options.operation.idempotencyKey, options.operation.requestDigest,
+        options.operation.requestCommitmentKeyId, options.operation.actorId,
+        input.next.credentialId, input.next.generation, input.next.issuedAt,
+      );
+    return row;
+  });
+}
+
 export function getSecretLifecycleOperation(
   db: AppDb,
   tenantId: string,
@@ -336,6 +408,12 @@ export function completeSecretBreakGlassOperation(
     actorId: string;
     credentialId: string;
     generation: number;
+    key: Readonly<{
+      provider: string;
+      keyId: string;
+      version: string;
+      attestationSha256: string;
+    }>;
     completedAt: string;
   }>,
   options: Readonly<{ audit: () => void }>,
@@ -354,6 +432,18 @@ export function completeSecretBreakGlassOperation(
   }
   validTimestamp("secret_break_glass_completed_at", input.completedAt);
   return transaction(db, () => {
+    const current = getSecretLifecycleVersion(
+      db,
+      input.tenantId,
+      input.credentialId,
+      input.generation,
+    );
+    if (
+      !current || current.state !== "active" ||
+      current.key_provider !== input.key.provider || current.key_id !== input.key.keyId ||
+      current.key_version !== input.key.version ||
+      current.key_attestation_sha256 !== input.key.attestationSha256
+    ) throw new Error("secret_break_glass_generation_inactive");
     const existing = getSecretBreakGlassOperation(db, input.tenantId, input.idempotencyKey);
     if (existing) {
       if (
@@ -393,11 +483,38 @@ export function revokeSecretLifecycle(
     revokedAt: string;
     reason: string;
   }>,
-  options: Readonly<{ audit?: (row: SecretLifecycleVersionRow) => void }> = {},
+  options: Readonly<{
+    operation?: SecretLifecycleOperationIdentity;
+    audit?: (row: SecretLifecycleVersionRow) => void;
+    replayAudit?: (row: SecretLifecycleVersionRow) => void;
+  }> = {},
 ): SecretLifecycleVersionRow {
   validTimestamp("secret_revoked_at", input.revokedAt);
   if (!input.reason.trim()) throw new Error("secret_revocation_reason_required");
   return transaction(db, () => {
+    if (options.operation) {
+      validateOperation(options.operation);
+      const replay = one<{
+        request_digest: string;
+        request_commitment_key_id: string;
+        actor_id: string;
+        credential_id: string;
+        generation: number;
+      }>(db, `SELECT * FROM secret_revoke_operations
+        WHERE tenant_id = ? AND idempotency_key = ?`, [input.tenantId, options.operation.idempotencyKey]);
+      if (replay) {
+        if (
+          replay.request_digest !== options.operation.requestDigest ||
+          replay.request_commitment_key_id !== options.operation.requestCommitmentKeyId ||
+          replay.actor_id !== options.operation.actorId || replay.credential_id !== input.credentialId ||
+          replay.generation !== input.generation
+        ) throw new Error("secret_lifecycle_idempotency_conflict");
+        const row = getSecretLifecycleVersion(db, input.tenantId, input.credentialId, input.generation);
+        if (!row) throw new Error("secret_lifecycle_idempotency_corrupt");
+        options.replayAudit?.(row);
+        return row;
+      }
+    }
     const existing = getSecretLifecycleVersion(
       db,
       input.tenantId,
@@ -405,17 +522,19 @@ export function revokeSecretLifecycle(
       input.generation,
     );
     if (!existing) throw new Error("secret_lifecycle_version_not_found");
-    if (existing.state === "revoked") return existing;
+    const lineage = existing.material_lineage_id;
     db.raw.prepare(`
       UPDATE secret_lifecycle_versions
       SET state = 'revoked', revoked_at = ?, revocation_reason = ?
-      WHERE tenant_id = ? AND credential_id = ? AND generation = ?
+      WHERE tenant_id = ? AND credential_id = ? AND state IN ('active', 'retired')
+        AND (? IS NULL OR material_lineage_id = ?)
     `).run(
       input.revokedAt,
       input.reason.trim(),
       input.tenantId,
       input.credentialId,
-      input.generation,
+      lineage,
+      lineage,
     );
     const row = getSecretLifecycleVersion(
       db,
@@ -424,6 +543,17 @@ export function revokeSecretLifecycle(
       input.generation,
     )!;
     options.audit?.(row);
+    if (options.operation) {
+      db.raw.prepare(`INSERT INTO secret_revoke_operations (
+        tenant_id, idempotency_key, request_digest, request_commitment_key_id, actor_id,
+        credential_id, generation, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(
+          input.tenantId, options.operation.idempotencyKey, options.operation.requestDigest,
+          options.operation.requestCommitmentKeyId, options.operation.actorId,
+          input.credentialId, input.generation, input.revokedAt,
+        );
+    }
     return row;
   });
 }

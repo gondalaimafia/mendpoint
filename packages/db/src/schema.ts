@@ -18,6 +18,7 @@ export type SecretLifecycleVersionRow = {
   key_version: string;
   customer_managed: number;
   key_attestation_sha256: string | null;
+  material_lineage_id: string | null;
   envelope_schema_version: number;
   algorithm: "AES-256-GCM";
   wrapped_data_key: string;
@@ -52,6 +53,7 @@ export type ApiKeyRow = {
   principal_id: string | null;
   scopes_json: string;
   authority_principal_id: string | null;
+  authority_role: "owner" | "admin" | "engineer" | "viewer" | "fde" | "agent" | null;
   created_at: string;
   last_used_at: string | null;
   revoked_at: string | null;

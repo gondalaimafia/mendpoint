@@ -246,6 +246,7 @@ import { normalizeChange } from "@mendpoint/change-intel";
 import {
   createAuthMiddleware,
   createRbacMiddleware,
+  attenuateApiKeyScopes,
   effectiveAuthMode,
   type ApiEnv,
 } from "./auth.js";
@@ -2273,12 +2274,30 @@ app.post("/keys", async (c) => {
   if (!principal) return c.json({ error: "unauthorized" }, 401);
   const body = await c.req.json<{ name: string; scopes?: string[] }>();
   if (!body.name) return c.json({ error: "name required" }, 400);
+  const authorityRole = c.get("authorityRole");
+  if (!authorityRole) {
+    return c.json({ error: "forbidden", message: "api_key_stable_authority_required" }, 403);
+  }
+  let scopes: string[];
+  try {
+    scopes = attenuateApiKeyScopes({
+      principalRole: principal.role,
+      currentScopes: c.get("authScopes") ?? [],
+      requestedScopes: body.scopes,
+    });
+  } catch (error) {
+    return c.json({
+      error: "forbidden",
+      message: error instanceof Error ? error.message : "api_key_authority_amplification",
+    }, 403);
+  }
   const created = createApiKey(db, {
     id: newId(),
     name: body.name,
     tenantId: principal.tenantId,
-    scopes: body.scopes,
+    scopes,
     authorityPrincipalId: c.get("authorityPrincipalId"),
+    authorityRole,
     createdAt: nowIso(),
   });
   requestAudit(c, {

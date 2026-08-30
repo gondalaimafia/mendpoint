@@ -97,6 +97,7 @@ function version(generation: number, ciphertext = `ciphertext-${generation}`) {
       version: String(generation),
       customerManaged: true,
     },
+    materialLineageId: "b".repeat(64),
     envelope: {
       schemaVersion: 1 as const,
       algorithm: "AES-256-GCM" as const,

@@ -464,3 +464,33 @@
 **Mistake:** Break-glass denial auditing lived inside the route, so authentication and RBAC middleware could return 401 or 403 before the audit boundary ran.
 **Correction:** Wrap the exact break-glass path before authentication and RBAC, audit unresolved or resolved denial context without changing successful dispatch, and return a fail-closed service error if audit persistence fails.
 **Rule:** If middleware can deny a security-sensitive operation, its durable denial audit must wrap that middleware rather than depend on the route handler.
+
+### 2026-08-30 — Credential minting cannot amplify authority
+
+**Mistake:** The tenant-admin key route accepted arbitrary scopes, while wildcard scope was interpreted as owner authority.
+**Correction:** Bound newly minted key permissions to the authenticated caller's effective role and scopes, and require current stable owner authority for break glass.
+**Rule:** Credential issuance may preserve or attenuate current authority. It may never manufacture a stronger role or broader scope than the authenticated authority holds.
+
+### 2026-08-30 — Rewrap and secret rotation are different operations
+
+**Mistake:** Lifecycle rotation changed only the KEK envelope while retaining the same credential plaintext, then presented the result as credential rotation.
+**Correction:** Require new resolver-bound credential material for a real rotation and retain material lineage so incident revocation reaches every successor that contains compromised material.
+**Rule:** Changing cryptographic wrapping does not rotate a credential. Rotation means new secret material with explicit provenance; rewrap is named and authorized separately.
+
+### 2026-08-30 — Break-glass release needs a final current-state fence
+
+**Mistake:** Break glass checked active state before asynchronous provider decrypt, allowing a concurrent revocation to complete before plaintext returned.
+**Correction:** Revalidate the exact generation, key binding, provider attestation, and active state transactionally immediately before completing authorization and returning plaintext.
+**Rule:** Authorization for plaintext release is a commit-time decision. Any asynchronous work before release invalidates earlier mutable-state checks.
+
+### 2026-08-30 — Revocation replay is still an authenticated operation
+
+**Mistake:** An already-revoked generation returned early before actor, reason, idempotency, and audit comparison.
+**Correction:** Persist a keyed semantic commitment and exact replay evidence for revoke, audit valid replay, and reject every drifted retry.
+**Rule:** Terminal state does not erase replay authority. Idempotent security mutations compare the full authenticated request before returning their prior result.
+
+### 2026-08-30 — Custody claims require provider evidence
+
+**Mistake:** Locally supplied JSON could label an application-held KEK customer-managed without an external provider proving customer custody.
+**Correction:** Describe locally imported key material as Mendpoint-custodied and reserve customer-managed claims for provider-authenticated evidence.
+**Rule:** Custody is an attested property, not a caller label. Never infer customer control from configuration text or a boolean supplied alongside key bytes.

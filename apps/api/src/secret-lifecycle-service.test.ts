@@ -39,13 +39,13 @@ function fixture() {
     provider: "local-envelope",
     keyId: "tenant-key",
     version: "1",
-    customerManaged: true,
+    customerManaged: false,
   }, Buffer.alloc(32, 1));
   provider.putKey("tenant-a", {
     provider: "local-envelope",
     keyId: "tenant-key",
     version: "2",
-    customerManaged: true,
+    customerManaged: false,
   }, Buffer.alloc(32, 2));
   return { db, path, provider };
 }
@@ -54,6 +54,7 @@ function service(db: AppDb, provider: KeyEncryptionKeyProvider, options?: {
   tenantId?: string;
   actorId?: string;
   role?: "owner" | "admin" | "engineer";
+  authorityRole?: "owner" | "admin" | "engineer";
   requestId?: string;
   breakGlassEnabled?: boolean;
   auditFailure?: boolean;
@@ -67,6 +68,7 @@ function service(db: AppDb, provider: KeyEncryptionKeyProvider, options?: {
     actorId: options?.actorId ?? "operator-a",
     credentialPrincipalId: options?.actorId ?? "operator-a",
     role: options?.role ?? "admin",
+    authorityRole: options?.authorityRole ?? options?.role ?? "admin",
     providers: [provider],
     breakGlassEnabled: options?.breakGlassEnabled ?? true,
     requestId: options?.requestId ?? "secret-service-request",
@@ -125,7 +127,14 @@ describe("durable secret lifecycle service", () => {
       expectedGeneration: 1,
       key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
     };
-    await expect(service(db, provider).rotate(rotateInput)).resolves.toMatchObject({ generation: 2 });
+    await expect(service(db, provider).rewrap(rotateInput)).resolves.toMatchObject({ generation: 2 });
+    expect(getSecretLifecycleOperation(db, "tenant-a", "rotate-restart")).toBeUndefined();
+    expect(db.raw.prepare(`SELECT credential_id, result_generation
+      FROM secret_rewrap_operations WHERE tenant_id = ? AND idempotency_key = ?`)
+      .get("tenant-a", "rotate-restart")).toMatchObject({
+        credential_id: "credential-a",
+        result_generation: 2,
+      });
     db.raw.close();
     open.splice(open.indexOf(db), 1);
     const reopened = createDb(path);
@@ -133,13 +142,122 @@ describe("durable secret lifecycle service", () => {
     await expect(service(
       reopened,
       new DisabledExternalVaultProvider("local-envelope"),
-    ).rotate(rotateInput)).resolves.toMatchObject({ generation: 2, state: "active" });
+    ).rewrap(rotateInput)).resolves.toMatchObject({ generation: 2, state: "active" });
+  });
+
+  it("requires new credential material for rotation and keeps KEK-only rewrap explicit", async () => {
+    const { db, provider } = fixture();
+    await service(db, provider).create(createInput);
+    const rotating = {
+      idempotencyKey: "rotate-new-material",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      plaintext: "customer-secret-next",
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    };
+    await service(db, provider).rotate(rotating);
+    await expect(service(db, provider, { role: "owner" }).breakGlass({
+      credentialId: "credential-a",
+      reason: "verify replacement",
+      idempotencyKey: "reveal-new-material",
+    })).resolves.toBe("customer-secret-next");
+    await expect(service(db, provider).rotate({
+      ...rotating,
+      idempotencyKey: "rotate-unchanged-material",
+      expectedGeneration: 2,
+      plaintext: "customer-secret-next",
+    })).rejects.toThrow("secret_rotation_material_unchanged");
+    const rewrap = (service(db, provider) as unknown as {
+      rewrap?: (input: Omit<typeof rotating, "plaintext">) => Promise<unknown>;
+    }).rewrap;
+    expect(typeof rewrap).toBe("function");
+  });
+
+  it("revokes every successor generation that retains compromised credential material", async () => {
+    const { db, provider } = fixture();
+    await service(db, provider).create(createInput);
+    await service(db, provider).rewrap({
+      idempotencyKey: "rewrap-compromised-material",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    });
+    service(db, provider).revoke({
+      idempotencyKey: "revoke-compromised-lineage",
+      credentialId: "credential-a",
+      generation: 1,
+      reason: "incident",
+    });
+    expect(getSecretLifecycleVersion(db, "tenant-a", "credential-a", 2)?.state).toBe("revoked");
+  });
+
+  it("denies break glass when the exact generation is revoked during provider decrypt", async () => {
+    const { db, provider } = fixture();
+    await service(db, provider).create(createInput);
+    const racingProvider: KeyEncryptionKeyProvider = {
+      provider: provider.provider,
+      enabled: true,
+      keyMaterialFingerprints: () => provider.keyMaterialFingerprints(),
+      attestKey: (key, tenantId) => provider.attestKey(key, tenantId),
+      wrapDataKey: (key, tenantId, dataKey) => provider.wrapDataKey(key, tenantId, dataKey),
+      unwrapDataKey: async (key, tenantId, wrappedDataKey) => {
+        const dataKey = await provider.unwrapDataKey(key, tenantId, wrappedDataKey);
+        service(db, provider).revoke({
+          idempotencyKey: "concurrent-revoke",
+          credentialId: "credential-a",
+          generation: 1,
+          reason: "concurrent incident",
+        });
+        return dataKey;
+      },
+    };
+    await expect(service(db, racingProvider, { role: "owner" }).breakGlass({
+      credentialId: "credential-a",
+      reason: "incident response",
+      idempotencyKey: "break-glass-revoke-race",
+    })).rejects.toThrow("secret_break_glass_generation_inactive");
+  });
+
+  it("commitment-binds and audits revoke replay while rejecting actor or reason drift", async () => {
+    const { db, provider } = fixture();
+    await service(db, provider).create(createInput);
+    const revoke = {
+      idempotencyKey: "revoke-replay",
+      credentialId: "credential-a",
+      generation: 1,
+      reason: "confirmed incident",
+    };
+    service(db, provider).revoke(revoke);
+    service(db, provider).revoke(revoke);
+    expect(listAudit(db, "tenant-a").filter(
+      (event) => event.action === "secret.lifecycle.revoke_replayed",
+    )).toHaveLength(1);
+    expect(() => service(db, provider).revoke({ ...revoke, reason: "different incident" }))
+      .toThrow("secret_lifecycle_idempotency_conflict");
+    expect(() => service(db, provider, { actorId: "operator-b" }).revoke(revoke))
+      .toThrow("secret_lifecycle_idempotency_conflict");
+    expect(listAudit(db, "tenant-a").filter(
+      (event) => event.action === "secret.lifecycle.revoke_denied",
+    )).toHaveLength(2);
+  });
+
+  it("requires the stable current authority to be owner for break glass", async () => {
+    const { db, provider } = fixture();
+    await service(db, provider).create(createInput);
+    await expect(service(db, provider, {
+      role: "owner",
+      authorityRole: "admin",
+    }).breakGlass({
+      credentialId: "credential-a",
+      reason: "attempted elevation",
+      idempotencyKey: "break-glass-amplified",
+    })).rejects.toThrow("secret_break_glass_owner_required");
   });
 
   it("does not advance the visible generation when required audit fails", async () => {
     const { db, provider } = fixture();
     await service(db, provider).create(createInput);
-    await expect(service(db, provider, { auditFailure: true }).rotate({
+    await expect(service(db, provider, { auditFailure: true }).rewrap({
       idempotencyKey: "rotate-one",
       credentialId: "credential-a",
       expectedGeneration: 1,
@@ -152,14 +270,14 @@ describe("durable secret lifecycle service", () => {
   it("durably audits rotation source unwrap outcomes without publishing a denied rotation", async () => {
     const { db, provider } = fixture();
     await service(db, provider).create(createInput);
-    await service(db, provider).rotate({
+    await service(db, provider).rewrap({
       idempotencyKey: "rotate-source-granted",
       credentialId: "credential-a",
       expectedGeneration: 1,
       key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
     });
     expect(listAudit(db, "tenant-a").map((event) => event.action))
-      .toContain("secret.lifecycle.rotation_source.granted");
+      .toContain("secret.lifecycle.rewrap_source.granted");
 
     const second = fixture();
     await service(second.db, second.provider).create(createInput);
@@ -167,16 +285,16 @@ describe("durable secret lifecycle service", () => {
       provider: "local-envelope",
       keyId: "tenant-key",
       version: "1",
-      customerManaged: true,
+      customerManaged: false,
     });
-    await expect(service(second.db, second.provider).rotate({
+    await expect(service(second.db, second.provider).rewrap({
       idempotencyKey: "rotate-source-denied",
       credentialId: "credential-a",
       expectedGeneration: 1,
       key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
     })).rejects.toThrow("vault_decrypt_denied");
     expect(listAudit(second.db, "tenant-a").map((event) => event.action))
-      .toContain("secret.lifecycle.rotation_source.denied");
+      .toContain("secret.lifecycle.rewrap_source.denied");
     expect(listSecretLifecycleVersions(second.db, "tenant-a", "credential-a"))
       .toHaveLength(1);
   });
@@ -188,16 +306,16 @@ describe("durable secret lifecycle service", () => {
       provider: "local-envelope",
       keyId: "tenant-key",
       version: "2",
-      customerManaged: true,
+      customerManaged: false,
     });
-    await expect(service(db, provider).rotate({
+    await expect(service(db, provider).rewrap({
       idempotencyKey: "rotate-replacement-denied",
       credentialId: "credential-a",
       expectedGeneration: 1,
       key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
     })).rejects.toThrow("local_envelope_key_missing");
     expect(listAudit(db, "tenant-a").map((event) => event.action))
-      .toContain("secret.lifecycle.rotation_source.granted");
+      .toContain("secret.lifecycle.rewrap_source.granted");
     expect(listSecretLifecycleVersions(db, "tenant-a", "credential-a"))
       .toHaveLength(1);
   });
@@ -209,7 +327,7 @@ describe("durable secret lifecycle service", () => {
       provider: "local-envelope",
       keyId: "tenant-key",
       version: "2",
-      customerManaged: true,
+      customerManaged: false,
     });
     const request = {
       idempotencyKey: "rotate-resume",
@@ -217,18 +335,18 @@ describe("durable secret lifecycle service", () => {
       expectedGeneration: 1,
       key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
     };
-    await expect(service(db, provider, { requestId: "rotate-http-one" }).rotate(request))
+    await expect(service(db, provider, { requestId: "rotate-http-one" }).rewrap(request))
       .rejects.toThrow("local_envelope_key_missing");
     provider.putKey("tenant-a", {
       provider: "local-envelope",
       keyId: "tenant-key",
       version: "2",
-      customerManaged: true,
+      customerManaged: false,
     }, Buffer.alloc(32, 2));
-    await expect(service(db, provider, { requestId: "rotate-http-two" }).rotate(request))
+    await expect(service(db, provider, { requestId: "rotate-http-two" }).rewrap(request))
       .resolves.toMatchObject({ generation: 2, state: "active" });
     expect(listAudit(db, "tenant-a").filter(
-      (event) => event.action === "secret.lifecycle.rotation_source.granted",
+      (event) => event.action === "secret.lifecycle.rewrap_source.granted",
     )).toHaveLength(1);
   });
 
@@ -239,7 +357,7 @@ describe("durable secret lifecycle service", () => {
       provider: "local-envelope",
       keyId: "tenant-key",
       version: "1",
-      customerManaged: true,
+      customerManaged: false,
     });
     await expect(service(db, provider, { role: "owner" }).breakGlass({
       credentialId: "credential-a",
@@ -408,7 +526,7 @@ describe("durable secret lifecycle service", () => {
         provider: "external-vault",
         keyId: "tenant-key",
         version: "1",
-        customerManaged: true,
+        customerManaged: false,
         attestation: "provider-attestation",
         materialBase64: material.toString("base64"),
       }],
@@ -428,7 +546,7 @@ describe("durable secret lifecycle service", () => {
   it("cannot mutate another tenant's credential and gates break glass to owners", async () => {
     const { db, provider } = fixture();
     await service(db, provider).create(createInput);
-    await expect(service(db, provider, { tenantId: "tenant-b" }).rotate({
+    await expect(service(db, provider, { tenantId: "tenant-b" }).rewrap({
       idempotencyKey: "rotate-cross-tenant",
       credentialId: "credential-a",
       expectedGeneration: 1,
@@ -444,6 +562,7 @@ describe("durable secret lifecycle service", () => {
       actorId: "operator-a",
       credentialPrincipalId: "operator-a",
       role: "owner",
+      authorityRole: "owner",
       providers: [provider],
       breakGlassEnabled: false,
       requestId: "break-glass-disabled-request",
@@ -460,6 +579,7 @@ describe("durable secret lifecycle service", () => {
       idempotencyKey: "break-glass-owner",
     })).resolves.toBe("customer-secret");
     expect(service(db, provider).revoke({
+      idempotencyKey: "revoke-test",
       credentialId: "credential-a",
       generation: 1,
       reason: "incident response",

@@ -55,7 +55,7 @@ describe("envelope secret lifecycle", () => {
         provider: "external-vault",
         keyId: "tenant-key",
         version: "1",
-        customerManaged: true,
+        customerManaged: false,
         attestation,
         materialBase64: Buffer.alloc(32, 7).toString("base64"),
       }],
@@ -64,7 +64,7 @@ describe("envelope secret lifecycle", () => {
       provider: "external-vault",
       keyId: "tenant-key",
       version: "1",
-      customerManaged: true,
+      customerManaged: false,
     } as const;
     const registry = new EnvelopeKeyLifecycleRegistry();
     registry.register(lifecycle(key, 1));
@@ -83,7 +83,7 @@ describe("envelope secret lifecycle", () => {
     }, context)).rejects.toThrow("vault_decrypt_denied");
   });
 
-  it("derives customer managed classification from provider attestation", async () => {
+  it("labels locally imported configured material as Mendpoint-custodied", async () => {
     const provider = ConfiguredEnvelopeKeyProvider.fromJson(JSON.stringify({
       schemaVersion: 1,
       keys: [{
@@ -91,7 +91,7 @@ describe("envelope secret lifecycle", () => {
         provider: "external-vault",
         keyId: "tenant-key",
         version: "1",
-        customerManaged: true,
+        customerManaged: false,
         attestation: "kms:key/tenant-key:1",
         materialBase64: Buffer.alloc(32, 7).toString("base64"),
       }],
@@ -101,13 +101,35 @@ describe("envelope secret lifecycle", () => {
       provider: "external-vault",
       keyId: "tenant-key",
       version: "1",
-    }, "tenant-a")).resolves.toMatchObject({ customerManaged: true });
+    }, "tenant-a")).resolves.toMatchObject({ customerManaged: false });
     await expect(provider.wrapDataKey({
       provider: "external-vault",
       keyId: "tenant-key",
       version: "1",
       customerManaged: false,
-    }, "tenant-a", Buffer.alloc(32, 1))).rejects.toThrow("vault_key_attestation_mismatch");
+    }, "tenant-a", Buffer.alloc(32, 1))).resolves.toEqual(expect.any(String));
+  });
+
+  it("withholds customer-managed claims for locally imported production key material", () => {
+    expect(() => ConfiguredEnvelopeKeyProvider.fromJson(JSON.stringify({
+      schemaVersion: 1,
+      keys: [{
+        tenantId: "tenant-a",
+        provider: "external-vault",
+        keyId: "tenant-key",
+        version: "1",
+        customerManaged: true,
+        attestation: "caller-asserted-cmk",
+        materialBase64: Buffer.alloc(32, 7).toString("base64"),
+      }],
+    }))).toThrow("external_vault_customer_managed_evidence_required");
+    const local = new LocalEnvelopeKeyProvider();
+    expect(() => local.putKey("tenant-a", {
+      provider: "local-envelope",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: true,
+    }, Buffer.alloc(32, 7))).toThrow("local_envelope_customer_managed_evidence_required");
   });
 
   it("keeps production provider wiring disabled when configuration is absent or invalid", () => {
@@ -144,7 +166,6 @@ describe("envelope secret lifecycle", () => {
 
   it.each([
     [false, true],
-    [true, false],
   ] as const)(
     "rejects customer-managed relabeling from %s to %s",
     async (customerManaged, relabeled) => {
@@ -158,17 +179,7 @@ describe("envelope secret lifecycle", () => {
       const envelope = await vault.encrypt("github-token", "customer-secret", key, context);
 
       const relabeledKey = { ...key, customerManaged: relabeled };
-      const relabeledRegistry = new EnvelopeKeyLifecycleRegistry();
-      relabeledRegistry.register(lifecycle(relabeledKey, 1));
-      const relabeledProvider = new LocalEnvelopeKeyProvider();
-      relabeledProvider.putKey("tenant-a", relabeledKey, material);
-      const relabeledVault = new EnvelopeSecretVault(
-        relabeledRegistry,
-        [relabeledProvider],
-        () => undefined,
-      );
-
-      await expect(relabeledVault.decrypt({
+      await expect(vault.decrypt({
         ...envelope,
         key: relabeledKey,
       }, context)).rejects.toThrow("vault_decrypt_denied");
@@ -292,7 +303,6 @@ describe("durable envelope secret provider", () => {
 
   it.each([
     [false, true],
-    [true, false],
   ] as const)(
     "rejects durable metadata relabeled from customerManaged %s to %s",
     async (customerManaged, relabeled) => {

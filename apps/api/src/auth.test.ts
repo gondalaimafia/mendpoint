@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
+import * as authModule from "./auth.js";
 import {
   createApiKey,
   createDb,
@@ -98,6 +99,30 @@ async function oidcFixture() {
 }
 
 describe("API authentication identity", () => {
+  it("attenuates minted API-key scopes to the current admin authority", () => {
+    const attenuate = (authModule as unknown as Record<string, unknown>)["attenuateApiKeyScopes"];
+    expect(typeof attenuate).toBe("function");
+    const authorize = attenuate as (input: {
+      principalRole: string;
+      currentScopes: string[];
+      requestedScopes?: string[];
+    }) => string[];
+    expect(authorize({
+      principalRole: "admin",
+      currentScopes: ["role:admin", "tenant:admin"],
+    })).toEqual(["role:admin", "tenant:admin"]);
+    expect(() => authorize({
+      principalRole: "admin",
+      currentScopes: ["role:admin", "tenant:admin"],
+      requestedScopes: ["*"],
+    })).toThrow("api_key_authority_amplification");
+    expect(() => authorize({
+      principalRole: "admin",
+      currentScopes: ["role:admin", "tenant:admin"],
+      requestedScopes: ["role:owner", "tenant:admin"],
+    })).toThrow("api_key_authority_amplification");
+  });
+
   it("binds principal role and tenant to the API key instead of request headers", async () => {
     process.env.API_AUTH = "required";
     const db = testDb();
@@ -114,6 +139,7 @@ describe("API authentication identity", () => {
       c.json({
         principal: c.get("principal"),
         scopes: c.get("authScopes"),
+        authorityRole: c.get("authorityRole"),
       }),
     );
 
@@ -128,6 +154,7 @@ describe("API authentication identity", () => {
     const body = (await response.json()) as {
       principal: { id: string; tenantId: string; role: string };
       scopes: string[];
+      authorityRole?: string;
     };
 
     expect(response.status).toBe(200);
@@ -137,8 +164,35 @@ describe("API authentication identity", () => {
       role: "owner",
     });
     expect(body.scopes).toEqual(["*"]);
+    expect(body.authorityRole).toBeUndefined();
     expect(getPrincipalBySubject(db, "tenant-a", "api_key", created.id)).toMatchObject({
       audience: "mendpoint-api",
+    });
+  });
+
+  it("rejects a wildcard API key whose scopes exceed its stable admin authority", async () => {
+    process.env.API_AUTH = "required";
+    const db = testDb();
+    const created = createApiKey(db, {
+      id: "key-amplified-admin",
+      name: "amplified admin",
+      tenantId: "tenant-a",
+      scopes: ["*"],
+      authorityRole: "admin",
+      createdAt: new Date().toISOString(),
+    });
+    const app = new Hono<ApiEnv>();
+    app.use("*", createAuthMiddleware(db));
+    app.get("/private", (c) => c.json({ principal: c.get("principal") }));
+
+    const response = await app.request("/private", {
+      headers: { Authorization: `Bearer ${created.token}` },
+    });
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      error: "unauthorized",
+      message: "api_key_authority_amplification",
     });
   });
 

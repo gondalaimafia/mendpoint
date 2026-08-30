@@ -160,6 +160,7 @@ async function durableCredential(
     expiresAt: "2026-09-01T00:00:00.000Z",
     issuedAt: `2026-08-0${input.generation}T00:00:00.000Z`,
     key,
+    materialLineageId: "c".repeat(64),
     envelope: {
       schemaVersion: envelope.schemaVersion,
       algorithm: envelope.algorithm,

@@ -1,12 +1,14 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   completeSecretBreakGlassOperation,
   createSecretLifecycle,
   getActiveSecretLifecycle,
   getSecretBreakGlassOperation,
   getSecretLifecycleOperation,
+  getSecretRewrapOperation,
   getSecretLifecycleVersion,
   revokeSecretLifecycle,
+  rewrapSecretLifecycle,
   rotateSecretLifecycle,
   type AppDb,
   type SecretLifecycleInput,
@@ -39,10 +41,17 @@ export type SecretLifecycleAudit = Readonly<{
     | "secret.lifecycle.create_replayed"
     | "secret.lifecycle.rotated"
     | "secret.lifecycle.rotate_replayed"
+    | "secret.lifecycle.rewrapped"
+    | "secret.lifecycle.rewrap_replayed"
     | "secret.lifecycle.revoked"
+    | "secret.lifecycle.revoke_replayed"
+    | "secret.lifecycle.revoke_denied"
     | "secret.lifecycle.rotation_source.granted"
     | "secret.lifecycle.rotation_source.denied"
     | "secret.lifecycle.rotation_source.attempted"
+    | "secret.lifecycle.rewrap_source.granted"
+    | "secret.lifecycle.rewrap_source.denied"
+    | "secret.lifecycle.rewrap_source.attempted"
     | "secret.break_glass.granted"
     | "secret.break_glass.replayed"
     | "secret.break_glass.denied";
@@ -61,6 +70,7 @@ export type DurableSecretLifecycleServiceOptions = Readonly<{
   actorId: string;
   credentialPrincipalId: string;
   role: Role;
+  authorityRole: Role;
   providers: readonly KeyEncryptionKeyProvider[];
   breakGlassEnabled: boolean;
   requestId: string | null;
@@ -85,8 +95,11 @@ type RotateInput = Readonly<{
   idempotencyKey: string;
   credentialId: string;
   expectedGeneration: number;
+  plaintext: string;
   key: EnvelopeKeyLocator;
 }>;
+
+type RewrapInput = Readonly<Omit<RotateInput, "plaintext">>;
 
 function digest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -182,6 +195,7 @@ function publicResult(row: SecretLifecycleVersionRow) {
     generation: row.generation,
     state: row.state,
     customerManaged: row.customer_managed === 1,
+    custody: row.customer_managed === 1 ? "customer-managed" : "mendpoint-custodied",
     key: Object.freeze({ provider: row.key_provider, keyId: row.key_id, version: row.key_version }),
     issuedAt: row.issued_at,
     retiredAt: row.retired_at,
@@ -245,6 +259,28 @@ export class DurableSecretLifecycleService {
     return row;
   }
 
+  #rewrapReplay(
+    idempotencyKey: string,
+    requestDigest: string,
+    requestCommitmentKeyId: string,
+    credentialId: string,
+    generation: number,
+  ): SecretLifecycleVersionRow | undefined {
+    const existing = getSecretRewrapOperation(this.options.db, this.options.tenantId, idempotencyKey);
+    if (!existing) return undefined;
+    if (
+      existing.request_digest !== requestDigest ||
+      existing.request_commitment_key_id !== requestCommitmentKeyId ||
+      existing.actor_id !== this.options.actorId || existing.credential_id !== credentialId ||
+      existing.result_generation !== generation
+    ) throw new Error("secret_lifecycle_idempotency_conflict");
+    const row = getSecretLifecycleVersion(
+      this.options.db, this.options.tenantId, credentialId, generation,
+    );
+    if (!row) throw new Error("secret_lifecycle_idempotency_corrupt");
+    return row;
+  }
+
   #audit(
     action: SecretLifecycleAudit["action"],
     idempotencyKey: string,
@@ -278,6 +314,8 @@ export class DurableSecretLifecycleService {
       SecretLifecycleAudit["action"],
       | "secret.lifecycle.create_replayed"
       | "secret.lifecycle.rotate_replayed"
+      | "secret.lifecycle.rewrap_replayed"
+      | "secret.lifecycle.revoke_replayed"
       | "secret.break_glass.replayed"
     >,
     idempotencyKey: string,
@@ -311,6 +349,67 @@ export class DurableSecretLifecycleService {
         .digest("hex"),
       keyId: this.requestCommitment.keyId,
     });
+  }
+
+  async #openMutationSource(
+    current: SecretLifecycleVersionRow,
+    idempotencyKey: string,
+    operation: "rotation" | "rewrap",
+    purpose: string,
+  ): Promise<string> {
+    const attemptedAction = operation === "rotation"
+      ? "secret.lifecycle.rotation_source.attempted"
+      : "secret.lifecycle.rewrap_source.attempted";
+    const grantedAction = operation === "rotation"
+      ? "secret.lifecycle.rotation_source.granted"
+      : "secret.lifecycle.rewrap_source.granted";
+    const deniedAction = operation === "rotation"
+      ? "secret.lifecycle.rotation_source.denied"
+      : "secret.lifecycle.rewrap_source.denied";
+    try {
+      this.#audit(
+        attemptedAction,
+        idempotencyKey,
+        current.credential_id,
+        { generation: current.generation, outcome: "attempted", purpose },
+        `${attemptedAction}:${this.options.requestId ?? randomUUID()}:${this.options.credentialPrincipalId}:${this.options.apiKeyId ?? "no-api-key"}`,
+      );
+    } catch {
+      throw new Error("vault_access_audit_failed");
+    }
+    let sourceAccess: EnvelopeAccessAuditEvent | undefined;
+    const plaintext = await openEnvelopeSecret(envelopeFromRow(current), {
+      tenantId: this.options.tenantId,
+      actorId: this.options.actorId,
+      correlationId: idempotencyKey,
+      purpose,
+      at: this.#now(),
+    }, this.options.providers, (event) => {
+      sourceAccess = event;
+      this.#audit(
+        event.outcome === "granted" ? grantedAction : deniedAction,
+        idempotencyKey,
+        current.credential_id,
+        {
+          generation: current.generation,
+          purpose,
+          reason: event.reason,
+          outcome: event.outcome,
+          keyProvider: event.key.provider,
+          keyId: event.key.keyId,
+          keyVersion: event.key.version,
+          attestationSha256: current.key_attestation_sha256,
+        },
+        event.outcome === "granted" ? grantedAction : deniedAction,
+        idempotencyKey,
+        null,
+        this.options.actorId,
+      );
+    });
+    if (!sourceAccess || sourceAccess.outcome !== "granted") {
+      throw new Error("secret_rotation_source_audit_missing");
+    }
+    return plaintext;
   }
 
   #auditBreakGlassDenied(
@@ -414,6 +513,7 @@ export class DurableSecretLifecycleService {
       issuedAt: at,
       rotateAfter: input.rotateAfter,
       key: attested,
+      materialLineageId: commitment.digest,
       envelope,
     };
     const row = createSecretLifecycle(this.options.db, lifecycle, {
@@ -437,6 +537,9 @@ export class DurableSecretLifecycleService {
 
   async rotate(input: RotateInput) {
     this.#authorizeAdmin();
+    if (typeof input.plaintext !== "string" || input.plaintext.length === 0) {
+      throw new Error("secret_rotation_material_required");
+    }
     const nextGeneration = input.expectedGeneration + 1;
     const commitment = this.#commitRequest({
       operation: "rotate",
@@ -445,10 +548,94 @@ export class DurableSecretLifecycleService {
       actorId: this.options.actorId,
       credentialId: input.credentialId,
       expectedGeneration: input.expectedGeneration,
+      plaintext: input.plaintext,
       key: input.key,
     });
     const replay = this.#replay(
-      "rotate",
+      "rotate", input.idempotencyKey, commitment.digest, commitment.keyId,
+      input.credentialId, nextGeneration,
+    );
+    if (replay) {
+      this.#auditReplay("secret.lifecycle.rotate_replayed", input.idempotencyKey, input.credentialId, replay.generation);
+      return publicResult(replay);
+    }
+    const current = getActiveSecretLifecycle(this.options.db, this.options.tenantId, input.credentialId);
+    if (!current) throw new Error("secret_lifecycle_not_found");
+    if (current.generation !== input.expectedGeneration) throw new Error("secret_rotation_generation_conflict");
+    const currentPlaintext = await this.#openMutationSource(
+      current,
+      input.idempotencyKey,
+      "rotation",
+      "validate replacement credential material",
+    );
+    const currentBytes = Buffer.from(currentPlaintext, "utf8");
+    const replacementBytes = Buffer.from(input.plaintext, "utf8");
+    if (
+      currentBytes.length === replacementBytes.length &&
+      timingSafeEqual(currentBytes, replacementBytes)
+    ) {
+      throw new Error("secret_rotation_material_unchanged");
+    }
+    const at = this.#now();
+    const attested = await attestEnvelopeKey(this.options.providers, this.options.tenantId, input.key);
+    const envelope = await sealEnvelopeSecret(input.credentialId, input.plaintext, nextGeneration, attested, {
+      tenantId: this.options.tenantId,
+      actorId: this.options.actorId,
+      correlationId: input.idempotencyKey,
+      purpose: "rotate durable credential material",
+      at,
+    }, this.options.providers);
+    const next: SecretLifecycleInput = {
+      tenantId: current.tenant_id,
+      credentialId: current.credential_id,
+      sourceRef: current.source_ref,
+      generation: nextGeneration,
+      audiences: JSON.parse(current.audiences_json) as string[],
+      expiresAt: current.expires_at ?? undefined,
+      issuedAt: at,
+      rotateAfter: current.rotate_after ?? undefined,
+      key: attested,
+      materialLineageId: commitment.digest,
+      envelope,
+    };
+    const row = rotateSecretLifecycle(this.options.db, {
+      expectedGeneration: input.expectedGeneration,
+      rotatedAt: at,
+      next,
+    }, {
+      operation: {
+        idempotencyKey: input.idempotencyKey,
+        requestDigest: commitment.digest,
+        requestCommitmentKeyId: commitment.keyId,
+        actorId: this.options.actorId,
+      },
+      audit: () => this.#audit("secret.lifecycle.rotated", input.idempotencyKey, input.credentialId, {
+        previousGeneration: input.expectedGeneration,
+        generation: nextGeneration,
+        keyProvider: attested.provider,
+        keyId: attested.keyId,
+        keyVersion: attested.version,
+        customerManaged: attested.customerManaged,
+        attestationSha256: attested.attestationSha256,
+        materialReplaced: true,
+      }),
+    });
+    return publicResult(row);
+  }
+
+  async rewrap(input: RewrapInput) {
+    this.#authorizeAdmin();
+    const nextGeneration = input.expectedGeneration + 1;
+    const commitment = this.#commitRequest({
+      operation: "rewrap",
+      idempotencyKey: input.idempotencyKey,
+      tenantId: this.options.tenantId,
+      actorId: this.options.actorId,
+      credentialId: input.credentialId,
+      expectedGeneration: input.expectedGeneration,
+      key: input.key,
+    });
+    const replay = this.#rewrapReplay(
       input.idempotencyKey,
       commitment.digest,
       commitment.keyId,
@@ -457,7 +644,7 @@ export class DurableSecretLifecycleService {
     );
     if (replay) {
       this.#auditReplay(
-        "secret.lifecycle.rotate_replayed",
+        "secret.lifecycle.rewrap_replayed",
         input.idempotencyKey,
         input.credentialId,
         replay.generation,
@@ -467,53 +654,14 @@ export class DurableSecretLifecycleService {
     const current = getActiveSecretLifecycle(this.options.db, this.options.tenantId, input.credentialId);
     if (!current) throw new Error("secret_lifecycle_not_found");
     if (current.generation !== input.expectedGeneration) throw new Error("secret_rotation_generation_conflict");
+    if (!current.material_lineage_id) throw new Error("secret_material_lineage_missing");
     const at = this.#now();
-    try {
-      this.#audit(
-        "secret.lifecycle.rotation_source.attempted",
-        input.idempotencyKey,
-        input.credentialId,
-        { generation: current.generation, outcome: "attempted" },
-        `secret.lifecycle.rotation_source.attempted:${this.options.requestId ?? randomUUID()}:${this.options.credentialPrincipalId}:${this.options.apiKeyId ?? "no-api-key"}`,
-      );
-    } catch {
-      throw new Error("vault_access_audit_failed");
-    }
-    let sourceAccess: EnvelopeAccessAuditEvent | undefined;
-    const plaintext = await openEnvelopeSecret(envelopeFromRow(current), {
-      tenantId: this.options.tenantId,
-      actorId: this.options.actorId,
-      correlationId: input.idempotencyKey,
-      purpose: "stage durable secret rotation",
-      at,
-    }, this.options.providers, (event) => {
-      sourceAccess = event;
-      this.#audit(
-        event.outcome === "granted"
-          ? "secret.lifecycle.rotation_source.granted"
-          : "secret.lifecycle.rotation_source.denied",
-        input.idempotencyKey,
-        input.credentialId,
-        {
-          generation: current.generation,
-          reason: event.reason,
-          outcome: event.outcome,
-          keyProvider: event.key.provider,
-          keyId: event.key.keyId,
-          keyVersion: event.key.version,
-          attestationSha256: current.key_attestation_sha256,
-        },
-        event.outcome === "granted"
-          ? "secret.lifecycle.rotation_source.granted"
-          : "secret.lifecycle.rotation_source.denied",
-        input.idempotencyKey,
-        null,
-        this.options.actorId,
-      );
-    });
-    if (!sourceAccess || sourceAccess.outcome !== "granted") {
-      throw new Error("secret_rotation_source_audit_missing");
-    }
+    const plaintext = await this.#openMutationSource(
+      current,
+      input.idempotencyKey,
+      "rewrap",
+      "rewrap durable credential material",
+    );
     const attested = await attestEnvelopeKey(this.options.providers, this.options.tenantId, input.key);
     const envelope = await sealEnvelopeSecret(input.credentialId, plaintext, nextGeneration, attested, {
       tenantId: this.options.tenantId,
@@ -532,9 +680,10 @@ export class DurableSecretLifecycleService {
       issuedAt: at,
       rotateAfter: current.rotate_after ?? undefined,
       key: attested,
+      materialLineageId: current.material_lineage_id,
       envelope,
     };
-    const row = rotateSecretLifecycle(this.options.db, {
+    const row = rewrapSecretLifecycle(this.options.db, {
       expectedGeneration: input.expectedGeneration,
       rotatedAt: at,
       next,
@@ -546,7 +695,7 @@ export class DurableSecretLifecycleService {
         actorId: this.options.actorId,
       },
       audit: () => {
-        this.#audit("secret.lifecycle.rotated", input.idempotencyKey, input.credentialId, {
+        this.#audit("secret.lifecycle.rewrapped", input.idempotencyKey, input.credentialId, {
           previousGeneration: input.expectedGeneration,
           generation: nextGeneration,
           keyProvider: attested.provider,
@@ -560,22 +709,64 @@ export class DurableSecretLifecycleService {
     return publicResult(row);
   }
 
-  revoke(input: Readonly<{ credentialId: string; generation: number; reason: string }>) {
+  revoke(input: Readonly<{
+    idempotencyKey: string;
+    credentialId: string;
+    generation: number;
+    reason: string;
+  }>) {
     this.#authorizeAdmin();
-    const at = this.#now();
-    const row = revokeSecretLifecycle(this.options.db, {
+    const reason = typeof input.reason === "string" ? input.reason.trim() : "";
+    const commitment = this.#commitRequest({
+      operation: "revoke",
+      idempotencyKey: input.idempotencyKey,
       tenantId: this.options.tenantId,
+      actorId: this.options.actorId,
       credentialId: input.credentialId,
       generation: input.generation,
-      revokedAt: at,
-      reason: input.reason,
-    }, {
-      audit: () => this.#audit("secret.lifecycle.revoked", `revoke:${input.credentialId}:${input.generation}`, input.credentialId, {
-        generation: input.generation,
-        reason: input.reason,
-      }),
+      reason,
     });
-    return publicResult(row);
+    const at = this.#now();
+    try {
+      const row = revokeSecretLifecycle(this.options.db, {
+        tenantId: this.options.tenantId,
+        credentialId: input.credentialId,
+        generation: input.generation,
+        revokedAt: at,
+        reason,
+      }, {
+        operation: {
+          idempotencyKey: input.idempotencyKey,
+          requestDigest: commitment.digest,
+          requestCommitmentKeyId: commitment.keyId,
+          actorId: this.options.actorId,
+        },
+        audit: () => this.#audit("secret.lifecycle.revoked", input.idempotencyKey, input.credentialId, {
+          generation: input.generation,
+          reason,
+        }),
+        replayAudit: () => this.#auditReplay(
+          "secret.lifecycle.revoke_replayed",
+          input.idempotencyKey,
+          input.credentialId,
+          input.generation,
+        ),
+      });
+      return publicResult(row);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "secret_lifecycle_idempotency_conflict") throw error;
+      try {
+        this.#audit("secret.lifecycle.revoke_denied", input.idempotencyKey, input.credentialId, {
+          generation: input.generation,
+          reason,
+          outcome: "denied",
+          failure: error.message,
+        }, `secret.lifecycle.revoke_denied:${this.options.requestId ?? randomUUID()}:${this.options.credentialPrincipalId}:${this.options.apiKeyId ?? "no-api-key"}`);
+      } catch {
+        throw new Error("vault_access_audit_failed");
+      }
+      throw error;
+    }
   }
 
   async breakGlass(input: Readonly<{
@@ -588,6 +779,7 @@ export class DurableSecretLifecycleService {
     try {
       this.#authorizeAdmin();
       if (this.options.role !== "owner") throw new Error("secret_break_glass_owner_required");
+      if (this.options.authorityRole !== "owner") throw new Error("secret_break_glass_owner_required");
       if (!this.options.breakGlassEnabled) throw new Error("secret_break_glass_disabled");
       const reason = typeof input.reason === "string" ? input.reason.trim() : "";
       if (!reason) throw new Error("secret_break_glass_reason_required");
@@ -642,6 +834,12 @@ export class DurableSecretLifecycleService {
         actorId: this.options.actorId,
         credentialId: input.credentialId,
         generation: current.generation,
+        key: {
+          provider: current.key_provider,
+          keyId: current.key_id,
+          version: current.key_version,
+          attestationSha256: current.key_attestation_sha256 ?? "",
+        },
         completedAt: at,
       }, {
         audit: () => this.#audit("secret.break_glass.granted", input.idempotencyKey, input.credentialId, {

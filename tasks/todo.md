@@ -26,6 +26,13 @@
 - [x] RED: prove real authentication and RBAC middleware durably audit anonymous and non-admin break-glass denials, preserve the original 401 or 403, and fail closed when audit persistence fails.
 - [x] GREEN: add provider key fingerprints, stable API-key authority binding, dual audit attribution, and a narrow pre-route break-glass denial audit middleware.
 - [x] Re-run focused and broad Platform, DB, API, auth, and SCM suites, affected typechecks, diff integrity, and commit locally without pushing.
+- [x] RED: prove `/keys` cannot amplify tenant-admin authority into wildcard or owner scope, and break glass requires a currently active stable owner authority.
+- [x] RED: distinguish KEK rewrap from credential-material rotation, require new resolver-bound material for rotation, and revoke every successor derived from compromised material.
+- [x] RED: deterministically race break glass with concurrent revocation and require exact active generation, key binding, and provider attestation revalidation before plaintext release.
+- [x] RED: bind revoke replay to keyed idempotency evidence, audit exact replay, and reject actor or reason drift even after the generation is already revoked.
+- [x] RED: classify locally held imported keys as Mendpoint-custodied and withhold customer-managed status without provider-authenticated custody evidence.
+- [x] GREEN: implement the smallest full-chain authority, material lineage, transactional release, revoke replay, and custody-evidence repair.
+- [x] Re-run focused and broad Platform, DB, API, auth, and SCM suites, affected typechecks, diff integrity, inspect the complete diff, and commit locally without pushing.
 
 ### Review
 
@@ -48,6 +55,11 @@
 - The exact break-glass path is wrapped before authentication and RBAC. Anonymous and non-admin 401 or 403 responses receive truthful durable denial evidence, compatibility headers cannot spoof attribution, successful dispatch is not double-audited, and audit persistence failure replaces the denial with a generic fail-closed 503.
 - Rotation records a credential-specific source attempt before unwrap and one stable source outcome for the semantic operation. A retry under a rotated key after pre-publication failure resumes without a source-audit conflict or duplicate grant.
 - Final verification passes 27 focused lifecycle tests, 115 affected tests, and 1,456 complete Platform, DB, API, auth, and SCM tests across 157 files. Platform, DB, API, and GitHub typechecks pass, and `git diff --check` is clean.
+- API-key minting now attenuates requested roles and permissions against both the current credential and its immutable stable authority. Wildcard scope can be issued only by a current wildcard owner, legacy wildcard keys cannot infer stable owner authority, and any persisted role that exceeds its stable authority is rejected during authentication.
+- Credential rotation now requires different replacement plaintext and starts a new material lineage. KEK rewrap is a separate operation and audit namespace that retains material lineage, while incident revocation reaches every rewrapped successor containing the compromised material.
+- Break-glass completion rechecks the exact active generation, envelope key binding, and provider attestation inside the final write transaction after decryption. Concurrent revoke therefore prevents plaintext release. Revoke operations now persist versioned keyed replay evidence, audit exact replay, and audit actor or reason drift even when the target is already revoked.
+- Locally held and configured imported keys are reported as Mendpoint-custodied. Customer-managed status is accepted only from provider-authenticated attestation and cannot be asserted in local key configuration.
+- Final verification passes all 138 focused secrets regressions and all 1,462 Platform, DB, API, auth, and SCM tests across 378 suites. Platform, DB, API, and GitHub typechecks pass, and `git diff --check` is clean.
 
 
 Observed `origin/main`: `96801a319fc3d355cb2b28b4167b83023a192042`.

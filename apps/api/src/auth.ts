@@ -33,6 +33,7 @@ import {
   isPublicRoute,
   parsePrincipalFromHeaders,
   permissionForRoute,
+  permissionsFor,
   type Permission,
   type Principal,
   type Role,
@@ -47,6 +48,7 @@ export type ApiVariables = {
   principal?: Principal;
   trustPrincipalId?: string;
   authorityPrincipalId?: string;
+  authorityRole?: Role;
   authMethod?: "oidc" | "api_key";
   membershipEvidenceId?: string;
   identitySessionId?: string;
@@ -221,6 +223,59 @@ export function scopeAllows(scopes: string[] | undefined, permission: Permission
   if (!scopes) return false;
   if (permission === "identity:provision") return scopes.includes(permission);
   return scopes.includes("*") || scopes.includes(permission);
+}
+
+const API_KEY_ROLES = new Set<Role>(["owner", "admin", "engineer", "viewer", "fde", "agent"]);
+const API_KEY_PERMISSIONS = new Set<Permission>([
+  ...permissionsFor("owner"), ...permissionsFor("admin"), ...permissionsFor("engineer"),
+  ...permissionsFor("viewer"), ...permissionsFor("fde"), ...permissionsFor("agent"),
+]);
+
+function roleWithinStableAuthority(role: Role, authorityRole: Role): boolean {
+  if (role === "owner" && authorityRole !== "owner") return false;
+  return permissionsFor(role).every((permission) =>
+    permissionsFor(authorityRole).includes(permission)
+  );
+}
+
+export function attenuateApiKeyScopes(input: Readonly<{
+  principalRole: Role;
+  currentScopes: readonly string[];
+  requestedScopes?: readonly string[];
+}>): string[] {
+  const requested = input.requestedScopes === undefined
+    ? (input.currentScopes.includes("*")
+        ? [`role:${input.principalRole}`, ...permissionsFor(input.principalRole)]
+        : [...input.currentScopes])
+    : [...input.requestedScopes];
+  if (requested.length === 0 || requested.some((scope) => !scope.trim())) {
+    throw new Error("api_key_scope_invalid");
+  }
+  if (requested.includes("*")) {
+    if (requested.length !== 1 || input.principalRole !== "owner" || !input.currentScopes.includes("*")) {
+      throw new Error("api_key_authority_amplification");
+    }
+    return ["*"];
+  }
+  const roleScopes = requested.filter((scope) => scope.startsWith("role:"));
+  if (roleScopes.length !== 1) throw new Error("api_key_scope_role_required");
+  const requestedRole = roleScopes[0]!.slice("role:".length) as Role;
+  if (!API_KEY_ROLES.has(requestedRole)) throw new Error("api_key_scope_invalid");
+  if (requestedRole === "owner" && input.principalRole !== "owner") {
+    throw new Error("api_key_authority_amplification");
+  }
+  if (permissionsFor(requestedRole).some(
+    (permission) => !permissionsFor(input.principalRole).includes(permission),
+  )) throw new Error("api_key_authority_amplification");
+  for (const scope of requested) {
+    if (scope.startsWith("role:")) continue;
+    if (!API_KEY_PERMISSIONS.has(scope as Permission)) throw new Error("api_key_scope_invalid");
+    if (
+      !permissionsFor(input.principalRole).includes(scope as Permission) ||
+      (!input.currentScopes.includes("*") && !input.currentScopes.includes(scope))
+    ) throw new Error("api_key_authority_amplification");
+  }
+  return [...new Set(requested)];
 }
 
 const ACTOR = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
@@ -406,6 +461,7 @@ export function createAuthMiddleware(
         c.set("authScopes", ["*"]);
         c.set("trustPrincipalId", trustPrincipal.id);
         c.set("authorityPrincipalId", trustPrincipal.id);
+        c.set("authorityRole", membership.role);
         c.set("authMethod", "oidc");
         c.set("membershipEvidenceId", `membership:${createHash("sha256")
           .update(`${identity.tenantId}\n${identity.issuer}\n${identity.subject}`, "utf8")
@@ -584,6 +640,19 @@ export function createAuthMiddleware(
     c.set("principal", principal);
     c.set("trustPrincipalId", trustPrincipal.id);
     c.set("authorityPrincipalId", authorityPrincipal.id);
+    if (key.authority_role !== null && !API_KEY_ROLES.has(key.authority_role)) {
+      return c.json({ error: "unauthorized", message: "api_key_authority_invalid" }, 401);
+    }
+    const authorityRole = delegatedActor
+      ? principal.role
+      : key.authority_role ?? undefined;
+    if (
+      authorityRole !== undefined &&
+      !roleWithinStableAuthority(principal.role, authorityRole)
+    ) {
+      return c.json({ error: "unauthorized", message: "api_key_authority_amplification" }, 401);
+    }
+    if (authorityRole !== undefined) c.set("authorityRole", authorityRole);
     c.set("authMethod", "api_key");
     return next();
   };

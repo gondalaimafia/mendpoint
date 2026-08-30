@@ -440,6 +440,9 @@ export class LocalEnvelopeKeyProvider implements KeyEncryptionKeyProvider {
     if (key.provider !== this.provider || material.byteLength !== 32) {
       throw new Error("local_envelope_key_invalid");
     }
+    if (key.customerManaged) {
+      throw new Error("local_envelope_customer_managed_evidence_required");
+    }
     this.#keys.set(locatorIdentity(tenantId, key), { key: Object.freeze({ ...key }), material: Buffer.from(material) });
   }
 
@@ -515,6 +518,9 @@ export class ConfiguredEnvelopeKeyProvider implements KeyEncryptionKeyProvider {
         !ID.test(record.keyId) || !ID.test(record.version) || typeof record.customerManaged !== "boolean" ||
         !record.attestation.trim() || material.byteLength !== 32
       ) throw new Error("external_vault_configuration_invalid");
+      if (record.customerManaged) {
+        throw new Error("external_vault_customer_managed_evidence_required");
+      }
       const base = {
         provider: record.provider,
         keyId: record.keyId,
@@ -539,7 +545,10 @@ export class ConfiguredEnvelopeKeyProvider implements KeyEncryptionKeyProvider {
       }
       return new ConfiguredEnvelopeKeyProvider(parsed.keys as ConfiguredKeyRecord[]);
     } catch (error) {
-      if (error instanceof Error && error.message === "external_vault_configuration_invalid") throw error;
+      if (error instanceof Error && (
+        error.message === "external_vault_configuration_invalid" ||
+        error.message === "external_vault_customer_managed_evidence_required"
+      )) throw error;
       throw new Error("external_vault_configuration_invalid");
     }
   }

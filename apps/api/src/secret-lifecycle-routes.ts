@@ -74,6 +74,10 @@ const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "secret_lifecycle_idempotency_key_invalid", status: 400 },
   { internalCode: "secret_lifecycle_request_digest_invalid", status: 400 },
   { internalCode: "secret_lifecycle_commitment_unconfigured", status: 503 },
+  { internalCode: "secret_rotation_material_required", status: 400 },
+  { internalCode: "secret_rotation_material_unchanged", status: 409 },
+  { internalCode: "secret_material_lineage_missing", status: 409 },
+  { internalCode: "secret_break_glass_generation_inactive", status: 409 },
   { internalCode: "vault_access_audit_failed", status: 503 },
   { internalCode: "secret_credential_id_invalid", status: 400 },
   { internalCode: "secret_source_reference_invalid", status: 400 },
@@ -100,6 +104,7 @@ export function createSecretLifecycleRoutes(options: Readonly<{
       actorId: c.get("authorityPrincipalId") ?? c.get("trustPrincipalId") ?? principal.id,
       credentialPrincipalId: c.get("trustPrincipalId") ?? principal.id,
       role: principal.role,
+      authorityRole: c.get("authorityRole") ?? "viewer",
       providers: options.providers,
       breakGlassEnabled: options.breakGlassEnabled,
       requestId: c.get("requestId") ?? null,
@@ -141,8 +146,26 @@ export function createSecretLifecycleRoutes(options: Readonly<{
 
   routes.post("/:id/rotate", async (c) => {
     try {
-      const body = await c.req.json<{ expectedGeneration: number; key: EnvelopeKeyLocator }>();
+      const body = await c.req.json<{
+        expectedGeneration: number;
+        plaintext: string;
+        key: EnvelopeKeyLocator;
+      }>();
       const result = await service(c).rotate({
+        ...body,
+        credentialId: c.req.param("id"),
+        idempotencyKey: c.req.header("Idempotency-Key") ?? "",
+      });
+      return c.json(result);
+    } catch (error) {
+      return mappedErrorResponse(c, error, ERRORS);
+    }
+  });
+
+  routes.post("/:id/rewrap", async (c) => {
+    try {
+      const body = await c.req.json<{ expectedGeneration: number; key: EnvelopeKeyLocator }>();
+      const result = await service(c).rewrap({
         ...body,
         credentialId: c.req.param("id"),
         idempotencyKey: c.req.header("Idempotency-Key") ?? "",
@@ -156,7 +179,11 @@ export function createSecretLifecycleRoutes(options: Readonly<{
   routes.post("/:id/revoke", async (c) => {
     try {
       const body = await c.req.json<{ generation: number; reason: string }>();
-      return c.json(service(c).revoke({ credentialId: c.req.param("id"), ...body }));
+      return c.json(service(c).revoke({
+        credentialId: c.req.param("id"),
+        idempotencyKey: c.req.header("Idempotency-Key") ?? "",
+        ...body,
+      }));
     } catch (error) {
       return mappedErrorResponse(c, error, ERRORS);
     }

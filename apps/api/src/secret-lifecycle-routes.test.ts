@@ -35,7 +35,7 @@ function fixture() {
       provider: "local-envelope",
       keyId: "tenant-key",
       version,
-      customerManaged: true,
+      customerManaged: false,
     }, Buffer.alloc(32, Number(version)));
   }
   const app = new Hono<ApiEnv>();
@@ -43,11 +43,13 @@ function fixture() {
     c.set("requestId", c.req.header("X-Request-Id") ?? "test-request");
     const apiKeyId = c.req.header("X-Api-Key-Id");
     if (apiKeyId) c.set("apiKeyId", apiKeyId);
+    const role = (c.req.header("X-Role") ?? "admin") as Role;
     c.set("principal", {
       id: "operator-a",
       tenantId: c.req.header("X-Tenant") ?? "tenant-a",
-      role: (c.req.header("X-Role") ?? "admin") as Role,
+      role,
     });
+    c.set("authorityRole", role);
     await next();
   });
   app.route("/platform/secrets", createSecretLifecycleRoutes({
@@ -107,6 +109,7 @@ function realAuthFixture(options: Readonly<{
     tenantId: "tenant-a",
     scopes: ["*"],
     authorityPrincipalId: "principal-service-owner",
+    authorityRole: "owner",
     createdAt: "2026-08-30T00:00:00.000Z",
   });
   const second = createApiKey(db, {
@@ -115,6 +118,7 @@ function realAuthFixture(options: Readonly<{
     tenantId: "tenant-a",
     scopes: ["*"],
     authorityPrincipalId: "principal-service-owner",
+    authorityRole: "owner",
     createdAt: "2026-08-30T00:01:00.000Z",
   });
   const unrelated = createApiKey(db, {
@@ -123,6 +127,7 @@ function realAuthFixture(options: Readonly<{
     tenantId: "tenant-a",
     scopes: ["*"],
     authorityPrincipalId: "principal-service-other",
+    authorityRole: "owner",
     createdAt: "2026-08-30T00:02:00.000Z",
   });
   const viewer = createApiKey(db, {
@@ -131,6 +136,7 @@ function realAuthFixture(options: Readonly<{
     tenantId: "tenant-a",
     scopes: ["role:viewer", "tenant:admin"],
     authorityPrincipalId: "principal-service-other",
+    authorityRole: "viewer",
     createdAt: "2026-08-30T00:03:00.000Z",
   });
   const provider = new LocalEnvelopeKeyProvider();
@@ -139,7 +145,7 @@ function realAuthFixture(options: Readonly<{
       provider: "local-envelope",
       keyId: "tenant-key",
       version,
-      customerManaged: true,
+      customerManaged: false,
     }, Buffer.alloc(32, Number(version)));
   }
   const app = new Hono<ApiEnv>();
@@ -182,7 +188,7 @@ describe("secret lifecycle routes", () => {
       provider: "local-envelope",
       keyId: "tenant-key",
       version: "1",
-      customerManaged: true,
+      customerManaged: false,
     }, Buffer.alloc(32, 9));
     expect(() => createSecretLifecycleRoutes({
       db,
@@ -204,7 +210,7 @@ describe("secret lifecycle routes", () => {
     expect((await create(unrelated.token, "create-other")).status).toBe(409);
 
     const rotate = (token: string, requestId: string) => app.request(
-      "/platform/secrets/credential-a/rotate",
+      "/platform/secrets/credential-a/rewrap",
       {
         method: "POST",
         headers: authenticatedHeaders(token, requestId, "stable-rotate"),
@@ -237,7 +243,7 @@ describe("secret lifecycle routes", () => {
     )!;
     for (const action of [
       "secret.lifecycle.create_replayed",
-      "secret.lifecycle.rotate_replayed",
+      "secret.lifecycle.rewrap_replayed",
       "secret.break_glass.replayed",
     ]) {
       const replay = listAudit(db, "tenant-a").find((event) => event.action === action);
@@ -263,10 +269,10 @@ describe("secret lifecycle routes", () => {
       provider: "local-envelope",
       keyId: "tenant-key",
       version: "2",
-      customerManaged: true,
+      customerManaged: false,
     });
     const rotate = (token: string, requestId: string) => app.request(
-      "/platform/secrets/credential-a/rotate",
+      "/platform/secrets/credential-a/rewrap",
       {
         method: "POST",
         headers: authenticatedHeaders(token, requestId, "rotation-resume"),
@@ -281,14 +287,14 @@ describe("secret lifecycle routes", () => {
       provider: "local-envelope",
       keyId: "tenant-key",
       version: "2",
-      customerManaged: true,
+      customerManaged: false,
     }, Buffer.alloc(32, 2));
     expect((await rotate(second.token, "rotation-retry-two")).status).toBe(200);
     expect(listAudit(db, "tenant-a").filter(
-      (event) => event.action === "secret.lifecycle.rotation_source.granted",
+      (event) => event.action === "secret.lifecycle.rewrap_source.granted",
     )).toHaveLength(1);
     expect(listAudit(db, "tenant-a").filter(
-      (event) => event.action === "secret.lifecycle.rotation_source.attempted",
+      (event) => event.action === "secret.lifecycle.rewrap_source.attempted",
     ).map((event) => event.api_key_id).sort()).toEqual([first.id, second.id].sort());
   });
 
@@ -394,7 +400,11 @@ describe("secret lifecycle routes", () => {
       body: JSON.stringify(createBody),
     });
     expect(created.status).toBe(201);
-    expect(await created.json()).toMatchObject({ generation: 1, customerManaged: true });
+    expect(await created.json()).toMatchObject({
+      generation: 1,
+      customerManaged: false,
+      custody: "mendpoint-custodied",
+    });
 
     const breakGlassDenied = await app.request("/platform/secrets/credential-a/break-glass", {
       method: "POST",
@@ -420,6 +430,7 @@ describe("secret lifecycle routes", () => {
       headers: headers({ "Idempotency-Key": "rotate-route-operation" }),
       body: JSON.stringify({
         expectedGeneration: 1,
+        plaintext: "customer-secret-next",
         key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
       }),
     });
@@ -474,10 +485,10 @@ describe("secret lifecycle routes", () => {
       provider: "local-envelope",
       keyId: "tenant-key",
       version: "2",
-      customerManaged: true,
+      customerManaged: false,
     });
     const rotate = (requestId: string) => app.request(
-      "/platform/secrets/credential-a/rotate",
+      "/platform/secrets/credential-a/rewrap",
       {
         method: "POST",
         headers: headers({
@@ -496,11 +507,11 @@ describe("secret lifecycle routes", () => {
       provider: "local-envelope",
       keyId: "tenant-key",
       version: "2",
-      customerManaged: true,
+      customerManaged: false,
     }, Buffer.alloc(32, 2));
     expect((await rotate("rotate-http-two")).status).toBe(200);
     expect(listAudit(db, "tenant-a").filter(
-      (event) => event.action === "secret.lifecycle.rotation_source.granted",
+      (event) => event.action === "secret.lifecycle.rewrap_source.granted",
     )).toHaveLength(1);
   });
 
@@ -627,6 +638,7 @@ describe("secret lifecycle routes", () => {
       }),
       body: JSON.stringify({
         expectedGeneration: 1,
+        plaintext: "tenant-b-secret-next",
         key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
       }),
     });
