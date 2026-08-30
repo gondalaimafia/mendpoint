@@ -966,6 +966,8 @@ CREATE TABLE IF NOT EXISTS actual_execution_cost_entries (
 );
 CREATE INDEX IF NOT EXISTS actual_execution_cost_task_idx
   ON actual_execution_cost_entries(tenant_id, task_id, campaign_id, entry_sequence);
+CREATE INDEX IF NOT EXISTS actual_execution_cost_task_attempt_idx
+  ON actual_execution_cost_entries(tenant_id, task_id, attempt_number DESC, entry_sequence DESC);
 CREATE INDEX IF NOT EXISTS actual_execution_cost_route_idx
   ON actual_execution_cost_entries(tenant_id, task_class, route, outcome_status);
 CREATE TRIGGER IF NOT EXISTS actual_execution_cost_entries_append_only_update
@@ -4909,6 +4911,7 @@ export type {
   WardenRunVersionReference,
 } from "./warden-replay.js";
 export {
+  getLatestActualExecutionCostForTaskBeforeAttempt,
   listActualExecutionCosts,
   reconcileGrossMargin,
   recordActualExecutionCost,

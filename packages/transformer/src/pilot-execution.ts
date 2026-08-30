@@ -472,6 +472,10 @@ export type TransformerAdaptiveCandidateHandoffRecord = Readonly<{
   attemptNumber: number;
   leaseGeneration: number;
   leaseTokenDigest: string;
+  routingJobId: string;
+  routingRunId: string;
+  routingEnvelopeId: string;
+  reviewTier: "standard" | "escalated" | "blocked";
   repositoryId: string;
   snapshotId: string;
   baseBranch: string;
@@ -514,6 +518,10 @@ export type TransformerAdaptiveCandidateHandoffInput = Readonly<{
   attemptNumber: number;
   leaseGeneration: number;
   leaseToken: string;
+  routingJobId: string;
+  routingRunId: string;
+  routingEnvelopeId: string;
+  reviewTier: "standard" | "escalated" | "blocked";
   repositoryId: string;
   snapshotId: string;
   baseBranch: string;
@@ -2986,6 +2994,12 @@ export class TransformerPilotExecutionStore {
   ): TransformerPilotCampaign {
     requireId(input.unitId, "transformer_pilot_unit_invalid");
     requireId(input.attemptId, "transformer_pilot_adaptive_candidate_attempt_invalid");
+    requireId(input.routingJobId, "transformer_pilot_adaptive_candidate_routing_job_invalid");
+    requireId(input.routingRunId, "transformer_pilot_adaptive_candidate_routing_run_invalid");
+    requireId(input.routingEnvelopeId, "transformer_pilot_adaptive_candidate_routing_envelope_invalid");
+    if (!["standard", "escalated", "blocked"].includes(input.reviewTier)) {
+      throw new Error("transformer_pilot_adaptive_candidate_review_tier_invalid");
+    }
     requireId(input.repositoryId, "transformer_pilot_adaptive_candidate_repository_invalid");
     requireId(input.snapshotId, "transformer_pilot_adaptive_candidate_snapshot_invalid");
     requireBranch(
@@ -3054,6 +3068,10 @@ export class TransformerPilotExecutionStore {
       attemptNumber: input.attemptNumber,
       leaseGeneration: input.leaseGeneration,
       leaseTokenDigest: leaseTokenDigest(input.leaseToken),
+      routingJobId: input.routingJobId,
+      routingRunId: input.routingRunId,
+      routingEnvelopeId: input.routingEnvelopeId,
+      reviewTier: input.reviewTier,
       repositoryId: input.repositoryId,
       snapshotId: input.snapshotId,
       baseBranch: input.baseBranch,

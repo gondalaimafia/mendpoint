@@ -92,12 +92,15 @@ function seedRouting(db: AppDb, runId: string, jobId: string) {
     envelopeId,
     action: "route",
     outcome: "succeeded",
+    executorId: "executor-frontier",
     inputTokens: 100,
     outputTokens: 40,
     totalTokens: 140,
     costUsd: 0.05,
+    completedAt: at,
     observedAt: at,
   });
+  return envelopeId;
 }
 
 describe("mission-task job bridge", () => {
@@ -108,7 +111,8 @@ describe("mission-task job bridge", () => {
     expect(bridgeClaimedJobToMissionTask(db, unbound, at)).toBeUndefined();
     expect(recordBoundMissionExecutionCost(db, {
       job: unbound,
-      sourceRunId: "run-1",
+      routingRunId: "run-1",
+      routingEnvelopeId: "envelope-run-1",
       createdAt: at,
     })).toBeUndefined();
     expect(getMissionTask(db, "t1", missionTaskIdForJob("job-1"))).toBeUndefined();
@@ -133,16 +137,17 @@ describe("mission-task job bridge", () => {
     });
     expect(bridgeClaimedJobToMissionTask(db, claimed, at)?.revision).toBe(task!.revision);
 
-    seedRouting(db, "session-1", "job-1");
+    const firstEnvelope = seedRouting(db, "session-1", "job-1");
     const cost = recordBoundMissionExecutionCost(db, {
       job: claimed,
-      sourceRunId: "session-1",
+      routingRunId: "session-1",
+      routingEnvelopeId: firstEnvelope,
       createdAt: at,
     });
     expect(cost).toMatchObject({
       missionId: "m1",
       taskId: missionTaskIdForJob("job-1"),
-      executionId: "session-1:lease-1:attempt-1",
+      executionId: "job-1:lease-1:attempt-1",
       route: "fettler",
       taskClass: "agent.run",
       outcomeStatus: "unresolved",
@@ -152,20 +157,22 @@ describe("mission-task job bridge", () => {
     });
     expect(recordBoundMissionExecutionCost(db, {
       job: claimed,
-      sourceRunId: "session-1",
+      routingRunId: "session-1",
+      routingEnvelopeId: firstEnvelope,
       createdAt: at,
     })?.id).toBe(cost!.id);
-    seedRouting(db, "session-2", "job-1");
+    const secondEnvelope = seedRouting(db, "session-2", "job-1");
     const retry = recordBoundMissionExecutionCost(db, {
       job: { ...claimed, attempts: 2 },
-      sourceRunId: "session-2",
+      routingRunId: "session-2",
+      routingEnvelopeId: secondEnvelope,
       createdAt: at,
     });
     expect(retry).toMatchObject({
-      executionId: "session-2:lease-2:attempt-2",
+      executionId: "job-1:lease-2:attempt-2",
       attemptNumber: 2,
       retryNumber: 1,
-      fallbackFromExecutionId: "session-1:lease-1:attempt-1",
+      fallbackFromExecutionId: "job-1:lease-1:attempt-1",
       outcomeStatus: "unresolved",
     });
     expect(listActualExecutionCosts(db, "t1")).toHaveLength(2);
@@ -178,10 +185,11 @@ describe("mission-task job bridge", () => {
       { resultJson: JSON.stringify({ ok: true, status: "no_action" }) },
     );
     bridgeClaimedJobToMissionTask(db, noAction, at);
-    seedRouting(db, "session-no-action", "job-1");
+    const noActionEnvelope = seedRouting(db, "session-no-action", "job-1");
     expect(recordBoundMissionExecutionCost(db, {
       job: noAction,
-      sourceRunId: "session-no-action",
+      routingRunId: "session-no-action",
+      routingEnvelopeId: noActionEnvelope,
       createdAt: at,
     })).toMatchObject({ outcomeStatus: "unresolved", acceptedOutcomeId: null });
   });
@@ -193,12 +201,13 @@ describe("mission-task job bridge", () => {
       { id: "job-rejected" },
     );
     bridgeClaimedJobToMissionTask(db, failed, at);
-    seedRouting(db, "session-rejected", "job-rejected");
+    const rejectedEnvelope = seedRouting(db, "session-rejected", "job-rejected");
 
     db.raw.exec("BEGIN IMMEDIATE");
     const rejected = recordBoundMissionExecutionCost(db, {
       job: failed,
-      sourceRunId: "session-rejected",
+      routingRunId: "session-rejected",
+      routingEnvelopeId: rejectedEnvelope,
       createdAt: at,
     });
     expect(rejected).toMatchObject({
@@ -210,7 +219,8 @@ describe("mission-task job bridge", () => {
 
     expect(recordBoundMissionExecutionCost(db, {
       job: failed,
-      sourceRunId: "session-rejected",
+      routingRunId: "session-rejected",
+      routingEnvelopeId: rejectedEnvelope,
       createdAt: at,
     })).toMatchObject({ outcomeStatus: "unresolved" });
   });
@@ -222,7 +232,7 @@ describe("mission-task job bridge", () => {
       { id: "job-atomic" },
     );
     bridgeClaimedJobToMissionTask(db, claimedJob, at);
-    seedRouting(db, "session-atomic", "job-atomic");
+    const atomicEnvelope = seedRouting(db, "session-atomic", "job-atomic");
     enqueueJob(db, {
       id: "job-atomic",
       tenantId: "t1",
@@ -245,7 +255,8 @@ describe("mission-task job bridge", () => {
     })).toBe(true);
     expect(() => recordBoundMissionExecutionCost(db, {
       job: getJob(db, "job-atomic", "t1")!,
-      sourceRunId: "session-atomic",
+      routingRunId: "session-atomic",
+      routingEnvelopeId: atomicEnvelope,
       createdAt: at,
     })).toThrow("execution_cost_actor_tenant_mismatch");
     db.raw.exec("ROLLBACK");

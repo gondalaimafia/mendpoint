@@ -424,6 +424,155 @@ function outcomeHash(entry: Omit<ExecutionCostOutcome, "entryHash">): string {
   return createHash("sha256").update(JSON.stringify(entry)).digest("hex");
 }
 
+function bindOutcomeAuthorityDigest(
+  evidenceId: string,
+  evidenceDigest: string,
+  costEntryHash: string,
+): string {
+  return createHash("sha256")
+    .update(`${evidenceId}\n${evidenceDigest}\n${costEntryHash}`)
+    .digest("hex");
+}
+
+function parseAuthorityPayload(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("execution_cost_outcome_authority_payload_invalid");
+    }
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof Error && error.message === "execution_cost_outcome_authority_payload_invalid") {
+      throw error;
+    }
+    throw new Error("execution_cost_outcome_authority_payload_invalid", { cause: error });
+  }
+}
+
+function requireCurrentOutcomeAuthority(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    executionId: string;
+    outcomeStatus: ExecutionOutcomeResolutionStatus;
+    acceptedOutcomeId: string | null;
+    authorityKind: "reviewer" | "delivery" | "rollback";
+    authorityEvidenceId: string;
+    authorityDigest: string;
+    actorPrincipalId: string;
+    createdAt: string;
+  }>,
+  cost: Pick<CostRow, "id" | "entry_hash">,
+): void {
+  if (input.authorityKind === "reviewer") {
+    const review = one<{
+      id: string;
+      decision: string;
+      candidate_artifact_id: string;
+      reviewer_principal_id: string;
+      created_at: string;
+      source_digest: string;
+      content_text: string | null;
+    }>(db,
+      `SELECT r.id, r.decision, r.candidate_artifact_id, r.reviewer_principal_id,
+              r.created_at, a.sha256 AS source_digest, a.content_text
+       FROM review_decisions r
+       JOIN artifact_manifests a
+         ON a.id = r.candidate_artifact_id AND a.tenant_id = r.tenant_id
+       WHERE r.id = ? AND r.tenant_id = ?
+         AND r.subject_type = 'execution_cost' AND r.subject_id = ?
+         AND NOT EXISTS (SELECT 1 FROM review_decisions s WHERE s.supersedes_id = r.id)
+         AND NOT EXISTS (SELECT 1 FROM review_decisions newer
+           WHERE newer.tenant_id = r.tenant_id AND newer.subject_type = r.subject_type
+             AND newer.subject_id = r.subject_id
+             AND (newer.created_at > r.created_at OR
+               (newer.created_at = r.created_at AND newer.rowid > r.rowid)))`,
+      [input.authorityEvidenceId, input.tenantId, input.executionId]);
+    const expectedDecision = input.outcomeStatus === "rejected" ? "reject" : "approve";
+    if (!review || review.decision !== expectedDecision ||
+        review.reviewer_principal_id !== input.actorPrincipalId ||
+        review.created_at !== input.createdAt ||
+        review.source_digest !== input.authorityDigest ||
+        (expectedDecision === "approve" &&
+          review.candidate_artifact_id !== input.acceptedOutcomeId)) {
+      throw new Error("execution_cost_outcome_authority_evidence_invalid");
+    }
+    const payload = review.content_text === null
+      ? undefined
+      : parseAuthorityPayload(review.content_text);
+    if (!payload || payload.costEntryId !== cost.id || payload.costEntryHash !== cost.entry_hash) {
+      throw new Error("execution_cost_outcome_authority_cost_binding_invalid");
+    }
+    const newerEvent = verifyDomainEventIntegrity(db, input.tenantId).ok
+      ? one<{ id: string }>(db,
+        `SELECT id FROM domain_events
+         WHERE tenant_id = ? AND aggregate_type = 'execution_cost' AND aggregate_id = ?
+           AND event_type IN ('execution_cost.delivered','execution_cost.rolled_back')
+           AND created_at >= ?
+           AND json_extract(payload_json, '$.costEntryId') = ?
+           AND json_extract(payload_json, '$.costEntryHash') = ?
+         ORDER BY created_at DESC, event_sequence DESC LIMIT 1`,
+        [input.tenantId, input.executionId, input.createdAt, cost.id, cost.entry_hash])
+      : undefined;
+    if (newerEvent) throw new Error("execution_cost_outcome_authority_not_current");
+    return;
+  }
+
+  if (!verifyDomainEventIntegrity(db, input.tenantId).ok) {
+    throw new Error("execution_cost_outcome_domain_event_integrity_invalid");
+  }
+  const event = one<{
+    id: string;
+    event_type: string;
+    actor_principal_id: string;
+    created_at: string;
+    event_hash: string;
+    payload_json: string;
+  }>(db,
+    `SELECT id, event_type, actor_principal_id, created_at, event_hash, payload_json
+     FROM domain_events
+     WHERE id = ? AND tenant_id = ? AND aggregate_type = 'execution_cost'
+       AND aggregate_id = ?
+       AND event_sequence = (SELECT MAX(e2.event_sequence) FROM domain_events e2
+         WHERE e2.tenant_id = domain_events.tenant_id
+           AND e2.aggregate_type = domain_events.aggregate_type
+           AND e2.aggregate_id = domain_events.aggregate_id
+           AND e2.event_type IN ('execution_cost.delivered','execution_cost.rolled_back'))`,
+    [input.authorityEvidenceId, input.tenantId, input.executionId]);
+  const expectedType = input.authorityKind === "rollback"
+    ? "execution_cost.rolled_back"
+    : "execution_cost.delivered";
+  if (!event || event.event_type !== expectedType ||
+      event.actor_principal_id !== input.actorPrincipalId ||
+      event.created_at !== input.createdAt || event.event_hash !== input.authorityDigest) {
+    throw new Error("execution_cost_outcome_authority_evidence_invalid");
+  }
+  const payload = parseAuthorityPayload(event.payload_json);
+  if (payload.costEntryId !== cost.id || payload.costEntryHash !== cost.entry_hash) {
+    throw new Error("execution_cost_outcome_authority_cost_binding_invalid");
+  }
+  if (input.authorityKind === "delivery") {
+    if (typeof payload.outcomeId !== "string" || !payload.outcomeId.trim() ||
+        payload.outcomeId.trim() !== input.acceptedOutcomeId) {
+      throw new Error("execution_cost_outcome_authority_outcome_invalid");
+    }
+  } else if (input.acceptedOutcomeId !== null) {
+    throw new Error("execution_cost_outcome_authority_outcome_invalid");
+  }
+  const newerReview = one<{ id: string }>(db,
+    `SELECT r.id FROM review_decisions r
+     JOIN artifact_manifests a
+       ON a.id = r.candidate_artifact_id AND a.tenant_id = r.tenant_id
+     WHERE r.tenant_id = ? AND r.subject_type = 'execution_cost' AND r.subject_id = ?
+       AND r.created_at >= ?
+       AND NOT EXISTS (SELECT 1 FROM review_decisions s WHERE s.supersedes_id = r.id)
+       AND json_extract(a.content_text, '$.costEntryId') = ?
+       AND json_extract(a.content_text, '$.costEntryHash') = ?
+     ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1`,
+    [input.tenantId, input.executionId, input.createdAt, cost.id, cost.entry_hash]);
+  if (newerReview) throw new Error("execution_cost_outcome_authority_not_current");
+}
+
 export function listExecutionCostOutcomes(
   db: AppDb,
   tenantId: string,
@@ -449,6 +598,8 @@ export function recordExecutionCostOutcome(
     outcomeStatus: ExecutionOutcomeResolutionStatus;
     acceptedOutcomeId?: string | null;
     authorityKind: "reviewer" | "delivery" | "rollback";
+    authorityEvidenceId: string;
+    /** Digest carried by the authority evidence before cost binding. */
     authorityDigest: string;
     actorPrincipalId: string;
     createdAt: string;
@@ -457,6 +608,8 @@ export function recordExecutionCostOutcome(
   text("execution_cost_outcome_id", input.id);
   text("execution_cost_outcome_idempotency_key", input.idempotencyKey);
   text("execution_cost_outcome_execution_id", input.executionId);
+  const authorityEvidenceId = text("execution_cost_outcome_authority_evidence_id",
+    input.authorityEvidenceId);
   timestamp("execution_cost_outcome_created_at", input.createdAt);
   if (!/^[a-f0-9]{64}$/.test(input.authorityDigest)) {
     throw new Error("execution_cost_outcome_authority_digest_invalid");
@@ -471,6 +624,23 @@ export function recordExecutionCostOutcome(
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
+    const cost = one<CostRow>(db,
+      `SELECT * FROM actual_execution_cost_entries WHERE tenant_id = ? AND execution_id = ?`,
+      [input.tenantId, input.executionId]);
+    if (!cost) throw new Error("execution_cost_outcome_execution_not_found");
+    requireCurrentOutcomeAuthority(db, {
+      tenantId: input.tenantId,
+      executionId: input.executionId,
+      outcomeStatus: input.outcomeStatus,
+      acceptedOutcomeId: input.acceptedOutcomeId ?? null,
+      authorityKind: input.authorityKind,
+      authorityEvidenceId,
+      authorityDigest: input.authorityDigest,
+      actorPrincipalId: input.actorPrincipalId,
+      createdAt: input.createdAt,
+    }, cost);
+    const boundAuthorityDigest = bindOutcomeAuthorityDigest(
+      authorityEvidenceId, input.authorityDigest, cost.entry_hash);
     const replay = one<OutcomeRow>(db,
       `SELECT * FROM actual_execution_cost_outcomes WHERE tenant_id = ? AND idempotency_key = ?`,
       [input.tenantId, input.idempotencyKey]);
@@ -480,17 +650,16 @@ export function recordExecutionCostOutcome(
           existing.outcomeStatus !== input.outcomeStatus ||
           existing.acceptedOutcomeId !== (input.acceptedOutcomeId ?? null) ||
           existing.authorityKind !== input.authorityKind ||
-          existing.authorityDigest !== input.authorityDigest ||
+          existing.authorityDigest !== boundAuthorityDigest ||
           existing.actorPrincipalId !== input.actorPrincipalId) {
         throw new Error("execution_cost_outcome_idempotency_conflict");
       }
       if (owns) db.raw.exec("COMMIT");
       return existing;
     }
-    const cost = one<CostRow>(db,
-      `SELECT * FROM actual_execution_cost_entries WHERE tenant_id = ? AND execution_id = ?`,
-      [input.tenantId, input.executionId]);
-    if (!cost) throw new Error("execution_cost_outcome_execution_not_found");
+    if (Date.parse(input.createdAt) <= Date.parse(cost.created_at)) {
+      throw new Error("execution_cost_outcome_authority_predates_execution");
+    }
     const actor = one<{ id: string }>(db,
       `SELECT id FROM principals WHERE id = ? AND tenant_id = ?
        AND created_at <= ? AND (expires_at IS NULL OR expires_at > ?)
@@ -501,7 +670,12 @@ export function recordExecutionCostOutcome(
       `SELECT * FROM actual_execution_cost_outcomes
        WHERE tenant_id = ? AND cost_entry_id = ? ORDER BY outcome_sequence DESC LIMIT 1`,
       [input.tenantId, cost.id]);
-    if (previous && Date.parse(input.createdAt) < Date.parse(previous.created_at)) {
+    const reusedAuthority = one<{ id: string }>(db,
+      `SELECT id FROM actual_execution_cost_outcomes
+       WHERE tenant_id = ? AND cost_entry_id = ? AND authority_digest = ?`,
+      [input.tenantId, cost.id, boundAuthorityDigest]);
+    if (reusedAuthority) throw new Error("execution_cost_outcome_authority_reused");
+    if (previous && Date.parse(input.createdAt) <= Date.parse(previous.created_at)) {
       throw new Error("execution_cost_outcome_chronology_invalid");
     }
     const allowed: Record<ExecutionOutcomeResolutionStatus | "none", ExecutionOutcomeResolutionStatus[]> = {
@@ -526,7 +700,7 @@ export function recordExecutionCostOutcome(
       outcomeStatus: input.outcomeStatus,
       acceptedOutcomeId: input.acceptedOutcomeId ?? null,
       authorityKind: input.authorityKind,
-      authorityDigest: input.authorityDigest,
+      authorityDigest: boundAuthorityDigest,
       actorPrincipalId: input.actorPrincipalId,
       outcomeSequence: (previous?.outcome_sequence ?? 0) + 1,
       previousHash: previous?.entry_hash ?? null,
@@ -878,8 +1052,12 @@ export function recordActualExecutionCost(
 
 export type ExecutionCostFromRoutingLedgerInput = Readonly<{
   tenantId: string;
-  /** The run whose routing_ledger rows carry the measured model cost/tokens. */
-  sourceRunId: string;
+  /** Exact settled routing decisions that belong to this execution attempt. */
+  routingEvidence: Readonly<{
+    jobId: string;
+    runId: string;
+    envelopeIds: readonly string[];
+  }>;
   executionId: string;
   taskId: string;
   taskClass: string;
@@ -898,7 +1076,10 @@ export type ExecutionCostFromRoutingLedgerInput = Readonly<{
 }>;
 
 type LedgerAggregateRow = Readonly<{
-  id: string | null;
+  id: string;
+  job_id: string;
+  run_id: string | null;
+  envelope_id: string;
   input_tokens: number | null;
   output_tokens: number | null;
   total_tokens: number | null;
@@ -907,7 +1088,50 @@ type LedgerAggregateRow = Readonly<{
   model_id: string | null;
   decision_json: string | null;
   outcome: string | null;
+  executed_executor_id: string | null;
+  completed_at: string | null;
 }>;
+
+function canonicalRoutingEvidenceRow(row: LedgerAggregateRow) {
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    runId: row.run_id,
+    envelopeId: row.envelope_id,
+    decisionJson: row.decision_json,
+    outcome: row.outcome,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    totalTokens: row.total_tokens,
+    costUsd: row.cost_usd,
+    executedExecutorId: row.executed_executor_id,
+    completedAt: row.completed_at,
+  };
+}
+
+function routingEvidenceDigest(rows: readonly LedgerAggregateRow[]): string {
+  return createHash("sha256")
+    .update(JSON.stringify(rows.map(canonicalRoutingEvidenceRow)))
+    .digest("hex");
+}
+
+function requireTerminalRoutingEvidence(rows: readonly LedgerAggregateRow[]): void {
+  if (rows.some((row) =>
+    !row.outcome || !["succeeded", "failed"].includes(row.outcome) ||
+    !row.executed_executor_id || !row.completed_at
+  )) {
+    throw new Error("execution_cost_routing_evidence_not_terminal");
+  }
+  for (const row of rows) {
+    if (row.cost_usd !== null && (
+      !Number.isSafeInteger(row.input_tokens) || !Number.isSafeInteger(row.output_tokens) ||
+      !Number.isSafeInteger(row.total_tokens) ||
+      row.total_tokens !== row.input_tokens! + row.output_tokens!
+    )) {
+      throw new Error("execution_cost_routing_evidence_tokens_invalid");
+    }
+  }
+}
 
 /**
  * Write one `actual_execution_cost_entries` row for a real execution, deriving
@@ -933,13 +1157,26 @@ export function recordExecutionCostFromRoutingLedger(
   input: ExecutionCostFromRoutingLedgerInput,
 ): ActualExecutionCostEntry {
   const tenantId = text("tenant_id", input.tenantId);
-  const sourceRunId = text("execution_cost_source_run_id", input.sourceRunId);
+  const jobId = text("execution_cost_routing_job_id", input.routingEvidence.jobId);
+  const runId = text("execution_cost_routing_run_id", input.routingEvidence.runId);
+  const envelopeIds = [...new Set(input.routingEvidence.envelopeIds.map((value) =>
+    text("execution_cost_routing_envelope_id", value)))];
+  if (envelopeIds.length < 1 || envelopeIds.length > 4 ||
+      envelopeIds.length !== input.routingEvidence.envelopeIds.length) {
+    throw new Error("execution_cost_routing_evidence_invalid");
+  }
   const routingRows = many<LedgerAggregateRow>(db,
-    `SELECT id, input_tokens, output_tokens, total_tokens, cost_usd,
+    `SELECT id, job_id, run_id, envelope_id, input_tokens, output_tokens, total_tokens, cost_usd,
        CASE WHEN cost_usd IS NOT NULL THEN 1 ELSE 0 END AS measured_rows,
-       executed_executor_id AS model_id, decision_json, outcome
-     FROM routing_ledger WHERE tenant_id = ? AND run_id = ?
-     ORDER BY created_at, id`, [tenantId, sourceRunId]);
+       executed_executor_id AS model_id, decision_json, outcome,
+       executed_executor_id, completed_at
+     FROM routing_ledger WHERE tenant_id = ? AND job_id = ? AND run_id = ?
+       AND envelope_id IN (${envelopeIds.map(() => "?").join(",")})
+     ORDER BY envelope_id, id`, [tenantId, jobId, runId, ...envelopeIds]);
+  if (routingRows.length !== envelopeIds.length) {
+    throw new Error("execution_cost_routing_evidence_incomplete");
+  }
+  requireTerminalRoutingEvidence(routingRows);
   const aggregate = routingRows.length > 0 ? {
     id: routingRows.map((row) => row.id).join(","),
     input_tokens: routingRows.reduce((sum, row) => sum + (row.input_tokens ?? 0), 0),
@@ -963,14 +1200,7 @@ export function recordExecutionCostFromRoutingLedger(
     };
 
   const modelMeasured = routingRows.length > 0 && aggregate.measured_rows === routingRows.length;
-  const routingEvidenceDigest = routingRows.length > 0 ? createHash("sha256").update(JSON.stringify(
-    routingRows.map((row) => ({
-      id: row.id, decisionJson: row.decision_json, outcome: row.outcome,
-      inputTokens: row.input_tokens, outputTokens: row.output_tokens,
-      totalTokens: row.total_tokens, costUsd: row.cost_usd,
-      executedExecutorId: row.model_id,
-    })),
-  )).digest("hex") : null;
+  const evidenceDigest = routingEvidenceDigest(routingRows);
   // USD is REAL in routing_ledger; convert to integer micros once, fail closed
   // on an unsafe value rather than writing a rounded lie.
   const modelCostMoneyMicros = modelMeasured
@@ -1029,8 +1259,8 @@ export function recordExecutionCostFromRoutingLedger(
     verificationCostMeasured: false,
     measurementProvenance: {
       model: modelMeasured
-        ? `routing_ledger_rows:${aggregate.id}:sha256:${routingEvidenceDigest}`
-        : `unmeasured:routing_ledger:${aggregate.id ?? "absent"}:cost_absent`,
+        ? `routing_ledger:v1:${aggregate.id}:sha256:${evidenceDigest}`
+        : `routing_ledger:v1:${aggregate.id}:sha256:${evidenceDigest}:cost_unmeasured`,
       cache: "unmeasured:no_cache_meter",
       gpu: "unmeasured:no_gpu_meter",
       graph: "unmeasured:no_graph_meter",
@@ -1052,6 +1282,21 @@ export function listActualExecutionCosts(
      WHERE tenant_id = ? ORDER BY entry_sequence DESC LIMIT ?`,
     [tenantId, bounded],
   ).map(entryFromRow);
+}
+
+export function getLatestActualExecutionCostForTaskBeforeAttempt(
+  db: AppDb,
+  input: Readonly<{ tenantId: string; taskId: string; attemptNumber: number }>,
+): ActualExecutionCostEntry | undefined {
+  text("tenant_id", input.tenantId);
+  text("execution_cost_task_id", input.taskId);
+  integer("execution_cost_attempt_number", input.attemptNumber, 1);
+  const row = one<CostRow>(db,
+    `SELECT * FROM actual_execution_cost_entries
+     WHERE tenant_id = ? AND task_id = ? AND attempt_number < ?
+     ORDER BY attempt_number DESC, entry_sequence DESC LIMIT 1`,
+    [input.tenantId, input.taskId, input.attemptNumber]);
+  return row ? entryFromRow(row) : undefined;
 }
 
 export function verifyExecutionCostIntegrity(
@@ -1109,6 +1354,37 @@ export function verifyExecutionCostIntegrity(
         };
       }
     }
+    const routingProvenance = entry.measurementProvenance.model;
+    if (routingProvenance?.startsWith("routing_ledger:v1:")) {
+      const match = /^routing_ledger:v1:([^:]+):sha256:([a-f0-9]{64})(?::cost_unmeasured)?$/
+        .exec(routingProvenance);
+      if (!match) {
+        return { ok: false, checked: index, totalCostMoneyMicros,
+          error: `execution_cost_routing_provenance_invalid:${entry.id}` };
+      }
+      const routingIds = match[1]!.split(",");
+      const routingRows = many<LedgerAggregateRow>(db,
+        `SELECT id, job_id, run_id, envelope_id, input_tokens, output_tokens, total_tokens, cost_usd,
+           CASE WHEN cost_usd IS NOT NULL THEN 1 ELSE 0 END AS measured_rows,
+           executed_executor_id AS model_id, decision_json, outcome,
+           executed_executor_id, completed_at
+         FROM routing_ledger WHERE tenant_id = ?
+           AND id IN (${routingIds.map(() => "?").join(",")})
+         ORDER BY envelope_id, id`, [tenantId, ...routingIds]);
+      try {
+        if (routingRows.length !== routingIds.length) {
+          throw new Error("execution_cost_routing_evidence_incomplete");
+        }
+        requireTerminalRoutingEvidence(routingRows);
+      } catch {
+        return { ok: false, checked: index, totalCostMoneyMicros,
+          error: `execution_cost_routing_provenance_stale:${entry.id}` };
+      }
+      if (routingEvidenceDigest(routingRows) !== match[2]) {
+        return { ok: false, checked: index, totalCostMoneyMicros,
+          error: `execution_cost_routing_provenance_digest:${entry.id}` };
+      }
+    }
     const { entryHash: _entryHash, ...hashInput } = entry;
     if (hashEntry(hashInput) !== entry.entryHash) {
       return {
@@ -1135,12 +1411,18 @@ export function verifyExecutionOutcomeIntegrity(
     `SELECT * FROM actual_execution_cost_outcomes
      WHERE tenant_id = ? ORDER BY cost_entry_id, outcome_sequence`, [tenantId]);
   const state = new Map<string, { sequence: number; hash: string | null; createdAt: number }>();
+  const latestSequenceByCost = new Map<string, number>();
+  for (const row of rows) latestSequenceByCost.set(row.cost_entry_id,
+    Math.max(latestSequenceByCost.get(row.cost_entry_id) ?? 0, row.outcome_sequence));
   const domainIntegrity = verifyDomainEventIntegrity(db, tenantId);
   for (const [index, row] of rows.entries()) {
     const entry = outcomeFromRow(row);
     const prior = state.get(entry.costEntryId) ?? { sequence: 0, hash: null, createdAt: -Infinity };
-    const cost = one<{ tenant_id: string; execution_id: string }>(db,
-      `SELECT tenant_id, execution_id FROM actual_execution_cost_entries WHERE id = ?`,
+    const cost = one<{
+      id: string; tenant_id: string; execution_id: string; entry_hash: string; created_at: string;
+    }>(db,
+      `SELECT id, tenant_id, execution_id, entry_hash, created_at
+       FROM actual_execution_cost_entries WHERE id = ?`,
       [entry.costEntryId]);
     const actor = one<{ id: string }>(db,
       `SELECT id FROM principals WHERE id = ? AND tenant_id = ? AND created_at <= ?
@@ -1150,7 +1432,8 @@ export function verifyExecutionOutcomeIntegrity(
     const { entryHash: _entryHash, ...hashInput } = entry;
     if (!cost || cost.tenant_id !== tenantId || cost.execution_id !== entry.executionId || !actor ||
         entry.outcomeSequence !== prior.sequence + 1 || entry.previousHash !== prior.hash ||
-        !Number.isFinite(createdAt) || createdAt < prior.createdAt ||
+        !Number.isFinite(createdAt) || createdAt <= Date.parse(cost?.created_at ?? "") ||
+        createdAt <= prior.createdAt ||
         outcomeHash(hashInput) !== entry.entryHash) {
       return { ok: false, checked: index, error: `execution_outcome_chain_integrity:${entry.id}` };
     }
@@ -1159,28 +1442,68 @@ export function verifyExecutionOutcomeIntegrity(
         (entry.outcomeStatus === "rolled_back") !== (entry.authorityKind === "rollback")) {
       return { ok: false, checked: index, error: `execution_outcome_authority_binding:${entry.id}` };
     }
-    const authorityBound = entry.authorityKind === "reviewer"
-      ? one<{ id: string }>(db,
-        `SELECT r.id FROM review_decisions r JOIN artifact_manifests a
+    const reviewAuthority = entry.authorityKind === "reviewer"
+      ? one<{ id: string; source_digest: string; content_text: string | null }>(db,
+        `SELECT r.id, a.sha256 AS source_digest, a.content_text
+         FROM review_decisions r JOIN artifact_manifests a
            ON a.id = r.candidate_artifact_id AND a.tenant_id = r.tenant_id
          WHERE r.tenant_id = ? AND r.subject_type = 'execution_cost' AND r.subject_id = ?
-           AND r.reviewer_principal_id = ? AND r.created_at = ? AND a.sha256 = ?
-           AND ((r.decision = 'approve' AND ? IN ('accepted','corrected') AND r.candidate_artifact_id = ?)
-             OR (r.decision = 'reject' AND ? = 'rejected' AND ? IS NULL))`,
-        [tenantId, entry.executionId, entry.actorPrincipalId, entry.createdAt, entry.authorityDigest,
+            AND r.reviewer_principal_id = ? AND r.created_at = ?
+            AND ((r.decision = 'approve' AND ? IN ('accepted','corrected') AND r.candidate_artifact_id = ?)
+              OR (r.decision = 'reject' AND ? = 'rejected' AND ? IS NULL))`,
+        [tenantId, entry.executionId, entry.actorPrincipalId, entry.createdAt,
           entry.outcomeStatus, entry.acceptedOutcomeId, entry.outcomeStatus, entry.acceptedOutcomeId])
-      : domainIntegrity.ok ? one<{ id: string }>(db,
-        `SELECT id FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'execution_cost'
-           AND aggregate_id = ? AND actor_principal_id = ? AND created_at = ? AND event_hash = ?
-           AND event_type = ?
-           AND ((event_type = 'execution_cost.rolled_back' AND ? IS NULL)
-             OR (event_type = 'execution_cost.delivered'
-               AND json_extract(payload_json, '$.outcomeId') = ?))`,
-        [tenantId, entry.executionId, entry.actorPrincipalId, entry.createdAt, entry.authorityDigest,
+      : undefined;
+    const eventAuthority = entry.authorityKind !== "reviewer" && domainIntegrity.ok
+      ? one<{ id: string; source_digest: string; payload_json: string }>(db,
+        `SELECT id, event_hash AS source_digest, payload_json FROM domain_events
+         WHERE tenant_id = ? AND aggregate_type = 'execution_cost'
+           AND aggregate_id = ? AND actor_principal_id = ? AND created_at = ?
+            AND event_type = ?
+            AND ((event_type = 'execution_cost.rolled_back' AND ? IS NULL)
+              OR (event_type = 'execution_cost.delivered'
+                AND json_extract(payload_json, '$.outcomeId') = ?))`,
+        [tenantId, entry.executionId, entry.actorPrincipalId, entry.createdAt,
           entry.authorityKind === "rollback" ? "execution_cost.rolled_back" : "execution_cost.delivered",
           entry.acceptedOutcomeId, entry.acceptedOutcomeId]) : undefined;
+    const authority = reviewAuthority ?? eventAuthority;
+    const authorityBound = authority && cost &&
+      bindOutcomeAuthorityDigest(authority.id, authority.source_digest, cost.entry_hash) ===
+        entry.authorityDigest;
     if (!authorityBound) {
       return { ok: false, checked: index, error: `execution_outcome_authority_evidence:${entry.id}` };
+    }
+    try {
+      const payload = parseAuthorityPayload(
+        reviewAuthority?.content_text ?? eventAuthority?.payload_json ?? "",
+      );
+      if (payload.costEntryId !== entry.costEntryId || payload.costEntryHash !== cost.entry_hash ||
+          (entry.authorityKind === "delivery" &&
+            (typeof payload.outcomeId !== "string" || !payload.outcomeId.trim() ||
+              payload.outcomeId.trim() !== entry.acceptedOutcomeId))) {
+        throw new Error("execution_cost_outcome_authority_cost_binding_invalid");
+      }
+    } catch {
+      return { ok: false, checked: index,
+        error: `execution_outcome_authority_cost_binding:${entry.id}` };
+    }
+    if (entry.outcomeSequence === latestSequenceByCost.get(entry.costEntryId)) {
+      try {
+        requireCurrentOutcomeAuthority(db, {
+          tenantId,
+          executionId: entry.executionId,
+          outcomeStatus: entry.outcomeStatus,
+          acceptedOutcomeId: entry.acceptedOutcomeId,
+          authorityKind: entry.authorityKind,
+          authorityEvidenceId: authority!.id,
+          authorityDigest: authority!.source_digest,
+          actorPrincipalId: entry.actorPrincipalId,
+          createdAt: entry.createdAt,
+        }, cost);
+      } catch {
+        return { ok: false, checked: index,
+          error: `execution_outcome_authority_not_current:${entry.id}` };
+      }
     }
     state.set(entry.costEntryId, { sequence: entry.outcomeSequence, hash: entry.entryHash, createdAt });
   }
@@ -1209,7 +1532,8 @@ function durableRevenueJobForCost(
   entry: ActualExecutionCostEntry,
 ): string | null {
   if (!entry.missionId) return null;
-  const row = one<{ job_id: string }>(
+  if (!verifyDomainEventIntegrity(db, entry.tenantId).ok) return null;
+  const rows = many<{ job_id: string }>(
     db,
     `SELECT j.id AS job_id
      FROM jobs j
@@ -1220,19 +1544,24 @@ function durableRevenueJobForCost(
      JOIN mission m
        ON m.id = mt.mission_id
       AND m.tenant_id = mt.tenant_id
-     WHERE j.tenant_id = ?
-       AND EXISTS (
+      WHERE j.tenant_id = ?
+        AND (? = j.id OR ? LIKE j.id || ':lease-%')
+        AND EXISTS (
          SELECT 1
          FROM domain_events e
          WHERE e.tenant_id = j.tenant_id
            AND e.aggregate_type = 'mission_task'
            AND e.aggregate_id = mt.id
-           AND e.event_type = 'mission_task.created'
-           AND e.correlation_id = j.id
-       )`,
-    [entry.taskId, entry.missionId, entry.tenantId],
+            AND e.event_type = 'mission_task.created'
+            AND e.correlation_id = j.id
+            AND e.created_at <= ?
+            AND json_extract(e.payload_json, '$.missionId') = mt.mission_id
+            AND json_extract(e.payload_json, '$.taskType') = mt.task_type
+        )`,
+    [entry.taskId, entry.missionId, entry.tenantId,
+      entry.executionId, entry.executionId, entry.createdAt],
   );
-  return row?.job_id ?? null;
+  return rows.length === 1 ? rows[0]!.job_id : null;
 }
 
 export function reconcileGrossMargin(
@@ -1484,7 +1813,8 @@ export function reconcileGrossMargin(
     const revenue = taskRevenue.get(taskId);
     const costs = costsByTask.get(taskId) ?? [];
     const accepted = costs.filter(isAcceptedOutcome);
-    let complete = (revenue?.complete ?? true) && !ambiguousReconciliationTasks.has(taskId);
+    let complete = usageIntegrity.ok && costIntegrity.ok && outcomeIntegrity.ok &&
+      (revenue?.complete ?? true) && !ambiguousReconciliationTasks.has(taskId);
     if (costs.some((entry) =>
       !entry.modelCostMeasured ||
       !entry.cacheCostMeasured ||

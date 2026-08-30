@@ -11,10 +11,10 @@
 import { createHash } from "node:crypto";
 import {
   ensureMissionTaskForJob,
+  getLatestActualExecutionCostForTaskBeforeAttempt,
   getMissionTask,
   getMission,
   insertPrincipal,
-  listActualExecutionCosts,
   listRepositorySnapshots,
   missionTaskIdForJob,
   openTaskHandoff,
@@ -196,7 +196,8 @@ export function recordBoundMissionExecutionCost(
   db: AppDb,
   input: Readonly<{
     job: BridgedJob;
-    sourceRunId: string;
+    routingRunId: string;
+    routingEnvelopeId: string;
     createdAt: string;
     outcomeStatus?: "unresolved";
   }>,
@@ -208,13 +209,22 @@ export function recordBoundMissionExecutionCost(
   // lease_generation is monotonic across operator reopen; attempts is not.
   const leaseGeneration = Math.max(1, input.job.lease_generation ?? input.job.attempts ?? 1);
   const attemptNumber = leaseGeneration;
-  const executionId = `${input.sourceRunId}:lease-${leaseGeneration}:attempt-${attemptNumber}`;
-  const prior = listActualExecutionCosts(db, input.job.tenant_id)
-    .filter((entry) => entry.taskId === taskId && entry.attemptNumber < leaseGeneration)
-    .sort((a, b) => b.attemptNumber - a.attemptNumber)[0];
+  const executionId = `${input.job.id}:lease-${leaseGeneration}:attempt-${attemptNumber}`;
+  const prior = getLatestActualExecutionCostForTaskBeforeAttempt(db, {
+    tenantId: input.job.tenant_id,
+    taskId,
+    attemptNumber: leaseGeneration,
+  });
+  if (leaseGeneration > 1 && !prior) {
+    throw new Error("mission_execution_cost_prior_attempt_missing");
+  }
   return recordExecutionCostFromRoutingLedger(db, {
     tenantId: input.job.tenant_id,
-    sourceRunId: input.sourceRunId,
+    routingEvidence: {
+      jobId: input.job.id,
+      runId: input.routingRunId,
+      envelopeIds: [input.routingEnvelopeId],
+    },
     executionId,
     taskId,
     taskClass: input.job.type,

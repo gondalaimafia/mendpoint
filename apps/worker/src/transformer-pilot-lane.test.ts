@@ -798,8 +798,10 @@ describe("Transformer production pilot lane", () => {
           candidateDigest: input.candidateDigest,
           changedPaths: input.changedPaths,
         });
-      expect(store.listEvents("tenant-a", "campaign-a").at(-1)?.type)
-        .toBe("attempt.adaptive_candidate_handoff");
+      const events = store.listEvents("tenant-a", "campaign-a");
+      expect(events.some((event) => event.type === "attempt.adaptive_candidate_handoff"))
+        .toBe(true);
+      expect(events.at(-1)?.type).toBe("routing.outcome_settled");
       return dbModule.recordAdaptiveCandidate(candidateDb, input);
     });
 
@@ -1434,7 +1436,14 @@ describe("Transformer production pilot lane", () => {
 
     expect(result).toMatchObject({ failed: 1, completed: 0 });
     expect(result.errors).toContain("transformer_adaptive_candidate_persistence_failed");
-    expect(result.adaptiveModelEvidence).toBeUndefined();
+    expect(result.adaptiveModelEvidence).toEqual([
+      expect.objectContaining({
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        unitId: "unit-a",
+        created: true,
+      }),
+    ]);
     expect(store.getCampaign("tenant-a", "campaign-a")).toMatchObject({
       state: "paused",
       units: [{
@@ -1448,7 +1457,7 @@ describe("Transformer production pilot lane", () => {
           changedPaths: [".node-version", ".nvmrc", "Dockerfile", "package.json"],
         },
       }],
-      exceptions: [{ code: "worker_crash", state: "open" }],
+      exceptions: [{ code: "verification_failed", state: "open" }],
     });
     expect(store.listEvents("tenant-a", "campaign-a").filter((event) =>
       event.type === "attempt.adaptive_candidate_handoff"

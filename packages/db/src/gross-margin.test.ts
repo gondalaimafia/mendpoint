@@ -421,7 +421,7 @@ describe("actual execution cost and gross margin", () => {
   it("preserves rejected, corrected, and rolled-back outcomes as append-only authority", () => {
     const db = setupDb();
     settle(db);
-    recordActualExecutionCost(db, costInput({
+    const recordedCost = recordActualExecutionCost(db, costInput({
       outcomeStatus: "unresolved",
       acceptedOutcomeId: null,
     }));
@@ -432,25 +432,36 @@ describe("actual execution cost and gross margin", () => {
       authorityDigest: string;
     }) => {
       let authorityDigest: string;
+      let authorityEvidenceId: string;
       if (input.authorityKind === "reviewer") {
+        authorityEvidenceId = `review-${suffix}`;
         const artifactId = input.acceptedOutcomeId ?? `rejected-artifact-${suffix}`;
-        const content = JSON.stringify({ suffix, decision: input.outcomeStatus });
+        const content = JSON.stringify({
+          suffix,
+          decision: input.outcomeStatus,
+          costEntryId: recordedCost.id,
+          costEntryHash: recordedCost.entryHash,
+        });
         authorityDigest = createHash("sha256").update(content).digest("hex");
         insertArtifactManifest(db, { id: artifactId, tenantId: "tenant_default",
           kind: "review-evidence", schemaVersion: 1, sha256: authorityDigest,
           mediaType: "application/json", sizeBytes: Buffer.byteLength(content),
           storageRef: `evidence://${artifactId}`, content, producerPrincipalId: "principal-a",
           createdAt: `2026-08-01T12:0${3 + listExecutionCostOutcomes(db, "tenant_default").length}:00.000Z` });
-        insertReviewDecision(db, { id: `review-${suffix}`, tenantId: "tenant_default",
+        insertReviewDecision(db, { id: authorityEvidenceId, tenantId: "tenant_default",
           subjectType: "execution_cost", subjectId: "execution-a", candidateArtifactId: artifactId,
           reviewerPrincipalId: "principal-a",
           decision: input.outcomeStatus === "rejected" ? "reject" : "approve",
           rationale: "Durable test outcome", createdAt: `2026-08-01T12:0${3 + listExecutionCostOutcomes(db, "tenant_default").length}:00.000Z` });
       } else {
-        const event = appendDomainEvent(db, { id: `rollback-${suffix}`, tenantId: "tenant_default",
+        authorityEvidenceId = `rollback-${suffix}`;
+        const event = appendDomainEvent(db, { id: authorityEvidenceId, tenantId: "tenant_default",
           schemaVersion: 1, eventType: "execution_cost.rolled_back", aggregateType: "execution_cost",
           aggregateId: "execution-a", actorPrincipalId: "principal-a", correlationId: "execution-a",
-          idempotencyKey: `rollback-${suffix}`, payload: {},
+          idempotencyKey: `rollback-${suffix}`, payload: {
+            costEntryId: recordedCost.id,
+            costEntryHash: recordedCost.entryHash,
+          },
           createdAt: `2026-08-01T12:0${3 + listExecutionCostOutcomes(db, "tenant_default").length}:00.000Z` });
         authorityDigest = event.row.event_hash;
       }
@@ -462,6 +473,7 @@ describe("actual execution cost and gross margin", () => {
       actorPrincipalId: "principal-a",
       createdAt: `2026-08-01T12:0${3 + listExecutionCostOutcomes(db, "tenant_default").length}:00.000Z`,
       ...input,
+      authorityEvidenceId,
       authorityDigest,
     });
     };
@@ -512,6 +524,187 @@ describe("actual execution cost and gross margin", () => {
       complete: false,
       exactGrossMarginMoneyMicros: null,
     });
+  });
+
+  it("rejects reused authority and withdraws attribution when newer authority supersedes it", () => {
+    const db = setupDb();
+    settle(db);
+    const cost = recordActualExecutionCost(db, costInput({
+      outcomeStatus: "unresolved",
+      acceptedOutcomeId: null,
+    }));
+    const approvedContent = JSON.stringify({
+      costEntryId: cost.id,
+      costEntryHash: cost.entryHash,
+      decision: "approve",
+    });
+    const approvedDigest = createHash("sha256").update(approvedContent).digest("hex");
+    insertArtifactManifest(db, {
+      id: "approved-artifact",
+      tenantId: "tenant_default",
+      kind: "review-evidence",
+      schemaVersion: 1,
+      sha256: approvedDigest,
+      mediaType: "application/json",
+      sizeBytes: Buffer.byteLength(approvedContent),
+      storageRef: "evidence://approved-artifact",
+      content: approvedContent,
+      producerPrincipalId: "principal-a",
+      createdAt: "2026-08-01T12:03:00.000Z",
+    });
+    insertReviewDecision(db, {
+      id: "review-approved",
+      tenantId: "tenant_default",
+      subjectType: "execution_cost",
+      subjectId: cost.executionId,
+      candidateArtifactId: "approved-artifact",
+      reviewerPrincipalId: "principal-a",
+      decision: "approve",
+      rationale: "Approved exact cost outcome",
+      createdAt: "2026-08-01T12:03:00.000Z",
+    });
+    const input = {
+      tenantId: "tenant_default",
+      executionId: cost.executionId,
+      outcomeStatus: "accepted" as const,
+      acceptedOutcomeId: "approved-artifact",
+      authorityKind: "reviewer" as const,
+      authorityEvidenceId: "review-approved",
+      authorityDigest: approvedDigest,
+      actorPrincipalId: "principal-a",
+      createdAt: "2026-08-01T12:03:00.000Z",
+    };
+    recordExecutionCostOutcome(db, {
+      ...input,
+      id: "outcome-approved",
+      idempotencyKey: "outcome-approved",
+    });
+    expect(() => recordExecutionCostOutcome(db, {
+      ...input,
+      id: "outcome-approved-reused",
+      idempotencyKey: "outcome-approved-reused",
+    })).toThrow("execution_cost_outcome_authority_reused");
+
+    const rejectedContent = JSON.stringify({
+      costEntryId: cost.id,
+      costEntryHash: cost.entryHash,
+      decision: "reject",
+    });
+    insertArtifactManifest(db, {
+      id: "rejected-artifact-current",
+      tenantId: "tenant_default",
+      kind: "review-evidence",
+      schemaVersion: 1,
+      sha256: createHash("sha256").update(rejectedContent).digest("hex"),
+      mediaType: "application/json",
+      sizeBytes: Buffer.byteLength(rejectedContent),
+      storageRef: "evidence://rejected-artifact-current",
+      content: rejectedContent,
+      producerPrincipalId: "principal-a",
+      createdAt: "2026-08-01T12:04:00.000Z",
+    });
+    insertReviewDecision(db, {
+      id: "review-rejected-current",
+      tenantId: "tenant_default",
+      subjectType: "execution_cost",
+      subjectId: cost.executionId,
+      candidateArtifactId: "rejected-artifact-current",
+      reviewerPrincipalId: "principal-a",
+      decision: "reject",
+      rationale: "Supersede prior approval",
+      createdAt: "2026-08-01T12:04:00.000Z",
+    });
+    expect(verifyExecutionOutcomeIntegrity(db, "tenant_default")).toMatchObject({
+      ok: false,
+      error: "execution_outcome_authority_not_current:outcome-approved",
+    });
+    expect(reconcileGrossMargin(db, "tenant_default")).toMatchObject({
+      complete: false,
+      exactGrossMarginMoneyMicros: null,
+      attributions: [{
+        attributedNetRevenueMoneyMicros: null,
+        attributedGrossMarginMoneyMicros: null,
+      }],
+    });
+  });
+
+  it("rejects malformed delivered outcome IDs and a corrupted domain-event chain before append", () => {
+    const malformedDb = setupDb();
+    const malformedCost = recordActualExecutionCost(malformedDb, costInput({
+      outcomeStatus: "unresolved",
+      acceptedOutcomeId: null,
+    }));
+    const malformed = appendDomainEvent(malformedDb, {
+      id: "delivery-malformed",
+      tenantId: "tenant_default",
+      schemaVersion: 1,
+      eventType: "execution_cost.delivered",
+      aggregateType: "execution_cost",
+      aggregateId: malformedCost.executionId,
+      actorPrincipalId: "principal-a",
+      correlationId: malformedCost.executionId,
+      idempotencyKey: "delivery-malformed",
+      payload: {
+        outcomeId: 42,
+        costEntryId: malformedCost.id,
+        costEntryHash: malformedCost.entryHash,
+      },
+      createdAt: "2026-08-01T12:03:00.000Z",
+    });
+    expect(() => recordExecutionCostOutcome(malformedDb, {
+      id: "outcome-malformed",
+      tenantId: "tenant_default",
+      idempotencyKey: "outcome-malformed",
+      executionId: malformedCost.executionId,
+      outcomeStatus: "accepted",
+      acceptedOutcomeId: "42",
+      authorityKind: "delivery",
+      authorityEvidenceId: malformed.row.id,
+      authorityDigest: malformed.row.event_hash,
+      actorPrincipalId: "principal-a",
+      createdAt: malformed.row.created_at,
+    })).toThrow("execution_cost_outcome_authority_outcome_invalid");
+    expect(listExecutionCostOutcomes(malformedDb, "tenant_default")).toEqual([]);
+
+    const corruptDb = setupDb();
+    const corruptCost = recordActualExecutionCost(corruptDb, costInput({
+      outcomeStatus: "unresolved",
+      acceptedOutcomeId: null,
+    }));
+    const delivered = appendDomainEvent(corruptDb, {
+      id: "delivery-corrupt",
+      tenantId: "tenant_default",
+      schemaVersion: 1,
+      eventType: "execution_cost.delivered",
+      aggregateType: "execution_cost",
+      aggregateId: corruptCost.executionId,
+      actorPrincipalId: "principal-a",
+      correlationId: corruptCost.executionId,
+      idempotencyKey: "delivery-corrupt",
+      payload: {
+        outcomeId: "pull-request-corrupt",
+        costEntryId: corruptCost.id,
+        costEntryHash: corruptCost.entryHash,
+      },
+      createdAt: "2026-08-01T12:03:00.000Z",
+    });
+    corruptDb.raw.exec("DROP TRIGGER domain_events_append_only_update");
+    corruptDb.raw.prepare("UPDATE domain_events SET payload_json = '{}' WHERE id = ?")
+      .run(delivered.row.id);
+    expect(() => recordExecutionCostOutcome(corruptDb, {
+      id: "outcome-corrupt",
+      tenantId: "tenant_default",
+      idempotencyKey: "outcome-corrupt",
+      executionId: corruptCost.executionId,
+      outcomeStatus: "accepted",
+      acceptedOutcomeId: "pull-request-corrupt",
+      authorityKind: "delivery",
+      authorityEvidenceId: delivered.row.id,
+      authorityDigest: delivered.row.event_hash,
+      actorPrincipalId: "principal-a",
+      createdAt: delivered.row.created_at,
+    })).toThrow("execution_cost_outcome_domain_event_integrity_invalid");
+    expect(listExecutionCostOutcomes(corruptDb, "tenant_default")).toEqual([]);
   });
 
   it("enforces tenant isolation, actor ownership, idempotency, and append-only rows", () => {

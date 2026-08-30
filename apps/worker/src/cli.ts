@@ -1885,6 +1885,8 @@ async function persistCompletedAgentJob(
   applyRoutingOutcome?: RoutingOutcomeFinalizer,
   finalizeTerminal?: () => Promise<WardenRuntimeTerminalEvidence>,
   applyCompletionOutcome?: () => void,
+  routingRunId?: string,
+  routingEnvelopeId?: string,
 ): Promise<void> {
   let routingFinalizationStarted = false;
   db.raw.exec("BEGIN IMMEDIATE");
@@ -1912,7 +1914,11 @@ async function persistCompletedAgentJob(
       runId: completedRun.id,
       meteredAt: nowIso(),
     });
-    recordJobMissionExecutionCost(db, jobId, completedRun.tenantId, completedRun.id);
+    if (routingRunId && routingEnvelopeId) {
+      recordJobMissionExecutionCost(
+        db, jobId, completedRun.tenantId, routingRunId, routingEnvelopeId,
+      );
+    }
     db.raw.exec("COMMIT");
   } catch (error) {
     db.raw.exec("ROLLBACK");
@@ -1933,6 +1939,8 @@ function persistFailedAgentJob(
   run: AgentRunWrite | null,
   applyRoutingOutcome?: RoutingOutcomeFinalizer,
   applyFailureOutcome?: (status: ReturnType<typeof failJob>["status"]) => void,
+  routingRunId?: string,
+  routingEnvelopeId?: string,
 ) {
   let routingFinalizationStarted = false;
   db.raw.exec("BEGIN IMMEDIATE");
@@ -1971,7 +1979,9 @@ function persistFailedAgentJob(
         // Every charged attempt is immutable accounting evidence. Pending retries
         // must retain their paid work just like dead letters and successes; the
         // next lease writes a distinct execution id from its lease generation.
-        recordJobMissionExecutionCost(db, jobId, run.tenantId, run.id);
+        if (routingRunId && routingEnvelopeId) {
+          recordJobMissionExecutionCost(db, jobId, run.tenantId, routingRunId, routingEnvelopeId);
+        }
       }
     }
     db.raw.exec("COMMIT");
@@ -2025,14 +2035,16 @@ function recordJobMissionExecutionCost(
   db: AppDb,
   jobId: string,
   tenantId: string,
-  sourceRunId: string,
+  routingRunId: string,
+  routingEnvelopeId: string,
 ): void {
   const completed = getJob(db, jobId, tenantId);
   if (!completed) throw new Error("mission_execution_cost_job_missing");
   try {
     recordBoundMissionExecutionCost(db, {
       job: completed,
-      sourceRunId,
+      routingRunId,
+      routingEnvelopeId,
       createdAt: nowIso(),
     });
   } catch (error) {
@@ -3170,6 +3182,8 @@ async function processJobsOnceUnfenced(
       createdAt: string;
     }> | null = null;
     let pendingWardenRoutingFinalizer: RoutingOutcomeFinalizer;
+    let pendingWardenRoutingRunId: string | undefined;
+    let pendingWardenRoutingEnvelopeId: string | undefined;
     if (job.type === "agent.run") {
       const queued = getAgentRunByJobId(db, job.id, job.tenant_id);
       if (queued) {
@@ -3290,7 +3304,6 @@ if (job.type === "warden.candidate.cleanup") {
             if (!completeJob(db, job.id, outcome, nowIso(), { ...fence })) {
               throw new Error("warden_campaign_execute_lease_lost");
             }
-            recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
             db.raw.exec("COMMIT");
           } catch (error) {
             if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
@@ -3724,11 +3737,12 @@ if (job.type === "warden.candidate.cleanup") {
           modelSourcePolicy,
           payload.mode ?? "repair",
         );
-        const routingRuntime = createWardenRoutingRuntime({
+        pendingWardenRoutingRunId = `${sessionId}:lease-${fence.leaseGeneration}`;
+        const baseRoutingRuntime = createWardenRoutingRuntime({
           db,
           tenantId: job.tenant_id,
           jobId: job.id,
-          runId: sessionId,
+          runId: pendingWardenRoutingRunId,
           registry: buildWardenExecutorRegistry(
             started,
             modelSourcePolicy,
@@ -3736,6 +3750,15 @@ if (job.type === "warden.candidate.cleanup") {
           ),
           deferOutcomePersistence: true,
         });
+        const routingRuntime = {
+          prepare: (request: Parameters<typeof baseRoutingRuntime.prepare>[0]) => {
+            const prepared = baseRoutingRuntime.prepare(request);
+            pendingWardenRoutingEnvelopeId = prepared.envelopeId;
+            return prepared;
+          },
+          recordOutcome: baseRoutingRuntime.recordOutcome,
+          applyPendingOutcome: baseRoutingRuntime.applyPendingOutcome,
+        };
         pendingWardenRoutingFinalizer = () => routingRuntime.applyPendingOutcome();
         let capturedAttempt: WardenAttemptResult | null = null;
         // Context refs supplied to the model this run, persisted onto the
@@ -4095,6 +4118,8 @@ if (job.type === "warden.candidate.cleanup") {
                   reason: attempt.code, observedAt: nowIso() });
               }
             },
+            pendingWardenRoutingRunId,
+            pendingWardenRoutingEnvelopeId,
           );
           result.failed++;
           if (failure.status === "pending") result.retried++;
@@ -4140,6 +4165,8 @@ if (job.type === "warden.candidate.cleanup") {
                   cycleId: payload.ciFailure!.cycleId, repairRunId: sessionId,
                   reason: attempt.code, observedAt: nowIso() })
               : undefined,
+            pendingWardenRoutingRunId,
+            pendingWardenRoutingEnvelopeId,
           );
         } catch (error) {
           discardWardenAttempt(attempt, candidateRoot, evidenceRoot);
@@ -4353,7 +4380,6 @@ if (job.type === "warden.candidate.cleanup") {
           ) {
             throw new Error("lease_lost_before_pipeline_completion");
           }
-          recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
           settleFanoutRunUsage(db, job.tenant_id, payload, report);
           db.raw.exec("COMMIT");
         } catch (error) {
@@ -4381,7 +4407,6 @@ if (job.type === "warden.candidate.cleanup") {
         ) {
           throw new Error("lease_lost_before_pipeline_completion");
         }
-        recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
         settleFanoutRunUsage(db, job.tenant_id, payload, report);
         db.raw.exec("COMMIT");
       } catch (error) {
@@ -4444,6 +4469,9 @@ if (job.type === "warden.candidate.cleanup") {
                 }
               : null,
             pendingWardenRoutingFinalizer,
+            undefined,
+            pendingWardenRoutingRunId,
+            pendingWardenRoutingEnvelopeId,
           )
         : failJob(db, job.id, classified.message, nowIso(), {
             ...fence,

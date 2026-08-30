@@ -3691,7 +3691,7 @@ describe("worker runtime", () => {
     });
     expect(listActualExecutionCosts(fixture.db, "tenant_test")).toEqual([
       expect.objectContaining({
-        executionId: "session-warden-snapshot:lease-1:attempt-1",
+        executionId: "job-warden-snapshot:lease-1:attempt-1",
         attemptNumber: 1,
         outcomeStatus: "unresolved",
       }),
@@ -3716,12 +3716,12 @@ describe("worker runtime", () => {
     });
     const attemptCosts = listActualExecutionCosts(fixture.db, "tenant_test");
     expect(attemptCosts.map((entry) => entry.executionId).sort()).toEqual([
-      "session-warden-snapshot:lease-1:attempt-1",
-      "session-warden-snapshot:lease-2:attempt-2",
+      "job-warden-snapshot:lease-1:attempt-1",
+      "job-warden-snapshot:lease-2:attempt-2",
     ]);
     expect(attemptCosts.find((entry) => entry.attemptNumber === 2)).toMatchObject({
       retryNumber: 1,
-      fallbackFromExecutionId: "session-warden-snapshot:lease-1:attempt-1",
+      fallbackFromExecutionId: "job-warden-snapshot:lease-1:attempt-1",
     });
     const acceptedAttempt = attemptCosts.find((entry) => entry.attemptNumber === 2)!;
     const authority = appendDomainEvent(fixture.db, {
@@ -3729,12 +3729,17 @@ describe("worker runtime", () => {
       eventType: "execution_cost.delivered", aggregateType: "execution_cost",
       aggregateId: acceptedAttempt.executionId, actorPrincipalId: "owner-routing-retry",
       correlationId: "job-warden-snapshot", idempotencyKey: "delivery-routing-retry",
-      payload: { outcomeId: "candidate-routing-retry" }, createdAt: nowIso(),
+      payload: {
+        outcomeId: "candidate-routing-retry",
+        costEntryId: acceptedAttempt.id,
+        costEntryHash: acceptedAttempt.entryHash,
+      }, createdAt: nowIso(),
     });
     recordExecutionCostOutcome(fixture.db, {
       id: "outcome-routing-retry", tenantId: "tenant_test", idempotencyKey: "outcome-routing-retry",
       executionId: acceptedAttempt.executionId, outcomeStatus: "accepted",
       acceptedOutcomeId: "candidate-routing-retry", authorityKind: "delivery",
+      authorityEvidenceId: authority.row.id,
       authorityDigest: authority.row.event_hash, actorPrincipalId: "owner-routing-retry",
       createdAt: authority.row.created_at,
     });
@@ -3749,6 +3754,16 @@ describe("worker runtime", () => {
     );
     expect(ledger).toHaveLength(2);
     expect(ledger.map((row) => row.outcome).sort()).toEqual(["failed", "succeeded"]);
+    const failedRoute = ledger.find((row) => row.outcome === "failed")!;
+    const succeededRoute = ledger.find((row) => row.outcome === "succeeded")!;
+    const firstAttemptCost = attemptCosts.find((entry) => entry.attemptNumber === 1)!;
+    const secondAttemptCost = attemptCosts.find((entry) => entry.attemptNumber === 2)!;
+    expect(firstAttemptCost.measurementProvenance.model).toContain(failedRoute.id);
+    expect(firstAttemptCost.measurementProvenance.model).not.toContain(succeededRoute.id);
+    expect(secondAttemptCost.measurementProvenance.model).toContain(succeededRoute.id);
+    expect(secondAttemptCost.measurementProvenance.model).not.toContain(failedRoute.id);
+    expect(secondAttemptCost.inputTokens).toBe(succeededRoute.input_tokens ?? 0);
+    expect(secondAttemptCost.outputTokens).toBe(succeededRoute.output_tokens ?? 0);
     const applications = fixture.db.raw.prepare(
       `SELECT idempotency_key FROM routing_outcome_applications
        WHERE tenant_id = ? AND job_id = ? ORDER BY idempotency_key`,

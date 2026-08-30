@@ -16,6 +16,7 @@ import {
   recordActualExecutionCost,
   recordExecutionCostOutcome,
   transitionInvoiceExportState,
+  verifyDomainEventIntegrity,
   type ActualExecutionCostEntry,
   type ActualExecutionCostInput,
   type AppDb,
@@ -493,19 +494,34 @@ export function createBillingEconomicsRoutes({
         return errorResponse(c, "execution_cost_outcome_evidence_required", "Durable outcome evidence is required", 400);
       }
       const executionId = c.req.param("executionId");
+      const cost = db.raw.prepare(
+        `SELECT id, entry_hash FROM actual_execution_cost_entries
+         WHERE tenant_id = ? AND execution_id = ?`,
+      ).get(identity.tenantId, executionId) as { id: string; entry_hash: string } | undefined;
+      if (!cost) {
+        return errorResponse(c, "execution_cost_outcome_execution_not_found",
+          "The execution cost was not found", 404);
+      }
       const review = db.raw.prepare(
         `SELECT r.id, r.decision, r.candidate_artifact_id, r.reviewer_principal_id,
-                r.created_at, a.sha256 AS content_sha256
+                r.created_at, a.sha256 AS content_sha256, a.content_text
          FROM review_decisions r JOIN artifact_manifests a
            ON a.id = r.candidate_artifact_id AND a.tenant_id = r.tenant_id
          WHERE r.id = ? AND r.tenant_id = ?
            AND r.subject_type = 'execution_cost' AND r.subject_id = ?
-           AND NOT EXISTS (SELECT 1 FROM review_decisions s WHERE s.supersedes_id = r.id)`,
+            AND NOT EXISTS (SELECT 1 FROM review_decisions s WHERE s.supersedes_id = r.id)
+            AND NOT EXISTS (SELECT 1 FROM review_decisions newer
+              WHERE newer.tenant_id = r.tenant_id AND newer.subject_type = r.subject_type
+                AND newer.subject_id = r.subject_id
+                AND (newer.created_at > r.created_at OR
+                  (newer.created_at = r.created_at AND newer.rowid > r.rowid)))`,
       ).get(evidenceId, identity.tenantId, executionId) as {
         id: string; decision: string; candidate_artifact_id: string;
         reviewer_principal_id: string; created_at: string; content_sha256: string;
+        content_text: string | null;
       } | undefined;
-      const event = review ? undefined : db.raw.prepare(
+      const domainIntegrity = review ? undefined : verifyDomainEventIntegrity(db, identity.tenantId);
+      const event = review || !domainIntegrity?.ok ? undefined : db.raw.prepare(
         `SELECT id, event_type, actor_principal_id, payload_json, payload_sha256, event_hash, created_at
          FROM domain_events WHERE id = ? AND tenant_id = ?
            AND aggregate_type = 'execution_cost' AND aggregate_id = ?
@@ -524,6 +540,15 @@ export function createBillingEconomicsRoutes({
       }
       const prior = listExecutionCostOutcomes(db, identity.tenantId, executionId).at(-1);
       const payload = event ? JSON.parse(event.payload_json) as JsonRecord : undefined;
+      const reviewPayload = review?.content_text
+        ? JSON.parse(review.content_text) as JsonRecord
+        : undefined;
+      const evidencePayload = reviewPayload ?? payload;
+      if (evidencePayload?.costEntryId !== cost.id ||
+          evidencePayload?.costEntryHash !== cost.entry_hash) {
+        return errorResponse(c, "execution_cost_outcome_cost_binding_invalid",
+          "Outcome evidence is not bound to the exact execution cost", 409);
+      }
       const approved = review?.decision === "approve" || event?.event_type === "execution_cost.delivered";
       const rejected = review?.decision === "reject";
       const rolledBack = event?.event_type === "execution_cost.rolled_back";
@@ -533,8 +558,14 @@ export function createBillingEconomicsRoutes({
       const outcomeStatus = rolledBack ? "rolled_back"
         : approved && prior ? "corrected" : approved ? "accepted" : "rejected";
       const acceptedOutcomeId = approved
-        ? (event ? String(payload?.outcomeId ?? event.id) : review!.candidate_artifact_id)
+        ? (event && typeof payload?.outcomeId === "string" && payload.outcomeId.trim()
+            ? payload.outcomeId.trim()
+            : event ? null : review!.candidate_artifact_id)
         : null;
+      if (approved && !acceptedOutcomeId) {
+        return errorResponse(c, "execution_cost_outcome_id_invalid",
+          "Delivered outcome evidence requires an exact outcome ID", 409);
+      }
       const outcome = recordExecutionCostOutcome(db, {
         id: recordId(identity.tenantId, `outcome:${idempotencyKey}`),
         tenantId: identity.tenantId,
@@ -543,6 +574,7 @@ export function createBillingEconomicsRoutes({
         outcomeStatus,
         acceptedOutcomeId,
         authorityKind: rolledBack ? "rollback" : event ? "delivery" : "reviewer",
+        authorityEvidenceId: event?.id ?? review!.id,
         authorityDigest: event?.event_hash ?? review!.content_sha256,
         actorPrincipalId: event?.actor_principal_id ?? review!.reviewer_principal_id,
         createdAt: event?.created_at ?? review!.created_at,

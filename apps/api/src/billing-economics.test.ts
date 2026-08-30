@@ -811,7 +811,7 @@ describe("billing economics API routes", () => {
       taskId: missionTask.id,
       campaignId: "campaign-a",
     });
-    recordActualExecutionCost(db, {
+    const recordedCost = recordActualExecutionCost(db, {
       ...(body as Omit<Parameters<typeof recordActualExecutionCost>[1],
         "id" | "tenantId" | "idempotencyKey" | "actorPrincipalId" | "missionId">),
       id: "cost-production-a",
@@ -820,7 +820,12 @@ describe("billing economics API routes", () => {
       actorPrincipalId: actor!.id,
       missionId: "mission-production-a",
     });
-    const evidenceContent = JSON.stringify({ decision: "approve", executionId: "job-production-a" });
+    const evidenceContent = JSON.stringify({
+      decision: "approve",
+      executionId: "job-production-a",
+      costEntryId: recordedCost.id,
+      costEntryHash: recordedCost.entryHash,
+    });
     insertArtifactManifest(db, {
       id: "pull-request-a", tenantId: "billing-tenant-a", kind: "review-evidence",
       schemaVersion: 1, sha256: createHash("sha256").update(evidenceContent).digest("hex"),
