@@ -118,6 +118,28 @@ describe("production router value proof caller", () => {
     });
   });
 
+  it("persists an attributable policy failure when accepted-output cost overflows", () => {
+    const value: any = input();
+    value.observations = [
+      ...value.observations,
+      { ...value.observations[0], taskId: "task-b", costUsd: 1e308 },
+      { ...value.observations[1], taskId: "task-b", costUsd: 1e308 },
+    ];
+    value.observations[0].costUsd = 1e308;
+    value.observations[1].costUsd = 1e308;
+    const item = fixture(value);
+
+    expect(runRouterValueProofCli([
+      `--input=${item.inputPath}`,
+      `--output=${item.outputPath}`,
+    ], item.io)).toBe(1);
+    expect(JSON.parse(readFileSync(item.outputPath, "utf8"))).toMatchObject({
+      ok: false,
+      acceptedOutputCostUsd: { baseline: null, candidate: null },
+      acceptedOutputCostRegressionTaskIds: ["task-a", "task-b"],
+    });
+  });
+
   it.each([
     ["held-out cohort", (value: any) => { value.cohort.heldOut = "false"; }, "router_value_cohort_not_held_out"],
     ["accepted observation", (value: any) => { value.observations[0].accepted = "false"; }, "router_value_acceptance_invalid"],

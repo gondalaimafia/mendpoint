@@ -79,6 +79,25 @@ describe("router value proof artifact runner", () => {
     );
   });
 
+  it("retains a failed attributable report when accepted-output cost overflows", () => {
+    const { input } = fixture();
+    const value = JSON.parse(readFileSync(input, "utf8"));
+    value.observations = [
+      ...value.observations,
+      { ...value.observations[0], taskId: "task-b", costUsd: 1e308 },
+      { ...value.observations[1], taskId: "task-b", costUsd: 1e308 },
+    ];
+    value.observations[0].costUsd = 1e308;
+    value.observations[1].costUsd = 1e308;
+    writeFileSync(input, JSON.stringify(value));
+
+    expect(runRouterValueProofArtifact(input)).toMatchObject({
+      ok: false,
+      acceptedOutputCostUsd: { baseline: null, candidate: null },
+      acceptedOutputCostRegressionTaskIds: ["task-a", "task-b"],
+    });
+  });
+
   it("refuses empty, oversized, and structurally incomplete cohort artifacts", () => {
     const empty = fixture();
     writeFileSync(empty.input, "");

@@ -41,7 +41,7 @@ export type RouterValueProofReport = {
   acceptance: { baseline: number; candidate: number };
   acceptanceRegressionTaskIds: string[];
   securityRegressionTaskIds: string[];
-  acceptedOutputCostUsd: { baseline: number; candidate: number };
+  acceptedOutputCostUsd: { baseline: number | null; candidate: number | null };
   acceptedOutputCostRegressionTaskIds: string[];
   candidateLatencyP95Ms: number;
   latencyObjectiveMs: number;
@@ -70,11 +70,12 @@ function rate(accepted: number, total: number): number {
   return total === 0 ? 0 : accepted / total;
 }
 
-function acceptedCost(observations: readonly RouterValueObservation[]): number {
+function acceptedCost(observations: readonly RouterValueObservation[]): number | null {
   const accepted = observations.filter((observation) => observation.accepted);
-  if (accepted.length === 0) return Number.POSITIVE_INFINITY;
-  return accepted.reduce((total, observation) => total + observation.costUsd, 0) /
-    accepted.length;
+  if (accepted.length === 0) return null;
+  const total = accepted.reduce((sum, observation) => sum + observation.costUsd, 0);
+  const average = total / accepted.length;
+  return Number.isFinite(average) ? average : null;
 }
 
 export function evaluateRouterValueProof(
@@ -151,20 +152,24 @@ export function evaluateRouterValueProof(
     baseline: acceptedCost(baseline),
     candidate: acceptedCost(candidate),
   };
-  const baselineAccepted = baseline.filter((item) => item.accepted);
-  const candidateAccepted = candidate.filter((item) => item.accepted);
+  const acceptedOutputCostPolicyPassed =
+    acceptedOutputCostUsd.baseline !== null &&
+    acceptedOutputCostUsd.candidate !== null &&
+    Number.isFinite(acceptedOutputCostUsd.baseline) &&
+    Number.isFinite(acceptedOutputCostUsd.candidate) &&
+    acceptedOutputCostUsd.candidate < acceptedOutputCostUsd.baseline;
+  const baselineAcceptedOutputCostUsd = acceptedOutputCostUsd.baseline;
   const acceptedOutputCostRegressionTaskIds =
-    baselineAccepted.length === 0 || candidateAccepted.length === 0
-      ? taskIds.filter((taskId) => {
-          const arms = byTask.get(taskId)!;
-          return !arms.get("baseline")!.accepted || !arms.get("candidate")!.accepted;
-        })
-      : acceptedOutputCostUsd.candidate >= acceptedOutputCostUsd.baseline
+    acceptedOutputCostPolicyPassed
+      ? []
+      : baselineAcceptedOutputCostUsd === null || acceptedOutputCostUsd.candidate === null
+        ? taskIds
+        : acceptedOutputCostUsd.candidate >= baselineAcceptedOutputCostUsd
         ? taskIds.filter((taskId) => {
             const item = byTask.get(taskId)!.get("candidate")!;
-            return item.accepted && item.costUsd >= acceptedOutputCostUsd.baseline;
+            return item.accepted && item.costUsd >= baselineAcceptedOutputCostUsd;
           })
-        : [];
+        : taskIds;
   const candidateLatencyP95Ms = nearestRank(candidate.map((item) => item.latencyMs), 0.95);
   const latencyObjectiveExceededTaskIds = taskIds.filter(
     (taskId) =>
@@ -178,7 +183,7 @@ export function evaluateRouterValueProof(
     acceptanceRegressionTaskIds.length === 0 &&
     securityRegressionTaskIds.length === 0 &&
     acceptance.candidate >= acceptance.baseline &&
-    acceptedOutputCostRegressionTaskIds.length === 0 &&
+    acceptedOutputCostPolicyPassed &&
     candidateLatencyP95Ms <= contract.policy.latencyP95Ms;
 
   return Object.freeze({

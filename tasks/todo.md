@@ -4081,7 +4081,8 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 ### Review
 
 - The first independent review blocked the slice because untyped JSON string booleans were treated as true and cost or latency failures were aggregate-only. The repair validates both boolean fields before evaluation and preserves task-level failure attribution in the immutable report.
-- Focused proof, artifact-runner, and CLI coverage passes 16 of 16 tests. Eval and scripts typechecks pass. The initial root test command was invalid for focused execution and hit the desktop filesystem boundary; the direct focused Vitest command passed outside that boundary.
+- The next review found an overflow case where finite task costs produced non-finite aggregates that serialized as null but could pass policy. Aggregate cost is now an explicit number-or-null contract, strict finite-and-lower evaluation remains authoritative, and undefined or overflowed aggregates fail with all cohort task IDs retained.
+- Focused proof, artifact-runner, and CLI coverage passes 19 of 19 tests. Eval and scripts typechecks pass. The initial root test command was invalid for focused execution and hit the desktop filesystem boundary; the direct focused Vitest command passed outside that boundary.
 
 ## 2026-08-30 GSD Plan 11-02: protected qualification authority loader (#430)
 

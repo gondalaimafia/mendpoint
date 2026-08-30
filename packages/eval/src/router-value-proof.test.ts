@@ -76,6 +76,24 @@ describe("router value proof", () => {
     });
   });
 
+  it("fails closed with task attribution when accepted-output cost aggregation overflows", () => {
+    const value = contract();
+    for (const observation of value.observations) {
+      observation.accepted = true;
+      observation.costUsd = 1e308;
+    }
+    value.observations.push(
+      { ...value.observations[0]!, taskId: "task-c", evidenceRefs: ["eval:base-c"] },
+      { ...value.observations[1]!, taskId: "task-c", evidenceRefs: ["eval:candidate-c"] },
+    );
+
+    expect(evaluateRouterValueProof(value)).toMatchObject({
+      ok: false,
+      acceptedOutputCostUsd: { baseline: null, candidate: null },
+      acceptedOutputCostRegressionTaskIds: ["task-a", "task-b", "task-c"],
+    });
+  });
+
   it("rejects training cohorts, missing arms, duplicate arms, and uncited observations", () => {
     const training = contract();
     training.cohort.heldOut = false;
