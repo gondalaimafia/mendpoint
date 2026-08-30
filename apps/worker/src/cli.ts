@@ -79,6 +79,7 @@ import {
   pollAllFeeds,
   probeKnownSdks,
   runFeedSchedules,
+  summarizeReleaseDispatchBacklog,
   type ParsedReleasePollConfiguration,
   type ReleaseIngestionStore,
   type ReleasePollConfigurationV1,
@@ -105,9 +106,18 @@ import {
   initializeWithMutationLease,
   flushTelemetry,
   isTelemetryEnabled,
+  recordCounter,
 } from "@mendpoint/ops";
 import { checkAuditIntegrityForAllTenants } from "./audit-integrity.js";
 import { createWardenCheckpointJobJournal } from "./warden-checkpoint-journal.js";
+import {
+  drainReleaseDispatchesOnce,
+  parseReleaseDispatchConsumersFromEnv,
+  type ReleaseDispatchConsumer,
+  type ReleaseDispatchFailureStage,
+  ReleaseDispatchRuntimeError,
+} from "./release-dispatch-drainer.js";
+import { runReleaseDispatchReconciliationProcess } from "./release-dispatch-reconcile-cli.js";
 
 export function initializeWorkerDurableState<T>(
   initialize: () => T,
@@ -260,6 +270,7 @@ export function initializeWorkerServiceDurableState<
   options: Readonly<{
     jobConcurrency: number;
     releaseConfigurationCount: number;
+    releaseDispatchConsumerCount?: number;
     openFeedDb: () => TDb;
     openHeartbeatDb: () => TDb;
     openTransformerDb: () => TDb;
@@ -297,7 +308,8 @@ export function initializeWorkerServiceDurableState<
       );
       const jobDbs = Array.from({ length: options.jobConcurrency }, (_, lane) =>
         track(options.openJobDb(lane), options.closeDb));
-      const releaseStore = options.releaseConfigurationCount > 0
+      const releaseStore = options.releaseConfigurationCount > 0 ||
+        (options.releaseDispatchConsumerCount ?? 0) > 0
         ? track(options.openReleaseStore(), (store) => store.close())
         : undefined;
       let closed = false;
@@ -390,13 +402,230 @@ export type WorkerHeartbeat = {
   feedScheduleStatus: "not_started" | "healthy" | "degraded";
   releaseConfigurationStatus: "not_started" | "not_configured" | "healthy" | "degraded";
   releaseConfigurationFailed: number;
+  releaseDispatchConfigured: boolean;
+  releaseDispatchConsumerCount: number;
+  releaseDispatchStatus: "not_started" | "not_configured" | "healthy" | "degraded" | "unknown";
+  releaseDispatchPending: number | null;
+  releaseDispatchClaimed: number | null;
+  releaseDispatchFailed: number | null;
+  releaseDispatchDue: number | null;
+  releaseDispatchExpiredClaims: number | null;
+  releaseDispatchFailureStage: ReleaseDispatchFailureStage | null;
+  releaseDispatchFailureCode: string | null;
 };
+
+export function releaseDispatchRuntimeStatus(input: Readonly<{
+  configured: boolean;
+  fenceAvailable: boolean;
+  degraded: boolean;
+}>): WorkerHeartbeat["releaseDispatchStatus"] {
+  if (!input.configured) return "not_configured";
+  return input.fenceAvailable && !input.degraded ? "healthy" : "degraded";
+}
+
+export type ReleaseDispatchRuntimeCycle = Readonly<{
+  fenceAvailable: boolean;
+  backoffRequired: boolean;
+  status: WorkerHeartbeat["releaseDispatchStatus"];
+  pending: number | null;
+  claimed: number | null;
+  failed: number | null;
+  due: number | null;
+  expiredClaims: number | null;
+  failureStage: ReleaseDispatchFailureStage | null;
+  failureCode: string | null;
+  drained: ReturnType<typeof drainReleaseDispatchesOnce> | null;
+}>;
+
+export function releaseDispatchRuntimeUnknownState(
+  failureStage: ReleaseDispatchFailureStage = "runtime",
+  failureCode = "release_dispatch_runtime_unavailable",
+): Readonly<{
+  status: "unknown";
+  pending: null;
+  claimed: null;
+  failed: null;
+  due: null;
+  expiredClaims: null;
+  failureStage: ReleaseDispatchFailureStage;
+  failureCode: string;
+}> {
+  return Object.freeze({
+    status: "unknown",
+    pending: null,
+    claimed: null,
+    failed: null,
+    due: null,
+    expiredClaims: null,
+    failureStage,
+    failureCode,
+  });
+}
+
+export function runReleaseDispatchRuntimeCycle(input: Readonly<{
+  store: ReleaseIngestionStore;
+  db: AppDb;
+  consumers: readonly ReleaseDispatchConsumer[];
+  workerId: string;
+  leaseDurationMs: number;
+  maxClaimsPerConsumer: number;
+  mutationFenceRoot?: string;
+  shouldContinue?: () => boolean;
+  previous?: Readonly<{
+    pending: number | null;
+    claimed: number | null;
+    failed: number | null;
+    due: number | null;
+    expiredClaims: number | null;
+    failureStage?: ReleaseDispatchFailureStage | null;
+    failureCode?: string | null;
+  }>;
+}>): ReleaseDispatchRuntimeCycle {
+  const mutationLease = input.mutationFenceRoot
+    ? tryAcquireMutationLease(input.mutationFenceRoot)
+    : undefined;
+  if (input.mutationFenceRoot && !mutationLease) {
+    return Object.freeze({
+      fenceAvailable: false,
+      backoffRequired: true,
+      status: releaseDispatchRuntimeStatus({
+        configured: input.consumers.length > 0,
+        fenceAvailable: false,
+        degraded: false,
+      }),
+      pending: input.previous?.pending ?? null,
+      claimed: input.previous?.claimed ?? null,
+      failed: input.previous?.failed ?? null,
+      due: input.previous?.due ?? null,
+      expiredClaims: input.previous?.expiredClaims ?? null,
+      failureStage: "fence",
+      failureCode: "release_dispatch_mutation_fence_unavailable",
+      drained: null,
+    });
+  }
+  try {
+    const drained = drainReleaseDispatchesOnce({
+      store: input.store,
+      db: input.db,
+      consumers: input.consumers,
+      workerId: input.workerId,
+      leaseDurationMs: input.leaseDurationMs,
+      maxClaimsPerConsumer: input.maxClaimsPerConsumer,
+      shouldContinue: input.shouldContinue,
+    });
+    let backlog: ReturnType<typeof summarizeReleaseDispatchBacklog>[];
+    try {
+      backlog = input.consumers.map((consumer) =>
+        summarizeReleaseDispatchBacklog(input.store, consumer.tenantId));
+    } catch {
+      throw new ReleaseDispatchRuntimeError("backlog", "release_dispatch_backlog_unavailable");
+    }
+    const pending = backlog.reduce((total, summary) => total + summary.pending, 0);
+    const claimed = backlog.reduce((total, summary) => total + summary.claimed, 0);
+    const failed = backlog.reduce((total, summary) => total + summary.failed, 0);
+    const due = backlog.reduce((total, summary) => total + summary.due, 0);
+    const expiredClaims = backlog.reduce(
+      (total, summary) => total + summary.expiredClaimed,
+      0,
+    );
+    const processingFailed = drained.configurationFailed > 0 || drained.failed > 0 ||
+      drained.retried > 0 || drained.exhausted > 0;
+    const degraded = processingFailed || failed > 0 || due > 0 || expiredClaims > 0;
+    const boundedProgress = due > 0 && drained.completed > 0 && !processingFailed &&
+      failed === 0 && expiredClaims === 0;
+    const failureStage = degraded
+      ? drained.failureStage ?? (expiredClaims > 0 ? "settlement" : "backlog")
+      : null;
+    const failureCode = degraded
+      ? drained.failureCode ??
+        (expiredClaims > 0
+          ? "release_dispatch_expired_claim"
+          : failed > 0 ? "release_dispatch_durable_failure" : "release_dispatch_overdue")
+      : null;
+    return Object.freeze({
+      fenceAvailable: true,
+      backoffRequired: degraded && !boundedProgress,
+      status: releaseDispatchRuntimeStatus({
+        configured: input.consumers.length > 0,
+        fenceAvailable: true,
+        degraded,
+      }),
+      pending,
+      claimed,
+      failed,
+      due,
+      expiredClaims,
+      failureStage,
+      failureCode,
+      drained,
+    });
+  } finally {
+    mutationLease?.release();
+  }
+}
+
+export function runReleaseDispatchServiceIteration(input: Parameters<
+  typeof runReleaseDispatchRuntimeCycle
+>[0]): Readonly<{
+  cycle: ReleaseDispatchRuntimeCycle | null;
+  state: Readonly<{
+    status: WorkerHeartbeat["releaseDispatchStatus"];
+    pending: number | null;
+    claimed: number | null;
+    failed: number | null;
+    due: number | null;
+    expiredClaims: number | null;
+    failureStage: ReleaseDispatchFailureStage | null;
+    failureCode: string | null;
+  }>;
+}> {
+  try {
+    const cycle = runReleaseDispatchRuntimeCycle(input);
+    return Object.freeze({
+      cycle,
+      state: Object.freeze({
+        status: cycle.status,
+        pending: cycle.pending,
+        claimed: cycle.claimed,
+        failed: cycle.failed,
+        due: cycle.due,
+        expiredClaims: cycle.expiredClaims,
+        failureStage: cycle.failureStage,
+        failureCode: cycle.failureCode,
+      }),
+    });
+  } catch (error) {
+    const failure = error instanceof ReleaseDispatchRuntimeError
+      ? error
+      : new ReleaseDispatchRuntimeError("runtime", "release_dispatch_runtime_unavailable");
+    return Object.freeze({
+      cycle: null,
+      state: releaseDispatchRuntimeUnknownState(failure.stage, failure.code),
+    });
+  }
+}
+
+export function recordReleaseDispatchRuntimeTelemetry(input: Readonly<{
+  status: WorkerHeartbeat["releaseDispatchStatus"];
+  failureStage: ReleaseDispatchFailureStage | null;
+  failureCode: string | null;
+}>): void {
+  recordCounter("release_dispatch_cycle_total", 1, {
+    status: input.status,
+    failure_stage: input.failureStage ?? "none",
+    failure_code: input.failureCode ?? "none",
+  });
+}
 
 const RELEASE_POLL_CONFIGURATIONS_ERROR =
   "MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON is invalid";
 const RELEASE_POLL_CONFIGURATION_LIMIT = 500;
 const RELEASE_POLL_DATA_DIR_ERROR =
   "MENDPOINT_DATA_DIR must be absolute when release polling is configured";
+const RELEASE_DISPATCH_CONSUMERS_ERROR =
+  "MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON is invalid";
+const RELEASE_DISPATCH_DATA_DIR_ERROR =
+  "MENDPOINT_DATA_DIR must be absolute when release dispatch is configured";
 
 export function parseReleasePollConfigurationsFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -1881,15 +2110,21 @@ export function validateWorkerProductionEnv(
 ): string[] {
   if (env.NODE_ENV !== "production") return [];
   const errors: string[] = [];
+  let releasePollConfigurations:
+    | ReturnType<typeof parseReleasePollConfigurationsFromEnv>
+    | undefined;
+  let releaseDispatchConsumers:
+    | ReturnType<typeof parseReleaseDispatchConsumersFromEnv>
+    | undefined;
   if (env.MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON?.trim()) {
     let releaseConfigurationsValid = false;
     try {
-      parseReleasePollConfigurationsFromEnv(env);
+      releasePollConfigurations = parseReleasePollConfigurationsFromEnv(env);
       releaseConfigurationsValid = true;
     } catch {
       errors.push(RELEASE_POLL_CONFIGURATIONS_ERROR);
     }
-    if (releaseConfigurationsValid) {
+    if (releaseConfigurationsValid && (releasePollConfigurations?.length ?? 0) > 0) {
       try {
         releaseIngestionWorkerPath(env);
       } catch {
@@ -1897,7 +2132,44 @@ export function validateWorkerProductionEnv(
       }
     }
   }
+  if (env.MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON !== undefined) {
+    let consumersValid = false;
+    try {
+      const consumers = parseReleaseDispatchConsumersFromEnv(env);
+      releaseDispatchConsumers = consumers;
+      const configuredTenantId = env.MENDPOINT_TENANT_ID?.trim();
+      if (configuredTenantId && consumers.some((consumer) => consumer.tenantId !== configuredTenantId)) {
+        throw new Error(RELEASE_DISPATCH_CONSUMERS_ERROR);
+      }
+      consumersValid = consumers.length > 0;
+    } catch {
+      errors.push(RELEASE_DISPATCH_CONSUMERS_ERROR);
+    }
+    if (consumersValid) {
+      try {
+        releaseIngestionWorkerPath(env);
+      } catch {
+        errors.push(RELEASE_DISPATCH_DATA_DIR_ERROR);
+      }
+    }
+  }
   const profile = deploymentProfile(env);
+  const releaseDispatchRequired = (releasePollConfigurations?.length ?? 0) > 0;
+  if (releaseDispatchRequired) {
+    const tenantId = env.MENDPOINT_TENANT_ID?.trim();
+    if (!tenantId) {
+      errors.push("MENDPOINT_TENANT_ID is required when release dispatch is required");
+    }
+    if (
+      releaseDispatchConsumers?.length !== 1 ||
+      !tenantId ||
+      releaseDispatchConsumers[0]?.tenantId !== tenantId
+    ) {
+      if (!errors.includes(RELEASE_DISPATCH_CONSUMERS_ERROR)) {
+        errors.push(RELEASE_DISPATCH_CONSUMERS_ERROR);
+      }
+    }
+  }
   if (!env.MENDPOINT_DEPLOYMENT_PROFILE) {
     errors.push("MENDPOINT_DEPLOYMENT_PROFILE must be explicitly set to demo, pilot, or customer");
   } else if (!profile) {
@@ -4233,6 +4505,7 @@ async function runJobWorker(intervalMs: number) {
 async function runService(intervalMs: number) {
   const jobConcurrency = parseJobConcurrency(process.env.MENDPOINT_JOB_CONCURRENCY);
   const releaseFeeds = parseReleasePollConfigurationsFromEnv(process.env);
+  const releaseDispatchConsumers = parseReleaseDispatchConsumersFromEnv(process.env);
   const heartbeatPath = process.env.MENDPOINT_WORKER_HEARTBEAT_PATH?.trim();
   if (!heartbeatPath) {
     throw new Error("MENDPOINT_WORKER_HEARTBEAT_PATH is required for run-service");
@@ -4240,12 +4513,13 @@ async function runService(intervalMs: number) {
   if (!isAbsolute(heartbeatPath)) {
     throw new Error("MENDPOINT_WORKER_HEARTBEAT_PATH must be absolute for run-service");
   }
-  const releasePath = releaseFeeds.length > 0
+  const releasePath = releaseFeeds.length > 0 || releaseDispatchConsumers.length > 0
     ? releaseIngestionWorkerPath(process.env)
     : undefined;
   const durableState = initializeWorkerServiceDurableState({
     jobConcurrency,
     releaseConfigurationCount: releaseFeeds.length,
+    releaseDispatchConsumerCount: releaseDispatchConsumers.length,
     openFeedDb: () => createDb(),
     openHeartbeatDb: () => createDb(),
     openTransformerDb: () => createDb(),
@@ -4283,6 +4557,15 @@ async function runService(intervalMs: number) {
   let releaseConfigurationStatus: WorkerHeartbeat["releaseConfigurationStatus"] =
     releaseFeeds.length > 0 ? "not_started" : "not_configured";
   let releaseConfigurationFailed = 0;
+  let releaseDispatchStatus: WorkerHeartbeat["releaseDispatchStatus"] =
+    releaseDispatchConsumers.length > 0 ? "not_started" : "not_configured";
+  let releaseDispatchPending: number | null = releaseDispatchConsumers.length > 0 ? null : 0;
+  let releaseDispatchClaimed: number | null = releaseDispatchConsumers.length > 0 ? null : 0;
+  let releaseDispatchFailed: number | null = releaseDispatchConsumers.length > 0 ? null : 0;
+  let releaseDispatchDue: number | null = releaseDispatchConsumers.length > 0 ? null : 0;
+  let releaseDispatchExpiredClaims: number | null = releaseDispatchConsumers.length > 0 ? null : 0;
+  let releaseDispatchFailureStage: ReleaseDispatchFailureStage | null = null;
+  let releaseDispatchFailureCode: string | null = null;
   let jobs: JobDrainResult = {
     claimed: 0,
     succeeded: 0,
@@ -4322,8 +4605,13 @@ async function runService(intervalMs: number) {
       });
       const recovery = getJobRecoverySummary(heartbeatDb, configuredTenantId);
       const heartbeatFeedOk = feedPollOk && (!customerProfile || feedFreshness.ok);
+      const heartbeatReleaseDispatchOk = releaseDispatchConsumers.length === 0 ||
+        releaseDispatchStatus === "healthy" && releaseDispatchFailed === 0 &&
+        releaseDispatchDue === 0 &&
+        releaseDispatchExpiredClaims === 0;
+      const heartbeatOk = heartbeatFeedOk && heartbeatReleaseDispatchOk;
       writeWorkerHeartbeat(heartbeatPath, {
-        ok: true,
+        ok: heartbeatOk,
         workerId: WORKER_ID,
         recordedAt: nowIso(),
         jobs,
@@ -4345,6 +4633,16 @@ async function runService(intervalMs: number) {
         feedScheduleStatus,
         releaseConfigurationStatus,
         releaseConfigurationFailed,
+        releaseDispatchConfigured: releaseDispatchConsumers.length > 0,
+        releaseDispatchConsumerCount: releaseDispatchConsumers.length,
+        releaseDispatchStatus,
+        releaseDispatchPending,
+        releaseDispatchClaimed,
+        releaseDispatchFailed,
+        releaseDispatchDue,
+        releaseDispatchExpiredClaims,
+        releaseDispatchFailureStage,
+        releaseDispatchFailureCode,
         ...(feedEvidence.lastSuccessAt
           ? { feedLastSuccessAt: feedEvidence.lastSuccessAt }
           : {}),
@@ -4360,10 +4658,18 @@ async function runService(intervalMs: number) {
       // so a persisting condition pages once per window rather than every tick.
       void pageWorkerHeartbeat({
         workerId: WORKER_ID,
-        ok: heartbeatFeedOk,
+        ok: heartbeatOk,
         stale: customerProfile && !feedFreshness.ok,
         deadLetter: recovery.deadLetter,
         expiredLeases: recovery.expiredLeases,
+        releaseDispatchDegraded: releaseDispatchConsumers.length > 0 && releaseDispatchStatus !== "healthy",
+        releaseDispatchPending,
+        releaseDispatchClaimed,
+        releaseDispatchFailed,
+        releaseDispatchDue,
+        releaseDispatchExpiredClaims,
+        releaseDispatchFailureStage,
+        releaseDispatchFailureCode,
       }).catch(() => undefined);
     } catch (error) {
       console.error(error);
@@ -4531,6 +4837,63 @@ async function runService(intervalMs: number) {
     }
   };
 
+  const runReleaseDispatchLane = async () => {
+    let failures = 0;
+    while (!shutdown.signal.aborted) {
+      const iteration = releaseStore
+        ? runReleaseDispatchServiceIteration({
+          store: releaseStore,
+          db: heartbeatDb,
+          consumers: releaseDispatchConsumers,
+          workerId: `${WORKER_ID}:release`,
+          leaseDurationMs: 30_000,
+          maxClaimsPerConsumer: 16,
+          shouldContinue: () => !shutdown.signal.aborted,
+          ...(mutationFenceEnabled ? { mutationFenceRoot } : {}),
+          previous: {
+            pending: releaseDispatchPending,
+            claimed: releaseDispatchClaimed,
+            failed: releaseDispatchFailed,
+            due: releaseDispatchDue,
+            expiredClaims: releaseDispatchExpiredClaims,
+            failureStage: releaseDispatchFailureStage,
+            failureCode: releaseDispatchFailureCode,
+          },
+        })
+        : Object.freeze({ cycle: null, state: releaseDispatchRuntimeUnknownState() });
+      const { cycle, state } = iteration;
+      releaseDispatchPending = state.pending;
+      releaseDispatchClaimed = state.claimed;
+      releaseDispatchFailed = state.failed;
+      releaseDispatchDue = state.due;
+      releaseDispatchExpiredClaims = state.expiredClaims;
+      releaseDispatchFailureStage = state.failureStage;
+      releaseDispatchFailureCode = state.failureCode;
+      releaseDispatchStatus = state.status;
+      recordReleaseDispatchRuntimeTelemetry(state);
+      if (cycle) {
+        failures = cycle.backoffRequired ? failures + 1 : 0;
+        if (!cycle.fenceAvailable) {
+          console.error(
+            `Release dispatch: status=degraded failureStage=${state.failureStage} failureCode=${state.failureCode}`,
+          );
+        } else if (cycle.drained) {
+          console.log(
+            `Release dispatch: configured=${cycle.drained.configured} claimed=${cycle.drained.claimed} completed=${cycle.drained.completed} failed=${cycle.drained.failed} retried=${cycle.drained.retried} exhausted=${cycle.drained.exhausted} configurationFailed=${cycle.drained.configurationFailed} pending=${releaseDispatchPending} due=${releaseDispatchDue} durableFailed=${releaseDispatchFailed} expired=${releaseDispatchExpiredClaims} status=${releaseDispatchStatus} failureStage=${state.failureStage ?? "none"} failureCode=${state.failureCode ?? "none"}`,
+          );
+        }
+      } else {
+        failures += 1;
+        console.error(
+          `Release dispatch: status=unknown failureStage=${state.failureStage} failureCode=${state.failureCode}`,
+        );
+      }
+      emitHeartbeat();
+      const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
+      await waitForWorkerDelay(delay, shutdown.signal);
+    }
+  };
+
   const dataRoot = resolve(
     process.env.MENDPOINT_DATA_DIR ?? join(process.cwd(), "data"),
   );
@@ -4589,8 +4952,11 @@ async function runService(intervalMs: number) {
     feeds: runFeedLane,
     jobs: () => startConcurrentJobLanes(jobConcurrency, runJobLane),
   });
+  const releaseDispatchLane = releaseDispatchConsumers.length > 0
+    ? runReleaseDispatchLane()
+    : Promise.resolve();
   try {
-    await Promise.all([lanes.feeds, lanes.jobs, runTransformerLane()]);
+    await Promise.all([lanes.feeds, lanes.jobs, runTransformerLane(), releaseDispatchLane]);
   } finally {
     clearInterval(heartbeatTimer);
     if (telemetryFlushTimer) clearInterval(telemetryFlushTimer);
@@ -4718,6 +5084,15 @@ async function main() {
     } finally {
       db.raw.close();
     }
+  } else if (cmd === "reconcile-release-dispatch") {
+    runReleaseDispatchReconciliationProcess({
+      argv: process.argv.slice(3),
+      env: process.env,
+      mutationFenceRoot: resolveMutationFenceRoot(),
+      openDb: () => createDb(),
+      openStore: () => openReleaseIngestionStore(releaseIngestionWorkerPath(process.env)),
+      write: (value) => console.log(value),
+    });
   } else if (cmd === "learning-corpus") {
     // H3: seal a governed learning dataset version through the existing
     // pipeline sealer. Does not train and does not invent organization-memory
@@ -4731,7 +5106,7 @@ async function main() {
       db.raw.close();
     }
   } else {
-    console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|run-transformer-service|sdk-signals|reconcile-installations|learning-corpus]
+    console.log(`Usage: worker [demo|watch|poll-once|poll|feeds|jobs|process-jobs|run-jobs|run-service|run-transformer-service|sdk-signals|reconcile-installations|reconcile-release-dispatch|learning-corpus]
   poll-once [--local] [--no-pipeline] [--slug acme-payments]
   poll [--local] [--interval 60000]
   process-jobs
@@ -4740,6 +5115,7 @@ async function main() {
   run-transformer-service
   sdk-signals [--local]
   reconcile-installations [--tenant tenant_default] [--installation 151614362]
+  reconcile-release-dispatch --tenant <id> --dispatch <id> --action <acknowledge|requeue> --evidence-sha256 <sha256> --expected-lease-generation <n> --expected-failed-at <iso> --expected-failure-code <code> --idempotency-key <key> --actor-principal-id <id>
   learning-corpus --tenant <id> --purpose <purpose> --cutoff <iso> --actor <principal-id> --idempotency-key <key> [--created-at <iso>]`);
     process.exitCode = 1;
   }
