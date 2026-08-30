@@ -247,6 +247,24 @@ describe("exact GitHub draft observation", () => {
     })).rejects.toThrow("github_exact_draft_observation_authority_mismatch");
   });
 
+  it("proves the exact existing draft when its head uses the legacy ReGauge namespace", async () => {
+    await expect(observeExactDraftWithOctokit(octokit({
+      headBranch: "mendpoint/transformer/legacy-unit",
+      openPullPages: [[
+        { number: 3, headBranch: "mendpoint/transformer/legacy-unit" },
+      ]],
+    }), {
+      ...input,
+      expectedHeadBranch: "mendpoint/transformer/legacy-unit",
+      expectedCampaignBranchPrefix: "mendpoint/regauge/",
+      compatibilityCampaignBranchPrefixes: ["mendpoint/transformer/"],
+      expectedRepositoryId: 101,
+      expectedInstallationId: 202,
+      requireExactDraft: true,
+      includeDeliveryEvidence: true,
+    })).resolves.toMatchObject({ matchingOpenDrafts: 1 });
+  });
+
   it("enumerates every open pull page before proving campaign draft cardinality", async () => {
     const client = octokit({
       headBranch: "mendpoint/regauge/unit-a",

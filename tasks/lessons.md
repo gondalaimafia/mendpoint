@@ -351,3 +351,9 @@
 **Mistake:** Workflow timing arithmetic counted nominal command timeouts and sleeps but omitted `--kill-after` grace, proof-command latency, and a final terminal inventory.
 **Correction:** Give live evaluation and each proof poll a whole-step hard bound, include those bounds in the authority guard, and calculate cleanup from timeout plus kill grace for every external call and retry round.
 **Rule:** Production budget proofs use executable worst-case time, not optimistic latency. Include kill grace, retry delay, final proof, and fixed transition costs, then retain explicit watchdog headroom.
+
+### 2026-08-30 — Compatibility namespaces must work as exact targets
+
+**Mistake:** The remote proof counted legacy ReGauge branches for cardinality but required the exact expected branch to use only the new canonical prefix.
+**Correction:** Accept the expected branch from either the canonical prefix or an explicitly validated compatibility prefix, while continuing to count every compatible namespace as one shared campaign boundary.
+**Rule:** A compatibility alias cannot be observation-only. If durable state may legally retain the old identifier, every exact read, replay, proof, and cardinality check must accept that identifier without creating new work.

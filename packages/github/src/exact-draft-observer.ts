@@ -141,13 +141,17 @@ function canonicalTimestamp(value: unknown): string {
 }
 
 function validate(input: ExactDraftObservationInput): void {
+  const allowedCampaignBranchPrefixes = input.expectedCampaignBranchPrefix === undefined
+    ? []
+    : [input.expectedCampaignBranchPrefix, ...(input.compatibilityCampaignBranchPrefixes ?? [])];
   if (!IDENTITY.test(input.owner) || !IDENTITY.test(input.repo) ||
       !Number.isSafeInteger(input.pullRequestNumber) || input.pullRequestNumber < 1 ||
       !input.expectedBaseBranch || !input.expectedHeadBranch ||
       !SHA.test(input.expectedBaseSha) || !SHA.test(input.expectedHeadSha) ||
       (input.expectedCampaignBranchPrefix !== undefined &&
         (!validBranchPrefix(input.expectedCampaignBranchPrefix) ||
-          !input.expectedHeadBranch.startsWith(input.expectedCampaignBranchPrefix))) ||
+          !allowedCampaignBranchPrefixes.some((prefix) =>
+            input.expectedHeadBranch.startsWith(prefix)))) ||
       (input.compatibilityCampaignBranchPrefixes !== undefined &&
         (input.expectedCampaignBranchPrefix === undefined ||
           input.compatibilityCampaignBranchPrefixes.length === 0 ||
