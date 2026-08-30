@@ -3777,3 +3777,22 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Protected deployment E2E then caught a serious keyboard-access violation on horizontally scrollable quickstart code. Both documentation quickstart regions are now explicitly named and keyboard focusable, preserving scrolling for keyboard-only and Safari users. The exact browser E2E and fresh immutable-head review remain required after current-base rebase.
 - Fresh exact-head review found the same keyboard-access defect remained in the generated website-upload HTML. Both generator templates now emit named, focusable quickstart regions, the committed bundle is regenerated from those templates, and a catalog-wide regression fails if either `aria-label` or `tabindex="0"` drifts. The repaired focused matrix passes 47 of 47 generator, catalog, API-route, GraphQL, and advanced-AI tests; the documentation drift check and diff integrity also pass.
 - The protected authority gate then detected live issue snapshot drift after unfinished identity issue #437 was reopened. This branch now carries the exact live issue timestamp, observation time, and recomputed canonical issue digest; it does not promote the identity requirement or change the documentation publication boundary.
+
+## 2026-08-30 GSD Plan 10-01: production human identity
+
+- [ ] Prove the literal ME-ENT-001 engineering gap against the existing OIDC, SAML, membership, trust-principal, reviewer, and offboarding paths.
+- [ ] RED: specify tenant-scoped service-principal provisioning, scope attenuation, expiry, rotation, revocation, replay, and cross-tenant denial.
+- [ ] GREEN: extend the existing principal and API-key contracts with the smallest durable service-principal administration surface; do not create a parallel identity store.
+- [ ] RED: specify revocable server-side session authority that binds tenant, issuer, subject, membership version, authentication strength, expiry, and logout/offboarding invalidation.
+- [ ] GREEN: require the production API identity path to consult that authority without weakening existing short-lived OIDC verification.
+- [ ] RED: specify SCIM 2.0 user provision, update, deactivate, reactivate, filtering, idempotent replay, stale-update rejection, tenant isolation, and last-owner protection.
+- [ ] GREEN: map SCIM lifecycle operations onto the canonical tenant membership and trust-principal contracts behind an explicit protected binding.
+- [ ] Prove mutation and failure behavior for revoked memberships, principals, sessions, credentials, and cross-tenant identifiers; keep the approved enterprise IdP drill as an external-proof leaf.
+- [ ] Run focused tests, affected typechecks, fresh and upgrade database convergence, full tests, optimized build, GA gates, dependency audit, and diff integrity.
+- [ ] Obtain independent exact-head review, current-base protected CI, all six required checks, intact `enforce_admins: true`, normal merge, exact-revision deployment, and live health proof.
+
+### Scope boundary
+
+- Plan 10-01 completes identity engineering only. It does not fabricate the approved enterprise SAML and SCIM tenant drill required for final GA evidence.
+- Plan 10-02 owns the repository-wide tenant-isolation qualification matrix; this increment adds hostile identity-boundary tests but does not promote ME-ENT-002.
+- Existing OIDC and SAML wire contracts remain compatible. Service credentials and session identifiers are never returned after creation and never written to audit metadata.
