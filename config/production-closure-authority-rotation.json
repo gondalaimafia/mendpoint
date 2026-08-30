@@ -659,6 +659,41 @@
           "toMode": "100644"
         }
       ]
+    },
+    {
+      "rotationId": "rotation-20260828-008",
+      "kind": "runtime",
+      "issuedAt": "2026-08-30T03:18:22.875Z",
+      "expiresAt": "2026-08-31T03:18:22.875Z",
+      "basePolicySha256": "sha256:6c50d01909e29fab574e56b62eff1c42fb8d87cac46771d76d6d1ff55b0a30f3",
+      "proposedPolicySha256": "sha256:f4c8e3fe31ed296e400de63483d44c62baf3a7976b39b4cd2a71bd276f4befcf",
+      "previousRotationId": "rotation-20260828-007",
+      "baseRevision": "aa90be01c014ac281c1dccab0147224b078e9ccf",
+      "baseLedgerSha256": "sha256:259bb967e481b9bb10a3ad67daa9596151e70c2f30b2a1c402b376e8c0a532f3",
+      "successor": null,
+      "changes": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "fromSha256": "sha256:0f28c6ca7a3f6201f6070d33df1d68a782aa54d231b0e46dcab8984bf8678c4f",
+          "toSha256": "sha256:c3dfa53458d96337ae79f104fb596b3037f7e60cb789ebe604780f6e90eae28e",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:6c50d01909e29fab574e56b62eff1c42fb8d87cac46771d76d6d1ff55b0a30f3",
+          "toSha256": "sha256:f4c8e3fe31ed296e400de63483d44c62baf3a7976b39b4cd2a71bd276f4befcf",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:b7a15d85d431f4183caa9fb6c4eaafae3fb65bc0239dd573b1f6770bb0374c1e",
+          "toSha256": "sha256:c98322c988d927f2ecd3118e39397197a3dc51821d9bd920d2b9efba6b340793",
+          "fromMode": "100644",
+          "toMode": "100644"
+        }
+      ]
     }
   ]
 }
