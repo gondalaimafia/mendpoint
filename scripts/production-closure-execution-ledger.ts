@@ -34,6 +34,10 @@ import {
   buildExecutionLedger,
 } from "./generate-production-closure-execution-ledger.js";
 import { isTestPath } from "./evidence-reachability-check.js";
+import {
+  validateCanonicalClosureRows,
+  type CanonicalClosureRow,
+} from "./production-closure-catalog.js";
 
 export interface LedgerGateIssue {
   code: string;
@@ -62,6 +66,17 @@ export function evaluateLedgerGate(
       subject: "docs/PRODUCTION_CLOSURE_EXECUTION_LEDGER.json",
       message:
         "committed ledger does not match a fresh generation; run `npm run ledger:generate` and commit the result",
+    });
+  }
+  try {
+    const committed = JSON.parse(committedText) as { rows?: CanonicalClosureRow[] };
+    if (!Array.isArray(committed.rows)) throw new Error("rows missing");
+    issues.push(...validateCanonicalClosureRows(committed.rows, ledger.rows));
+  } catch {
+    issues.push({
+      code: "LEDGER_INVALID_JSON",
+      subject: "docs/PRODUCTION_CLOSURE_EXECUTION_LEDGER.json",
+      message: "committed ledger must be valid JSON with a rows array",
     });
   }
   for (const row of ledger.rows) {
