@@ -9,6 +9,9 @@ export const DOC_CATEGORIES = [
 
 export type DocCategory = (typeof DOC_CATEGORIES)[number];
 export type DocStatus = "production" | "limited_availability" | "preview" | "internal";
+export type DocPublicationEvidence =
+  | Readonly<{ state: "not_live"; deployedRevision: null; evidenceDigest: null }>
+  | Readonly<{ state: "live"; deployedRevision: string; evidenceDigest: string }>;
 
 export type ProductDoc = Readonly<{
   slug: string;
@@ -19,6 +22,7 @@ export type ProductDoc = Readonly<{
   statusLabel: string;
   availability: string;
   lastVerified: string;
+  publicationEvidence: DocPublicationEvidence;
   startHere: Readonly<{ intro: string; steps: readonly string[]; command?: string }>;
   capabilities: readonly string[];
   useWhen: readonly string[];
@@ -40,18 +44,18 @@ type DocAuthority = Readonly<{
 }>;
 
 const DOC_AUTHORITY: Readonly<Record<string, DocAuthority>> = deepFreeze({
-  fettler: authority(["ME-WAR-001", "ME-WAR-002", "ME-WAR-003", "ME-WAR-004", "ME-WAR-006", "ME-WAR-007", "ME-WAR-008", "ME-WAR-009", "ME-GTM-001", "ME-GTM-002"], ["CLM-002", "CLM-004", "CLM-005", "CLM-006"], ["apps/api/src/server.ts", "packages/agent/src/agent.ts", "apps/worker/src/cli.ts"]),
+  fettler: authority(["ME-ING-001", "ME-ING-002", "ME-ING-009", "ME-SCM-003", "ME-WAR-001", "ME-WAR-002", "ME-WAR-003", "ME-WAR-004", "ME-WAR-005", "ME-WAR-006", "ME-WAR-007", "ME-WAR-008", "ME-WAR-009", "ME-GTM-001", "ME-GTM-002"], ["CLM-002", "CLM-004", "CLM-005", "CLM-006"], ["apps/api/src/server.ts", "packages/agent/src/agent.ts", "apps/worker/src/cli.ts"]),
   regauge: authority(["ME-TRN-001", "ME-TRN-002", "ME-TRN-003", "ME-TRN-004", "ME-TRN-005", "ME-TRN-006", "ME-TRN-007", "ME-TRN-008", "ME-TRN-009", "ME-TRN-010", "ME-TRN-011", "ME-TRN-012", "ME-TRN-013"], ["CLM-007"], ["apps/api/src/regauge-production-bootstrap.ts", "apps/api/src/regauge-plan-consult.ts", "apps/worker/src/regauge-mission-task-claim.ts"]),
   "change-ingestion": authority(["ME-ING-001", "ME-ING-002", "ME-ING-003", "ME-ING-004", "ME-ING-005", "ME-ING-006", "ME-ING-007", "ME-ING-008", "ME-ING-009"], [], ["packages/change-intel/src/index.ts", "packages/catalog/src/index.ts", "apps/api/src/server.ts"]),
   "change-graph": authority(["ME-GRF-001", "ME-GRF-002", "ME-GRF-003", "ME-GRF-004", "ME-GRF-005", "ME-GRF-006", "ME-GRF-007", "ME-GRF-008", "ME-WAR-001"], ["CLM-003"], ["packages/graph/src/index.ts", "packages/graph-learn/src/store.ts", "apps/api/src/server.ts"]),
   "repository-connections": authority(["ME-SCM-001", "ME-SCM-002", "ME-SCM-003", "ME-SCM-004", "ME-SCM-005", "ME-SCM-006"], ["CLM-008"], ["apps/api/src/repository-connections.ts", "packages/github/src/index.ts", "packages/platform/src/repository-source.ts"]),
   "draft-delivery": authority(["ME-SCM-003", "ME-SCM-004", "ME-WAR-003", "ME-WAR-004"], ["CLM-006", "CLM-008"], ["packages/github/src/index.ts", "apps/worker/src/fettler-pr-review-dispatch.ts", "apps/api/src/server.ts"]),
-  "verification-attestations": authority(["ME-WAR-002", "ME-WAR-003", "ME-RTR-005"], ["CLM-005"], ["packages/repair/src/verify.ts", "packages/db/src/mission-verification.ts", "apps/api/src/advanced-ai-applications.ts"]),
+  "verification-attestations": authority(["ME-WAR-002", "ME-WAR-003", "ME-WAR-005", "ME-RTR-005"], ["CLM-005"], ["packages/repair/src/verify.ts", "packages/db/src/mission-verification.ts", "apps/api/src/advanced-ai-applications.ts"]),
   "model-router": authority(["ME-RTR-001", "ME-RTR-002", "ME-RTR-003", "ME-RTR-004", "ME-RTR-005", "ME-RTR-006", "ME-RTR-009"], [], ["packages/platform/src/router.ts", "packages/platform/src/router-runtime.ts", "apps/worker/src/cli.ts"]),
   "post-trained-models": authority(["ME-FND-004", "ME-RTR-007", "ME-RTR-008", "ME-RTR-009"], [], ["packages/platform/src/adapter-lifecycle.ts", "apps/api/src/advanced-ai-applications.ts"]),
   "learning-system": authority(["ME-FND-009", "ME-RTR-006", "ME-RTR-007"], [], ["packages/db/src/learning.ts", "packages/db/src/organization-memory.ts", "apps/api/src/learning-consent-routes.ts"]),
   "billing-usage": authority(["ME-FND-008", "ME-COM-001", "ME-COM-002", "ME-COM-003", "ME-COM-004"], [], ["packages/db/src/usage.ts", "apps/api/src/billing-economics.ts", "apps/api/src/server.ts"]),
-  "security-governance": authority(["ME-ENT-001", "ME-ENT-002", "ME-ENT-003", "ME-ENT-004", "ME-WAR-008"], ["CLM-014"], ["apps/api/src/auth.ts", "packages/contract/src/tenant-boundary.ts", "packages/contract/src/audit-governance.ts"]),
+  "security-governance": authority(["ME-GTM-001", "ME-ENT-001", "ME-ENT-002", "ME-ENT-003", "ME-ENT-004", "ME-WAR-008"], ["CLM-014"], ["apps/api/src/auth.ts", "packages/contract/src/tenant-boundary.ts", "packages/contract/src/audit-governance.ts"]),
   "deployment-operations": authority(["ME-FND-005", "ME-ENT-005", "ME-ENT-006", "ME-ENT-007", "ME-ENT-008", "ME-ENT-009", "ME-ENT-010", "ME-ENT-011", "ME-ENT-012"], ["CLM-009", "CLM-013"], ["scripts/start-fly.mjs", "packages/ops/src/readiness.ts", "packages/ops/src/disaster-recovery.ts"]),
   "authentication-tenancy": authority(["ME-ENT-001", "ME-ENT-002", "ME-ENT-003"], [], ["apps/api/src/auth.ts", "apps/api/src/tenant-memberships.ts", "packages/contract/src/tenant-boundary.ts"]),
   "mission-policy": authority(["ME-WAR-005", "ME-TRN-003", "ME-TRN-007", "ME-TRN-009"], [], ["packages/db/src/mission.ts", "packages/db/src/mission-task.ts", "packages/db/src/policy-envelope.ts"]),
@@ -63,6 +67,11 @@ const DOC_AUTHORITY: Readonly<Record<string, DocAuthority>> = deepFreeze({
 });
 
 const verified = "2026-08-14";
+const notLivePublicationEvidence: DocPublicationEvidence = deepFreeze({
+  state: "not_live",
+  deployedRevision: null,
+  evidenceDigest: null,
+});
 
 export const PRODUCT_DOCS: readonly ProductDoc[] = Object.freeze([
   page({
@@ -89,9 +98,9 @@ export const PRODUCT_DOCS: readonly ProductDoc[] = Object.freeze([
   }),
   page({
     slug: "regauge",
-    title: "Regauge — the first AI Legacy Engineer",
+    title: "ReGauge — the first AI Legacy Engineer",
     category: "Specialist agents",
-    summary: "Regauge is an experimental planning preview.",
+    summary: "ReGauge is an experimental planning preview.",
     status: "preview",
     statusLabel: "Experimental planning preview",
     availability: "Durable campaign planning and review controls; repository execution and staged pull request campaigns are not customer ready",
@@ -102,10 +111,10 @@ export const PRODUCT_DOCS: readonly ProductDoc[] = Object.freeze([
     capabilities: ["Objective-to-blueprint mission planning with CODEOWNERS and organization constraints", "Signed deterministic recipe selection and compilation", "Durable campaign plans with units, waves, budgets, exceptions, rollback plans, and review evidence", "Independent blueprint review and exact planning evidence", "Internal execution, checkpoint, and draft-delivery primitives behind separate non-customer gates"],
     useWhen: ["A team is evaluating how a larger migration could be staged.", "The repository matches an approved deterministic planning recipe.", "Independent blueprint review and exact rollback planning are required."],
     howItWorks: ["The mission planner re-verifies exact snapshot bytes, topology, owners, and policy before selecting one recipe or abstaining.", "An independent reviewer evaluates the integrity-bound blueprint.", "The compiler creates a durable campaign plan with units, dependencies, waves, budgets, and evidence authority.", "The preview retains the plan and review evidence without granting customer repository execution.", "Execution and staged draft delivery remain outside the customer-ready preview posture."],
-    interfaces: [api("POST /transformer/missions", "Plan a repository-backed migration mission."), api("POST /transformer/control-plane/campaigns/:campaignId/review", "Record independent blueprint review."), api("GET /transformer/executions/:campaignId", "Inspect execution state."), command("npm run eval:transformer:canary", "Run the deterministic Regauge canary."), configuration("MENDPOINT_REGAUGE_GATE", "Tenant, environment, boundary, and production-delivery authority.")],
+    interfaces: [api("POST /transformer/missions", "Plan a repository-backed migration mission."), api("POST /transformer/control-plane/campaigns/:campaignId/review", "Record independent blueprint review."), api("GET /transformer/control-plane/campaigns/:campaignId", "Inspect campaign and execution state."), command("npm run eval:transformer:canary", "Run the deterministic ReGauge canary."), configuration("MENDPOINT_REGAUGE_GATE", "Tenant, environment, boundary, and production-delivery authority.")],
     evidence: [evidence("Mission planning and compilation", "packages/transformer/src/mission-planner.test.ts"), evidence("Pilot execution and checkpoints", "packages/transformer/src/pilot-execution.test.ts"), evidence("Multi-node worker", "apps/worker/src/transformer-multinode-service.test.ts")],
     guardrails: ["Blueprint planner and approving reviewer must be independent authorized principals.", "Planning cannot widen paths, recipe scope, budgets, or source authority.", "Stale or mismatched source evidence fails closed.", "Preview access does not grant repository mutation or delivery authority."],
-    limitations: ["Repository execution and staged pull request campaigns are not customer ready", "No dedicated Regauge deployment is claimed live.", "Adaptive model planning and legacy extraction use separate gates and are not implied by the planning preview."],
+    limitations: ["Repository execution and staged pull request campaigns are not customer ready", "No dedicated ReGauge deployment is claimed live.", "Adaptive model planning and legacy extraction use separate gates and are not implied by the planning preview."],
     related: ["repository-connections", "draft-delivery", "deployment-operations", "learning-system"],
   }),
   page({
@@ -154,7 +163,7 @@ export const PRODUCT_DOCS: readonly ProductDoc[] = Object.freeze([
     availability: "GitHub App pilot path. GitLab delivery is on the roadmap.",
     startHere: { intro: "Install the Mendpoint GitHub App for an approved account and select the exact repositories it may access.", steps: ["Create or open the GitHub App install URL.", "Complete the installation callback for the tenant account.", "Register the allowed repository and selected branch.", "Materialize an exact immutable snapshot before any agent run."] },
     capabilities: ["Tenant-bound GitHub App installation and repository authorization", "Short-lived installation tokens restricted to selected repositories", "Exact commit resolution, immutable file manifests, modes, hashes, and retention", "Connection revocation and snapshot purge", "Generic SCM capability adapters for GitHub, GitLab, Bitbucket, and Azure DevOps"],
-    useWhen: ["Fettler or Regauge needs authoritative source bytes.", "A repository must be read without storing a long-lived user token.", "A later worker must reconstruct the exact prior source state."],
+    useWhen: ["Fettler or ReGauge needs authoritative source bytes.", "A repository must be read without storing a long-lived user token.", "A later worker must reconstruct the exact prior source state."],
     howItWorks: ["An authenticated tenant administrator authorizes a GitHub account and selected repositories.", "Mendpoint exchanges App authority for repository-scoped installation tokens.", "The snapshot service resolves one revision, materializes bounded files, and persists an immutable manifest.", "Agents receive snapshot bindings, not an unrestricted repository handle."],
     interfaces: [api("GET /github/app/install-url", "Start a GitHub App installation."), api("POST /github/app/callback", "Bind the installation to the authenticated tenant."), api("POST /platform/scm/repositories", "Register an approved repository."), api("POST /platform/scm/repositories/:id/snapshots", "Materialize an exact snapshot."), api("POST /platform/scm/connections/:id/revoke", "Revoke a connection.")],
     evidence: [evidence("GitHub App lifecycle", "packages/github/src/app-lifecycle.test.ts"), evidence("Repository source", "packages/platform/src/repository-source.test.ts"), evidence("Connection API", "apps/api/src/repository-connections.test.ts")],
@@ -243,11 +252,11 @@ export const PRODUCT_DOCS: readonly ProductDoc[] = Object.freeze([
     statusLabel: "Governed learning preview",
     availability: "Capture and corpus export implemented; downstream training requires separate authorization",
     startHere: { intro: "Record one approved outcome with explicit tenant consent, residency, retention, and source lineage.", steps: ["Capture the reviewed candidate and outcome metadata.", "Apply redaction, consent, temporal cutoff, and residency eligibility.", "Seal an immutable corpus export for one declared purpose.", "Use the export for evaluation or a separately authorized training job."] },
-    capabilities: ["Human-reviewed Fettler and Regauge outcome capture", "Consent, residency, temporal cutoff, redaction, and lineage gates", "Deterministic sealed corpus exports", "Suppression and rejection evidence", "Graph and router outcome feedback"],
+    capabilities: ["Human-reviewed Fettler and ReGauge outcome capture", "Consent, residency, temporal cutoff, redaction, and lineage gates", "Deterministic sealed corpus exports", "Suppression and rejection evidence", "Graph and router outcome feedback"],
     useWhen: ["A reviewed migration should improve future ranking or evaluation.", "A tenant has explicitly consented to a defined learning purpose.", "An external training job needs an exact eligible dataset lineage."],
     howItWorks: ["The capture layer records approved metadata, evidence references, outcomes, and policy context.", "Eligibility excludes unconsented, stale, residency-conflicting, unredacted, or incomplete rows.", "The exporter orders and seals the eligible corpus under a purpose and cutoff.", "Consumers receive metadata and approved redacted content only; raw secrets and unrestricted repository data are excluded."],
     interfaces: [api("POST /advanced-ai/learning/consents", "Grant purpose-specific tenant learning consent."), api("POST /advanced-ai/learning/consents/:consentId/revoke", "Revoke one exact learning grant for future processing."), api("GET /advanced-ai/learning/status", "Read tenant-scoped learning, dataset, training, evaluation, canary, and adapter counts."), api("POST /advanced-ai/learning/corpora", "Seal eligible lessons and materialize deterministic train, validation, and holdout artifacts."), command("npm run learning:export-corpus", "Export the earlier compatibility corpus format."), artifact("Learning capture", "Outcome, consent, lineage, policy, and evidence references."), artifact("Sealed corpus", "Purpose-bound deterministic eligible dataset with a split manifest.")],
-    evidence: [evidence("Learning capture", "packages/db/src/learning.test.ts"), evidence("Corpus eligibility", "packages/db/src/learning-corpus.test.ts"), evidence("Regauge learning loop", "apps/worker/src/transformer-learning.test.ts")],
+    evidence: [evidence("Learning capture", "packages/db/src/learning.test.ts"), evidence("Corpus eligibility", "packages/db/src/learning-corpus.test.ts"), evidence("ReGauge learning loop", "apps/worker/src/transformer-learning.test.ts")],
     guardrails: ["No record is eligible without active consent and purpose authority.", "Redaction and lineage checks run before export.", "Temporal cutoffs prevent future outcome leakage into historical evaluation.", "Export does not invoke a trainer or model."],
     limitations: ["Corpus size and outcome diversity depend on real reviewed migrations.", "The current corpus does not imply a trained or promoted adapter.", "Learning activation and external processing remain tenant-specific."],
     related: ["post-trained-models", "model-router", "security-governance"],
@@ -281,11 +290,11 @@ export const PRODUCT_DOCS: readonly ProductDoc[] = Object.freeze([
     startHere: { intro: "Run the deployment preflight, bootstrap one owner authority, and configure the narrowest repository, model, and delivery permissions required.", steps: ["Select the exact deployment profile.", "Configure encryption, authentication, tenant, repository, and egress authority.", "Bootstrap and rotate scoped API keys or SSO bindings.", "Verify readiness, audit, backup, revocation, and incident procedures before customer access."] },
     capabilities: ["Tenant-scoped API keys, RBAC, memberships, and trust principals", "GitHub account, installation, and repository binding", "Per-record encryption, checkpoint encryption, domain-separated keys, and cryptographic erasure", "Human review, waiver, escalation, production delivery, and policy gates", "Append-only audit and domain events with governed export", "SAML and OIDC integration surfaces"],
     useWhen: ["A deployment handles private repositories or model egress.", "An operator needs attributable approvals and revocation.", "A tenant requires bounded data retention and audit export."],
-    howItWorks: ["Authentication resolves a durable principal and tenant before route authority.", "RBAC and domain-specific gates authorize the exact action and scope.", "Sensitive data is encrypted at rest and excluded from logs and public evidence.", "Every transition records immutable evidence and rechecks stale or revoked authority at effect boundaries.", "Readiness fails closed when profile-required controls are absent."],
+    howItWorks: ["Authentication resolves a durable principal and tenant before route authority.", "RBAC and domain-specific gates authorize the exact action and scope.", "Sensitive data is encrypted at rest and excluded from logs and public evidence.", "Every transition records attributable evidence under the authority implemented by that route.", "Readiness fails closed when profile-required controls are absent."],
     interfaces: [api("GET /keys", "List scoped API keys without returning secret values."), api("POST /keys", "Create a scoped key."), api("POST /keys/:id/revoke", "Revoke a key."), api("GET /audit", "Read tenant audit events."), api("GET /audit/export", "Export governed audit evidence."), configuration("Deployment profile", "Fail-closed environment contract for each runtime role.")],
     evidence: [evidence("Authentication and RBAC", "apps/api/src/auth.test.ts"), evidence("Tenant isolation", "packages/db/src/provider-tenant-isolation.test.ts"), evidence("Customer profile", "scripts/customer-warden-profile.test.ts"), evidence("Design partner encryption", "apps/api/src/design-partner-applications-store.test.ts")],
     guardrails: ["Tenant identity comes from authenticated authority, never request body claims.", "Secrets are not returned by list APIs or serialized into evidence.", "Human approval never grants merge or deployment capability.", "Profile-required missing authority stops startup rather than falling back."],
-    limitations: ["Security posture depends on correct deployment secrets, network policy, and operator procedures.", "High availability differs by profile; the current dedicated Regauge coordinator is single-authority.", "External providers and SCM integrations create egress only when explicitly configured."],
+    limitations: ["Security posture depends on correct deployment secrets, network policy, and operator procedures.", "High availability differs by profile; a dedicated ReGauge coordinator is single-authority when deployed.", "External providers and SCM integrations create egress only when explicitly configured."],
     related: ["repository-connections", "verification-attestations", "deployment-operations"],
   }),
   page({
@@ -300,11 +309,11 @@ export const PRODUCT_DOCS: readonly ProductDoc[] = Object.freeze([
     startHere: { intro: "Create a tenant scoped credential through an authenticated administrator and keep its secret outside source control.", steps: ["Select the tenant and least privileged role.", "Create the credential and capture its value once through the protected operator path.", "Send it as a Bearer token over HTTPS.", "Rotate or revoke it and verify that later requests fail closed."], command: "curl -H \"Authorization: Bearer $MENDPOINT_API_KEY\" https://your-mendpoint.example/ready" },
     capabilities: ["Tenant scoped API key authentication", "Durable principals, memberships, roles, expiry, and revocation", "Request identity and audit attribution", "Service principal and enterprise identity contracts"],
     useWhen: ["A human or service needs access to a protected Mendpoint API.", "An operator must rotate or revoke access without changing tenant data."],
-    howItWorks: ["The authentication middleware resolves the credential to one durable principal and tenant.", "Membership and role checks authorize the exact route capability.", "Mutation code revalidates authority at the effect boundary.", "Audit records retain principal, credential, tenant, and request identity without storing the secret."],
+    howItWorks: ["The authentication middleware resolves the credential to one durable principal and tenant.", "Membership and role checks authorize the exact route capability.", "Mutation routes apply the authority checks implemented at their declared boundary.", "Audit records retain principal, credential, tenant, and request identity without storing the secret."],
     interfaces: [api("GET /keys", "List credential metadata without secret material."), api("POST /keys", "Create a scoped credential through tenant administration authority."), api("POST /keys/:id/revoke", "Revoke one credential."), api("GET /tenants", "List tenants visible to the authenticated principal."), api("POST /tenants/memberships", "Create a tenant membership when authorized.")],
     evidence: [evidence("Authentication middleware", "apps/api/src/auth.test.ts"), evidence("Membership lifecycle", "apps/api/src/tenant-memberships.test.ts"), evidence("Cross tenant denial", "apps/api/src/cross-tenant-denial.test.ts")],
     guardrails: ["Tenant identity never comes from a request body claim.", "Credential values are returned only at creation and are never listed.", "Expiry and revocation are rechecked before protected effects.", "Production credentials require HTTPS and must not follow redirects."],
-    limitations: ["SAML and SCIM need an approved enterprise identity tenant for live qualification.", "Authentication availability depends on the selected deployment profile."],
+    limitations: ["Tenant membership mutations in the current release authorize before body processing; effect-boundary revalidation is not claimed until its upgrade path ships.", "SAML and SCIM need an approved enterprise identity tenant for live qualification.", "Authentication availability depends on the selected deployment profile."],
     related: ["api-conventions", "security-governance", "audit-compliance"],
   }),
   page({
@@ -316,7 +325,7 @@ export const PRODUCT_DOCS: readonly ProductDoc[] = Object.freeze([
     statusLabel: "Internal shared foundation",
     availability: "Durable Mission and Policy Envelope primitives are active behind product specific interfaces",
     lastVerified: "2026-08-30",
-    startHere: { intro: "Create product work through Fettler or Regauge so the product binds the Mission to its exact source and policy context.", steps: ["Create the product request under an authenticated tenant.", "Inspect the bound repository snapshot, graph projection, and Policy Envelope version.", "Run or hand off one Mission task under its current lease.", "Resolve exceptions and inspect the retained decision and artifact lineage."] },
+    startHere: { intro: "Create product work through Fettler or ReGauge so the product binds the Mission to its exact source and policy context.", steps: ["Create the product request under an authenticated tenant.", "Inspect the bound repository snapshot, graph projection, and Policy Envelope version.", "Run or hand off one Mission task under its current lease.", "Resolve exceptions and inspect the retained decision and artifact lineage."] },
     capabilities: ["Durable Missions, tasks, decisions, exceptions, and artifacts", "Versioned Policy Envelope inheritance", "Agent to human to agent handoff", "Restart and lease safe continuation", "Bounded MissionGraphProjection and context references"],
     useWhen: ["Work spans multiple steps, workers, or reviewers.", "A later operator must reconstruct the exact authority and evidence used by a task."],
     howItWorks: ["The product creates one tenant scoped Mission and binds its immutable source identities.", "Tasks inherit the exact Policy Envelope rather than reconstructing restrictions from a prompt.", "Workers claim tasks under leases and append idempotent outcomes.", "Handoffs, exceptions, and superseding decisions preserve lineage without storing hidden reasoning."],
@@ -388,18 +397,18 @@ export const PRODUCT_DOCS: readonly ProductDoc[] = Object.freeze([
     title: "Recovery and reliability",
     category: "Operations",
     summary: "Back up authenticated state, restore it under a bounded operator workflow, and prove readiness without repeating completed external work.",
-    status: "limited_availability",
-    statusLabel: "Engineering controls active",
-    availability: "Encrypted backup and restore controls exist; cross region production recovery proof remains external",
+    status: "internal",
+    statusLabel: "Engineering controls only",
+    availability: "Authenticated backup and restore primitives exist; current schema convergence, replay canaries, and cross region production recovery are not integrated",
     lastVerified: "2026-08-30",
-    startHere: { intro: "Create an authenticated backup receipt before exercising recovery in an isolated target.", steps: ["Verify current backup authority and create one committed encrypted backup.", "Load and authenticate its exact recovery receipt.", "Restore to an isolated target and run current schema convergence.", "Verify row, ledger, checkpoint, readiness, and rollback identities before cutover."] },
-    capabilities: ["Encrypted committed backup manifests", "Authenticated recovery receipts", "Atomic restore and backup fencing", "Lease and checkpoint safe restart", "Readiness, recovery summary, and disaster recovery drill primitives"],
+    startHere: { intro: "Create an authenticated backup receipt before exercising recovery in an isolated target.", steps: ["Verify current backup authority and create one committed encrypted backup.", "Load and authenticate its exact recovery receipt.", "Restore only into the explicitly isolated target.", "Separately run current schema convergence, replay canaries, readiness, and rollback checks before considering cutover."] },
+    capabilities: ["Encrypted committed backup manifests", "Authenticated recovery receipts", "Bounded restore orchestration", "Backup fencing", "Readiness, recovery summary, and disaster recovery drill primitives"],
     useWhen: ["A deployment must recover from storage or region loss.", "An upgrade must prove rollback and prior schema restore."],
-    howItWorks: ["Backup captures the declared durable resources and signs the exact manifest identity.", "Restore authenticates the receipt and content before replacing target state.", "Current schema code opens the restored stores and verifies convergence.", "Canaries prove that completed external effects are adopted rather than repeated.", "Cutover proceeds only after readiness, recovery, and rollback evidence agree."],
+    howItWorks: ["Backup captures the declared durable resources and signs the exact manifest identity.", "The restore command authenticates the receipt and content before copying into the explicit target.", "The restore command does not open the restored stores under current schema code or run replay canaries.", "Schema convergence, no-repeat canaries, readiness, and rollback evidence remain separate required qualification gates.", "Cutover must not proceed until those gates are implemented and pass."],
     interfaces: [command("npm run backup:customer", "Create a protected customer backup."), command("npm run restore:customer", "Restore an authenticated backup under operator authority."), command("npm run dr:drill", "Run the deterministic disaster recovery drill."), api("GET /recovery/summary", "Read bounded recovery state."), api("GET /ready", "Read dependency readiness.")],
     evidence: [evidence("Disaster recovery", "packages/ops/src/disaster-recovery.test.ts"), evidence("Readiness", "packages/ops/src/readiness.test.ts"), evidence("Customer restore", "scripts/customer-backup-workflow.test.ts")],
     guardrails: ["An expired or mismatched receipt fails closed.", "Restore targets are explicit and cannot escape the declared root.", "Historical authenticated checkpoints and external effects are never rematerialized.", "No old authority is stopped before replacement health and rollback evidence pass."],
-    limitations: ["Measured cross region RTO and RPO need an approved recovery target.", "Single node profiles do not imply high availability."],
+    limitations: ["Current schema convergence and no-repeat external-effect canaries are not performed by the restore command.", "Measured cross region RTO and RPO need an approved recovery target.", "Single node profiles do not imply high availability."],
     related: ["deployment-operations", "audit-compliance", "limits-errors"],
   }),
   page({
@@ -428,15 +437,15 @@ export const PRODUCT_DOCS: readonly ProductDoc[] = Object.freeze([
     summary: "Run Mendpoint with role-specific readiness, durable state, recovery controls, audit evidence, backups, and bounded rollout procedures.",
     status: "limited_availability",
     statusLabel: "Pilot evaluation",
-    availability: "Docker Compose and Fly pilot deployment; the dedicated Regauge profile is implemented but no live Regauge deployment is claimed",
-    startHere: { intro: "Choose the Fettler, Regauge pilot, demo, or self-hosted profile and satisfy its complete startup contract before deployment.", steps: ["Validate the exact configuration and secret names without exposing values.", "Build and boot the production image against an existing-state database.", "Deploy one canary instance and verify liveness, readiness, storage, integrations, and rollback.", "Scale only after crash, response-loss, stale-fence, and restore drills pass."] },
-    capabilities: ["Docker multi-stage images for API, web, worker, all-in-one Fly, and dedicated Regauge roles", "Fly Fettler production and dedicated Regauge coordinator/worker manifests", "Liveness, readiness, worker heartbeat, alerts, metrics, trajectories, and recovery summary", "Encrypted backup, restore, backup fencing, snapshots, disaster-recovery drill, and image rollback", "Lease-fenced jobs and checkpointed Fettler and Regauge execution"],
+    availability: "Docker Compose and Fly pilot deployment; the dedicated ReGauge profile is implemented but no live ReGauge deployment is claimed",
+    startHere: { intro: "Choose the Fettler, ReGauge pilot, demo, or self-hosted profile and satisfy its complete startup contract before deployment.", steps: ["Validate the exact configuration and secret names without exposing values.", "Build and boot the production image against an existing-state database.", "Deploy one canary instance and verify liveness, readiness, storage, integrations, and rollback.", "Scale only after crash, response-loss, stale-fence, and restore drills pass."] },
+    capabilities: ["Docker multi-stage images for API, web, worker, all-in-one Fly, and dedicated ReGauge roles", "Fly Fettler production and dedicated ReGauge coordinator/worker manifests", "Liveness, readiness, worker heartbeat, alerts, metrics, trajectories, and recovery summary", "Encrypted backup, restore, backup fencing, snapshots, disaster-recovery drill, and image rollback", "Lease-fenced jobs and checkpointed Fettler and ReGauge execution"],
     useWhen: ["An operator is preparing a new pilot environment.", "A release changes persistence, jobs, external effects, or readiness.", "A worker or process must be replaced without duplicating work."],
     howItWorks: ["Profile validation turns configuration into an explicit authority contract.", "Durable coordinators own leases and state; workers operate only under current fences.", "Health endpoints separate process liveness from dependency readiness.", "Deployments proceed through tests, production build, container smoke, canary, live checks, and recorded rollback.", "Backups and terminal evidence retain recovery and audit authority."],
     interfaces: [command("npm run ga:check", "Run specification, claim, action-pin, and GA checks."), command("npm run e2e:deployment", "Run the production deployment journey and crash recovery."), command("npm run dr:drill", "Exercise disaster recovery."), api("GET /live", "API process liveness."), api("GET /ready", "API dependency readiness."), api("GET /health", "Detailed runtime health."), configuration("fly.transformer.toml", "Separate coordinator and stateless worker production pilot.")],
-    evidence: [evidence("Deployment E2E", "tests/e2e/deployment.spec.ts"), evidence("Readiness", "packages/ops/src/readiness.test.ts"), evidence("Backup and restore", "packages/ops/src/disaster-recovery.test.ts"), evidence("Regauge profile contract", "apps/worker/src/transformer-production-profile.test.ts")],
+    evidence: [evidence("Deployment E2E", "tests/e2e/deployment.spec.ts"), evidence("Readiness", "packages/ops/src/readiness.test.ts"), evidence("Backup and restore", "packages/ops/src/disaster-recovery.test.ts"), evidence("ReGauge profile contract", "apps/worker/src/transformer-production-profile.test.ts")],
     guardrails: ["A release is not complete until exact commit, image, health, and rollback evidence agree.", "Schema changes must boot against both fresh and pre-change databases.", "Coordinator and worker identities, storage, and fences must remain distinct across scale-out.", "Stopping workers preserves coordinator, volume, and immutable artifacts for evidence."],
-    limitations: ["Optional model and source control integrations can create network egress", "High availability and enterprise support are not included", "The hosted Fettler profile is a single Fly application, not a multi-region high-availability control plane.", "No dedicated Regauge deployment is claimed live until its app, secrets, volume, health, and canary evidence are independently verified."],
+    limitations: ["Optional model and source control integrations can create network egress", "High availability and enterprise support are not included", "The hosted Fettler profile is a single Fly application, not a multi-region high-availability control plane.", "No dedicated ReGauge deployment is claimed live until its app, secrets, volume, health, and canary evidence are independently verified."],
     related: ["security-governance", "billing-usage", "fettler", "regauge"],
   }),
 ]);
@@ -454,7 +463,7 @@ export function docsByCategory(): readonly Readonly<{ category: DocCategory; pag
 
 export function buildDocsManifest() {
   return Object.freeze({
-    schemaVersion: "2026-08-30.v2" as const,
+    schemaVersion: "2026-08-30.v3" as const,
     generatedFrom: "apps/web/app/docs/catalog.ts",
     pages: Object.freeze(PRODUCT_DOCS.map((page) => Object.freeze({
       slug: page.slug,
@@ -464,6 +473,7 @@ export function buildDocsManifest() {
       statusLabel: page.statusLabel,
       availability: page.availability,
       lastVerified: page.lastVerified,
+      publicationEvidence: page.publicationEvidence,
       webPath: `/docs/${page.slug}`,
       markdownPath: `./${page.slug}.md`,
       requirementIds: page.requirementIds,
@@ -482,6 +492,7 @@ export function renderProductDocMarkdown(page: ProductDoc): string {
     `Status: ${page.statusLabel}`,
     `Availability: ${page.availability}`,
     `Last verified: ${page.lastVerified}`,
+    `Publication evidence: ${publicationEvidenceLabel(page.publicationEvidence)}`,
     `Requirements: ${page.requirementIds.join(", ")}`,
     `Public claims: ${page.claimIds.length > 0 ? page.claimIds.join(", ") : "None"}`,
     "",
@@ -509,12 +520,17 @@ export function renderProductDocMarkdown(page: ProductDoc): string {
 }
 
 function page(
-  input: Omit<ProductDoc, "lastVerified" | "requirementIds" | "claimIds" | "sourceContracts">
-    & Partial<Pick<ProductDoc, "lastVerified">>,
+  input: Omit<ProductDoc, "lastVerified" | "publicationEvidence" | "requirementIds" | "claimIds" | "sourceContracts">
+    & Partial<Pick<ProductDoc, "lastVerified" | "publicationEvidence">>,
 ): ProductDoc {
   const authority = DOC_AUTHORITY[input.slug];
   if (!authority) throw new Error(`public_docs_authority_missing:${input.slug}`);
-  return deepFreeze({ ...input, ...authority, lastVerified: input.lastVerified ?? verified }) as ProductDoc;
+  return deepFreeze({
+    ...input,
+    ...authority,
+    lastVerified: input.lastVerified ?? verified,
+    publicationEvidence: input.publicationEvidence ?? notLivePublicationEvidence,
+  }) as ProductDoc;
 }
 
 function api(name: string, detail: string) { return Object.freeze({ name, kind: "API" as const, detail }); }
@@ -527,6 +543,11 @@ function authority(requirementIds: readonly string[], claimIds: readonly string[
   return Object.freeze({ requirementIds: Object.freeze([...requirementIds]), claimIds: Object.freeze([...claimIds]), sourceContracts: Object.freeze([...sourceContracts]) });
 }
 function escapeTable(value: string): string { return value.replaceAll("|", "\\|").replaceAll("\n", " "); }
+function publicationEvidenceLabel(value: DocPublicationEvidence): string {
+  return value.state === "live"
+    ? `live; revision ${value.deployedRevision}; evidence digest ${value.evidenceDigest}`
+    : "not live; no deployed revision or live evidence digest recorded";
+}
 
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {

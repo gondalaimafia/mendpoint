@@ -5,6 +5,7 @@ Use consistent authentication, request identity, idempotency, error, and retry r
 Status: Route specific production contract
 Availability: Documented behavior applies only where the referenced route implements the named convention
 Last verified: 2026-08-30
+Publication evidence: not live; no deployed revision or live evidence digest recorded
 Requirements: ME-FND-007, ME-ENT-001, ME-ENT-002, ME-WAR-008
 Public claims: None
 

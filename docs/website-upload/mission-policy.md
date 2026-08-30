@@ -5,12 +5,13 @@ Persist durable work as tenant scoped Missions whose tasks inherit deterministic
 Status: Internal shared foundation
 Availability: Durable Mission and Policy Envelope primitives are active behind product specific interfaces
 Last verified: 2026-08-30
+Publication evidence: not live; no deployed revision or live evidence digest recorded
 Requirements: ME-WAR-005, ME-TRN-003, ME-TRN-007, ME-TRN-009
 Public claims: None
 
 ## Start here
 
-Create product work through Fettler or Regauge so the product binds the Mission to its exact source and policy context.
+Create product work through Fettler or ReGauge so the product binds the Mission to its exact source and policy context.
 
 1. Create the product request under an authenticated tenant.
 2. Inspect the bound repository snapshot, graph projection, and Policy Envelope version.
@@ -74,6 +75,6 @@ Create product work through Fettler or Regauge so the product binds the Mission 
 ## See also
 
 - [Fettler — the first AI API Engineer](./fettler.md)
-- [Regauge — the first AI Legacy Engineer](./regauge.md)
+- [ReGauge — the first AI Legacy Engineer](./regauge.md)
 - [Change Graph](./change-graph.md)
 - [Audit and compliance evidence](./audit-compliance.md)

@@ -5,6 +5,7 @@ Accept authenticated SCM events, deduplicate deliveries, derive tenant scope fro
 Status: GitHub production path
 Availability: GitHub webhook ingestion is implemented; a customer ready GitLab webhook path is not active
 Last verified: 2026-08-30
+Publication evidence: not live; no deployed revision or live evidence digest recorded
 Requirements: ME-SCM-003, ME-SCM-004, ME-WAR-004, ME-WAR-008
 Public claims: None
 

@@ -5,6 +5,7 @@ Authorize least-privilege source access and materialize immutable repository sna
 Status: GitHub production path
 Availability: GitHub App pilot path. GitLab delivery is on the roadmap.
 Last verified: 2026-08-14
+Publication evidence: not live; no deployed revision or live evidence digest recorded
 Requirements: ME-SCM-001, ME-SCM-002, ME-SCM-003, ME-SCM-004, ME-SCM-005, ME-SCM-006
 Public claims: CLM-008
 
@@ -27,7 +28,7 @@ Install the Mendpoint GitHub App for an approved account and select the exact re
 
 ## When to use it
 
-- Fettler or Regauge needs authoritative source bytes.
+- Fettler or ReGauge needs authoritative source bytes.
 - A repository must be read without storing a long-lived user token.
 - A later worker must reconstruct the exact prior source state.
 
@@ -77,4 +78,4 @@ Install the Mendpoint GitHub App for an approved account and select the exact re
 - [Draft delivery](./draft-delivery.md)
 - [Security and governance](./security-governance.md)
 - [Fettler — the first AI API Engineer](./fettler.md)
-- [Regauge — the first AI Legacy Engineer](./regauge.md)
+- [ReGauge — the first AI Legacy Engineer](./regauge.md)

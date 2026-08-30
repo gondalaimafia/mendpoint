@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "2026-08-30.v2",
+  "schemaVersion": "2026-08-30.v3",
   "generatedFrom": "apps/web/app/docs/catalog.ts",
   "pages": [
     {
@@ -10,13 +10,23 @@
       "statusLabel": "Limited availability",
       "availability": "Submitted OpenAPI JSON and configured GitHub pilot repositories",
       "lastVerified": "2026-08-14",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/fettler",
       "markdownPath": "./fettler.md",
       "requirementIds": [
+        "ME-ING-001",
+        "ME-ING-002",
+        "ME-ING-009",
+        "ME-SCM-003",
         "ME-WAR-001",
         "ME-WAR-002",
         "ME-WAR-003",
         "ME-WAR-004",
+        "ME-WAR-005",
         "ME-WAR-006",
         "ME-WAR-007",
         "ME-WAR-008",
@@ -38,12 +48,17 @@
     },
     {
       "slug": "regauge",
-      "title": "Regauge — the first AI Legacy Engineer",
+      "title": "ReGauge — the first AI Legacy Engineer",
       "category": "Specialist agents",
       "status": "preview",
       "statusLabel": "Experimental planning preview",
       "availability": "Durable campaign planning and review controls; repository execution and staged pull request campaigns are not customer ready",
       "lastVerified": "2026-08-14",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/regauge",
       "markdownPath": "./regauge.md",
       "requirementIds": [
@@ -78,6 +93,11 @@
       "statusLabel": "Mixed availability",
       "availability": "OpenAPI active; GraphQL and several release sources are gated previews",
       "lastVerified": "2026-08-14",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/change-ingestion",
       "markdownPath": "./change-ingestion.md",
       "requirementIds": [
@@ -106,6 +126,11 @@
       "statusLabel": "Production pilot",
       "availability": "Real connected snapshots with bounded language and evidence coverage",
       "lastVerified": "2026-08-14",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/change-graph",
       "markdownPath": "./change-graph.md",
       "requirementIds": [
@@ -136,6 +161,11 @@
       "statusLabel": "GitHub production path",
       "availability": "GitHub App pilot path. GitLab delivery is on the roadmap.",
       "lastVerified": "2026-08-14",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/repository-connections",
       "markdownPath": "./repository-connections.md",
       "requirementIds": [
@@ -163,6 +193,11 @@
       "statusLabel": "GitHub production path",
       "availability": "GitHub draft delivery for approved pilot repositories. GitLab delivery is on the roadmap.",
       "lastVerified": "2026-08-14",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/draft-delivery",
       "markdownPath": "./draft-delivery.md",
       "requirementIds": [
@@ -189,11 +224,17 @@
       "statusLabel": "Verification production; attestations gated",
       "availability": "Repository verification in active flows; formal attestation API requires explicit enablement and signing authority",
       "lastVerified": "2026-08-14",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/verification-attestations",
       "markdownPath": "./verification-attestations.md",
       "requirementIds": [
         "ME-WAR-002",
         "ME-WAR-003",
+        "ME-WAR-005",
         "ME-RTR-005"
       ],
       "claimIds": [
@@ -213,6 +254,11 @@
       "statusLabel": "Runtime component",
       "availability": "Used by specialist runtimes; configured providers and executors vary by deployment",
       "lastVerified": "2026-08-14",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/model-router",
       "markdownPath": "./model-router.md",
       "requirementIds": [
@@ -239,6 +285,11 @@
       "statusLabel": "Configured integration preview",
       "availability": "Implemented control plane; no first-party trainer or shipped Mendpoint-trained model",
       "lastVerified": "2026-08-14",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/post-trained-models",
       "markdownPath": "./post-trained-models.md",
       "requirementIds": [
@@ -261,6 +312,11 @@
       "statusLabel": "Governed learning preview",
       "availability": "Capture and corpus export implemented; downstream training requires separate authorization",
       "lastVerified": "2026-08-14",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/learning-system",
       "markdownPath": "./learning-system.md",
       "requirementIds": [
@@ -283,6 +339,11 @@
       "statusLabel": "Internal commercial control",
       "availability": "Usage accounting active in runtimes; public payment collection and standard invoicing are not active",
       "lastVerified": "2026-08-14",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/billing-usage",
       "markdownPath": "./billing-usage.md",
       "requirementIds": [
@@ -307,9 +368,15 @@
       "statusLabel": "Profile-specific pilot controls",
       "availability": "Private preview deployments with profile-specific authentication, encryption, and governance controls",
       "lastVerified": "2026-08-14",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/security-governance",
       "markdownPath": "./security-governance.md",
       "requirementIds": [
+        "ME-GTM-001",
         "ME-ENT-001",
         "ME-ENT-002",
         "ME-ENT-003",
@@ -333,6 +400,11 @@
       "statusLabel": "Profile specific controls",
       "availability": "Scoped API key authentication is active; enterprise identity integrations require separately configured authority",
       "lastVerified": "2026-08-30",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/authentication-tenancy",
       "markdownPath": "./authentication-tenancy.md",
       "requirementIds": [
@@ -355,6 +427,11 @@
       "statusLabel": "Internal shared foundation",
       "availability": "Durable Mission and Policy Envelope primitives are active behind product specific interfaces",
       "lastVerified": "2026-08-30",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/mission-policy",
       "markdownPath": "./mission-policy.md",
       "requirementIds": [
@@ -378,6 +455,11 @@
       "statusLabel": "Route specific production contract",
       "availability": "Documented behavior applies only where the referenced route implements the named convention",
       "lastVerified": "2026-08-30",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/api-conventions",
       "markdownPath": "./api-conventions.md",
       "requirementIds": [
@@ -401,6 +483,11 @@
       "statusLabel": "GitHub production path",
       "availability": "GitHub webhook ingestion is implemented; a customer ready GitLab webhook path is not active",
       "lastVerified": "2026-08-30",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/webhooks-events",
       "markdownPath": "./webhooks-events.md",
       "requirementIds": [
@@ -424,6 +511,11 @@
       "statusLabel": "Engineering evidence active",
       "availability": "Audit capture and governed export are implemented; independent compliance assessment remains external",
       "lastVerified": "2026-08-30",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/audit-compliance",
       "markdownPath": "./audit-compliance.md",
       "requirementIds": [
@@ -442,10 +534,15 @@
       "slug": "recovery-reliability",
       "title": "Recovery and reliability",
       "category": "Operations",
-      "status": "limited_availability",
-      "statusLabel": "Engineering controls active",
-      "availability": "Encrypted backup and restore controls exist; cross region production recovery proof remains external",
+      "status": "internal",
+      "statusLabel": "Engineering controls only",
+      "availability": "Authenticated backup and restore primitives exist; current schema convergence, replay canaries, and cross region production recovery are not integrated",
       "lastVerified": "2026-08-30",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/recovery-reliability",
       "markdownPath": "./recovery-reliability.md",
       "requirementIds": [
@@ -471,6 +568,11 @@
       "statusLabel": "Profile specific limits",
       "availability": "Runtime bounds and error contracts vary by route, workload tier, and deployment profile",
       "lastVerified": "2026-08-30",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/limits-errors",
       "markdownPath": "./limits-errors.md",
       "requirementIds": [
@@ -492,8 +594,13 @@
       "category": "Operations",
       "status": "limited_availability",
       "statusLabel": "Pilot evaluation",
-      "availability": "Docker Compose and Fly pilot deployment; the dedicated Regauge profile is implemented but no live Regauge deployment is claimed",
+      "availability": "Docker Compose and Fly pilot deployment; the dedicated ReGauge profile is implemented but no live ReGauge deployment is claimed",
       "lastVerified": "2026-08-14",
+      "publicationEvidence": {
+        "state": "not_live",
+        "deployedRevision": null,
+        "evidenceDigest": null
+      },
       "webPath": "/docs/deployment-operations",
       "markdownPath": "./deployment-operations.md",
       "requirementIds": [

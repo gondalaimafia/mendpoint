@@ -5,6 +5,7 @@ Authenticate one durable principal, derive its tenant from protected authority, 
 Status: Profile specific controls
 Availability: Scoped API key authentication is active; enterprise identity integrations require separately configured authority
 Last verified: 2026-08-30
+Publication evidence: not live; no deployed revision or live evidence digest recorded
 Requirements: ME-ENT-001, ME-ENT-002, ME-ENT-003
 Public claims: None
 
@@ -37,7 +38,7 @@ curl -H "Authorization: Bearer $MENDPOINT_API_KEY" https://your-mendpoint.exampl
 
 1. The authentication middleware resolves the credential to one durable principal and tenant.
 2. Membership and role checks authorize the exact route capability.
-3. Mutation code revalidates authority at the effect boundary.
+3. Mutation routes apply the authority checks implemented at their declared boundary.
 4. Audit records retain principal, credential, tenant, and request identity without storing the secret.
 
 ## Interfaces
@@ -71,6 +72,7 @@ curl -H "Authorization: Bearer $MENDPOINT_API_KEY" https://your-mendpoint.exampl
 
 ## Limitations
 
+- Tenant membership mutations in the current release authorize before body processing; effect-boundary revalidation is not claimed until its upgrade path ships.
 - SAML and SCIM need an approved enterprise identity tenant for live qualification.
 - Authentication availability depends on the selected deployment profile.
 

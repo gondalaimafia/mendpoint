@@ -16,7 +16,7 @@
       <p class="kicker">Operations</p>
       <h1>Billing and usage</h1>
       <p>Authorize plans and entitlements, reserve bounded spend before work, and settle exact usage with durable evidence.</p>
-      <dl><dt>Status</dt><dd>Internal commercial control</dd><dt>Availability</dt><dd>Usage accounting active in runtimes; public payment collection and standard invoicing are not active</dd><dt>Last verified</dt><dd>2026-08-14</dd><dt>Requirements</dt><dd>ME-FND-008, ME-COM-001, ME-COM-002, ME-COM-003, ME-COM-004</dd><dt>Public claims</dt><dd>None</dd></dl>
+      <dl><dt>Status</dt><dd>Internal commercial control</dd><dt>Availability</dt><dd>Usage accounting active in runtimes; public payment collection and standard invoicing are not active</dd><dt>Last verified</dt><dd>2026-08-14</dd><dt>Publication evidence</dt><dd>Not live; no deployed revision or live evidence digest recorded</dd><dt>Requirements</dt><dd>ME-FND-008, ME-COM-001, ME-COM-002, ME-COM-003, ME-COM-004</dd><dt>Public claims</dt><dd>None</dd></dl>
     </header>
     <section><h2>Start here</h2><p>Assign the tenant an approved plan and entitlement before starting model or migration work.</p><ol><li>Create or select a versioned price plan.</li><li>Grant the tenant a bounded entitlement.</li><li>Reserve model, tool, or campaign usage before dispatch.</li><li>Settle or release the reservation with exact receipt evidence.</li></ol></section>
     <section><h2>What it does</h2><ul><li>Versioned plans and price definitions</li><li>Tenant entitlements and quotas</li><li>Idempotent usage reservations, settlement, release, and evidence</li><li>Model token, cost, response-byte, and campaign budget accounting</li><li>Gross-margin and execution-cost reporting</li></ul></section>
@@ -27,7 +27,7 @@
     <section><h2>Contract sources</h2><ul><li><code>packages/db/src/usage.ts</code></li><li><code>apps/api/src/billing-economics.ts</code></li><li><code>apps/api/src/server.ts</code></li></ul></section>
     <section><h2>Safety model</h2><ul class="guardrails"><li>No external model spend is authorized without a successful reservation where accounting is required.</li><li>Settlement cannot exceed authority or replay with different bytes.</li><li>Tenant usage and evidence are isolated.</li></ul></section>
     <section><h2>Limitations</h2><ul><li>No public card checkout, subscription charging, or standard invoice flow is active.</li><li>Private pilot commercial terms are agreed case by case.</li><li>Configured prices are internal authority, not a public price list.</li></ul></section>
-    <section><h2>See also</h2><ul><li><a href="model-router.html">Model router</a></li><li><a href="fettler.html">Fettler — the first AI API Engineer</a></li><li><a href="regauge.html">Regauge — the first AI Legacy Engineer</a></li><li><a href="security-governance.html">Security and governance</a></li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="model-router.html">Model router</a></li><li><a href="fettler.html">Fettler — the first AI API Engineer</a></li><li><a href="regauge.html">ReGauge — the first AI Legacy Engineer</a></li><li><a href="security-governance.html">Security and governance</a></li></ul></section>
     <p class="download"><a href="billing-usage.md">Read this page as Markdown</a></p></main>
   <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
 </body>

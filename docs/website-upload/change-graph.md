@@ -5,6 +5,7 @@ Resolve an API change through repository evidence to affected operations, fields
 Status: Production pilot
 Availability: Real connected snapshots with bounded language and evidence coverage
 Last verified: 2026-08-14
+Publication evidence: not live; no deployed revision or live evidence digest recorded
 Requirements: ME-GRF-001, ME-GRF-002, ME-GRF-003, ME-GRF-004, ME-GRF-005, ME-GRF-006, ME-GRF-007, ME-GRF-008, ME-WAR-001
 Public claims: CLM-003
 
@@ -76,4 +77,4 @@ Materialize a repository snapshot, index it, and query an approved change or con
 
 - [Change ingestion](./change-ingestion.md)
 - [Fettler — the first AI API Engineer](./fettler.md)
-- [Regauge — the first AI Legacy Engineer](./regauge.md)
+- [ReGauge — the first AI Legacy Engineer](./regauge.md)

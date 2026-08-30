@@ -5,7 +5,8 @@ Run approved repository and contract checks, retain exact evidence, and optional
 Status: Verification production; attestations gated
 Availability: Repository verification in active flows; formal attestation API requires explicit enablement and signing authority
 Last verified: 2026-08-14
-Requirements: ME-WAR-002, ME-WAR-003, ME-RTR-005
+Publication evidence: not live; no deployed revision or live evidence digest recorded
+Requirements: ME-WAR-002, ME-WAR-003, ME-WAR-005, ME-RTR-005
 Public claims: CLM-005
 
 ## Start here

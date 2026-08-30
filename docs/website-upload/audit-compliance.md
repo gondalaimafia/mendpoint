@@ -5,6 +5,7 @@ Retain tenant scoped, attributable, append only operational evidence and export 
 Status: Engineering evidence active
 Availability: Audit capture and governed export are implemented; independent compliance assessment remains external
 Last verified: 2026-08-30
+Publication evidence: not live; no deployed revision or live evidence digest recorded
 Requirements: ME-WAR-008, ME-ENT-004, ME-ENT-012
 Public claims: None
 

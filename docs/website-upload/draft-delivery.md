@@ -5,6 +5,7 @@ Publish one exact, review-first source change to a draft pull request and reconc
 Status: GitHub production path
 Availability: GitHub draft delivery for approved pilot repositories. GitLab delivery is on the roadmap.
 Last verified: 2026-08-14
+Publication evidence: not live; no deployed revision or live evidence digest recorded
 Requirements: ME-SCM-003, ME-SCM-004, ME-WAR-003, ME-WAR-004
 Public claims: CLM-006, CLM-008
 
@@ -79,4 +80,4 @@ Approve a sealed candidate whose source, files, verification, and target reposit
 - [Repository connections](./repository-connections.md)
 - [Verification and attestations](./verification-attestations.md)
 - [Fettler — the first AI API Engineer](./fettler.md)
-- [Regauge — the first AI Legacy Engineer](./regauge.md)
+- [ReGauge — the first AI Legacy Engineer](./regauge.md)

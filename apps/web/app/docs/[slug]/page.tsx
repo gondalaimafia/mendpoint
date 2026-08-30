@@ -37,6 +37,7 @@ export default async function ProductDocumentationPage({ params }: PageInput) {
             <div><dt>Status</dt><dd><span className={`docs-status docs-status-${page.status}`}>{page.statusLabel}</span></dd></div>
             <div><dt>Availability</dt><dd>{page.availability}</dd></div>
             <div><dt>Last verified</dt><dd>{page.lastVerified}</dd></div>
+            <div><dt>Publication evidence</dt><dd>{page.publicationEvidence.state === "live" ? `Live at ${page.publicationEvidence.deployedRevision}, evidence ${page.publicationEvidence.evidenceDigest}` : "Not live; no deployed revision or live evidence digest recorded"}</dd></div>
             <div><dt>Requirements</dt><dd>{page.requirementIds.join(", ")}</dd></div>
             <div><dt>Public claims</dt><dd>{page.claimIds.length > 0 ? page.claimIds.join(", ") : "None"}</dd></div>
           </dl>

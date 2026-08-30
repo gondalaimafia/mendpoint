@@ -14,6 +14,7 @@ const claimRegistry = JSON.parse(
 ) as {
   claims: Array<{
     id: string;
+    requirementIds: string[];
     state: string;
     wording: string;
     scope: string;
@@ -67,7 +68,8 @@ describe("public product documentation catalog", () => {
     expect(PRODUCT_DOCS.find((page) => page.slug === "fettler")?.title)
       .toBe("Fettler — the first AI API Engineer");
     expect(PRODUCT_DOCS.find((page) => page.slug === "regauge")?.title)
-      .toBe("Regauge — the first AI Legacy Engineer");
+      .toBe("ReGauge — the first AI Legacy Engineer");
+    expect(JSON.stringify(PRODUCT_DOCS)).not.toMatch(/\bRegauge\b/);
     expect(PRODUCT_DOCS.map((page) => page.slug)).not.toEqual(
       expect.arrayContaining(["warden", "transformer"]),
     );
@@ -79,6 +81,16 @@ describe("public product documentation catalog", () => {
       expect(["production", "limited_availability", "preview", "internal"]).toContain(page.status);
       expect(page.availability.length).toBeGreaterThan(0);
       expect(page.lastVerified).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      if (page.publicationEvidence.state === "live") {
+        expect(page.publicationEvidence.deployedRevision).toMatch(/^[0-9a-f]{40}$/);
+        expect(page.publicationEvidence.evidenceDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+      } else {
+        expect(page.publicationEvidence).toEqual({
+          state: "not_live",
+          deployedRevision: null,
+          evidenceDigest: null,
+        });
+      }
       expect(page.startHere.steps.length).toBeGreaterThan(0);
       expect(page.howItWorks.length).toBeGreaterThan(1);
       expect(page.interfaces.length).toBeGreaterThan(0);
@@ -106,10 +118,8 @@ describe("public product documentation catalog", () => {
       summary: fettlerClaim.wording,
     });
     expect(fettler?.availability).toContain(fettlerClaim.scope);
-    expect(regauge).toMatchObject({
-      status: regaugeClaim.state,
-      summary: regaugeClaim.wording,
-    });
+    expect(regauge).toMatchObject({ status: regaugeClaim.state });
+    expect(regauge?.summary).toBe(regaugeClaim.wording.replace(/^Regauge\b/, "ReGauge"));
     expect(regauge?.availability).toContain(regaugeClaim.scope);
     expect(regauge?.limitations).toEqual(expect.arrayContaining(regaugeClaim.limitations));
     expect(repositoryConnections?.availability).toContain(gitLabClaim.wording);
@@ -147,14 +157,20 @@ describe("public product documentation catalog", () => {
 
   it("binds every page to registered requirements, claims, and existing contract sources", () => {
     const requirements = new Map(requirementRegistry.requirements.map((entry) => [entry.id, entry]));
-    const claims = new Set(claimRegistry.claims.map((entry) => entry.id));
+    const claims = new Map(claimRegistry.claims.map((entry) => [entry.id, entry]));
     for (const page of PRODUCT_DOCS) {
       expect(page.requirementIds.length, `${page.slug}: requirements`).toBeGreaterThan(0);
       expect(new Set(page.requirementIds).size, `${page.slug}: duplicate requirements`).toBe(page.requirementIds.length);
       expect(new Set(page.claimIds).size, `${page.slug}: duplicate claims`).toBe(page.claimIds.length);
       expect(page.sourceContracts.length, `${page.slug}: sources`).toBeGreaterThan(0);
       for (const id of page.requirementIds) expect(requirements.has(id), `${page.slug}: ${id}`).toBe(true);
-      for (const id of page.claimIds) expect(claims.has(id), `${page.slug}: ${id}`).toBe(true);
+      for (const id of page.claimIds) {
+        const publicClaim = claims.get(id);
+        expect(publicClaim, `${page.slug}: ${id}`).toBeDefined();
+        for (const requirementId of publicClaim?.requirementIds ?? []) {
+          expect(page.requirementIds, `${page.slug}: ${id} requires ${requirementId}`).toContain(requirementId);
+        }
+      }
       for (const locator of page.sourceContracts) {
         expect(existsSync(resolve(repoRoot, locator)), `${page.slug}: ${locator}`).toBe(true);
       }
@@ -167,6 +183,16 @@ describe("public product documentation catalog", () => {
         }
       }
     }
+  });
+
+  it("binds the documented ReGauge campaign read route to the implemented control plane route", () => {
+    const regauge = PRODUCT_DOCS.find((page) => page.slug === "regauge");
+    expect(regauge?.interfaces).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "GET /transformer/control-plane/campaigns/:campaignId", kind: "API" }),
+    ]));
+    expect(
+      readFileSync(resolve(repoRoot, "apps/api/src/transformer-control-plane.ts"), "utf8"),
+    ).toContain('app.get(`${base}/control-plane/campaigns/:campaignId`');
   });
 
   it("keeps related links closed over the catalog and examples free of credential values", () => {
@@ -184,6 +210,7 @@ describe("public product documentation catalog", () => {
       expect(markdown).toContain(`Status: ${page.statusLabel}`);
       expect(markdown).toContain(`Availability: ${page.availability}`);
       expect(markdown).toContain(`Last verified: ${page.lastVerified}`);
+      expect(markdown).toContain("Publication evidence: ");
       expect(markdown).toContain(`Requirements: ${page.requirementIds.join(", ")}`);
       expect(markdown).toContain("## Start here");
       expect(markdown).toContain("## How it works");
@@ -199,7 +226,8 @@ describe("public product documentation catalog", () => {
   it("builds a deterministic manifest without legacy docs slugs or secret material", () => {
     const first = buildDocsManifest();
     expect(first).toEqual(buildDocsManifest());
-    expect(first.schemaVersion).toBe("2026-08-30.v2");
+    expect(first.schemaVersion).toBe("2026-08-30.v3");
+    expect(first.pages.every((page) => page.publicationEvidence.state === "not_live")).toBe(true);
     expect(first.pages).toHaveLength(requiredSlugs.length);
     expect(first.pages.map((page) => page.webPath)).not.toEqual(
       expect.arrayContaining(["/docs/warden", "/docs/transformer"]),

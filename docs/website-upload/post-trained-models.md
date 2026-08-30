@@ -5,6 +5,7 @@ Govern external adapter training, evaluation, consent, canary admission, routing
 Status: Configured integration preview
 Availability: Implemented control plane; no first-party trainer or shipped Mendpoint-trained model
 Last verified: 2026-08-14
+Publication evidence: not live; no deployed revision or live evidence digest recorded
 Requirements: ME-FND-004, ME-RTR-007, ME-RTR-008, ME-RTR-009
 Public claims: None
 

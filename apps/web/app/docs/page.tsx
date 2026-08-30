@@ -5,7 +5,7 @@ import { docsByCategory, PRODUCT_DOCS } from "./catalog.js";
 
 export const metadata: Metadata = {
   title: "Product documentation",
-  description: "Build and operate Mendpoint with evidence-backed guides for Fettler, Regauge, change intelligence, delivery, verification, AI infrastructure, and production operations.",
+  description: "Build and operate Mendpoint with evidence-backed guides for Fettler, ReGauge, change intelligence, delivery, verification, AI infrastructure, and production operations.",
   alternates: { canonical: "/docs" },
 };
 
@@ -20,11 +20,11 @@ export default function DocumentationPage() {
           verify it, and deliver it for human review.
         </p>
         <p className="public-lead">
-          Fettler — the first AI API Engineer. Regauge — the first AI Legacy Engineer.
+          Fettler — the first AI API Engineer. ReGauge — the first AI Legacy Engineer.
         </p>
         <div className="public-actions">
           <Link className="btn primary" href="/docs/fettler">Start with Fettler</Link>
-          <Link className="btn" href="/docs/regauge">Plan a Regauge campaign</Link>
+          <Link className="btn" href="/docs/regauge">Plan a ReGauge campaign</Link>
         </div>
       </header>
 
@@ -61,7 +61,7 @@ export default function DocumentationPage() {
         </div>
         <ul className="public-list">
           <li><Link href="/docs/fettler.md">Fettler as Markdown</Link></li>
-          <li><Link href="/docs/regauge.md">Regauge as Markdown</Link></li>
+          <li><Link href="/docs/regauge.md">ReGauge as Markdown</Link></li>
           <li><Link href="/docs/manifest.json">Documentation manifest</Link></li>
         </ul>
       </section>

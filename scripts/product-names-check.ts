@@ -45,7 +45,7 @@ export const PRODUCT_NAME_COMPATIBILITY_EXCEPTIONS = Object.freeze([
   {
     path: "apps/web/app/nav.tsx",
     sourceText: "/transformer",
-    reason: "The existing Regauge workspace URL remains a compatibility route.",
+    reason: "The existing ReGauge workspace URL remains a compatibility route.",
   },
   {
     path: "apps/web/app/docs/catalog.ts",
@@ -60,27 +60,27 @@ export const PRODUCT_NAME_COMPATIBILITY_EXCEPTIONS = Object.freeze([
   {
     path: "apps/web/app/docs/catalog.ts",
     sourceText: "Submit a migration objective to POST /transformer/missions.",
-    reason: "The existing Regauge mission API remains a compatibility route.",
+    reason: "The existing ReGauge mission API remains a compatibility route.",
   },
   {
     path: "apps/web/app/docs/catalog.ts",
     sourceText: "POST /transformer/missions",
-    reason: "The existing Regauge mission API remains a compatibility route.",
+    reason: "The existing ReGauge mission API remains a compatibility route.",
   },
   {
     path: "apps/web/app/docs/catalog.ts",
     sourceText: "POST /transformer/control-plane/campaigns/:campaignId/review",
-    reason: "The existing Regauge review API remains a compatibility route.",
+    reason: "The existing ReGauge review API remains a compatibility route.",
   },
   {
     path: "apps/web/app/docs/catalog.ts",
-    sourceText: "GET /transformer/executions/:campaignId",
-    reason: "The existing Regauge execution API remains a compatibility route.",
+    sourceText: "GET /transformer/control-plane/campaigns/:campaignId",
+    reason: "The existing ReGauge campaign API remains a compatibility route.",
   },
   {
     path: "apps/web/app/docs/catalog.ts",
     sourceText: "npm run eval:transformer:canary",
-    reason: "eval:transformer:canary is the existing Regauge benchmark command.",
+    reason: "eval:transformer:canary is the existing ReGauge benchmark command.",
   },
   {
     path: "apps/web/app/docs/catalog.ts",

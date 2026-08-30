@@ -5,7 +5,8 @@ Turn submitted OpenAPI changes into evidence backed migration pull request candi
 Status: Limited availability
 Availability: Submitted OpenAPI JSON and configured GitHub pilot repositories
 Last verified: 2026-08-14
-Requirements: ME-WAR-001, ME-WAR-002, ME-WAR-003, ME-WAR-004, ME-WAR-006, ME-WAR-007, ME-WAR-008, ME-WAR-009, ME-GTM-001, ME-GTM-002
+Publication evidence: not live; no deployed revision or live evidence digest recorded
+Requirements: ME-ING-001, ME-ING-002, ME-ING-009, ME-SCM-003, ME-WAR-001, ME-WAR-002, ME-WAR-003, ME-WAR-004, ME-WAR-005, ME-WAR-006, ME-WAR-007, ME-WAR-008, ME-WAR-009, ME-GTM-001, ME-GTM-002
 Public claims: CLM-002, CLM-004, CLM-005, CLM-006
 
 ## Start here

@@ -5,6 +5,7 @@ Treat every bounded input, overload response, partial result, and unavailable de
 Status: Profile specific limits
 Availability: Runtime bounds and error contracts vary by route, workload tier, and deployment profile
 Last verified: 2026-08-30
+Publication evidence: not live; no deployed revision or live evidence digest recorded
 Requirements: ME-FND-006, ME-FND-007, ME-ENT-005, ME-ENT-009
 Public claims: None
 

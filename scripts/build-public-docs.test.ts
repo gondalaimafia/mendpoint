@@ -21,7 +21,7 @@ describe("website upload documentation bundle", () => {
       "<h1>Fettler — the first AI API Engineer</h1>",
     );
     expect(bundle.get("regauge.md")).toContain(
-      "# Regauge — the first AI Legacy Engineer",
+      "# ReGauge — the first AI Legacy Engineer",
     );
     expect([...bundle.keys()]).not.toEqual(
       expect.arrayContaining(["warden.html", "warden.md", "transformer.html", "transformer.md"]),
@@ -53,13 +53,23 @@ describe("website upload documentation bundle", () => {
   it("exports requirement, claim, and source lineage in the machine manifest", () => {
     const manifest = JSON.parse(buildPublicDocsBundle().get("manifest.json") ?? "null") as {
       schemaVersion: string;
-      pages: Array<{ requirementIds: string[]; claimIds: string[]; sourceContracts: string[] }>;
+      pages: Array<{
+        requirementIds: string[];
+        claimIds: string[];
+        sourceContracts: string[];
+        publicationEvidence: { state: string; deployedRevision: string | null; evidenceDigest: string | null };
+      }>;
     };
-    expect(manifest.schemaVersion).toBe("2026-08-30.v2");
+    expect(manifest.schemaVersion).toBe("2026-08-30.v3");
     for (const page of manifest.pages) {
       expect(page.requirementIds.length).toBeGreaterThan(0);
       expect(page.sourceContracts.length).toBeGreaterThan(0);
       expect(page.claimIds).toBeInstanceOf(Array);
+      expect(page.publicationEvidence).toEqual({
+        state: "not_live",
+        deployedRevision: null,
+        evidenceDigest: null,
+      });
     }
   });
 
