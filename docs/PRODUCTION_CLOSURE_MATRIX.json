@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-30T03:18:22.875Z",
-    "observedMainRevision": "aa90be01c014ac281c1dccab0147224b078e9ccf",
-    "observationDigest": "sha256:a8f02a61b59ce0566d1e95ad64237651cad3d327470de491fa786b9e2b665b0d",
+    "observedAt": "2026-08-30T04:30:39.324Z",
+    "observedMainRevision": "4ae3c8d022d79b3329d96cc4fed99d0bb28e7277",
+    "observationDigest": "sha256:231f2e3e01f960d66947e429d13345cdf014c2f9d2df24b8199eeb0dce280b09",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 550,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/550",
-      "title": "Deploy the customer app with its app-scoped Fly token",
+      "number": 553,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/553",
+      "title": "Guarantee the customer app is running after its deploy",
       "baseBranch": "main",
-      "headBranch": "codex/customer-deploy-token",
+      "headBranch": "codex/customer-deploy-machine-start",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2087,12 +2087,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260828-008",
+        "rotationId": "rotation-20260828-009",
         "kind": "runtime",
-        "issuedAt": "2026-08-30T03:18:22.875Z",
-        "expiresAt": "2026-08-31T03:18:22.875Z",
-        "basePolicySha256": "sha256:6c50d01909e29fab574e56b62eff1c42fb8d87cac46771d76d6d1ff55b0a30f3",
-        "proposedPolicySha256": "sha256:f4c8e3fe31ed296e400de63483d44c62baf3a7976b39b4cd2a71bd276f4befcf"
+        "issuedAt": "2026-08-30T04:30:39.324Z",
+        "expiresAt": "2026-08-31T04:30:39.324Z",
+        "basePolicySha256": "sha256:f4c8e3fe31ed296e400de63483d44c62baf3a7976b39b4cd2a71bd276f4befcf",
+        "proposedPolicySha256": "sha256:465a91d74119edaaa8a0bf8f81281856ac3428b9ff389b40f7c3794b524b00d9"
       }
     },
     "pullRequests": [

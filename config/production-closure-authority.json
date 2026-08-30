@@ -37,7 +37,7 @@
   "protectedFiles": {
     "config/production-closure-successors/closure-authority-quiet-sweep.yml": "sha256:82826aac2754b62bfebc5c98adfa8ea1379d1377f30ea8ad69f0ac0170d0d7b9",
     "config/production-closure-successors/closure-authority-systemic-escalation.yml": "sha256:8f538c66031de95befaa01328138d779f64af639a7efb292ad39c939206aef79",
-    ".github/workflows/ci.yml": "sha256:c3dfa53458d96337ae79f104fb596b3037f7e60cb789ebe604780f6e90eae28e",
+    ".github/workflows/ci.yml": "sha256:590b3bb293333910fbf13a9dad678241b3a5a34fe858811ecd3e8670473aa15f",
     "package.json": "sha256:5166abfa08925beec8bbf6cc0078435bf37f1d4165e25524608924d840dd606a",
     "package-lock.json": "sha256:193181927b3e5813f43471c60c343c0300c6c71540a9b3921968a215cb57cd0d",
     "tsconfig.base.json": "sha256:7c157e5eafd2be931e382044c0bdbf7008e111c119c3932f6fd31603a28e8ede",
