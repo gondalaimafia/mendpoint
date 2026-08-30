@@ -529,13 +529,155 @@ jobs:
           --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_CUSTOMER }}
+      # A successful image swap is not a running app. On 4ae3c8d0 this deploy
+      # step exited 0 -- the image was pulled and swapped in place on machine
+      # 84e696a22eee68, same machine id before and after -- and flyctl left that
+      # machine `stopped` with checks 0/1. Customer production was hard down for
+      # seven minutes until the machine was started by hand. The app is not at
+      # fault: started, it boots in ~300ms and its health check passes. Nothing
+      # in this job asserted the machine was actually running, so a deploy that
+      # succeeded and a deploy that left production dark looked identical.
+      # No flyctl flag avoids this; it is documented behaviour of every in-place
+      # strategy. flyctl sends skip_launch=true for any machine whose PRE-deploy
+      # state is not started/starting/failed, so a stopped machine is updated
+      # and deliberately left stopped -- and the health-check wait is skipped
+      # along with it, which is why --wait-timeout and the smoke/DNS checks
+      # cannot catch this. rolling (the default), immediate and canary all share
+      # that rule. Only bluegreen force-starts, and bluegreen is not an in-place
+      # update: it builds a replacement machine with a NEW id, which this
+      # profile fails closed on (it pins itself to MENDPOINT_ALLOWED_MACHINE_ID).
+      # Worse, flyctl also treats a machine that WAS started and came back
+      # stopped as a success. A green `flyctl deploy` is therefore never, on its
+      # own, evidence that the app is up, so the guarantee has to be asserted
+      # here rather than delegated to a flag.
+      #
+      # Idempotent by construction. It reads every machine's state first and
+      # issues `machine start` only for a machine that is not already running,
+      # so the normal case -- the machine came back up on its own -- makes zero
+      # mutating calls and this step is a no-op, not an error. Reading first is
+      # load-bearing rather than tidy: `machine start` has no already-started
+      # special case, it acquires a lease, and it surfaces any API error as a
+      # non-zero exit, so blind-firing it would make a healthy deploy flaky.
+      # flyctl guards on state the same way before starting a machine of its
+      # own accord.
+      #
+      # It cannot create machines: `machine start` acts only on a machine id
+      # that already exists. And it honours the same bound the deploy does --
+      # the profile is pinned to one machine (MENDPOINT_CUSTOMER_MAX_MACHINES=1)
+      # and a machine beyond that bound fails closed on boot -- so it will never
+      # leave more than one machine running, even if the app somehow acquires
+      # extras.
+      #
+      # Deliberately additive, never the decider. It always exits 0 and only
+      # records what it observed; the verification step below is what passes or
+      # fails this job. A blind start that also relaxed verification would turn
+      # a loud outage into a silent one, so the start is best-effort and the
+      # assertion stays strict: a genuine boot failure still fails the deploy.
+      - name: Ensure customer production machines are running
+        id: machines
+        if: steps.head.outputs.superseded != 'true'
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_CUSTOMER }}
+        run: |
+          set -euo pipefail
+          app=mendpoint-fettler-production
+          max=1
+          # Five distinct outcomes, never folded together: "could not look" must
+          # not read as "looks fine" in the failure message below.
+          record() {
+            {
+              echo "outcome=$1"
+              echo "detail=$2"
+            } >>"$GITHUB_OUTPUT"
+            echo "Machine run state after deploy: $1 ($2)"
+          }
+          if ! flyctl machines list --app "$app" --json >machines.json 2>/dev/null; then
+            record undetermined "Fly did not return a machine list"
+            echo "::warning::Could not read machine state for ${app}; leaving the run state as the deploy left it. The verification step below decides this job."
+            exit 0
+          fi
+          # `machines list --json` renders the raw Machines API array, so .id
+          # and .state are per-machine fields. A field can be absent rather than
+          # empty, and an absent state is UNKNOWN, never "stopped": an unknown
+          # machine is left alone and named in the summary, so "could not read
+          # this machine" can never be actioned as "this machine needs starting".
+          if ! states="$(jq -r '.[] | "\(.id // "") \(.state // "")"' machines.json 2>/dev/null)"; then
+            record undetermined "the machine list was not parseable JSON"
+            echo "::warning::Could not parse the machine list for ${app}; leaving the run state as the deploy left it. The verification step below decides this job."
+            exit 0
+          fi
+          total=0
+          running=0
+          startable=""
+          summary=""
+          while read -r id state; do
+            [ -n "$id" ] || continue
+            total=$((total + 1))
+            summary="${summary}${id}=${state:-unknown} "
+            case "$state" in
+              started|starting) running=$((running + 1)) ;;
+              created|stopped|suspended) startable="${startable}${id} " ;;
+              *) ;;
+            esac
+          done <<<"$states"
+          if [ "$total" -eq 0 ]; then
+            record none "the app reports no machines"
+            echo "::warning::${app} reports no machines. This step starts machines that already exist; it never creates one."
+            exit 0
+          fi
+          started=0
+          for id in $startable; do
+            if [ $((running + started)) -ge "$max" ]; then
+              echo "::warning::Not starting machine ${id}: ${app} is bounded to ${max} running machine(s) and that bound is already met. A machine beyond the bound fails closed on boot, so leaving it stopped is correct."
+              continue
+            fi
+            echo "Machine ${id} is not running; starting it."
+            if flyctl machine start "$id" --app "$app"; then
+              started=$((started + 1))
+            else
+              # A start that lost a race with the machine coming up on its
+              # own is not a failure, and `machine start` takes a lease, so it
+              # can also lose to a deploy that has not let go yet. Re-read the
+              # state rather than trust the exit code.
+              now="$(flyctl machines list --app "$app" --json 2>/dev/null | jq -r --arg id "$id" '.[] | select((.id // .ID) == $id) | (.state // .State)' 2>/dev/null || true)"
+              case "$now" in
+                started|starting)
+                  echo "Machine ${id} is ${now}; the start command raced with it coming up."
+                  started=$((started + 1))
+                  ;;
+                *)
+                  echo "::warning::Could not start machine ${id} (state now: ${now:-unknown}). The verification step below decides this job."
+                  ;;
+              esac
+            fi
+          done
+          if [ "$started" -gt 0 ]; then
+            record started "started ${started} machine(s); states before this step: ${summary% }"
+          elif [ "$running" -gt 0 ]; then
+            record already-running "${summary% }"
+          else
+            record not-running "${summary% }"
+          fi
       # Bounded verification, mirroring the mendpoint-talal deploy: every curl
       # carries --max-time and the loop has an explicit deadline, so an
       # unresponsive app fails fast rather than burning the job timeout. An
       # absent revision is treated as a FAILURE, never a match.
+      #
+      # This step remains the sole decider of the job. The start step above is
+      # additive: it can leave the machine running, but it cannot make this
+      # step pass. What the machine step contributes here is diagnosis, not
+      # permission -- its observation is read in through the environment (never
+      # interpolated into the script) so the failure message can say WHICH
+      # failure this was. Before this, a deploy that never shipped and a deploy
+      # that shipped and left production dark printed the same words, and the
+      # dark-production outage on 4ae3c8d0 was reported as a failed deploy.
       - name: Verify deployed revision and customer production health
         if: steps.head.outputs.superseded != 'true'
         shell: bash
+        env:
+          MACHINE_OUTCOME: ${{ steps.machines.outputs.outcome }}
+          MACHINE_DETAIL: ${{ steps.machines.outputs.detail }}
         run: |
           set -euo pipefail
           expected="${{ github.sha }}"
@@ -565,15 +707,25 @@ jobs:
             fi
             sleep 5
           done
-          echo "::error::Customer production verification failed for revision ${expected} (deployed, but not confirmed live on current main)."
+          echo "::error::Customer production verification failed for revision ${expected}: the image swap succeeded but the app is not serving it."
+          echo "  Image swap: SUCCEEDED. This step runs only after 'Deploy customer production' exited 0, so ${expected} is on the machine. A deploy that failed outright fails THAT step and never reaches here -- if you are reading this message, the deploy itself did not fail."
+          echo "  Machine run state after deploy: ${MACHINE_OUTCOME:-unrecorded} (${MACHINE_DETAIL:-no observation recorded})"
           echo "  /version -> http ${ver_code}, ${ver_bytes} bytes, revision=$([ -n "${revision}" ] && echo "${revision}" || echo "<absent>")"
           echo "  /livez   -> http ${live_code}, ${live_bytes} bytes"
           echo "  /healthz -> http ${health_code}, ${health_bytes} bytes"
           if [ -z "${revision}" ]; then
             echo "  Deployed revision could not be determined (absent). This is a FAILURE, not a match."
+            case "${MACHINE_OUTCOME:-}" in
+              already-running|started)
+                echo "  The machine IS running, so the app came up and still did not serve: read the app logs (flyctl logs --app mendpoint-fettler-production)."
+                ;;
+              *)
+                echo "  The machine is NOT confirmed running, so there was nothing up to answer: read machine state (flyctl machines list --app mendpoint-fettler-production) and start it if it is stopped."
+                ;;
+            esac
           elif [ "${revision}" != "${expected}" ]; then
-            echo "  Deployed revision ${revision} does not match expected ${expected}."
+            echo "  Deployed revision ${revision} does not match expected ${expected}. The app is serving OLD code: the swap landed but this machine is running a previous image."
           else
-            echo "  Revision matched but the app never reported healthy (/livez and /healthz must both be 200)."
+            echo "  Revision matched but the app never reported healthy (/livez and /healthz must both be 200). The right code is running and failing its own health checks."
           fi
           exit 1
