@@ -207,7 +207,7 @@ function renderIndex(): string {
       <p class="kicker">Mendpoint documentation</p>
       <h1>Build safe software migration workflows</h1>
       <p>Understand change, produce bounded candidates, verify the result, and deliver it for human review.</p>
-      <pre><code>npm install\nnpm run demo</code></pre>
+      <pre aria-label="Quickstart command" tabindex="0"><code>npm install\nnpm run demo</code></pre>
     </header>
 ${groups}
     <section><h2>Machine-readable resources</h2><p>Every component is included beside this page as Markdown. Use <a href="manifest.json">manifest.json</a> to enumerate the bundle.</p></section>`);
@@ -226,7 +226,7 @@ function renderPage(page: ProductDoc): string {
       <p>${html(page.summary)}</p>
       <dl><dt>Status</dt><dd>${html(page.statusLabel)}</dd><dt>Availability</dt><dd>${html(page.availability)}</dd><dt>Last verified</dt><dd>${html(page.lastVerified)}</dd><dt>Publication evidence</dt><dd>${html(page.publicationEvidence.state === "live" ? `Live at ${page.publicationEvidence.deployedRevision}, evidence ${page.publicationEvidence.evidenceDigest}` : "Not live; no deployed revision or live evidence digest recorded")}</dd><dt>Requirements</dt><dd>${html(page.requirementIds.join(", "))}</dd><dt>Public claims</dt><dd>${html(page.claimIds.length > 0 ? page.claimIds.join(", ") : "None")}</dd></dl>
     </header>
-    ${section("Start here", `<p>${html(page.startHere.intro)}</p>${ordered(page.startHere.steps)}${page.startHere.command ? `<pre><code>${html(page.startHere.command)}</code></pre>` : ""}`)}
+    ${section("Start here", `<p>${html(page.startHere.intro)}</p>${ordered(page.startHere.steps)}${page.startHere.command ? `<pre aria-label="${attribute(`${page.title} quickstart command`)}" tabindex="0"><code>${html(page.startHere.command)}</code></pre>` : ""}`)}
     ${section("What it does", unordered(page.capabilities))}
     ${section("When to use it", unordered(page.useWhen))}
     ${section("How it works", ordered(page.howItWorks))}

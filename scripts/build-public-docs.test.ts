@@ -38,6 +38,25 @@ describe("website upload documentation bundle", () => {
     expect(index).not.toMatch(/<script|javascript:/i);
   });
 
+  it("keeps generated scrollable quickstarts keyboard focusable and named", () => {
+    const bundle = buildPublicDocsBundle();
+    const index = bundle.get("index.html") ?? "";
+    expect(index).toContain(
+      '<pre aria-label="Quickstart command" tabindex="0"><code>npm install',
+    );
+
+    for (const page of PRODUCT_DOCS) {
+      const generated = bundle.get(`${page.slug}.html`) ?? "";
+      if (page.startHere.command) {
+        expect(generated).toContain(
+          `<pre aria-label="${page.title} quickstart command" tabindex="0"><code>`,
+        );
+      } else {
+        expect(generated).not.toContain("<pre");
+      }
+    }
+  });
+
   it("keeps every generated relative documentation link inside the bundle", () => {
     const bundle = buildPublicDocsBundle();
     for (const [name, content] of bundle) {
