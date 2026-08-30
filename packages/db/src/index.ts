@@ -7,6 +7,7 @@ import { computeProductMetrics } from "./metrics.js";
 import { settleExpiredWardenModelReservations } from "./warden-model-accounting.js";
 import { assertTenantScope } from "./tenant-scope.js";
 import { createTenantMembership, getTenantMembership } from "./identity.js";
+import { insertPrincipal } from "./trust.js";
 import type {
   ApiChange,
   ApiKeyRow,
@@ -23,6 +24,7 @@ import type {
   ImpactFindingRow,
   MigrationPrRow,
   MonitoredApi,
+  PrincipalRow,
   Provider,
   RoutingExecutorHealthRow,
   RoutingLedgerRow,
@@ -52,6 +54,7 @@ export * from "./mission-handoff.js";
 export * from "./mission-task.js";
 export * from "./policy-envelope.js";
 export * from "./task-ownership.js";
+export * from "./secret-lifecycle.js";
 
 export type AppDb = {
   raw: DatabaseSync;
@@ -369,6 +372,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
   tenant_id TEXT NOT NULL DEFAULT 'default',
   principal_id TEXT,
   scopes_json TEXT NOT NULL DEFAULT '["*"]',
+  authority_principal_id TEXT,
+  authority_role TEXT CHECK (authority_role IN ('owner', 'admin', 'engineer', 'viewer', 'fde', 'agent')),
   created_at TEXT NOT NULL,
   last_used_at TEXT,
   revoked_at TEXT
@@ -1744,6 +1749,207 @@ CREATE TABLE IF NOT EXISTS scm_connections (
 );
 CREATE INDEX IF NOT EXISTS scm_connections_tenant_idx ON scm_connections(tenant_id, provider);
 
+-- Durable encrypted secret generations. SCM rows keep their scheme://id reference;
+-- source_ref resolves that compatibility locator to the current lifecycle record.
+-- There is deliberately no plaintext column.
+CREATE TABLE IF NOT EXISTS secret_lifecycle_versions (
+  tenant_id TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
+  source_ref TEXT NOT NULL,
+  generation INTEGER NOT NULL CHECK (generation >= 1),
+  state TEXT NOT NULL CHECK (state IN ('active', 'retired', 'revoked')),
+  audiences_json TEXT NOT NULL,
+  expires_at TEXT,
+  issued_at TEXT NOT NULL,
+  rotate_after TEXT,
+  retired_at TEXT,
+  revoked_at TEXT,
+  revocation_reason TEXT,
+  key_provider TEXT NOT NULL,
+  key_id TEXT NOT NULL,
+  key_version TEXT NOT NULL,
+  customer_managed INTEGER NOT NULL CHECK (customer_managed IN (0, 1)),
+  key_attestation_sha256 TEXT NOT NULL CHECK (length(key_attestation_sha256) = 64),
+  material_lineage_id TEXT NOT NULL CHECK (length(material_lineage_id) = 64),
+  material_lineage_key_id TEXT NOT NULL,
+  envelope_schema_version INTEGER NOT NULL CHECK (envelope_schema_version = 1),
+  algorithm TEXT NOT NULL CHECK (algorithm = 'AES-256-GCM'),
+  wrapped_data_key TEXT NOT NULL,
+  iv TEXT NOT NULL,
+  auth_tag TEXT NOT NULL,
+  ciphertext TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, credential_id, generation),
+  UNIQUE (tenant_id, source_ref, generation),
+  CHECK ((state = 'active' AND retired_at IS NULL AND revoked_at IS NULL AND revocation_reason IS NULL)
+    OR (state = 'retired' AND retired_at IS NOT NULL AND revoked_at IS NULL AND revocation_reason IS NULL)
+    OR (state = 'revoked' AND revoked_at IS NOT NULL AND length(trim(revocation_reason)) > 0))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS secret_lifecycle_one_active_idx
+  ON secret_lifecycle_versions(tenant_id, credential_id) WHERE state = 'active';
+CREATE UNIQUE INDEX IF NOT EXISTS secret_lifecycle_one_active_source_ref_idx
+  ON secret_lifecycle_versions(tenant_id, source_ref) WHERE state = 'active';
+CREATE INDEX IF NOT EXISTS secret_lifecycle_source_ref_idx
+  ON secret_lifecycle_versions(tenant_id, source_ref, generation);
+
+-- Immutable protected-state binding between a lineage key's versioned ID and
+-- a domain-separated commitment of its random key bytes. The commitment is
+-- safe to retain; key material never enters the database.
+CREATE TABLE IF NOT EXISTS secret_lineage_key_bindings (
+  tenant_id TEXT NOT NULL,
+  key_id TEXT NOT NULL,
+  key_fingerprint TEXT NOT NULL CHECK (length(key_fingerprint) = 64),
+  bound_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, key_id)
+);
+CREATE TRIGGER IF NOT EXISTS secret_lineage_key_bindings_no_update
+BEFORE UPDATE ON secret_lineage_key_bindings BEGIN
+  SELECT RAISE(ABORT, 'secret_lineage_key_binding_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS secret_lineage_key_bindings_no_delete
+BEFORE DELETE ON secret_lineage_key_bindings BEGIN
+  SELECT RAISE(ABORT, 'secret_lineage_key_binding_delete_forbidden');
+END;
+
+CREATE TABLE IF NOT EXISTS secret_lifecycle_operations (
+  tenant_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  operation TEXT NOT NULL CHECK (operation IN ('create', 'rotate')),
+  request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+  request_commitment_key_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
+  result_generation INTEGER NOT NULL CHECK (result_generation >= 1),
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, idempotency_key),
+  FOREIGN KEY (tenant_id, credential_id, result_generation)
+    REFERENCES secret_lifecycle_versions(tenant_id, credential_id, generation)
+);
+CREATE INDEX IF NOT EXISTS secret_lifecycle_operations_result_idx
+  ON secret_lifecycle_operations(tenant_id, credential_id, result_generation);
+CREATE TRIGGER IF NOT EXISTS secret_lifecycle_operations_no_update
+BEFORE UPDATE ON secret_lifecycle_operations
+BEGIN
+  SELECT RAISE(ABORT, 'secret_lifecycle_operation_immutable');
+END;
+
+CREATE TABLE IF NOT EXISTS secret_rewrap_operations (
+  tenant_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+  request_commitment_key_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
+  result_generation INTEGER NOT NULL CHECK (result_generation >= 1),
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, idempotency_key),
+  FOREIGN KEY (tenant_id, credential_id, result_generation)
+    REFERENCES secret_lifecycle_versions(tenant_id, credential_id, generation)
+);
+CREATE TRIGGER IF NOT EXISTS secret_rewrap_operations_no_update
+BEFORE UPDATE ON secret_rewrap_operations BEGIN
+  SELECT RAISE(ABORT, 'secret_rewrap_operation_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS secret_rewrap_operations_no_delete
+BEFORE DELETE ON secret_rewrap_operations BEGIN
+  SELECT RAISE(ABORT, 'secret_rewrap_operation_delete_forbidden');
+END;
+
+CREATE TABLE IF NOT EXISTS secret_break_glass_operations (
+  tenant_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+  request_commitment_key_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
+  generation INTEGER NOT NULL CHECK (generation >= 1),
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, idempotency_key),
+  FOREIGN KEY (tenant_id, credential_id, generation)
+    REFERENCES secret_lifecycle_versions(tenant_id, credential_id, generation)
+);
+CREATE INDEX IF NOT EXISTS secret_break_glass_operations_result_idx
+  ON secret_break_glass_operations(tenant_id, credential_id, generation);
+CREATE TRIGGER IF NOT EXISTS secret_break_glass_operations_no_update
+BEFORE UPDATE ON secret_break_glass_operations
+BEGIN
+  SELECT RAISE(ABORT, 'secret_break_glass_operation_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS secret_break_glass_operations_no_delete
+BEFORE DELETE ON secret_break_glass_operations
+BEGIN
+  SELECT RAISE(ABORT, 'secret_break_glass_operation_delete_forbidden');
+END;
+CREATE TRIGGER IF NOT EXISTS secret_lifecycle_operations_no_delete
+BEFORE DELETE ON secret_lifecycle_operations
+BEGIN
+  SELECT RAISE(ABORT, 'secret_lifecycle_operation_delete_forbidden');
+END;
+
+CREATE TABLE IF NOT EXISTS secret_revoke_operations (
+  tenant_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+  request_commitment_key_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
+  generation INTEGER NOT NULL CHECK (generation >= 1),
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, idempotency_key),
+  FOREIGN KEY (tenant_id, credential_id, generation)
+    REFERENCES secret_lifecycle_versions(tenant_id, credential_id, generation)
+);
+CREATE TRIGGER IF NOT EXISTS secret_revoke_operations_no_update
+BEFORE UPDATE ON secret_revoke_operations BEGIN
+  SELECT RAISE(ABORT, 'secret_revoke_operation_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS secret_revoke_operations_no_delete
+BEFORE DELETE ON secret_revoke_operations BEGIN
+  SELECT RAISE(ABORT, 'secret_revoke_operation_delete_forbidden');
+END;
+
+CREATE TRIGGER IF NOT EXISTS secret_lifecycle_versions_no_delete
+BEFORE DELETE ON secret_lifecycle_versions
+BEGIN
+  SELECT RAISE(ABORT, 'secret_lifecycle_delete_forbidden');
+END;
+
+CREATE TRIGGER IF NOT EXISTS secret_lifecycle_versions_guard_update
+BEFORE UPDATE ON secret_lifecycle_versions
+WHEN
+  NEW.tenant_id IS NOT OLD.tenant_id OR
+  NEW.credential_id IS NOT OLD.credential_id OR
+  NEW.source_ref IS NOT OLD.source_ref OR
+  NEW.generation IS NOT OLD.generation OR
+  NEW.audiences_json IS NOT OLD.audiences_json OR
+  NEW.expires_at IS NOT OLD.expires_at OR
+  NEW.issued_at IS NOT OLD.issued_at OR
+  NEW.rotate_after IS NOT OLD.rotate_after OR
+  NEW.key_provider IS NOT OLD.key_provider OR
+  NEW.key_id IS NOT OLD.key_id OR
+  NEW.key_version IS NOT OLD.key_version OR
+  NEW.customer_managed IS NOT OLD.customer_managed OR
+  NEW.key_attestation_sha256 IS NOT OLD.key_attestation_sha256 OR
+  NEW.material_lineage_id IS NOT OLD.material_lineage_id OR
+  NEW.material_lineage_key_id IS NOT OLD.material_lineage_key_id OR
+  NEW.envelope_schema_version IS NOT OLD.envelope_schema_version OR
+  NEW.algorithm IS NOT OLD.algorithm OR
+  NEW.wrapped_data_key IS NOT OLD.wrapped_data_key OR
+  NEW.iv IS NOT OLD.iv OR
+  NEW.auth_tag IS NOT OLD.auth_tag OR
+  NEW.ciphertext IS NOT OLD.ciphertext OR
+  NEW.created_at IS NOT OLD.created_at OR
+  NOT (
+    (OLD.state = 'active' AND NEW.state = 'retired' AND
+      NEW.retired_at IS NOT NULL AND NEW.revoked_at IS NULL AND NEW.revocation_reason IS NULL) OR
+    (OLD.state IN ('active', 'retired') AND NEW.state = 'revoked' AND
+      NEW.retired_at IS OLD.retired_at AND NEW.revoked_at IS NOT NULL AND
+      length(trim(NEW.revocation_reason)) > 0)
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'secret_lifecycle_transition_invalid');
+END;
+
 CREATE TABLE IF NOT EXISTS connected_repositories (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
@@ -2258,6 +2464,8 @@ export function createDb(urlOrPath?: string): AppDb {
     migrateProvidersFeedColumns({ raw });
     migrateAuditIntegrity({ raw });
     migrateArtifactContent({ raw });
+    migrateSecretLifecycleOperationCommitments({ raw });
+    migrateSecretLifecycleAttestation({ raw });
     migrateWardenTransformerTableNames({ raw });
     migrateWardenCiAwaitingReview({ raw });
     installTrustImmutability({ raw });
@@ -2306,6 +2514,98 @@ function migrateTenantMembershipUserNameUniqueness(db: AppDb): void {
     if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
     throw error;
   }
+}
+
+function migrateSecretLifecycleOperationCommitments(db: AppDb): void {
+  const columns = all<{ name: string }>(
+    db,
+    "PRAGMA table_info(secret_lifecycle_operations)",
+  ).map((column) => column.name);
+  if (!columns.includes("request_commitment_key_id")) {
+    run(db, "ALTER TABLE secret_lifecycle_operations ADD COLUMN request_commitment_key_id TEXT");
+  }
+  db.raw.exec(`
+    CREATE TRIGGER IF NOT EXISTS secret_lifecycle_operations_commitment_required
+    BEFORE INSERT ON secret_lifecycle_operations
+    WHEN NEW.request_commitment_key_id IS NULL OR length(trim(NEW.request_commitment_key_id)) = 0
+    BEGIN
+      SELECT RAISE(ABORT, 'secret_lifecycle_commitment_key_required');
+    END;
+  `);
+}
+
+function migrateSecretLifecycleAttestation(db: AppDb): void {
+  db.raw.exec("DROP TRIGGER IF EXISTS secret_lifecycle_versions_guard_update");
+  const columns = all<{ name: string }>(
+    db,
+    "PRAGMA table_info(secret_lifecycle_versions)",
+  ).map((column) => column.name);
+  if (!columns.includes("key_attestation_sha256")) {
+    run(db, "ALTER TABLE secret_lifecycle_versions ADD COLUMN key_attestation_sha256 TEXT");
+  }
+  if (!columns.includes("material_lineage_id")) {
+    run(db, "ALTER TABLE secret_lifecycle_versions ADD COLUMN material_lineage_id TEXT");
+  }
+  if (!columns.includes("material_lineage_key_id")) {
+    run(db, "ALTER TABLE secret_lifecycle_versions ADD COLUMN material_lineage_key_id TEXT");
+  }
+  run(db, `UPDATE secret_lifecycle_versions AS version
+    SET material_lineage_key_id = (
+      SELECT operation.request_commitment_key_id
+      FROM secret_lifecycle_operations AS operation
+      WHERE operation.tenant_id = version.tenant_id
+        AND operation.credential_id = version.credential_id
+        AND operation.result_generation <= version.generation
+        AND operation.request_commitment_key_id IS NOT NULL
+      ORDER BY operation.result_generation DESC
+      LIMIT 1
+    )
+    WHERE material_lineage_key_id IS NULL
+      AND EXISTS (
+        SELECT 1
+        FROM secret_lifecycle_operations AS operation
+        WHERE operation.tenant_id = version.tenant_id
+          AND operation.credential_id = version.credential_id
+          AND operation.result_generation <= version.generation
+          AND operation.request_commitment_key_id IS NOT NULL
+      )`);
+  db.raw.exec(`
+    CREATE TRIGGER secret_lifecycle_versions_guard_update
+    BEFORE UPDATE ON secret_lifecycle_versions
+    WHEN
+      NEW.tenant_id IS NOT OLD.tenant_id OR
+      NEW.credential_id IS NOT OLD.credential_id OR
+      NEW.source_ref IS NOT OLD.source_ref OR
+      NEW.generation IS NOT OLD.generation OR
+      NEW.audiences_json IS NOT OLD.audiences_json OR
+      NEW.expires_at IS NOT OLD.expires_at OR
+      NEW.issued_at IS NOT OLD.issued_at OR
+      NEW.rotate_after IS NOT OLD.rotate_after OR
+      NEW.key_provider IS NOT OLD.key_provider OR
+      NEW.key_id IS NOT OLD.key_id OR
+      NEW.key_version IS NOT OLD.key_version OR
+      NEW.customer_managed IS NOT OLD.customer_managed OR
+      NEW.key_attestation_sha256 IS NOT OLD.key_attestation_sha256 OR
+      NEW.material_lineage_id IS NOT OLD.material_lineage_id OR
+      NEW.material_lineage_key_id IS NOT OLD.material_lineage_key_id OR
+      NEW.envelope_schema_version IS NOT OLD.envelope_schema_version OR
+      NEW.algorithm IS NOT OLD.algorithm OR
+      NEW.wrapped_data_key IS NOT OLD.wrapped_data_key OR
+      NEW.iv IS NOT OLD.iv OR
+      NEW.auth_tag IS NOT OLD.auth_tag OR
+      NEW.ciphertext IS NOT OLD.ciphertext OR
+      NEW.created_at IS NOT OLD.created_at OR
+      NOT (
+        (OLD.state = 'active' AND NEW.state = 'retired' AND
+          NEW.retired_at IS NOT NULL AND NEW.revoked_at IS NULL AND NEW.revocation_reason IS NULL) OR
+        (OLD.state IN ('active', 'retired') AND NEW.state = 'revoked' AND
+          NEW.retired_at IS OLD.retired_at AND NEW.revoked_at IS NOT NULL AND
+          length(trim(NEW.revocation_reason)) > 0)
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'secret_lifecycle_transition_invalid');
+    END;
+  `);
 }
 
 function migrateWardenCiAwaitingReview(db: AppDb): void {
@@ -2787,6 +3087,8 @@ function migrateProvidersFeedColumns(db: AppDb) {
     // catalog, byte-identical). No static index/view/constraint references it, so an existing
     // DB that has not run this migration never touches the column in the static DDL.
     { table: "providers", name: "tenant_id", sql: "TEXT" },
+    { table: "api_keys", name: "authority_principal_id", sql: "TEXT" },
+    { table: "api_keys", name: "authority_role", sql: "TEXT" },
     { table: "jobs", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
     { table: "api_keys", name: "principal_id", sql: "TEXT" },
     { table: "jobs", name: "lease_owner", sql: "TEXT" },
@@ -4672,17 +4974,25 @@ export function createApiKey(
     tenantId: string;
     principalId?: string | null;
     scopes?: string[];
+    authorityPrincipalId?: string;
+    authorityRole?: ApiKeyRow["authority_role"];
     createdAt: string;
   },
 ): { id: string; token: string; prefix: string; tenantId: string } {
   const token = `me_${randomBytes(24).toString("base64url")}`;
   const prefix = token.slice(0, 10);
   const keyHash = hashApiKey(token);
+  const authorityPrincipalId = validatedApiKeyAuthorityPrincipal(
+    db,
+    row.tenantId,
+    row.authorityPrincipalId,
+  );
+  const authorityRole = validatedApiKeyAuthorityRole(row.authorityRole);
   run(
     db,
     `INSERT INTO api_keys
-       (id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     (id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json, authority_principal_id, authority_role, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.name,
@@ -4691,6 +5001,8 @@ export function createApiKey(
       row.tenantId,
       row.principalId ?? null,
       JSON.stringify(row.scopes ?? ["*"]),
+      authorityPrincipalId,
+      authorityRole,
       row.createdAt,
     ],
   );
@@ -4712,15 +5024,23 @@ export function createApiKeyFromToken(
     principalId?: string | null;
     token: string;
     scopes?: string[];
+    authorityPrincipalId?: string;
+    authorityRole?: ApiKeyRow["authority_role"];
     createdAt: string;
   },
 ): { id: string; prefix: string; tenantId: string } {
   const prefix = row.token.slice(0, 10);
+  const authorityPrincipalId = validatedApiKeyAuthorityPrincipal(
+    db,
+    row.tenantId,
+    row.authorityPrincipalId,
+  );
+  const authorityRole = validatedApiKeyAuthorityRole(row.authorityRole);
   run(
     db,
     `INSERT INTO api_keys
-       (id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     (id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json, authority_principal_id, authority_role, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.name,
@@ -4729,10 +5049,206 @@ export function createApiKeyFromToken(
       row.tenantId,
       row.principalId ?? null,
       JSON.stringify(row.scopes ?? ["*"]),
+      authorityPrincipalId,
+      authorityRole,
       row.createdAt,
     ],
   );
   return { id: row.id, prefix, tenantId: row.tenantId };
+}
+
+function validatedApiKeyAuthorityRole(role: ApiKeyRow["authority_role"] | undefined): ApiKeyRow["authority_role"] {
+  if (role === undefined || role === null) return null;
+  if (!(new Set(["owner", "admin", "engineer", "viewer", "fde", "agent"])).has(role)) {
+    throw new Error("api_key_authority_role_invalid");
+  }
+  return role;
+}
+
+function validatedApiKeyAuthorityPrincipal(
+  db: AppDb,
+  tenantId: string,
+  authorityPrincipalId: string | undefined,
+  observedAtMs = Date.now(),
+): string | null {
+  if (authorityPrincipalId === undefined) return null;
+  const principal = get<PrincipalRow>(
+    db,
+    `SELECT * FROM principals WHERE tenant_id = ? AND id = ?`,
+    [tenantId, authorityPrincipalId],
+  );
+  const createdAt = principal ? Date.parse(principal.created_at) : Number.NaN;
+  const expiresAt = principal?.expires_at === null ? null : Date.parse(principal?.expires_at ?? "");
+  if (
+    !principal ||
+    !Number.isFinite(observedAtMs) ||
+    (principal.kind !== "human" && principal.kind !== "service") ||
+    principal.revoked_at !== null ||
+    !Number.isFinite(createdAt) ||
+    createdAt > observedAtMs ||
+    (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= observedAtMs))
+  ) {
+    throw new Error("api_key_authority_principal_invalid");
+  }
+  return principal.id;
+}
+
+export function bindApiKeyAuthorityPrincipal(
+  db: AppDb,
+  input: Readonly<{
+    apiKeyId: string;
+    tenantId: string;
+    authorityPrincipalId: string;
+    authorityRole?: Exclude<ApiKeyRow["authority_role"], null>;
+    observedAt?: string;
+  }>,
+): void {
+  const authorityPrincipalId = validatedApiKeyAuthorityPrincipal(
+    db,
+    input.tenantId,
+    input.authorityPrincipalId,
+    input.observedAt === undefined ? undefined : Date.parse(input.observedAt),
+  );
+  const authorityRole = validatedApiKeyAuthorityRole(input.authorityRole);
+  const key = get<Pick<ApiKeyRow, "tenant_id" | "authority_principal_id" | "authority_role">>(
+    db,
+    `SELECT tenant_id, authority_principal_id, authority_role FROM api_keys WHERE id = ?`,
+    [input.apiKeyId],
+  );
+  if (!key || key.tenant_id !== input.tenantId || !authorityPrincipalId) {
+    throw new Error("api_key_authority_binding_invalid");
+  }
+  if (key.authority_principal_id !== null && key.authority_principal_id !== authorityPrincipalId) {
+    throw new Error("api_key_authority_binding_conflict");
+  }
+  if (authorityRole !== null && key.authority_role !== null && key.authority_role !== authorityRole) {
+    throw new Error("api_key_authority_binding_conflict");
+  }
+  if (key.authority_principal_id === null || (authorityRole !== null && key.authority_role === null)) {
+    run(
+      db,
+      `UPDATE api_keys
+       SET authority_principal_id = COALESCE(authority_principal_id, ?),
+           authority_role = COALESCE(authority_role, ?)
+       WHERE id = ? AND tenant_id = ?`,
+      [authorityPrincipalId, authorityRole, input.apiKeyId, input.tenantId],
+    );
+  }
+}
+
+/**
+ * Bind a wildcard owner key to one durable authority. The only replaceable
+ * legacy binding is the exact key-specific service principal created by the
+ * pre-authority authentication compatibility path, and only while its role is
+ * still unbound. This keeps migration from amplifying arbitrary legacy keys.
+ */
+export function bindOwnerApiKeyAuthority(
+  db: AppDb,
+  input: Readonly<{
+    apiKeyId: string;
+    tenantId: string;
+    authorityPrincipalId: string;
+  }>,
+): ApiKeyRow {
+  const authorityPrincipalId = validatedApiKeyAuthorityPrincipal(
+    db,
+    input.tenantId,
+    input.authorityPrincipalId,
+  );
+  if (!authorityPrincipalId) throw new Error("api_key_authority_binding_invalid");
+  const key = get<ApiKeyRow>(db, `SELECT * FROM api_keys WHERE id = ? AND tenant_id = ?`, [
+    input.apiKeyId,
+    input.tenantId,
+  ]);
+  if (!key) throw new Error("api_key_authority_binding_invalid");
+  let scopes: unknown;
+  try {
+    scopes = JSON.parse(key.scopes_json);
+  } catch {
+    throw new Error("api_key_authority_binding_invalid");
+  }
+  if (!Array.isArray(scopes) || scopes.length !== 1 || scopes[0] !== "*") {
+    throw new Error("api_key_authority_binding_invalid");
+  }
+  if (key.authority_principal_id === authorityPrincipalId && key.authority_role === "owner") {
+    return key;
+  }
+  const legacy = key.authority_principal_id === null
+    ? null
+    : get<PrincipalRow>(db, `SELECT * FROM principals WHERE id = ? AND tenant_id = ?`, [
+        key.authority_principal_id,
+        input.tenantId,
+      ]);
+  const exactLegacyCompatibilityBinding = key.authority_role === null && legacy?.kind === "service" &&
+    legacy.subject === `api-key-authority:${key.id}` && legacy.audience === "mendpoint-api";
+  const replaceable = key.authority_role === null && (
+    key.authority_principal_id === null ||
+    key.authority_principal_id === authorityPrincipalId ||
+    exactLegacyCompatibilityBinding
+  );
+  if (!replaceable) throw new Error("api_key_authority_binding_conflict");
+  const updated = db.raw.prepare(
+    `UPDATE api_keys SET authority_principal_id = ?, authority_role = 'owner'
+     WHERE id = ? AND tenant_id = ? AND authority_role IS NULL
+       AND authority_principal_id IS ?`,
+  ).run(authorityPrincipalId, key.id, input.tenantId, key.authority_principal_id);
+  if (updated.changes !== 1) throw new Error("api_key_authority_binding_conflict");
+  return get<ApiKeyRow>(db, `SELECT * FROM api_keys WHERE id = ?`, [key.id])!;
+}
+
+export function ensureDeploymentBootstrapOwnerPrincipal(
+  db: AppDb,
+  tenantId: string,
+  createdAt: string,
+): PrincipalRow {
+  const subject = "deployment-bootstrap-owner";
+  return insertPrincipal(db, {
+    id: `principal-service-${createHash("sha256")
+      .update(`${tenantId}\n${subject}`)
+      .digest("hex")
+      .slice(0, 32)}`,
+    tenantId,
+    kind: "service",
+    subject,
+    displayName: "Deployment bootstrap owner",
+    audience: "mendpoint-api",
+    createdAt,
+  });
+}
+
+export function migrateLegacySelfServeOwnerKeyAuthority(
+  db: AppDb,
+  apiKeyId: string,
+): ApiKeyRow {
+  const key = get<ApiKeyRow>(db, `SELECT * FROM api_keys WHERE id = ?`, [apiKeyId]);
+  if (!key || !key.id.startsWith("key_ss_") || !key.tenant_id.startsWith("tenant_ss_")) {
+    throw new Error("api_key_authority_binding_invalid");
+  }
+  const memberships = all<TenantMembershipRow>(db, `SELECT * FROM tenant_memberships
+    WHERE tenant_id = ? AND issuer = ? AND role = 'owner' AND status = 'active'`, [
+    key.tenant_id,
+    "https://self-serve.mendpoint.ai",
+  ]);
+  if (memberships.length !== 1) throw new Error("api_key_authority_binding_invalid");
+  const membership = memberships[0]!;
+  const trustSubject = `${membership.issuer}|${membership.subject}`;
+  const principal = insertPrincipal(db, {
+    id: `principal-human-${createHash("sha256")
+      .update(`${key.tenant_id}\n${trustSubject}`)
+      .digest("hex")
+      .slice(0, 32)}`,
+    tenantId: key.tenant_id,
+    kind: "human",
+    subject: trustSubject,
+    displayName: membership.display_name,
+    audience: membership.issuer,
+    createdAt: membership.created_at,
+  });
+  return bindOwnerApiKeyAuthority(db, {
+    apiKeyId: key.id,
+    tenantId: key.tenant_id,
+    authorityPrincipalId: principal.id,
+  });
 }
 
 export type CreateTenantResult = {
@@ -4811,11 +5327,26 @@ export function createTenant(
       role: "owner",
       createdAt: input.createdAt,
     });
+    const trustSubject = `${input.owner.issuer}|${input.owner.subject}`;
+    const ownerAuthority = insertPrincipal(db, {
+      id: `principal-human-${createHash("sha256")
+        .update(`${tenantId}\n${trustSubject}`)
+        .digest("hex")
+        .slice(0, 32)}`,
+      tenantId,
+      kind: "human",
+      subject: trustSubject,
+      displayName: input.owner.displayName,
+      audience: input.owner.issuer,
+      createdAt: input.createdAt,
+    });
     const apiKey = createApiKey(db, {
       id: input.apiKeyId,
       name: input.apiKeyName ?? `${name} owner key`,
       tenantId,
       scopes: input.apiKeyScopes ?? ["*"],
+      authorityPrincipalId: ownerAuthority.id,
+      authorityRole: "owner",
       createdAt: input.createdAt,
     });
     const tenant = get<TenantRow>(db, `SELECT * FROM tenants WHERE id = ?`, [tenantId])!;
@@ -4882,7 +5413,8 @@ export function listApiKeys(
   assertTenantScope(tenantId);
   return all<ApiKeyRow>(
     db,
-    `SELECT id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json, created_at, last_used_at, revoked_at
+    `SELECT id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json,
+            authority_principal_id, authority_role, created_at, last_used_at, revoked_at
      FROM api_keys
      ${tenantId ? "WHERE tenant_id = ?" : ""}
      ORDER BY created_at DESC`,

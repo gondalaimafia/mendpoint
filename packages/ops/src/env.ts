@@ -107,7 +107,46 @@ export function validateApiEnv(env: NodeJS.ProcessEnv = process.env): EnvReport 
     CORS_ORIGINS: env.CORS_ORIGINS,
     TRUST_PROXY: env.TRUST_PROXY,
     TRUST_PROXY_SECRET: env.TRUST_PROXY_SECRET ? "[set]" : undefined,
+    MENDPOINT_SECRET_LIFECYCLE_ENABLED: env.MENDPOINT_SECRET_LIFECYCLE_ENABLED,
+    MENDPOINT_ENVELOPE_KEY_CATALOG_JSON: env.MENDPOINT_ENVELOPE_KEY_CATALOG_JSON ? "[set]" : undefined,
+    MENDPOINT_SECRET_BREAK_GLASS: env.MENDPOINT_SECRET_BREAK_GLASS,
+    MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON: env.MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON ? "[set]" : undefined,
+    MENDPOINT_SECRET_LINEAGE_KEYRING_JSON: env.MENDPOINT_SECRET_LINEAGE_KEYRING_JSON ? "[set]" : undefined,
   };
+
+  const secretLifecycleEnabled = env.MENDPOINT_SECRET_LIFECYCLE_ENABLED === "1";
+  if (
+    env.MENDPOINT_SECRET_LIFECYCLE_ENABLED !== undefined &&
+    env.MENDPOINT_SECRET_LIFECYCLE_ENABLED !== "0" &&
+    env.MENDPOINT_SECRET_LIFECYCLE_ENABLED !== "1"
+  ) {
+    errors.push("MENDPOINT_SECRET_LIFECYCLE_ENABLED must be exactly 0 or 1");
+  }
+  const secretLifecycleBindings = [
+    "MENDPOINT_ENVELOPE_KEY_CATALOG_JSON",
+    "MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON",
+    "MENDPOINT_SECRET_LINEAGE_KEYRING_JSON",
+  ] as const;
+  if (mode === "production" && secretLifecycleEnabled) {
+    for (const name of secretLifecycleBindings) {
+      if (!env[name]?.trim()) {
+        errors.push(`${name} is required when MENDPOINT_SECRET_LIFECYCLE_ENABLED=1 in production`);
+      }
+    }
+    if (env.MENDPOINT_SECRET_BREAK_GLASS !== "true" && env.MENDPOINT_SECRET_BREAK_GLASS !== "false") {
+      errors.push(
+        "MENDPOINT_SECRET_BREAK_GLASS must be explicitly true or false when MENDPOINT_SECRET_LIFECYCLE_ENABLED=1 in production",
+      );
+    }
+  }
+  if (!secretLifecycleEnabled && (
+    secretLifecycleBindings.some((name) => Boolean(env[name]?.trim())) ||
+    env.MENDPOINT_SECRET_BREAK_GLASS === "true"
+  )) {
+    errors.push(
+      "Secret lifecycle authority bindings require MENDPOINT_SECRET_LIFECYCLE_ENABLED=1; partial or inactive bindings are forbidden",
+    );
+  }
 
   // Retired environment names (Transformer -> Regauge): the legacy name is no
   // longer read. A deployment that still sets only the retired legacy name would

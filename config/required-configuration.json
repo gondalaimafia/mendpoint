@@ -1,5 +1,39 @@
 {
   "schemaVersion": 1,
+  "runtimeEntries": [
+    {
+      "name": "MENDPOINT_ENVELOPE_KEY_CATALOG_JSON",
+      "type": "secret",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_SECRET_LIFECYCLE_ENABLED=1",
+      "note": "Versioned envelope-key catalog for only the app instances that activate secret lifecycle operations"
+    },
+    {
+      "name": "MENDPOINT_SECRET_BREAK_GLASS",
+      "type": "variable",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_SECRET_LIFECYCLE_ENABLED=1",
+      "note": "Explicit true or false break-glass policy binding"
+    },
+    {
+      "name": "MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON",
+      "type": "secret",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_SECRET_LIFECYCLE_ENABLED=1",
+      "note": "Versioned retained request-replay keyring with one active signing key"
+    },
+    {
+      "name": "MENDPOINT_SECRET_LINEAGE_KEYRING_JSON",
+      "type": "secret",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_SECRET_LIFECYCLE_ENABLED=1",
+      "note": "Distinct retained material-lineage keyring; must not reuse replay or envelope-key material"
+    }
+  ],
   "entries": [
     {
       "name": "DEEPSEEK_API_KEY",

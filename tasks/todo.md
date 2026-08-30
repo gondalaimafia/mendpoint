@@ -1,5 +1,147 @@
 # Mendpoint 101 production closure (2026-08-28)
 
+## Issue 433 independent review repair: 2026-08-30
+
+### Exact-head follow-up for `9b882204`
+
+- [x] RED: prove a restarted process cannot substitute new lineage key bytes under an already-bound key ID and revive revoked material.
+- [x] GREEN: bind new lineage key IDs immediately, but authenticate every first binding for historical IDs against all decryptable non-revoked durable generations before insertion.
+- [x] GREEN: reject same-ID/different-key substitution, missing historical lineage authority, and unattributable legacy rows before material mutation.
+- [x] Verify clean restart, pre-binding upgrade, fingerprint secrecy, focused database and API behavior, and affected typechecks.
+- [x] RED: prove exact replay survives request-key rotation only while the operation's stored historical key remains retained.
+- [x] RED: prove revoked material cannot be revived after independent replay and lineage-key rotation.
+- [x] RED: prove missing historical lineage authority fails closed and tenant or credential boundaries produce distinct fingerprints.
+- [x] GREEN: split replay and material-lineage keyrings, persist lineage key identity, and recognize migrated pre-split rows only through their retained historical replay key.
+- [x] GREEN: require production's protected configuration to supply distinct retained replay and lineage keyrings.
+- [x] GREEN: make lineage-key migration backfill independently idempotent after an interrupted column-add step.
+- [x] Run affected database, API, environment, and configuration tests, affected typechecks, and diff integrity; commit locally without pushing.
+
+#### Follow-up review
+
+- Lineage key IDs now have tenant-scoped durable cryptographic identity. A genuinely empty tenant can establish first authority immediately. A pre-binding tenant with history must decrypt and audit every non-revoked generation for the proposed ID, reproduce each stored lineage commitment, and only then atomically insert the immutable binding.
+- Existing deployments no longer trust the current protected key bytes as their own backfill proof. Same-ID substitution, inconsistent history, revoked-only history, missing envelope authority, and missing historical keys all fail closed without inserting a binding or publishing a new generation. Stored fingerprints are domain separated hashes of random 256-bit key material, not plaintext, reversible material, or credential fingerprints.
+- Every replay computes its commitment with the exact key ID stored on the immutable operation. Rotation selects the active key only for new operations; removing a historical replay key makes the old operation unavailable rather than conflicting or silently reauthorizing it.
+- New material fingerprints use a separate retained lineage keyring. Each version persists the lineage key ID, and every replacement is compared under every retained lineage key inside the rotation transaction before the current generation can retire.
+- Upgrade migration binds pre-split lineage rows to the request key recorded by the last material-changing create or rotate operation. Retained replay keys can recognize those legacy fingerprints but cannot mint new lineage identities. Unattributable legacy rows and missing retained keys fail closed.
+- The backfill now runs whenever authoritative NULL rows remain, independently of whether a prior process already added the column. Repeated startup is exact, and rows without attributable historical operation identity remain NULL and fail closed.
+- Revoked A remains revoked across A to B, revocation, independent replay-key rotation, lineage-key rotation, and attempted B to A replacement. Tenant and credential identifiers are inside the keyed canonical input, so identical plaintext across either boundary produces different durable fingerprints.
+- Production activation now requires distinct protected replay and lineage keyring JSON bindings. No key bytes, plaintext, unkeyed material digest, or reversible fingerprint is stored or logged.
+- Verification: 74 focused lifecycle database, service, and route tests pass, including exact pre-binding A to B, revoke A, restart with same ID and different bytes, valid retained-key upgrade, inconsistent history, and revoked-only history. DB and API typechecks pass; `git diff --check` is clean.
+
+### Exact-head follow-up for `744e5aa8`
+
+- [x] RED: prove operation commitments cannot stand in for credential-material lineage across A to B to A rotation.
+- [x] RED: prove revoking compromised material revokes every historical reuse and prevents later resurrection.
+- [x] RED: prove a second connection can downgrade owner authority after the post-decrypt check without permitting a break-glass grant.
+- [x] GREEN: derive a separate domain-bound keyed material lineage, reject revoked-lineage rotation, and revalidate owner authority inside the break-glass transaction immediately before grant audit and operation persistence.
+- [x] Run focused DB and API lifecycle tests, DB, API, and Platform typechecks, and diff integrity; commit locally without pushing.
+
+#### Follow-up review
+
+- Material lineage is now a domain-separated HMAC over the tenant, credential, and plaintext. It is independent of the semantic operation commitment and neither plaintext nor a guessable unkeyed digest is logged or persisted.
+- A to B to A produces the same lineage for both A generations. Revoking the first A generation revokes the active reused A generation atomically, while a later attempt to resurrect any already-revoked lineage is rejected before the current B generation is retired.
+- Break-glass completion revalidates the live owner authority inside the database transaction immediately before grant audit and operation insertion. A hostile second connection that downgrades the owner after the last outside-transaction observation now causes rollback with no grant operation or granted audit.
+- Verification: 62 focused lifecycle tests pass, DB, API, and Platform typechecks pass, and `git diff --check` is clean.
+
+### Exact-head follow-up for `8b39ac8`
+
+- [x] RED: prove every physical rotation or rewrap source decrypt emits its own granted or denied outcome with the actual request, API key, and credential principal attribution.
+- [x] RED: reject JSONP and JSON-prefixed media types while accepting case-insensitive `application/json` with parameters.
+- [x] GREEN: separate physical decrypt audit identity from semantic operation replay identity and parse the exact media type token.
+- [x] Run focused lifecycle suites, affected API typecheck, diff checks, and commit locally without pushing.
+
+#### Follow-up review
+
+- Each physical source decrypt now creates one random attempt identity shared by its attempted and actual-outcome audit pair. Granted and denied events retain the real request ID, API key ID, credential principal, and stable authority principal; lifecycle operation tables remain the separate semantic replay authority.
+- Two rewrap attempts under rotated API keys now produce two granted events with exact per-request and per-credential attribution. A completed lifecycle replay still returns from the semantic operation record without another decrypt.
+- Content type validation compares the case-insensitive media type token before optional parameters exactly to `application/json`. `application/jsonp` and `application/json-bogus` are rejected, while `Application/JSON; Charset=UTF-8` is accepted.
+- Verification: the 52 focused lifecycle service and route tests pass, the affected API typecheck passes, and `git diff --check` is clean.
+
+- [x] Trace the exact create, rotate, rewrap, and revoke commit boundaries and reproduce authority loss during asynchronous provider work.
+- [x] RED: prove every lifecycle mutation revalidates the stable principal and credential binding immediately before durable publication and cleans up staged provider state on loss.
+- [x] RED: prove self-serve and production-bootstrap owner keys retain a stable owner authority binding, including safe compatibility for legacy rows.
+- [x] RED: reject oversized JSON, unknown fields, overlong identifiers, lifecycle values, arrays, and break-glass reasons before persistence.
+- [x] GREEN: implement the smallest transactional authority fences, owner-binding migration, and bounded strict parsers.
+- [x] Verify focused suites, affected typechecks, complete tests, build, GA gates, dependency audit, and diff integrity.
+- [x] Review the complete diff, record evidence below, and commit locally without pushing.
+
+### Issue 433 repair review
+
+- Create, rotate, rewrap, and revoke now capture the exact stable authority version before provider work and revalidate it inside the final SQLite transaction after lifecycle rows, operation rows, and audit rows are staged. Authority loss throws before commit, so the transaction removes every staged durable effect and preserves the prior active generation.
+- Fresh self-serve tenants bind their wildcard owner key to a deterministic human authority principal. Legacy self-serve keys migrate only when exactly one active self-serve owner membership exists. Production bootstrap keys bind to a deterministic deployment owner principal, and existing configured keys can receive only that exact owner binding under a narrow fail-closed compatibility rule.
+- Lifecycle HTTP bodies are byte bounded before JSON parsing, require JSON media type, reject unknown top-level and nested fields, and cap identifiers, source references, secret material, audiences, timestamps, envelope values, revocation reasons, and break-glass reasons. Rejected oversized break-glass values are not copied into audit metadata.
+- Hostile regressions cover authority loss during provider wrapping for create, rotate, and rewrap, authority loss inside revoke audit persistence, stable authority migration and rotation, unknown fields, oversized bodies, invalid media type, and direct-service bypass attempts.
+- Verification: 62 focused API and database tests pass; all workspace typechecks pass; the complete workspace and root test runner passes, including 586 API tests, 237 web tests, 648 worker tests with 1 skipped, and 476 root tests; the optimized 50-route production build passes; GA preflight passes; `npm audit --omit=dev` reports 0 vulnerabilities; `git diff --check` is clean.
+
+## Plan 01-01: Durable secret lifecycle SCM tracer
+
+- [x] RED: add database lifecycle tests for encrypted envelopes, tenant scope, rotation, expiry, retirement, and immutable incident revocation.
+- [x] GREEN: implement the additive secret lifecycle schema and atomic persistence module.
+- [x] RED: add provider and SCM materialization tests for durable lifecycle resolution, fail-closed audit, rotation, revocation, and pre-transport denial.
+- [x] GREEN: wire the existing vault envelope and SCM snapshot seam without changing `scheme://id` references.
+- [x] Verify fresh and aged database behavior, focused tests, affected typechecks, and the complete diff.
+- [x] RED: cover provider-authoritative KEK classification, disabled production wiring, lifecycle authorization, cross-tenant denial, idempotent replay, and restart-safe atomic rotation failures.
+- [x] GREEN: replace caller-asserted KEK metadata and split in-memory lifecycle publication with one durable provider-attested lifecycle service.
+- [x] GREEN: expose tenant-admin create, rotate, revoke, and break-glass operations with policy-bound audit and fail-closed replay.
+- [x] Verify focused Platform, DB, and API suites, affected typechecks, diff integrity, and commit the final repair locally without pushing.
+- [x] RED: prove attestation drift, restart, generation transplant, and legacy-schema migration fail closed.
+- [x] RED: prove denied break glass and rotation unwrap outcomes are durable and request-attempt identities distinguish new authority from exact replay.
+- [x] RED: prove tenant-created SCM connections cannot select deployment-global environment secrets or another tenant's lifecycle reference.
+- [x] GREEN: persist and AAD-bind provider attestation, make lifecycle access audit outcome-aware, remove tenant-selectable env fallback, and bind break-glass replay identity.
+- [x] Re-run Platform, DB, API, and SCM suites, affected typechecks, diff integrity, and commit the audit repair locally without pushing.
+- [x] RED: prove break-glass HTTP replay and interrupted rotation recovery are independent of transport request IDs.
+- [x] RED: prove every pre-decrypt break-glass denial is durably audited with actual request context and audit failure remains fail closed.
+- [x] RED: prove lifecycle request commitments resist offline plaintext guessing, bind every semantic field and key ID, and reject legacy or wrong-key replay.
+- [x] GREEN: persist versioned keyed commitments, add durable break-glass replay evidence, and separate stable operation audit identity from denied-attempt identity.
+- [x] Re-run focused and complete Platform, DB, API, and SCM suites, affected typechecks, diff integrity, and commit locally without pushing.
+- [x] RED: reject identical commitment and envelope key material at both route startup and direct service construction without exposing key material.
+- [x] RED: prove exact create, rotate, and break-glass replay across two rotated API keys bound to one stable authority, with unrelated-authority denial and dual attribution.
+- [x] RED: prove real authentication and RBAC middleware durably audit anonymous and non-admin break-glass denials, preserve the original 401 or 403, and fail closed when audit persistence fails.
+- [x] GREEN: add provider key fingerprints, stable API-key authority binding, dual audit attribution, and a narrow pre-route break-glass denial audit middleware.
+- [x] Re-run focused and broad Platform, DB, API, auth, and SCM suites, affected typechecks, diff integrity, and commit locally without pushing.
+- [x] RED: prove `/keys` cannot amplify tenant-admin authority into wildcard or owner scope, and break glass requires a currently active stable owner authority.
+- [x] RED: distinguish KEK rewrap from credential-material rotation, require new resolver-bound material for rotation, and revoke every successor derived from compromised material.
+- [x] RED: deterministically race break glass with concurrent revocation and require exact active generation, key binding, and provider attestation revalidation before plaintext release.
+- [x] RED: bind revoke replay to keyed idempotency evidence, audit exact replay, and reject actor or reason drift even after the generation is already revoked.
+- [x] RED: classify locally held imported keys as Mendpoint-custodied and withhold customer-managed status without provider-authenticated custody evidence.
+- [x] GREEN: implement the smallest full-chain authority, material lineage, transactional release, revoke replay, and custody-evidence repair.
+- [x] Re-run focused and broad Platform, DB, API, auth, and SCM suites, affected typechecks, diff integrity, inspect the complete diff, and commit locally without pushing.
+- [x] RED: require current stable admin or owner authority for create, rotate, rewrap, and revoke, and reject unbound legacy wildcard keys through the real auth and RBAC middleware.
+- [x] RED: race break-glass unwrap against human downgrade, offboarding, principal revocation, and principal expiry, with no plaintext grant operation committed.
+- [x] RED: reject a second revoke under a different idempotency key without publishing contradictory reason evidence.
+- [x] GREEN: revalidate exact principal, credential principal, API-key binding, membership, role, revocation, expiry, and authority version immediately before audited plaintext release.
+- [x] GREEN: validate every lifecycle request body, locator, generation, material, array, reason, and timestamp order at the HTTP boundary with bounded 400 responses.
+- [x] Re-run focused tests, full workspace tests, typechecks, optimized build, GA gates, dependency audit, root script tests, and diff integrity; commit locally without pushing.
+
+### Review
+
+- New additive tables converge on fresh and pre-change databases with no existing-table alteration.
+- SCM materialization resolves durable metadata separately from the stored `scheme://id` reference, reloads exact generations, and denies expiry or revocation before GitHub transport.
+- Production now constructs one validated provider-authoritative key catalog from protected environment configuration and otherwise retains an explicitly disabled provider. The provider, not request metadata, supplies customer-managed classification and a digest-bound attestation; both wrap and unwrap reject relabeling.
+- Durable reads no longer rebuild an in-memory lifecycle registry. Create and rotation stage provider-attested envelopes, then commit required durable audit, immutable replay identity, and the visible lifecycle generation in one SQLite transaction. Failed audit or operation persistence leaves the previous active generation exact.
+- Tenant-admin HTTP entry points cover create, rotate, and revoke. Break glass additionally requires owner role, an explicit production policy flag, and a nonempty audited reason. Tenant and actor always come from the authenticated principal; responses never return envelope material, and only the gated break-glass response can return plaintext with `Cache-Control: no-store`.
+- Verification passes all 252 Platform tests; 30 focused DB, lifecycle API, route, and SCM tests; Platform, DB, and API typechecks; and `git diff --check`. The regressions include false customer-managed relabeling, missing and malformed provider configuration, failed-audit rollback, process-restart create and rotation replay, replay mismatch, non-admin denial, cross-tenant denial, disabled break glass, and all four authorized lifecycle entry points.
+- Provider attestation is now persisted beside each lifecycle envelope, included in outer AAD, and compared exactly with current provider evidence before unwrap. Migrated rows without that evidence remain present but unreadable, and both attestation drift and generation transplants fail closed after restart.
+- Secret access audit records the actual grant or denial. Rotation source unwrap is durably audited before a replacement generation can publish, while break-glass attempts use caller-supplied idempotency keys so exact retries reuse one record and new authorized attempts receive distinct identities.
+- Production SCM resolution accepts only tenant-scoped lifecycle records. Caller-supplied environment fallback providers are ignored, and both deployment-global references and another tenant's lifecycle reference are denied before transport.
+- Final audit-repair evidence passes all 253 Platform tests and 35 focused DB, lifecycle service, route, and SCM tests. Platform, DB, and API typechecks pass, and `git diff --check` is clean.
+- Lifecycle create, rotation, and break-glass replay now persist a versioned HMAC-SHA-256 commitment under a deployment-owned key ID. The canonical commitment binds every semantic request field while excluding transport request and API-key identifiers; legacy unkeyed operation rows, wrong keys, wrong key IDs, and payload drift fail closed.
+- Break-glass grant replay is an immutable tenant-scoped operation. Exact HTTP retries across new request IDs and API keys return the committed generation without another grant audit, while payload mismatches are denied and every distinct denial attempt records its actual principal, request, API key, role, reason, and failure before the response. Missing audit durability returns `vault_access_audit_failed` and never plaintext.
+- Rotation source access audit uses a stable operation identity, so retries after an audited unwrap or replacement-stage failure resume without duplicate or conflicting access evidence and cannot publish a new generation until the required audit and lifecycle transaction commit.
+- Final verification passes 28 focused lifecycle and database tests, 1,449 complete Platform, DB, API, and SCM tests across 157 files, all four affected package typechecks, and `git diff --check`.
+- Envelope and commitment authorities now publish only domain-separated one-way key fingerprints for construction-time equality checks. Route startup and direct service construction reject identical material without logging or persisting the key or fingerprint.
+- API keys carry an additive stable human or service authority binding. Exact create, rotate, and break-glass retries survive credential rotation because semantic commitments bind the stable authority, while every attempt and replay audit separately records the current API key and credential principal. A different stable authority cannot consume the replay.
+- The exact break-glass path is wrapped before authentication and RBAC. Anonymous and non-admin 401 or 403 responses receive truthful durable denial evidence, compatibility headers cannot spoof attribution, successful dispatch is not double-audited, and audit persistence failure replaces the denial with a generic fail-closed 503.
+- Rotation records a credential-specific source attempt before unwrap and one stable source outcome for the semantic operation. A retry under a rotated key after pre-publication failure resumes without a source-audit conflict or duplicate grant.
+- Final verification passes 27 focused lifecycle tests, 115 affected tests, and 1,456 complete Platform, DB, API, auth, and SCM tests across 157 files. Platform, DB, API, and GitHub typechecks pass, and `git diff --check` is clean.
+- API-key minting now attenuates requested roles and permissions against both the current credential and its immutable stable authority. Wildcard scope can be issued only by a current wildcard owner, legacy wildcard keys cannot infer stable owner authority, and any persisted role that exceeds its stable authority is rejected during authentication.
+- Credential rotation now requires different replacement plaintext and starts a new material lineage. KEK rewrap is a separate operation and audit namespace that retains material lineage, while incident revocation reaches every rewrapped successor containing the compromised material.
+- Break-glass completion rechecks the exact active generation, envelope key binding, and provider attestation inside the final write transaction after decryption. Concurrent revoke therefore prevents plaintext release. Revoke operations now persist versioned keyed replay evidence, audit exact replay, and audit actor or reason drift even when the target is already revoked.
+- Locally held and configured imported keys are reported as Mendpoint-custodied. Customer-managed status is accepted only from provider-authenticated attestation and cannot be asserted in local key configuration.
+- Final verification passes all 138 focused secrets regressions and all 1,462 Platform, DB, API, auth, and SCM tests across 378 suites. Platform, DB, API, and GitHub typechecks pass, and `git diff --check` is clean.
+- Final exact-head repair verification passes 52 focused lifecycle tests, all workspace package tests, all workspace typechecks, the optimized 50-route production build, GA preflight, and a zero-vulnerability production dependency audit. The complete 476-test script suite also passes when its two load-sensitive proposal-authority cases run in a bounded worker; the first all-at-once pass hit only a Vitest RPC timeout after every assertion passed.
+
+
 Observed `origin/main`: `96801a319fc3d355cb2b28b4167b83023a192042`.
 
 - [x] Convert the approved eleven-phase plan into the exhaustive 101-row execution ledger (`docs/PRODUCTION_CLOSURE_EXECUTION_LEDGER.json`).

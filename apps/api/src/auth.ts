@@ -16,6 +16,7 @@ import {
   type JWTVerifyGetKey,
 } from "jose";
 import {
+  bindApiKeyAuthorityPrincipal,
   countActiveApiKeys,
   claimIdentitySession,
   claimDelegatedRequestNonce,
@@ -24,11 +25,16 @@ import {
   getPrincipal,
   getPrincipalBySubject,
   insertPrincipal,
+  migrateLegacySelfServeOwnerKeyAuthority,
   touchApiKey,
   type AppDb,
 } from "@mendpoint/db";
 import {
+  can,
   isPublicRoute,
+  parsePrincipalFromHeaders,
+  permissionForRoute,
+  permissionsFor,
   type Permission,
   type Principal,
   type Role,
@@ -42,10 +48,13 @@ export type ApiVariables = {
   authScopes?: string[];
   principal?: Principal;
   trustPrincipalId?: string;
+  authorityPrincipalId?: string;
+  authorityRole?: Role;
   authMethod?: "oidc" | "api_key";
   membershipEvidenceId?: string;
   identitySessionId?: string;
   webhookDeliveryId?: string;
+  secretBreakGlassAuditHandled?: boolean;
 };
 export type ApiEnv = { Variables: ApiVariables };
 
@@ -217,6 +226,79 @@ export function scopeAllows(scopes: string[] | undefined, permission: Permission
   return scopes.includes("*") || scopes.includes(permission);
 }
 
+const API_KEY_ROLES = new Set<Role>(["owner", "admin", "engineer", "viewer", "fde", "agent"]);
+const API_KEY_PERMISSIONS = new Set<Permission>([
+  ...permissionsFor("owner"), ...permissionsFor("admin"), ...permissionsFor("engineer"),
+  ...permissionsFor("viewer"), ...permissionsFor("fde"), ...permissionsFor("agent"),
+]);
+
+function roleWithinStableAuthority(role: Role, authorityRole: Role): boolean {
+  if (role === "owner" && authorityRole !== "owner") return false;
+  return permissionsFor(role).every((permission) =>
+    permissionsFor(authorityRole).includes(permission)
+  );
+}
+
+function humanMembershipForAuthority(
+  db: AppDb,
+  tenantId: string,
+  principal: NonNullable<ReturnType<typeof getPrincipal>>,
+) {
+  if (principal.kind !== "human" || !principal.audience) return null;
+  const prefix = `${principal.audience}|`;
+  if (!principal.subject.startsWith(prefix)) return null;
+  const subject = principal.subject.slice(prefix.length);
+  if (!subject) return null;
+  return getTenantMembership(db, tenantId, principal.audience, subject) ?? null;
+}
+
+function effectiveHumanAuthorityRole(stableRole: Role | null, currentRole: Role): Role | null {
+  if (stableRole === null) return currentRole;
+  if (roleWithinStableAuthority(stableRole, currentRole)) return stableRole;
+  if (roleWithinStableAuthority(currentRole, stableRole)) return currentRole;
+  return null;
+}
+
+export function attenuateApiKeyScopes(input: Readonly<{
+  principalRole: Role;
+  currentScopes: readonly string[];
+  requestedScopes?: readonly string[];
+}>): string[] {
+  const requested = input.requestedScopes === undefined
+    ? (input.currentScopes.includes("*")
+        ? [`role:${input.principalRole}`, ...permissionsFor(input.principalRole)]
+        : [...input.currentScopes])
+    : [...input.requestedScopes];
+  if (requested.length === 0 || requested.some((scope) => !scope.trim())) {
+    throw new Error("api_key_scope_invalid");
+  }
+  if (requested.includes("*")) {
+    if (requested.length !== 1 || input.principalRole !== "owner" || !input.currentScopes.includes("*")) {
+      throw new Error("api_key_authority_amplification");
+    }
+    return ["*"];
+  }
+  const roleScopes = requested.filter((scope) => scope.startsWith("role:"));
+  if (roleScopes.length !== 1) throw new Error("api_key_scope_role_required");
+  const requestedRole = roleScopes[0]!.slice("role:".length) as Role;
+  if (!API_KEY_ROLES.has(requestedRole)) throw new Error("api_key_scope_invalid");
+  if (requestedRole === "owner" && input.principalRole !== "owner") {
+    throw new Error("api_key_authority_amplification");
+  }
+  if (permissionsFor(requestedRole).some(
+    (permission) => !permissionsFor(input.principalRole).includes(permission),
+  )) throw new Error("api_key_authority_amplification");
+  for (const scope of requested) {
+    if (scope.startsWith("role:")) continue;
+    if (!API_KEY_PERMISSIONS.has(scope as Permission)) throw new Error("api_key_scope_invalid");
+    if (
+      !permissionsFor(input.principalRole).includes(scope as Permission) ||
+      (!input.currentScopes.includes("*") && !input.currentScopes.includes(scope))
+    ) throw new Error("api_key_authority_amplification");
+  }
+  return [...new Set(requested)];
+}
+
 const ACTOR = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
 const SIGNATURE = /^[a-f0-9]{64}$/;
 const DELEGATION_MAX_SKEW_MS = 5 * 60 * 1000;
@@ -330,7 +412,15 @@ export function createAuthMiddleware(
       return c.json({ error: "unauthorized", message: "API key required (Bearer or X-API-Key)" }, 401);
     }
 
-    const key = findApiKeyByToken(db, raw);
+    let key = findApiKeyByToken(db, raw);
+    if (key?.id.startsWith("key_ss_") &&
+        (key.authority_principal_id === null || key.authority_role === null)) {
+      try {
+        key = migrateLegacySelfServeOwnerKeyAuthority(db, key.id);
+      } catch {
+        return c.json({ error: "unauthorized", message: "api_key_authority_invalid" }, 401);
+      }
+    }
     if (!key) {
       if (raw.split(".").length !== 3) {
         return c.json({ error: "unauthorized", message: "invalid API key" }, 401);
@@ -399,6 +489,8 @@ export function createAuthMiddleware(
         // scope attenuation applies only when an API key authenticated the request.
         c.set("authScopes", ["*"]);
         c.set("trustPrincipalId", trustPrincipal.id);
+        c.set("authorityPrincipalId", trustPrincipal.id);
+        c.set("authorityRole", membership.role);
         c.set("authMethod", "oidc");
         c.set("membershipEvidenceId", `membership:${createHash("sha256")
           .update(`${identity.tenantId}\n${identity.issuer}\n${identity.subject}`, "utf8")
@@ -470,6 +562,7 @@ export function createAuthMiddleware(
     }
     let principal: Principal;
     let trustPrincipal;
+    let authorityPrincipal;
     if (delegatedActor) {
       trustPrincipal = getPrincipal(db, key.tenant_id, delegatedActor);
       const issuer = trustPrincipal?.audience;
@@ -494,12 +587,30 @@ export function createAuthMiddleware(
           401,
         );
       }
+      if (
+        key.authority_principal_id !== trustPrincipal.id ||
+        key.authority_role === null ||
+        !API_KEY_ROLES.has(key.authority_role)
+      ) {
+        return c.json(
+          { error: "unauthorized", message: "delegated_actor_authority_unbound" },
+          401,
+        );
+      }
+      const effectiveRole = effectiveHumanAuthorityRole(key.authority_role, membership.role);
+      if (!effectiveRole) {
+        return c.json(
+          { error: "unauthorized", message: "api_key_authority_amplification" },
+          401,
+        );
+      }
       principal = {
         id: `human:${trustPrincipal.subject}`,
         tenantId: key.tenant_id,
-        role: membership.role,
+        role: effectiveRole,
         ...(membership.email ? { email: membership.email } : {}),
       };
+      authorityPrincipal = trustPrincipal;
     } else if (key.principal_id) {
       trustPrincipal = getPrincipal(db, key.tenant_id, key.principal_id);
       if (!trustPrincipal || trustPrincipal.kind !== "service") {
@@ -510,6 +621,9 @@ export function createAuthMiddleware(
         tenantId: key.tenant_id,
         role: "agent",
       };
+      authorityPrincipal = key.authority_principal_id
+        ? getPrincipal(db, key.tenant_id, key.authority_principal_id)
+        : trustPrincipal;
     } else {
       principal = {
         id: `api-key:${key.id}`,
@@ -530,16 +644,111 @@ export function createAuthMiddleware(
         audience: "mendpoint-api",
         createdAt: observedAt.toISOString(),
       });
+      if (key.authority_principal_id) {
+        authorityPrincipal = getPrincipal(db, key.tenant_id, key.authority_principal_id);
+      } else {
+        authorityPrincipal = insertPrincipal(db, {
+          id: `principal-service-${createHash("sha256")
+            .update(`${key.tenant_id}\napi-key-authority\n${key.id}`)
+            .digest("hex")
+            .slice(0, 32)}`,
+          tenantId: key.tenant_id,
+          kind: "service",
+          subject: `api-key-authority:${key.id}`,
+          displayName: `${key.name} authority`,
+          audience: "mendpoint-api",
+          createdAt: observedAt.toISOString(),
+        });
+        try {
+          bindApiKeyAuthorityPrincipal(db, {
+            apiKeyId: key.id,
+            tenantId: key.tenant_id,
+            authorityPrincipalId: authorityPrincipal.id,
+            observedAt: observedAt.toISOString(),
+          });
+        } catch {
+          return c.json({ error: "unauthorized", message: "api_key_authority_invalid" }, 401);
+        }
+      }
     }
     if (!activeTrustPrincipal(trustPrincipal, observedAtMs)) {
       return c.json({ error: "unauthorized", message: "trust_principal_inactive" }, 401);
+    }
+    if (
+      !authorityPrincipal ||
+      (authorityPrincipal.kind !== "human" && authorityPrincipal.kind !== "service") ||
+      !activeTrustPrincipal(authorityPrincipal, observedAtMs)
+    ) {
+      return c.json({ error: "unauthorized", message: "api_key_authority_invalid" }, 401);
+    }
+    let currentAuthorityRole = key.authority_role;
+    if (authorityPrincipal.kind === "human") {
+      const membership = humanMembershipForAuthority(db, key.tenant_id, authorityPrincipal);
+      if (!membership || membership.status !== "active") {
+        return c.json({ error: "unauthorized", message: "api_key_authority_membership_inactive" }, 401);
+      }
+      if (currentAuthorityRole === null || !API_KEY_ROLES.has(currentAuthorityRole)) {
+        return c.json({ error: "unauthorized", message: "api_key_authority_invalid" }, 401);
+      }
+      currentAuthorityRole = effectiveHumanAuthorityRole(currentAuthorityRole, membership.role);
+      if (!currentAuthorityRole) {
+        return c.json({ error: "unauthorized", message: "api_key_authority_amplification" }, 401);
+      }
     }
     c.set("tenantId", key.tenant_id);
     c.set("apiKeyId", key.id);
     c.set("authScopes", scopes);
     c.set("principal", principal);
     c.set("trustPrincipalId", trustPrincipal.id);
+    c.set("authorityPrincipalId", authorityPrincipal.id);
+    if (key.authority_role !== null && !API_KEY_ROLES.has(key.authority_role)) {
+      return c.json({ error: "unauthorized", message: "api_key_authority_invalid" }, 401);
+    }
+    const authorityRole = delegatedActor
+      ? principal.role
+      : currentAuthorityRole ?? undefined;
+    if (
+      authorityRole !== undefined &&
+      !roleWithinStableAuthority(principal.role, authorityRole)
+    ) {
+      return c.json({ error: "unauthorized", message: "api_key_authority_amplification" }, 401);
+    }
+    if (authorityRole !== undefined) c.set("authorityRole", authorityRole);
     c.set("authMethod", "api_key");
+    return next();
+  };
+}
+
+export function createRbacMiddleware() {
+  return async (c: Context<ApiEnv>, next: Next) => {
+    const path = new URL(c.req.url).pathname;
+    const method = c.req.method;
+    if (method === "OPTIONS") return next();
+    const need = permissionForRoute(method, path);
+    if (!need) return next();
+    const mode = effectiveAuthMode();
+    const authenticated = c.get("principal");
+    const principal = authenticated ?? (mode === "off"
+      ? parsePrincipalFromHeaders({
+          "x-tenant-id": c.req.header("x-tenant-id") ?? undefined,
+          "x-role": c.req.header("x-role") ?? undefined,
+          "x-user-id": c.req.header("x-user-id") ?? undefined,
+        })
+      : undefined);
+    if (!principal) {
+      return c.json({ error: "unauthorized", message: "authenticated principal required" }, 401);
+    }
+    const scopes = c.get("authScopes");
+    const scopeAllowed = mode === "off" || scopeAllows(scopes, need);
+    if (!can(principal, need) || !scopeAllowed) {
+      return c.json({
+        error: "rbac_denied",
+        need,
+        role: principal.role,
+        message: `role ${principal.role} or API key scope lacks ${need}`,
+      }, 403);
+    }
+    c.set("principal", principal);
     return next();
   };
 }
