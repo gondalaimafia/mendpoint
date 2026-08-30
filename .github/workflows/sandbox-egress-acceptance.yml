@@ -458,12 +458,34 @@ jobs:
             # safe because "repo:tag@sha256:X" is a legal reference. Do NOT
             # "simplify" this back to
             # "\(.registry)/\(.repository)@\(.digest)" over image_ref.
+            # After a SUCCESSFUL update Fly stores config.image digest-pinned
+            # ("repo:tag@sha256:X"), so the next rotation reads that shape back
+            # and the guard below would reject it. Hand flyctl the tag it was
+            # pinned from and let flyctl re-append the digest itself, exactly as
+            # it already does for tag-form input. A BARE digest pin
+            # ("repo@sha256:X") carries no tag, so stripping it would resolve
+            # ":latest" - a DIFFERENT image - and it would pass the reference
+            # regex below because the tag group is optional. Leave that shape
+            # intact so the guard still rejects it.
+            mutable_image_jq='
+              def mutable_image:
+                if type != "string" then .
+                else
+                  . as $ref
+                  | ($ref | split("@sha256:")[0]) as $base
+                  | if $ref == $base then $ref
+                    elif ($base | split("/") | last | contains(":")) then $base
+                    else $ref
+                    end
+                end;
+            '
             assert_mutable_image() {
               local guard_machine_id="$1"
               local candidate="$2"
               local canonical
               canonical="$(jq -r --arg id "$guard_machine_id" \
-                '.[] | select(.id == $id) | .config.image' <<<"$machines_json")"
+                "$mutable_image_jq"'.[] | select(.id == $id) | .config.image | mutable_image' \
+                <<<"$machines_json")"
               if [ -z "$canonical" ] || [ "$canonical" = "null" ]; then
                 printf 'image_guard_no_canonical\t%s\n' "$guard_machine_id" \
                   >>"test-results/sandbox-egress/rotation-recovery-${app}.txt"
@@ -511,9 +533,9 @@ jobs:
                 rollback_attempted_machines "machine_update_failed:${machine_id}" || true
                 exit 1
               fi
-            done < <(jq -r '.[] | [
+            done < <(jq -r "$mutable_image_jq"'.[] | [
               .id,
-              .config.image,
+              (.config.image | mutable_image),
               .config.metadata.fly_process_group
             ] | @tsv' <<<"$machines_json")
             updated_machines_json="$(flyctl machine list --app "$app" --json)"
