@@ -1780,8 +1780,8 @@ export function reconcileReleaseDispatchFailure(
     256,
   );
   const idempotencyKey = required("release_dispatch_reconciliation_idempotency_key", input.idempotencyKey, 256);
-  if (store.raw.isTransaction) throw new Error("release_dispatch_transaction_active");
-  store.raw.exec("BEGIN IMMEDIATE");
+  const ownsTransaction = !store.raw.isTransaction;
+  if (ownsTransaction) store.raw.exec("BEGIN IMMEDIATE");
   try {
     const createdAt = advanceReleaseClock(store);
     const existing = one<DispatchReconciliationRow>(store, `SELECT *
@@ -1801,7 +1801,7 @@ export function reconcileReleaseDispatchFailure(
         "SELECT * FROM release_ingestion_dispatches WHERE tenant_id = ? AND id = ?",
         [tenantId, dispatchId]);
       if (!replayedDispatch) throw new Error("release_dispatch_not_found");
-      store.raw.exec("COMMIT");
+      if (ownsTransaction) store.raw.exec("COMMIT");
       return Object.freeze({
         reconciliation: dispatchReconciliationFromRow(existing),
         dispatch: dispatchFromRow(replayedDispatch),
@@ -1847,14 +1847,14 @@ export function reconcileReleaseDispatchFailure(
       "SELECT * FROM release_ingestion_dispatches WHERE tenant_id = ? AND id = ?",
       [tenantId, dispatchId]);
     if (!reconciliation || !dispatch) throw new Error("release_dispatch_reconciliation_write_failed");
-    store.raw.exec("COMMIT");
+    if (ownsTransaction) store.raw.exec("COMMIT");
     return Object.freeze({
       reconciliation: dispatchReconciliationFromRow(reconciliation),
       dispatch: dispatchFromRow(dispatch),
       inserted: true,
     });
   } catch (error) {
-    if (store.raw.isTransaction) store.raw.exec("ROLLBACK");
+    if (ownsTransaction && store.raw.isTransaction) store.raw.exec("ROLLBACK");
     throw error;
   }
 }

@@ -574,6 +574,7 @@ describe("worker runtime", () => {
       releaseDispatchPending: 0,
       releaseDispatchClaimed: 0,
       releaseDispatchFailed: 0,
+      releaseDispatchDue: 0,
       releaseDispatchExpiredClaims: 0,
       releaseDispatchFailureStage: null,
       releaseDispatchFailureCode: null,
@@ -594,6 +595,7 @@ describe("worker runtime", () => {
       releaseDispatchPending: 0,
       releaseDispatchClaimed: 0,
       releaseDispatchFailed: 0,
+      releaseDispatchDue: 0,
       releaseDispatchExpiredClaims: 0,
     });
     expect(() =>
@@ -615,6 +617,7 @@ describe("worker runtime", () => {
         releaseDispatchPending: 0,
         releaseDispatchClaimed: 0,
         releaseDispatchFailed: 0,
+        releaseDispatchDue: 0,
         releaseDispatchExpiredClaims: 0,
         releaseDispatchFailureStage: null,
         releaseDispatchFailureCode: null,

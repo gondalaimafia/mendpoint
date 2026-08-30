@@ -177,6 +177,7 @@ describe("paging adapters", () => {
       releaseDispatchPending: 7,
       releaseDispatchClaimed: 2,
       releaseDispatchFailed: 3,
+      releaseDispatchDue: 5,
       releaseDispatchExpiredClaims: 1,
     });
 
@@ -184,7 +185,7 @@ describe("paging adapters", () => {
       type: "release_dispatch_degraded",
       severity: "critical",
       dedupeKey: "release_dispatch_degraded:w1",
-      details: { pending: 7, claimed: 2, failed: 3, expiredClaims: 1 },
+      details: { pending: 7, claimed: 2, failed: 3, due: 5, expiredClaims: 1 },
     });
     expect(event?.type).not.toBe("worker_heartbeat_stale");
   });
@@ -198,10 +199,11 @@ describe("paging adapters", () => {
       releaseDispatchPending: null,
       releaseDispatchClaimed: null,
       releaseDispatchFailed: null,
+      releaseDispatchDue: null,
       releaseDispatchExpiredClaims: null,
     })).toMatchObject({
       type: "release_dispatch_degraded",
-      details: { pending: null, claimed: null, failed: null, expiredClaims: null },
+      details: { pending: null, claimed: null, failed: null, due: null, expiredClaims: null },
     });
   });
 
@@ -214,6 +216,7 @@ describe("paging adapters", () => {
       releaseDispatchPending: null,
       releaseDispatchClaimed: null,
       releaseDispatchFailed: null,
+      releaseDispatchDue: null,
       releaseDispatchExpiredClaims: null,
       releaseDispatchFailureStage: "claim",
       releaseDispatchFailureCode: "release_dispatch_claim_unavailable",
@@ -270,6 +273,7 @@ describe("paging best-effort wiring", () => {
       releaseDispatchPending: 4,
       releaseDispatchClaimed: 1,
       releaseDispatchFailed: 2,
+      releaseDispatchDue: 3,
       releaseDispatchExpiredClaims: 1,
     });
     if (!res || res.skipped) throw new Error("expected a delivered page");
@@ -277,7 +281,7 @@ describe("paging best-effort wiring", () => {
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
     expect(body.type).toBe("release_dispatch_degraded");
     expect(body.details).toEqual({
-      pending: 4, claimed: 1, failed: 2, expiredClaims: 1,
+      pending: 4, claimed: 1, failed: 2, due: 3, expiredClaims: 1,
       failureStage: null, failureCode: null,
     });
   });

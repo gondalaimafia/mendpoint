@@ -54,6 +54,7 @@ describe("public deployment health", () => {
         releaseDispatchPending: 0,
         releaseDispatchClaimed: 0,
         releaseDispatchFailed: 0,
+        releaseDispatchDue: 0,
         releaseDispatchExpiredClaims: 0,
       } },
     });
@@ -79,6 +80,7 @@ describe("public deployment health", () => {
       releaseDispatchPending: 2,
       releaseDispatchClaimed: 0,
       releaseDispatchFailed: 0,
+      releaseDispatchDue: 0,
       releaseDispatchExpiredClaims: 0,
       releaseDispatchFailureStage: null,
       releaseDispatchFailureCode: null,
@@ -98,6 +100,7 @@ describe("public deployment health", () => {
         releaseDispatchStatus: "healthy",
         releaseDispatchPending: 2,
         releaseDispatchFailed: 0,
+        releaseDispatchDue: 0,
       } },
     });
 
@@ -137,6 +140,7 @@ describe("public deployment health", () => {
         releaseDispatchPending: null,
         releaseDispatchClaimed: null,
         releaseDispatchFailed: null,
+        releaseDispatchDue: null,
         releaseDispatchExpiredClaims: null,
       } },
     });
@@ -176,6 +180,37 @@ describe("public deployment health", () => {
     });
   });
 
+  it("fails closed when active release polling omits dispatch health", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-release-dispatch-missing-"));
+    dirs.push(dir);
+    const heartbeatPath = join(dir, "worker-heartbeat.json");
+    writeFileSync(heartbeatPath, JSON.stringify({
+      ok: true,
+      recordedAt: new Date().toISOString(),
+      feedPollingEnabled: true,
+      feedPollOk: true,
+      releasePollingConfigured: true,
+      releasePollConfigurationCount: 1,
+      feedScheduleStatus: "healthy",
+      releaseConfigurationStatus: "healthy",
+      releaseConfigurationFailed: 0,
+      jobs: { failed: 0 },
+    }));
+    process.env.MENDPOINT_WORKER_HEARTBEAT_PATH = heartbeatPath;
+    process.env.MENDPOINT_API_KEY = `me_${"a".repeat(40)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+
+    const response = await GET();
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      checks: { worker: {
+        ok: false,
+        releaseDispatchConfigured: null,
+        releaseDispatchStatus: "unknown",
+      } },
+    });
+  });
+
   it.each([
     ["releasePollingConfigured", "yes"],
     ["releasePollConfigurationCount", -1],
@@ -189,6 +224,7 @@ describe("public deployment health", () => {
     ["releaseDispatchPending", -1],
     ["releaseDispatchClaimed", 1.5],
     ["releaseDispatchFailed", "0"],
+    ["releaseDispatchDue", -1],
     ["releaseDispatchExpiredClaims", -1],
     ["releaseDispatchFailureStage", "provider-secret-stage"],
     ["releaseDispatchFailureCode", "RAW Provider Error"],

@@ -4,6 +4,7 @@ import {
   type ReleaseIngestionStore,
 } from "@mendpoint/catalog";
 import { getPrincipal, type AppDb } from "@mendpoint/db";
+import { tryAcquireMutationLease } from "@mendpoint/ops";
 import { parseReleaseDispatchConsumersFromEnv } from "./release-dispatch-drainer.js";
 
 const FLAGS = Object.freeze([
@@ -34,12 +35,45 @@ function assertActiveReconciliationPrincipal(input: Readonly<{
   const expiresAt = principal?.expires_at ? Date.parse(principal.expires_at) : null;
   const identityValid = principal?.kind === "human" ||
     principal?.kind === "service" && principal.subject === "release-dispatch-reconciliation";
+  const privilegedHuman = principal?.kind !== "human" || Boolean(input.db.raw.prepare(
+    `SELECT 1 FROM tenant_memberships
+     WHERE tenant_id = ? AND subject = ? AND status = 'active'
+       AND role IN ('owner', 'admin')
+     LIMIT 1`,
+  ).get(input.tenantId, principal.subject));
   if (
-    !principal || !identityValid || !Number.isFinite(observedAt) ||
+    !principal || !identityValid || !privilegedHuman || !Number.isFinite(observedAt) ||
     !Number.isFinite(createdAt) || createdAt > observedAt ||
     (revokedAt !== null && (!Number.isFinite(revokedAt) || revokedAt <= observedAt)) ||
     (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= observedAt))
   ) throw new Error("release_dispatch_reconciliation_authority_invalid");
+}
+
+function assertReachableReconciliationEvidence(input: Readonly<{
+  db: AppDb;
+  tenantId: string;
+  dispatchId: string;
+  evidenceSha256: string;
+  observedAt: string;
+}>): void {
+  const row = input.db.raw.prepare(
+    `SELECT e.created_at
+     FROM evidence_records e
+     JOIN artifact_manifests a
+       ON a.id = e.artifact_id AND a.tenant_id = e.tenant_id
+     WHERE e.tenant_id = ?
+       AND e.subject_type = 'release_dispatch_reconciliation'
+       AND e.subject_id = ?
+       AND e.verdict = 'passed'
+       AND a.sha256 = ?
+     LIMIT 1`,
+  ).get(input.tenantId, input.dispatchId, input.evidenceSha256) as
+    { created_at: string } | undefined;
+  const createdAt = Date.parse(row?.created_at ?? "");
+  const observedAt = Date.parse(input.observedAt);
+  if (!row || !Number.isFinite(createdAt) || !Number.isFinite(observedAt) || createdAt > observedAt) {
+    throw new Error("release_dispatch_reconciliation_evidence_unreachable");
+  }
 }
 
 function parseExactFlags(argv: readonly string[]): Readonly<Record<string, string>> {
@@ -66,6 +100,7 @@ export function runReleaseDispatchReconciliationCommand(input: Readonly<{
   env: Readonly<Record<string, string | undefined>>;
   db: AppDb;
   store: ReleaseIngestionStore;
+  mutationFenceRoot: string;
   write?: (value: string) => void;
 }>): Readonly<{ reconciliationId: string; dispatchId: string; action: ReleaseDispatchReconciliationAction }> {
   const flags = parseExactFlags(input.argv);
@@ -93,14 +128,26 @@ export function runReleaseDispatchReconciliationCommand(input: Readonly<{
     actorPrincipalId === consumer.actorPrincipalId ||
     input.env[RELEASE_DISPATCH_RECONCILIATION_PRINCIPAL_ENV]?.trim() !== actorPrincipalId
   ) throw new Error("release_dispatch_reconciliation_authority_binding_required");
-  input.db.raw.exec("BEGIN IMMEDIATE");
+  const mutationLease = tryAcquireMutationLease(input.mutationFenceRoot);
+  if (!mutationLease) {
+    throw new Error("release_dispatch_reconciliation_mutation_fence_unavailable");
+  }
   let result: ReturnType<typeof reconcileReleaseDispatchFailure>;
   try {
+    input.db.raw.exec("BEGIN IMMEDIATE");
+    input.store.raw.exec("BEGIN IMMEDIATE");
     const observedAt = input.store.trustedNow();
     assertActiveReconciliationPrincipal({
       db: input.db,
       tenantId,
       actorPrincipalId,
+      observedAt,
+    });
+    assertReachableReconciliationEvidence({
+      db: input.db,
+      tenantId,
+      dispatchId: flags["--dispatch"]!,
+      evidenceSha256: flags["--evidence-sha256"]!,
       observedAt,
     });
     result = reconcileReleaseDispatchFailure(input.store, {
@@ -118,12 +165,16 @@ export function runReleaseDispatchReconciliationCommand(input: Readonly<{
       db: input.db,
       tenantId,
       actorPrincipalId,
-      observedAt,
+      observedAt: input.store.trustedNow(),
     });
+    input.store.raw.exec("COMMIT");
     input.db.raw.exec("COMMIT");
   } catch (error) {
+    if (input.store.raw.isTransaction) input.store.raw.exec("ROLLBACK");
     if (input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
     throw error;
+  } finally {
+    mutationLease.release();
   }
   const output = Object.freeze({
     reconciliationId: result.reconciliation.id,

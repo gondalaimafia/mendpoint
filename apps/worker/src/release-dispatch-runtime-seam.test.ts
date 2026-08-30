@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { openReleaseIngestionStore, type ReleaseIngestionStore } from "@mendpoint/catalog";
+import { ingestReleaseDocument, openReleaseIngestionStore, type ReleaseIngestionStore } from "@mendpoint/catalog";
 import { createDb, insertPrincipal, type AppDb } from "@mendpoint/db";
 import { pagingEventForWorkerHeartbeat } from "@mendpoint/notify";
 import { drainTelemetry, resetTelemetry } from "@mendpoint/ops";
@@ -87,6 +87,7 @@ function heartbeat(cycle: ReleaseDispatchRuntimeCycle): WorkerHeartbeat {
     releaseDispatchPending: cycle.pending,
     releaseDispatchClaimed: cycle.claimed,
     releaseDispatchFailed: cycle.failed,
+    releaseDispatchDue: cycle.due,
     releaseDispatchExpiredClaims: cycle.expiredClaims,
     releaseDispatchFailureStage: cycle.failureStage,
     releaseDispatchFailureCode: cycle.failureCode,
@@ -125,6 +126,7 @@ describe("release dispatch runtime fence to heartbeat to paging seam", () => {
       releaseDispatchPending: blocked.pending,
       releaseDispatchClaimed: blocked.claimed,
       releaseDispatchFailed: blocked.failed,
+      releaseDispatchDue: blocked.due,
       releaseDispatchExpiredClaims: blocked.expiredClaims,
     })).toMatchObject({ type: "release_dispatch_degraded" });
 
@@ -183,6 +185,7 @@ describe("release dispatch runtime fence to heartbeat to paging seam", () => {
       releaseDispatchPending: null,
       releaseDispatchClaimed: null,
       releaseDispatchFailed: null,
+      releaseDispatchDue: null,
       releaseDispatchExpiredClaims: null,
     });
     expect(pagingEventForWorkerHeartbeat({
@@ -193,10 +196,42 @@ describe("release dispatch runtime fence to heartbeat to paging seam", () => {
       releaseDispatchPending: unknown.pending,
       releaseDispatchClaimed: unknown.claimed,
       releaseDispatchFailed: unknown.failed,
+      releaseDispatchDue: unknown.due,
       releaseDispatchExpiredClaims: unknown.expiredClaims,
     })).toMatchObject({
       type: "release_dispatch_degraded",
-      details: { pending: null, claimed: null, failed: null, expiredClaims: null },
+      details: { pending: null, claimed: null, failed: null, due: null, expiredClaims: null },
+    });
+  });
+
+  it("degrades when the bounded drain leaves overdue work", () => {
+    const value = fixture();
+    for (const version of ["v1", "v2"]) {
+      ingestReleaseDocument(value.store, {
+        tenantId: "tenant-a",
+        providerSlug: "stripe",
+        adapter: "rss",
+        sourceUrl: `https://docs.example.test/${version}.xml`,
+        body: `<?xml version="1.0"?><rss><channel><item><guid>${version}</guid><title>${version}</title><link>https://docs.example.test/${version}</link><pubDate>Thu, 27 Aug 2026 18:00:00 GMT</pubDate><description>${version}</description></item></channel></rss>`,
+        observedAt: NOW,
+        now: NOW,
+      });
+    }
+
+    const cycle = runReleaseDispatchRuntimeCycle({
+      store: value.store,
+      db: value.db,
+      consumers: [value.consumer],
+      workerId: "worker-release-seam",
+      leaseDurationMs: 30_000,
+      maxClaimsPerConsumer: 1,
+      mutationFenceRoot: value.fenceRoot,
+    });
+    expect(cycle).toMatchObject({
+      status: "degraded",
+      due: 1,
+      failureStage: "backlog",
+      failureCode: "release_dispatch_overdue",
     });
   });
 

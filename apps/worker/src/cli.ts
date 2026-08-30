@@ -408,6 +408,7 @@ export type WorkerHeartbeat = {
   releaseDispatchPending: number | null;
   releaseDispatchClaimed: number | null;
   releaseDispatchFailed: number | null;
+  releaseDispatchDue: number | null;
   releaseDispatchExpiredClaims: number | null;
   releaseDispatchFailureStage: ReleaseDispatchFailureStage | null;
   releaseDispatchFailureCode: string | null;
@@ -428,6 +429,7 @@ export type ReleaseDispatchRuntimeCycle = Readonly<{
   pending: number | null;
   claimed: number | null;
   failed: number | null;
+  due: number | null;
   expiredClaims: number | null;
   failureStage: ReleaseDispatchFailureStage | null;
   failureCode: string | null;
@@ -442,6 +444,7 @@ export function releaseDispatchRuntimeUnknownState(
   pending: null;
   claimed: null;
   failed: null;
+  due: null;
   expiredClaims: null;
   failureStage: ReleaseDispatchFailureStage;
   failureCode: string;
@@ -451,6 +454,7 @@ export function releaseDispatchRuntimeUnknownState(
     pending: null,
     claimed: null,
     failed: null,
+    due: null,
     expiredClaims: null,
     failureStage,
     failureCode,
@@ -470,6 +474,7 @@ export function runReleaseDispatchRuntimeCycle(input: Readonly<{
     pending: number | null;
     claimed: number | null;
     failed: number | null;
+    due: number | null;
     expiredClaims: number | null;
     failureStage?: ReleaseDispatchFailureStage | null;
     failureCode?: string | null;
@@ -489,6 +494,7 @@ export function runReleaseDispatchRuntimeCycle(input: Readonly<{
       pending: input.previous?.pending ?? null,
       claimed: input.previous?.claimed ?? null,
       failed: input.previous?.failed ?? null,
+      due: input.previous?.due ?? null,
       expiredClaims: input.previous?.expiredClaims ?? null,
       failureStage: "fence",
       failureCode: "release_dispatch_mutation_fence_unavailable",
@@ -515,12 +521,13 @@ export function runReleaseDispatchRuntimeCycle(input: Readonly<{
     const pending = backlog.reduce((total, summary) => total + summary.pending, 0);
     const claimed = backlog.reduce((total, summary) => total + summary.claimed, 0);
     const failed = backlog.reduce((total, summary) => total + summary.failed, 0);
+    const due = backlog.reduce((total, summary) => total + summary.due, 0);
     const expiredClaims = backlog.reduce(
       (total, summary) => total + summary.expiredClaimed,
       0,
     );
     const degraded = drained.configurationFailed > 0 || drained.failed > 0 ||
-      drained.retried > 0 || drained.exhausted > 0 || failed > 0 || expiredClaims > 0;
+      drained.retried > 0 || drained.exhausted > 0 || failed > 0 || due > 0 || expiredClaims > 0;
     const failureStage = degraded
       ? drained.failureStage ?? input.previous?.failureStage ??
         (expiredClaims > 0 ? "settlement" : "backlog")
@@ -529,7 +536,7 @@ export function runReleaseDispatchRuntimeCycle(input: Readonly<{
       ? drained.failureCode ?? input.previous?.failureCode ??
         (expiredClaims > 0
           ? "release_dispatch_expired_claim"
-          : "release_dispatch_durable_failure")
+          : due > 0 ? "release_dispatch_overdue" : "release_dispatch_durable_failure")
       : null;
     return Object.freeze({
       fenceAvailable: true,
@@ -541,6 +548,7 @@ export function runReleaseDispatchRuntimeCycle(input: Readonly<{
       pending,
       claimed,
       failed,
+      due,
       expiredClaims,
       failureStage,
       failureCode,
@@ -560,6 +568,7 @@ export function runReleaseDispatchServiceIteration(input: Parameters<
     pending: number | null;
     claimed: number | null;
     failed: number | null;
+    due: number | null;
     expiredClaims: number | null;
     failureStage: ReleaseDispatchFailureStage | null;
     failureCode: string | null;
@@ -574,6 +583,7 @@ export function runReleaseDispatchServiceIteration(input: Parameters<
         pending: cycle.pending,
         claimed: cycle.claimed,
         failed: cycle.failed,
+        due: cycle.due,
         expiredClaims: cycle.expiredClaims,
         failureStage: cycle.failureStage,
         failureCode: cycle.failureCode,
@@ -4547,6 +4557,7 @@ async function runService(intervalMs: number) {
   let releaseDispatchPending: number | null = releaseDispatchConsumers.length > 0 ? null : 0;
   let releaseDispatchClaimed: number | null = releaseDispatchConsumers.length > 0 ? null : 0;
   let releaseDispatchFailed: number | null = releaseDispatchConsumers.length > 0 ? null : 0;
+  let releaseDispatchDue: number | null = releaseDispatchConsumers.length > 0 ? null : 0;
   let releaseDispatchExpiredClaims: number | null = releaseDispatchConsumers.length > 0 ? null : 0;
   let releaseDispatchFailureStage: ReleaseDispatchFailureStage | null = null;
   let releaseDispatchFailureCode: string | null = null;
@@ -4591,6 +4602,7 @@ async function runService(intervalMs: number) {
       const heartbeatFeedOk = feedPollOk && (!customerProfile || feedFreshness.ok);
       const heartbeatReleaseDispatchOk = releaseDispatchConsumers.length === 0 ||
         releaseDispatchStatus === "healthy" && releaseDispatchFailed === 0 &&
+        releaseDispatchDue === 0 &&
         releaseDispatchExpiredClaims === 0;
       const heartbeatOk = heartbeatFeedOk && heartbeatReleaseDispatchOk;
       writeWorkerHeartbeat(heartbeatPath, {
@@ -4622,6 +4634,7 @@ async function runService(intervalMs: number) {
         releaseDispatchPending,
         releaseDispatchClaimed,
         releaseDispatchFailed,
+        releaseDispatchDue,
         releaseDispatchExpiredClaims,
         releaseDispatchFailureStage,
         releaseDispatchFailureCode,
@@ -4648,6 +4661,7 @@ async function runService(intervalMs: number) {
         releaseDispatchPending,
         releaseDispatchClaimed,
         releaseDispatchFailed,
+        releaseDispatchDue,
         releaseDispatchExpiredClaims,
         releaseDispatchFailureStage,
         releaseDispatchFailureCode,
@@ -4835,6 +4849,7 @@ async function runService(intervalMs: number) {
             pending: releaseDispatchPending,
             claimed: releaseDispatchClaimed,
             failed: releaseDispatchFailed,
+            due: releaseDispatchDue,
             expiredClaims: releaseDispatchExpiredClaims,
             failureStage: releaseDispatchFailureStage,
             failureCode: releaseDispatchFailureCode,
@@ -4845,6 +4860,7 @@ async function runService(intervalMs: number) {
       releaseDispatchPending = state.pending;
       releaseDispatchClaimed = state.claimed;
       releaseDispatchFailed = state.failed;
+      releaseDispatchDue = state.due;
       releaseDispatchExpiredClaims = state.expiredClaims;
       releaseDispatchFailureStage = state.failureStage;
       releaseDispatchFailureCode = state.failureCode;
@@ -4858,7 +4874,7 @@ async function runService(intervalMs: number) {
           );
         } else if (cycle.drained) {
           console.log(
-            `Release dispatch: configured=${cycle.drained.configured} claimed=${cycle.drained.claimed} completed=${cycle.drained.completed} failed=${cycle.drained.failed} retried=${cycle.drained.retried} exhausted=${cycle.drained.exhausted} configurationFailed=${cycle.drained.configurationFailed} pending=${releaseDispatchPending} durableFailed=${releaseDispatchFailed} expired=${releaseDispatchExpiredClaims} status=${releaseDispatchStatus} failureStage=${state.failureStage ?? "none"} failureCode=${state.failureCode ?? "none"}`,
+            `Release dispatch: configured=${cycle.drained.configured} claimed=${cycle.drained.claimed} completed=${cycle.drained.completed} failed=${cycle.drained.failed} retried=${cycle.drained.retried} exhausted=${cycle.drained.exhausted} configurationFailed=${cycle.drained.configurationFailed} pending=${releaseDispatchPending} due=${releaseDispatchDue} durableFailed=${releaseDispatchFailed} expired=${releaseDispatchExpiredClaims} status=${releaseDispatchStatus} failureStage=${state.failureStage ?? "none"} failureCode=${state.failureCode ?? "none"}`,
           );
         }
       } else {
@@ -5072,6 +5088,7 @@ async function main() {
         env: process.env,
         db,
         store: releaseStore,
+        mutationFenceRoot: resolveMutationFenceRoot(),
         write: (value) => console.log(value),
       });
     } finally {

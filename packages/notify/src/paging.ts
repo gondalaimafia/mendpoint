@@ -185,6 +185,7 @@ export function pagingEventForWorkerHeartbeat(input: {
   releaseDispatchPending?: number | null;
   releaseDispatchClaimed?: number | null;
   releaseDispatchFailed?: number | null;
+  releaseDispatchDue?: number | null;
   releaseDispatchExpiredClaims?: number | null;
   releaseDispatchFailureStage?: string | null;
   releaseDispatchFailureCode?: string | null;
@@ -202,6 +203,7 @@ export function pagingEventsForWorkerHeartbeat(input: {
   releaseDispatchPending?: number | null;
   releaseDispatchClaimed?: number | null;
   releaseDispatchFailed?: number | null;
+  releaseDispatchDue?: number | null;
   releaseDispatchExpiredClaims?: number | null;
   releaseDispatchFailureStage?: string | null;
   releaseDispatchFailureCode?: string | null;
@@ -228,6 +230,7 @@ export function pagingEventsForWorkerHeartbeat(input: {
         pending: boundedPagingCount(input.releaseDispatchPending),
         claimed: boundedPagingCount(input.releaseDispatchClaimed),
         failed: boundedPagingCount(input.releaseDispatchFailed),
+        due: boundedPagingCount(input.releaseDispatchDue),
         expiredClaims: boundedPagingCount(input.releaseDispatchExpiredClaims),
         failureStage: input.releaseDispatchFailureStage ?? null,
         failureCode: input.releaseDispatchFailureCode ?? null,
@@ -379,6 +382,7 @@ export async function pageWorkerHeartbeat(input: {
   releaseDispatchPending?: number | null;
   releaseDispatchClaimed?: number | null;
   releaseDispatchFailed?: number | null;
+  releaseDispatchDue?: number | null;
   releaseDispatchExpiredClaims?: number | null;
   releaseDispatchFailureStage?: string | null;
   releaseDispatchFailureCode?: string | null;

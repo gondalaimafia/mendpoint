@@ -36,6 +36,7 @@ type WorkerHeartbeat = {
   releaseDispatchPending?: number | null;
   releaseDispatchClaimed?: number | null;
   releaseDispatchFailed?: number | null;
+  releaseDispatchDue?: number | null;
   releaseDispatchExpiredClaims?: number | null;
   releaseDispatchFailureStage?: string | null;
   releaseDispatchFailureCode?: string | null;
@@ -131,6 +132,7 @@ export async function workerCheck(operational = true): Promise<{
   releaseDispatchPending?: number | null;
   releaseDispatchClaimed?: number | null;
   releaseDispatchFailed?: number | null;
+  releaseDispatchDue?: number | null;
   releaseDispatchExpiredClaims?: number | null;
   releaseDispatchFailureStage?: ReleaseDispatchFailureStage | null;
   releaseDispatchFailureCode?: string | null;
@@ -219,6 +221,7 @@ export async function workerCheck(operational = true): Promise<{
       "releaseDispatchPending",
       "releaseDispatchClaimed",
       "releaseDispatchFailed",
+      "releaseDispatchDue",
       "releaseDispatchExpiredClaims",
       "releaseDispatchFailureStage",
       "releaseDispatchFailureCode",
@@ -245,6 +248,9 @@ export async function workerCheck(operational = true): Promise<{
       : releaseDispatchAnyFieldPresent ? null : 0;
     const releaseDispatchFailed = hasOwn(heartbeat, "releaseDispatchFailed")
       ? safeCount(heartbeat.releaseDispatchFailed)
+      : releaseDispatchAnyFieldPresent ? null : 0;
+    const releaseDispatchDue = hasOwn(heartbeat, "releaseDispatchDue")
+      ? safeCount(heartbeat.releaseDispatchDue)
       : releaseDispatchAnyFieldPresent ? null : 0;
     const releaseDispatchExpiredClaims = hasOwn(heartbeat, "releaseDispatchExpiredClaims")
       ? safeCount(heartbeat.releaseDispatchExpiredClaims)
@@ -274,12 +280,17 @@ export async function workerCheck(operational = true): Promise<{
       releaseDispatchPending !== null &&
       releaseDispatchClaimed !== null &&
       releaseDispatchFailed !== null &&
+      releaseDispatchDue !== null &&
       releaseDispatchExpiredClaims !== null;
-    const releaseDispatchContractValid = releaseDispatchFieldsValid && releaseDispatchFailureValid;
+    const releaseDispatchRequiredButMissing =
+      releasePollingConfigured === true && !releaseDispatchAnyFieldPresent;
+    const releaseDispatchContractValid = releaseDispatchFieldsValid &&
+      releaseDispatchFailureValid && !releaseDispatchRequiredButMissing;
     const releaseDispatchHealthy = releaseDispatchContractValid && releaseDispatchConfigured
       ? releaseDispatchConsumerCount > 0 &&
         currentReleaseDispatchStatus === "healthy" &&
         releaseDispatchFailed === 0 &&
+        releaseDispatchDue === 0 &&
         releaseDispatchExpiredClaims === 0
       : releaseDispatchContractValid &&
         releaseDispatchConsumerCount === 0 &&
@@ -287,8 +298,10 @@ export async function workerCheck(operational = true): Promise<{
         releaseDispatchPending === 0 &&
         releaseDispatchClaimed === 0 &&
         releaseDispatchFailed === 0 &&
+        releaseDispatchDue === 0 &&
         releaseDispatchExpiredClaims === 0;
-    const releaseDispatchUnknown = releaseDispatchAnyFieldPresent && !releaseDispatchContractValid;
+    const releaseDispatchUnknown = releaseDispatchRequiredButMissing ||
+      releaseDispatchAnyFieldPresent && !releaseDispatchContractValid;
     const feedLastSuccessAt = Date.parse(heartbeat.feedLastSuccessAt ?? "");
     const feedFreshness = assessFeedFreshness({
       lastSuccessAt: heartbeat.feedLastSuccessAt,
@@ -339,6 +352,7 @@ export async function workerCheck(operational = true): Promise<{
       releaseDispatchPending: releaseDispatchUnknown ? null : releaseDispatchPending,
       releaseDispatchClaimed: releaseDispatchUnknown ? null : releaseDispatchClaimed,
       releaseDispatchFailed: releaseDispatchUnknown ? null : releaseDispatchFailed,
+      releaseDispatchDue: releaseDispatchUnknown ? null : releaseDispatchDue,
       releaseDispatchExpiredClaims: releaseDispatchUnknown ? null : releaseDispatchExpiredClaims,
       releaseDispatchFailureStage: releaseDispatchUnknown ? null : currentReleaseDispatchFailureStage,
       releaseDispatchFailureCode: releaseDispatchUnknown ? null : currentReleaseDispatchFailureCode,
