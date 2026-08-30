@@ -130,7 +130,8 @@ async function requestBody(
   allowed: ReadonlySet<string>,
 ): Promise<Record<string, unknown>> {
   const contentType = c.req.header("content-type")?.toLowerCase() ?? "";
-  if (!contentType.startsWith("application/json")) {
+  const mediaType = contentType.split(";", 1)[0]?.trim();
+  if (mediaType !== "application/json") {
     throw new Error("secret_lifecycle_content_type_invalid");
   }
   const declaredHeader = c.req.header("content-length");

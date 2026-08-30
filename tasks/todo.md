@@ -2,6 +2,20 @@
 
 ## Issue 433 independent review repair: 2026-08-30
 
+### Exact-head follow-up for `8b39ac8`
+
+- [x] RED: prove every physical rotation or rewrap source decrypt emits its own granted or denied outcome with the actual request, API key, and credential principal attribution.
+- [x] RED: reject JSONP and JSON-prefixed media types while accepting case-insensitive `application/json` with parameters.
+- [x] GREEN: separate physical decrypt audit identity from semantic operation replay identity and parse the exact media type token.
+- [x] Run focused lifecycle suites, affected API typecheck, diff checks, and commit locally without pushing.
+
+#### Follow-up review
+
+- Each physical source decrypt now creates one random attempt identity shared by its attempted and actual-outcome audit pair. Granted and denied events retain the real request ID, API key ID, credential principal, and stable authority principal; lifecycle operation tables remain the separate semantic replay authority.
+- Two rewrap attempts under rotated API keys now produce two granted events with exact per-request and per-credential attribution. A completed lifecycle replay still returns from the semantic operation record without another decrypt.
+- Content type validation compares the case-insensitive media type token before optional parameters exactly to `application/json`. `application/jsonp` and `application/json-bogus` are rejected, while `Application/JSON; Charset=UTF-8` is accepted.
+- Verification: the 52 focused lifecycle service and route tests pass, the affected API typecheck passes, and `git diff --check` is clean.
+
 - [x] Trace the exact create, rotate, rewrap, and revoke commit boundaries and reproduce authority loss during asynchronous provider work.
 - [x] RED: prove every lifecycle mutation revalidates the stable principal and credential binding immediately before durable publication and cleans up staged provider state on loss.
 - [x] RED: prove self-serve and production-bootstrap owner keys retain a stable owner authority binding, including safe compatibility for legacy rows.

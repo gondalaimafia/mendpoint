@@ -300,7 +300,7 @@ describe("secret lifecycle routes", () => {
     }
   });
 
-  it("resumes an audited rotation failure across rotated API keys without source-audit conflict", async () => {
+  it("attributes every physical source decrypt across rotated API keys", async () => {
     const { app, db, provider, first, second } = realAuthFixture();
     expect((await app.request("/platform/secrets", {
       method: "POST",
@@ -332,9 +332,19 @@ describe("secret lifecycle routes", () => {
       customerManaged: false,
     }, Buffer.alloc(32, 2));
     expect((await rotate(second.token, "rotation-retry-two")).status).toBe(200);
-    expect(listAudit(db, "tenant-a").filter(
+    const grants = listAudit(db, "tenant-a").filter(
       (event) => event.action === "secret.lifecycle.rewrap_source.granted",
-    )).toHaveLength(1);
+    );
+    expect(grants).toHaveLength(2);
+    expect(grants.map((event) => event.request_id).sort())
+      .toEqual(["rotation-failed-one", "rotation-retry-two"]);
+    expect(grants.map((event) => event.api_key_id).sort()).toEqual([first.id, second.id].sort());
+    const credentialPrincipals = [first, second].map((key) =>
+      getPrincipalBySubject(db, "tenant-a", "api_key", key.id)!.id
+    ).sort();
+    expect(grants.map((event) => JSON.parse(event.metadata_json!).credentialPrincipalId).sort())
+      .toEqual(credentialPrincipals);
+    expect(grants.every((event) => event.principal_id === "principal-service-owner")).toBe(true);
     expect(listAudit(db, "tenant-a").filter(
       (event) => event.action === "secret.lifecycle.rewrap_source.attempted",
     ).map((event) => event.api_key_id).sort()).toEqual([first.id, second.id].sort());
@@ -473,6 +483,33 @@ describe("secret lifecycle routes", () => {
       });
       expect(response.status, idempotencyKey).toBe(400);
     }
+  });
+
+  it("requires the exact application/json media type before optional parameters", async () => {
+    const { app, db } = fixture();
+    for (const [contentType, idempotencyKey] of [
+      ["application/jsonp", "jsonp-media-type"],
+      ["application/json-bogus", "json-bogus-media-type"],
+    ] as const) {
+      const response = await app.request("/platform/secrets", {
+        method: "POST",
+        headers: headers({ "Content-Type": contentType, "Idempotency-Key": idempotencyKey }),
+        body: JSON.stringify(createBody),
+      });
+      expect(response.status, contentType).toBe(400);
+    }
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM secret_lifecycle_versions").get())
+      .toMatchObject({ count: 0 });
+
+    const accepted = await app.request("/platform/secrets", {
+      method: "POST",
+      headers: headers({
+        "Content-Type": "Application/JSON; Charset=UTF-8",
+        "Idempotency-Key": "json-charset-media-type",
+      }),
+      body: JSON.stringify(createBody),
+    });
+    expect(accepted.status).toBe(201);
   });
 
   it("rejects unknown fields and oversized lifecycle JSON before persistence", async () => {
@@ -719,7 +756,7 @@ describe("secret lifecycle routes", () => {
     )).toHaveLength(1);
   });
 
-  it("resumes an interrupted HTTP rotation across request IDs without duplicate source audit", async () => {
+  it("audits each source decrypt when an interrupted HTTP rotation is retried", async () => {
     const { app, db, provider } = fixture();
     await app.request("/platform/secrets", {
       method: "POST",
@@ -755,9 +792,16 @@ describe("secret lifecycle routes", () => {
       customerManaged: false,
     }, Buffer.alloc(32, 2));
     expect((await rotate("rotate-http-two")).status).toBe(200);
-    expect(listAudit(db, "tenant-a").filter(
+    const grants = listAudit(db, "tenant-a").filter(
       (event) => event.action === "secret.lifecycle.rewrap_source.granted",
-    )).toHaveLength(1);
+    );
+    expect(grants).toHaveLength(2);
+    expect(grants.map((event) => event.request_id).sort())
+      .toEqual(["rotate-http-one", "rotate-http-two"]);
+    expect(grants.map((event) => event.api_key_id).sort())
+      .toEqual(["api-key-one", "api-key-two"]);
+    expect(grants.map((event) => JSON.parse(event.metadata_json!).credentialPrincipalId))
+      .toEqual(["operator-a", "operator-a"]);
   });
 
   it("audits HTTP authorization denial with the actual request context", async () => {

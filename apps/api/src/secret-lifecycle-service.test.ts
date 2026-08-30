@@ -520,7 +520,7 @@ describe("durable secret lifecycle service", () => {
       .toHaveLength(1);
   });
 
-  it("resumes rotation after a pre-publication failure without duplicating source audit", async () => {
+  it("records one granted outcome for every source decrypt across a retry", async () => {
     const { db, provider } = fixture();
     await service(db, provider).create(createInput);
     provider.removeKey("tenant-a", {
@@ -545,9 +545,12 @@ describe("durable secret lifecycle service", () => {
     }, Buffer.alloc(32, 2));
     await expect(service(db, provider, { requestId: "rotate-http-two" }).rewrap(request))
       .resolves.toMatchObject({ generation: 2, state: "active" });
-    expect(listAudit(db, "tenant-a").filter(
+    const grants = listAudit(db, "tenant-a").filter(
       (event) => event.action === "secret.lifecycle.rewrap_source.granted",
-    )).toHaveLength(1);
+    );
+    expect(grants).toHaveLength(2);
+    expect(grants.map((event) => event.request_id).sort())
+      .toEqual(["rotate-http-one", "rotate-http-two"]);
   });
 
   it("audits denied break glass and distinguishes new attempts from exact replay", async () => {

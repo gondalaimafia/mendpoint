@@ -411,6 +411,7 @@ export class DurableSecretLifecycleService {
     operation: "rotation" | "rewrap",
     purpose: string,
   ): Promise<string> {
+    const decryptAttemptId = randomUUID();
     const attemptedAction = operation === "rotation"
       ? "secret.lifecycle.rotation_source.attempted"
       : "secret.lifecycle.rewrap_source.attempted";
@@ -425,8 +426,8 @@ export class DurableSecretLifecycleService {
         attemptedAction,
         idempotencyKey,
         current.credential_id,
-        { generation: current.generation, outcome: "attempted", purpose },
-        `${attemptedAction}:${this.options.requestId ?? randomUUID()}:${this.options.credentialPrincipalId}:${this.options.apiKeyId ?? "no-api-key"}`,
+        { generation: current.generation, outcome: "attempted", purpose, decryptAttemptId },
+        `${attemptedAction}:${decryptAttemptId}`,
       );
     } catch {
       throw new Error("vault_access_audit_failed");
@@ -453,11 +454,9 @@ export class DurableSecretLifecycleService {
           keyId: event.key.keyId,
           keyVersion: event.key.version,
           attestationSha256: current.key_attestation_sha256,
+          decryptAttemptId,
         },
-        event.outcome === "granted" ? grantedAction : deniedAction,
-        idempotencyKey,
-        null,
-        this.options.actorId,
+        `${event.outcome === "granted" ? grantedAction : deniedAction}:${decryptAttemptId}`,
       );
     });
     if (!sourceAccess || sourceAccess.outcome !== "granted") {
