@@ -78,6 +78,7 @@ export type GrossMarginIncompleteAttribution = Readonly<{
     | "actual_cost_missing"
     | "accepted_outcome_missing"
     | "accepted_outcome_ambiguous"
+    | "task_attribution_ambiguous"
     | "settlement_missing"
     | "campaign_mismatch";
   taskId: string | null;
@@ -1015,11 +1016,73 @@ export function reconcileGrossMargin(
     addIssue(issues, { code: "currency_mismatch", taskId: null, sourceId: null });
   }
 
+  const rawCostsByTask = new Map<string, ActualExecutionCostEntry[]>();
+  for (const entry of costEntries) {
+    const entries = rawCostsByTask.get(entry.taskId) ?? [];
+    entries.push(entry);
+    rawCostsByTask.set(entry.taskId, entries);
+  }
+
+  // A production run is admitted and settled before its MissionTask exists, so
+  // usage carries the stable job/run id while mission-bound cost rows carry the
+  // MissionTask id and retain that same job id as executionId. Bridge only that
+  // exact, tenant-local identity. Ambiguous candidates remain separate and the
+  // existing missing-cost / missing-settlement reasons keep the report closed.
+  const candidateRevenueTasksByCostTask = new Map<string, Set<string>>();
+  for (const [costTaskId, entries] of rawCostsByTask) {
+    const candidates = new Set<string>();
+    if (taskRevenue.has(costTaskId)) candidates.add(costTaskId);
+    for (const entry of entries) {
+      if (taskRevenue.has(entry.executionId)) candidates.add(entry.executionId);
+    }
+    candidateRevenueTasksByCostTask.set(costTaskId, candidates);
+  }
+  const costTasksByRevenueTask = new Map<string, Set<string>>();
+  const ambiguousReconciliationTasks = new Set<string>();
+  for (const [costTaskId, candidates] of candidateRevenueTasksByCostTask) {
+    if (candidates.size !== 1) {
+      if (candidates.size > 1) {
+        ambiguousReconciliationTasks.add(costTaskId);
+        for (const candidate of candidates) ambiguousReconciliationTasks.add(candidate);
+        addIssue(issues, {
+          code: "task_attribution_ambiguous",
+          taskId: costTaskId,
+          sourceId: null,
+        });
+      }
+      continue;
+    }
+    const revenueTaskId = [...candidates][0]!;
+    const costTasks = costTasksByRevenueTask.get(revenueTaskId) ?? new Set<string>();
+    costTasks.add(costTaskId);
+    costTasksByRevenueTask.set(revenueTaskId, costTasks);
+  }
+  const reconciliationTaskByCostTask = new Map<string, string>();
+  for (const [costTaskId, candidates] of candidateRevenueTasksByCostTask) {
+    if (candidates.size !== 1) continue;
+    const revenueTaskId = [...candidates][0]!;
+    const matchingCostTasks = costTasksByRevenueTask.get(revenueTaskId);
+    if (matchingCostTasks?.size !== 1) {
+      ambiguousReconciliationTasks.add(revenueTaskId);
+      for (const matchingCostTask of matchingCostTasks ?? []) {
+        ambiguousReconciliationTasks.add(matchingCostTask);
+      }
+      addIssue(issues, {
+        code: "task_attribution_ambiguous",
+        taskId: revenueTaskId,
+        sourceId: null,
+      });
+      continue;
+    }
+    reconciliationTaskByCostTask.set(costTaskId, revenueTaskId);
+  }
+
   const costsByTask = new Map<string, ActualExecutionCostEntry[]>();
   for (const entry of costEntries) {
-    const entries = costsByTask.get(entry.taskId) ?? [];
+    const reconciliationTaskId = reconciliationTaskByCostTask.get(entry.taskId) ?? entry.taskId;
+    const entries = costsByTask.get(reconciliationTaskId) ?? [];
     entries.push(entry);
-    costsByTask.set(entry.taskId, entries);
+    costsByTask.set(reconciliationTaskId, entries);
   }
 
   let unattributedRevenueMoneyMicros = 0;
@@ -1028,7 +1091,7 @@ export function reconcileGrossMargin(
     const revenue = taskRevenue.get(taskId);
     const costs = costsByTask.get(taskId) ?? [];
     const accepted = costs.filter((entry) => entry.outcomeStatus === "accepted");
-    let complete = revenue?.complete ?? true;
+    let complete = (revenue?.complete ?? true) && !ambiguousReconciliationTasks.has(taskId);
     if (revenue && costs.length === 0) {
       complete = false;
       addIssue(issues, { code: "actual_cost_missing", taskId, sourceId: null });
@@ -1064,8 +1127,9 @@ export function reconcileGrossMargin(
   }
 
   const attributions = costEntries.map<GrossMarginAttribution>((entry) => {
-    const revenue = taskRevenue.get(entry.taskId);
-    const complete = taskComplete.get(entry.taskId) ?? false;
+    const reconciliationTaskId = reconciliationTaskByCostTask.get(entry.taskId) ?? entry.taskId;
+    const revenue = taskRevenue.get(reconciliationTaskId);
+    const complete = taskComplete.get(reconciliationTaskId) ?? false;
     const attributedRevenue = complete
       ? entry.outcomeStatus === "accepted"
         ? revenue?.netRevenueMoneyMicros ?? 0

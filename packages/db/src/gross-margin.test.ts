@@ -89,6 +89,7 @@ function settle(
     taskId?: string;
     campaignId?: string | null;
     actualMcuMicros?: number;
+    actorPrincipalId?: string;
   } = {},
 ) {
   const tenantId = input.tenantId ?? "tenant_default";
@@ -102,7 +103,7 @@ function settle(
     campaignId: input.campaignId === undefined ? "campaign-a" : input.campaignId,
     mcuMicros: 5_000_000,
     reason: "task ceiling",
-    actorPrincipalId: `principal-${suffix}`,
+    actorPrincipalId: input.actorPrincipalId ?? `principal-${suffix}`,
     createdAt: at,
   });
   return settleUsageReservation(db, {
@@ -113,7 +114,7 @@ function settle(
     actualMcuMicros: input.actualMcuMicros ?? 4_000_000,
     invoiceReference: `invoice-${suffix}`,
     reason: "actual accepted work",
-    actorPrincipalId: `principal-${suffix}`,
+    actorPrincipalId: input.actorPrincipalId ?? `principal-${suffix}`,
     createdAt: "2026-08-01T12:01:00.000Z",
   });
 }
@@ -292,6 +293,63 @@ describe("actual execution cost and gross margin", () => {
       "accepted_outcome_missing",
       "actual_cost_missing",
     ]);
+  });
+
+  it("keeps an execution-ID bridge closed when campaign attribution disagrees", () => {
+    const db = setupDb();
+    settle(db, { taskId: "job-a", campaignId: "campaign-a" });
+    recordActualExecutionCost(db, costInput({
+      executionId: "job-a",
+      taskId: "mission-task-a",
+      campaignId: "campaign-b",
+    }));
+
+    const report = reconcileGrossMargin(db, "tenant_default");
+    expect(report.complete).toBe(false);
+    expect(report.exactGrossMarginMoneyMicros).toBeNull();
+    expect(report.attributedGrossMarginMoneyMicros).toBeNull();
+    expect(report.unattributedRevenueMoneyMicros).toBe(80_000);
+    expect(report.incompleteAttributions).toEqual([
+      { code: "campaign_mismatch", taskId: "job-a", sourceId: null },
+    ]);
+    expect(report.attributions[0]).toMatchObject({
+      executionId: "job-a",
+      taskId: "mission-task-a",
+      campaignId: "campaign-b",
+      attributedNetRevenueMoneyMicros: null,
+      attributedGrossMarginMoneyMicros: null,
+    });
+  });
+
+  it("keeps margin closed when task and execution IDs point at different revenue tasks", () => {
+    const db = setupDb();
+    settle(db, { suffix: "a", taskId: "job-a", campaignId: "campaign-a" });
+    settle(db, {
+      suffix: "b",
+      taskId: "job-b",
+      campaignId: "campaign-a",
+      actorPrincipalId: "principal-a",
+    });
+    recordActualExecutionCost(db, costInput({
+      executionId: "job-a",
+      taskId: "job-b",
+    }));
+
+    const report = reconcileGrossMargin(db, "tenant_default");
+    expect(report.complete).toBe(false);
+    expect(report.exactGrossMarginMoneyMicros).toBeNull();
+    expect(report.attributedGrossMarginMoneyMicros).toBeNull();
+    expect(report.attributions[0]).toMatchObject({
+      executionId: "job-a",
+      taskId: "job-b",
+      attributedNetRevenueMoneyMicros: null,
+      attributedGrossMarginMoneyMicros: null,
+    });
+    expect(report.incompleteAttributions).toContainEqual({
+      code: "task_attribution_ambiguous",
+      taskId: "job-b",
+      sourceId: null,
+    });
   });
 
   it("enforces tenant isolation, actor ownership, idempotency, and append-only rows", () => {
