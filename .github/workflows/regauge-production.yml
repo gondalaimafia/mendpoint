@@ -939,33 +939,44 @@ jobs:
             done
             action="contained_run_owned_worker"
           fi
-          after="$(flyctl machines list --app mendpoint-regauge-production --json)"
-          printf '%s\n' "$after" > test-results/regauge-cleanup/after-machines.json
-          if [[ "$action" == "restored_prior_worker" ]]; then
-            after_coordinator="$(jq -cS '
-              .[] | select(.config.metadata.fly_process_group == "coordinator")
-              | {id, config, image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")}
-            ' <<<"$after")"
-            after_worker="$(jq -cS --arg id "$worker_id" '
-              .[] | select(.id == $id)
-              | {id, state, config, image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")}
-            ' <<<"$after")"
-            prior_worker="$(jq -cS --arg id "$worker_id" '
-              .[] | select(.id == $id)
-              | {id, state, config, image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")}
-            ' "$snapshot")"
-            [[ "$after_coordinator" == "$prior_coordinator" ]]
-            [[ "$after_worker" == "$prior_worker" ]]
-          else
-            remaining_owned_started="$(jq --arg run "$GITHUB_RUN_ID" \
-              --arg attempt "$GITHUB_RUN_ATTEMPT" '[.[] | select(
-                .config.metadata.fly_process_group == "worker"
-                and .config.env.MENDPOINT_REGAUGE_ACTIVATION_RUN_ID == $run
-                and .config.env.MENDPOINT_REGAUGE_ACTIVATION_RUN_ATTEMPT == $attempt
-                and .state == "started"
-              )] | length' <<<"$after")"
-            test "$remaining_owned_started" = "0"
-          fi
+          prior_worker="$(jq -cS --arg id "$worker_id" '
+            .[] | select(.id == $id)
+            | {id, state, config, image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")}
+          ' "$snapshot")"
+          cleanup_verified=false
+          for attempt in {1..30}; do
+            after="$(flyctl machines list --app mendpoint-regauge-production --json)"
+            printf '%s\n' "$after" > test-results/regauge-cleanup/after-machines.json
+            if [[ "$action" == "restored_prior_worker" ]]; then
+              after_coordinator="$(jq -cS '
+                .[] | select(.config.metadata.fly_process_group == "coordinator")
+                | {id, config, image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")}
+              ' <<<"$after")"
+              after_worker="$(jq -cS --arg id "$worker_id" '
+                .[] | select(.id == $id)
+                | {id, state, config, image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")}
+              ' <<<"$after")"
+              if [[ "$after_coordinator" == "$prior_coordinator" && "$after_worker" == "$prior_worker" ]]; then
+                cleanup_verified=true
+                break
+              fi
+            else
+              remaining_owned_started="$(jq --arg run "$GITHUB_RUN_ID" \
+                --arg attempt "$GITHUB_RUN_ATTEMPT" '[.[] | select(
+                  .config.metadata.fly_process_group == "worker"
+                  and .config.env.MENDPOINT_REGAUGE_ACTIVATION_RUN_ID == $run
+                  and .config.env.MENDPOINT_REGAUGE_ACTIVATION_RUN_ATTEMPT == $attempt
+                  and .state == "started"
+                )] | length' <<<"$after")"
+              if [[ "$remaining_owned_started" == "0" ]]; then
+                cleanup_verified=true
+                break
+              fi
+            fi
+            test "$attempt" -lt 30
+            sleep 2
+          done
+          test "$cleanup_verified" = true
           jq -n --arg action "$action" --arg runId "$GITHUB_RUN_ID" \
             --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
             '{action: $action, runId: $runId, runAttempt: $runAttempt}' \

@@ -187,6 +187,8 @@ describe("Regauge production proof", () => {
       expectedBaseSha: baseRevision,
       expectedHeadBranch: "mendpoint/regauge/unit-a",
       expectedHeadSha: headRevision,
+      expectedCampaignBranchPrefix: "mendpoint/regauge/",
+      compatibilityCampaignBranchPrefixes: ["mendpoint/transformer/"],
       expectedInstallationId: installationId,
       expectedRepositoryId: repositoryId,
       requireExactDraft: true,

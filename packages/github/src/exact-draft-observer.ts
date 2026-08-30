@@ -13,6 +13,7 @@ export type ExactDraftObservationInput = Readonly<{
   expectedHeadBranch: string;
   expectedHeadSha: string;
   expectedCampaignBranchPrefix?: string;
+  compatibilityCampaignBranchPrefixes?: readonly string[];
   expectedRepositoryId?: number;
   expectedInstallationId?: number;
   requireExactDraft?: boolean;
@@ -147,6 +148,14 @@ function validate(input: ExactDraftObservationInput): void {
       (input.expectedCampaignBranchPrefix !== undefined &&
         (!validBranchPrefix(input.expectedCampaignBranchPrefix) ||
           !input.expectedHeadBranch.startsWith(input.expectedCampaignBranchPrefix))) ||
+      (input.compatibilityCampaignBranchPrefixes !== undefined &&
+        (input.expectedCampaignBranchPrefix === undefined ||
+          input.compatibilityCampaignBranchPrefixes.length === 0 ||
+          input.compatibilityCampaignBranchPrefixes.length > 10 ||
+          input.compatibilityCampaignBranchPrefixes.some((prefix) =>
+            !validBranchPrefix(prefix) || prefix === input.expectedCampaignBranchPrefix) ||
+          new Set(input.compatibilityCampaignBranchPrefixes).size !==
+            input.compatibilityCampaignBranchPrefixes.length)) ||
       (input.expectedRepositoryId !== undefined &&
         (!Number.isSafeInteger(input.expectedRepositoryId) || input.expectedRepositoryId < 1)) ||
       (input.expectedInstallationId !== undefined &&
@@ -225,9 +234,12 @@ async function observeDeliveryEvidence(octokit: Octokit, input: ExactDraftObserv
   }
   const campaignDrafts = openPulls.filter((candidate) => {
     const candidateBranch = String(candidate.head.ref ?? "");
+    const campaignPrefixes = input.expectedCampaignBranchPrefix === undefined
+      ? []
+      : [input.expectedCampaignBranchPrefix, ...(input.compatibilityCampaignBranchPrefixes ?? [])];
     const inCampaignNamespace = input.expectedCampaignBranchPrefix === undefined
       ? candidateBranch === input.expectedHeadBranch
-      : candidateBranch.startsWith(input.expectedCampaignBranchPrefix);
+      : campaignPrefixes.some((prefix) => candidateBranch.startsWith(prefix));
     return candidate.state === "open" && candidate.draft === true && inCampaignNamespace;
   });
   const matching = campaignDrafts.filter((candidate) => candidate.number === input.pullRequestNumber &&

@@ -228,6 +228,25 @@ describe("exact GitHub draft observation", () => {
     })).rejects.toThrow("github_exact_draft_observation_authority_mismatch");
   });
 
+  it("counts a legacy ReGauge draft in the same campaign cardinality proof", async () => {
+    await expect(observeExactDraftWithOctokit(octokit({
+      headBranch: "mendpoint/regauge/unit-a",
+      openPullPages: [[
+        { number: 3, headBranch: "mendpoint/regauge/unit-a" },
+        { number: 92, headBranch: "mendpoint/transformer/legacy-unit", headSha: sha("e") },
+      ]],
+    }), {
+      ...input,
+      expectedHeadBranch: "mendpoint/regauge/unit-a",
+      expectedCampaignBranchPrefix: "mendpoint/regauge/",
+      compatibilityCampaignBranchPrefixes: ["mendpoint/transformer/"],
+      expectedRepositoryId: 101,
+      expectedInstallationId: 202,
+      requireExactDraft: true,
+      includeDeliveryEvidence: true,
+    })).rejects.toThrow("github_exact_draft_observation_authority_mismatch");
+  });
+
   it("enumerates every open pull page before proving campaign draft cardinality", async () => {
     const client = octokit({
       headBranch: "mendpoint/regauge/unit-a",
@@ -255,6 +274,16 @@ describe("exact GitHub draft observation", () => {
       ...input,
       expectedHeadBranch: "mendpoint/regauge/unit-a",
       expectedCampaignBranchPrefix: "mendpoint/fettler-",
+      expectedRepositoryId: 101,
+      expectedInstallationId: 202,
+      requireExactDraft: true,
+      includeDeliveryEvidence: true,
+    })).rejects.toThrow("github_exact_draft_observation_invalid");
+    await expect(observeExactDraftWithOctokit(client, {
+      ...input,
+      expectedHeadBranch: "mendpoint/regauge/unit-a",
+      expectedCampaignBranchPrefix: "mendpoint/regauge/",
+      compatibilityCampaignBranchPrefixes: ["mendpoint/regauge/"],
       expectedRepositoryId: 101,
       expectedInstallationId: 202,
       requireExactDraft: true,

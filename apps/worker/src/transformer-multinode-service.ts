@@ -30,6 +30,7 @@ import type { TransformerCheckpointArtifactBackend } from "./transformer-checkpo
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 
 export const REGAUGE_DRAFT_BRANCH_PREFIX = "mendpoint/regauge/" as const;
+export const REGAUGE_LEGACY_DRAFT_BRANCH_PREFIX = "mendpoint/transformer/" as const;
 
 export type TransformerMultinodeTransport = Readonly<{
   request(input: Readonly<{ path: string; body: unknown; signal?: AbortSignal }>): Promise<unknown>;

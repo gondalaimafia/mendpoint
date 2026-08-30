@@ -7,7 +7,10 @@ import {
   type ExactDraftObservation,
   type ExactDraftObservationInput,
 } from "@mendpoint/github";
-import { REGAUGE_DRAFT_BRANCH_PREFIX } from "@mendpoint/worker/transformer-multinode-service";
+import {
+  REGAUGE_DRAFT_BRANCH_PREFIX,
+  REGAUGE_LEGACY_DRAFT_BRANCH_PREFIX,
+} from "@mendpoint/worker/transformer-multinode-service";
 
 const API_KEY = /^me_[A-Za-z0-9_-]{32,}$/;
 const REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -440,6 +443,7 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
       expectedHeadBranch: String(draft.branchName),
       expectedHeadSha: String(draft.commitSha),
       expectedCampaignBranchPrefix: REGAUGE_DRAFT_BRANCH_PREFIX,
+      compatibilityCampaignBranchPrefixes: [REGAUGE_LEGACY_DRAFT_BRANCH_PREFIX],
       expectedRepositoryId: input.expectedRepositoryId,
       expectedInstallationId: input.expectedInstallationId,
       requireExactDraft: true,

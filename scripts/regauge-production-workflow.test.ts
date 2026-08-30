@@ -532,7 +532,9 @@ describe("Regauge production workflow", () => {
     expect(restore).toContain('if [[ "$prior_state" == "started" ]]');
     expect(restore).toContain("MENDPOINT_REGAUGE_ACTIVATION_RUN_ID");
     expect(restore).toContain("MENDPOINT_REGAUGE_ACTIVATION_RUN_ATTEMPT");
-    expect(restore).toContain('test "$remaining_owned_started" = "0"');
+    expect(restore).toContain("for attempt in {1..30}");
+    expect(restore).toContain('if [[ "$remaining_owned_started" == "0" ]]');
+    expect(restore).toContain('test "$cleanup_verified" = true');
     expect(cleanup.steps.some(
       (step: Record<string, unknown>) => step.name === "Upload cleanup evidence",
     )).toBe(true);
