@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -130,5 +130,56 @@ describe("website upload documentation bundle", () => {
       "public_docs_bundle_owner_missing",
     );
     await expect(readFile(unrelated, "utf8")).resolves.toBe("keep me");
+  });
+
+  it("rejects an output-root junction before touching its target", async ({ skip }) => {
+    const sandbox = await mkdtemp(join(tmpdir(), "mendpoint-public-docs-junction-"));
+    const boundary = join(sandbox, "repo-docs");
+    const victim = join(sandbox, "victim");
+    const output = join(boundary, "website-upload");
+    await mkdir(boundary);
+    await mkdir(victim);
+    const victimFile = join(victim, "keep.txt");
+    await writeFile(victimFile, "do not touch", "utf8");
+    try {
+      await symlink(victim, output, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (["EPERM", "EACCES", "ENOSYS"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        skip();
+        return;
+      }
+      throw error;
+    }
+
+    await expect(writePublicDocsBundle(false, output, boundary)).rejects.toThrow(
+      "public_docs_bundle_reparse_point",
+    );
+    await expect(readFile(victimFile, "utf8")).resolves.toBe("do not touch");
+  });
+
+  it("rejects a junction in the output path before touching its target", async ({ skip }) => {
+    const sandbox = await mkdtemp(join(tmpdir(), "mendpoint-public-docs-ancestor-"));
+    const boundary = join(sandbox, "repo-docs");
+    const victim = join(sandbox, "victim");
+    const linkedAncestor = join(boundary, "linked");
+    const output = join(linkedAncestor, "website-upload");
+    await mkdir(boundary);
+    await mkdir(join(victim, "website-upload"), { recursive: true });
+    const victimFile = join(victim, "website-upload", "keep.txt");
+    await writeFile(victimFile, "do not touch", "utf8");
+    try {
+      await symlink(victim, linkedAncestor, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (["EPERM", "EACCES", "ENOSYS"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        skip();
+        return;
+      }
+      throw error;
+    }
+
+    await expect(writePublicDocsBundle(false, output, boundary)).rejects.toThrow(
+      "public_docs_bundle_reparse_point",
+    );
+    await expect(readFile(victimFile, "utf8")).resolves.toBe("do not touch");
   });
 });

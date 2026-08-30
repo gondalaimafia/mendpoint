@@ -1,6 +1,6 @@
-import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath, unlink, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   buildDocsManifest,
   docsByCategory,
@@ -11,6 +11,7 @@ import {
 } from "../apps/web/app/docs/catalog.js";
 
 const OUTPUT = resolve(process.cwd(), "docs", "website-upload");
+const OUTPUT_BOUNDARY = resolve(process.cwd(), "docs");
 const OUTPUT_OWNER = ".mendpoint-public-docs-owner";
 const OUTPUT_OWNER_TOKEN = "Mendpoint public documentation bundle";
 const OUTPUT_OWNER_CONTENT = `${OUTPUT_OWNER_TOKEN}\n`;
@@ -30,11 +31,18 @@ export function buildPublicDocsBundle(): ReadonlyMap<string, string> {
 export async function writePublicDocsBundle(
   check = false,
   output = OUTPUT,
+  outputBoundary = output === OUTPUT ? OUTPUT_BOUNDARY : resolve(output, ".."),
 ): Promise<void> {
+  const root = resolve(output);
+  const boundary = resolve(outputBoundary);
+  await requireSafeOutputRoot(root, boundary);
   const files = buildPublicDocsBundle();
-  if (!check) await mkdir(output, { recursive: true });
-  const entries = await readOutputEntries(output);
-  await requireOutputOwnership(output, entries, check);
+  if (!check) {
+    await mkdir(root, { recursive: true });
+    await requireSafeOutputRoot(root, boundary);
+  }
+  const entries = await readOutputEntries(root);
+  await requireOutputOwnership(root, boundary, entries, check);
   const expected = new Set([...files.keys(), OUTPUT_OWNER]);
   const unexpectedFiles = entries
     .filter((entry) => entry.isFile() && !expected.has(entry.name))
@@ -51,16 +59,20 @@ export async function writePublicDocsBundle(
     throw new Error(`public_docs_bundle_unexpected_files:${unexpectedFiles.join(",")}`);
   }
   if (!check) {
-    for (const name of unexpectedFiles) await unlink(outputPath(output, name));
+    for (const name of unexpectedFiles) {
+      await requireSafeOutputRoot(root, boundary);
+      await unlink(outputPath(root, name));
+    }
   }
   const mismatches: string[] = [];
   for (const [name, content] of files) {
-    const target = outputPath(output, name);
+    const target = outputPath(root, name);
     if (check) {
       try {
         if (await readFile(target, "utf8") !== content) mismatches.push(name);
       } catch { mismatches.push(name); }
     } else {
+      await requireSafeOutputRoot(root, boundary);
       await writeFile(target, content, "utf8");
     }
   }
@@ -69,6 +81,7 @@ export async function writePublicDocsBundle(
 
 async function requireOutputOwnership(
   output: string,
+  outputBoundary: string,
   entries: Awaited<ReturnType<typeof readOutputEntries>>,
   check: boolean,
 ): Promise<void> {
@@ -84,7 +97,78 @@ async function requireOutputOwnership(
   if (entries.length > 0 || check) {
     throw new Error(`public_docs_bundle_owner_missing:${output}`);
   }
+  await requireSafeOutputRoot(output, outputBoundary);
   await writeFile(outputPath(output, OUTPUT_OWNER), OUTPUT_OWNER_CONTENT, "utf8");
+}
+
+async function requireSafeOutputRoot(output: string, outputBoundary: string): Promise<void> {
+  const boundary = resolve(outputBoundary);
+  const root = resolve(output);
+  requireContainedPath(boundary, root, `public_docs_bundle_path_escape:${output}`);
+
+  let boundaryStats;
+  try {
+    boundaryStats = await lstat(boundary);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`public_docs_bundle_boundary_missing:${boundary}`);
+    }
+    throw error;
+  }
+  if (boundaryStats.isSymbolicLink()) {
+    throw new Error(`public_docs_bundle_reparse_point:${boundary}`);
+  }
+  if (!boundaryStats.isDirectory()) {
+    throw new Error(`public_docs_bundle_boundary_invalid:${boundary}`);
+  }
+
+  const resolvedBoundary = await realpath(boundary);
+  if (!sameFilesystemPath(resolvedBoundary, boundary)) {
+    throw new Error(`public_docs_bundle_reparse_point:${boundary}`);
+  }
+
+  const locator = relative(boundary, root);
+  const segments = locator === "" ? [] : locator.split(sep);
+  let current = boundary;
+  for (const segment of segments) {
+    current = join(current, segment);
+    let stats;
+    try {
+      stats = await lstat(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+      throw error;
+    }
+    if (stats.isSymbolicLink()) {
+      throw new Error(`public_docs_bundle_reparse_point:${current}`);
+    }
+    if (!stats.isDirectory()) {
+      throw new Error(`public_docs_bundle_output_ancestor_invalid:${current}`);
+    }
+    const resolvedCurrent = await realpath(current);
+    requireContainedPath(
+      resolvedBoundary,
+      resolvedCurrent,
+      `public_docs_bundle_realpath_escape:${current}`,
+    );
+    if (!sameFilesystemPath(resolvedCurrent, current)) {
+      throw new Error(`public_docs_bundle_reparse_point:${current}`);
+    }
+  }
+}
+
+function requireContainedPath(boundary: string, target: string, error: string): void {
+  const locator = relative(boundary, target);
+  if (locator.startsWith("..") || isAbsolute(locator)) throw new Error(error);
+}
+
+function sameFilesystemPath(left: string, right: string): boolean {
+  const normalize = (value: string) => {
+    const withoutExtendedPrefix = value.startsWith("\\\\?\\") ? value.slice(4) : value;
+    const normalized = resolve(withoutExtendedPrefix);
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  };
+  return normalize(left) === normalize(right);
 }
 
 async function readOutputEntries(output: string) {
