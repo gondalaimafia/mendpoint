@@ -13,8 +13,10 @@ import {
   insertPrincipal,
   insertTenant,
   listActualExecutionCosts,
+  listExecutionCostOutcomes,
   reconcileGrossMargin,
   recordActualExecutionCost,
+  recordExecutionCostOutcome,
   reserveUsage,
   settleUsageReservation,
   verifyExecutionCostIntegrity,
@@ -409,6 +411,62 @@ describe("actual execution cost and gross margin", () => {
       attributedNetRevenueMoneyMicros: null,
       attributedGrossMarginMoneyMicros: null,
     });
+  });
+
+  it("preserves rejected, corrected, and rolled-back outcomes as append-only authority", () => {
+    const db = setupDb();
+    settle(db);
+    recordActualExecutionCost(db, costInput({
+      outcomeStatus: "unresolved",
+      acceptedOutcomeId: null,
+    }));
+    const outcome = (suffix: string, input: {
+      outcomeStatus: "rejected" | "corrected" | "rolled_back";
+      acceptedOutcomeId?: string | null;
+      authorityKind: "reviewer" | "rollback";
+      authorityDigest: string;
+    }) => recordExecutionCostOutcome(db, {
+      id: `outcome-${suffix}`,
+      tenantId: "tenant_default",
+      idempotencyKey: `outcome-${suffix}`,
+      executionId: "execution-a",
+      actorPrincipalId: "principal-a",
+      createdAt: `2026-08-01T12:0${3 + listExecutionCostOutcomes(db, "tenant_default").length}:00.000Z`,
+      ...input,
+    });
+
+    outcome("rejected", {
+      outcomeStatus: "rejected",
+      authorityKind: "reviewer",
+      authorityDigest: "a".repeat(64),
+    });
+    expect(reconcileGrossMargin(db, "tenant_default").complete).toBe(false);
+    outcome("corrected", {
+      outcomeStatus: "corrected",
+      acceptedOutcomeId: "pull-request-corrected",
+      authorityKind: "reviewer",
+      authorityDigest: "b".repeat(64),
+    });
+    expect(reconcileGrossMargin(db, "tenant_default")).toMatchObject({
+      complete: true,
+      exactGrossMarginMoneyMicros: 77_500,
+      attributions: [{ outcomeStatus: "corrected", acceptedOutcomeId: "pull-request-corrected" }],
+    });
+    outcome("rolled-back", {
+      outcomeStatus: "rolled_back",
+      authorityKind: "rollback",
+      authorityDigest: "c".repeat(64),
+    });
+    expect(reconcileGrossMargin(db, "tenant_default")).toMatchObject({
+      complete: false,
+      exactGrossMarginMoneyMicros: null,
+      attributions: [{ outcomeStatus: "rolled_back", acceptedOutcomeId: null }],
+    });
+    expect(listExecutionCostOutcomes(db, "tenant_default", "execution-a").map((row) => row.outcomeStatus))
+      .toEqual(["rejected", "corrected", "rolled_back"]);
+    expect(() => db.raw.prepare(
+      "UPDATE actual_execution_cost_outcomes SET outcome_status = 'accepted' WHERE id = 'outcome-rejected'",
+    ).run()).toThrow("actual_execution_cost_outcomes_append_only");
   });
 
   it("enforces tenant isolation, actor ownership, idempotency, and append-only rows", () => {

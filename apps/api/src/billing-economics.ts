@@ -13,6 +13,7 @@ import {
   reconcileInvoiceExport,
   reconcileGrossMargin,
   recordActualExecutionCost,
+  recordExecutionCostOutcome,
   transitionInvoiceExportState,
   type ActualExecutionCostEntry,
   type ActualExecutionCostInput,
@@ -256,6 +257,10 @@ function authenticatedPrincipal(c: Context<ApiEnv>) {
   return { tenantId: principal.tenantId, actorPrincipalId };
 }
 
+function hasExactServiceScope(c: Context<ApiEnv>, scope: string): boolean {
+  return c.get("authMethod") === "api_key" && (c.get("authScopes") ?? []).includes(scope);
+}
+
 async function requireAuthenticatedPrincipal(c: Context<ApiEnv>, next: Next) {
   if (!authenticatedPrincipal(c)) {
     return errorResponse(c, "unauthorized", "Authentication is required", 401);
@@ -370,6 +375,13 @@ function executionCostInput(
     graphCostMoneyMicros: body.graphCostMoneyMicros as number,
     sandboxCostMoneyMicros: body.sandboxCostMoneyMicros as number,
     verificationCostMoneyMicros: body.verificationCostMoneyMicros as number,
+    modelCostMeasured: body.modelCostMeasured as boolean,
+    cacheCostMeasured: body.cacheCostMeasured as boolean,
+    gpuCostMeasured: body.gpuCostMeasured as boolean,
+    graphCostMeasured: body.graphCostMeasured as boolean,
+    sandboxCostMeasured: body.sandboxCostMeasured as boolean,
+    verificationCostMeasured: body.verificationCostMeasured as boolean,
+    measurementProvenance: body.measurementProvenance as ActualExecutionCostInput["measurementProvenance"],
     currency: body.currency as string,
     actorPrincipalId: identity.actorPrincipalId,
     createdAt,
@@ -426,6 +438,9 @@ export function createBillingEconomicsRoutes({
 
   routes.post("/execution-costs", async (c) => {
     const identity = authenticatedPrincipal(c)!;
+    if (!hasExactServiceScope(c, "billing:execution-cost:write")) {
+      return errorResponse(c, "execution_cost_authority_required", "A purpose-bound accounting service key is required", 403);
+    }
     const idempotencyKey = requestId(c);
     if (!idempotencyKey) {
       return errorResponse(c, "request_id_invalid", "A valid request ID is required", 400);
@@ -434,6 +449,18 @@ export function createBillingEconomicsRoutes({
       const body = await c.req.json<unknown>();
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return errorResponse(c, "execution_cost_request_invalid", "The execution cost request is invalid", 400);
+      }
+      const record = body as JsonRecord;
+      const measuredFields = ["modelCostMeasured", "cacheCostMeasured", "gpuCostMeasured",
+        "graphCostMeasured", "sandboxCostMeasured", "verificationCostMeasured"];
+      const provenance = record.measurementProvenance;
+      if (record.outcomeStatus !== "unresolved" || record.acceptedOutcomeId != null ||
+          measuredFields.some((field) => typeof record[field] !== "boolean") ||
+          !provenance || typeof provenance !== "object" || Array.isArray(provenance) ||
+          ["model", "cache", "gpu", "graph", "sandbox", "verification"].some((field) =>
+            typeof (provenance as JsonRecord)[field] !== "string" ||
+            !(provenance as JsonRecord)[field]!.toString().trim())) {
+        return errorResponse(c, "execution_cost_observation_evidence_required", "Explicit measurement state and provenance are required", 400);
       }
       const entry = recordActualExecutionCost(
         db,
@@ -445,6 +472,33 @@ export function createBillingEconomicsRoutes({
         ),
       );
       return c.json({ data: publicExecutionCost(entry) }, 201);
+    } catch (error) {
+      return handleRecordError(c, error);
+    }
+  });
+
+  routes.post("/execution-costs/:executionId/outcomes", async (c) => {
+    const identity = authenticatedPrincipal(c)!;
+    if (!hasExactServiceScope(c, "billing:execution-outcome:write")) {
+      return errorResponse(c, "execution_cost_outcome_authority_required", "A purpose-bound outcome authority key is required", 403);
+    }
+    const idempotencyKey = requestId(c);
+    if (!idempotencyKey) return errorResponse(c, "request_id_invalid", "A valid request ID is required", 400);
+    try {
+      const body = await c.req.json<JsonRecord>();
+      const outcome = recordExecutionCostOutcome(db, {
+        id: recordId(identity.tenantId, `outcome:${idempotencyKey}`),
+        tenantId: identity.tenantId,
+        idempotencyKey,
+        executionId: c.req.param("executionId"),
+        outcomeStatus: body.outcomeStatus as "accepted" | "rejected" | "corrected" | "rolled_back",
+        acceptedOutcomeId: body.acceptedOutcomeId as string | null | undefined,
+        authorityKind: body.authorityKind as "reviewer" | "delivery" | "rollback",
+        authorityDigest: body.authorityDigest as string,
+        actorPrincipalId: identity.actorPrincipalId,
+        createdAt: now(),
+      });
+      return c.json({ data: outcome }, 201);
     } catch (error) {
       return handleRecordError(c, error);
     }

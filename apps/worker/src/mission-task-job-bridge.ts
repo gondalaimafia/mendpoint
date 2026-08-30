@@ -14,6 +14,7 @@ import {
   getMissionTask,
   getMission,
   insertPrincipal,
+  listActualExecutionCosts,
   listRepositorySnapshots,
   missionTaskIdForJob,
   openTaskHandoff,
@@ -35,6 +36,7 @@ export type BridgedJob = Readonly<{
   payload_json: string;
   status?: string;
   result_json?: string | null;
+  attempts?: number;
 }>;
 
 function payloadRecord(job: BridgedJob): Record<string, unknown> | undefined {
@@ -195,18 +197,22 @@ export function recordBoundMissionExecutionCost(
     job: BridgedJob;
     sourceRunId: string;
     createdAt: string;
-    outcomeStatus: "accepted" | "rejected";
-    acceptedOutcomeId?: string | null;
+    outcomeStatus?: "unresolved";
   }>,
 ): ActualExecutionCostEntry | undefined {
   const mission = resolveBoundMissionForJob(db, input.job);
   if (!mission) return undefined;
   const payload = payloadRecord(input.job);
+  const taskId = missionTaskIdForJob(input.job.id);
+  const attemptNumber = Math.max(1, input.job.attempts ?? 1);
+  const prior = listActualExecutionCosts(db, input.job.tenant_id)
+    .filter((entry) => entry.taskId === taskId && entry.executionId !== input.sourceRunId)
+    .at(-1);
   return recordExecutionCostFromRoutingLedger(db, {
     tenantId: input.job.tenant_id,
     sourceRunId: input.sourceRunId,
-    executionId: input.job.id,
-    taskId: missionTaskIdForJob(input.job.id),
+    executionId: input.sourceRunId,
+    taskId,
     taskClass: input.job.type,
     route: mission.product,
     campaignId: mission.fettlerCampaignId ?? mission.regaugeCampaignId
@@ -214,9 +220,9 @@ export function recordBoundMissionExecutionCost(
     missionId: mission.id,
     actorPrincipalId: mission.ownerPrincipalId,
     createdAt: input.createdAt,
-    outcomeStatus: input.outcomeStatus,
-    acceptedOutcomeId: input.outcomeStatus === "accepted"
-      ? input.acceptedOutcomeId ?? input.job.id
-      : null,
+    attemptNumber,
+    retryNumber: attemptNumber - 1,
+    fallbackFromExecutionId: prior?.executionId ?? null,
+    outcomeStatus: "unresolved",
   });
 }

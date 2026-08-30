@@ -54,13 +54,15 @@ function fixture() {
 
 function job(
   payload: Record<string, unknown>,
-  extra: { id?: string; type?: string; tenantId?: string } = {},
+  extra: { id?: string; type?: string; tenantId?: string; attempts?: number; resultJson?: string } = {},
 ) {
   return {
     id: extra.id ?? "job-1",
     tenant_id: extra.tenantId ?? "t1",
     type: extra.type ?? "agent.run",
     payload_json: JSON.stringify(payload),
+    attempts: extra.attempts ?? 1,
+    result_json: extra.resultJson ?? null,
   };
 }
 
@@ -108,7 +110,6 @@ describe("mission-task job bridge", () => {
       job: unbound,
       sourceRunId: "run-1",
       createdAt: at,
-      outcomeStatus: "accepted",
     })).toBeUndefined();
     expect(getMissionTask(db, "t1", missionTaskIdForJob("job-1"))).toBeUndefined();
   });
@@ -137,16 +138,15 @@ describe("mission-task job bridge", () => {
       job: claimed,
       sourceRunId: "session-1",
       createdAt: at,
-      outcomeStatus: "accepted",
     });
     expect(cost).toMatchObject({
       missionId: "m1",
       taskId: missionTaskIdForJob("job-1"),
-      executionId: "job-1",
+      executionId: "session-1",
       route: "fettler",
       taskClass: "agent.run",
-      outcomeStatus: "accepted",
-      acceptedOutcomeId: "job-1",
+      outcomeStatus: "unresolved",
+      acceptedOutcomeId: null,
       modelCostMeasured: true,
       modelCostMoneyMicros: 50_000,
     });
@@ -154,9 +154,36 @@ describe("mission-task job bridge", () => {
       job: claimed,
       sourceRunId: "session-1",
       createdAt: at,
-      outcomeStatus: "accepted",
     })?.id).toBe(cost!.id);
-    expect(listActualExecutionCosts(db, "t1")).toHaveLength(1);
+    seedRouting(db, "session-2", "job-1");
+    const retry = recordBoundMissionExecutionCost(db, {
+      job: { ...claimed, attempts: 2 },
+      sourceRunId: "session-2",
+      createdAt: at,
+    });
+    expect(retry).toMatchObject({
+      executionId: "session-2",
+      attemptNumber: 2,
+      retryNumber: 1,
+      fallbackFromExecutionId: "session-1",
+      outcomeStatus: "unresolved",
+    });
+    expect(listActualExecutionCosts(db, "t1")).toHaveLength(2);
+  });
+
+  it("does not infer acceptance from a review-first no-action completion", () => {
+    const db = fixture();
+    const noAction = job(
+      { missionId: "m1", goal: "review", consumerId: "c1" },
+      { resultJson: JSON.stringify({ ok: true, status: "no_action" }) },
+    );
+    bridgeClaimedJobToMissionTask(db, noAction, at);
+    seedRouting(db, "session-no-action", "job-1");
+    expect(recordBoundMissionExecutionCost(db, {
+      job: noAction,
+      sourceRunId: "session-no-action",
+      createdAt: at,
+    })).toMatchObject({ outcomeStatus: "unresolved", acceptedOutcomeId: null });
   });
 
   it("joins the terminal job transaction so accounting failures remain retryable", () => {
@@ -173,10 +200,9 @@ describe("mission-task job bridge", () => {
       job: failed,
       sourceRunId: "session-rejected",
       createdAt: at,
-      outcomeStatus: "rejected",
     });
     expect(rejected).toMatchObject({
-      outcomeStatus: "rejected",
+      outcomeStatus: "unresolved",
       acceptedOutcomeId: null,
     });
     db.raw.exec("ROLLBACK");
@@ -186,8 +212,7 @@ describe("mission-task job bridge", () => {
       job: failed,
       sourceRunId: "session-rejected",
       createdAt: at,
-      outcomeStatus: "rejected",
-    })).toMatchObject({ outcomeStatus: "rejected" });
+    })).toMatchObject({ outcomeStatus: "unresolved" });
   });
 
   it("rolls back terminal job state when immutable cost persistence fails", () => {
@@ -222,7 +247,6 @@ describe("mission-task job bridge", () => {
       job: getJob(db, "job-atomic", "t1")!,
       sourceRunId: "session-atomic",
       createdAt: at,
-      outcomeStatus: "accepted",
     })).toThrow("execution_cost_actor_tenant_mismatch");
     db.raw.exec("ROLLBACK");
 

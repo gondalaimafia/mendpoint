@@ -535,6 +535,15 @@ describe("worker runtime", () => {
       errorCode: "transient_dependency",
       retryable: true,
     });
+    for (const message of [
+      "mcu_accounting_persistence_failed",
+      "mcu_settlement_persistence_failed",
+    ]) {
+      expect(classifyJobFailure(new Error(message))).toMatchObject({
+        errorCode: message,
+        retryable: true,
+      });
+    }
   });
 
   it("validates intervals and applies bounded backoff", () => {

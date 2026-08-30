@@ -971,7 +971,7 @@ export function classifyJobFailure(error: unknown): {
     );
   const retryable =
     !authorizationFailure &&
-    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable/.test(
+    /timeout|timed out|rate.?limit|429|5\d\d|econnreset|econnrefused|enotfound|sqlite_busy|lease_(?:expired|lost)|delivery_failed|verifier_advisory_provider_retryable|mcu_(?:accounting|settlement)_persistence_failed/.test(
         normalized,
       );
   const errorCode = explicitCode ?? (retryable
@@ -2028,34 +2028,15 @@ function recordJobMissionExecutionCost(
 ): void {
   const completed = getJob(db, jobId, tenantId);
   if (!completed) throw new Error("mission_execution_cost_job_missing");
-  const result = (() => {
-    try {
-      const value: unknown = JSON.parse(completed.result_json ?? "null");
-      return value && typeof value === "object" && !Array.isArray(value)
-        ? value as Record<string, unknown>
-        : {};
-    } catch {
-      return {};
-    }
-  })();
-  const rejected = completed.status === "dead_letter" ||
-    result.ok === false ||
-    ["rejected", "failed", "rolled_back", "reverted", "closed_unmerged"]
-      .includes(String(result.outcomeStatus ?? result.deliveryOutcome ?? result.status ?? ""));
-  const acceptedOutcomeId = [
-    result.acceptedOutcomeId,
-    result.pullRequestId,
-    result.prUrl,
-    result.changeId,
-    completed.id,
-  ].find((value): value is string => typeof value === "string" && value.trim().length > 0);
-  recordBoundMissionExecutionCost(db, {
-    job: completed,
-    sourceRunId,
-    createdAt: nowIso(),
-    outcomeStatus: rejected ? "rejected" : "accepted",
-    acceptedOutcomeId: rejected ? null : acceptedOutcomeId,
-  });
+  try {
+    recordBoundMissionExecutionCost(db, {
+      job: completed,
+      sourceRunId,
+      createdAt: nowIso(),
+    });
+  } catch (error) {
+    throw new Error("mcu_accounting_persistence_failed", { cause: error });
+  }
 }
 
 function settleFanoutRunUsage(
@@ -2083,11 +2064,7 @@ function settleFanoutRunUsage(
       createdAt: nowIso(),
     });
   } catch (error) {
-    console.error(
-      `  usage settle skipped reservation=${reservationId}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
+    throw new Error("mcu_settlement_persistence_failed", { cause: error });
   }
 }
 
@@ -4376,12 +4353,12 @@ if (job.type === "warden.candidate.cleanup") {
             throw new Error("lease_lost_before_pipeline_completion");
           }
           recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
+          settleFanoutRunUsage(db, job.tenant_id, payload, report);
           db.raw.exec("COMMIT");
         } catch (error) {
           if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
           throw error;
         }
-        settleFanoutRunUsage(db, job.tenant_id, payload, report);
         result.succeeded++;
         console.log(`  done change=${report.changeId}`);
         continue;
@@ -4404,12 +4381,12 @@ if (job.type === "warden.candidate.cleanup") {
           throw new Error("lease_lost_before_pipeline_completion");
         }
         recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
+        settleFanoutRunUsage(db, job.tenant_id, payload, report);
         db.raw.exec("COMMIT");
       } catch (error) {
         if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
         throw error;
       }
-      settleFanoutRunUsage(db, job.tenant_id, payload, report);
       result.succeeded++;
       console.log(`  done change=${report.changeId}`);
     } catch (error) {

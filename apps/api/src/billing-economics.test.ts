@@ -98,7 +98,7 @@ function fixture() {
     id: "billing-key-a",
     name: "Billing tenant A",
     tenantId: "billing-tenant-a",
-    scopes: ["*"],
+    scopes: ["*", "billing:execution-cost:write", "billing:execution-outcome:write"],
     createdAt: NOW,
   });
   const tenantB = createApiKey(db, {
@@ -226,8 +226,8 @@ function executionCostBody(overrides: Record<string, unknown> = {}) {
     attemptNumber: 1,
     retryNumber: 0,
     fallbackFromExecutionId: null,
-    outcomeStatus: "accepted",
-    acceptedOutcomeId: "pull-request-a",
+    outcomeStatus: "unresolved",
+    acceptedOutcomeId: null,
     inputTokens: 1_000,
     outputTokens: 500,
     cacheReadTokens: 200,
@@ -241,6 +241,20 @@ function executionCostBody(overrides: Record<string, unknown> = {}) {
     graphCostMoneyMicros: 300,
     sandboxCostMoneyMicros: 400,
     verificationCostMoneyMicros: 500,
+    modelCostMeasured: true,
+    cacheCostMeasured: true,
+    gpuCostMeasured: true,
+    graphCostMeasured: true,
+    sandboxCostMeasured: true,
+    verificationCostMeasured: true,
+    measurementProvenance: {
+      model: "provider_invoice:model-a",
+      cache: "provider_invoice:cache",
+      gpu: "runtime_meter:gpu",
+      graph: "runtime_meter:graph",
+      sandbox: "runtime_meter:sandbox",
+      verification: "runtime_meter:verification",
+    },
     currency: "USD",
     createdAt: NOW,
     ...overrides,
@@ -517,6 +531,44 @@ describe("billing economics API routes", () => {
     expect(listActualExecutionCosts(db, "billing-tenant-a")).toHaveLength(1);
   });
 
+  it("requires purpose-bound service authority and explicit measurement evidence", async () => {
+    const { db, tenantA, tenantB } = fixture();
+    const app = appFor(db);
+
+    const wildcardOnly = await postCost(
+      app,
+      tenantB,
+      "wildcard-cannot-write-cost",
+      executionCostBody(),
+    );
+    expect(wildcardOnly.status).toBe(403);
+
+    const forgedAccepted = await postCost(
+      app,
+      tenantA,
+      "accepted-requires-outcome-authority",
+      executionCostBody({ outcomeStatus: "accepted", acceptedOutcomeId: "review-a" }),
+    );
+    expect(forgedAccepted.status).toBe(400);
+
+    const missingObservation = await postCost(
+      app,
+      tenantA,
+      "observation-flags-required",
+      executionCostBody({ cacheCostMeasured: undefined }),
+    );
+    expect(missingObservation.status).toBe(400);
+
+    const missingProvenance = await postCost(
+      app,
+      tenantA,
+      "measurement-provenance-required",
+      executionCostBody({ measurementProvenance: { model: "provider_invoice:model-a" } }),
+    );
+    expect(missingProvenance.status).toBe(400);
+    expect(listActualExecutionCosts(db, "billing-tenant-a")).toEqual([]);
+  });
+
   it("keeps margin fields closed when recognized revenue has no actual cost", async () => {
     const { db, tenantA, tenantB } = fixture();
     const app = appFor(db);
@@ -714,7 +766,7 @@ describe("billing economics API routes", () => {
 
   it("reconciles a settled job to its mission task through the exact execution ID", async () => {
     const { db, tenantA } = fixture();
-    const app = appFor(db);
+    const app = appFor(db, () => "2026-09-02T00:00:00.000Z");
     await app.request("/billing/execution-costs", {
       headers: headers(tenantA, "initialize-mission-principal"),
     });
@@ -766,6 +818,17 @@ describe("billing economics API routes", () => {
       actorPrincipalId: actor!.id,
       missionId: "mission-production-a",
     });
+    const accepted = await app.request("/billing/execution-costs/job-production-a/outcomes", {
+      method: "POST",
+      headers: headers(tenantA, "mission-outcome-a"),
+      body: JSON.stringify({
+        outcomeStatus: "accepted",
+        acceptedOutcomeId: "pull-request-a",
+        authorityKind: "reviewer",
+        authorityDigest: "a".repeat(64),
+      }),
+    });
+    expect(accepted.status).toBe(201);
 
     const margin = await app.request("/billing/gross-margin", {
       headers: headers(tenantA, "mission-margin"),
