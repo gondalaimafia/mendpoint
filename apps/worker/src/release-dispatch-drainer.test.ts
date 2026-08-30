@@ -69,6 +69,7 @@ function addPrincipal(database: AppDb, input: Readonly<{
   tenantId: string;
   id: string;
   kind?: "human" | "service";
+  subject?: string;
   createdAt?: string;
   revokedAt?: string | null;
   expiresAt?: string | null;
@@ -77,7 +78,7 @@ function addPrincipal(database: AppDb, input: Readonly<{
     id: input.id,
     tenantId: input.tenantId,
     kind: input.kind ?? "service",
-    subject: "release-dispatch",
+    subject: input.subject ?? "release-dispatch",
     displayName: "Release dispatch worker",
     createdAt: input.createdAt ?? BEFORE,
     revokedAt: input.revokedAt,
@@ -205,7 +206,7 @@ describe("release dispatch drainer", () => {
     });
     expect(getPrincipal(appDb, "tenant-a", "release-service-a")).toMatchObject({
       kind: "service",
-      subject: "release-dispatch",
+      subject: "release-dispatch:release-service-a",
       display_name: "Release dispatch worker",
     });
   });
@@ -389,6 +390,154 @@ describe("release dispatch drainer", () => {
       failureCode: "dispatch_attempts_exhausted",
     });
     expect(listDomainEvents(appDb, "tenant-a")).toEqual([]);
+  });
+
+  it("keeps a final recovery lease unsettled when exact-event observation is transiently unavailable", () => {
+    let clock = NOW;
+    const releaseStore = store(() => clock);
+    const appDb = db();
+    ingest(releaseStore, "tenant-a");
+    addPrincipal(appDb, { tenantId: "tenant-a", id: "release-service-a" });
+    const dispatch = listReleaseDispatches(releaseStore, "tenant-a")[0]!;
+    acceptReleaseDispatchDomainEvent({
+      db: appDb,
+      actorPrincipalId: "release-service-a",
+      envelope: {
+        contractVersion: RELEASE_DISPATCH_CONTRACT_VERSION,
+        tenantId: dispatch.tenantId,
+        dispatchId: dispatch.id,
+        artifactId: dispatch.artifactId,
+        artifactContentSha256: dispatch.artifactContentSha256,
+      },
+      observedAt: NOW,
+    });
+    releaseStore.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'claimed', lease_owner = 'crashed-worker', claimed_at = ?,
+          lease_expires_at = ?, lease_generation = 5, attempt_count = max_attempts
+      WHERE id = ?`).run(
+        "2026-08-27T14:59:58.000Z",
+        "2026-08-27T14:59:59.000Z",
+        dispatch.id,
+      );
+    const unavailable = Object.assign(new Error("private database detail"), {
+      code: RELEASE_DISPATCH_SINK_FAILURE_CODES.infrastructureUnavailable,
+      retryable: true,
+    });
+
+    expect(() => run({
+      store: releaseStore,
+      db: appDb,
+      consumers: [consumer("tenant-a", "release-service-a")],
+      now: () => clock,
+      reconcile: (() => { throw unavailable; }) as NonNullable<
+        Parameters<typeof drainReleaseDispatchesOnce>[0]["reconcile"]
+      >,
+    })).toThrow(expect.objectContaining({
+      stage: "event_append",
+      code: RELEASE_DISPATCH_SINK_FAILURE_CODES.infrastructureUnavailable,
+    }));
+    expect(listReleaseDispatches(releaseStore, "tenant-a")[0]).toMatchObject({
+      status: "claimed",
+      leaseOwner: "release-worker-a",
+      attemptCount: 5,
+      leaseGeneration: 6,
+      failureCode: null,
+    });
+
+    clock = "2026-08-27T15:00:01.001Z";
+    expect(run({
+      store: releaseStore,
+      db: appDb,
+      consumers: [consumer("tenant-a", "release-service-a")],
+      now: () => clock,
+    })).toMatchObject({ claimed: 1, completed: 1, failed: 0, exhausted: 0 });
+    expect(listReleaseDispatches(releaseStore, "tenant-a")[0]).toMatchObject({
+      status: "completed", attemptCount: 5, leaseGeneration: 7,
+    });
+    expect(listDomainEvents(appDb, "tenant-a")).toHaveLength(1);
+  });
+
+  it("recovers a historical exact event after the recorded actor is revoked and configuration rotates", () => {
+    let clock = "2026-08-27T15:00:01.000Z";
+    const releaseStore = store(() => clock);
+    const appDb = db();
+    ingest(releaseStore, "tenant-a");
+    addPrincipal(appDb, { tenantId: "tenant-a", id: "release-service-old" });
+    addPrincipal(appDb, {
+      tenantId: "tenant-a",
+      id: "release-service-new",
+      subject: "release-dispatch:release-service-new",
+      createdAt: "2026-08-27T15:00:00.500Z",
+    });
+    const dispatch = listReleaseDispatches(releaseStore, "tenant-a")[0]!;
+    acceptReleaseDispatchDomainEvent({
+      db: appDb,
+      actorPrincipalId: "release-service-old",
+      envelope: {
+        contractVersion: RELEASE_DISPATCH_CONTRACT_VERSION,
+        tenantId: dispatch.tenantId,
+        dispatchId: dispatch.id,
+        artifactId: dispatch.artifactId,
+        artifactContentSha256: dispatch.artifactContentSha256,
+      },
+      observedAt: NOW,
+    });
+    appDb.raw.prepare(`UPDATE principals SET revoked_at = ?
+      WHERE tenant_id = 'tenant-a' AND id = 'release-service-old'`)
+      .run("2026-08-27T15:00:00.500Z");
+    releaseStore.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'claimed', lease_owner = 'crashed-worker', claimed_at = ?,
+          lease_expires_at = ?, lease_generation = 5, attempt_count = max_attempts
+      WHERE id = ?`).run(
+        "2026-08-27T14:59:58.000Z",
+        "2026-08-27T14:59:59.000Z",
+        dispatch.id,
+      );
+
+    expect(run({
+      store: releaseStore,
+      db: appDb,
+      consumers: [consumer("tenant-a", "release-service-new")],
+      now: () => clock,
+    })).toMatchObject({ claimed: 1, completed: 1, failed: 0, exhausted: 0 });
+    expect(listReleaseDispatches(releaseStore, "tenant-a")[0]).toMatchObject({
+      status: "completed", attemptCount: 5, leaseGeneration: 6,
+    });
+    expect(listDomainEvents(appDb, "tenant-a")[0]).toMatchObject({
+      actor_principal_id: "release-service-old",
+    });
+  });
+
+  it("terminalizes deterministic invalid recovery evidence instead of retrying it", () => {
+    const releaseStore = store();
+    const appDb = db();
+    ingest(releaseStore, "tenant-a");
+    addPrincipal(appDb, { tenantId: "tenant-a", id: "release-service-a" });
+    releaseStore.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'claimed', lease_owner = 'crashed-worker', claimed_at = ?,
+          lease_expires_at = ?, lease_generation = 5, attempt_count = max_attempts
+      WHERE tenant_id = 'tenant-a'`).run(
+        "2026-08-27T14:59:58.000Z",
+        "2026-08-27T14:59:59.000Z",
+      );
+    const invalid = Object.assign(new Error("private evidence mismatch"), {
+      code: RELEASE_DISPATCH_SINK_FAILURE_CODES.idempotencyConflict,
+      retryable: false,
+    });
+
+    expect(run({
+      store: releaseStore,
+      db: appDb,
+      consumers: [consumer("tenant-a", "release-service-a")],
+      reconcile: (() => { throw invalid; }) as NonNullable<
+        Parameters<typeof drainReleaseDispatchesOnce>[0]["reconcile"]
+      >,
+    })).toMatchObject({ claimed: 1, failed: 1, retried: 0, exhausted: 0 });
+    expect(listReleaseDispatches(releaseStore, "tenant-a")[0]).toMatchObject({
+      status: "failed",
+      attemptCount: 5,
+      failureCode: RELEASE_DISPATCH_SINK_FAILURE_CODES.idempotencyConflict,
+    });
   });
 
   it("fails a dispatch nonretryably when exact artifact rehydration detects a digest mismatch", () => {

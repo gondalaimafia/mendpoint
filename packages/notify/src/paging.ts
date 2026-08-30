@@ -237,7 +237,7 @@ export function pagingEventsForWorkerHeartbeat(input: {
       },
     });
   }
-  if (!input.ok && events.length === 0) {
+  if (!input.ok && events.length === 0 && expiredLeases === 0 && deadLetter === 0) {
     events.push({
       type: "worker_heartbeat_stale",
       severity: "critical",
@@ -246,7 +246,7 @@ export function pagingEventsForWorkerHeartbeat(input: {
       details: { deadLetter, expiredLeases, ok: input.ok, stale: input.stale },
     });
   }
-  if (events.length === 0 && expiredLeases > 0) {
+  if (expiredLeases > 0) {
     events.push({
       type: "expired_lease_uncertain_side_effect",
       severity: "critical",
@@ -254,7 +254,8 @@ export function pagingEventsForWorkerHeartbeat(input: {
       dedupeKey: `expired_lease_uncertain_side_effect:${input.workerId}`,
       details: { expiredLeases, deadLetter },
     });
-  } else if (events.length === 0 && deadLetter > 0) {
+  }
+  if (deadLetter > 0) {
     events.push({
       type: "dead_letter_growth",
       severity: "error",
@@ -390,5 +391,11 @@ export async function pageWorkerHeartbeat(input: {
   const events = pagingEventsForWorkerHeartbeat(input);
   if (events.length === 0) return null;
   const results = await Promise.all(events.map((event) => notifyPaging(event)));
-  return results[0] ?? null;
+  const deliveries = results.flatMap((result) =>
+    "deliveries" in result ? result.deliveries : []);
+  if (deliveries.length === 0) return results[0] ?? null;
+  return {
+    ok: results.every((result) => result.ok),
+    deliveries,
+  };
 }

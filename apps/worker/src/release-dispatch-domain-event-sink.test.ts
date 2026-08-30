@@ -16,6 +16,7 @@ import {
   assertActiveReleaseDispatchPrincipal,
   ensureReleaseDispatchPrincipal,
   parseReleaseDispatchEnvelope,
+  reconcileExactReleaseDispatchDomainEvent,
 } from "./release-dispatch-domain-event-sink.js";
 
 const NOW = "2026-08-27T15:00:00.000Z";
@@ -118,7 +119,7 @@ describe("release dispatch domain event sink", () => {
     expect(events[0]!.payload_json).not.toContain("excerpt");
   });
 
-  it("rejects an exact crash replay under a different service principal", () => {
+  it("reconciles an exact historical event after the configured service principal rotates", () => {
     const db = database();
     const originalPrincipalId = principal(db, { id: "release-service-original" });
     const first = acceptReleaseDispatchDomainEvent({
@@ -129,16 +130,16 @@ describe("release dispatch domain event sink", () => {
       .run("2026-08-27T15:00:30.000Z", "tenant-a", originalPrincipalId);
     const replacementPrincipalId = principal(db, {
       id: "release-service-replacement",
-      subject: "release-dispatch-replacement",
+      subject: "release-dispatch:release-service-replacement",
       createdAt: "2026-08-27T15:00:30.000Z",
     });
 
-    expect(() => acceptReleaseDispatchDomainEvent({
+    expect(acceptReleaseDispatchDomainEvent({
       db,
       actorPrincipalId: replacementPrincipalId,
       envelope: envelope(),
       observedAt: "2026-08-27T15:01:00.000Z",
-    })).toThrow(RELEASE_DISPATCH_SINK_FAILURE_CODES.idempotencyConflict);
+    })).toEqual({ eventId: first.eventId, inserted: false });
     const events = listDomainEvents(db, "tenant-a");
     expect(events).toHaveLength(1);
     expect(events[0]!.actor_principal_id).toBe(originalPrincipalId);
@@ -279,5 +280,18 @@ describe("release dispatch domain event sink", () => {
       code: RELEASE_DISPATCH_SINK_FAILURE_CODES.infrastructureUnavailable,
       retryable: true,
     });
+  });
+
+  it("maps an unavailable read-only reconciliation store to retryable infrastructure failure", () => {
+    const db = database();
+    db.raw.close();
+    opened.splice(opened.indexOf(db), 1);
+    expect(() => reconcileExactReleaseDispatchDomainEvent({
+      db,
+      envelope: envelope(),
+    })).toThrow(expect.objectContaining({
+      code: RELEASE_DISPATCH_SINK_FAILURE_CODES.infrastructureUnavailable,
+      retryable: true,
+    }));
   });
 });

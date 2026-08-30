@@ -71,6 +71,14 @@ function requireIdentifier(value: unknown): string {
   return value;
 }
 
+function releaseDispatchPrincipalSubject(actorPrincipalId: string): string {
+  return `release-dispatch:${actorPrincipalId}`;
+}
+
+function isReleaseDispatchPrincipalSubject(subject: string, actorPrincipalId: string): boolean {
+  return subject === "release-dispatch" || subject === releaseDispatchPrincipalSubject(actorPrincipalId);
+}
+
 export function parseReleaseDispatchEnvelope(value: unknown): ReleaseDispatchEnvelope {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw sinkError(RELEASE_DISPATCH_SINK_FAILURE_CODES.validationFailed, false);
@@ -120,7 +128,8 @@ export function assertActiveReleaseDispatchPrincipal(input: Readonly<{
   const revokedAt = principal?.revoked_at ? Date.parse(principal.revoked_at) : null;
   const expiresAt = principal?.expires_at ? Date.parse(principal.expires_at) : null;
   if (
-    !principal || principal.kind !== "service" || principal.subject !== "release-dispatch" ||
+    !principal || principal.kind !== "service" ||
+    !isReleaseDispatchPrincipalSubject(principal.subject, actorPrincipalId) ||
     principal.display_name !== "Release dispatch worker" ||
     !Number.isFinite(createdAt) || createdAt > observedAt ||
     (revokedAt !== null && (!Number.isFinite(revokedAt) || revokedAt <= observedAt)) ||
@@ -147,7 +156,7 @@ export function ensureReleaseDispatchPrincipal(input: Readonly<{
         id: actorPrincipalId,
         tenantId,
         kind: "service",
-        subject: "release-dispatch",
+        subject: releaseDispatchPrincipalSubject(actorPrincipalId),
         displayName: "Release dispatch worker",
         createdAt: input.observedAt,
       });
@@ -155,7 +164,7 @@ export function ensureReleaseDispatchPrincipal(input: Readonly<{
       principal.id !== actorPrincipalId ||
       principal.tenant_id !== tenantId ||
       principal.kind !== "service" ||
-      principal.subject !== "release-dispatch" ||
+      !isReleaseDispatchPrincipalSubject(principal.subject, actorPrincipalId) ||
       principal.display_name !== "Release dispatch worker"
     ) {
       throw sinkError(RELEASE_DISPATCH_SINK_FAILURE_CODES.authorityInvalid, false);
@@ -223,7 +232,6 @@ function assertExactReplay(input: Readonly<{
   db: AppDb;
   row: DomainEventRow;
   envelope: ReleaseDispatchEnvelope;
-  actorPrincipalId: string;
   expectedEventId: string;
   expectedPayloadJson: string;
 }>): void {
@@ -269,7 +277,6 @@ export function acceptReleaseDispatchDomainEvent(input: Readonly<{
         db: input.db,
         row: existing,
         envelope,
-        actorPrincipalId,
         expectedEventId,
         expectedPayloadJson,
       });
@@ -332,7 +339,6 @@ export function acceptReleaseDispatchDomainEvent(input: Readonly<{
           db: input.db,
           row: raced,
           envelope,
-          actorPrincipalId,
           expectedEventId,
           expectedPayloadJson,
         });
@@ -352,26 +358,28 @@ export function acceptReleaseDispatchDomainEvent(input: Readonly<{
  */
 export function reconcileExactReleaseDispatchDomainEvent(input: Readonly<{
   db: AppDb;
-  actorPrincipalId: string;
   envelope: unknown;
 }>): Readonly<{ eventId: string }> | null {
   const envelope = parseReleaseDispatchEnvelope(input.envelope);
-  const actorPrincipalId = requireIdentifier(input.actorPrincipalId);
   const expectedEventId = eventId(envelope);
   const expectedPayloadJson = JSON.stringify(envelope);
-  const row = existingReleaseDispatchEvent({
-    db: input.db,
-    tenantId: envelope.tenantId,
-    idempotencyKey: `catalog-release:${envelope.dispatchId}`,
-  });
-  if (!row) return null;
-  assertExactReplay({
-    db: input.db,
-    row,
-    envelope,
-    actorPrincipalId,
-    expectedEventId,
-    expectedPayloadJson,
-  });
-  return Object.freeze({ eventId: row.id });
+  try {
+    const row = existingReleaseDispatchEvent({
+      db: input.db,
+      tenantId: envelope.tenantId,
+      idempotencyKey: `catalog-release:${envelope.dispatchId}`,
+    });
+    if (!row) return null;
+    assertExactReplay({
+      db: input.db,
+      row,
+      envelope,
+      expectedEventId,
+      expectedPayloadJson,
+    });
+    return Object.freeze({ eventId: row.id });
+  } catch (error) {
+    if (isSinkError(error)) throw error;
+    throw sinkError(RELEASE_DISPATCH_SINK_FAILURE_CODES.infrastructureUnavailable, true);
+  }
 }

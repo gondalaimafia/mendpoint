@@ -231,6 +231,26 @@ describe("paging adapters", () => {
       }),
     ]);
   });
+
+  it("emits every simultaneous critical heartbeat condition with an independent dedupe key", () => {
+    const events = pagingEventsForWorkerHeartbeat({
+      workerId: "w-compound",
+      ok: false,
+      stale: true,
+      expiredLeases: 2,
+      deadLetter: 3,
+      releaseDispatchDegraded: true,
+      releaseDispatchFailureStage: "claim",
+      releaseDispatchFailureCode: "release_dispatch_claim_unavailable",
+    });
+    expect(events.map((event) => event.type)).toEqual([
+      "worker_heartbeat_stale",
+      "release_dispatch_degraded",
+      "expired_lease_uncertain_side_effect",
+      "dead_letter_growth",
+    ]);
+    expect(new Set(events.map((event) => event.dedupeKey)).size).toBe(4);
+  });
 });
 
 describe("paging best-effort wiring", () => {
@@ -247,9 +267,11 @@ describe("paging best-effort wiring", () => {
     });
     if (!res || res.skipped) throw new Error("expected a delivered page");
     expect(res.ok).toBe(true);
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
-    expect(body.type).toBe("worker_heartbeat_stale");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map((call) => JSON.parse(call[1].body as string).type)).toEqual([
+      "worker_heartbeat_stale",
+      "dead_letter_growth",
+    ]);
   });
 
   it("does not page for a healthy worker heartbeat", async () => {
@@ -306,6 +328,33 @@ describe("paging best-effort wiring", () => {
       "worker_heartbeat_stale",
       "release_dispatch_degraded",
     ]);
+  });
+
+  it("attempts every simultaneous page and reports aggregate failure when any required delivery fails", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await pageWorkerHeartbeat({
+      workerId: "w-compound-failure",
+      ok: false,
+      stale: true,
+      expiredLeases: 1,
+      deadLetter: 1,
+      releaseDispatchDegraded: true,
+      releaseDispatchFailureStage: "claim",
+      releaseDispatchFailureCode: "release_dispatch_claim_unavailable",
+    });
+    if (!result || result.skipped) throw new Error("expected aggregate delivery result");
+    expect(result.ok).toBe(false);
+    expect(result.deliveries).toHaveLength(4);
+    expect(result.deliveries.map((delivery) => delivery.ok)).toEqual([true, false, true, true]);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("pages when the readiness probe is failing (the real /ready path)", async () => {

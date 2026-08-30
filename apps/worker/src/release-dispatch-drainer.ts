@@ -273,13 +273,18 @@ export function drainReleaseDispatchesOnce(input: Readonly<{
         try {
           exact = reconcile({
             db: input.db,
-            actorPrincipalId: parsedConsumer.actorPrincipalId,
             envelope,
           });
         } catch (error) {
           const classification = classifyFailure(error);
           failureStage = "event_append";
           failureCode = classification.code;
+          if (classification.retryable) {
+            // The exact-event read was inconclusive. Preserve the recovery
+            // lease so another generation can retry after expiry; terminal
+            // settlement is reserved for confirmed absence or invalid proof.
+            throw new ReleaseDispatchRuntimeError("event_append", classification.code);
+          }
           const outcome = settleFailure({
             store: input.store,
             dispatch: recovery,
