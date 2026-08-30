@@ -76,6 +76,7 @@ export type SecretLifecycleOperationRow = Readonly<{
 }>;
 
 export type SecretLineageKeyBindingRow = Readonly<{
+  tenant_id: string;
   key_id: string;
   key_fingerprint: string;
   bound_at: string;
@@ -176,9 +177,11 @@ export function listSecretLineageKeyIds(
 
 export function bindSecretLineageKeyAuthorities(
   db: AppDb,
+  tenantId: string,
   bindings: readonly Readonly<{ keyId: string; keyFingerprint: string }>[],
   boundAt: string,
 ): void {
+  if (!ID.test(tenantId)) throw new Error("secret_tenant_invalid");
   validTimestamp("secret_lineage_key_bound_at", boundAt);
   if (bindings.length === 0 || bindings.length > 256) {
     throw new Error("secret_lineage_key_binding_invalid");
@@ -195,8 +198,8 @@ export function bindSecretLineageKeyAuthorities(
     for (const binding of bindings) {
       const existing = one<SecretLineageKeyBindingRow>(
         db,
-        "SELECT * FROM secret_lineage_key_bindings WHERE key_id = ?",
-        [binding.keyId],
+        "SELECT * FROM secret_lineage_key_bindings WHERE tenant_id = ? AND key_id = ?",
+        [tenantId, binding.keyId],
       );
       if (existing) {
         if (existing.key_fingerprint !== binding.keyFingerprint) {
@@ -205,10 +208,38 @@ export function bindSecretLineageKeyAuthorities(
         continue;
       }
       db.raw.prepare(`INSERT INTO secret_lineage_key_bindings (
-        key_id, key_fingerprint, bound_at
-      ) VALUES (?, ?, ?)`).run(binding.keyId, binding.keyFingerprint, boundAt);
+        tenant_id, key_id, key_fingerprint, bound_at
+      ) VALUES (?, ?, ?, ?)`).run(tenantId, binding.keyId, binding.keyFingerprint, boundAt);
     }
   });
+}
+
+export function getSecretLineageKeyBinding(
+  db: AppDb,
+  tenantId: string,
+  keyId: string,
+): SecretLineageKeyBindingRow | undefined {
+  if (!ID.test(tenantId) || !ID.test(keyId)) throw new Error("secret_lineage_key_binding_invalid");
+  return one(
+    db,
+    "SELECT * FROM secret_lineage_key_bindings WHERE tenant_id = ? AND key_id = ?",
+    [tenantId, keyId],
+  );
+}
+
+export function listSecretLifecycleVersionsByLineageKey(
+  db: AppDb,
+  tenantId: string,
+  keyId: string,
+): readonly SecretLifecycleVersionRow[] {
+  if (!ID.test(tenantId) || !ID.test(keyId)) throw new Error("secret_lineage_key_binding_invalid");
+  return Object.freeze(many<SecretLifecycleVersionRow>(
+    db,
+    `SELECT * FROM secret_lifecycle_versions
+     WHERE tenant_id = ? AND material_lineage_key_id = ?
+     ORDER BY CASE state WHEN 'active' THEN 0 WHEN 'retired' THEN 1 ELSE 2 END, generation DESC`,
+    [tenantId, keyId],
+  ));
 }
 
 function replayedOperation(

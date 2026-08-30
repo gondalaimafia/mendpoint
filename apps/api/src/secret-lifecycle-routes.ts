@@ -408,7 +408,7 @@ export function createSecretLifecycleRoutes(options: Readonly<{
         reason: text(raw.reason, "secret_revocation_reason_invalid", MAX_REASON_CHARS).trim(),
       };
       if (!body.reason) throw new Error("secret_revocation_reason_required");
-      return c.json(service(c).revoke({
+      return c.json(await service(c).revoke({
         credentialId: identifier(c.req.param("id"), "secret_credential_id_invalid"),
         idempotencyKey: c.req.header("Idempotency-Key") ?? "",
         ...body,

@@ -1796,9 +1796,11 @@ CREATE INDEX IF NOT EXISTS secret_lifecycle_source_ref_idx
 -- a domain-separated commitment of its random key bytes. The commitment is
 -- safe to retain; key material never enters the database.
 CREATE TABLE IF NOT EXISTS secret_lineage_key_bindings (
-  key_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  key_id TEXT NOT NULL,
   key_fingerprint TEXT NOT NULL CHECK (length(key_fingerprint) = 64),
-  bound_at TEXT NOT NULL
+  bound_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, key_id)
 );
 CREATE TRIGGER IF NOT EXISTS secret_lineage_key_bindings_no_update
 BEFORE UPDATE ON secret_lineage_key_bindings BEGIN

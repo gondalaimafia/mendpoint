@@ -5,11 +5,13 @@ import {
   createSecretLifecycle,
   getActiveSecretLifecycle,
   getSecretBreakGlassOperation,
+  getSecretLineageKeyBinding,
   getSecretLifecycleOperation,
   getSecretRevokeOperation,
   getSecretRewrapOperation,
   getSecretLifecycleVersion,
   listSecretLifecycleVersions,
+  listSecretLifecycleVersionsByLineageKey,
   listSecretLineageKeyIds,
   revokeSecretLifecycle,
   rewrapSecretLifecycle,
@@ -98,6 +100,9 @@ export type SecretLifecycleAudit = Readonly<{
     | "secret.lifecycle.rewrap_source.granted"
     | "secret.lifecycle.rewrap_source.denied"
     | "secret.lifecycle.rewrap_source.attempted"
+    | "secret.lifecycle.lineage_authority.granted"
+    | "secret.lifecycle.lineage_authority.denied"
+    | "secret.lifecycle.lineage_authority.attempted"
     | "secret.break_glass.granted"
     | "secret.break_glass.replayed"
     | "secret.break_glass.denied";
@@ -160,6 +165,26 @@ function digest(value: unknown): string {
 
 const REQUEST_COMMITMENT_DOMAIN = "mendpoint:secret-lifecycle:request-commitment:v1\0";
 const MATERIAL_LINEAGE_DOMAIN = "mendpoint:secret-lifecycle:material-lineage:v1\0";
+
+function materialLineageId(
+  keyId: string,
+  key: Uint8Array,
+  tenantId: string,
+  credentialId: string,
+  plaintext: string,
+): string {
+  const canonical = canonicalJson({
+    schemaVersion: 1,
+    keyId,
+    tenantId,
+    credentialId,
+    plaintext,
+  });
+  return createHmac("sha256", key)
+    .update(MATERIAL_LINEAGE_DOMAIN, "utf8")
+    .update(canonical, "utf8")
+    .digest("hex");
+}
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
@@ -368,6 +393,7 @@ export class DurableSecretLifecycleService {
     activeKeyId: string;
     keys: ReadonlyMap<string, Buffer>;
   }>;
+  private readonly pendingLineageAuthorities = new Map<string, Buffer>();
 
   constructor(private readonly options: DurableSecretLifecycleServiceOptions) {
     assertSecretLifecycleKeySeparation(
@@ -381,9 +407,8 @@ export class DurableSecretLifecycleService {
     if (options.requestCommitment && options.materialLineageCommitment) {
       this.requestCommitments = normalizeCommitmentKeyring(options.requestCommitment);
       this.materialLineageCommitments = normalizeCommitmentKeyring(options.materialLineageCommitment);
-      const historicalIds = ID.test(options.tenantId)
-        ? listSecretLineageKeyIds(options.db, options.tenantId)
-        : [];
+      if (!ID.test(options.tenantId)) return;
+      const historicalIds = listSecretLineageKeyIds(options.db, options.tenantId);
       if (historicalIds.includes(null)) {
         throw new Error("secret_material_lineage_key_binding_unavailable");
       }
@@ -394,19 +419,141 @@ export class DurableSecretLifecycleService {
         if (!legacyKey) throw new Error("secret_material_lineage_key_binding_unavailable");
         authorities.set(keyId, legacyKey);
       }
-      bindSecretLineageKeyAuthorities(
-        options.db,
-        [...authorities].map(([keyId, key]) => Object.freeze({
-          keyId,
-          keyFingerprint: cryptographicKeyMaterialFingerprint(key),
-        })),
-        this.#now(),
-      );
+      const historicalKeyIds = new Set(historicalIds as readonly string[]);
+      const immediatelyBindable: Array<Readonly<{ keyId: string; keyFingerprint: string }>> = [];
+      for (const [keyId, key] of authorities) {
+        const keyFingerprint = cryptographicKeyMaterialFingerprint(key);
+        const existing = getSecretLineageKeyBinding(options.db, options.tenantId, keyId);
+        if (existing) {
+          if (existing.key_fingerprint !== keyFingerprint) {
+            throw new Error("secret_material_lineage_key_binding_mismatch");
+          }
+          continue;
+        }
+        if (historicalKeyIds.has(keyId)) {
+          this.pendingLineageAuthorities.set(keyId, key);
+          continue;
+        }
+        immediatelyBindable.push(Object.freeze({ keyId, keyFingerprint }));
+      }
+      if (immediatelyBindable.length > 0) {
+        bindSecretLineageKeyAuthorities(
+          options.db,
+          options.tenantId,
+          immediatelyBindable,
+          this.#now(),
+        );
+      }
     }
   }
 
   #now(): string {
     return this.options.now?.() ?? new Date().toISOString();
+  }
+
+  async #authenticatePendingLineageAuthorities(idempotencyKey: string): Promise<void> {
+    if (this.pendingLineageAuthorities.size === 0) return;
+    const verified: Array<Readonly<{ keyId: string; keyFingerprint: string }>> = [];
+    for (const [keyId, key] of this.pendingLineageAuthorities) {
+      const proofs = listSecretLifecycleVersionsByLineageKey(
+        this.options.db,
+        this.options.tenantId,
+        keyId,
+      ).filter((row) => row.state !== "revoked");
+      if (proofs.length === 0) {
+        throw new Error("secret_material_lineage_key_binding_unavailable");
+      }
+      for (const proof of proofs) {
+        const attemptId = randomUUID();
+        try {
+          this.#audit(
+            "secret.lifecycle.lineage_authority.attempted",
+            idempotencyKey,
+            proof.credential_id,
+            { generation: proof.generation, keyId, outcome: "attempted", attemptId },
+            `secret.lifecycle.lineage_authority.attempted:${attemptId}`,
+          );
+        } catch {
+          throw new Error("vault_access_audit_failed");
+        }
+        let access: EnvelopeAccessAuditEvent | undefined;
+        let plaintext: string;
+        try {
+          plaintext = await openEnvelopeSecret(envelopeFromRow(proof), {
+            tenantId: this.options.tenantId,
+            actorId: this.options.actorId,
+            correlationId: idempotencyKey,
+            purpose: "authenticate retained material lineage authority",
+            at: this.#now(),
+          }, this.options.providers, (event) => {
+            access = event;
+            this.#audit(
+              event.outcome === "granted"
+                ? "secret.lifecycle.lineage_authority.granted"
+                : "secret.lifecycle.lineage_authority.denied",
+              idempotencyKey,
+              proof.credential_id,
+              {
+                generation: proof.generation,
+                keyId,
+                outcome: event.outcome,
+                reason: event.reason,
+                keyProvider: event.key.provider,
+                envelopeKeyId: event.key.keyId,
+                envelopeKeyVersion: event.key.version,
+                attestationSha256: proof.key_attestation_sha256,
+                attemptId,
+              },
+              `secret.lifecycle.lineage_authority.${event.outcome}:${attemptId}`,
+            );
+          });
+        } catch (error) {
+          if (error instanceof Error && error.message === "vault_access_audit_failed") throw error;
+          throw new Error("secret_material_lineage_key_binding_unavailable");
+        }
+        if (!access || access.outcome !== "granted") {
+          throw new Error("secret_material_lineage_key_binding_unavailable");
+        }
+        const candidate = materialLineageId(
+          keyId,
+          key,
+          this.options.tenantId,
+          proof.credential_id,
+          plaintext,
+        );
+        if (candidate !== proof.material_lineage_id) {
+          try {
+            this.#audit(
+              "secret.lifecycle.lineage_authority.denied",
+              idempotencyKey,
+              proof.credential_id,
+              {
+                generation: proof.generation,
+                keyId,
+                outcome: "denied",
+                reason: "lineage_commitment_mismatch",
+                attemptId,
+              },
+              `secret.lifecycle.lineage_authority.denied:commitment:${attemptId}`,
+            );
+          } catch {
+            throw new Error("vault_access_audit_failed");
+          }
+          throw new Error("secret_material_lineage_key_binding_mismatch");
+        }
+      }
+      verified.push(Object.freeze({
+        keyId,
+        keyFingerprint: cryptographicKeyMaterialFingerprint(key),
+      }));
+    }
+    bindSecretLineageKeyAuthorities(
+      this.options.db,
+      this.options.tenantId,
+      verified,
+      this.#now(),
+    );
+    this.pendingLineageAuthorities.clear();
   }
 
   #authorizeAdmin(): string | null {
@@ -585,19 +732,15 @@ export class DurableSecretLifecycleService {
       const key = this.materialLineageCommitments!.keys.get(keyId) ??
         this.requestCommitments?.keys.get(keyId);
       if (!key) throw new Error("secret_material_lineage_key_unavailable");
-      const canonical = canonicalJson({
-        schemaVersion: 1,
-        keyId,
-        tenantId: this.options.tenantId,
-        credentialId,
-        plaintext,
-      });
       return Object.freeze({
         keyId,
-        lineageId: createHmac("sha256", key)
-          .update(MATERIAL_LINEAGE_DOMAIN, "utf8")
-          .update(canonical, "utf8")
-          .digest("hex"),
+        lineageId: materialLineageId(
+          keyId,
+          key,
+          this.options.tenantId,
+          credentialId,
+          plaintext,
+        ),
       });
     }));
   }
@@ -771,6 +914,7 @@ export class DurableSecretLifecycleService {
       );
       return publicResult(replay);
     }
+    await this.#authenticatePendingLineageAuthorities(input.idempotencyKey);
 
     const at = this.#now();
     const atMs = Date.parse(at);
@@ -864,6 +1008,7 @@ export class DurableSecretLifecycleService {
       this.#auditReplay("secret.lifecycle.rotate_replayed", input.idempotencyKey, input.credentialId, replay.generation);
       return publicResult(replay);
     }
+    await this.#authenticatePendingLineageAuthorities(input.idempotencyKey);
     const current = getActiveSecretLifecycle(this.options.db, this.options.tenantId, input.credentialId);
     if (!current) throw new Error("secret_lifecycle_not_found");
     if (current.generation !== input.expectedGeneration) throw new Error("secret_rotation_generation_conflict");
@@ -975,6 +1120,7 @@ export class DurableSecretLifecycleService {
       );
       return publicResult(replay);
     }
+    await this.#authenticatePendingLineageAuthorities(input.idempotencyKey);
     const current = getActiveSecretLifecycle(this.options.db, this.options.tenantId, input.credentialId);
     if (!current) throw new Error("secret_lifecycle_not_found");
     if (current.generation !== input.expectedGeneration) throw new Error("secret_rotation_generation_conflict");
@@ -1067,7 +1213,7 @@ export class DurableSecretLifecycleService {
     return publicResult(row);
   }
 
-  revoke(input: Readonly<{
+  async revoke(input: Readonly<{
     idempotencyKey: string;
     credentialId: string;
     generation: number;
@@ -1100,6 +1246,7 @@ export class DurableSecretLifecycleService {
       input.idempotencyKey,
     );
     const commitment = this.#commitRequest(request, existingOperation?.request_commitment_key_id);
+    await this.#authenticatePendingLineageAuthorities(input.idempotencyKey);
     const at = this.#now();
     const row = revokeSecretLifecycle(this.options.db, {
       tenantId: this.options.tenantId,
@@ -1175,6 +1322,7 @@ export class DurableSecretLifecycleService {
       if (existing && existing.generation !== current.generation) {
         throw new Error("secret_lifecycle_idempotency_conflict");
       }
+      await this.#authenticatePendingLineageAuthorities(input.idempotencyKey);
       const authority = this.options.revalidateAuthority?.("owner");
       const at = this.#now();
       let access: EnvelopeAccessAuditEvent | undefined;

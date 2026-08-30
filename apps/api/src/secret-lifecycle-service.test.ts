@@ -263,7 +263,7 @@ describe("durable secret lifecycle service", () => {
       expectedGeneration: 1,
       key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
     });
-    service(db, provider).revoke({
+    await service(db, provider).revoke({
       idempotencyKey: "revoke-compromised-lineage",
       credentialId: "credential-a",
       generation: 1,
@@ -297,7 +297,7 @@ describe("durable secret lifecycle service", () => {
     expect(beforeRevocation[0]!.material_lineage_id).toBe(beforeRevocation[2]!.material_lineage_id);
     expect(beforeRevocation[1]!.material_lineage_id).not.toBe(beforeRevocation[0]!.material_lineage_id);
 
-    lifecycle.revoke({
+    await lifecycle.revoke({
       idempotencyKey: "revoke-lineage-a",
       credentialId: "credential-a",
       generation: 1,
@@ -319,7 +319,7 @@ describe("durable secret lifecycle service", () => {
       plaintext: "customer-secret-b",
       key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
     });
-    lifecycle.revoke({
+    await lifecycle.revoke({
       idempotencyKey: "revoke-resurrection-a",
       credentialId: "credential-resurrection",
       generation: 1,
@@ -347,7 +347,7 @@ describe("durable secret lifecycle service", () => {
       plaintext: "customer-secret-b",
       key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
     });
-    initial.revoke({
+    await initial.revoke({
       idempotencyKey: "revoke-a-before-authority-change",
       credentialId: "credential-a",
       generation: 1,
@@ -386,14 +386,15 @@ describe("durable secret lifecycle service", () => {
       plaintext: "customer-secret-b",
       key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
     });
-    initial.revoke({
+    await initial.revoke({
       idempotencyKey: "revoke-a-before-key-substitution",
       credentialId: "credential-a",
       generation: 1,
       reason: "material A compromised",
     });
-    expect(db.raw.prepare("SELECT * FROM secret_lineage_key_bindings WHERE key_id = ?")
-      .get(LINEAGE_KEY_ID)).toMatchObject({
+    expect(db.raw.prepare("SELECT * FROM secret_lineage_key_bindings WHERE tenant_id = ? AND key_id = ?")
+      .get("tenant-a", LINEAGE_KEY_ID)).toMatchObject({
+        tenant_id: "tenant-a",
         key_id: LINEAGE_KEY_ID,
         key_fingerprint: cryptographicKeyMaterialFingerprint(LINEAGE_KEY),
       });
@@ -415,25 +416,169 @@ describe("durable secret lifecycle service", () => {
   it("establishes one immutable protected binding when upgrading an existing deployment", async () => {
     const { db, path, provider } = fixture();
     await service(db, provider).create(createInput);
+    await service(db, provider).rotate({
+      idempotencyKey: "rotate-before-valid-binding-upgrade",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      plaintext: "customer-secret-b",
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    });
     db.raw.exec("DROP TABLE secret_lineage_key_bindings");
     db.raw.close();
     open.splice(open.indexOf(db), 1);
 
     const reopened = createDb(path);
     open.push(reopened);
-    expect(() => service(reopened, provider)).not.toThrow();
-    expect(() => service(reopened, provider)).not.toThrow();
+    const upgraded = service(reopened, provider);
+    expect(reopened.raw.prepare("SELECT * FROM secret_lineage_key_bindings").all()).toHaveLength(0);
+    await upgraded.rotate({
+      idempotencyKey: "authenticate-valid-binding-upgrade",
+      credentialId: "credential-a",
+      expectedGeneration: 2,
+      plaintext: "customer-secret-c",
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "1" },
+    });
     const bindings = reopened.raw.prepare("SELECT * FROM secret_lineage_key_bindings").all() as Array<{
-      key_id: string; key_fingerprint: string;
+      tenant_id: string; key_id: string; key_fingerprint: string;
     }>;
     expect(bindings).toHaveLength(1);
     expect(bindings[0]).toMatchObject({
+      tenant_id: "tenant-a",
       key_id: LINEAGE_KEY_ID,
       key_fingerprint: cryptographicKeyMaterialFingerprint(LINEAGE_KEY),
     });
     const durable = JSON.stringify(bindings);
     expect(durable).not.toContain(LINEAGE_KEY.toString("base64"));
     expect(durable).not.toContain(LINEAGE_KEY.toString("hex"));
+  });
+
+  it("rejects first-binding key substitution against pre-binding lineage evidence", async () => {
+    const { db, path, provider } = fixture();
+    const initial = service(db, provider);
+    await initial.create(createInput);
+    await initial.rotate({
+      idempotencyKey: "rotate-a-to-b-before-binding-migration",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      plaintext: "customer-secret-b",
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    });
+    await initial.revoke({
+      idempotencyKey: "revoke-a-before-binding-migration",
+      credentialId: "credential-a",
+      generation: 1,
+      reason: "material A compromised",
+    });
+    db.raw.exec("DROP TABLE secret_lineage_key_bindings");
+    db.raw.close();
+    open.splice(open.indexOf(db), 1);
+
+    const reopened = createDb(path);
+    open.push(reopened);
+    const substituted = service(reopened, provider, {
+      materialLineageCommitment: keyring(LINEAGE_KEY_ID, [
+        { keyId: LINEAGE_KEY_ID, key: LINEAGE_KEY_V2 },
+      ]),
+    });
+    await expect(substituted.rotate({
+      idempotencyKey: "reject-substituted-first-binding",
+      credentialId: "credential-a",
+      expectedGeneration: 2,
+      plaintext: createInput.plaintext,
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "1" },
+    })).rejects.toThrow("secret_material_lineage_key_binding_mismatch");
+    expect(reopened.raw.prepare("SELECT * FROM secret_lineage_key_bindings").all()).toHaveLength(0);
+    expect(listSecretLifecycleVersions(reopened, "tenant-a", "credential-a").map((row) => row.state))
+      .toEqual(["revoked", "active"]);
+  });
+
+  it("authenticates the retained upgrade key before enforcing revoked material", async () => {
+    const { db, path, provider } = fixture();
+    const initial = service(db, provider);
+    await initial.create(createInput);
+    await initial.rotate({
+      idempotencyKey: "rotate-a-to-b-before-retained-upgrade",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      plaintext: "customer-secret-b",
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    });
+    await initial.revoke({
+      idempotencyKey: "revoke-a-before-retained-upgrade",
+      credentialId: "credential-a",
+      generation: 1,
+      reason: "material A compromised",
+    });
+    db.raw.exec("DROP TABLE secret_lineage_key_bindings");
+    db.raw.close();
+    open.splice(open.indexOf(db), 1);
+
+    const reopened = createDb(path);
+    open.push(reopened);
+    await expect(service(reopened, provider).rotate({
+      idempotencyKey: "reject-revived-material-after-valid-upgrade",
+      credentialId: "credential-a",
+      expectedGeneration: 2,
+      plaintext: createInput.plaintext,
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "1" },
+    })).rejects.toThrow("secret_material_lineage_revoked");
+    expect(reopened.raw.prepare("SELECT * FROM secret_lineage_key_bindings").all()).toHaveLength(1);
+    expect(getSecretLifecycleVersion(reopened, "tenant-a", "credential-a", 3)).toBeUndefined();
+  });
+
+  it("fails closed when pre-binding history has no non-revoked authority proof", async () => {
+    const { db, path, provider } = fixture();
+    await service(db, provider).create(createInput);
+    await service(db, provider).revoke({
+      idempotencyKey: "revoke-only-upgrade-proof",
+      credentialId: "credential-a",
+      generation: 1,
+      reason: "material compromised",
+    });
+    db.raw.exec("DROP TABLE secret_lineage_key_bindings");
+    db.raw.close();
+    open.splice(open.indexOf(db), 1);
+
+    const reopened = createDb(path);
+    open.push(reopened);
+    await expect(service(reopened, provider).create({
+      ...createInput,
+      idempotencyKey: "create-with-unverifiable-upgrade-history",
+      credentialId: "credential-b",
+      sourceRef: "vault://github/installations/unverifiable",
+    })).rejects.toThrow("secret_material_lineage_key_binding_unavailable");
+    expect(reopened.raw.prepare("SELECT * FROM secret_lineage_key_bindings").all()).toHaveLength(0);
+    expect(getSecretLifecycleVersion(reopened, "tenant-a", "credential-b", 1)).toBeUndefined();
+  });
+
+  it("fails closed when pre-binding lineage evidence is internally inconsistent", async () => {
+    const { db, path, provider } = fixture();
+    const lifecycle = service(db, provider);
+    await lifecycle.create(createInput);
+    await lifecycle.create({
+      ...createInput,
+      idempotencyKey: "create-ambiguous-upgrade-proof",
+      credentialId: "credential-b",
+      sourceRef: "vault://github/installations/ambiguous",
+    });
+    db.raw.exec("DROP TABLE secret_lineage_key_bindings");
+    db.raw.exec("DROP TRIGGER secret_lifecycle_versions_guard_update");
+    db.raw.prepare(`UPDATE secret_lifecycle_versions SET material_lineage_id = ?
+      WHERE tenant_id = ? AND credential_id = ?`).run("f".repeat(64), "tenant-a", "credential-b");
+    db.raw.close();
+    open.splice(open.indexOf(db), 1);
+
+    const reopened = createDb(path);
+    open.push(reopened);
+    await expect(service(reopened, provider).rotate({
+      idempotencyKey: "reject-ambiguous-upgrade-proof",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      plaintext: "customer-secret-c",
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    })).rejects.toThrow("secret_material_lineage_key_binding_mismatch");
+    expect(reopened.raw.prepare("SELECT * FROM secret_lineage_key_bindings").all()).toHaveLength(0);
+    expect(getSecretLifecycleVersion(reopened, "tenant-a", "credential-a", 2)).toBeUndefined();
   });
 
   it("fails closed when a historical material-lineage key is not retained", async () => {
@@ -467,6 +612,11 @@ describe("durable secret lifecycle service", () => {
     ];
     expect(new Set(rows.map((row) => row.material_lineage_id)).size).toBe(3);
     expect(rows.every((row) => row.material_lineage_key_id === LINEAGE_KEY_ID)).toBe(true);
+    expect(db.raw.prepare(`SELECT tenant_id, key_id FROM secret_lineage_key_bindings
+      WHERE key_id = ? ORDER BY tenant_id`).all(LINEAGE_KEY_ID)).toEqual([
+      { tenant_id: "tenant-a", key_id: LINEAGE_KEY_ID },
+      { tenant_id: "tenant-b", key_id: LINEAGE_KEY_ID },
+    ]);
     const durable = JSON.stringify({
       versions: db.raw.prepare("SELECT * FROM secret_lifecycle_versions").all(),
       operations: db.raw.prepare("SELECT * FROM secret_lifecycle_operations").all(),
@@ -489,7 +639,7 @@ describe("durable secret lifecycle service", () => {
       wrapDataKey: (key, tenantId, dataKey) => provider.wrapDataKey(key, tenantId, dataKey),
       unwrapDataKey: async (key, tenantId, wrappedDataKey) => {
         const dataKey = await provider.unwrapDataKey(key, tenantId, wrappedDataKey);
-        service(db, provider).revoke({
+        await service(db, provider).revoke({
           idempotencyKey: "concurrent-revoke",
           credentialId: "credential-a",
           generation: 1,
@@ -514,26 +664,26 @@ describe("durable secret lifecycle service", () => {
       generation: 1,
       reason: "confirmed incident",
     };
-    service(db, provider).revoke(revoke);
-    service(db, provider).revoke(revoke);
+    await service(db, provider).revoke(revoke);
+    await service(db, provider).revoke(revoke);
     expect(listAudit(db, "tenant-a").filter(
       (event) => event.action === "secret.lifecycle.revoke_replayed",
     )).toHaveLength(1);
-    expect(() => service(db, provider).revoke({ ...revoke, reason: "different incident" }))
-      .toThrow("secret_lifecycle_idempotency_conflict");
-    expect(() => service(db, provider, { actorId: "operator-b" }).revoke(revoke))
-      .toThrow("secret_lifecycle_idempotency_conflict");
+    await expect(service(db, provider).revoke({ ...revoke, reason: "different incident" }))
+      .rejects.toThrow("secret_lifecycle_idempotency_conflict");
+    await expect(service(db, provider, { actorId: "operator-b" }).revoke(revoke))
+      .rejects.toThrow("secret_lifecycle_idempotency_conflict");
     expect(listAudit(db, "tenant-a").filter(
       (event) => event.action === "secret.lifecycle.revoke_denied",
     )).toHaveLength(0);
     expect(listAudit(db, "tenant-a").filter(
       (event) => event.action === "secret.lifecycle.revoked",
     )).toHaveLength(1);
-    expect(() => service(db, provider).revoke({
+    await expect(service(db, provider).revoke({
       ...revoke,
       idempotencyKey: "revoke-second-operation",
       reason: "uncommitted replacement reason",
-    })).toThrow("secret_lifecycle_already_revoked");
+    })).rejects.toThrow("secret_lifecycle_already_revoked");
     expect(listAudit(db, "tenant-a").filter(
       (event) => event.action === "secret.lifecycle.revoked",
     )).toHaveLength(1);
@@ -765,12 +915,12 @@ describe("durable secret lifecycle service", () => {
     expect(listSecretLifecycleVersions(db, "tenant-a", "credential-a")).toHaveLength(0);
 
     await service(db, provider).create(createInput);
-    expect(() => service(db, provider).revoke({
+    await expect(service(db, provider).revoke({
       idempotencyKey: "overlong-revoke-reason",
       credentialId: "credential-a",
       generation: 1,
       reason: "x".repeat(4_097),
-    })).toThrow("secret_revocation_reason_invalid");
+    })).rejects.toThrow("secret_revocation_reason_invalid");
     await expect(service(db, provider, { role: "owner" }).breakGlass({
       credentialId: "credential-a",
       idempotencyKey: "overlong-break-glass-reason",
@@ -1141,11 +1291,11 @@ describe("durable secret lifecycle service", () => {
       reason: "incident",
       idempotencyKey: "break-glass-owner",
     })).resolves.toBe("customer-secret");
-    expect(service(db, provider).revoke({
+    await expect(service(db, provider).revoke({
       idempotencyKey: "revoke-test",
       credentialId: "credential-a",
       generation: 1,
       reason: "incident response",
-    })).toMatchObject({ state: "revoked", generation: 1 });
+    })).resolves.toMatchObject({ state: "revoked", generation: 1 });
   });
 });

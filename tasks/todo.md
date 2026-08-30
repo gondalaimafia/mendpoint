@@ -5,7 +5,7 @@
 ### Exact-head follow-up for `9b882204`
 
 - [x] RED: prove a restarted process cannot substitute new lineage key bytes under an already-bound key ID and revive revoked material.
-- [x] GREEN: persist an immutable, domain-separated fingerprint for every configured lineage key ID before lifecycle operations begin.
+- [x] GREEN: bind new lineage key IDs immediately, but authenticate every first binding for historical IDs against all decryptable non-revoked durable generations before insertion.
 - [x] GREEN: reject same-ID/different-key substitution, missing historical lineage authority, and unattributable legacy rows before material mutation.
 - [x] Verify clean restart, pre-binding upgrade, fingerprint secrecy, focused database and API behavior, and affected typechecks.
 - [x] RED: prove exact replay survives request-key rotation only while the operation's stored historical key remains retained.
@@ -18,15 +18,15 @@
 
 #### Follow-up review
 
-- Lineage key IDs now have durable cryptographic identity. Startup transactionally establishes immutable key-ID bindings from protected keyring material, accepts exact repeats, and rejects a reused ID with different bytes before create, rotate, revoke, rewrap, or break-glass behavior can run.
-- Existing deployments establish the binding once from their protected retained keyring. Historical rows must still identify an available retained authority; unknown historical identity remains fail closed. Stored fingerprints are domain separated hashes of random 256-bit key material, not plaintext, reversible material, or credential fingerprints.
+- Lineage key IDs now have tenant-scoped durable cryptographic identity. A genuinely empty tenant can establish first authority immediately. A pre-binding tenant with history must decrypt and audit every non-revoked generation for the proposed ID, reproduce each stored lineage commitment, and only then atomically insert the immutable binding.
+- Existing deployments no longer trust the current protected key bytes as their own backfill proof. Same-ID substitution, inconsistent history, revoked-only history, missing envelope authority, and missing historical keys all fail closed without inserting a binding or publishing a new generation. Stored fingerprints are domain separated hashes of random 256-bit key material, not plaintext, reversible material, or credential fingerprints.
 - Every replay computes its commitment with the exact key ID stored on the immutable operation. Rotation selects the active key only for new operations; removing a historical replay key makes the old operation unavailable rather than conflicting or silently reauthorizing it.
 - New material fingerprints use a separate retained lineage keyring. Each version persists the lineage key ID, and every replacement is compared under every retained lineage key inside the rotation transaction before the current generation can retire.
 - Upgrade migration binds pre-split lineage rows to the request key recorded by the last material-changing create or rotate operation. Retained replay keys can recognize those legacy fingerprints but cannot mint new lineage identities. Unattributable legacy rows and missing retained keys fail closed.
 - The backfill now runs whenever authoritative NULL rows remain, independently of whether a prior process already added the column. Repeated startup is exact, and rows without attributable historical operation identity remain NULL and fail closed.
 - Revoked A remains revoked across A to B, revocation, independent replay-key rotation, lineage-key rotation, and attempted B to A replacement. Tenant and credential identifiers are inside the keyed canonical input, so identical plaintext across either boundary produces different durable fingerprints.
 - Production activation now requires distinct protected replay and lineage keyring JSON bindings. No key bytes, plaintext, unkeyed material digest, or reversible fingerprint is stored or logged.
-- Verification: 109 affected tests pass across database, API, repository connection, environment, and configuration suites; DB, API, and Ops typechecks pass; `git diff --check` is clean.
+- Verification: 74 focused lifecycle database, service, and route tests pass, including exact pre-binding A to B, revoke A, restart with same ID and different bytes, valid retained-key upgrade, inconsistent history, and revoked-only history. DB and API typechecks pass; `git diff --check` is clean.
 
 ### Exact-head follow-up for `744e5aa8`
 
