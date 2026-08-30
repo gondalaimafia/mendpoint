@@ -83,6 +83,26 @@ describe("envelope secret lifecycle", () => {
     expect(await vault.decrypt(rotated, context)).toBe("customer-secret");
   });
 
+  it("does not publish lifecycle rotation until replacement audit succeeds", async () => {
+    const registry = new EnvelopeKeyLifecycleRegistry();
+    registry.register(lifecycle(key1, 1));
+    const provider = new LocalEnvelopeKeyProvider();
+    provider.putKey("tenant-a", key1, Buffer.alloc(32, 1));
+    provider.putKey("tenant-a", key2, Buffer.alloc(32, 2));
+    const vault = new EnvelopeSecretVault(registry, [provider], (event) => {
+      if (event.operation === "rotate") throw new Error("audit offline");
+    });
+    const envelope = await vault.encrypt("github-token", "customer-secret", key1, context);
+
+    await expect(vault.rotate(envelope, lifecycle(key2, 2), {
+      ...context,
+      at: "2026-08-03T00:00:00.000Z",
+    })).rejects.toThrow("vault_access_audit_failed");
+
+    expect(registry.get("tenant-a", key1)?.state).toBe("active");
+    expect(registry.get("tenant-a", key2)).toBeUndefined();
+  });
+
   it("revokes compromised versions and denies incident access", async () => {
     const { vault, registry } = setup();
     const envelope = await vault.encrypt("github-token", "customer-secret", key1, context);
@@ -123,6 +143,47 @@ describe("envelope secret lifecycle", () => {
 });
 
 describe("durable envelope secret provider", () => {
+  it("rejects generation-one ciphertext transplanted into generation two", async () => {
+    const { vault, provider } = setup();
+    const generationOneEnvelope = await vault.encrypt(
+      "scm-credential-a",
+      "generation-one-secret",
+      key1,
+      context,
+    );
+    let stored: DurableEnvelopeSecretVersion = {
+      credentialId: "scm-credential-a",
+      generation: 2,
+      state: "active",
+      key: key1,
+      envelope: { ...generationOneEnvelope, generation: 2 },
+      issuedAt: at,
+    };
+    const durable = new DurableEnvelopeSecretProvider({
+      tenantId: "tenant-a",
+      actorId: "service:api",
+      correlationId: "request-1",
+      purpose: "materialize_read_only_repository_snapshot",
+      at: () => at,
+      keyProviders: [provider],
+      resolve: async () => stored,
+      audit: () => undefined,
+    });
+
+    await expect(durable.read({
+      provider: "durable-envelope",
+      id: "scm-credential-a",
+      version: "2",
+    })).rejects.toThrow("vault_decrypt_denied");
+
+    stored = { ...stored, envelope: generationOneEnvelope };
+    await expect(durable.read({
+      provider: "durable-envelope",
+      id: "scm-credential-a",
+      version: "2",
+    })).rejects.toThrow("vault_secret_binding_invalid");
+  });
+
   it("reloads lifecycle state for every read so rotation and revocation invalidate material", async () => {
     const { vault, provider } = setup();
     const envelope = await vault.encrypt("scm-credential-a", "customer-secret", key1, context);

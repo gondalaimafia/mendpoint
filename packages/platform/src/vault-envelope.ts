@@ -35,6 +35,7 @@ export type EnvelopeSecret = Readonly<{
   schemaVersion: typeof ENVELOPE_SECRET_SCHEMA_VERSION;
   tenantId: string;
   secretId: string;
+  generation: number;
   key: EnvelopeKeyReference;
   algorithm: "AES-256-GCM";
   wrappedDataKey: string;
@@ -77,7 +78,7 @@ export type DurableEnvelopeSecretVersion = Readonly<{
   generation: number;
   state: EnvelopeKeyState;
   key: EnvelopeKeyReference;
-  envelope: EnvelopeSecret;
+  envelope: Readonly<Omit<EnvelopeSecret, "generation"> & { generation?: number }>;
   issuedAt: string;
   retiredAt?: string;
   revokedAt?: string;
@@ -103,6 +104,15 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 
 function keyIdentity(tenantId: string, key: EnvelopeKeyReference): string {
   return `${tenantId}\0${key.provider}\0${key.keyId}\0${key.version}`;
+}
+
+function envelopeAad(
+  tenantId: string,
+  secretId: string,
+  generation: number,
+  key: EnvelopeKeyReference,
+): Buffer {
+  return Buffer.from(`${tenantId}\0${secretId}\0${generation}\0${key.provider}\0${key.keyId}\0${key.version}`);
 }
 
 function validContext(context: SecretAccessContext): void {
@@ -159,15 +169,28 @@ export class EnvelopeKeyLifecycleRegistry {
     next: EnvelopeKeyLifecycle,
     rotatedAt: string,
   ): void {
-    const existing = this.assertEncryptable(tenantId, current);
-    if (next.tenantId !== tenantId || next.state !== "active") throw new Error("vault_rotation_target_invalid");
-    if (next.generation !== existing.generation + 1) throw new Error("vault_rotation_generation_invalid");
-    if (!Number.isFinite(Date.parse(rotatedAt))) throw new Error("vault_rotation_time_invalid");
+    const existing = this.assertRotation(tenantId, current, next, rotatedAt);
     this.register(next);
     this.#keys.set(
       keyIdentity(tenantId, current),
       Object.freeze({ ...existing, state: "retired", rotatedAt }),
     );
+  }
+
+  assertRotation(
+    tenantId: string,
+    current: EnvelopeKeyReference,
+    next: EnvelopeKeyLifecycle,
+    rotatedAt: string,
+  ): EnvelopeKeyLifecycle {
+    const existing = this.assertEncryptable(tenantId, current);
+    validKey(next.key);
+    if (next.tenantId !== tenantId || next.state !== "active") throw new Error("vault_rotation_target_invalid");
+    if (next.generation !== existing.generation + 1) throw new Error("vault_rotation_generation_invalid");
+    if (!Number.isFinite(Date.parse(next.createdAt))) throw new Error("vault_key_created_at_invalid");
+    if (!Number.isFinite(Date.parse(rotatedAt))) throw new Error("vault_rotation_time_invalid");
+    if (this.get(tenantId, next.key)) throw new Error("vault_key_version_exists");
+    return existing;
   }
 
   revoke(
@@ -263,7 +286,18 @@ export class EnvelopeSecretVault {
   ): Promise<EnvelopeSecret> {
     validContext(context);
     if (context.tenantId.trim().length === 0 || !ID.test(secretId)) throw new Error("vault_secret_id_invalid");
-    this.lifecycle.assertEncryptable(context.tenantId, key);
+    const lifecycle = this.lifecycle.assertEncryptable(context.tenantId, key);
+    return this.#encrypt(secretId, plaintext, lifecycle.generation, key, context, operation);
+  }
+
+  async #encrypt(
+    secretId: string,
+    plaintext: string,
+    generation: number,
+    key: EnvelopeKeyReference,
+    context: SecretAccessContext,
+    operation: EnvelopeAccessAuditEvent["operation"],
+  ): Promise<EnvelopeSecret> {
     const provider = this.#providers.get(key.provider);
     if (!provider || !provider.enabled) {
       await this.#emit(secretId, key, context, operation, "denied", "vault_provider_disabled");
@@ -274,12 +308,13 @@ export class EnvelopeSecretVault {
       const wrappedDataKey = await provider.wrapDataKey(key, context.tenantId, dataKey);
       const iv = randomBytes(12);
       const cipher = createCipheriv("aes-256-gcm", dataKey, iv);
-      cipher.setAAD(Buffer.from(`${context.tenantId}\0${secretId}\0${key.provider}\0${key.keyId}\0${key.version}`));
+      cipher.setAAD(envelopeAad(context.tenantId, secretId, generation, key));
       const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
       const result = Object.freeze({
         schemaVersion: ENVELOPE_SECRET_SCHEMA_VERSION,
         tenantId: context.tenantId,
         secretId,
+        generation,
         key: Object.freeze({ ...key }),
         algorithm: "AES-256-GCM" as const,
         wrappedDataKey,
@@ -304,12 +339,19 @@ export class EnvelopeSecretVault {
       throw new Error("tenant_mismatch");
     }
     try {
-      this.lifecycle.assertDecryptable(context.tenantId, envelope.key);
+      const lifecycle = this.lifecycle.assertDecryptable(context.tenantId, envelope.key);
+      if (
+        !Number.isSafeInteger(envelope.generation) ||
+        (envelope.generation ?? 0) < 1 ||
+        envelope.generation !== lifecycle.generation
+      ) {
+        throw new Error("vault_secret_generation_invalid");
+      }
       const provider = this.#providers.get(envelope.key.provider);
       if (!provider || !provider.enabled) throw new Error("vault_provider_disabled");
       const dataKey = await provider.unwrapDataKey(envelope.key, context.tenantId, envelope.wrappedDataKey);
       const decipher = createDecipheriv("aes-256-gcm", dataKey, Buffer.from(envelope.iv, "base64"));
-      decipher.setAAD(Buffer.from(`${context.tenantId}\0${envelope.secretId}\0${envelope.key.provider}\0${envelope.key.keyId}\0${envelope.key.version}`));
+      decipher.setAAD(envelopeAad(context.tenantId, envelope.secretId, envelope.generation, envelope.key));
       decipher.setAuthTag(Buffer.from(envelope.authTag, "base64"));
       const plaintext = Buffer.concat([
         decipher.update(Buffer.from(envelope.ciphertext, "base64")),
@@ -331,8 +373,17 @@ export class EnvelopeSecretVault {
     context: SecretAccessContext,
   ): Promise<EnvelopeSecret> {
     const plaintext = await this.decrypt(envelope, { ...context, purpose: `${context.purpose}:read_for_rotation` });
+    this.lifecycle.assertRotation(context.tenantId, envelope.key, next, context.at);
+    const replacement = await this.#encrypt(
+      envelope.secretId,
+      plaintext,
+      next.generation,
+      next.key,
+      context,
+      "rotate",
+    );
     this.lifecycle.rotate(context.tenantId, envelope.key, next, context.at);
-    return this.encrypt(envelope.secretId, plaintext, next.key, context, "rotate");
+    return replacement;
   }
 
   async #emit(
@@ -390,6 +441,7 @@ export class DurableEnvelopeSecretProvider implements SecretProvider {
       version.generation !== generation ||
       version.envelope.tenantId !== this.options.tenantId ||
       version.envelope.secretId !== reference.id ||
+      (version.envelope.generation !== undefined && version.envelope.generation !== generation) ||
       keyIdentity(this.options.tenantId, version.envelope.key) !==
         keyIdentity(this.options.tenantId, version.key)
     ) {
@@ -409,7 +461,7 @@ export class DurableEnvelopeSecretProvider implements SecretProvider {
       revocationReason: version.revocationReason,
     });
     const vault = new EnvelopeSecretVault(lifecycle, this.options.keyProviders, this.options.audit);
-    return vault.decrypt(version.envelope, {
+    return vault.decrypt(Object.freeze({ ...version.envelope, generation }), {
       tenantId: this.options.tenantId,
       actorId: this.options.actorId,
       correlationId: this.options.correlationId,
