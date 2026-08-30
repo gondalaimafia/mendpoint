@@ -134,6 +134,7 @@ export type GrossMarginReconciliation = Readonly<{
   currency: string | null;
   usageIntegrity: ReturnType<typeof reconcileUsageLedger>;
   costIntegrity: ExecutionCostIntegrity;
+  outcomeIntegrity: ExecutionOutcomeIntegrity;
   settledMcuMicros: number;
   creditedMcuMicros: number;
   adjustedMcuMicros: number;
@@ -1919,6 +1920,7 @@ export function reconcileGrossMargin(
     currency: currencies.size === 1 ? [...currencies][0]! : null,
     usageIntegrity,
     costIntegrity,
+    outcomeIntegrity,
     settledMcuMicros,
     creditedMcuMicros,
     adjustedMcuMicros,

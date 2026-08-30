@@ -587,6 +587,124 @@ describe("Transformer pilot execution coordinator", () => {
     store.close();
   });
 
+  it("normalizes a pending pre-routing handoff from exact durable routing authority", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-legacy-handoff-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    let store = new TransformerPilotExecutionStore(path);
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    store.bindRoutingAttempt(routingBinding("bind-legacy-handoff"));
+    const token = "lease-token-legacy-handoff-00001";
+    const lease = store.claimNextAttempt({
+      ...mutation(2, "claim-legacy-handoff"),
+      leaseToken: token,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    store.recordAdaptiveCandidateHandoff(adaptiveHandoff(
+      lease,
+      token,
+      "record-legacy-handoff",
+    ));
+    store.close();
+
+    const legacy = new DatabaseSync(path);
+    const row = legacy.prepare(
+      "SELECT body_json FROM tf_pilot_campaigns WHERE tenant_id = ? AND campaign_id = ?",
+    ).get("tenant-a", "campaign-a") as { body_json: string };
+    const body = JSON.parse(row.body_json) as {
+      units: Array<{
+        adaptiveCandidateHandoff?: Record<string, unknown>;
+      }>;
+    };
+    const handoff = body.units[0]!.adaptiveCandidateHandoff!;
+    delete handoff.routingJobId;
+    delete handoff.routingRunId;
+    delete handoff.routingEnvelopeId;
+    delete handoff.reviewTier;
+    legacy.prepare(
+      "UPDATE tf_pilot_campaigns SET body_json = ? WHERE tenant_id = ? AND campaign_id = ?",
+    ).run(JSON.stringify(body), "tenant-a", "campaign-a");
+    legacy.close();
+
+    store = new TransformerPilotExecutionStore(path);
+    expect(store.listAdaptiveCandidateHandoffs("tenant-a", 10, gateConfig())).toEqual([
+      expect.objectContaining({
+        handoff: expect.objectContaining({
+          routingJobId: "campaign-a",
+          routingRunId: "run-routing-a",
+          routingEnvelopeId: "route-routing-a",
+          reviewTier: "blocked",
+        }),
+      }),
+    ]);
+    store.close();
+
+    const persisted = new DatabaseSync(path);
+    const migrated = JSON.parse((persisted.prepare(
+      "SELECT body_json FROM tf_pilot_campaigns WHERE tenant_id = ? AND campaign_id = ?",
+    ).get("tenant-a", "campaign-a") as { body_json: string }).body_json) as {
+      units: Array<{ adaptiveCandidateHandoff: Record<string, unknown> }>;
+    };
+    expect(migrated.units[0]!.adaptiveCandidateHandoff).toMatchObject({
+      routingJobId: "campaign-a",
+      routingRunId: "run-routing-a",
+      routingEnvelopeId: "route-routing-a",
+      reviewTier: "blocked",
+    });
+    persisted.close();
+  });
+
+  it("fails closed when a legacy pending handoff has no durable routing authority", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-legacy-handoff-unbound-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    let store = new TransformerPilotExecutionStore(path);
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    const token = "lease-token-legacy-unbound-00001";
+    const lease = store.claimNextAttempt({
+      ...mutation(1, "claim-legacy-unbound"),
+      leaseToken: token,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    store.recordAdaptiveCandidateHandoff(adaptiveHandoff(
+      lease,
+      token,
+      "record-legacy-unbound",
+    ));
+    store.close();
+
+    const legacy = new DatabaseSync(path);
+    const row = legacy.prepare(
+      "SELECT body_json FROM tf_pilot_campaigns WHERE tenant_id = ? AND campaign_id = ?",
+    ).get("tenant-a", "campaign-a") as { body_json: string };
+    const body = JSON.parse(row.body_json) as {
+      units: Array<{ adaptiveCandidateHandoff?: Record<string, unknown> }>;
+    };
+    const handoff = body.units[0]!.adaptiveCandidateHandoff!;
+    delete handoff.routingJobId;
+    delete handoff.routingRunId;
+    delete handoff.routingEnvelopeId;
+    delete handoff.reviewTier;
+    legacy.prepare(
+      "UPDATE tf_pilot_campaigns SET body_json = ? WHERE tenant_id = ? AND campaign_id = ?",
+    ).run(JSON.stringify(body), "tenant-a", "campaign-a");
+    legacy.close();
+
+    expect(() => new TransformerPilotExecutionStore(path)).toThrow(
+      "transformer_pilot_legacy_handoff_routing_authority_missing",
+    );
+    const persisted = new DatabaseSync(path);
+    const unchanged = JSON.parse((persisted.prepare(
+      "SELECT body_json FROM tf_pilot_campaigns WHERE tenant_id = ? AND campaign_id = ?",
+    ).get("tenant-a", "campaign-a") as { body_json: string }).body_json) as {
+      units: Array<{ adaptiveCandidateHandoff: Record<string, unknown> }>;
+    };
+    expect(unchanged.units[0]!.adaptiveCandidateHandoff).not.toHaveProperty("routingRunId");
+    persisted.close();
+  });
+
   it("persists exact snapshots, versioned constraints, evidence, and idempotency across restart", () => {
     const root = mkdtempSync(join(tmpdir(), "transformer-pilot-"));
     roots.push(root);

@@ -856,6 +856,9 @@ describe("billing economics API routes", () => {
     await expect(margin.json()).resolves.toMatchObject({
       data: {
         complete: true,
+        ledgers: {
+          executionCosts: { ok: true, checked: 1 },
+        },
         netRevenueMoneyMicros: 80_000,
         actualCostMoneyMicros: 2_500,
         exactGrossMarginMoneyMicros: 77_500,
@@ -874,6 +877,23 @@ describe("billing economics API routes", () => {
             attributedGrossMarginMoneyMicros: 77_500,
           },
         ],
+      },
+    });
+
+    db.raw.exec("DROP TRIGGER actual_execution_cost_outcomes_append_only_update");
+    db.raw.prepare(
+      "UPDATE actual_execution_cost_outcomes SET authority_digest = ? WHERE execution_id = ?",
+    ).run("f".repeat(64), "job-production-a");
+    const corruptMargin = await app.request("/billing/gross-margin", {
+      headers: headers(tenantA, "mission-margin-corrupt-outcome"),
+    });
+    expect(corruptMargin.status).toBe(200);
+    await expect(corruptMargin.json()).resolves.toMatchObject({
+      data: {
+        complete: false,
+        ledgers: {
+          executionCosts: { ok: false, checked: 1 },
+        },
       },
     });
   });

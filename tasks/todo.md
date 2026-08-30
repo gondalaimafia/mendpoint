@@ -4169,3 +4169,24 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Final-chain repair isolates every Fettler lease generation under an exact routing run and envelope, accounts only terminal executed rows with immutable provenance, and replaces the bounded prior-attempt scan with an indexed exact lookup. ReGauge now persists its exact routing identity in the durable handoff, settles the route before importing candidate, trajectory, and MCU cost in one owned transaction, and acknowledges the cross-store handoff only after commit.
 - Outcome accounting now binds a strictly newer, unused authority record to the exact immutable cost entry and digest; revalidates current unsuperseded review or terminal domain-event authority; rejects malformed outcome identifiers and broken event chains; and requires unique verified MissionTask, job, and Mission lineage. Historical v1 and v2 cost hashes remain readable while new v3 rows authenticate the stronger provenance.
 - Verification passes the 235-test focused matrix, all four affected workspace typechecks, and the complete `npm test` workspace and scripts catalog. The broad run completed with every test file green; diff integrity and debug-artifact scans are clean. No push, deployment, or production authority action occurred.
+
+## 2026-08-30 Plan 09-01 exact-head recovery repair
+
+- [x] RED: reproduce a paid Fettler model attempt whose deferred routing outcome rolls back, then prove a new lease generation cannot wedge or settle the same provider work twice.
+- [x] GREEN: reconcile the exact authenticated prior reservation and routing attempt before retry accounting, preserving lease fencing, immutable cost provenance, and exactly-once settlement.
+- [x] RED: open a pre-change ReGauge volume containing a pending adaptive candidate handoff without routing identifiers or a review tier.
+- [x] GREEN: normalize only records with exact durable routing authority, default legacy review authority to fail-closed, and leave ambiguous state undrained.
+- [x] RED and GREEN: make customer gross-margin execution-cost diagnostics fail whenever either immutable cost rows or their outcome authority ledger fails integrity.
+- [x] Run focused database, Worker, Transformer, and API suites, affected typechecks, diff integrity, inspect the complete repair, and commit locally without pushing.
+
+### Scope and rollback
+
+- This repair changes recovery and diagnostics only. It does not create new spend, repeat provider execution, relax ReGauge review authority, alter historical ledger hashes, or promote any requirement or public claim.
+- Rollback is the isolated repair commit. Existing immutable model reservations, routing decisions, MCU cost entries, and ReGauge campaign history remain retained.
+
+### Review
+
+- A retried Fettler lease now imports each exact prior paid attempt from its terminal model-reservation evidence before current execution. Recovery completes only the matching nonterminal routing envelope and records the corresponding historical Mission cost in one transaction; replay is a no-op and the settled reservation remains byte-for-byte unchanged.
+- Restored ReGauge campaigns now normalize only pending pre-change handoffs that have an exact same-attempt durable routing settlement. Missing review authority defaults to `blocked`; missing or conflicting routing authority aborts store startup without mutating the campaign.
+- Gross-margin reconciliation now exposes outcome-ledger integrity to its caller, and the authenticated API reports execution-cost diagnostics unhealthy when either cost rows or their authority outcomes fail integrity.
+- Verification passes 191 focused tests across database, Worker, Transformer, and API packages, including the 90-test live Worker job-loop suite and both restored-volume migration outcomes. All four affected workspace typechecks pass, and diff integrity is clean. No provider call, settlement rewrite, push, deployment, or protected-authority action occurred.

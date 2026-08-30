@@ -1661,6 +1661,88 @@ export class TransformerPilotExecutionStore {
       CREATE TRIGGER IF NOT EXISTS tf_pilot_verifier_advisory_dispatch_claim_results_no_delete BEFORE DELETE ON tf_pilot_verifier_advisory_dispatch_claim_results
       BEGIN SELECT RAISE(ABORT, 'transformer_pilot_verifier_advisory_dispatch_claim_results_append_only'); END;
     `);
+    try {
+      this.normalizeLegacyAdaptiveCandidateHandoffs();
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
+  }
+
+  private normalizeLegacyAdaptiveCandidateHandoffs(): void {
+    const rows = this.db.prepare(
+      "SELECT tenant_id, campaign_id, body_json FROM tf_pilot_campaigns ORDER BY tenant_id, campaign_id",
+    ).all() as Array<{ tenant_id: string; campaign_id: string; body_json: string }>;
+    const updates: Array<{ tenantId: string; campaignId: string; body: string }> = [];
+    for (const row of rows) {
+      const campaign = JSON.parse(row.body_json) as StoredCampaign;
+      let changed = false;
+      const units = campaign.units.map((unit) => {
+        const handoff = unit.adaptiveCandidateHandoff;
+        if (!handoff || handoff.importedAt !== undefined) return unit;
+        const legacy = handoff as unknown as {
+          routingJobId?: string;
+          routingRunId?: string;
+          routingEnvelopeId?: string;
+          reviewTier?: string;
+        };
+        if (
+          legacy.routingJobId !== undefined &&
+          legacy.routingRunId !== undefined &&
+          legacy.routingEnvelopeId !== undefined &&
+          legacy.reviewTier !== undefined
+        ) {
+          return unit;
+        }
+        const routing = unit.routingSettlement;
+        if (
+          !routing || !routing.runId || !routing.envelopeId ||
+          routing.attemptNumber !== handoff.attemptNumber ||
+          routing.leaseGeneration !== handoff.leaseGeneration
+        ) {
+          throw new Error("transformer_pilot_legacy_handoff_routing_authority_missing");
+        }
+        if (
+          (legacy.routingJobId !== undefined && legacy.routingJobId !== campaign.campaignId) ||
+          (legacy.routingRunId !== undefined && legacy.routingRunId !== routing.runId) ||
+          (legacy.routingEnvelopeId !== undefined && legacy.routingEnvelopeId !== routing.envelopeId) ||
+          (legacy.reviewTier !== undefined &&
+            !["standard", "escalated", "blocked"].includes(legacy.reviewTier))
+        ) {
+          throw new Error("transformer_pilot_legacy_handoff_routing_authority_conflict");
+        }
+        changed = true;
+        return {
+          ...unit,
+          adaptiveCandidateHandoff: Object.freeze({
+            ...handoff,
+            routingJobId: campaign.campaignId,
+            routingRunId: routing.runId,
+            routingEnvelopeId: routing.envelopeId,
+            reviewTier: legacy.reviewTier ?? "blocked",
+          }),
+        };
+      });
+      if (changed) {
+        updates.push({
+          tenantId: row.tenant_id,
+          campaignId: row.campaign_id,
+          body: JSON.stringify({ ...campaign, units }),
+        });
+      }
+    }
+    if (updates.length === 0) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const update = this.db.prepare(
+        "UPDATE tf_pilot_campaigns SET body_json = ? WHERE tenant_id = ? AND campaign_id = ?",
+      );
+      for (const item of updates) update.run(item.body, item.tenantId, item.campaignId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   close(): void {

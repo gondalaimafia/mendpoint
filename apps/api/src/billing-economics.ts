@@ -320,7 +320,10 @@ function publicGrossMargin(report: GrossMarginReconciliation) {
     currency: report.currency,
     ledgers: {
       usage: { ok: report.usageIntegrity.ok, checked: report.usageIntegrity.checked },
-      executionCosts: { ok: report.costIntegrity.ok, checked: report.costIntegrity.checked },
+      executionCosts: {
+        ok: report.costIntegrity.ok && report.outcomeIntegrity.ok,
+        checked: report.costIntegrity.checked,
+      },
     },
     settledMcuMicros: report.settledMcuMicros,
     creditedMcuMicros: report.creditedMcuMicros,

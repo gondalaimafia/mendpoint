@@ -18,6 +18,7 @@ import {
   listRepositorySnapshots,
   missionTaskIdForJob,
   openTaskHandoff,
+  recordRoutingOutcomeExactlyOnce,
   recordExecutionCostFromRoutingLedger,
   resolveMissionForFettlerCampaign,
   resolveMissionForRegaugeCampaign,
@@ -199,6 +200,7 @@ export function recordBoundMissionExecutionCost(
     routingRunId: string;
     routingEnvelopeId: string;
     createdAt: string;
+    attemptNumber?: number;
     outcomeStatus?: "unresolved";
   }>,
 ): ActualExecutionCostEntry | undefined {
@@ -208,14 +210,17 @@ export function recordBoundMissionExecutionCost(
   const taskId = missionTaskIdForJob(input.job.id);
   // lease_generation is monotonic across operator reopen; attempts is not.
   const leaseGeneration = Math.max(1, input.job.lease_generation ?? input.job.attempts ?? 1);
-  const attemptNumber = leaseGeneration;
-  const executionId = `${input.job.id}:lease-${leaseGeneration}:attempt-${attemptNumber}`;
+  const attemptNumber = input.attemptNumber ?? leaseGeneration;
+  if (!Number.isSafeInteger(attemptNumber) || attemptNumber < 1 || attemptNumber > leaseGeneration) {
+    throw new Error("mission_execution_cost_attempt_invalid");
+  }
+  const executionId = `${input.job.id}:lease-${attemptNumber}:attempt-${attemptNumber}`;
   const prior = getLatestActualExecutionCostForTaskBeforeAttempt(db, {
     tenantId: input.job.tenant_id,
     taskId,
     attemptNumber: leaseGeneration,
   });
-  if (leaseGeneration > 1 && !prior) {
+  if (attemptNumber > 1 && !prior) {
     throw new Error("mission_execution_cost_prior_attempt_missing");
   }
   return recordExecutionCostFromRoutingLedger(db, {
@@ -239,4 +244,170 @@ export function recordBoundMissionExecutionCost(
     fallbackFromExecutionId: prior?.executionId ?? null,
     outcomeStatus: "unresolved",
   });
+}
+
+type PendingPaidRoutingRow = Readonly<{
+  run_id: string;
+  envelope_id: string;
+  action: string;
+  selected_executor_id: string | null;
+  provider_id: string | null;
+}>;
+
+type SettledModelReservationRow = Readonly<{
+  id: string;
+  run_id: string;
+  lease_generation: number;
+  reservation_digest: string;
+  settlement_digest: string | null;
+  provider: string;
+  status: string;
+  charged_input_tokens: number | null;
+  charged_output_tokens: number | null;
+  charged_total_tokens: number | null;
+  charged_cost_usd: number | null;
+  reserved_at: string;
+  settled_at: string | null;
+}>;
+
+const SHA256 = /^sha256:[a-f0-9]{64}$/;
+
+/**
+ * Recover a paid prior Fettler attempt whose deferred routing outcome was lost
+ * when the terminal job transaction rolled back. Settled model reservations are
+ * the durable execution evidence: they are imported into one conservative
+ * terminal routing row and one immutable cost entry without calling or settling
+ * the provider again. Ambiguous or unauthenticated evidence fails closed.
+ */
+export function reconcilePriorPaidWardenAttempts(
+  db: AppDb,
+  input: Readonly<{ job: BridgedJob; observedAt: string }>,
+): number {
+  const currentGeneration = input.job.lease_generation ?? input.job.attempts ?? 1;
+  if (!Number.isSafeInteger(currentGeneration) || currentGeneration < 1 ||
+      !Number.isFinite(Date.parse(input.observedAt))) {
+    throw new Error("warden_paid_attempt_recovery_input_invalid");
+  }
+  const pending = db.raw.prepare(
+    `SELECT run_id, envelope_id, action, selected_executor_id, provider_id
+     FROM routing_ledger
+     WHERE tenant_id = ? AND job_id = ? AND outcome IS NULL AND run_id IS NOT NULL
+     ORDER BY created_at, id`,
+  ).all(input.job.tenant_id, input.job.id) as PendingPaidRoutingRow[];
+  const candidates = pending.map((route) => {
+    const match = /^(.*):lease-([1-9][0-9]*)$/.exec(route.run_id);
+    if (!match) return undefined;
+    const leaseGeneration = Number(match[2]);
+    if (!Number.isSafeInteger(leaseGeneration) || leaseGeneration >= currentGeneration) return undefined;
+    return { route, baseRunId: match[1]!, leaseGeneration };
+  }).filter((value): value is NonNullable<typeof value> => value !== undefined)
+    .sort((left, right) => left.leaseGeneration - right.leaseGeneration);
+  const generations = new Set<number>();
+  for (const candidate of candidates) {
+    if (generations.has(candidate.leaseGeneration)) {
+      throw new Error("warden_paid_attempt_routing_ambiguous");
+    }
+    generations.add(candidate.leaseGeneration);
+  }
+  let reconciled = 0;
+  for (const candidate of candidates) {
+    const reservations = db.raw.prepare(
+      `SELECT id, run_id, lease_generation, reservation_digest, settlement_digest,
+              provider, status, charged_input_tokens, charged_output_tokens,
+              charged_total_tokens, charged_cost_usd, reserved_at, settled_at
+       FROM fettler_model_reservations
+       WHERE tenant_id = ? AND job_id = ? AND lease_generation = ?
+       ORDER BY call_index, id`,
+    ).all(
+      input.job.tenant_id,
+      input.job.id,
+      candidate.leaseGeneration,
+    ) as SettledModelReservationRow[];
+    if (reservations.length === 0) continue;
+    if (
+      candidate.route.action !== "route" ||
+      !candidate.route.selected_executor_id ||
+      !candidate.route.provider_id ||
+      reservations.some((reservation) =>
+        reservation.run_id !== candidate.baseRunId ||
+        reservation.provider !== candidate.route.provider_id ||
+        reservation.status === "active" ||
+        !SHA256.test(reservation.reservation_digest) ||
+        !reservation.settlement_digest ||
+        !SHA256.test(reservation.settlement_digest) ||
+        !Number.isSafeInteger(reservation.charged_input_tokens) ||
+        reservation.charged_input_tokens! < 0 ||
+        !Number.isSafeInteger(reservation.charged_output_tokens) ||
+        reservation.charged_output_tokens! < 0 ||
+        !Number.isSafeInteger(reservation.charged_total_tokens) ||
+        reservation.charged_total_tokens !==
+          reservation.charged_input_tokens! + reservation.charged_output_tokens! ||
+        typeof reservation.charged_cost_usd !== "number" ||
+        !Number.isFinite(reservation.charged_cost_usd) ||
+        reservation.charged_cost_usd < 0 ||
+        !reservation.settled_at ||
+        !Number.isFinite(Date.parse(reservation.reserved_at)) ||
+        !Number.isFinite(Date.parse(reservation.settled_at))
+      )
+    ) {
+      throw new Error("warden_paid_attempt_evidence_invalid");
+    }
+    const sumInteger = (field: "charged_input_tokens" | "charged_output_tokens" | "charged_total_tokens") => {
+      const value = reservations.reduce((sum, reservation) => sum + reservation[field]!, 0);
+      if (!Number.isSafeInteger(value)) throw new Error("warden_paid_attempt_evidence_invalid");
+      return value;
+    };
+    const costUsd = reservations.reduce(
+      (sum, reservation) => sum + reservation.charged_cost_usd!,
+      0,
+    );
+    if (!Number.isFinite(costUsd)) throw new Error("warden_paid_attempt_evidence_invalid");
+    const evidence = reservations.map((reservation) => ({
+      reservationId: reservation.id,
+      reservationDigest: reservation.reservation_digest,
+      settlementDigest: reservation.settlement_digest,
+      status: reservation.status,
+    }));
+    const ownsTransaction = !db.raw.isTransaction;
+    if (ownsTransaction) db.raw.exec("BEGIN IMMEDIATE");
+    try {
+      recordRoutingOutcomeExactlyOnce(db, {
+        tenantId: input.job.tenant_id,
+        jobId: input.job.id,
+        envelopeId: candidate.route.envelope_id,
+        idempotencyKey: `warden-paid-attempt-recovery:${candidate.route.envelope_id}`,
+        idempotencyPayload: {
+          schemaVersion: "mendpoint.warden-paid-attempt-recovery.v1",
+          runId: candidate.route.run_id,
+          evidence,
+        },
+        executorId: candidate.route.selected_executor_id,
+        providerId: candidate.route.provider_id,
+        breakerFeedback: "none",
+        action: "human_handoff",
+        outcome: "failed",
+        errorCode: "warden_routing_outcome_recovered_from_model_reservations",
+        inputTokens: sumInteger("charged_input_tokens"),
+        outputTokens: sumInteger("charged_output_tokens"),
+        totalTokens: sumInteger("charged_total_tokens"),
+        costUsd,
+        startedAt: reservations.map((reservation) => reservation.reserved_at).sort()[0]!,
+        completedAt: reservations.map((reservation) => reservation.settled_at!).sort().at(-1)!,
+        observedAt: input.observedAt,
+      });
+      recordBoundMissionExecutionCost(db, {
+        job: input.job,
+        routingRunId: candidate.route.run_id,
+        routingEnvelopeId: candidate.route.envelope_id,
+        createdAt: input.observedAt,
+        attemptNumber: candidate.leaseGeneration,
+      });
+      if (ownsTransaction) db.raw.exec("COMMIT");
+      reconciled++;
+    } catch (error) {
+      if (ownsTransaction && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  return reconciled;
 }

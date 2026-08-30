@@ -211,6 +211,7 @@ import {
 } from "./learning-corpus-cli.js";
 import {
   bridgeClaimedJobToMissionTask,
+  reconcilePriorPaidWardenAttempts,
   recordBoundMissionExecutionCost,
 } from "./mission-task-job-bridge.js";
 import {
@@ -3226,6 +3227,9 @@ async function processJobsOnceUnfenced(
       // D3: when the job is bound to a real mission, put a MissionTask on the
       // live claim path (unassigned → agent_working). Unbound jobs stay unbound.
       bridgeClaimedJobToMissionTask(db, job, nowIso());
+      if (job.type === "agent.run" && job.lease_generation > 1) {
+        reconcilePriorPaidWardenAttempts(db, { job, observedAt: nowIso() });
+      }
       if (job.type === VERIFIER_ADVISORY_JOB_TYPE) {
         await runVerifierAdvisoryJob({
           db,
