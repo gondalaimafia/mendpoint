@@ -81,6 +81,55 @@ function legacySecretDb(): AppDb {
   return db;
 }
 
+function interruptedLineageMigrationDb(): Readonly<{ db: AppDb; path: string }> {
+  const path = join(mkdtempSync(join(tmpdir(), "mp-secret-lineage-interrupted-")), "db.sqlite");
+  const interrupted = new DatabaseSync(path);
+  interrupted.exec(`
+    CREATE TABLE secret_lifecycle_versions (
+      tenant_id TEXT NOT NULL, credential_id TEXT NOT NULL, source_ref TEXT NOT NULL,
+      generation INTEGER NOT NULL, state TEXT NOT NULL, audiences_json TEXT NOT NULL,
+      expires_at TEXT, issued_at TEXT NOT NULL, rotate_after TEXT, retired_at TEXT,
+      revoked_at TEXT, revocation_reason TEXT, key_provider TEXT NOT NULL,
+      key_id TEXT NOT NULL, key_version TEXT NOT NULL, customer_managed INTEGER NOT NULL,
+      key_attestation_sha256 TEXT, material_lineage_id TEXT,
+      material_lineage_key_id TEXT, envelope_schema_version INTEGER NOT NULL,
+      algorithm TEXT NOT NULL, wrapped_data_key TEXT NOT NULL, iv TEXT NOT NULL,
+      auth_tag TEXT NOT NULL, ciphertext TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY (tenant_id, credential_id, generation),
+      UNIQUE (tenant_id, source_ref, generation)
+    );
+    INSERT INTO secret_lifecycle_versions (
+      tenant_id, credential_id, source_ref, generation, state, audiences_json,
+      issued_at, key_provider, key_id, key_version, customer_managed,
+      key_attestation_sha256, material_lineage_id, material_lineage_key_id,
+      envelope_schema_version, algorithm, wrapped_data_key, iv, auth_tag, ciphertext, created_at
+    ) VALUES
+      ('tenant-a', 'bound-credential', 'vault://legacy/bound', 1, 'active', '["legacy"]',
+       '2026-08-01T00:00:00.000Z', 'external-vault', 'legacy-key', '1', 1,
+       '${"f".repeat(64)}', '${"b".repeat(64)}', NULL, 1, 'AES-256-GCM',
+       'wrapped-bound', 'iv-bound', 'tag-bound', 'ciphertext-bound', '2026-08-01T00:00:00.000Z'),
+      ('tenant-a', 'unattributed-credential', 'vault://legacy/unattributed', 1, 'active', '["legacy"]',
+       '2026-08-01T00:00:00.000Z', 'external-vault', 'legacy-key', '1', 1,
+       '${"f".repeat(64)}', '${"c".repeat(64)}', NULL, 1, 'AES-256-GCM',
+       'wrapped-unattributed', 'iv-unattributed', 'tag-unattributed', 'ciphertext-unattributed',
+       '2026-08-01T00:00:00.000Z');
+    CREATE TABLE secret_lifecycle_operations (
+      tenant_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, operation TEXT NOT NULL,
+      request_digest TEXT NOT NULL, request_commitment_key_id TEXT, actor_id TEXT NOT NULL,
+      credential_id TEXT NOT NULL, result_generation INTEGER NOT NULL, completed_at TEXT NOT NULL,
+      PRIMARY KEY (tenant_id, idempotency_key)
+    );
+    INSERT INTO secret_lifecycle_operations VALUES (
+      'tenant-a', 'bound-create', 'create', '${"a".repeat(64)}', 'secret-request-v1',
+      'operator-a', 'bound-credential', 1, '2026-08-01T00:00:00.000Z'
+    );
+  `);
+  interrupted.close();
+  const db = createDb(path);
+  open.push(db);
+  return { db, path };
+}
+
 function version(generation: number, ciphertext = `ciphertext-${generation}`) {
   return {
     tenantId: "tenant-a",
@@ -153,6 +202,23 @@ describe.each([
 });
 
 describe("secret lifecycle transitions", () => {
+  it("resumes lineage-key backfill after a crash that already added the nullable column", () => {
+    const { db, path } = interruptedLineageMigrationDb();
+    expect(getSecretLifecycleVersion(db, "tenant-a", "bound-credential", 1))
+      .toMatchObject({ material_lineage_key_id: "secret-request-v1" });
+    expect(getSecretLifecycleVersion(db, "tenant-a", "unattributed-credential", 1))
+      .toMatchObject({ material_lineage_key_id: null });
+
+    db.raw.close();
+    open.splice(open.indexOf(db), 1);
+    const reopened = createDb(path);
+    open.push(reopened);
+    expect(getSecretLifecycleVersion(reopened, "tenant-a", "bound-credential", 1))
+      .toMatchObject({ material_lineage_key_id: "secret-request-v1" });
+    expect(getSecretLifecycleVersion(reopened, "tenant-a", "unattributed-credential", 1))
+      .toMatchObject({ material_lineage_key_id: null });
+  });
+
   it("adds nullable attestation evidence to legacy rows and keeps it immutable", () => {
     const db = legacySecretDb();
     const row = getSecretLifecycleVersion(db, "tenant-a", "legacy-credential", 1);

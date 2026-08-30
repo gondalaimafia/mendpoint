@@ -511,3 +511,8 @@
 **Mistake:** One active HMAC key controlled both operation replay and material lineage, so rotating it broke exact replay and changed the identity of already revoked material.
 **Correction:** Keep independent versioned keyrings, verify durable evidence with its stored key ID, and give pre-split rows an explicit fail-closed compatibility path.
 **Rule:** Cryptographic key rotation never changes historical identity. Persist the purpose-specific key ID, retain verification keys for every live record, and reject the operation when required historical authority is unavailable.
+### 2026-08-30 — Schema presence does not prove migration completion
+
+**Mistake:** The lineage-key backfill ran only inside the column-add branch, so a crash after ALTER but before UPDATE made the partial migration permanent.
+**Correction:** Run authoritative NULL-row backfill independently and idempotently on every startup, preserving NULL when historical identity cannot be proven.
+**Rule:** Every multi-step migration must resume from each durable intermediate state. A newly present column is not evidence that its data migration completed.

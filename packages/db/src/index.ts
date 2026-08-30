@@ -2529,19 +2529,27 @@ function migrateSecretLifecycleAttestation(db: AppDb): void {
   }
   if (!columns.includes("material_lineage_key_id")) {
     run(db, "ALTER TABLE secret_lifecycle_versions ADD COLUMN material_lineage_key_id TEXT");
-    run(db, `UPDATE secret_lifecycle_versions AS version
-      SET material_lineage_key_id = (
-        SELECT operation.request_commitment_key_id
+  }
+  run(db, `UPDATE secret_lifecycle_versions AS version
+    SET material_lineage_key_id = (
+      SELECT operation.request_commitment_key_id
+      FROM secret_lifecycle_operations AS operation
+      WHERE operation.tenant_id = version.tenant_id
+        AND operation.credential_id = version.credential_id
+        AND operation.result_generation <= version.generation
+        AND operation.request_commitment_key_id IS NOT NULL
+      ORDER BY operation.result_generation DESC
+      LIMIT 1
+    )
+    WHERE material_lineage_key_id IS NULL
+      AND EXISTS (
+        SELECT 1
         FROM secret_lifecycle_operations AS operation
         WHERE operation.tenant_id = version.tenant_id
           AND operation.credential_id = version.credential_id
           AND operation.result_generation <= version.generation
           AND operation.request_commitment_key_id IS NOT NULL
-        ORDER BY operation.result_generation DESC
-        LIMIT 1
-      )
-      WHERE material_lineage_key_id IS NULL`);
-  }
+      )`);
   db.raw.exec(`
     CREATE TRIGGER secret_lifecycle_versions_guard_update
     BEFORE UPDATE ON secret_lifecycle_versions

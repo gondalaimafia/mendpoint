@@ -9,6 +9,7 @@
 - [x] RED: prove missing historical lineage authority fails closed and tenant or credential boundaries produce distinct fingerprints.
 - [x] GREEN: split replay and material-lineage keyrings, persist lineage key identity, and recognize migrated pre-split rows only through their retained historical replay key.
 - [x] GREEN: require production's protected configuration to supply distinct retained replay and lineage keyrings.
+- [x] GREEN: make lineage-key migration backfill independently idempotent after an interrupted column-add step.
 - [x] Run affected database, API, environment, and configuration tests, affected typechecks, and diff integrity; commit locally without pushing.
 
 #### Follow-up review
@@ -16,6 +17,7 @@
 - Every replay computes its commitment with the exact key ID stored on the immutable operation. Rotation selects the active key only for new operations; removing a historical replay key makes the old operation unavailable rather than conflicting or silently reauthorizing it.
 - New material fingerprints use a separate retained lineage keyring. Each version persists the lineage key ID, and every replacement is compared under every retained lineage key inside the rotation transaction before the current generation can retire.
 - Upgrade migration binds pre-split lineage rows to the request key recorded by the last material-changing create or rotate operation. Retained replay keys can recognize those legacy fingerprints but cannot mint new lineage identities. Unattributable legacy rows and missing retained keys fail closed.
+- The backfill now runs whenever authoritative NULL rows remain, independently of whether a prior process already added the column. Repeated startup is exact, and rows without attributable historical operation identity remain NULL and fail closed.
 - Revoked A remains revoked across A to B, revocation, independent replay-key rotation, lineage-key rotation, and attempted B to A replacement. Tenant and credential identifiers are inside the keyed canonical input, so identical plaintext across either boundary produces different durable fingerprints.
 - Production activation now requires distinct protected replay and lineage keyring JSON bindings. No key bytes, plaintext, unkeyed material digest, or reversible fingerprint is stored or logged.
 - Verification: 109 affected tests pass across database, API, repository connection, environment, and configuration suites; DB, API, and Ops typechecks pass; `git diff --check` is clean.
