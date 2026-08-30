@@ -142,7 +142,7 @@ function assessmentDigest(value: unknown): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(canonical(value), "utf8").digest("hex")}`;
 }
 
-function parseQualificationAttestation(value: unknown): CustomerQualificationAttestation | null {
+export function parseCustomerQualificationAttestation(value: unknown): CustomerQualificationAttestation | null {
   if (!isRecord(value) || !hasExactKeys(value, ATTESTATION_KEYS)) return null;
   if (
     value.schemaVersion !== CUSTOMER_QUALIFICATION_ATTESTATION_SCHEMA ||
@@ -227,7 +227,7 @@ export function computeCustomerReadiness(input: CustomerReadinessInput): Custome
     if (input.qualificationAttestation === undefined || input.qualificationAttestation === null) {
       reasons.add("qualification_attestation_missing");
     } else {
-      const attestation = parseQualificationAttestation(input.qualificationAttestation);
+      const attestation = parseCustomerQualificationAttestation(input.qualificationAttestation);
       if (!attestation) {
         reasons.add("qualification_attestation_malformed");
       } else {
@@ -298,7 +298,7 @@ export function computeCustomerReadiness(input: CustomerReadinessInput): Custome
         .sort((left, right) => left.name.localeCompare(right.name)),
       revokedEvidenceIds: revocationStateAuthoritative ? [...input.revokedEvidenceIds].sort() : null,
       trustRoots: input.trustRoots ?? null,
-      qualificationAttestation: parseQualificationAttestation(input.qualificationAttestation),
+      qualificationAttestation: parseCustomerQualificationAttestation(input.qualificationAttestation),
       sandboxReceipt: input.sandboxReceipt ?? null,
     }),
   });

@@ -16,8 +16,16 @@ export {
   type DeploymentProfile,
 } from "./env.js";
 export {
+  CUSTOMER_QUALIFICATION_BUNDLE_SCHEMA,
+  loadCustomerQualificationAuthority,
+  type CustomerQualificationAuthorityLoadReason,
+  type CustomerQualificationAuthorityLoadResult,
+  type LoadCustomerQualificationAuthorityInput,
+} from "./customer-qualification-authority.js";
+export {
   assessCustomerReadiness,
   computeCustomerReadiness,
+  parseCustomerQualificationAttestation,
   verifyCustomerSandboxReceipt,
   CUSTOMER_QUALIFICATION_ATTESTATION_SCHEMA,
   CUSTOMER_QUALIFICATION_REQUIREMENT_COUNT,
