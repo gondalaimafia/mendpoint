@@ -764,6 +764,48 @@
           "toMode": "100644"
         }
       ]
+    },
+    {
+      "rotationId": "rotation-20260830-011",
+      "kind": "runtime",
+      "issuedAt": "2026-08-30T22:22:50.000Z",
+      "expiresAt": "2026-08-31T22:22:50.000Z",
+      "basePolicySha256": "sha256:e1c13a09fd9b00b2b0f0a509f7ffec56649676a08379931508d5dadeb4f62215",
+      "proposedPolicySha256": "sha256:ce460df1f6b6f803952d7a98b4193c45db62e82889f00adf678ffd5b535b90ba",
+      "previousRotationId": "rotation-20260828-010",
+      "baseRevision": "ef5ea1be6807040023541ac74ebdec42a2d75f91",
+      "baseLedgerSha256": "sha256:5ed45d1131f5a144d0b94b9f0bf8ec5d8df53c543f76babcb5e34aca76590e20",
+      "successor": null,
+      "changes": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "fromSha256": "sha256:0f3e4c862140e6572218d5a7b9a2e0e9c9a74f51655ec7cb383d65d627654ce6",
+          "toSha256": "sha256:f9892155bf9dc282096c68aef68f36fbe167703fbe32c9beebacdc43546f1b86",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "config/production-closure-authority.json",
+          "fromSha256": "sha256:e1c13a09fd9b00b2b0f0a509f7ffec56649676a08379931508d5dadeb4f62215",
+          "toSha256": "sha256:ce460df1f6b6f803952d7a98b4193c45db62e82889f00adf678ffd5b535b90ba",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "docs/PRODUCTION_CLOSURE_MATRIX.json",
+          "fromSha256": "sha256:36c6671d454470887f1d00297c57b65fa115c3601a91ad23a98516066019b0fc",
+          "toSha256": "sha256:5081444fd01541d9061ef1e75de0796da821b8854d205ac91801706816c29fcf",
+          "fromMode": "100644",
+          "toMode": "100644"
+        },
+        {
+          "path": "scripts/production-closure-ci-workflow.test.ts",
+          "fromSha256": null,
+          "toSha256": "sha256:5325d8a7f5e6b6a840b300be2c111d81df2147b4cdf883d6a3f3b00ed0e345ef",
+          "fromMode": null,
+          "toMode": "100644"
+        }
+      ]
     }
   ]
 }
