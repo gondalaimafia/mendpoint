@@ -22,6 +22,7 @@ export type ApiKeyRow = {
   key_hash: string;
   key_prefix: string;
   tenant_id: string;
+  principal_id: string | null;
   scopes_json: string;
   created_at: string;
   last_used_at: string | null;
@@ -363,6 +364,24 @@ export type PrincipalRow = {
   audience: string | null;
   expires_at: string | null;
   revoked_at: string | null;
+  created_at: string;
+};
+
+export type IdentitySessionRow = {
+  id: string;
+  tenant_id: string;
+  principal_id: string;
+  issuer: string;
+  subject: string;
+  membership_updated_at: string;
+  auth_strength: string;
+  token_sha256: string;
+  issued_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  revoked_by_principal_id: string | null;
+  revoke_reason: string | null;
+  last_seen_at: string;
   created_at: string;
 };
 

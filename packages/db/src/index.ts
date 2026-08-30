@@ -367,6 +367,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   key_hash TEXT NOT NULL UNIQUE,
   key_prefix TEXT NOT NULL,
   tenant_id TEXT NOT NULL DEFAULT 'default',
+  principal_id TEXT,
   scopes_json TEXT NOT NULL DEFAULT '["*"]',
   created_at TEXT NOT NULL,
   last_used_at TEXT,
@@ -571,6 +572,25 @@ CREATE TABLE IF NOT EXISTS principals (
   UNIQUE (tenant_id, kind, subject)
 );
 CREATE INDEX IF NOT EXISTS principals_tenant_idx ON principals(tenant_id, kind);
+CREATE UNIQUE INDEX IF NOT EXISTS principals_id_tenant_uidx ON principals(id, tenant_id);
+CREATE TRIGGER IF NOT EXISTS api_keys_principal_tenant_insert
+BEFORE INSERT ON api_keys
+WHEN NEW.principal_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM principals
+  WHERE id = NEW.principal_id AND tenant_id = NEW.tenant_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'api_key_principal_tenant_mismatch');
+END;
+CREATE TRIGGER IF NOT EXISTS api_keys_principal_tenant_update
+BEFORE UPDATE OF principal_id, tenant_id ON api_keys
+WHEN NEW.principal_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM principals
+  WHERE id = NEW.principal_id AND tenant_id = NEW.tenant_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'api_key_principal_tenant_mismatch');
+END;
 
 CREATE TABLE IF NOT EXISTS tenant_memberships (
   tenant_id TEXT NOT NULL REFERENCES tenants(id),
@@ -589,6 +609,57 @@ CREATE TABLE IF NOT EXISTS tenant_memberships (
 );
 CREATE INDEX IF NOT EXISTS tenant_memberships_subject_idx
   ON tenant_memberships(issuer, subject, tenant_id, status);
+
+CREATE TABLE IF NOT EXISTS identity_sessions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  principal_id TEXT NOT NULL,
+  issuer TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  membership_updated_at TEXT NOT NULL,
+  auth_strength TEXT NOT NULL,
+  token_sha256 TEXT NOT NULL UNIQUE,
+  issued_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  revoked_by_principal_id TEXT,
+  revoke_reason TEXT,
+  last_seen_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  CHECK (expires_at > issued_at),
+  CHECK ((revoked_at IS NULL AND revoked_by_principal_id IS NULL AND revoke_reason IS NULL)
+    OR (revoked_at IS NOT NULL AND revoked_by_principal_id IS NOT NULL AND revoke_reason IS NOT NULL)),
+  FOREIGN KEY (principal_id, tenant_id) REFERENCES principals(id, tenant_id),
+  FOREIGN KEY (revoked_by_principal_id, tenant_id) REFERENCES principals(id, tenant_id)
+);
+CREATE INDEX IF NOT EXISTS identity_sessions_member_idx
+  ON identity_sessions(tenant_id, issuer, subject, expires_at, revoked_at);
+CREATE INDEX IF NOT EXISTS identity_sessions_principal_idx
+  ON identity_sessions(tenant_id, principal_id, expires_at, revoked_at);
+CREATE TRIGGER IF NOT EXISTS identity_sessions_identity_immutable
+BEFORE UPDATE OF tenant_id, principal_id, issuer, subject, membership_updated_at,
+  auth_strength, token_sha256, issued_at, expires_at, created_at ON identity_sessions
+BEGIN
+  SELECT RAISE(ABORT, 'identity_session_identity_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS identity_sessions_revocation_immutable
+BEFORE UPDATE OF revoked_at, revoked_by_principal_id, revoke_reason ON identity_sessions
+WHEN NOT (
+  (OLD.revoked_at IS NULL AND OLD.revoked_by_principal_id IS NULL AND OLD.revoke_reason IS NULL
+    AND NEW.revoked_at IS NOT NULL AND NEW.revoked_by_principal_id IS NOT NULL AND NEW.revoke_reason IS NOT NULL)
+  OR
+  (OLD.revoked_at = NEW.revoked_at
+    AND OLD.revoked_by_principal_id = NEW.revoked_by_principal_id
+    AND OLD.revoke_reason = NEW.revoke_reason)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'identity_session_revocation_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS identity_sessions_no_delete
+BEFORE DELETE ON identity_sessions
+BEGIN
+  SELECT RAISE(ABORT, 'identity_session_delete_forbidden');
+END;
 
 CREATE TABLE IF NOT EXISTS artifact_manifests (
   id TEXT PRIMARY KEY,
@@ -2658,6 +2729,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
     // DB that has not run this migration never touches the column in the static DDL.
     { table: "providers", name: "tenant_id", sql: "TEXT" },
     { table: "jobs", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
+    { table: "api_keys", name: "principal_id", sql: "TEXT" },
     { table: "jobs", name: "lease_owner", sql: "TEXT" },
     { table: "jobs", name: "lease_expires_at", sql: "TEXT" },
     { table: "jobs", name: "available_at", sql: "TEXT" },
@@ -4090,22 +4162,28 @@ export {
   insertEvidenceRecord,
   insertPrincipal,
   insertReviewDecision,
+  listPrincipals,
   listArtifactManifests,
   listDomainEvents,
   listEvidenceRecords,
   listReviewDecisions,
   verifyDomainEventRecordIntegrity,
+  revokePrincipal,
   verifyDomainEventIntegrity,
 } from "./trust.js";
 
 export {
   changeTenantMembershipRole,
+  claimIdentitySession,
   countActiveTenantOwners,
   createTenantMembership,
+  getIdentitySession,
   getTenantMembership,
   listTenantMemberships,
   offboardTenantMembership,
   putTenantMembership,
+  revokeIdentitySession,
+  revokeIdentitySessionsForMember,
   setTenantMembershipStatus,
 } from "./identity.js";
 
@@ -4533,6 +4611,7 @@ export function createApiKey(
     id: string;
     name: string;
     tenantId: string;
+    principalId?: string | null;
     scopes?: string[];
     createdAt: string;
   },
@@ -4542,14 +4621,16 @@ export function createApiKey(
   const keyHash = hashApiKey(token);
   run(
     db,
-    `INSERT INTO api_keys (id, name, key_hash, key_prefix, tenant_id, scopes_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO api_keys
+       (id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.name,
       keyHash,
       prefix,
       row.tenantId,
+      row.principalId ?? null,
       JSON.stringify(row.scopes ?? ["*"]),
       row.createdAt,
     ],
@@ -4569,6 +4650,7 @@ export function createApiKeyFromToken(
     id: string;
     name: string;
     tenantId: string;
+    principalId?: string | null;
     token: string;
     scopes?: string[];
     createdAt: string;
@@ -4577,14 +4659,16 @@ export function createApiKeyFromToken(
   const prefix = row.token.slice(0, 10);
   run(
     db,
-    `INSERT INTO api_keys (id, name, key_hash, key_prefix, tenant_id, scopes_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO api_keys
+       (id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.name,
       hashApiKey(row.token),
       prefix,
       row.tenantId,
+      row.principalId ?? null,
       JSON.stringify(row.scopes ?? ["*"]),
       row.createdAt,
     ],
@@ -4739,7 +4823,7 @@ export function listApiKeys(
   assertTenantScope(tenantId);
   return all<ApiKeyRow>(
     db,
-    `SELECT id, name, key_hash, key_prefix, tenant_id, scopes_json, created_at, last_used_at, revoked_at
+    `SELECT id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json, created_at, last_used_at, revoked_at
      FROM api_keys
      ${tenantId ? "WHERE tenant_id = ?" : ""}
      ORDER BY created_at DESC`,

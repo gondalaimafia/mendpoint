@@ -351,6 +351,9 @@ const {
   pilotSuccessRoutes,
   migrationPrRoutes,
   tenantMembershipRoutes,
+  servicePrincipalRoutes,
+  identitySessionRoutes,
+  scimRoutes,
 } = durableState;
 const app = new Hono<ApiEnv>();
 const startedAt = Date.now();
@@ -925,6 +928,9 @@ app.route("/design-partner-applications", designPartnerRoutes);
 app.route("/pilot-success-contracts", pilotSuccessRoutes);
 app.route("/prs", migrationPrRoutes);
 app.route("/tenants/memberships", tenantMembershipRoutes);
+app.route("/tenants/service-principals", servicePrincipalRoutes);
+app.route("/auth/sessions", identitySessionRoutes);
+app.route("/scim/v2", scimRoutes);
 const wardenPilotIntakeRoutes = createWardenPilotIntakeRoutes({ db });
 app.route("/fettler/pilot", wardenPilotIntakeRoutes);
 app.route("/warden/pilot", wardenPilotIntakeRoutes);

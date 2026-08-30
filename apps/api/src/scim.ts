@@ -1,0 +1,381 @@
+import {
+  getPrincipal,
+  getTenantMembership,
+  listTenantMemberships,
+  putTenantMembership,
+  recordAudit,
+  revokeIdentitySessionsForMember,
+  type AppDb,
+  type TenantMembershipRow,
+} from "@mendpoint/db";
+import { createHash } from "node:crypto";
+import type { Context } from "hono";
+import { Hono } from "hono";
+import type { ApiEnv } from "./auth.js";
+
+const USER_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:User";
+const PATCH_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:PatchOp";
+const LIST_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:ListResponse";
+const ERROR_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:Error";
+const MAX_BODY_BYTES = 64 * 1_024;
+type ScimRole = Exclude<TenantMembershipRow["role"], "owner">;
+const SCIM_ROLES = new Set<ScimRole>(["admin", "engineer", "viewer", "fde"]);
+
+export type ScimBinding = Readonly<{ tenantId: string; principalId: string; issuer: string }>;
+type Options = Readonly<{ db: AppDb; bindings: ReadonlyMap<string, ScimBinding>; now?: () => Date }>;
+
+function text(value: unknown, code: string, maximum: number): string {
+  if (typeof value !== "string" || !value.trim() || value.trim().length > maximum) throw new Error(code);
+  return value.trim();
+}
+
+function httpsIssuer(value: unknown): string {
+  const issuer = text(value, "scim_issuer_invalid", 2_048).replace(/\/$/, "");
+  let url: URL;
+  try { url = new URL(issuer); } catch { throw new Error("scim_issuer_invalid"); }
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+    throw new Error("scim_issuer_invalid");
+  }
+  return issuer;
+}
+
+export function scimBindingsFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): ReadonlyMap<string, ScimBinding> {
+  const raw = env.MENDPOINT_SCIM_BINDINGS_JSON?.trim();
+  if (!raw) return new Map();
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { throw new Error("scim_bindings_invalid"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("scim_bindings_invalid");
+  const document = value as { schemaVersion?: unknown; bindings?: unknown };
+  if (document.schemaVersion !== 1 || !Array.isArray(document.bindings)) throw new Error("scim_bindings_invalid");
+  const result = new Map<string, ScimBinding>();
+  for (const item of document.bindings) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("scim_bindings_invalid");
+    const row = item as Record<string, unknown>;
+    if (Object.keys(row).some((key) => !["tenantId", "principalId", "issuer"].includes(key))) {
+      throw new Error("scim_bindings_invalid");
+    }
+    const tenantId = text(row.tenantId, "scim_bindings_invalid", 255);
+    const principalId = text(row.principalId, "scim_bindings_invalid", 128);
+    const issuer = httpsIssuer(row.issuer);
+    if (result.has(tenantId)) throw new Error("scim_bindings_invalid");
+    result.set(tenantId, Object.freeze({ tenantId, principalId, issuer }));
+  }
+  return result;
+}
+
+function scimError(c: Context<ApiEnv>, status: number, detail: string, scimType?: string): Response {
+  return c.json({ schemas: [ERROR_SCHEMA], status: String(status), detail, ...(scimType ? { scimType } : {}) }, status as 400);
+}
+
+function authority(c: Context<ApiEnv>, options: Options): ScimBinding {
+  const principal = c.get("principal");
+  const trustPrincipalId = c.get("trustPrincipalId");
+  const scopes = c.get("authScopes") ?? [];
+  if (!principal || !trustPrincipalId || c.get("authMethod") !== "api_key") throw new Error("scim_authentication_required");
+  const binding = options.bindings.get(principal.tenantId);
+  if (
+    !binding ||
+    binding.principalId !== trustPrincipalId ||
+    scopes.length !== 1 ||
+    scopes[0] !== "identity:provision"
+  ) {
+    throw new Error("scim_binding_required");
+  }
+  const trust = getPrincipal(options.db, principal.tenantId, trustPrincipalId);
+  if (!trust || trust.kind !== "service" || trust.audience !== "mendpoint-scim" || trust.revoked_at) {
+    throw new Error("scim_principal_invalid");
+  }
+  return binding;
+}
+
+async function jsonBody(c: Context<ApiEnv>): Promise<Record<string, unknown>> {
+  const contentType = c.req.header("content-type")?.toLowerCase() ?? "";
+  if (!contentType.startsWith("application/scim+json") && !contentType.startsWith("application/json")) {
+    throw new Error("scim_content_type_invalid");
+  }
+  const declared = Number(c.req.header("content-length") ?? 0);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw new Error("scim_payload_too_large");
+  const raw = await c.req.text();
+  if (Buffer.byteLength(raw, "utf8") > MAX_BODY_BYTES) throw new Error("scim_payload_too_large");
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw new Error("scim_payload_invalid");
+  }
+}
+
+function userId(tenantId: string, issuer: string, subject: string): string {
+  return `scim-user-${createHash("sha256").update(`${tenantId}\n${issuer}\n${subject}`, "utf8").digest("hex").slice(0, 32)}`;
+}
+
+function version(updatedAt: string): string {
+  return `W/"${updatedAt}"`;
+}
+
+function dto(row: TenantMembershipRow) {
+  return {
+    schemas: [USER_SCHEMA],
+    id: userId(row.tenant_id, row.issuer, row.subject),
+    externalId: row.subject,
+    userName: row.email ?? row.subject,
+    displayName: row.display_name,
+    active: row.status === "active",
+    roles: [{ value: row.role, primary: true }],
+    meta: {
+      resourceType: "User",
+      created: row.created_at,
+      lastModified: row.updated_at,
+      version: version(row.updated_at),
+    },
+  };
+}
+
+function memberById(db: AppDb, binding: ScimBinding, id: string): TenantMembershipRow | undefined {
+  return listTenantMemberships(db, binding.tenantId)
+    .filter((row) => row.issuer === binding.issuer)
+    .find((row) => userId(row.tenant_id, row.issuer, row.subject) === id);
+}
+
+function role(value: unknown): ScimRole {
+  const candidate = Array.isArray(value)
+    ? (value.find((item) => item && typeof item === "object" && (item as { primary?: unknown }).primary === true) ?? value[0])
+    : value;
+  const raw = typeof candidate === "object" && candidate !== null ? (candidate as { value?: unknown }).value : candidate;
+  const normalized = text(raw, "scim_role_invalid", 32) as ScimRole;
+  if (!SCIM_ROLES.has(normalized)) throw new Error("scim_role_invalid");
+  return normalized;
+}
+
+function email(value: unknown): string {
+  const normalized = text(value, "scim_user_name_invalid", 320).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) throw new Error("scim_user_name_invalid");
+  return normalized;
+}
+
+function nextTimestamp(now: Date, previous?: string): string {
+  const value = now.getTime();
+  if (!Number.isFinite(value)) throw new Error("scim_observed_at_invalid");
+  return new Date(Math.max(value, previous ? Date.parse(previous) + 1 : value)).toISOString();
+}
+
+function requireVersion(c: Context<ApiEnv>, row: TenantMembershipRow): void {
+  if (c.req.header("if-match") !== version(row.updated_at)) throw new Error("scim_version_conflict");
+}
+
+function audit(options: Options, c: Context<ApiEnv>, binding: ScimBinding, action: string, row: TenantMembershipRow) {
+  const at = row.updated_at;
+  recordAudit(options.db, {
+    id: `audit-scim-${createHash("sha256").update(`${binding.tenantId}\n${action}\n${row.subject}\n${at}`).digest("hex").slice(0, 32)}`,
+    tenantId: binding.tenantId,
+    actor: c.get("principal")!.id,
+    principalId: binding.principalId,
+    apiKeyId: c.get("apiKeyId") ?? null,
+    requestId: c.get("requestId") ?? null,
+    action,
+    resourceType: "tenant_membership",
+    resourceId: userId(binding.tenantId, binding.issuer, row.subject),
+    metadata: { status: row.status, role: row.role, updatedAt: row.updated_at },
+  });
+}
+
+function transact<T>(db: AppDb, operation: () => T): T {
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const result = operation();
+    if (owns) db.raw.exec("COMMIT");
+    return result;
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function failure(c: Context<ApiEnv>, error: unknown): Response {
+  const code = error instanceof Error ? error.message : "scim_internal_error";
+  if (code === "scim_authentication_required") return scimError(c, 401, "SCIM authentication is required");
+  if (code === "scim_binding_required" || code === "scim_principal_invalid") return scimError(c, 403, "SCIM authority is not valid");
+  if (code === "scim_not_found") return scimError(c, 404, "Resource not found");
+  if (code === "scim_version_conflict") return scimError(c, 412, "Resource version changed", "mutability");
+  if (code === "scim_user_conflict") return scimError(c, 409, "User already exists", "uniqueness");
+  if (code === "scim_payload_too_large") return scimError(c, 413, "Payload is too large");
+  if (code.startsWith("scim_")) return scimError(c, 400, "SCIM request is invalid", "invalidValue");
+  console.error(code);
+  return scimError(c, 500, "SCIM request failed");
+}
+
+export function createScimRoutes(options: Options): Hono<ApiEnv> {
+  const routes = new Hono<ApiEnv>({ strict: false });
+  const now = options.now ?? (() => new Date());
+
+  routes.get("/Users", (c) => {
+    try {
+      const binding = authority(c, options);
+      let rows = listTenantMemberships(options.db, binding.tenantId).filter((row) => row.issuer === binding.issuer);
+      const filter = c.req.query("filter");
+      if (filter) {
+        const match = /^(userName|externalId) eq "([^"]{1,512})"$/.exec(filter);
+        if (!match) throw new Error("scim_filter_invalid");
+        rows = rows.filter((row) => match[1] === "externalId" ? row.subject === match[2] : row.email === match[2]!.toLowerCase());
+      }
+      const resources = rows.map(dto);
+      return c.json({ schemas: [LIST_SCHEMA], totalResults: resources.length, startIndex: 1, itemsPerPage: resources.length, Resources: resources });
+    } catch (error) { return failure(c, error); }
+  });
+
+  routes.get("/Users/:id", (c) => {
+    try {
+      const binding = authority(c, options);
+      const row = memberById(options.db, binding, c.req.param("id"));
+      if (!row) throw new Error("scim_not_found");
+      c.header("ETag", version(row.updated_at));
+      return c.json(dto(row));
+    } catch (error) { return failure(c, error); }
+  });
+
+  routes.post("/Users", async (c) => {
+    try {
+      const binding = authority(c, options);
+      const input = await jsonBody(c);
+      const subject = text(input.externalId, "scim_external_id_invalid", 512);
+      const requested = {
+        email: email(input.userName),
+        displayName: text(input.displayName, "scim_display_name_invalid", 200),
+        role: role(input.roles),
+        status: input.active === false ? "offboarded" as const : "active" as const,
+      };
+      const result = transact(options.db, () => {
+        const existing = getTenantMembership(options.db, binding.tenantId, binding.issuer, subject);
+        if (existing) {
+          if (
+            existing.email === requested.email && existing.display_name === requested.displayName &&
+            existing.role === requested.role && existing.status === requested.status
+          ) return { row: existing, created: false } as const;
+          throw new Error("scim_user_conflict");
+        }
+        const created = putTenantMembership(options.db, {
+          tenantId: binding.tenantId,
+          issuer: binding.issuer,
+          subject,
+          email: requested.email,
+          displayName: requested.displayName,
+          role: requested.role,
+          status: requested.status,
+          updatedAt: nextTimestamp(now()),
+        });
+        audit(options, c, binding, "scim.user.provision", created);
+        return { row: created, created: true } as const;
+      });
+      if (result.created) {
+        c.header("Location", `/scim/v2/Users/${userId(result.row.tenant_id, result.row.issuer, result.row.subject)}`);
+      }
+      c.header("ETag", version(result.row.updated_at));
+      return c.json(dto(result.row), result.created ? 201 : 200);
+    } catch (error) { return failure(c, error); }
+  });
+
+  routes.put("/Users/:id", async (c) => {
+    try {
+      const binding = authority(c, options);
+      const input = await jsonBody(c);
+      const row = transact(options.db, () => {
+        const current = memberById(options.db, binding, c.req.param("id"));
+        if (!current) throw new Error("scim_not_found");
+        if (current.role === "owner") throw new Error("scim_owner_managed_outside_scim");
+        requireVersion(c, current);
+        if (text(input.externalId, "scim_external_id_invalid", 512) !== current.subject) throw new Error("scim_external_id_immutable");
+        const updatedAt = nextTimestamp(now(), current.updated_at);
+        const updated = putTenantMembership(options.db, {
+          tenantId: binding.tenantId,
+          issuer: binding.issuer,
+          subject: current.subject,
+          email: email(input.userName),
+          displayName: text(input.displayName, "scim_display_name_invalid", 200),
+          role: role(input.roles),
+          status: input.active === false ? "offboarded" : "active",
+          updatedAt,
+        });
+        if (updated.status === "offboarded") revokeIdentitySessionsForMember(options.db, {
+          tenantId: binding.tenantId, issuer: binding.issuer, subject: current.subject,
+          actorPrincipalId: binding.principalId, reason: "scim_deactivated", revokedAt: updatedAt,
+        });
+        audit(options, c, binding, "scim.user.replace", updated);
+        return updated;
+      });
+      c.header("ETag", version(row.updated_at));
+      return c.json(dto(row));
+    } catch (error) { return failure(c, error); }
+  });
+
+  routes.patch("/Users/:id", async (c) => {
+    try {
+      const binding = authority(c, options);
+      const input = await jsonBody(c);
+      if (!Array.isArray(input.schemas) || !input.schemas.includes(PATCH_SCHEMA) || !Array.isArray(input.Operations)) {
+        throw new Error("scim_patch_invalid");
+      }
+      const row = transact(options.db, () => {
+        const current = memberById(options.db, binding, c.req.param("id"));
+        if (!current) throw new Error("scim_not_found");
+        if (current.role === "owner") throw new Error("scim_owner_managed_outside_scim");
+        requireVersion(c, current);
+        const next = { email: current.email, displayName: current.display_name, role: current.role, status: current.status };
+        for (const operation of input.Operations as unknown[]) {
+          if (!operation || typeof operation !== "object" || Array.isArray(operation)) throw new Error("scim_patch_invalid");
+          const value = operation as { op?: unknown; path?: unknown; value?: unknown };
+          if (typeof value.op !== "string" || value.op.toLowerCase() !== "replace" || typeof value.path !== "string") {
+            throw new Error("scim_patch_invalid");
+          }
+          if (value.path === "active" && typeof value.value === "boolean") next.status = value.value ? "active" : "offboarded";
+          else if (value.path === "roles") next.role = role(value.value);
+          else if (value.path === "displayName") next.displayName = text(value.value, "scim_display_name_invalid", 200);
+          else if (value.path === "userName") next.email = email(value.value);
+          else throw new Error("scim_patch_invalid");
+        }
+        const updatedAt = nextTimestamp(now(), current.updated_at);
+        const updated = putTenantMembership(options.db, {
+          tenantId: binding.tenantId, issuer: binding.issuer, subject: current.subject,
+          email: next.email, displayName: next.displayName, role: next.role, status: next.status, updatedAt,
+        });
+        if (updated.status === "offboarded") revokeIdentitySessionsForMember(options.db, {
+          tenantId: binding.tenantId, issuer: binding.issuer, subject: current.subject,
+          actorPrincipalId: binding.principalId, reason: "scim_deactivated", revokedAt: updatedAt,
+        });
+        audit(options, c, binding, "scim.user.patch", updated);
+        return updated;
+      });
+      c.header("ETag", version(row.updated_at));
+      return c.json(dto(row));
+    } catch (error) { return failure(c, error); }
+  });
+
+  routes.delete("/Users/:id", (c) => {
+    try {
+      const binding = authority(c, options);
+      transact(options.db, () => {
+        const current = memberById(options.db, binding, c.req.param("id"));
+        if (!current) throw new Error("scim_not_found");
+        if (current.role === "owner") throw new Error("scim_owner_managed_outside_scim");
+        requireVersion(c, current);
+        const updatedAt = nextTimestamp(now(), current.updated_at);
+        const updated = putTenantMembership(options.db, {
+          tenantId: binding.tenantId, issuer: binding.issuer, subject: current.subject,
+          email: current.email, displayName: current.display_name, role: current.role,
+          status: "offboarded", updatedAt,
+        });
+        revokeIdentitySessionsForMember(options.db, {
+          tenantId: binding.tenantId, issuer: binding.issuer, subject: current.subject,
+          actorPrincipalId: binding.principalId, reason: "scim_deleted", revokedAt: updatedAt,
+        });
+        audit(options, c, binding, "scim.user.delete", updated);
+      });
+      return new Response(null, { status: 204 });
+    } catch (error) { return failure(c, error); }
+  });
+
+  return routes;
+}

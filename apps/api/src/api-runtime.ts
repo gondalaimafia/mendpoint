@@ -13,6 +13,9 @@ import { createDesignPartnerApplicationRoutes } from "./design-partner-applicati
 import { createPilotSuccessContractRoutes } from "./pilot-success-contracts.js";
 import { createMigrationPrReviewRoutes } from "./review-routes.js";
 import { createTenantMembershipRoutes } from "./tenant-memberships.js";
+import { createServicePrincipalRoutes } from "./service-principals.js";
+import { createIdentitySessionRoutes } from "./identity-sessions.js";
+import { createScimRoutes, scimBindingsFromEnv } from "./scim.js";
 import { initializeApiDurableState } from "./production.js";
 import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
@@ -86,6 +89,9 @@ export function initializeApiRuntime(
       pilotSuccessRoutes: createPilotSuccessContractRoutes({ db }),
       migrationPrRoutes: createMigrationPrReviewRoutes({ db }),
       tenantMembershipRoutes: createTenantMembershipRoutes({ db }),
+      servicePrincipalRoutes: createServicePrincipalRoutes({ db }),
+      identitySessionRoutes: createIdentitySessionRoutes({ db }),
+      scimRoutes: createScimRoutes({ db, bindings: scimBindingsFromEnv(env) }),
     };
   }, env);
 }

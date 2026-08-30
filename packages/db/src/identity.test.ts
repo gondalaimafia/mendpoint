@@ -3,9 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  claimIdentitySession,
   createDb,
   getTenantMembership,
+  insertPrincipal,
   putTenantMembership,
+  revokeIdentitySession,
   setTenantMembershipStatus,
   type AppDb,
 } from "./index.js";
@@ -131,5 +134,97 @@ describe("tenant identity memberships", () => {
     expect(() =>
       putTenantMembership(db, { ...base, tenantId: "tenant-missing", role: "viewer" }),
     ).toThrow();
+  });
+
+  it("binds durable sessions to the exact tenant principal and immutable membership authority", () => {
+    const db = testDb();
+    putTenantMembership(db, {
+      tenantId: "tenant-a", issuer: "https://id.example.com", subject: "user-123",
+      email: "owner@example.com", displayName: "Owner", role: "owner", status: "active",
+      updatedAt: "2026-08-02T00:00:00.000Z",
+    });
+    insertPrincipal(db, {
+      id: "principal-human-a", tenantId: "tenant-a", kind: "human",
+      subject: "https://id.example.com|user-123", displayName: "Owner",
+      audience: "https://id.example.com", createdAt: "2026-08-02T00:00:00.000Z",
+    });
+    const session = claimIdentitySession(db, {
+      tenantId: "tenant-a", principalId: "principal-human-a", issuer: "https://id.example.com",
+      subject: "user-123", membershipUpdatedAt: "2026-08-02T00:00:00.000Z",
+      authStrength: "amr:mfa", token: "private-bearer-token",
+      issuedAt: "2026-08-02T00:00:00.000Z", expiresAt: "2026-08-02T01:00:00.000Z",
+      observedAt: "2026-08-02T00:10:00.000Z",
+    });
+    expect(JSON.stringify(session)).not.toContain("private-bearer-token");
+    expect(() => db.raw.prepare(
+      "UPDATE identity_sessions SET subject = 'other' WHERE id = ?",
+    ).run(session.id)).toThrow("identity_session_identity_immutable");
+    expect(() => db.raw.prepare(
+      "UPDATE identity_sessions SET revoked_at = ?, revoked_by_principal_id = ?, revoke_reason = ? WHERE id = ?",
+    ).run(
+      "2026-08-02T00:20:00.000Z", "principal-human-a", "logout", session.id,
+    )).not.toThrow();
+    expect(() => db.raw.prepare(
+      "UPDATE identity_sessions SET revoke_reason = 'rewritten' WHERE id = ?",
+    ).run(session.id)).toThrow("identity_session_revocation_immutable");
+    expect(() => db.raw.prepare(
+      `INSERT INTO identity_sessions
+       (id, tenant_id, principal_id, issuer, subject, membership_updated_at, auth_strength,
+        token_sha256, issued_at, expires_at, last_seen_at, created_at)
+       VALUES ('cross-tenant', 'tenant-b', 'principal-human-a', 'https://id.example.com',
+        'user-123', ?, 'amr:mfa', ?, ?, ?, ?, ?)`,
+    ).run(
+      "2026-08-02T00:00:00.000Z", "a".repeat(64), "2026-08-02T00:00:00.000Z",
+      "2026-08-02T01:00:00.000Z", "2026-08-02T00:10:00.000Z", "2026-08-02T00:10:00.000Z",
+    )).toThrow(/FOREIGN KEY/);
+  });
+
+  it("requires a current tenant-bound actor when revoking a durable session", () => {
+    const db = testDb();
+    putTenantMembership(db, {
+      tenantId: "tenant-a", issuer: "https://id.example.com", subject: "user-123",
+      email: null, displayName: "User", role: "engineer", status: "active",
+      updatedAt: "2026-08-02T00:00:00.000Z",
+    });
+    insertPrincipal(db, {
+      id: "principal-human-a", tenantId: "tenant-a", kind: "human",
+      subject: "https://id.example.com|user-123", displayName: "User",
+      audience: "https://id.example.com", createdAt: "2026-08-02T00:00:00.000Z",
+    });
+    insertPrincipal(db, {
+      id: "principal-expired-operator", tenantId: "tenant-a", kind: "service",
+      subject: "expired", displayName: "Expired", audience: "mendpoint-scim",
+      createdAt: "2026-08-02T00:00:00.000Z", expiresAt: "2026-08-02T00:05:00.000Z",
+    });
+    const session = claimIdentitySession(db, {
+      tenantId: "tenant-a", principalId: "principal-human-a", issuer: "https://id.example.com",
+      subject: "user-123", membershipUpdatedAt: "2026-08-02T00:00:00.000Z",
+      authStrength: "amr:mfa", token: "private-bearer-token",
+      issuedAt: "2026-08-02T00:00:00.000Z", expiresAt: "2026-08-02T01:00:00.000Z",
+      observedAt: "2026-08-02T00:10:00.000Z",
+    });
+    expect(() => revokeIdentitySession(db, {
+      tenantId: "tenant-a", sessionId: session.id, actorPrincipalId: "principal-expired-operator",
+      reason: "operator_revoke", revokedAt: "2026-08-02T00:10:00.000Z",
+    })).toThrow("identity_session_actor_invalid");
+    const exact = {
+      tenantId: "tenant-a",
+      sessionId: session.id,
+      actorPrincipalId: "principal-human-a",
+      reason: "human_logout",
+      revokedAt: "2026-08-02T00:10:00.000Z",
+    };
+    expect(revokeIdentitySession(db, exact)).toMatchObject({
+      revoked_at: exact.revokedAt,
+      revoked_by_principal_id: exact.actorPrincipalId,
+      revoke_reason: exact.reason,
+    });
+    expect(revokeIdentitySession(db, exact)).toMatchObject({
+      revoked_at: exact.revokedAt,
+    });
+    expect(() => revokeIdentitySession(db, {
+      ...exact,
+      reason: "rewritten",
+    })).toThrow("identity_session_revoke_conflict");
   });
 });

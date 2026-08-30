@@ -3780,19 +3780,27 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 ## 2026-08-30 GSD Plan 10-01: production human identity
 
-- [ ] Prove the literal ME-ENT-001 engineering gap against the existing OIDC, SAML, membership, trust-principal, reviewer, and offboarding paths.
-- [ ] RED: specify tenant-scoped service-principal provisioning, scope attenuation, expiry, rotation, revocation, replay, and cross-tenant denial.
-- [ ] GREEN: extend the existing principal and API-key contracts with the smallest durable service-principal administration surface; do not create a parallel identity store.
-- [ ] RED: specify revocable server-side session authority that binds tenant, issuer, subject, membership version, authentication strength, expiry, and logout/offboarding invalidation.
-- [ ] GREEN: require the production API identity path to consult that authority without weakening existing short-lived OIDC verification.
-- [ ] RED: specify SCIM 2.0 user provision, update, deactivate, reactivate, filtering, idempotent replay, stale-update rejection, tenant isolation, and last-owner protection.
-- [ ] GREEN: map SCIM lifecycle operations onto the canonical tenant membership and trust-principal contracts behind an explicit protected binding.
-- [ ] Prove mutation and failure behavior for revoked memberships, principals, sessions, credentials, and cross-tenant identifiers; keep the approved enterprise IdP drill as an external-proof leaf.
-- [ ] Run focused tests, affected typechecks, fresh and upgrade database convergence, full tests, optimized build, GA gates, dependency audit, and diff integrity.
+- [x] Prove the literal ME-ENT-001 engineering gap against the existing OIDC, SAML, membership, trust-principal, reviewer, and offboarding paths.
+- [x] RED: specify tenant-scoped service-principal provisioning, scope attenuation, expiry, rotation, revocation, replay, and cross-tenant denial.
+- [x] GREEN: extend the existing principal and API-key contracts with the smallest durable service-principal administration surface; do not create a parallel identity store.
+- [x] RED: specify revocable server-side session authority that binds tenant, issuer, subject, membership version, authentication strength, expiry, and logout/offboarding invalidation.
+- [x] GREEN: require the production API identity path to consult that authority without weakening existing short-lived OIDC verification.
+- [x] RED: specify SCIM 2.0 user provision, update, deactivate, reactivate, filtering, idempotent replay, stale-update rejection, tenant isolation, and last-owner protection.
+- [x] GREEN: map SCIM lifecycle operations onto the canonical tenant membership and trust-principal contracts behind an explicit protected binding.
+- [x] Prove mutation and failure behavior for revoked memberships, principals, sessions, credentials, and cross-tenant identifiers; keep the approved enterprise IdP drill as an external-proof leaf.
+- [x] Run focused tests, affected typechecks, fresh and upgrade database convergence, full tests, optimized build, GA gates, dependency audit, and diff integrity.
 - [ ] Obtain independent exact-head review, current-base protected CI, all six required checks, intact `enforce_admins: true`, normal merge, exact-revision deployment, and live health proof.
 
 ### Scope boundary
 
 - Plan 10-01 completes identity engineering only. It does not fabricate the approved enterprise SAML and SCIM tenant drill required for final GA evidence.
 - Plan 10-02 owns the repository-wide tenant-isolation qualification matrix; this increment adds hostile identity-boundary tests but does not promote ME-ENT-002.
-- Existing OIDC and SAML wire contracts remain compatible. Service credentials and session identifiers are never returned after creation and never written to audit metadata.
+- Existing OIDC and SAML wire contracts remain compatible. Service credential secrets are returned only once at creation, while bearer tokens and token hashes are never persisted in plaintext, returned by lifecycle reads, or written to audit metadata.
+
+### Review
+
+- The vertical tracer extends the existing `principals`, `api_keys`, and `tenant_memberships` authority rather than introducing a second identity store. Service principals receive one explicit audience, an enumerated attenuated scope set, a maximum 90-day lifetime, one-time credentials, deterministic replay denial, complete credential revocation, and tenant-bound persistence triggers.
+- Production OIDC authentication now claims a durable server-side session bound to the exact tenant, issuer, subject, trust principal, membership version, MFA evidence, token digest, issuance, and expiry. Logout, membership offboarding, and SCIM deactivation revoke that session; completed revocation evidence is immutable and conflicting replay fails closed.
+- SCIM 2.0 provisioning requires one exact protected tenant-to-principal-to-issuer binding plus a dedicated `mendpoint-scim` service principal carrying only `identity:provision`. Provision, replay, filter, replace, patch, deactivate, reactivate, and delete paths serialize their version check and write under one database transaction. Owner lifecycle remains outside SCIM.
+- Root self-review closed additional authority gaps before independent review: every human can revoke only their own OIDC session; service rotation replay reports a stable issued-credential conflict; credential-to-principal tenant binding and session revocation lineage are protected from raw drift; session revocation replay is exact; and SCIM read-check-write sequences cannot race an old ETag.
+- Verification passed: 119 focused identity and authorization checks, all 101-requirement database convergence checks exercised by the full suite, complete repository tests, full workspace typecheck, optimized 50-route production build, every GA gate, zero production dependency vulnerabilities, and diff integrity. Independent exact-head review, protected CI, merge, deployment, and the separate enterprise IdP drill remain outstanding.

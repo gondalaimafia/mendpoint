@@ -17,6 +17,7 @@ import {
 } from "jose";
 import {
   countActiveApiKeys,
+  claimIdentitySession,
   claimDelegatedRequestNonce,
   findApiKeyByToken,
   getTenantMembership,
@@ -26,7 +27,6 @@ import {
   touchApiKey,
   type AppDb,
 } from "@mendpoint/db";
-import { nowIso } from "@mendpoint/shared";
 import {
   isPublicRoute,
   type Permission,
@@ -44,6 +44,7 @@ export type ApiVariables = {
   trustPrincipalId?: string;
   authMethod?: "oidc" | "api_key";
   membershipEvidenceId?: string;
+  identitySessionId?: string;
   webhookDeliveryId?: string;
 };
 export type ApiEnv = { Variables: ApiVariables };
@@ -52,6 +53,11 @@ export type OidcIdentity = {
   issuer: string;
   subject: string;
   tenantId: string;
+  session?: Readonly<{
+    issuedAt: string;
+    expiresAt: string;
+    authStrength: string;
+  }>;
 };
 
 export type OidcVerifier = {
@@ -126,6 +132,13 @@ export function createOidcVerifier(config: OidcVerifierConfig): OidcVerifier {
         issuer,
         subject: textClaim("subject", payload.sub, 255),
         tenantId: textClaim("tenant", payload[tenantClaim], 255),
+        session: {
+          issuedAt: new Date(payload.iat! * 1_000).toISOString(),
+          expiresAt: new Date(payload.exp! * 1_000).toISOString(),
+          authStrength: amrSatisfied
+            ? `amr:${[...amr].sort().join(",")}`
+            : `acr:${acr!}`,
+        },
       };
     },
   };
@@ -200,6 +213,7 @@ export function roleFromApiKeyScopes(scopes: string[]): Role {
 
 export function scopeAllows(scopes: string[] | undefined, permission: Permission): boolean {
   if (!scopes) return false;
+  if (permission === "identity:provision") return scopes.includes(permission);
   return scopes.includes("*") || scopes.includes(permission);
 }
 
@@ -284,11 +298,14 @@ export function verifyDelegatedActor(
 
 export function createAuthMiddleware(
   db: AppDb,
-  options: { oidc?: OidcVerifier | null } = {},
+  options: { oidc?: OidcVerifier | null; now?: () => Date } = {},
 ) {
   const oidc = options.oidc === undefined ? oidcVerifierFromEnv() : options.oidc;
   const apiKeyTouchedAt = new Map<string, number>();
   return async (c: Context<ApiEnv>, next: Next) => {
+    const observedAt = (options.now ?? (() => new Date()))();
+    const observedAtMs = observedAt.getTime();
+    if (!Number.isFinite(observedAtMs)) throw new Error("auth_observed_at_invalid");
     const path = new URL(c.req.url).pathname;
     if (isExemptPath(path, c.req.method)) {
       return next();
@@ -348,10 +365,28 @@ export function createAuthMiddleware(
           subject: trustSubject,
           displayName: membership.display_name,
           audience: identity.issuer,
-          createdAt: nowIso(),
+          createdAt: observedAt.toISOString(),
         });
-        if (!activeTrustPrincipal(trustPrincipal)) {
+        if (!activeTrustPrincipal(trustPrincipal, observedAtMs)) {
           return c.json({ error: "unauthorized", message: "trust_principal_inactive" }, 401);
+        }
+        if (!identity.session && (process.env.NODE_ENV ?? "").toLowerCase() === "production") {
+          return c.json({ error: "unauthorized", message: "oidc_session_authority_required" }, 401);
+        }
+        if (identity.session) {
+          const session = claimIdentitySession(db, {
+            tenantId: identity.tenantId,
+            principalId: trustPrincipal.id,
+            issuer: identity.issuer,
+            subject: identity.subject,
+            membershipUpdatedAt: membership.updated_at,
+            authStrength: identity.session.authStrength,
+            token: raw,
+            issuedAt: identity.session.issuedAt,
+            expiresAt: identity.session.expiresAt,
+            observedAt: observedAt.toISOString(),
+          });
+          c.set("identitySessionId", session.id);
         }
         c.set("tenantId", identity.tenantId);
         c.set("principal", {
@@ -372,14 +407,15 @@ export function createAuthMiddleware(
       } catch (error) {
         return c.json({
           error: "unauthorized",
-          message: error instanceof Error && error.message === "oidc_mfa_required"
-            ? error.message
-            : "oidc_token_invalid",
+          message: error instanceof Error && (
+            error.message === "oidc_mfa_required" ||
+            error.message.startsWith("identity_session_")
+          ) ? error.message : "oidc_token_invalid",
         }, 401);
       }
     }
 
-    const touchedAt = Date.now();
+    const touchedAt = observedAtMs;
     const previousTouch = apiKeyTouchedAt.get(key.id) ?? 0;
     if (touchedAt - previousTouch >= 60_000) {
       touchApiKey(db, key.id, new Date(touchedAt).toISOString());
@@ -417,7 +453,7 @@ export function createAuthMiddleware(
           signatureSha256: createHmac("sha256", raw)
             .update(c.req.header("x-mendpoint-actor-signature") ?? "")
             .digest("hex"),
-          createdAt: nowIso(),
+          createdAt: observedAt.toISOString(),
         });
         if (!claimed) {
           return c.json(
@@ -447,7 +483,7 @@ export function createAuthMiddleware(
       if (
         !trustPrincipal ||
         trustPrincipal.kind !== "human" ||
-        !activeTrustPrincipal(trustPrincipal) ||
+        !activeTrustPrincipal(trustPrincipal, observedAtMs) ||
         !issuer ||
         !subject ||
         !membership ||
@@ -463,6 +499,16 @@ export function createAuthMiddleware(
         tenantId: key.tenant_id,
         role: membership.role,
         ...(membership.email ? { email: membership.email } : {}),
+      };
+    } else if (key.principal_id) {
+      trustPrincipal = getPrincipal(db, key.tenant_id, key.principal_id);
+      if (!trustPrincipal || trustPrincipal.kind !== "service") {
+        return c.json({ error: "unauthorized", message: "service_principal_binding_invalid" }, 401);
+      }
+      principal = {
+        id: `service:${trustPrincipal.subject}`,
+        tenantId: key.tenant_id,
+        role: "agent",
       };
     } else {
       principal = {
@@ -482,10 +528,10 @@ export function createAuthMiddleware(
         subject: key.id,
         displayName: key.name,
         audience: "mendpoint-api",
-        createdAt: nowIso(),
+        createdAt: observedAt.toISOString(),
       });
     }
-    if (!activeTrustPrincipal(trustPrincipal)) {
+    if (!activeTrustPrincipal(trustPrincipal, observedAtMs)) {
       return c.json({ error: "unauthorized", message: "trust_principal_inactive" }, 401);
     }
     c.set("tenantId", key.tenant_id);

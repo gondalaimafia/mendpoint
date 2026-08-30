@@ -6,6 +6,7 @@ import {
   listTenantMemberships,
   offboardTenantMembership,
   recordAudit,
+  revokeIdentitySessionsForMember,
   type AppDb,
   type TenantMembershipRow,
 } from "@mendpoint/db";
@@ -348,6 +349,14 @@ export function createTenantMembershipRoutes(options: TenantMembershipRoutesOpti
           updatedAt: nextTimestamp(now(), current.updated_at),
         });
         if (!row) throw new Error("tenant_membership_version_conflict");
+        revokeIdentitySessionsForMember(options.db, {
+          tenantId: actor.tenantId,
+          issuer: issuerValue,
+          subject,
+          actorPrincipalId: actor.trustPrincipalId,
+          reason: "membership_offboarded",
+          revokedAt: row.offboarded_at!,
+        });
         audit(options, c, actor, "tenant_membership.offboard", row, {
           previousRole: current.role,
           role: row.role,

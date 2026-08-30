@@ -142,6 +142,42 @@ export function getPrincipal(
   );
 }
 
+export function listPrincipals(
+  db: AppDb,
+  tenantId: string,
+  kind?: PrincipalRow["kind"],
+): PrincipalRow[] {
+  requireText("tenant_id", tenantId);
+  if (kind !== undefined && !PRINCIPAL_KINDS.has(kind)) {
+    throw new Error("principal_kind_invalid");
+  }
+  return many(
+    db,
+    `SELECT * FROM principals
+     WHERE tenant_id = ? ${kind ? "AND kind = ?" : ""}
+     ORDER BY created_at, id`,
+    kind ? [tenantId, kind] : [tenantId],
+  );
+}
+
+export function revokePrincipal(
+  db: AppDb,
+  input: { tenantId: string; principalId: string; revokedAt: string },
+): PrincipalRow | undefined {
+  requireText("tenant_id", input.tenantId);
+  requireText("principal_id", input.principalId);
+  if (!Number.isFinite(Date.parse(input.revokedAt)) || new Date(input.revokedAt).toISOString() !== input.revokedAt) {
+    throw new Error("principal_revoked_at_invalid");
+  }
+  const result = db.raw.prepare(
+    `UPDATE principals SET revoked_at = ?
+     WHERE tenant_id = ? AND id = ? AND revoked_at IS NULL`,
+  ).run(input.revokedAt, input.tenantId, input.principalId);
+  return result.changes === 1
+    ? getPrincipal(db, input.tenantId, input.principalId)
+    : undefined;
+}
+
 export function insertArtifactManifest(
   db: AppDb,
   input: {
