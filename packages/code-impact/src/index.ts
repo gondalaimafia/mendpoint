@@ -713,6 +713,12 @@ export async function analyzeImpactWithSoftwareGraph(
   options: AnalyzeImpactWithSoftwareGraphOptions,
 ) {
   const endpointSurfaces = surfaces.filter((surface) => surface.path);
+  const endpointKeys = new Set(endpointSurfaces.map(
+    (surface) => `${(surface.method ?? "ANY").toUpperCase()} ${surface.path}`,
+  ));
+  if (endpointKeys.size !== 1) {
+    throw new Error("software_graph_single_endpoint_required");
+  }
   const endpointSurface = endpointSurfaces[0];
   if (!endpointSurface?.path) throw new Error("software_graph_endpoint_surface_required");
   const sdkContext = sdkContextFromSurfaces(surfaces, options.impact?.sdkHints);

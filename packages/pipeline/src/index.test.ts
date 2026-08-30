@@ -36,7 +36,6 @@ import { applyPrFeedback, runChangePipeline } from "./index.js";
 import {
   getSoftwareGraphHead,
   openGraphLearnMemory,
-  readSoftwareGraphVersion,
   resetGraphLearnDbForTests,
   type GraphLearnDb,
 } from "@mendpoint/graph-learn";
@@ -82,6 +81,21 @@ function seedProviderVersions() {
     });
   }
   return db;
+}
+
+function restrictProviderVersionsToCharges(db: ReturnType<typeof seedProviderVersions>, providerId: string): void {
+  for (const [versionLabel, file] of [
+    ["1.0.0", "openapi-v1.json"],
+    ["2.0.0", "openapi-v2.json"],
+  ] as const) {
+    const spec = JSON.parse(readFileSync(join(acme, file), "utf8")) as {
+      paths: Record<string, unknown>;
+    };
+    spec.paths = { "/v1/charges": spec.paths["/v1/charges"] };
+    db.raw.prepare(
+      "UPDATE api_versions SET openapi_json = ? WHERE provider_id = ? AND version_label = ?",
+    ).run(JSON.stringify(spec), providerId, versionLabel);
+  }
 }
 
 function addMonitoredConsumer(
@@ -288,6 +302,7 @@ describe("pipeline", () => {
     const provider = db.raw
       .prepare("SELECT id FROM providers WHERE slug = ?")
       .get("acme-payments") as { id: string };
+    restrictProviderVersionsToCharges(db, provider.id);
     addMonitoredConsumer(db, provider.id, { name: "Shop", repo: "shop", localPath: shop });
     const deliveryRoot = join(tmpdir(), `mendpoint-pipe-graph-fail-${Date.now()}-${Math.random()}`);
     dirs.push(deliveryRoot);
@@ -326,6 +341,7 @@ describe("pipeline", () => {
     const provider = db.raw
       .prepare("SELECT id FROM providers WHERE slug = ?")
       .get("acme-payments") as { id: string };
+    restrictProviderVersionsToCharges(db, provider.id);
     const consumerId = addMonitoredConsumer(db, provider.id, {
       name: "Fallback Shop",
       repo: "fallback-shop",
@@ -565,6 +581,77 @@ describe("pipeline", () => {
     }, 15_000);
   }
 
+  it("binds early budget abstention replay to changed repository content", async () => {
+    const dir = join(tmpdir(), `mendpoint-budget-identity-${Date.now()}-${Math.random()}`);
+    const repoDir = join(dir, "shop");
+    mkdirSync(dir, { recursive: true });
+    cpSync(shop, repoDir, { recursive: true });
+    dirs.push(dir);
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    restrictProviderVersionsToCharges(db, provider.id);
+    addMonitoredConsumer(db, provider.id, {
+      name: "Identity budget shop",
+      repo: "identity-budget-shop",
+      localPath: repoDir,
+    });
+    const previous = process.env.GRAPH_LEARN_DB;
+    delete process.env.GRAPH_LEARN_DB;
+    try {
+      const common = {
+        tenantId: "tenant_default",
+        providerSlug: "acme-payments",
+        db,
+        github: new MockGitHubDelivery(join(dir, "delivery")),
+        persistIndex: false,
+        rawRetrievalBounds: { maxFiles: 1 },
+        contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+        securityScanAttested: true,
+      };
+      const first = await runChangePipeline(common);
+      const readDecisions = () => listArtifactManifests(
+        db,
+        "tenant_default",
+        "fettler-raw-retrieval-fallback",
+      ).map((artifact) => (JSON.parse(artifact.content_text!) as {
+        decision: {
+          decisionDigest: string;
+          repositorySnapshotId: string;
+          repositoryRevision: string;
+          repositoryContentDigest: string;
+        };
+      }).decision);
+      const firstDecision = readDecisions()[0]!;
+      const readmePath = join(repoDir, "README.md");
+      const before = readFileSync(readmePath, "utf8");
+      const replacement = before.startsWith("A") ? "B" : "A";
+      writeFileSync(readmePath, `${replacement}${before.slice(1)}`, "utf8");
+      expect(readFileSync(readmePath).byteLength).toBe(Buffer.byteLength(before));
+
+      const second = await runChangePipeline(common);
+      const decisions = readDecisions();
+      expect(first.consumers[0]?.deliveryError).toBe("raw_retrieval_file_budget_exceeded");
+      expect(second.consumers[0]?.deliveryError).toBe("raw_retrieval_file_budget_exceeded");
+      expect(decisions).toHaveLength(2);
+      expect(new Set(decisions.map((decision) => decision.decisionDigest))).toHaveLength(2);
+      expect(new Set(decisions.map((decision) => decision.repositorySnapshotId))).toHaveLength(2);
+      expect(new Set(decisions.map((decision) => decision.repositoryRevision))).toHaveLength(2);
+      expect(new Set(decisions.map((decision) => decision.repositoryContentDigest))).toHaveLength(2);
+      expect(decisions).toContainEqual(firstDecision);
+      expect(listEvidenceRecords(db, "tenant_default", "api_change", first.changeId).filter(
+        (evidence) => evidence.tool === "mendpoint-raw-retrieval-fallback",
+      )).toHaveLength(2);
+      expect(listDomainEvents(db, "tenant_default", "api_change", first.changeId).filter(
+        (event) => event.event_type === "change_graph.raw_retrieval_recorded",
+      )).toHaveLength(2);
+    } finally {
+      if (previous === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = previous;
+    }
+  }, 15_000);
+
   it("applies the same bounds when a change has no endpoint surface", async () => {
     const db = seedProviderVersions();
     const provider = db.raw
@@ -738,21 +825,33 @@ describe("pipeline", () => {
     expect(report.consumers.length).toBe(1);
     expect(report.consumers[0].findings).toBeGreaterThan(0);
     expect(report.consumers[0].candidates).toBeGreaterThan(0);
-    expect(report.consumers[0].graphVersionId).toMatch(/^sgv1:[a-f0-9]{64}$/);
-    expect(readSoftwareGraphVersion(
+    expect(report.consumers[0].graphVersionId).toBeUndefined();
+    expect(getSoftwareGraphHead(
       graphDb,
       "tenant_default",
       consumerRepoId,
-      report.consumers[0].graphVersionId!,
-    ).repositoryId).toBe(consumerRepoId);
-    expect(report.consumers[0].graphContextArtifactId).toMatch(/^artifact_/);
+      providerId,
+    )).toBeUndefined();
+    expect(report.consumers[0].graphContextArtifactId).toBeUndefined();
     expect(report.consumers[0].prStatus).toBe("draft");
     expect(listPrs(db).length).toBe(1);
     expect(listAudit(db).some((a) => a.action === "change.normalized")).toBe(true);
     expect(listAudit(db).some((a) => a.action === "pr.draft_opened")).toBe(true);
     const graphAnalyzed = listAudit(db).find((event) => event.action === "impact.analyzed");
     expect(graphAnalyzed).toBeDefined();
-    expect(JSON.parse(graphAnalyzed!.metadata_json!).fallback).toBeUndefined();
+    expect(JSON.parse(graphAnalyzed!.metadata_json!).fallback).toBe("raw_retrieval");
+    const storedFindings = listFindingsForChange(db, report.changeId, "tenant_default")
+      .map((finding) => JSON.parse(finding.evidence_json) as {
+        surfaceIds?: string[];
+        relatedOps?: string[];
+      });
+    expect(storedFindings.length).toBeGreaterThan(0);
+    expect(storedFindings.every(
+      (finding) => (finding.surfaceIds?.length ?? 0) < report.surfaces,
+    )).toBe(true);
+    expect(storedFindings.some(
+      (finding) => !(finding.relatedOps ?? []).includes("path_added"),
+    )).toBe(true);
 
     const prId = report.consumers[0].prId!;
     const artifacts = listArtifactManifests(db, "tenant_default");
@@ -762,9 +861,10 @@ describe("pipeline", () => {
         "candidate-edit",
         "verification-result",
         "structured-pr-package",
-        "fettler-change-graph-context",
       ]),
     );
+    expect(artifacts.some((artifact) => artifact.kind === "fettler-change-graph-context"))
+      .toBe(false);
     expect(artifacts.every((artifact) => artifact.content_text)).toBe(true);
     const structuredPackage = JSON.parse(
       artifacts.find((artifact) => artifact.kind === "structured-pr-package")!.content_text!,
@@ -784,7 +884,7 @@ describe("pipeline", () => {
       listDomainEvents(db, "tenant_default", "api_change", report.changeId).map(
         (event) => event.event_type,
       ),
-    ).toContain("change_graph.context_recorded");
+    ).not.toContain("change_graph.context_recorded");
     expect(listDomainEvents(db, "tenant_default", "migration_pr", prId).map((event) => event.event_type)).toEqual([
       "migration_pr.candidate_recorded",
       "migration_pr.package_recorded",
@@ -799,8 +899,7 @@ describe("pipeline", () => {
     expect(delivered.body).toContain("#### Verification results");
     expect(delivered.body).toContain("Automatic merge: disabled");
     expect(delivered.body).toContain("Automatic deployment: disabled");
-    expect(delivered.body).toContain("### Change Graph evidence");
-    expect(delivered.body).toContain(report.consumers[0].graphVersionId!);
+    expect(delivered.body).not.toContain("### Change Graph evidence");
     // Gap 2 provenance: the caller-attested security scan reaches the PR evidence
     // labelled as an attestation, never as an independently verified result.
     expect(delivered.body).toContain("**security-scan** _(attested, not verified)_");
@@ -1262,6 +1361,7 @@ describe("pipeline", () => {
     const provider = db.raw
       .prepare("SELECT id FROM providers WHERE slug = ?")
       .get("acme-payments") as { id: string };
+    restrictProviderVersionsToCharges(db, provider.id);
     addMonitoredConsumer(db, provider.id, {
       name: "A Shop",
       repo: "a-shop",

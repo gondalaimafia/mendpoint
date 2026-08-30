@@ -332,7 +332,7 @@ describe("Fettler software graph materializer", () => {
     expect(first.repositorySnapshotId).not.toBe(second.repositorySnapshotId);
   });
 
-  it("keeps the analysed endpoint's provider coverage complete when the diff also touches sibling endpoints", async () => {
+  it("refuses to certify sibling endpoints through one endpoint projection", async () => {
     const repoRoot = makeRepository();
     const index = buildIndex(repoRoot, { sdkContext: sdkContextFromSurfaces([surface]) });
     // The graph materializes exactly the ONE endpoint it was asked about, and the
@@ -367,10 +367,10 @@ describe("Fettler software graph materializer", () => {
     expect(providerStage).toMatchObject({ basis: "complete", omitted: 0 });
     expect(providerStage?.reasons).toBeUndefined();
 
-    // End to end, the sibling surfaces do not push the query for the analysed
-    // endpoint to partial via a provider_specification gap.
+    // End to end, one endpoint projection may not inherit or certify a sibling.
+    // The pipeline routes this shape through bounded raw retrieval instead.
     const db = openGraphLearnMemory();
-    const result = await analyzeImpactWithSoftwareGraph(repoRoot, [
+    await expect(analyzeImpactWithSoftwareGraph(repoRoot, [
       surface,
       { ...surface, id: "surface-calls", path: "/v1/calls" },
     ], {
@@ -386,8 +386,8 @@ describe("Fettler software graph materializer", () => {
       observedAt: "2026-08-17T12:00:00.000Z",
       maxCallerHops: 4,
       maxContextBytes: 8_192,
-    });
-    expect(result.graphImpact.coverage.reasons).not.toContain("provider_specification:partial");
+    })).rejects.toThrow("software_graph_single_endpoint_required");
+    expect(getSoftwareGraphHead(db, "tenant-a", "repo-a", "twilio")).toBeUndefined();
     db.raw.close();
   });
 

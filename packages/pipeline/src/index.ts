@@ -33,7 +33,8 @@ import {
 } from "@mendpoint/db";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { join, relative } from "node:path";
 
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
@@ -211,6 +212,92 @@ function classifyRawRetrievalBudgetFailure(
     });
   }
   return undefined;
+}
+
+type RawRetrievalRepositoryIdentity = Readonly<{
+  repositorySnapshotId: string;
+  repositoryRevision: string;
+  repositoryContentDigest: string;
+}>;
+
+export type RawRetrievalBudgetDecisionV1 = Readonly<{
+  schemaVersion: "mendpoint.raw-retrieval-budget-decision.v1";
+  outcome: "abstained";
+  tenantId: string;
+  repositoryId: string;
+  repositorySnapshotId: string;
+  repositoryRevision: string;
+  repositoryContentDigest: string;
+  providerId: string;
+  providerSnapshotId: string;
+  observedAt: string;
+  bounds: RawRetrievalBounds;
+  usage: Readonly<{
+    metric: RawRetrievalBudgetFailure["metric"];
+    limit: number;
+    actual: number;
+  }>;
+  failureCode: RawRetrievalBudgetFailure["failureCode"];
+  sourceCode: string;
+  graphBinding: Readonly<{ versionId: string; contentDigest: string }> | null;
+  decisionDigest: string;
+}>;
+
+const RAW_RETRIEVAL_IDENTITY_MAX_FILES = 50_000;
+const RAW_RETRIEVAL_IDENTITY_MAX_BYTES = 2_147_483_648;
+const RAW_RETRIEVAL_IDENTITY_IGNORED_DIRECTORIES = new Set([
+  ".git",
+  ".mendpoint",
+  "node_modules",
+]);
+
+function captureRawRetrievalRepositoryIdentity(repoRoot: string): RawRetrievalRepositoryIdentity {
+  const rows: Array<{ path: string; size: number; sha256: string }> = [];
+  let bytes = 0;
+  const visit = (directory: string): void => {
+    const entries = readdirSync(directory, { withFileTypes: true })
+      .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    for (const entry of entries) {
+      if (entry.isDirectory() && RAW_RETRIEVAL_IDENTITY_IGNORED_DIRECTORIES.has(entry.name)) {
+        continue;
+      }
+      const absolute = join(directory, entry.name);
+      const relativePath = relative(repoRoot, absolute).replace(/\\/g, "/");
+      const stat = lstatSync(absolute);
+      if (stat.isSymbolicLink()) throw new Error("raw_retrieval_snapshot_symlink_not_allowed");
+      if (stat.isDirectory()) {
+        visit(absolute);
+        continue;
+      }
+      if (!stat.isFile()) continue;
+      if (rows.length >= RAW_RETRIEVAL_IDENTITY_MAX_FILES) {
+        throw new Error("raw_retrieval_snapshot_file_limit_exceeded");
+      }
+      bytes += stat.size;
+      if (!Number.isSafeInteger(bytes) || bytes > RAW_RETRIEVAL_IDENTITY_MAX_BYTES) {
+        throw new Error("raw_retrieval_snapshot_byte_limit_exceeded");
+      }
+      const content = readFileSync(absolute);
+      const after = lstatSync(absolute);
+      if (content.byteLength !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) {
+        throw new Error("raw_retrieval_snapshot_changed_during_capture");
+      }
+      rows.push({
+        path: relativePath,
+        size: stat.size,
+        sha256: createHash("sha256").update(content).digest("hex"),
+      });
+    }
+  };
+  visit(repoRoot);
+  rows.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  const repositoryContentDigest = `sha256:${textDigest(JSON.stringify(rows))}`;
+  const repositoryRevision = repositoryContentDigest.slice("sha256:".length);
+  return Object.freeze({
+    repositorySnapshotId: `repository-snapshot:${repositoryRevision}`,
+    repositoryRevision,
+    repositoryContentDigest,
+  });
 }
 
 function trustId(prefix: string, ...parts: string[]): string {
@@ -1041,6 +1128,32 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     let impactReport: ImpactReport;
     let indexMaterialization: IndexMaterializationEvidence | undefined;
     let rawRetrievalFallback = false;
+    let repositoryIdentity: RawRetrievalRepositoryIdentity;
+    try {
+      repositoryIdentity = captureRawRetrievalRepositoryIdentity(repo.local_path);
+    } catch (error) {
+      const code = error instanceof Error && /^[a-z0-9._:-]{1,160}$/i.test(error.message)
+        ? error.message
+        : "raw_retrieval_snapshot_capture_failed";
+      recordAudit(db, {
+        tenantId: input.tenantId,
+        actor: "pipeline",
+        action: "graph.analysis_failed",
+        resourceType: "consumer",
+        resourceId: consumer.id,
+        metadata: { code },
+      });
+      report.consumers.push({
+        consumerId: consumer.id,
+        name: consumer.name,
+        findings: 0,
+        candidates: 0,
+        confirmed: 0,
+        prStatus: "package_failed",
+        deliveryError: code,
+      });
+      continue;
+    }
     const persistRawRetrievalBudgetFailure = (
       error: unknown,
       inputArtifactId: string,
@@ -1056,10 +1169,13 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           )
         : undefined;
       const unsignedDecision = {
-        schemaVersion: "mendpoint.raw-retrieval-budget-decision.v1",
+        schemaVersion: "mendpoint.raw-retrieval-budget-decision.v1" as const,
         outcome: "abstained" as const,
         tenantId: input.tenantId,
         repositoryId: repo.connected_repository_id ?? repo.id,
+        repositorySnapshotId: repositoryIdentity.repositorySnapshotId,
+        repositoryRevision: repositoryIdentity.repositoryRevision,
+        repositoryContentDigest: repositoryIdentity.repositoryContentDigest,
         providerId: provider.id,
         providerSnapshotId: to.id,
         observedAt: graphObservedAt,
@@ -1073,10 +1189,10 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         sourceCode: failure.sourceCode,
         graphBinding: graphHead ?? null,
       };
-      const decision = {
+      const decision: RawRetrievalBudgetDecisionV1 = Object.freeze({
         ...unsignedDecision,
         decisionDigest: `sha256:${textDigest(JSON.stringify(unsignedDecision))}`,
-      };
+      });
       const artifact = persistJsonArtifact(db, {
         tenantId: input.tenantId,
         kind: "fettler-raw-retrieval-fallback",
@@ -1113,6 +1229,9 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           outcome: decision.outcome,
           failureCode: decision.failureCode,
           usage: decision.usage,
+          repositorySnapshotId: decision.repositorySnapshotId,
+          repositoryRevision: decision.repositoryRevision,
+          repositoryContentDigest: decision.repositoryContentDigest,
           artifactId: artifact.id,
         },
       });
@@ -1142,6 +1261,9 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           outcome: decision.outcome,
           failureCode: decision.failureCode,
           usage: decision.usage,
+          repositorySnapshotId: decision.repositorySnapshotId,
+          repositoryRevision: decision.repositoryRevision,
+          repositoryContentDigest: decision.repositoryContentDigest,
           learningDestination: "graph_candidate_validation",
           modelWeightEligible: false,
         },
@@ -1149,13 +1271,19 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       });
       return failure;
     };
-    const endpointSurface = surfaces.find((surface) => surface.path);
+    const endpointSurfaces = surfaces.filter((surface) => surface.path);
+    const endpointKeys = new Set(endpointSurfaces.map(
+      (surface) => `${(surface.method ?? "ANY").toUpperCase()} ${surface.path}`,
+    ));
+    const endpointSurface = endpointKeys.size === 1 ? endpointSurfaces[0] : undefined;
     if (endpointSurface && gldb) {
       try {
         const graphAnalysis = await (input.softwareGraphAnalyzer ?? analyzeImpactWithSoftwareGraph)(repo.local_path, surfaces, {
           graphDb: gldb,
           tenantId: input.tenantId,
           repositoryId: repo.connected_repository_id ?? repo.id,
+          repositorySnapshotId: repositoryIdentity.repositorySnapshotId,
+          repositoryRevision: repositoryIdentity.repositoryRevision,
           providerId: provider.id,
           providerSnapshotId: to.id,
           providerRevision: to.version_label,
