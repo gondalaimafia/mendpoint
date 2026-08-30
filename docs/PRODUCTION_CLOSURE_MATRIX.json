@@ -1824,8 +1824,8 @@
   "issueAuthority": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-30T20:10:07.593Z",
-    "observationDigest": "sha256:750323bffce211c02bdd51d3133e0c0c3f8596c79ca675b80c2068bd96c48502",
+    "observedAt": "2026-08-30T23:49:47.272Z",
+    "observationDigest": "sha256:87e9f68ce12947e833983dd4bf68bc97e070b0c08a3b249105f3c0d967c21083",
     "issues": [
       {
         "number": 350,
@@ -1877,7 +1877,7 @@
         "owner": "gondalaimafia",
         "title": "Production closure FC 00: foundational specification and release boundaries",
         "url": "https://github.com/gondalaimafia/mendpoint/issues/430",
-        "updatedAt": "2026-08-29T19:49:18.000Z",
+        "updatedAt": "2026-08-30T23:49:26.000Z",
         "requirementIds": [
           "ME-FND-001",
           "ME-FND-002",
@@ -1945,7 +1945,7 @@
         "owner": "gondalaimafia",
         "title": "Production closure FC 04: Fettler customer proof",
         "url": "https://github.com/gondalaimafia/mendpoint/issues/433",
-        "updatedAt": "2026-08-26T03:04:16.000Z",
+        "updatedAt": "2026-08-30T23:49:27.000Z",
         "requirementIds": [
           "ME-WAR-004",
           "ME-WAR-006",
