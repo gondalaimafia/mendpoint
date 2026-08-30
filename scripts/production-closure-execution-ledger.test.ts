@@ -11,6 +11,13 @@ import {
   evaluateLedgerGate,
   serializeLedger,
 } from "./production-closure-execution-ledger.js";
+import {
+  APPROVED_PRIMARY_PLAN_CATALOG,
+  EXPECTED_WORKSTREAM_COUNTS,
+  finalQualificationReady,
+  runnableClosurePlans,
+  validateCanonicalClosureRows,
+} from "./production-closure-catalog.js";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -36,6 +43,22 @@ const REQUIRED_FIELDS = [
   "rollbackOrFailureProof",
   "publicClaimEffect",
   "externalDependency",
+  "primaryPlan",
+  "acceptanceIds",
+  "evidenceProfile",
+  "implementationEvidenceIds",
+  "testEvidenceIds",
+  "syntheticEvidenceIds",
+  "liveEvidenceIds",
+  "externalEvidenceIds",
+  "plannedEvidenceIds",
+  "rollbackEvidenceIds",
+  "supportBoundary",
+  "target",
+  "productionRevision",
+  "productionEvidenceDigest",
+  "transitionState",
+  "queueState",
 ] as const;
 
 describe("production closure execution ledger", () => {
@@ -241,5 +264,117 @@ describe("production closure execution ledger", () => {
     // regresses to that substring judge.
     expect(isTestPath("packages/foo/src/foo.spec.ts")).toBe(true);
     expect("packages/foo/src/foo.spec.ts".includes(".test.")).toBe(false);
+  });
+
+  it("binds every canonical requirement to exactly one approved primary plan", () => {
+    const catalogIds = Object.values(APPROVED_PRIMARY_PLAN_CATALOG).flat();
+    expect(catalogIds).toHaveLength(101);
+    expect(new Set(catalogIds).size).toBe(101);
+    expect([...catalogIds].sort()).toEqual([...registerIds].sort());
+    expect(Object.keys(APPROVED_PRIMARY_PLAN_CATALOG)).not.toContain("*");
+
+    for (const row of ledger.rows) {
+      expect(row.primaryPlan).toMatch(/^\d{2}-\d{2}$/);
+      expect(APPROVED_PRIMARY_PLAN_CATALOG[row.primaryPlan]).toContain(row.requirementId);
+      expect(row.acceptanceIds).toEqual([row.acceptanceId]);
+    }
+  });
+
+  it("preserves the approved workstream totals and partitions every acceptance evidence ID", () => {
+    const counts = Object.fromEntries(
+      Object.keys(EXPECTED_WORKSTREAM_COUNTS).map((workstream) => [
+        workstream,
+        ledger.rows.filter((row) => row.workstream === workstream).length,
+      ]),
+    );
+    expect(counts).toEqual(EXPECTED_WORKSTREAM_COUNTS);
+
+    for (const row of ledger.rows) {
+      const partitioned = [
+        ...row.implementationEvidenceIds,
+        ...row.testEvidenceIds,
+        ...row.syntheticEvidenceIds,
+        ...row.liveEvidenceIds,
+        ...row.externalEvidenceIds,
+        ...row.plannedEvidenceIds,
+      ];
+      const requirement = [
+        ...register.requirements,
+        ...register.additionalRegisterSets.flatMap((set) => set.requirements),
+      ].find((candidate) => candidate.id === row.requirementId) as unknown as {
+        acceptance: Array<{ id: string; evidence: Array<{ id: string }> }>;
+      };
+      expect(row.acceptanceIds).toEqual(requirement.acceptance.map((item) => item.id));
+      expect([...partitioned].sort()).toEqual(
+        requirement.acceptance.flatMap((item) => item.evidence.map((evidence) => evidence.id)).sort(),
+      );
+    }
+  });
+
+  it("fails closed on primary, acceptance, external GA, and production binding drift", () => {
+    const clean = validateCanonicalClosureRows(ledger.rows);
+    expect(clean).toEqual([]);
+
+    const target = ledger.rows.find((row) => row.requirementId === "ME-WAR-010")!;
+    const drifted = ledger.rows.map((row) => row === target
+      ? {
+          ...row,
+          primaryPlan: "*",
+          acceptanceIds: [],
+          availability: "ga" as const,
+          plannedEvidenceIds: ["planned-evidence"],
+          productionRevision: ledger.observedMainRevision,
+          productionEvidenceDigest: null,
+        }
+      : row);
+    const codes = validateCanonicalClosureRows(drifted).map((issue) => issue.code);
+    expect(codes).toContain("PRIMARY_PLAN_WILDCARD");
+    expect(codes).toContain("ACCEPTANCE_UNCOVERED");
+    expect(codes).toContain("EXTERNAL_GA_EVIDENCE_MISSING");
+    expect(codes).toContain("PRODUCTION_BINDING_INCOMPLETE");
+    expect(codes).toContain("GA_EVIDENCE_MISSING");
+    expect(codes).toContain("PLANNED_EVIDENCE_UNRESOLVED");
+  });
+
+  it("reports count, workstream, register, claim, evidence, and deployed revision drift", () => {
+    const first = ledger.rows.find((row) => row.requirementId === "ME-ING-002")!;
+    const second = ledger.rows.find((row) => row.requirementId === "ME-ENT-001")!;
+    const duplicateAndMissing = ledger.rows.map((row) =>
+      row.requirementId === second.requirementId ? first : row,
+    );
+    const ownershipCodes = validateCanonicalClosureRows(duplicateAndMissing).map((issue) => issue.code);
+    expect(ownershipCodes).toContain("REQUIREMENT_DUPLICATE");
+    expect(ownershipCodes).toContain("PRIMARY_REQUIREMENT_MISSING");
+
+    const drifted = ledger.rows.map((row) => row.requirementId === first.requirementId
+      ? {
+          ...row,
+          workstream: second.workstream,
+          implementationStatus: second.implementationStatus,
+          claimState: second.claimState,
+          target: { ...row.target, claimState: "public_limited" as const },
+          testEvidenceIds: [],
+          productionRevision: "f".repeat(40),
+          productionEvidenceDigest: `sha256:${"e".repeat(64)}`,
+        }
+      : row);
+    const driftCodes = validateCanonicalClosureRows(drifted, ledger.rows).map((issue) => issue.code);
+    expect(driftCodes).toContain("WORKSTREAM_COUNT_DRIFT");
+    expect(driftCodes).toContain("REGISTER_DRIFT");
+    expect(driftCodes).toContain("CLAIM_DRIFT");
+    expect(driftCodes).toContain("EVIDENCE_DRIFT");
+    expect(driftCodes).toContain("DEPLOYED_REVISION_DRIFT");
+  });
+
+  it("keeps unrelated queue work runnable and reserves global waiting for final qualification", () => {
+    const queue = [
+      { planId: "05-01", queueState: "repair" as const, outcome: "failed" as const, dependencies: [] },
+      { planId: "06-05", queueState: "external-proof" as const, outcome: "pending" as const, dependencies: [] },
+      { planId: "08-01", queueState: "build" as const, outcome: "pending" as const, dependencies: [] },
+      { planId: "09-01", queueState: "ship" as const, outcome: "pending" as const, dependencies: [] },
+    ];
+    expect(runnableClosurePlans(queue)).toEqual(["08-01", "09-01"]);
+    expect(finalQualificationReady(queue)).toBe(false);
+    expect(finalQualificationReady(queue.map((item) => ({ ...item, outcome: "succeeded" as const })))).toBe(true);
   });
 });
