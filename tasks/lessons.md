@@ -522,3 +522,8 @@
 **Mistake:** The lineage-key backfill ran only inside the column-add branch, so a crash after ALTER but before UPDATE made the partial migration permanent.
 **Correction:** Run authoritative NULL-row backfill independently and idempotently on every startup, preserving NULL when historical identity cannot be proven.
 **Rule:** Every multi-step migration must resume from each durable intermediate state. A newly present column is not evidence that its data migration completed.
+### 2026-08-30 — Retire every superseded production consumer
+
+**Mistake:** The customer deployment path was added while the generic CI workflow still invoked an obsolete credential and stopped Fly target, so a correct production deployment remained paired with a predictably failing legacy job.
+**Correction:** Trace the complete trigger to gate to credential to config to target to verification chain, remove the obsolete consumer, and require exactly one CI deployment target in a workflow contract test.
+**Rule:** When production authority moves, retire every superseded consumer in the same increment and test deployment-target cardinality so an old path cannot silently return.
