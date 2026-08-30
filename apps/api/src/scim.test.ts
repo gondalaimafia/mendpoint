@@ -165,6 +165,68 @@ describe("SCIM tenant lifecycle", () => {
       .toThrow("scim_binding_principal_invalid");
   });
 
+  it.each([
+    ["missing expiry", null],
+    ["malformed expiry", "not-a-timestamp"],
+    ["expired authority", "2026-08-30T12:00:00.000Z"],
+    ["overlong authority", "2026-11-28T12:00:00.001Z"],
+  ])("rejects %s during protected binding validation", (_label, expiresAt) => {
+    const value = fixture();
+    value.db.raw.prepare("UPDATE principals SET expires_at = ? WHERE tenant_id = ? AND id = ?")
+      .run(expiresAt, "tenant-a", value.service.id);
+    expect(() => validateScimBindings(value.db, value.bindings, NOW))
+      .toThrow("scim_binding_principal_invalid");
+  });
+
+  it("rejects a malformed creation time during protected binding validation", () => {
+    const value = fixture();
+    value.db.raw.prepare("UPDATE principals SET created_at = ? WHERE tenant_id = ? AND id = ?")
+      .run("not-a-timestamp", "tenant-a", value.service.id);
+    expect(() => validateScimBindings(value.db, value.bindings, NOW))
+      .toThrow("scim_binding_principal_invalid");
+  });
+
+  it.each([
+    ["missing expiry", null],
+    ["malformed expiry", "not-a-timestamp"],
+    ["expired authority", "2026-08-30T12:00:00.000Z"],
+    ["overlong authority", "2026-11-28T12:00:00.001Z"],
+  ])("rejects %s during request-time authority revalidation", async (_label, expiresAt) => {
+    const { db, key, bindings, service } = fixture();
+    db.raw.prepare("UPDATE principals SET expires_at = ? WHERE tenant_id = ? AND id = ?")
+      .run(expiresAt, "tenant-a", service.id);
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("principal", { id: "service:enterprise-scim", tenantId: "tenant-a", role: "agent" });
+      c.set("trustPrincipalId", service.id);
+      c.set("authMethod", "api_key");
+      c.set("apiKeyId", key.id);
+      c.set("authScopes", ["identity:provision"]);
+      await next();
+    });
+    app.route("/scim/v2", createScimRoutes({ db, bindings, now: () => new Date(NOW) }));
+
+    expect((await app.request("/scim/v2/Users", { headers: headers(key.token) })).status).toBe(403);
+  });
+
+  it("rejects a malformed creation time during request-time authority revalidation", async () => {
+    const { db, key, bindings, service } = fixture();
+    db.raw.prepare("UPDATE principals SET created_at = ? WHERE tenant_id = ? AND id = ?")
+      .run("not-a-timestamp", "tenant-a", service.id);
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("principal", { id: "service:enterprise-scim", tenantId: "tenant-a", role: "agent" });
+      c.set("trustPrincipalId", service.id);
+      c.set("authMethod", "api_key");
+      c.set("apiKeyId", key.id);
+      c.set("authScopes", ["identity:provision"]);
+      await next();
+    });
+    app.route("/scim/v2", createScimRoutes({ db, bindings, now: () => new Date(NOW) }));
+
+    expect((await app.request("/scim/v2/Users", { headers: headers(key.token) })).status).toBe(403);
+  });
+
   it("provisions, lists, filters, and exactly replays a user without crossing tenants", async () => {
     const { app, db, key } = fixture();
     const created = await app.request("/scim/v2/Users", {

@@ -20,12 +20,33 @@ const PATCH_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:PatchOp";
 const LIST_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:ListResponse";
 const ERROR_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:Error";
 const MAX_BODY_BYTES = 64 * 1_024;
+const MAX_AUTHORITY_LIFETIME_MS = 90 * 24 * 60 * 60 * 1_000;
 type ScimRole = Exclude<TenantMembershipRow["role"], "owner">;
 const SCIM_ROLES = new Set<ScimRole>(["admin", "engineer", "viewer", "fde"]);
 
 export { scimBindingsFromEnv };
 export type { ScimBinding };
 type Options = Readonly<{ db: AppDb; bindings: ReadonlyMap<string, ScimBinding>; now?: () => Date }>;
+
+function canonicalTimestamp(value: string | null): number | null {
+  if (value === null) return null;
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) && new Date(milliseconds).toISOString() === value
+    ? milliseconds
+    : null;
+}
+
+function activeBoundPrincipalLifetime(
+  principal: Readonly<{ created_at: string; expires_at: string | null }>,
+  observedAt: string,
+): boolean {
+  const createdAtMs = canonicalTimestamp(principal.created_at);
+  const expiresAtMs = canonicalTimestamp(principal.expires_at);
+  const observedAtMs = canonicalTimestamp(observedAt);
+  return createdAtMs !== null && expiresAtMs !== null && observedAtMs !== null &&
+    createdAtMs <= observedAtMs && expiresAtMs > observedAtMs &&
+    expiresAtMs - createdAtMs <= MAX_AUTHORITY_LIFETIME_MS;
+}
 
 function attribute(input: Record<string, unknown>, name: string): unknown {
   const matches = Object.keys(input).filter((key) => key.toLowerCase() === name.toLowerCase());
@@ -61,9 +82,9 @@ export function validateScimBindings(
       !principal ||
       principal.kind !== "service" ||
       principal.audience !== "mendpoint-scim" ||
-      principal.created_at > observedAt ||
+      !activeBoundPrincipalLifetime(principal, observedAt) ||
       principal.revoked_at !== null ||
-      (principal.expires_at !== null && principal.expires_at <= observedAt)
+      principal.expires_at === null
     ) throw new Error("scim_binding_principal_invalid");
     const activeKeys = listApiKeys(db, binding.tenantId).filter(
       (key) => key.principal_id === binding.principalId && key.created_at <= observedAt && key.revoked_at === null,
@@ -102,14 +123,15 @@ function authority(c: Context<ApiEnv>, options: Options, observedAt: Date): Scim
   }
   const observedAtMs = observedAt.getTime();
   if (!Number.isFinite(observedAtMs)) throw new Error("scim_observed_at_invalid");
+  const observedAtIso = observedAt.toISOString();
   const trust = getPrincipal(options.db, principal.tenantId, trustPrincipalId);
   if (
     !trust ||
     trust.kind !== "service" ||
     trust.audience !== "mendpoint-scim" ||
-    trust.created_at > observedAt.toISOString() ||
+    !activeBoundPrincipalLifetime(trust, observedAtIso) ||
     trust.revoked_at !== null ||
-    (trust.expires_at !== null && Date.parse(trust.expires_at) <= observedAtMs)
+    trust.expires_at === null
   ) {
     throw new Error("scim_principal_invalid");
   }
@@ -119,7 +141,7 @@ function authority(c: Context<ApiEnv>, options: Options, observedAt: Date): Scim
   if (
     !key ||
     key.principal_id !== trustPrincipalId ||
-    key.created_at > observedAt.toISOString() ||
+    key.created_at > observedAtIso ||
     key.revoked_at !== null ||
     !Array.isArray(liveScopes) ||
     liveScopes.length !== 1 ||

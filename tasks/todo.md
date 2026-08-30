@@ -3906,3 +3906,4 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 ### Review
 
 - Issue #437 is open again under the existing owner and title. The matrix now records the live `2026-08-30T20:07:33.000Z` authority timestamp. This repairs the observed `ISSUE_METADATA_MISMATCH` without promoting the unfinished identity requirements or changing their supported boundary.
+- Exact-head review found that protected SCIM binding validation still accepted null or malformed service-principal expiry and did not enforce the 90-day authority ceiling after bootstrap. Startup and every request-time authority check now require canonical finite creation and expiry timestamps, active expiry, and a creation-to-expiry lifetime no greater than 90 days. Direct null, malformed, expired, and overlong regressions cover both consumption points. The repaired identity matrix passes 78 of 78 tests, API typecheck passes, and diff integrity is clean.
