@@ -247,6 +247,16 @@
       "gatedBy": "profile-gate job reports NOT-CONFIGURED and skips the backup when unset"
     },
     {
+      "name": "MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON",
+      "type": "secret",
+      "scope": {
+        "kind": "repo"
+      },
+      "status": "optional_gated",
+      "gatedBy": "release dispatch storage, service principal provisioning, drain, heartbeat, and paging remain unopened until at least one exact catalog.release-dispatch.v1 tenant binding is configured",
+      "note": "identifier-only tenant and service-principal bindings; repository content and credentials are prohibited"
+    },
+    {
       "name": "REGAUGE_CANARY_BRANCH",
       "type": "variable",
       "scope": {

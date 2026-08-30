@@ -4094,6 +4094,7 @@ export {
   listDomainEvents,
   listEvidenceRecords,
   listReviewDecisions,
+  verifyDomainEventRecordIntegrity,
   verifyDomainEventIntegrity,
 } from "./trust.js";
 

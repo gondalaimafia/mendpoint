@@ -166,6 +166,43 @@ describe("paging adapters", () => {
       pagingEventForWorkerHeartbeat({ workerId: "w1", ok: true, stale: false }),
     ).toBeNull();
   });
+
+  it("classifies a fresh degraded release-dispatch heartbeat separately from stale", () => {
+    const event = pagingEventForWorkerHeartbeat({
+      workerId: "w1",
+      ok: false,
+      stale: false,
+      releaseDispatchDegraded: true,
+      releaseDispatchPending: 7,
+      releaseDispatchClaimed: 2,
+      releaseDispatchFailed: 3,
+      releaseDispatchExpiredClaims: 1,
+    });
+
+    expect(event).toMatchObject({
+      type: "release_dispatch_degraded",
+      severity: "critical",
+      dedupeKey: "release_dispatch_degraded:w1",
+      details: { pending: 7, claimed: 2, failed: 3, expiredClaims: 1 },
+    });
+    expect(event?.type).not.toBe("worker_heartbeat_stale");
+  });
+
+  it("preserves unknown release-dispatch counts instead of reporting false zeroes", () => {
+    expect(pagingEventForWorkerHeartbeat({
+      workerId: "w1",
+      ok: false,
+      stale: false,
+      releaseDispatchDegraded: true,
+      releaseDispatchPending: null,
+      releaseDispatchClaimed: null,
+      releaseDispatchFailed: null,
+      releaseDispatchExpiredClaims: null,
+    })).toMatchObject({
+      type: "release_dispatch_degraded",
+      details: { pending: null, claimed: null, failed: null, expiredClaims: null },
+    });
+  });
 });
 
 describe("paging best-effort wiring", () => {
@@ -193,6 +230,28 @@ describe("paging best-effort wiring", () => {
     const res = await pageWorkerHeartbeat({ workerId: "w1", ok: true, stale: false });
     expect(res).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("pages a fresh release-dispatch degradation with its own event type", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await pageWorkerHeartbeat({
+      workerId: "w1",
+      ok: false,
+      stale: false,
+      releaseDispatchDegraded: true,
+      releaseDispatchPending: 4,
+      releaseDispatchClaimed: 1,
+      releaseDispatchFailed: 2,
+      releaseDispatchExpiredClaims: 1,
+    });
+    if (!res || res.skipped) throw new Error("expected a delivered page");
+    expect(res.ok).toBe(true);
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body.type).toBe("release_dispatch_degraded");
+    expect(body.details).toEqual({ pending: 4, claimed: 1, failed: 2, expiredClaims: 1 });
   });
 
   it("pages when the readiness probe is failing (the real /ready path)", async () => {

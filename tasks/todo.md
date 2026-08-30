@@ -3692,14 +3692,14 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 ## 2026-08-30 GSD Plan 10-03: production dispatch observability and horizontal reliability
 
-- [ ] Recover only the tenant-scoped release-dispatch runtime from closed PR #507 on current `main`; keep customer activation bindings optional and leave the documented operator hold intact.
-- [ ] Add one durable operator reconciliation path for exhausted dispatches, including authenticated requeue or acknowledgement evidence, bounded retry state, exact tenant scope, and immutable failure history.
-- [ ] Provision the dispatch service principal through the existing production identity bootstrap and require its active tenant-bound identity at every event write.
-- [ ] Bind replay to tenant, dispatch, actor principal, source digest, payload digest, and exact domain-event identity; reject unknown or malformed runtime state instead of normalizing it to zero or healthy.
-- [ ] Wire the release-dispatch drainer into the real worker lifecycle with lease-generation fencing, exact claim ownership, bounded integrity verification, shutdown containment, and a test that fails when the live caller is removed.
-- [ ] Surface identifier-and-digest-only dispatch health through the existing tenant health, paging, and error-budget path without source, prompts, credentials, or raw provider payloads.
-- [ ] Verify duplicate delivery, poisoned-row recovery, crash takeover, stale lease rejection, cross-tenant denial, principal revocation, malformed configuration, unknown health, shutdown, and restored-database replay.
-- [ ] Run focused Catalog, Worker, Notify, Web, API, and Ops tests; affected typechecks; fresh and upgrade database convergence; production build; configuration checks; and `git diff --check`.
+- [x] Recover only the tenant-scoped release-dispatch runtime from closed PR #507 on current `main`; keep customer activation bindings optional and leave the documented operator hold intact.
+- [x] Add one durable operator reconciliation path for exhausted dispatches, including authenticated requeue or acknowledgement evidence, bounded retry state, exact tenant scope, and immutable failure history.
+- [x] Provision the dispatch service principal through the existing production identity bootstrap and require its active tenant-bound identity at every event write.
+- [x] Bind replay to tenant, dispatch, actor principal, source digest, payload digest, and exact domain-event identity; reject unknown or malformed runtime state instead of normalizing it to zero or healthy.
+- [x] Wire the release-dispatch drainer into the real worker lifecycle with lease-generation fencing, exact claim ownership, bounded integrity verification, shutdown containment, and a test that fails when the live caller is removed.
+- [x] Surface identifier-and-digest-only dispatch health through the existing tenant health, paging, and error-budget path without source, prompts, credentials, or raw provider payloads.
+- [x] Verify duplicate delivery, poisoned-row recovery, crash takeover, stale lease rejection, cross-tenant denial, principal revocation, malformed configuration, unknown health, shutdown, and restored-database replay.
+- [x] Run focused Catalog, Worker, Notify, Web, API, and Ops tests; affected typechecks; fresh and upgrade database convergence; production build; configuration checks; and `git diff --check`.
 - [ ] Obtain independent exact-head Codex review, rebase on current `main`, pass all six protected checks with `enforce_admins: true`, merge normally, and verify the exact Fettler production revision and capability health.
 
 ### Scope and safety
@@ -3711,4 +3711,8 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 ### Review
 
-- Pending implementation and exact-head evidence.
+- The extracted runtime remains gated only by explicit release polling or dispatch configuration. Customer profile selection alone neither opens the dispatch store nor makes the new binding a boot requirement. `MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON` is declared as identifier-only, optional gated configuration.
+- The catalog schema now converges through v5 and retains append-only acknowledgement and requeue evidence bound to the exact tenant, dispatch, lease generation, terminal time, failure code, actor, evidence digest, and idempotency key. Exact replays are stable, drift conflicts, acknowledgement removes only the matching terminal failure from actionable health, and requeue preserves immutable last-failure history.
+- The operator command resolves the exact tenant consumer, provisions the canonical service identity, holds current authority while reconciling, emits identifiers only, and cannot cross tenants. Event replay binds the actor and validates the exact local hash-chain record in bounded time.
+- The production worker calls one tested service-iteration seam. Leases fence every claim and settlement, unknown programming defects terminate under a fixed nonretryable code, corrupt cross-tenant claims abort before consumption, and unavailable backlog state becomes explicit `unknown` with null counts through heartbeat, health, and paging rather than false zeroes.
+- Verification is green: 208 affected tests across Catalog, DB, Worker, Notify, and Web; all five affected workspace typechecks; fresh, v1, v2, partial-v3, and restart migration paths; optimized 50-route production build; complete GA gate; configuration completeness; zero production dependency vulnerabilities; and `git diff --check`. Independent exact-head review, protected CI, merge, deployment, and live proof remain pending.
