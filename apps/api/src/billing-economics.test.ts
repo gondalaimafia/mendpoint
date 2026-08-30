@@ -55,6 +55,12 @@ function serializedSigningKey(keyId: string) {
   };
 }
 
+function publicSigningKey(
+  key: ReturnType<typeof serializedSigningKey>,
+): { keyId: string; publicKeySpkiBase64: string } {
+  return { keyId: key.keyId, publicKeySpkiBase64: key.publicKeySpkiBase64 };
+}
+
 afterEach(() => {
   if (originalAuth === undefined) delete process.env.API_AUTH;
   else process.env.API_AUTH = originalAuth;
@@ -331,7 +337,13 @@ describe("billing economics API routes", () => {
     });
     const oldKey = serializedSigningKey("invoice-key-old");
     const newKey = serializedSigningKey("invoice-key-new");
-    const signerFor = (keyId: string, keys: readonly ReturnType<typeof serializedSigningKey>[]) =>
+    const signerFor = (
+      keyId: string,
+      keys: readonly (
+        ReturnType<typeof serializedSigningKey> |
+        ReturnType<typeof publicSigningKey>
+      )[],
+    ) =>
       invoiceExportSignerFromEnv({
         MENDPOINT_INVOICE_EXPORT_SIGNING_KEY_ID: keyId,
         MENDPOINT_INVOICE_EXPORT_SIGNING_KEYS_JSON: JSON.stringify({
@@ -357,7 +369,7 @@ describe("billing economics API routes", () => {
       db,
       () => "2026-09-03T00:00:00.000Z",
       signerFor("invoice-key-new", [
-        oldKey,
+        publicSigningKey(oldKey),
         newKey,
       ]),
     );

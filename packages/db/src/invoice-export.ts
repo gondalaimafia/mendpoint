@@ -289,6 +289,8 @@ function sourceRows(
   tenantId: string,
   periodStart: string,
   periodEnd: string,
+  currency: string,
+  contractReference: string,
 ): UsageSourceRow[] {
   return many<UsageSourceRow>(
     db,
@@ -306,8 +308,11 @@ function sourceRows(
      WHERE usage.tenant_id = ?
        AND usage.entry_type IN ('settlement', 'adjustment', 'credit')
        AND usage.created_at >= ? AND usage.created_at < ?
+       AND price.currency = ?
+       AND price.contract_reference = ?
+       AND entitlement.contract_reference = ?
      ORDER BY usage.entry_sequence`,
-    [tenantId, periodStart, periodEnd],
+    [tenantId, periodStart, periodEnd, currency, contractReference, contractReference],
   );
 }
 
@@ -395,7 +400,14 @@ function deriveDraft(
 ): Draft {
   const integrity = reconcileUsageLedger(db, input.tenantId);
   if (!integrity.ok) throw new Error("invoice_export_usage_chain_invalid");
-  const sources = sourceRows(db, input.tenantId, input.periodStart, input.periodEnd);
+  const sources = sourceRows(
+    db,
+    input.tenantId,
+    input.periodStart,
+    input.periodEnd,
+    input.currency,
+    input.contractReference,
+  );
   if (sources.length === 0) throw new Error("invoice_export_usage_required");
   const lines = sources.map((source, index): InvoiceExportLine => {
     if (

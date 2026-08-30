@@ -45,7 +45,7 @@ const INVOICE_EXPORT_AUTHORITY_SCHEMA = "invoice-export-authority/1" as const;
 const INVOICE_EXPORT_KEYRING_SCHEMA = "invoice-export-signing-keyring/2" as const;
 
 type InvoiceSigningKey = Readonly<{
-  privateKey: KeyObject;
+  privateKey?: KeyObject;
   publicKey: KeyObject;
   publicKeySpkiBase64: string;
 }>;
@@ -61,32 +61,41 @@ function invoiceExportSigningKeys(value: string): ReadonlyMap<string, InvoiceSig
     for (const valueKey of record.keys) {
       if (!valueKey || typeof valueKey !== "object" || Array.isArray(valueKey)) return null;
       const keyRecord = valueKey as Record<string, unknown>;
-      if (Object.keys(keyRecord).sort().join(",") !==
-          "keyId,privateKeyPkcs8Base64,publicKeySpkiBase64") return null;
+      const fields = Object.keys(keyRecord).sort().join(",");
+      if (fields !== "keyId,privateKeyPkcs8Base64,publicKeySpkiBase64" &&
+          fields !== "keyId,publicKeySpkiBase64") return null;
       if (
         typeof keyRecord.keyId !== "string" ||
         !keyRecord.keyId ||
         keyRecord.keyId.trim() !== keyRecord.keyId ||
         keyRecord.keyId.length > 200 ||
-        typeof keyRecord.privateKeyPkcs8Base64 !== "string" ||
+        (keyRecord.privateKeyPkcs8Base64 !== undefined &&
+          typeof keyRecord.privateKeyPkcs8Base64 !== "string") ||
         typeof keyRecord.publicKeySpkiBase64 !== "string"
       ) return null;
-      const privateDer = Buffer.from(keyRecord.privateKeyPkcs8Base64, "base64");
+      const privateDer = keyRecord.privateKeyPkcs8Base64 === undefined
+        ? null
+        : Buffer.from(keyRecord.privateKeyPkcs8Base64, "base64");
       const publicDer = Buffer.from(keyRecord.publicKeySpkiBase64, "base64");
       if (
-        privateDer.toString("base64") !== keyRecord.privateKeyPkcs8Base64 ||
+        (privateDer !== null && privateDer.toString("base64") !== keyRecord.privateKeyPkcs8Base64) ||
         publicDer.toString("base64") !== keyRecord.publicKeySpkiBase64 ||
         keys.has(keyRecord.keyId)
       ) {
         return null;
       }
-      const privateKey = createPrivateKey({ key: privateDer, format: "der", type: "pkcs8" });
+      const privateKey = privateDer === null
+        ? undefined
+        : createPrivateKey({ key: privateDer, format: "der", type: "pkcs8" });
       const publicKey = createPublicKey({ key: publicDer, format: "der", type: "spki" });
-      if (privateKey.asymmetricKeyType !== "ed25519" || publicKey.asymmetricKeyType !== "ed25519") {
+      if ((privateKey && privateKey.asymmetricKeyType !== "ed25519") ||
+          publicKey.asymmetricKeyType !== "ed25519") {
         return null;
       }
-      const derivedPublic = createPublicKey(privateKey).export({ format: "der", type: "spki" });
-      if (!Buffer.from(derivedPublic).equals(publicDer)) return null;
+      if (privateKey) {
+        const derivedPublic = createPublicKey(privateKey).export({ format: "der", type: "spki" });
+        if (!Buffer.from(derivedPublic).equals(publicDer)) return null;
+      }
       keys.set(keyRecord.keyId, Object.freeze({
         privateKey,
         publicKey,
@@ -146,7 +155,7 @@ export function invoiceExportSignerFromEnv(
   if (!keyId || !keyringJson || !authorityJson || keyId.length > 200) return undefined;
   const keys = invoiceExportSigningKeys(keyringJson);
   const currentKey = keys?.get(keyId);
-  if (!keys || !currentKey) return undefined;
+  if (!keys || !currentKey?.privateKey) return undefined;
   const grants = invoiceExportAuthorityGrants(authorityJson);
   if (!grants) return undefined;
   return Object.freeze({
@@ -159,7 +168,7 @@ export function invoiceExportSignerFromEnv(
       grant.taxBasisPoints === input.tax.basisPoints &&
       grant.taxJurisdiction === input.tax.jurisdiction &&
       grant.taxPolicyVersion === input.tax.policyVersion),
-    sign: (payload) => signBytes(null, Buffer.from(payload, "utf8"), currentKey.privateKey).toString("base64"),
+    sign: (payload) => signBytes(null, Buffer.from(payload, "utf8"), currentKey.privateKey!).toString("base64"),
     verifyForKey: (verificationKeyId, payload, signature) => {
       const verificationKey = keys.get(verificationKeyId);
       if (!verificationKey) return false;

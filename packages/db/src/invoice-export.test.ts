@@ -269,7 +269,7 @@ describe("signed invoice exports", () => {
       id: "invoice-currency",
       idempotencyKey: "currency",
       currency: "EUR",
-    }))).toThrow("invoice_export_price_contract_mismatch");
+    }))).toThrow("invoice_export_usage_required");
     expect(() => createInvoiceExport(db, createInput({
       id: "invoice-open-period",
       idempotencyKey: "open-period",
@@ -280,7 +280,58 @@ describe("signed invoice exports", () => {
   it("prevents a source entry from appearing on a second signed invoice", () => {
     const { db } = open();
     seed(db);
-    createInvoiceExport(db, createInput());
+    createUsagePriceVersion(db, {
+      id: "price-tenant-a-eur",
+      tenantId: "tenant-a",
+      formulaVersion: "mcu-v1",
+      currency: "EUR",
+      pricePerMcuMoneyMicros: 30_000,
+      effectiveAt: PERIOD_START,
+      expiresAt: PERIOD_END,
+      contractReference: "contract-tenant-a-eur",
+      createdAt: PERIOD_START,
+    });
+    createUsageEntitlement(db, {
+      id: "entitlement-tenant-a-eur",
+      tenantId: "tenant-a",
+      priceVersionId: "price-tenant-a-eur",
+      quotaMcuMicros: 20_000_000,
+      features: ["fettler"],
+      contractReference: "contract-tenant-a-eur",
+      periodStart: PERIOD_START,
+      periodEnd: PERIOD_END,
+      createdAt: PERIOD_START,
+    });
+    const euroReservation = reserveUsage(db, {
+      id: "reservation-a-eur",
+      tenantId: "tenant-a",
+      idempotencyKey: "reserve-a-eur",
+      taskId: "task-a-eur",
+      mcuMicros: 2_000_000,
+      reason: "bounded euro work",
+      actorPrincipalId: "actor-a",
+      createdAt: "2026-08-11T10:00:00.000Z",
+    });
+    settleUsageReservation(db, {
+      id: "settlement-a-eur",
+      tenantId: "tenant-a",
+      idempotencyKey: "settle-a-eur",
+      reservationId: euroReservation.id,
+      actualMcuMicros: 1_000_000,
+      reason: "accepted euro work",
+      actorPrincipalId: "actor-a",
+      createdAt: "2026-08-11T10:01:00.000Z",
+    });
+
+    const usdInvoice = createInvoiceExport(db, createInput());
+    expect(usdInvoice.lines.map((line) => line.usageEntryId)).toEqual(["settlement-a"]);
+    const euroInvoice = createInvoiceExport(db, createInput({
+      id: "invoice-a-eur",
+      idempotencyKey: "invoice-request-a-eur",
+      currency: "EUR",
+      contractReference: "contract-tenant-a-eur",
+    }));
+    expect(euroInvoice.lines.map((line) => line.usageEntryId)).toEqual(["settlement-a-eur"]);
     expect(() => createInvoiceExport(db, createInput({
       id: "invoice-a-duplicate",
       idempotencyKey: "invoice-request-a-duplicate",
