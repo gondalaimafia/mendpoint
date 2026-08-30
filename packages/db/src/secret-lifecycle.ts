@@ -522,6 +522,7 @@ export function revokeSecretLifecycle(
       input.generation,
     );
     if (!existing) throw new Error("secret_lifecycle_version_not_found");
+    if (existing.state === "revoked") throw new Error("secret_lifecycle_already_revoked");
     const lineage = existing.material_lineage_id;
     db.raw.prepare(`
       UPDATE secret_lifecycle_versions

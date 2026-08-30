@@ -9,9 +9,10 @@ import {
   getPrincipalBySubject,
   insertPrincipal,
   listAudit,
+  putTenantMembership,
   type AppDb,
 } from "@mendpoint/db";
-import { LocalEnvelopeKeyProvider, type Role } from "@mendpoint/platform";
+import { LocalEnvelopeKeyProvider, type KeyEncryptionKeyProvider, type Role } from "@mendpoint/platform";
 import { createAuthMiddleware, createRbacMiddleware, type ApiEnv } from "./auth.js";
 import {
   createSecretBreakGlassDenialAuditMiddleware,
@@ -223,18 +224,33 @@ describe("secret lifecycle routes", () => {
     expect((await create(unrelated.token, "create-other")).status).toBe(409);
 
     const rotate = (token: string, requestId: string) => app.request(
-      "/platform/secrets/credential-a/rewrap",
+      "/platform/secrets/credential-a/rotate",
       {
         method: "POST",
         headers: authenticatedHeaders(token, requestId, "stable-rotate"),
         body: JSON.stringify({
           expectedGeneration: 1,
+          plaintext: "customer-secret-next",
           key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
         }),
       },
     );
     expect((await rotate(first.token, "rotate-one")).status).toBe(200);
     expect((await rotate(second.token, "rotate-two")).status).toBe(200);
+
+    const rewrap = (token: string, requestId: string) => app.request(
+      "/platform/secrets/credential-a/rewrap",
+      {
+        method: "POST",
+        headers: authenticatedHeaders(token, requestId, "stable-rewrap"),
+        body: JSON.stringify({
+          expectedGeneration: 2,
+          key: { provider: "local-envelope", keyId: "tenant-key", version: "1" },
+        }),
+      },
+    );
+    expect((await rewrap(first.token, "rewrap-one")).status).toBe(200);
+    expect((await rewrap(second.token, "rewrap-two")).status).toBe(200);
 
     const reveal = (token: string, requestId: string) => app.request(
       "/platform/secrets/credential-a/break-glass",
@@ -248,6 +264,17 @@ describe("secret lifecycle routes", () => {
     expect((await reveal(second.token, "break-glass-two")).status).toBe(200);
     expect((await reveal(unrelated.token, "break-glass-other")).status).toBe(409);
 
+    const revoke = (token: string, requestId: string) => app.request(
+      "/platform/secrets/credential-a/revoke",
+      {
+        method: "POST",
+        headers: authenticatedHeaders(token, requestId, "stable-revoke"),
+        body: JSON.stringify({ generation: 3, reason: "confirmed incident" }),
+      },
+    );
+    expect((await revoke(first.token, "revoke-one")).status).toBe(200);
+    expect((await revoke(second.token, "revoke-two")).status).toBe(200);
+
     const credentialPrincipal = getPrincipalBySubject(
       db,
       "tenant-a",
@@ -256,7 +283,9 @@ describe("secret lifecycle routes", () => {
     )!;
     for (const action of [
       "secret.lifecycle.create_replayed",
+      "secret.lifecycle.rotate_replayed",
       "secret.lifecycle.rewrap_replayed",
+      "secret.lifecycle.revoke_replayed",
       "secret.break_glass.replayed",
     ]) {
       const replay = listAudit(db, "tenant-a").find((event) => event.action === action);
@@ -309,6 +338,131 @@ describe("secret lifecycle routes", () => {
     expect(listAudit(db, "tenant-a").filter(
       (event) => event.action === "secret.lifecycle.rewrap_source.attempted",
     ).map((event) => event.api_key_id).sort()).toEqual([first.id, second.id].sort());
+  });
+
+  it("denies every mutation to a wildcard key without a stable authority binding", async () => {
+    const { app, db } = realAuthFixture();
+    const legacy = createApiKey(db, {
+      id: "legacy-unbound-wildcard", name: "Legacy wildcard", tenantId: "tenant-a",
+      scopes: ["*"], createdAt: "2026-08-30T00:04:00.000Z",
+    });
+    const request = (path: string, idempotencyKey: string, body: unknown) => app.request(path, {
+      method: "POST",
+      headers: authenticatedHeaders(legacy.token, idempotencyKey, idempotencyKey),
+      body: JSON.stringify(body),
+    });
+    expect((await request("/platform/secrets", "legacy-create", createBody)).status).toBe(403);
+    expect((await request("/platform/secrets/credential-a/rotate", "legacy-rotate", {
+      expectedGeneration: 1, plaintext: "replacement",
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    })).status).toBe(403);
+    expect((await request("/platform/secrets/credential-a/rewrap", "legacy-rewrap", {
+      expectedGeneration: 1,
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    })).status).toBe(403);
+    expect((await request("/platform/secrets/credential-a/revoke", "legacy-revoke", {
+      generation: 1, reason: "incident",
+    })).status).toBe(403);
+  });
+
+  it.each(["downgrade", "offboard", "revoke", "expiry"] as const)(
+    "denies break glass when durable authority suffers a concurrent %s",
+    async (change) => {
+      process.env.API_AUTH = "required";
+      const db = createDb(join(mkdtempSync(join(tmpdir(), "mp-secret-authority-race-")), "db.sqlite"));
+      open.push(db);
+      db.raw.prepare(`INSERT OR IGNORE INTO tenants
+        (id, slug, name, plan, billing_status, seat_limit, created_at)
+        VALUES ('tenant-a', 'tenant-a', 'Tenant A', 'enterprise', 'active', 20, ?)`)
+        .run("2026-08-30T00:00:00.000Z");
+      const issuer = "https://identity.example.com";
+      const subject = `race-owner-${change}`;
+      const principalId = `principal-race-owner-${change}`;
+      putTenantMembership(db, {
+        tenantId: "tenant-a", issuer, subject, email: null, displayName: "Race owner",
+        role: "owner", status: "active", updatedAt: "2026-08-30T00:00:00.000Z",
+      });
+      insertPrincipal(db, {
+        id: principalId, tenantId: "tenant-a", kind: "human",
+        subject: `${issuer}|${subject}`, displayName: "Race owner", audience: issuer,
+        createdAt: "2026-08-30T00:00:00.000Z",
+      });
+      const key = createApiKey(db, {
+        id: `race-key-${change}`, name: "Race key", tenantId: "tenant-a", scopes: ["*"],
+        authorityPrincipalId: principalId, authorityRole: "owner",
+        createdAt: "2026-08-30T00:00:00.000Z",
+      });
+      const provider = new LocalEnvelopeKeyProvider();
+      provider.putKey("tenant-a", {
+        provider: "local-envelope", keyId: "tenant-key", version: "1", customerManaged: false,
+      }, Buffer.alloc(32, 1));
+      const racingProvider: KeyEncryptionKeyProvider = {
+        provider: provider.provider,
+        enabled: true,
+        keyMaterialFingerprints: () => provider.keyMaterialFingerprints(),
+        keyMaterialFingerprint: (locator, tenantId) => provider.keyMaterialFingerprint(locator, tenantId),
+        attestKey: (locator, tenantId) => provider.attestKey(locator, tenantId),
+        wrapDataKey: (locator, tenantId, dataKey) => provider.wrapDataKey(locator, tenantId, dataKey),
+        unwrapDataKey: async (locator, tenantId, wrappedDataKey) => {
+          const dataKey = await provider.unwrapDataKey(locator, tenantId, wrappedDataKey);
+          if (change === "downgrade") {
+            db.raw.prepare(`UPDATE tenant_memberships SET role = 'viewer', updated_at = ?
+              WHERE tenant_id = ? AND issuer = ? AND subject = ?`)
+              .run("2026-08-30T00:01:00.000Z", "tenant-a", issuer, subject);
+          } else if (change === "offboard") {
+            db.raw.prepare(`UPDATE tenant_memberships SET status = 'offboarded', offboarded_at = ?, updated_at = ?
+              WHERE tenant_id = ? AND issuer = ? AND subject = ?`)
+              .run("2026-08-30T00:01:00.000Z", "2026-08-30T00:01:00.000Z", "tenant-a", issuer, subject);
+          } else if (change === "revoke") {
+            db.raw.prepare("UPDATE principals SET revoked_at = ? WHERE tenant_id = ? AND id = ?")
+              .run("2026-08-30T00:01:00.000Z", "tenant-a", principalId);
+          } else {
+            db.raw.prepare("UPDATE principals SET expires_at = ? WHERE tenant_id = ? AND id = ?")
+              .run("2026-08-30T00:01:00.000Z", "tenant-a", principalId);
+          }
+          return dataKey;
+        },
+      };
+      const app = new Hono<ApiEnv>();
+      app.use("*", async (c, next) => { c.set("requestId", `race-${change}`); await next(); });
+      app.use("*", createAuthMiddleware(db, { oidc: null }));
+      app.use("*", createRbacMiddleware());
+      app.route("/platform/secrets", createSecretLifecycleRoutes({
+        db, providers: [racingProvider], breakGlassEnabled: true,
+        requestCommitment: { keyId: "secret-request-v1", key: Buffer.alloc(32, 9) },
+      }));
+      expect((await app.request("/platform/secrets", {
+        method: "POST", headers: authenticatedHeaders(key.token, `create-${change}`, `create-${change}`),
+        body: JSON.stringify(createBody),
+      })).status).toBe(201);
+      const response = await app.request("/platform/secrets/credential-a/break-glass", {
+        method: "POST", headers: authenticatedHeaders(key.token, `reveal-${change}`, `reveal-${change}`),
+        body: JSON.stringify({ reason: "incident response" }),
+      });
+      expect(response.status).toBe(403);
+      expect(db.raw.prepare("SELECT COUNT(*) AS count FROM secret_break_glass_operations").get())
+        .toMatchObject({ count: 0 });
+    },
+  );
+
+  it("returns bounded client errors for malformed lifecycle payloads", async () => {
+    const { app } = fixture();
+    const cases = [
+      ["/platform/secrets", "{", "bad-json"],
+      ["/platform/secrets", JSON.stringify({ ...createBody, plaintext: "" }), "empty-material"],
+      ["/platform/secrets", JSON.stringify({ ...createBody, audiences: "github" }), "bad-audiences"],
+      ["/platform/secrets", JSON.stringify({ ...createBody, key: { provider: "", keyId: "k", version: "1" } }), "bad-key"],
+      ["/platform/secrets", JSON.stringify({ ...createBody, expiresAt: "2026-08-01T00:00:00.000Z", rotateAfter: "2026-08-02T00:00:00.000Z" }), "bad-order"],
+      ["/platform/secrets/credential-a/rotate", JSON.stringify({ expectedGeneration: 0, plaintext: "next", key: createBody.key }), "bad-generation"],
+      ["/platform/secrets/credential-a/rewrap", JSON.stringify({ expectedGeneration: 1.5, key: createBody.key }), "fractional-generation"],
+      ["/platform/secrets/credential-a/revoke", JSON.stringify({ generation: 1, reason: "" }), "empty-reason"],
+    ] as const;
+    for (const [path, body, idempotencyKey] of cases) {
+      const response = await app.request(path, {
+        method: "POST", headers: headers({ "Idempotency-Key": idempotencyKey }), body,
+      });
+      expect(response.status, idempotencyKey).toBe(400);
+    }
   });
 
   it("audits real authentication and RBAC break-glass denials before route dispatch", async () => {
@@ -589,7 +743,7 @@ describe("secret lifecycle routes", () => {
         body: "{",
       },
     );
-    expect(malformed.status).toBe(500);
+    expect(malformed.status).toBe(400);
     expect(listAudit(authenticated.db, "tenant-a").filter(
       (event) => event.action === "secret.break_glass.denied",
     )).toEqual([

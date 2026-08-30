@@ -319,13 +319,13 @@ describe("secret lifecycle transitions", () => {
       revoked_at: "2026-08-02T02:00:00.000Z",
       revocation_reason: "installation token exposure",
     });
-    expect(revokeSecretLifecycle(db, {
+    expect(() => revokeSecretLifecycle(db, {
       tenantId: "tenant-a",
       credentialId: "scm-credential-a",
       generation: 2,
       revokedAt: "2026-08-03T00:00:00.000Z",
       reason: "different reason",
-    })).toEqual(revoked);
+    })).toThrow("secret_lifecycle_already_revoked");
     expect(() => db.raw.prepare(
       "UPDATE secret_lifecycle_versions SET revocation_reason = 'rewritten' " +
       "WHERE tenant_id = 'tenant-a' AND credential_id = 'scm-credential-a' AND generation = 2",

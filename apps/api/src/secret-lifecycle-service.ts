@@ -77,6 +77,7 @@ export type DurableSecretLifecycleServiceOptions = Readonly<{
   apiKeyId: string | null;
   requestCommitment?: SecretLifecycleRequestCommitment;
   audit: (event: SecretLifecycleAudit) => void;
+  revalidateAuthority?: (requiredRole: "admin" | "owner") => Readonly<{ version: string }>;
   now?: () => string;
 }>;
 
@@ -231,6 +232,10 @@ export class DurableSecretLifecycleService {
     if (!ID.test(this.options.tenantId) || !ID.test(this.options.actorId)) {
       throw new Error("secret_lifecycle_authority_invalid");
     }
+    if (this.options.authorityRole !== "owner" && this.options.authorityRole !== "admin") {
+      throw new Error("secret_lifecycle_authority_required");
+    }
+    this.options.revalidateAuthority?.("admin");
   }
 
   #replay(
@@ -495,6 +500,14 @@ export class DurableSecretLifecycleService {
     }
 
     const at = this.#now();
+    const atMs = Date.parse(at);
+    const expiresAtMs = input.expiresAt === undefined ? null : Date.parse(input.expiresAt);
+    const rotateAfterMs = input.rotateAfter === undefined ? null : Date.parse(input.rotateAfter);
+    if ((expiresAtMs !== null && (!Number.isFinite(expiresAtMs) || expiresAtMs <= atMs)) ||
+        (rotateAfterMs !== null && (!Number.isFinite(rotateAfterMs) || rotateAfterMs <= atMs)) ||
+        (expiresAtMs !== null && rotateAfterMs !== null && rotateAfterMs >= expiresAtMs)) {
+      throw new Error("secret_timestamp_order_invalid");
+    }
     const attested = await attestEnvelopeKey(this.options.providers, this.options.tenantId, input.key);
     const envelope = await sealEnvelopeSecret(input.credentialId, input.plaintext, 1, attested, {
       tenantId: this.options.tenantId,
@@ -818,6 +831,7 @@ export class DurableSecretLifecycleService {
       if (existing && existing.generation !== current.generation) {
         throw new Error("secret_lifecycle_idempotency_conflict");
       }
+      const authority = this.options.revalidateAuthority?.("owner");
       const at = this.#now();
       let access: EnvelopeAccessAuditEvent | undefined;
       const plaintext = await openEnvelopeSecret(envelopeFromRow(current), {
@@ -835,6 +849,10 @@ export class DurableSecretLifecycleService {
       });
       if (!access || access.outcome !== "granted") {
         throw new Error("secret_break_glass_access_audit_missing");
+      }
+      const currentAuthority = this.options.revalidateAuthority?.("owner");
+      if (authority && currentAuthority && authority.version !== currentAuthority.version) {
+        throw new Error("secret_lifecycle_authority_changed");
       }
       const completion = completeSecretBreakGlassOperation(this.options.db, {
         tenantId: this.options.tenantId,
@@ -862,6 +880,7 @@ export class DurableSecretLifecycleService {
           keyVersion: access!.key.version,
           attestationSha256: current!.key_attestation_sha256,
           requestCommitmentKeyId: commitment.keyId,
+          authorityVersion: currentAuthority?.version ?? authority?.version ?? null,
         }, "secret.break_glass.operation"),
       });
       if (completion.replayed) {

@@ -33,6 +33,12 @@
 - [x] RED: classify locally held imported keys as Mendpoint-custodied and withhold customer-managed status without provider-authenticated custody evidence.
 - [x] GREEN: implement the smallest full-chain authority, material lineage, transactional release, revoke replay, and custody-evidence repair.
 - [x] Re-run focused and broad Platform, DB, API, auth, and SCM suites, affected typechecks, diff integrity, inspect the complete diff, and commit locally without pushing.
+- [x] RED: require current stable admin or owner authority for create, rotate, rewrap, and revoke, and reject unbound legacy wildcard keys through the real auth and RBAC middleware.
+- [x] RED: race break-glass unwrap against human downgrade, offboarding, principal revocation, and principal expiry, with no plaintext grant operation committed.
+- [x] RED: reject a second revoke under a different idempotency key without publishing contradictory reason evidence.
+- [x] GREEN: revalidate exact principal, credential principal, API-key binding, membership, role, revocation, expiry, and authority version immediately before audited plaintext release.
+- [x] GREEN: validate every lifecycle request body, locator, generation, material, array, reason, and timestamp order at the HTTP boundary with bounded 400 responses.
+- [x] Re-run focused tests, full workspace tests, typechecks, optimized build, GA gates, dependency audit, root script tests, and diff integrity; commit locally without pushing.
 
 ### Review
 
@@ -60,6 +66,7 @@
 - Break-glass completion rechecks the exact active generation, envelope key binding, and provider attestation inside the final write transaction after decryption. Concurrent revoke therefore prevents plaintext release. Revoke operations now persist versioned keyed replay evidence, audit exact replay, and audit actor or reason drift even when the target is already revoked.
 - Locally held and configured imported keys are reported as Mendpoint-custodied. Customer-managed status is accepted only from provider-authenticated attestation and cannot be asserted in local key configuration.
 - Final verification passes all 138 focused secrets regressions and all 1,462 Platform, DB, API, auth, and SCM tests across 378 suites. Platform, DB, API, and GitHub typechecks pass, and `git diff --check` is clean.
+- Final exact-head repair verification passes 52 focused lifecycle tests, all workspace package tests, all workspace typechecks, the optimized 50-route production build, GA preflight, and a zero-vulnerability production dependency audit. The complete 476-test script suite also passes when its two load-sensitive proposal-authority cases run in a bounded worker; the first all-at-once pass hit only a Vitest RPC timeout after every assertion passed.
 
 
 Observed `origin/main`: `96801a319fc3d355cb2b28b4167b83023a192042`.

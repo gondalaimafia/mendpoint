@@ -67,6 +67,7 @@ function service(db: AppDb, provider: KeyEncryptionKeyProvider, options?: {
   commitmentKey?: Buffer;
   commitmentKeyId?: string;
   commitmentConfigured?: boolean;
+  revalidateAuthority?: (requiredRole: "admin" | "owner") => Readonly<{ version: string }>;
 }) {
   return new DurableSecretLifecycleService({
     db,
@@ -99,6 +100,7 @@ function service(db: AppDb, provider: KeyEncryptionKeyProvider, options?: {
         metadata: event.metadata,
       });
     },
+    revalidateAuthority: options?.revalidateAuthority,
   });
 }
 
@@ -267,7 +269,52 @@ describe("durable secret lifecycle service", () => {
     expect(listAudit(db, "tenant-a").filter(
       (event) => event.action === "secret.lifecycle.revoked",
     )).toHaveLength(1);
+    expect(() => service(db, provider).revoke({
+      ...revoke,
+      idempotencyKey: "revoke-second-operation",
+      reason: "uncommitted replacement reason",
+    })).toThrow("secret_lifecycle_already_revoked");
+    expect(listAudit(db, "tenant-a").filter(
+      (event) => event.action === "secret.lifecycle.revoked",
+    )).toHaveLength(1);
   });
+
+  it.each(["downgrade", "offboard", "revoke", "expiry"])(
+    "revalidates durable owner authority after unwrap before %s disclosure",
+    async (change) => {
+      const { db, provider } = fixture();
+      await service(db, provider).create(createInput);
+      let authorityVersion = "authority-v1";
+      let active = true;
+      const racingProvider: KeyEncryptionKeyProvider = {
+        provider: provider.provider,
+        enabled: true,
+        keyMaterialFingerprints: () => provider.keyMaterialFingerprints(),
+        keyMaterialFingerprint: (key, tenantId) => provider.keyMaterialFingerprint(key, tenantId),
+        attestKey: (key, tenantId) => provider.attestKey(key, tenantId),
+        wrapDataKey: (key, tenantId, dataKey) => provider.wrapDataKey(key, tenantId, dataKey),
+        unwrapDataKey: async (key, tenantId, wrappedDataKey) => {
+          const dataKey = await provider.unwrapDataKey(key, tenantId, wrappedDataKey);
+          authorityVersion = `authority-${change}`;
+          active = false;
+          return dataKey;
+        },
+      };
+      const revalidateAuthority = () => {
+        if (!active) throw new Error("secret_lifecycle_authority_invalid");
+        return Object.freeze({ version: authorityVersion });
+      };
+      await expect(service(db, racingProvider, {
+        role: "owner", authorityRole: "owner", revalidateAuthority,
+      }).breakGlass({
+        credentialId: "credential-a",
+        reason: `authority ${change} race`,
+        idempotencyKey: `break-glass-${change}-race`,
+      })).rejects.toThrow("secret_lifecycle_authority_invalid");
+      expect(db.raw.prepare("SELECT COUNT(*) AS count FROM secret_break_glass_operations")
+        .get()).toMatchObject({ count: 0 });
+    },
+  );
 
   it("requires the stable current authority to be owner for break glass", async () => {
     const { db, provider } = fixture();

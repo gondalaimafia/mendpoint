@@ -1,5 +1,6 @@
 import { Hono, type Context, type Next } from "hono";
-import { recordAudit, type AppDb } from "@mendpoint/db";
+import { getPrincipal, getTenantMembership, recordAudit, type AppDb } from "@mendpoint/db";
+import { createHash } from "node:crypto";
 import type { EnvelopeKeyLocator, KeyEncryptionKeyProvider } from "@mendpoint/platform";
 import type { ApiEnv } from "./auth.js";
 import { mappedErrorResponse, type PublicErrorRule } from "./error-boundary.js";
@@ -68,6 +69,8 @@ const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "secret_lifecycle_version_not_found", publicCode: "not_found", status: 404 },
   { internalCode: "secret_lifecycle_idempotency_conflict", status: 409 },
   { internalCode: "secret_rotation_generation_conflict", status: 409 },
+  { internalCode: "secret_lifecycle_already_revoked", status: 409 },
+  { internalCode: "secret_lifecycle_authority_changed", publicCode: "forbidden", status: 403 },
   { internalCode: "vault_provider_disabled", status: 503 },
   { internalCode: "external_vault_key_not_attested", status: 503 },
   { internalCode: "vault_key_attestation_mismatch", status: 503 },
@@ -86,7 +89,132 @@ const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "secret_audiences_invalid", status: 400 },
   { internalCode: "secret_revocation_reason_required", status: 400 },
   { internalCode: "secret_break_glass_reason_required", status: 400 },
+  { internalCode: "secret_lifecycle_request_invalid", status: 400 },
+  { internalCode: "secret_generation_invalid", status: 400 },
+  { internalCode: "secret_key_reference_invalid", status: 400 },
+  { internalCode: "secret_expires_at_invalid", status: 400 },
+  { internalCode: "secret_rotate_after_invalid", status: 400 },
+  { internalCode: "secret_timestamp_order_invalid", status: 400 },
 ];
+
+const BOUNDED_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
+const SOURCE_REF = /^[a-z][a-z0-9+.-]*:\/\/[A-Za-z0-9._/@:-]+$/u;
+
+function objectBody(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("secret_lifecycle_request_invalid");
+  }
+  return value as Record<string, unknown>;
+}
+
+async function requestBody(c: Context<ApiEnv>): Promise<Record<string, unknown>> {
+  try {
+    return objectBody(await c.req.json<unknown>());
+  } catch (error) {
+    if (error instanceof Error && error.message === "secret_lifecycle_request_invalid") throw error;
+    throw new Error("secret_lifecycle_request_invalid");
+  }
+}
+
+function text(value: unknown, code: string, max = 16_384): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > max) throw new Error(code);
+  return value;
+}
+
+function identifier(value: unknown, code: string): string {
+  const result = text(value, code, 256);
+  if (!BOUNDED_ID.test(result)) throw new Error(code);
+  return result;
+}
+
+function generation(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error("secret_generation_invalid");
+  return value as number;
+}
+
+function timestamp(value: unknown, code: string): string | undefined {
+  if (value === undefined) return undefined;
+  const result = text(value, code, 64);
+  if (!Number.isFinite(Date.parse(result)) || new Date(result).toISOString() !== result) throw new Error(code);
+  return result;
+}
+
+function keyLocator(value: unknown): EnvelopeKeyLocator {
+  const key = objectBody(value);
+  return Object.freeze({
+    provider: identifier(key.provider, "secret_key_reference_invalid"),
+    keyId: identifier(key.keyId, "secret_key_reference_invalid"),
+    version: identifier(key.version, "secret_key_reference_invalid"),
+  });
+}
+
+function currentAuthorityVersion(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    actorId: string;
+    credentialPrincipalId: string;
+    apiKeyId: string | null;
+    requiredRole: "admin" | "owner";
+  }>,
+): Readonly<{ version: string }> {
+  const now = Date.now();
+  const principal = getPrincipal(db, input.tenantId, input.actorId);
+  if (!principal || principal.revoked_at !== null || Date.parse(principal.created_at) > now ||
+      (principal.expires_at !== null && Date.parse(principal.expires_at) <= now)) {
+    throw new Error("secret_lifecycle_authority_invalid");
+  }
+  const credentialPrincipal = getPrincipal(db, input.tenantId, input.credentialPrincipalId);
+  if (!credentialPrincipal || credentialPrincipal.revoked_at !== null ||
+      Date.parse(credentialPrincipal.created_at) > now ||
+      (credentialPrincipal.expires_at !== null && Date.parse(credentialPrincipal.expires_at) <= now)) {
+    throw new Error("secret_lifecycle_authority_invalid");
+  }
+  let role: string | null = null;
+  let membershipVersion: string | null = null;
+  let keyVersion: string | null = null;
+  if (input.apiKeyId) {
+    const key = db.raw.prepare(`SELECT authority_principal_id, authority_role, scopes_json,
+      created_at, revoked_at FROM api_keys WHERE id = ? AND tenant_id = ?`)
+      .get(input.apiKeyId, input.tenantId) as {
+        authority_principal_id: string | null; authority_role: string | null; scopes_json: string;
+        created_at: string; revoked_at: string | null;
+      } | undefined;
+    if (!key || key.revoked_at !== null || key.authority_principal_id !== input.actorId ||
+        (key.authority_role !== "admin" && key.authority_role !== "owner")) {
+      throw new Error("secret_lifecycle_authority_invalid");
+    }
+    const scopes = JSON.parse(key.scopes_json) as unknown;
+    if (!Array.isArray(scopes) || scopes.length === 0 || scopes.some((scope) => typeof scope !== "string")) {
+      throw new Error("secret_lifecycle_authority_invalid");
+    }
+    role = key.authority_role;
+    keyVersion = `${key.created_at}:${key.authority_principal_id}:${key.authority_role}:${key.scopes_json}`;
+  }
+  if (principal.kind === "human") {
+    if (!principal.audience || !principal.subject.startsWith(`${principal.audience}|`)) {
+      throw new Error("secret_lifecycle_authority_invalid");
+    }
+    const membership = getTenantMembership(
+      db, input.tenantId, principal.audience, principal.subject.slice(principal.audience.length + 1),
+    );
+    if (!membership || membership.status !== "active") throw new Error("secret_lifecycle_authority_invalid");
+    role = role === "admin" && membership.role === "owner" ? "admin" : membership.role;
+    membershipVersion = `${membership.role}:${membership.status}:${membership.updated_at}`;
+  }
+  if (role === null) throw new Error("secret_lifecycle_authority_invalid");
+  if (input.requiredRole === "owner" ? role !== "owner" : role !== "owner" && role !== "admin") {
+    throw new Error("secret_lifecycle_authority_required");
+  }
+  return Object.freeze({
+    version: createHash("sha256").update(JSON.stringify({
+      principal: [principal.id, principal.created_at, principal.expires_at, principal.revoked_at],
+      credentialPrincipal: [credentialPrincipal.id, credentialPrincipal.created_at,
+        credentialPrincipal.expires_at, credentialPrincipal.revoked_at],
+      role, membershipVersion, keyVersion,
+    })).digest("hex"),
+  });
+}
 
 export function createSecretLifecycleRoutes(options: Readonly<{
   db: AppDb;
@@ -129,20 +257,41 @@ export function createSecretLifecycleRoutes(options: Readonly<{
         resourceId: event.credentialId,
         metadata: event.metadata,
       }),
+      ...(c.get("authMethod") ? {
+        revalidateAuthority: (requiredRole: "admin" | "owner") => currentAuthorityVersion(options.db, {
+          tenantId: principal.tenantId,
+          actorId: c.get("authorityPrincipalId") ?? c.get("trustPrincipalId") ?? principal.id,
+          credentialPrincipalId: c.get("trustPrincipalId") ?? principal.id,
+          apiKeyId: c.get("apiKeyId") ?? null,
+          requiredRole,
+        }),
+      } : {}),
     });
   }
 
   routes.post("/", async (c) => {
     try {
-      const body = await c.req.json<{
-        credentialId: string;
-        sourceRef: string;
-        plaintext: string;
-        audiences: string[];
-        expiresAt?: string;
-        rotateAfter?: string;
-        key: EnvelopeKeyLocator;
-      }>();
+      const raw = await requestBody(c);
+      const expiresAt = timestamp(raw.expiresAt, "secret_expires_at_invalid");
+      const rotateAfter = timestamp(raw.rotateAfter, "secret_rotate_after_invalid");
+      if (expiresAt && rotateAfter && Date.parse(rotateAfter) >= Date.parse(expiresAt)) {
+        throw new Error("secret_timestamp_order_invalid");
+      }
+      if (!Array.isArray(raw.audiences) || raw.audiences.length < 1 || raw.audiences.length > 64) {
+        throw new Error("secret_audiences_invalid");
+      }
+      const audiences = raw.audiences.map((audience) => identifier(audience, "secret_audiences_invalid"));
+      const sourceRef = text(raw.sourceRef, "secret_source_reference_invalid", 512);
+      if (!SOURCE_REF.test(sourceRef)) throw new Error("secret_source_reference_invalid");
+      const body = {
+        credentialId: identifier(raw.credentialId, "secret_credential_id_invalid"),
+        sourceRef,
+        plaintext: text(raw.plaintext, "secret_rotation_material_required", 1_048_576),
+        audiences,
+        ...(expiresAt ? { expiresAt } : {}),
+        ...(rotateAfter ? { rotateAfter } : {}),
+        key: keyLocator(raw.key),
+      };
       const idempotencyKey = c.req.header("Idempotency-Key") ?? "";
       const result = await service(c).create({ ...body, idempotencyKey });
       return c.json(result, 201);
@@ -153,14 +302,15 @@ export function createSecretLifecycleRoutes(options: Readonly<{
 
   routes.post("/:id/rotate", async (c) => {
     try {
-      const body = await c.req.json<{
-        expectedGeneration: number;
-        plaintext: string;
-        key: EnvelopeKeyLocator;
-      }>();
+      const raw = await requestBody(c);
+      const body = {
+        expectedGeneration: generation(raw.expectedGeneration),
+        plaintext: text(raw.plaintext, "secret_rotation_material_required", 1_048_576),
+        key: keyLocator(raw.key),
+      };
       const result = await service(c).rotate({
         ...body,
-        credentialId: c.req.param("id"),
+        credentialId: identifier(c.req.param("id"), "secret_credential_id_invalid"),
         idempotencyKey: c.req.header("Idempotency-Key") ?? "",
       });
       return c.json(result);
@@ -171,10 +321,11 @@ export function createSecretLifecycleRoutes(options: Readonly<{
 
   routes.post("/:id/rewrap", async (c) => {
     try {
-      const body = await c.req.json<{ expectedGeneration: number; key: EnvelopeKeyLocator }>();
+      const raw = await requestBody(c);
+      const body = { expectedGeneration: generation(raw.expectedGeneration), key: keyLocator(raw.key) };
       const result = await service(c).rewrap({
         ...body,
-        credentialId: c.req.param("id"),
+        credentialId: identifier(c.req.param("id"), "secret_credential_id_invalid"),
         idempotencyKey: c.req.header("Idempotency-Key") ?? "",
       });
       return c.json(result);
@@ -185,9 +336,14 @@ export function createSecretLifecycleRoutes(options: Readonly<{
 
   routes.post("/:id/revoke", async (c) => {
     try {
-      const body = await c.req.json<{ generation: number; reason: string }>();
+      const raw = await requestBody(c);
+      const body = {
+        generation: generation(raw.generation),
+        reason: text(raw.reason, "secret_revocation_reason_required", 4_096).trim(),
+      };
+      if (!body.reason) throw new Error("secret_revocation_reason_required");
       return c.json(service(c).revoke({
-        credentialId: c.req.param("id"),
+        credentialId: identifier(c.req.param("id"), "secret_credential_id_invalid"),
         idempotencyKey: c.req.header("Idempotency-Key") ?? "",
         ...body,
       }));
@@ -199,12 +355,10 @@ export function createSecretLifecycleRoutes(options: Readonly<{
   routes.post("/:id/break-glass", async (c) => {
     let reason: unknown;
     try {
-      const body = await c.req.json<unknown>();
-      reason = body !== null && typeof body === "object"
-        ? (body as { reason?: unknown }).reason
-        : undefined;
+      const body = await requestBody(c);
+      reason = body.reason;
       const plaintext = await service(c).breakGlass({
-        credentialId: c.req.param("id"),
+        credentialId: identifier(c.req.param("id"), "secret_credential_id_invalid"),
         reason,
         idempotencyKey: c.req.header("Idempotency-Key") ?? "",
       });
