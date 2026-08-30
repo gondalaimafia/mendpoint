@@ -4148,3 +4148,19 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The repository index captures one exact source set, validates file identity and the complete directory-entry set against same-size metadata mutation, late files, and late links, then passes only those captured bytes into full or incremental call-graph extraction. The call graph never falls back to a mutable disk read when snapshot sources are supplied.
 - The public retrieval contract now accepts and enforces `maxFiles`, `maxBytes`, `maxFileBytes`, `maxTraversalDepth`, and `maxCandidates` on graph and non-graph paths. Traversal-depth exhaustion produces an idempotent abstention artifact, evidence record, audit event, and domain event bound to the exact repository snapshot, revision, content digest, limits, and usage.
 - Full affected verification passes: call graph 25 tests, codebase index 34 tests, code impact 123 tests, and pipeline 256 tests, for 438 tests total. All four affected workspace typechecks and diff integrity pass. No requirement, availability, or public claim is promoted.
+
+## 2026-08-30 Plan 09-01 MCU ledger closure
+
+- [x] Prove the remaining production-shaped gap without rebuilding the verified MCU calculator or usage ledger.
+- [x] RED: reproduce the split between job-scoped settled usage and MissionTask-scoped execution cost at the authenticated gross-margin API.
+- [x] GREEN: reconcile only an exact tenant-local execution ID and leave ambiguous or mismatched attribution closed.
+- [x] Preserve versioned prices, immutable ledgers, reservation conservation, idempotency, corrections, and tenant scope without changing their writers or hashes.
+- [x] Run the focused database and API tests, affected typechecks, diff integrity, and final diff inspection.
+
+### Review
+
+- ME-COM-001, ME-COM-002, and ME-COM-004 already had verified calculator, ledger, and API evidence. The literal uncovered gap was their production join: usage settles with the stable run or job ID, while a mission-bound cost row uses the deterministic MissionTask ID and retains that same job ID as `executionId`.
+- Gross-margin reconciliation now bridges those identifiers only when one cost task and one revenue task have a unique exact execution-ID relationship inside the authenticated tenant. Multiple candidates stay separate and therefore retain the existing `actual_cost_missing` and `settlement_missing` fail-closed reasons.
+- The tracer proves the customer-facing API returns exact revenue, actual cost, route, campaign, accepted outcome, and gross margin for that production-shaped relationship. A separate regression proves a campaign disagreement still yields null margin and `campaign_mismatch`.
+- Focused verification passes 10 tests across the database and API suites. Both `@mendpoint/db` and `@mendpoint/api` typechecks pass, and `git diff --check` is clean.
+- No schema, historical hash, reservation or settlement writer, charging path, payment processor, pricing policy, or production system changed. Automatic metering coverage for every MCU component and finance-approved customer charging remain later activation work.

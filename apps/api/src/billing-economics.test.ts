@@ -16,6 +16,7 @@ import {
   getPrincipalBySubject,
   insertTenant,
   listActualExecutionCosts,
+  missionTaskIdForJob,
   reserveUsage,
   settleUsageReservation,
   type AppDb,
@@ -250,6 +251,58 @@ async function postCost(app: Hono<ApiEnv>, token: string, requestId: string, bod
   });
 }
 
+function settleRevenue(
+  db: AppDb,
+  actorPrincipalId: string,
+  taskId: string,
+  campaignId: string,
+) {
+  createUsagePriceVersion(db, {
+    id: "billing-price-a",
+    tenantId: "billing-tenant-a",
+    formulaVersion: "mcu-v1",
+    currency: "USD",
+    pricePerMcuMoneyMicros: 20_000,
+    effectiveAt: "2026-08-01T00:00:00.000Z",
+    expiresAt: "2026-09-01T00:00:00.000Z",
+    contractReference: "contract-a",
+    createdAt: NOW,
+  });
+  createUsageEntitlement(db, {
+    id: "billing-entitlement-a",
+    tenantId: "billing-tenant-a",
+    priceVersionId: "billing-price-a",
+    quotaMcuMicros: 20_000_000,
+    features: ["warden"],
+    contractReference: "contract-a",
+    periodStart: "2026-08-01T00:00:00.000Z",
+    periodEnd: "2026-09-01T00:00:00.000Z",
+    createdAt: NOW,
+  });
+  const reservation = reserveUsage(db, {
+    id: "billing-reservation-a",
+    tenantId: "billing-tenant-a",
+    idempotencyKey: "billing-reserve-a",
+    taskId,
+    campaignId,
+    mcuMicros: 5_000_000,
+    reason: "task ceiling",
+    actorPrincipalId,
+    createdAt: NOW,
+  });
+  settleUsageReservation(db, {
+    id: "billing-settlement-a",
+    tenantId: "billing-tenant-a",
+    idempotencyKey: "billing-settle-a",
+    reservationId: reservation.id,
+    actualMcuMicros: 4_000_000,
+    invoiceReference: "invoice-a",
+    reason: "verified outcome",
+    actorPrincipalId,
+    createdAt: "2026-08-01T15:01:00.000Z",
+  });
+}
+
 describe("billing economics API routes", () => {
   it("constructs a signer only from a complete exact protected authority binding", () => {
     const authority = JSON.stringify({
@@ -468,50 +521,7 @@ describe("billing economics API routes", () => {
     });
     const actor = getPrincipalBySubject(db, "billing-tenant-a", "api_key", "billing-key-a");
     expect(actor).not.toBeNull();
-    createUsagePriceVersion(db, {
-      id: "billing-price-a",
-      tenantId: "billing-tenant-a",
-      formulaVersion: "mcu-v1",
-      currency: "USD",
-      pricePerMcuMoneyMicros: 20_000,
-      effectiveAt: "2026-08-01T00:00:00.000Z",
-      expiresAt: "2026-09-01T00:00:00.000Z",
-      contractReference: "contract-a",
-      createdAt: NOW,
-    });
-    createUsageEntitlement(db, {
-      id: "billing-entitlement-a",
-      tenantId: "billing-tenant-a",
-      priceVersionId: "billing-price-a",
-      quotaMcuMicros: 20_000_000,
-      features: ["warden"],
-      contractReference: "contract-a",
-      periodStart: "2026-08-01T00:00:00.000Z",
-      periodEnd: "2026-09-01T00:00:00.000Z",
-      createdAt: NOW,
-    });
-    const reservation = reserveUsage(db, {
-      id: "billing-reservation-a",
-      tenantId: "billing-tenant-a",
-      idempotencyKey: "billing-reserve-a",
-      taskId: "task-without-cost",
-      campaignId: "campaign-a",
-      mcuMicros: 5_000_000,
-      reason: "task ceiling",
-      actorPrincipalId: actor!.id,
-      createdAt: NOW,
-    });
-    settleUsageReservation(db, {
-      id: "billing-settlement-a",
-      tenantId: "billing-tenant-a",
-      idempotencyKey: "billing-settle-a",
-      reservationId: reservation.id,
-      actualMcuMicros: 4_000_000,
-      invoiceReference: "invoice-a",
-      reason: "actual accepted work",
-      actorPrincipalId: actor!.id,
-      createdAt: "2026-08-01T15:01:00.000Z",
-    });
+    settleRevenue(db, actor!.id, "task-without-cost", "campaign-a");
 
     const margin = await app.request("/billing/gross-margin", {
       headers: headers(tenantA, "margin-a"),
@@ -695,6 +705,48 @@ describe("billing economics API routes", () => {
     expect(missingSigner.status).toBe(503);
     await expect(missingSigner.json()).resolves.toMatchObject({
       error: { code: "invoice_export_signer_required" },
+  it("reconciles a settled job to its mission task through the exact execution ID", async () => {
+    const { db, tenantA } = fixture();
+    const app = appFor(db);
+    await app.request("/billing/execution-costs", {
+      headers: headers(tenantA, "initialize-mission-principal"),
+    });
+    const actor = getPrincipalBySubject(db, "billing-tenant-a", "api_key", "billing-key-a");
+    expect(actor).not.toBeNull();
+    settleRevenue(db, actor!.id, "job-production-a", "campaign-a");
+    const created = await postCost(app, tenantA, "mission-cost", executionCostBody({
+      executionId: "job-production-a",
+      taskId: missionTaskIdForJob("job-production-a"),
+      campaignId: "campaign-a",
+    }));
+    expect(created.status).toBe(201);
+
+    const margin = await app.request("/billing/gross-margin", {
+      headers: headers(tenantA, "mission-margin"),
+    });
+    expect(margin.status).toBe(200);
+    await expect(margin.json()).resolves.toMatchObject({
+      data: {
+        complete: true,
+        netRevenueMoneyMicros: 80_000,
+        actualCostMoneyMicros: 2_500,
+        exactGrossMarginMoneyMicros: 77_500,
+        attributedGrossMarginMoneyMicros: 77_500,
+        unattributedRevenueMoneyMicros: 0,
+        incompleteAttributions: [],
+        attributions: [
+          {
+            executionId: "job-production-a",
+            taskId: missionTaskIdForJob("job-production-a"),
+            campaignId: "campaign-a",
+            route: "frontier-primary",
+            outcomeStatus: "accepted",
+            acceptedOutcomeId: "pull-request-a",
+            attributedNetRevenueMoneyMicros: 80_000,
+            attributedGrossMarginMoneyMicros: 77_500,
+          },
+        ],
+      },
     });
   });
 });
