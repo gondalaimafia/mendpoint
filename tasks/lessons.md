@@ -251,3 +251,8 @@
 **Mistake:** The first backup fix changed UID and GID without clearing supplementary groups, and its regression asserted configuration construction without observing the spawned rclone process.
 **Correction:** Exact-head review showed that privileged group authority could survive and that deleting the runtime argument wiring would leave the test green.
 **Rule:** A privilege drop must clear supplementary groups before changing GID and UID, then read back all three identity dimensions. A subprocess regression must observe the real spawn boundary, including final argv and environment, so removing the production wiring makes the test fail.
+
+### 2026-08-29 — Validate each hypothesis against the called contract
+**Mistake:** I initially blamed the repeated readiness sentinel because it used `createOnly`, without checking that the backend contract explicitly returns `exists` as a successful idempotent outcome.
+**Correction:** Live status-only probes showed the real chain: listener bound, coordinator passed, Tigris returned `NoSuchBucket`, then 403 after the bucket name was corrected because the failed create attempt had also replaced credentials.
+**Rule:** Before changing code, inspect every called contract and test the complete live failure chain. A plausible explanation is not a root cause. On the second hidden layer, enumerate configuration, authentication, transport, provider status, and containment evidence before another retry.

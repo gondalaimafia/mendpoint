@@ -95,6 +95,7 @@ export function createS3CompatibleTransformerArtifactBackend(
   const read = async (storageKey: string): Promise<Uint8Array | null> => {
     const response = await getObject({ bucket, key: objectKey(storageKey) });
     if (response.status === 404) return null;
+    if (response.status === 401 || response.status === 403) throw new Error("s3_artifact_access_denied");
     if (response.status < 200 || response.status >= 300 || response.body === null) throw new Error("s3_artifact_backend_unavailable");
     if (response.contentLength !== undefined && (!Number.isSafeInteger(response.contentLength) || response.contentLength < 0 || response.contentLength > maxStoredBytes)) throw new Error("s3_artifact_read_too_large");
     if (response.body instanceof Uint8Array) {
@@ -118,6 +119,8 @@ export function createS3CompatibleTransformerArtifactBackend(
     if (!(encryptedBytes instanceof Uint8Array) || encryptedBytes.byteLength > maxStoredBytes) throw new Error("s3_artifact_too_large");
     const response = await putObject({ bucket, key: objectKey(storageKey), body: new Uint8Array(encryptedBytes), ifNoneMatch: "*" });
     if (response.status === 409 || response.status === 412) return "exists";
+    if (response.status === 401 || response.status === 403) throw new Error("s3_artifact_access_denied");
+    if (response.status === 404) throw new Error("s3_artifact_bucket_not_found");
     if (response.status < 200 || response.status >= 300) throw new Error("s3_artifact_backend_unavailable");
     return "created";
   };

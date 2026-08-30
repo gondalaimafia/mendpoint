@@ -372,6 +372,18 @@ describe("Regauge production workflow", () => {
     expect(receipt).toContain("restored-state-receipt.json");
     expect(receipt).not.toContain("MENDPOINT_REGAUGE_TRANSFER_KEY=");
     const failure = steps.find((step) => step.name === "Contain target after activation failure")!;
+    const diagnostics = steps.find((step) => step.name === "Capture worker failure diagnostics")!;
+    expect(diagnostics.if).toBe("${{ failure() }}");
+    expect(diagnostics.run).toContain("worker-failure-machines.json");
+    expect(diagnostics.run).toContain("worker-failure-checks.txt");
+    expect(diagnostics.run).toContain("timeout --kill-after=2s 15s flyctl machines list");
+    expect(diagnostics.run).toContain("timeout --kill-after=2s 10s flyctl checks list");
+    expect(diagnostics.run).toContain(".config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA");
+    expect(diagnostics.run).toContain(".[0:4][]");
+    expect(diagnostics.run).toContain('timeout --kill-after=2s 10s flyctl logs --app mendpoint-regauge-production');
+    expect(diagnostics.run).toContain('> "test-results/regauge-production/worker-${machine_id}.log" 2>&1 || true) &');
+    expect(diagnostics.run).toContain("wait || true");
+    expect(steps.indexOf(diagnostics)).toBeLessThan(steps.indexOf(failure));
     expect(failure.if).toBe("${{ failure() }}");
     expect(failure.run).toContain("flyctl machines list --app mendpoint-regauge-production --json");
     expect(failure.run).toContain('flyctl machine stop "$machine_id"');
