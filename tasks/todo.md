@@ -3931,7 +3931,7 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - [x] Return an explicit fail-closed indeterminate result for absent, malformed, unsafe, stale, or mismatched authority.
 - [x] Add hostile deletion, drift, traversal, symlink, junction, schema, digest, revision, and revocation-state tests.
 - [x] Run focused and complete Ops tests, the Ops typecheck, and diff integrity.
-- [ ] Obtain exact-head review before any push or runtime wiring.
+- [x] Obtain independent review of the original exact head before push; require a fresh exact-head review after the production-repair rebase.
 
 ### Scope and safety
 
@@ -3943,6 +3943,6 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 ### Review
 
-- In progress. Runtime consumption and protected environment binding remain separate follow-up increments after this pure loader contract passes hostile tests and immutable-head review.
+- The original exact head received an independent APPROVE with no P0, P1, or P2 findings. The protected production-repair rebase changes the immutable head, so a fresh exact-head review remains mandatory before merge. Runtime consumption and protected environment binding remain separate follow-up increments.
 - The first vertical slice defines a pure protected-bundle loader. It accepts only an exact schema, validates the existing 101-of-101 attestation, confines the bundle and three artifacts to a canonical non-reparse root, hashes the raw file bytes, binds every digest and the exact release revision, and returns only an indeterminate authority on any ambiguity.
-- Ten hostile loader tests plus the existing 32 readiness tests pass. Coverage includes deletion, byte drift, extra and missing keys, malformed JSON, stale revision, attestation substitution, traversal, absolute paths, incomplete revocation state, symbolic links, substituted roots, and a real Windows junction. The Ops typecheck and diff integrity pass. Immutable-head review and any runtime wiring remain pending.
+- After rebasing onto production repair `842dafc2`, all 170 Ops tests pass, including ten hostile loader tests and the existing readiness matrix. Coverage includes deletion, byte drift, extra and missing keys, malformed JSON, stale revision, attestation substitution, traversal, absolute paths, incomplete revocation state, symbolic links, substituted roots, and a real Windows junction. The Ops typecheck and diff integrity pass. Any runtime wiring remains pending.
