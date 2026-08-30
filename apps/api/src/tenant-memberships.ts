@@ -15,6 +15,12 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import type { ApiEnv } from "./auth.js";
 import { mappedErrorResponse, type PublicErrorRule } from "./error-boundary.js";
+import {
+  claimedHumanManager,
+  revalidateBootstrapManager,
+  revalidateHumanManager,
+  type HumanManagerAuthorityErrors,
+} from "./human-manager-authority.js";
 
 const MAX_BODY_BYTES = 32 * 1_024;
 const ROLES = new Set<TenantMembershipRow["role"]>([
@@ -58,15 +64,14 @@ export type TenantMembershipRoutesOptions = Readonly<{
   now?: () => Date;
   createId?: () => string;
 }>;
+const MANAGER_ERRORS: HumanManagerAuthorityErrors = Object.freeze({
+  authenticationRequired: "tenant_membership_authentication_required",
+  managerRequired: "tenant_membership_manager_required",
+  observedAtInvalid: "tenant_membership_expected_updated_at_invalid",
+});
 
 function manager(c: Context<ApiEnv>) {
-  const principal = c.get("principal");
-  const trustPrincipalId = c.get("trustPrincipalId");
-  if (!principal || !trustPrincipalId) throw new Error("tenant_membership_authentication_required");
-  if (principal.role !== "owner" && principal.role !== "admin") {
-    throw new Error("tenant_membership_manager_required");
-  }
-  return { ...principal, trustPrincipalId };
+  return claimedHumanManager(c, MANAGER_ERRORS);
 }
 
 async function jsonBody(c: Context<ApiEnv>, allowed: ReadonlySet<string>): Promise<Record<string, unknown>> {
@@ -235,14 +240,15 @@ export function createTenantMembershipRoutes(options: TenantMembershipRoutesOpti
 
   routes.post("/bootstrap", async (c) => {
     try {
-      const actor = manager(c);
+      manager(c);
       const body = await jsonBody(c, BOOTSTRAP_FIELDS);
       const created = transaction(options.db, () => {
-        if (listTenantMemberships(options.db, actor.tenantId).length > 0) {
+        const liveActor = revalidateBootstrapManager(c, options.db, now(), MANAGER_ERRORS);
+        if (listTenantMemberships(options.db, liveActor.tenantId).length > 0) {
           throw new Error("tenant_membership_bootstrap_exists");
         }
         const row = createTenantMembership(options.db, {
-          tenantId: actor.tenantId,
+          tenantId: liveActor.tenantId,
           issuer: issuer(body.issuer),
           subject: requiredText(body.subject, "tenant_membership_subject_invalid", 512),
           email: email(body.email),
@@ -250,7 +256,7 @@ export function createTenantMembershipRoutes(options: TenantMembershipRoutesOpti
           role: "owner",
           createdAt: nextTimestamp(now()),
         });
-        audit(options, c, actor, "tenant_membership.bootstrap", row, { role: row.role, status: row.status });
+        audit(options, c, liveActor, "tenant_membership.bootstrap", row, { role: row.role, status: row.status });
         return row;
       });
       return c.json({ data: output(created) }, 201);
@@ -261,15 +267,16 @@ export function createTenantMembershipRoutes(options: TenantMembershipRoutesOpti
 
   routes.post("/", async (c) => {
     try {
-      const actor = manager(c);
+      manager(c);
       const body = await jsonBody(c, CREATE_FIELDS);
       const requestedRole = role(body.role);
-      if (requestedRole === "owner" && actor.role !== "owner") {
-        throw new Error("tenant_membership_owner_authority_required");
-      }
       const created = transaction(options.db, () => {
+        const liveActor = revalidateHumanManager(c, options.db, now(), MANAGER_ERRORS);
+        if (requestedRole === "owner" && liveActor.role !== "owner") {
+          throw new Error("tenant_membership_owner_authority_required");
+        }
         const row = createTenantMembership(options.db, {
-          tenantId: actor.tenantId,
+          tenantId: liveActor.tenantId,
           issuer: issuer(body.issuer),
           subject: requiredText(body.subject, "tenant_membership_subject_invalid", 512),
           email: email(body.email),
@@ -277,7 +284,7 @@ export function createTenantMembershipRoutes(options: TenantMembershipRoutesOpti
           role: requestedRole,
           createdAt: nextTimestamp(now()),
         });
-        audit(options, c, actor, "tenant_membership.provision", row, { role: row.role, status: row.status });
+        audit(options, c, liveActor, "tenant_membership.provision", row, { role: row.role, status: row.status });
         return row;
       });
       return c.json({ data: output(created) }, 201);
@@ -288,23 +295,24 @@ export function createTenantMembershipRoutes(options: TenantMembershipRoutesOpti
 
   routes.patch("/role", async (c) => {
     try {
-      const actor = manager(c);
+      manager(c);
       const body = await jsonBody(c, ROLE_FIELDS);
       const issuerValue = issuer(body.issuer);
       const subject = requiredText(body.subject, "tenant_membership_subject_invalid", 512);
       const requestedRole = role(body.role);
       const expected = expectedUpdatedAt(body.expectedUpdatedAt);
       const updated = transaction(options.db, () => {
-        const current = getTenantMembership(options.db, actor.tenantId, issuerValue, subject);
+        const liveActor = revalidateHumanManager(c, options.db, now(), MANAGER_ERRORS);
+        const current = getTenantMembership(options.db, liveActor.tenantId, issuerValue, subject);
         if (!current || current.status !== "active") throw new Error("tenant_membership_not_found");
-        if ((current.role === "owner" || requestedRole === "owner") && actor.role !== "owner") {
+        if ((current.role === "owner" || requestedRole === "owner") && liveActor.role !== "owner") {
           throw new Error("tenant_membership_owner_authority_required");
         }
-        if (current.role === "owner" && requestedRole !== "owner" && countActiveTenantOwners(options.db, actor.tenantId) <= 1) {
+        if (current.role === "owner" && requestedRole !== "owner" && countActiveTenantOwners(options.db, liveActor.tenantId) <= 1) {
           throw new Error("tenant_membership_last_owner_required");
         }
         const row = changeTenantMembershipRole(options.db, {
-          tenantId: actor.tenantId,
+          tenantId: liveActor.tenantId,
           issuer: issuerValue,
           subject,
           role: requestedRole,
@@ -312,7 +320,7 @@ export function createTenantMembershipRoutes(options: TenantMembershipRoutesOpti
           updatedAt: nextTimestamp(now(), current.updated_at),
         });
         if (!row) throw new Error("tenant_membership_version_conflict");
-        audit(options, c, actor, "tenant_membership.role_change", row, {
+        audit(options, c, liveActor, "tenant_membership.role_change", row, {
           previousRole: current.role,
           role: row.role,
           status: row.status,
@@ -327,22 +335,23 @@ export function createTenantMembershipRoutes(options: TenantMembershipRoutesOpti
 
   routes.post("/offboard", async (c) => {
     try {
-      const actor = manager(c);
+      manager(c);
       const body = await jsonBody(c, OFFBOARD_FIELDS);
       const issuerValue = issuer(body.issuer);
       const subject = requiredText(body.subject, "tenant_membership_subject_invalid", 512);
       const expected = expectedUpdatedAt(body.expectedUpdatedAt);
       const updated = transaction(options.db, () => {
-        const current = getTenantMembership(options.db, actor.tenantId, issuerValue, subject);
+        const liveActor = revalidateHumanManager(c, options.db, now(), MANAGER_ERRORS);
+        const current = getTenantMembership(options.db, liveActor.tenantId, issuerValue, subject);
         if (!current || current.status !== "active") throw new Error("tenant_membership_not_found");
-        if (current.role === "owner" && actor.role !== "owner") {
+        if (current.role === "owner" && liveActor.role !== "owner") {
           throw new Error("tenant_membership_owner_authority_required");
         }
-        if (current.role === "owner" && countActiveTenantOwners(options.db, actor.tenantId) <= 1) {
+        if (current.role === "owner" && countActiveTenantOwners(options.db, liveActor.tenantId) <= 1) {
           throw new Error("tenant_membership_last_owner_required");
         }
         const row = offboardTenantMembership(options.db, {
-          tenantId: actor.tenantId,
+          tenantId: liveActor.tenantId,
           issuer: issuerValue,
           subject,
           expectedUpdatedAt: expected,
@@ -350,14 +359,14 @@ export function createTenantMembershipRoutes(options: TenantMembershipRoutesOpti
         });
         if (!row) throw new Error("tenant_membership_version_conflict");
         revokeIdentitySessionsForMember(options.db, {
-          tenantId: actor.tenantId,
+          tenantId: liveActor.tenantId,
           issuer: issuerValue,
           subject,
-          actorPrincipalId: actor.trustPrincipalId,
+          actorPrincipalId: liveActor.trustPrincipalId,
           reason: "membership_offboarded",
           revokedAt: row.offboarded_at!,
         });
-        audit(options, c, actor, "tenant_membership.offboard", row, {
+        audit(options, c, liveActor, "tenant_membership.offboard", row, {
           previousRole: current.role,
           role: row.role,
           status: row.status,

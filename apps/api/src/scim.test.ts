@@ -294,6 +294,112 @@ describe("SCIM tenant lifecycle", () => {
     },
   );
 
+  it.each(["POST", "PUT", "PATCH"] as const)(
+    "rejects multiple roles without one primary on %s without mutation",
+    async (method) => {
+      const { app, db, key } = fixture();
+      let path = "/scim/v2/Users";
+      let payload: Record<string, unknown> = user({
+        roles: [{ value: "viewer" }, { value: "engineer" }],
+      });
+      let versionHeader: Record<string, string> = {};
+      if (method !== "POST") {
+        const created = await app.request(path, {
+          method: "POST", headers: headers(key.token), body: JSON.stringify(user()),
+        });
+        const value = await created.json() as { id: string; meta: { version: string } };
+        path = `/scim/v2/Users/${value.id}`;
+        versionHeader = { "if-match": value.meta.version };
+        if (method === "PATCH") {
+          payload = {
+            schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+            Operations: [{ op: "Replace", path: "roles", value: payload.roles }],
+          };
+        }
+      }
+      const membershipBefore = getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1");
+      const auditBefore = listAudit(db, "tenant-a");
+
+      const rejected = await app.request(path, {
+        method,
+        headers: headers(key.token, versionHeader),
+        body: JSON.stringify(payload),
+      });
+
+      expect(rejected.status).toBe(400);
+      expect(getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")).toEqual(membershipBefore);
+      expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
+    },
+  );
+
+  it("revalidates authority inside DELETE after authentication context was captured", async () => {
+    const { app, db, key, bindings, service } = fixture();
+    const created = await app.request("/scim/v2/Users", {
+      method: "POST", headers: headers(key.token), body: JSON.stringify(user()),
+    });
+    const value = await created.json() as { id: string; meta: { version: string } };
+    const membershipBefore = getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")!;
+    const auditBefore = listAudit(db, "tenant-a");
+    let clockReads = 0;
+    const staleContext = new Hono<ApiEnv>();
+    staleContext.use("*", async (c, next) => {
+      c.set("principal", { id: "service:enterprise-scim", tenantId: "tenant-a", role: "agent" });
+      c.set("trustPrincipalId", service.id);
+      c.set("authMethod", "api_key");
+      c.set("apiKeyId", key.id);
+      c.set("authScopes", ["identity:provision"]);
+      c.set("requestId", "request-scim-delete");
+      await next();
+    });
+    staleContext.route("/scim/v2", createScimRoutes({
+      db,
+      bindings,
+      now: () => {
+        clockReads += 1;
+        if (clockReads === 2) {
+          revokeApiKey(db, key.id, "2026-08-30T12:00:01.000Z", "tenant-a");
+        }
+        return new Date(NOW);
+      },
+    }));
+
+    const rejected = await staleContext.request(`/scim/v2/Users/${value.id}`, {
+      method: "DELETE",
+      headers: headers(key.token, { "if-match": value.meta.version }),
+    });
+
+    expect(rejected.status).toBe(403);
+    expect(getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")).toEqual(membershipBefore);
+    expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
+  });
+
+  it("cancels an oversized streamed body at the byte ceiling and rejects invalid lengths", async () => {
+    const { app, db, key } = fixture();
+    let cancelled = false;
+    const oversized = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array(64 * 1_024 + 1)); },
+      cancel() { cancelled = true; },
+    });
+    const rejected = await app.request("/scim/v2/Users", {
+      method: "POST",
+      headers: headers(key.token),
+      body: oversized,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    expect(rejected.status).toBe(413);
+    expect(cancelled).toBe(true);
+    expect(getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")).toBeUndefined();
+
+    for (const declared of ["-1", "not-a-number"]) {
+      const invalid = await app.request("/scim/v2/Users", {
+        method: "POST",
+        headers: headers(key.token, { "content-length": declared }),
+        body: JSON.stringify(user()),
+      });
+      expect(invalid.status).toBe(400);
+    }
+  });
+
   it("revalidates a revoked SCIM trust principal after a delayed POST body", async () => {
     const { app, db, key, service } = fixture();
     const auditBefore = listAudit(db, "tenant-a");

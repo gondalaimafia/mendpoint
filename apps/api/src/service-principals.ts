@@ -1,8 +1,6 @@
 import {
   createApiKey,
-  getIdentitySession,
   getPrincipal,
-  getTenantMembership,
   insertPrincipal,
   listApiKeys,
   listPrincipals,
@@ -17,6 +15,11 @@ import { createHash } from "node:crypto";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import type { ApiEnv } from "./auth.js";
+import {
+  claimedHumanManager,
+  revalidateHumanManager,
+  type HumanManagerAuthorityErrors,
+} from "./human-manager-authority.js";
 
 const MAX_BODY_BYTES = 32 * 1_024;
 const MAX_LIFETIME_MS = 90 * 24 * 60 * 60 * 1_000;
@@ -28,92 +31,59 @@ export const SERVICE_PRINCIPAL_ALLOWED_SCOPES = Object.freeze(
 const ALLOWED_SCOPES = new Set<Permission>(SERVICE_PRINCIPAL_ALLOWED_SCOPES);
 
 type Options = Readonly<{ db: AppDb; now?: () => Date }>;
+const MANAGER_ERRORS: HumanManagerAuthorityErrors = Object.freeze({
+  authenticationRequired: "service_principal_authentication_required",
+  managerRequired: "service_principal_manager_required",
+  observedAtInvalid: "service_principal_observed_at_invalid",
+});
 
 function actor(c: Context<ApiEnv>) {
-  const principal = c.get("principal");
-  const trustPrincipalId = c.get("trustPrincipalId");
-  if (!principal || !trustPrincipalId) throw new Error("service_principal_authentication_required");
-  if (principal.role !== "owner" && principal.role !== "admin") {
-    throw new Error("service_principal_manager_required");
-  }
-  return { ...principal, trustPrincipalId };
+  return claimedHumanManager(c, MANAGER_ERRORS);
 }
 
 function liveManager(c: Context<ApiEnv>, options: Options, observedAt: Date) {
-  const claimed = actor(c);
-  const observedAtMs = observedAt.getTime();
-  if (!Number.isFinite(observedAtMs)) throw new Error("service_principal_observed_at_invalid");
-  const trust = getPrincipal(options.db, claimed.tenantId, claimed.trustPrincipalId);
-  if (
-    !trust ||
-    trust.kind !== "human" ||
-    trust.created_at > observedAt.toISOString() ||
-    trust.revoked_at !== null ||
-    (trust.expires_at !== null && Date.parse(trust.expires_at) <= observedAtMs) ||
-    !trust.audience ||
-    !trust.subject.startsWith(`${trust.audience}|`)
-  ) throw new Error("service_principal_authentication_required");
-  const subject = trust.subject.slice(trust.audience.length + 1);
-  const membership = subject
-    ? getTenantMembership(options.db, claimed.tenantId, trust.audience, subject)
-    : undefined;
-  if (
-    !membership ||
-    membership.status !== "active" ||
-    (membership.role !== "owner" && membership.role !== "admin") ||
-    claimed.id !== `human:${trust.subject}`
-  ) throw new Error("service_principal_manager_required");
-  const authMethod = c.get("authMethod");
-  if (authMethod === "api_key") {
-    const apiKeyId = c.get("apiKeyId");
-    const key = apiKeyId
-      ? listApiKeys(options.db, claimed.tenantId).find((candidate) => candidate.id === apiKeyId)
-      : undefined;
-    let liveScopes: unknown;
-    try { liveScopes = key ? JSON.parse(key.scopes_json) : null; } catch { liveScopes = null; }
-    if (
-      !key ||
-      key.created_at > observedAt.toISOString() ||
-      key.revoked_at !== null ||
-      !Array.isArray(liveScopes) ||
-      (!liveScopes.includes("tenant:admin") && !liveScopes.includes("*"))
-    ) throw new Error("service_principal_authentication_required");
-  } else if (authMethod === "oidc") {
-    const sessionId = c.get("identitySessionId");
-    const session = sessionId
-      ? getIdentitySession(options.db, claimed.tenantId, sessionId)
-      : undefined;
-    const evidenceId = `membership:${createHash("sha256")
-      .update(`${claimed.tenantId}\n${trust.audience}\n${subject}`, "utf8")
-      .digest("hex")}`;
-    if (
-      !session ||
-      session.principal_id !== trust.id ||
-      session.issuer !== trust.audience ||
-      session.subject !== subject ||
-      session.membership_updated_at !== membership.updated_at ||
-      session.issued_at > observedAt.toISOString() ||
-      session.expires_at <= observedAt.toISOString() ||
-      session.revoked_at !== null ||
-      c.get("membershipEvidenceId") !== evidenceId
-    ) throw new Error("service_principal_authentication_required");
-  } else {
-    throw new Error("service_principal_authentication_required");
-  }
-  return { ...claimed, role: membership.role };
+  return revalidateHumanManager(c, options.db, observedAt, MANAGER_ERRORS);
 }
 
 async function body(c: Context<ApiEnv>): Promise<Record<string, unknown>> {
   if (!c.req.header("content-type")?.toLowerCase().startsWith("application/json")) {
     throw new Error("service_principal_content_type_invalid");
   }
-  const declared = Number(c.req.header("content-length") ?? 0);
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
-    throw new Error("service_principal_payload_too_large");
+  const declaredHeader = c.req.header("content-length");
+  if (declaredHeader !== undefined) {
+    const declared = declaredHeader.trim();
+    if (!/^\d+$/.test(declared)) {
+      await c.req.raw.body?.cancel("service_principal_content_length_invalid");
+      throw new Error("service_principal_content_length_invalid");
+    }
+    if (BigInt(declared) > BigInt(MAX_BODY_BYTES)) {
+      await c.req.raw.body?.cancel("service_principal_payload_too_large");
+      throw new Error("service_principal_payload_too_large");
+    }
   }
-  const raw = await c.req.text();
-  if (Buffer.byteLength(raw, "utf8") > MAX_BODY_BYTES) {
-    throw new Error("service_principal_payload_too_large");
+  const reader = c.req.raw.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_BODY_BYTES) {
+        await reader.cancel("service_principal_payload_too_large");
+        throw new Error("service_principal_payload_too_large");
+      }
+      chunks.push(value);
+    }
+  }
+  let raw: string;
+  try {
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("service_principal_payload_invalid");
   }
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -363,20 +333,22 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
 
   routes.post("/:principalId/revoke", (c) => {
     try {
-      const identity = actor(c);
+      const claimed = actor(c);
       const principalId = text(c.req.param("principalId"), "service_principal_id_invalid", 96);
-      const observedAt = now().toISOString();
+      const observedAt = now();
+      const observedAtIso = observedAt.toISOString();
       const revoked = transact(options.db, () => {
+        const identity = liveManager(c, options, observedAt);
         const current = getPrincipal(options.db, identity.tenantId, principalId);
         if (!current || current.kind !== "service") throw new Error("service_principal_not_found");
         if (current.revoked_at) return current;
-        const row = revokePrincipal(options.db, { tenantId: identity.tenantId, principalId, revokedAt: observedAt });
+        const row = revokePrincipal(options.db, { tenantId: identity.tenantId, principalId, revokedAt: observedAtIso });
         if (!row) throw new Error("service_principal_revoke_conflict");
         for (const key of listApiKeys(options.db, identity.tenantId).filter((candidate) => candidate.principal_id === principalId && !candidate.revoked_at)) {
-          revokeApiKey(options.db, key.id, observedAt, identity.tenantId);
+          revokeApiKey(options.db, key.id, observedAtIso, identity.tenantId);
         }
         recordAudit(options.db, {
-          id: deterministicId("audit-service-revoke", [identity.tenantId, principalId, observedAt]),
+          id: deterministicId("audit-service-revoke", [identity.tenantId, principalId, observedAtIso]),
           tenantId: identity.tenantId,
           actor: identity.id,
           principalId: identity.trustPrincipalId,
@@ -385,11 +357,11 @@ export function createServicePrincipalRoutes(options: Options): Hono<ApiEnv> {
           action: "service_principal.revoke",
           resourceType: "service_principal",
           resourceId: principalId,
-          metadata: { revokedAt: observedAt },
+          metadata: { revokedAt: observedAtIso },
         });
         return row;
       });
-      return c.json({ data: principalDto(revoked, listApiKeys(options.db, identity.tenantId)) });
+      return c.json({ data: principalDto(revoked, listApiKeys(options.db, claimed.tenantId)) });
     } catch (error) {
       return responseError(c, error);
     }

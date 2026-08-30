@@ -3843,6 +3843,24 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Verification passes: 19 focused SCIM tests, the 59-test API and database identity matrix, both affected workspace typechecks, and diff integrity.
 - No push, merge, deployment, or production claim was performed. Fresh immutable-head independent review remains required.
 
+## 2026-08-30 Plan 10-01 complete authority and payload-boundary repair
+
+- [x] Revalidate complete live human-manager authority inside every tenant-membership mutation, SCIM DELETE, and service-principal revoke transaction.
+- [x] Keep first-owner bootstrap API-key-only and revalidate the exact live key, scope, actor, and trust principal inside its transaction.
+- [x] Reject multi-valued SCIM role arrays unless exactly one role is primary.
+- [x] Parse required customer-profile SCIM bindings, require at least one binding, and bind the exact SCIM tenant set to the Fettler model-source tenant allowlist.
+- [x] Enforce SCIM and service-principal request limits while streaming, cancel on overflow, and reject malformed or negative content lengths.
+- [x] Prove delayed-body and pre-transaction revocation cannot change target membership, credential, audit, or version state.
+- [x] Run focused hostile tests, the wider identity/startup matrix, affected typechecks, and diff integrity.
+- [x] Inspect and commit the isolated repair without pushing.
+
+### Review
+
+- One shared live-manager authority primitive now verifies the exact trust principal, active owner/admin membership, OIDC session or delegated API key, membership evidence, scope, expiry, and revocation state at the mutation boundary. Bootstrap retains its distinct first-owner contract but no longer trusts stale request context.
+- SCIM DELETE and service-principal revoke now perform the same transaction-local authority proof as their asynchronous peers. Hostile regressions revoke authority after request context capture and prove the target row, resource version, credentials, and audit history remain unchanged.
+- The production profile consumes the same SCIM binding parser as the API and rejects empty, malformed, issuer-mismatched, duplicate, or tenant-set-mismatched bindings before startup.
+- The focused and wider identity/startup matrix passes 97 tests. API and platform typechecks plus diff integrity pass. A fresh immutable-head independent review remains required; no push, merge, deployment, enterprise IdP drill, or production claim was performed.
+
 ## 2026-08-30 Plan 10-01 live authority repair
 
 - [x] RED: prove delayed-body API-key and trust-principal revocation blocks SCIM POST, PUT, and PATCH without membership, audit, or version mutation.

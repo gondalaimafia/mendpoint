@@ -30,6 +30,20 @@ function customerRuntime(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     ...overrides,
   };
   for (const name of CUSTOMER_WARDEN_REQUIRED_SECRETS) env[name] ??= `${name}-configured`;
+  if (overrides.OIDC_ISSUER === undefined) env.OIDC_ISSUER = "https://identity.example";
+  if (overrides.MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS === undefined) {
+    env.MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS = "tenant-default";
+  }
+  if (overrides.MENDPOINT_SCIM_BINDINGS_JSON === undefined) {
+    env.MENDPOINT_SCIM_BINDINGS_JSON = JSON.stringify({
+      schemaVersion: 1,
+      bindings: [{
+        tenantId: "tenant-default",
+        principalId: "principal-scim-default",
+        issuer: env.OIDC_ISSUER,
+      }],
+    });
+  }
   env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA =
     SANDBOX_EGRESS_ATTESTATION_SCHEMA;
   env.MENDPOINT_ALLOWED_MACHINE_ID = overrides.MENDPOINT_ALLOWED_MACHINE_ID ?? env.FLY_MACHINE_ID;
@@ -144,6 +158,24 @@ describe("Fettler-only customer Fly profile", () => {
       MENDPOINT_BACKUP_OPERATION_TIMEOUT_MS: "59999",
     }))).toContain(
       "Customer Fettler profile has invalid object store settings: customer_backup_operation_timeout_invalid",
+    );
+    expect(validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_SCIM_BINDINGS_JSON: JSON.stringify({ schemaVersion: 1, bindings: [] }),
+    }))).toContain(
+      "Customer Fettler profile has invalid SCIM bindings: scim_bindings_empty",
+    );
+    expect(validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_SCIM_BINDINGS_JSON: JSON.stringify({
+        schemaVersion: 1,
+        bindings: [{ tenantId: "other-tenant", principalId: "principal-scim", issuer: "https://identity.example" }],
+      }),
+    }))).toContain(
+      "Customer Fettler profile has invalid SCIM bindings: scim_binding_tenant_set_mismatch",
+    );
+    expect(validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_SCIM_BINDINGS_JSON: "{not-json",
+    }))).toContain(
+      "Customer Fettler profile has invalid SCIM bindings: scim_bindings_invalid",
     );
   });
 

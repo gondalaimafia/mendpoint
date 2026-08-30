@@ -428,6 +428,64 @@ describe("service principal administration", () => {
     expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
   });
 
+  it("revalidates manager authority inside service revocation without target mutation", async () => {
+    const { app, db } = fixture();
+    const created = await createPrincipal(app, "pre-revoke-create");
+    const principalId = created.payload.data.id;
+    const targetBefore = db.raw.prepare("SELECT * FROM principals WHERE tenant_id = ? AND id = ?")
+      .get("tenant-a", principalId);
+    const keysBefore = listApiKeys(db, "tenant-a");
+    const auditBefore = listAudit(db, "tenant-a");
+    revokePrincipal(db, {
+      tenantId: "tenant-a",
+      principalId: "human-owner-a",
+      revokedAt: "2026-08-30T12:00:01.000Z",
+    });
+
+    const rejected = await app.request(`/tenants/service-principals/${principalId}/revoke`, {
+      method: "POST",
+      headers: mutationHeaders("pre-revoked-manager"),
+    });
+
+    expect(rejected.status).toBe(401);
+    expect(db.raw.prepare("SELECT * FROM principals WHERE tenant_id = ? AND id = ?")
+      .get("tenant-a", principalId)).toEqual(targetBefore);
+    expect(listApiKeys(db, "tenant-a")).toEqual(keysBefore);
+    expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
+  });
+
+  it("cancels an oversized streamed body at the byte ceiling and rejects invalid lengths", async () => {
+    const { app, db } = fixture();
+    let cancelled = false;
+    const oversized = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array(32 * 1_024 + 1)); },
+      cancel() { cancelled = true; },
+    });
+    const rejected = await app.request("/tenants/service-principals", {
+      method: "POST",
+      headers: mutationHeaders("oversized-stream"),
+      body: oversized,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    expect(rejected.status).toBe(413);
+    expect(cancelled).toBe(true);
+    expect(db.raw.prepare("SELECT * FROM principals WHERE kind = 'service'").all()).toEqual([]);
+
+    for (const declared of ["-1", "not-a-number"]) {
+      const invalid = await app.request("/tenants/service-principals", {
+        method: "POST",
+        headers: { ...mutationHeaders(`invalid-length-${declared}`), "content-length": declared },
+        body: JSON.stringify({
+          subject: "invalid-length",
+          displayName: "Invalid length",
+          scopes: ["graph:read"],
+          expiresAt: EXPIRES,
+        }),
+      });
+      expect(invalid.status).toBe(422);
+    }
+  });
+
   it("revokes the service and every credential while remaining tenant scoped and idempotent", async () => {
     const { app, db } = fixture();
     const created = await createPrincipal(app);
