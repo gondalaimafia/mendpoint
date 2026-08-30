@@ -339,3 +339,15 @@
 **Mistake:** ReGauge preflight and production evidence artifact names used only the commit SHA, so a GitHub rerun could collide with attempt-one artifacts or consume stale topology.
 **Correction:** Bind every upload and matching download to commit SHA, workflow run ID, and run attempt.
 **Rule:** Any artifact that carries production authority or rollback state must be uniquely named by the exact execution attempt. A rerun may reuse source, but it must never reuse mutable control evidence.
+
+### 2026-08-30 — Expiry permits exact replay, never new authority
+
+**Mistake:** The coordinator treated any already-authorized draft state as replayable after expiry, even when a later request introduced a previously unseen approval and acceptance set.
+**Correction:** After expiry, require the exact current approval and every current acceptance reference to already be durable on every draft before calling the idempotent store path.
+**Rule:** Expiry freezes authority. A post-expiry request may read or repeat an exact durable result, but it may not add, replace, or widen authorization evidence.
+
+### 2026-08-30 — Budget the executable timeout, including kill grace
+
+**Mistake:** Workflow timing arithmetic counted nominal command timeouts and sleeps but omitted `--kill-after` grace, proof-command latency, and a final terminal inventory.
+**Correction:** Give live evaluation and each proof poll a whole-step hard bound, include those bounds in the authority guard, and calculate cleanup from timeout plus kill grace for every external call and retry round.
+**Rule:** Production budget proofs use executable worst-case time, not optimistic latency. Include kill grace, retry delay, final proof, and fixed transition costs, then retain explicit watchdog headroom.

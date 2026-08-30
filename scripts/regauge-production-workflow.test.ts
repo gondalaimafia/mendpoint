@@ -171,7 +171,7 @@ describe("Regauge production workflow", () => {
     expect(authority).toContain("MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF=");
     expect(authority).toContain("MENDPOINT_REGAUGE_GATE=");
     expect(authority).toContain("MENDPOINT_REGAUGE_EVIDENCE_REFS=");
-    expect(authority).toContain("date -u -d '+45 minutes'");
+    expect(authority).toContain("date -u -d '+75 minutes'");
     expect(authority).toContain("MENDPOINT_REGAUGE_ACTIVATION_DEADLINE_EPOCH=");
     expect(authority).toContain("MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT=");
     expect(authority).toContain("MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT=2026-08-24T00:00:00.000Z");
@@ -494,7 +494,7 @@ describe("Regauge production workflow", () => {
       (step) => step.name === "Validate exact authority before mutation",
     )!.run as string;
 
-    expect(workflow.jobs.deploy["timeout-minutes"]).toBe(60);
+    expect(workflow.jobs.deploy["timeout-minutes"]).toBe(85);
     expect(validation).toContain('test "$LIVE_EVAL_REPETITIONS" = 3');
     expect(validation).toContain('test "$READINESS_SOAK_SECONDS" -le 600');
     expect(validation).not.toContain('test "$READINESS_SOAK_SECONDS" -le 21600');
@@ -503,8 +503,19 @@ describe("Regauge production workflow", () => {
     )!.run as string;
     expect(liveEvaluation).toContain("MENDPOINT_REGAUGE_ACTIVATION_DEADLINE_EPOCH");
     expect(liveEvaluation).toContain("required_seconds=");
+    expect(liveEvaluation).toContain("1230 + 610 + 610");
     expect(liveEvaluation).toContain("regauge_activation_budget_insufficient");
     expect(liveEvaluation).toContain("timeout --kill-after=30s 1200s");
+    const draftPoll = (workflow.jobs.deploy.steps as Record<string, any>[]).find(
+      (step) => step.name === "Wait for exact real draft canary",
+    )!.run as string;
+    const verifierPoll = (workflow.jobs.deploy.steps as Record<string, any>[]).find(
+      (step) => step.name === "Wait for durable DeepSeek advisory evidence",
+    )!.run as string;
+    for (const poll of [draftPoll, verifierPoll]) {
+      expect(poll).toContain("timeout --kill-after=10s 600s bash");
+      expect(poll).toContain("timeout --kill-after=5s 20s npm run regauge:production:proof");
+    }
   });
 
   it("quiesces an immutable topology and gives every production mutation exact run ownership", () => {
@@ -552,7 +563,7 @@ describe("Regauge production workflow", () => {
     expect(cleanup.if).toContain("always()");
     expect(cleanup.if).toContain("needs.deploy.result != 'success'");
     expect(cleanup.if).toContain("needs.deploy.result != 'skipped'");
-    expect(cleanup["timeout-minutes"]).toBe(15);
+    expect(cleanup["timeout-minutes"]).toBe(20);
     const restore = cleanup.steps.find(
       (step: Record<string, unknown>) => step.name === "Restore or contain the exact activation worker",
     ).run as string;
@@ -569,13 +580,14 @@ describe("Regauge production workflow", () => {
     expect(restore).toContain('action="contained_all_workers_after_restore_drift"');
     expect(restore).toContain('action="contained_all_workers_after_restore_health_failure"');
     expect(restore).toContain('action="contained_all_workers_after_restore_instance_failure"');
+    expect(restore).toContain('action="contained_all_workers_after_restore_timeout"');
     expect(restore.indexOf('if [[ "$quiesce_markers" == "1" ]]')).toBeLessThan(
       restore.indexOf('--machine-config test-results/regauge-cleanup/prior-worker-config.json'),
     );
     expect(restore.indexOf('elif [[ "$quiesce_markers" == "0" ]]')).toBeLessThan(
       restore.indexOf('action="no_owned_mutation"'),
     );
-    expect(restore).toContain("for attempt in {1..20}");
+    expect(restore).toContain("for attempt in {1..15}");
     expect(restore).toContain('state != "stopped" and .state != "destroyed"');
     expect(restore).toContain('(timeout --kill-after=5s 15s flyctl machine stop');
     expect(restore).toContain('if ! timeout --kill-after=10s 180s flyctl machine update');
@@ -593,6 +605,8 @@ describe("Regauge production workflow", () => {
     expect(restore).toContain('.name == "regauge_worker" and .status == "passing"');
     expect(restore).toContain('restoredInstanceId: $restoredInstanceId');
     expect(restore).toContain('restoreHealthStatus: $restoreHealthStatus');
+    expect(restore).toContain('if [[ "$cleanup_verified" != true && "$action" == contained_all_workers_* ]]');
+    expect(restore).toContain('remaining_unsafe_workers=');
     expect(restore).toContain('test "$cleanup_verified" = true');
     expect(cleanup.steps.some(
       (step: Record<string, unknown>) => step.name === "Upload cleanup evidence",
@@ -614,17 +628,19 @@ describe("Regauge production workflow", () => {
       ).run,
     ] as string[];
 
-    expect(workflow.jobs.cleanup["timeout-minutes"]).toBe(15);
+    expect(workflow.jobs.cleanup["timeout-minutes"]).toBe(20);
     for (const run of containmentRuns) {
-      expect(run).toContain("for attempt in {1..20}");
+      expect(run).toContain("for attempt in {1..15}");
       expect(run).toContain("timeout --kill-after=2s 10s flyctl machines list");
       expect(run).toContain('(timeout --kill-after=5s 15s flyctl machine stop');
       expect(run).toContain('stop_pids+=("$!")');
       expect(run).toContain('if ! wait "$stop_pid"');
     }
-    // Bounded inventory, parallel stops, and the retry delay keep 20 rounds
-    // under the cleanup job's independent 15 minute watchdog with headroom.
-    expect(10 + 180 + 10 + 60 + 20 * (10 + 15 + 2)).toBeLessThan(15 * 60);
+    // Bounded inventory, parallel stops, and the retry delay keep 15 rounds
+    // under the cleanup job's independent 20 minute watchdog with headroom.
+    const worstCaseSeconds = 12 + 190 + 12 + 65 + 15 * (12 + 20) + 14 * 2 + 12;
+    expect(worstCaseSeconds).toBe(799);
+    expect(worstCaseSeconds).toBeLessThan(20 * 60);
   });
 
   it("samples the exact worker identity and health throughout the readiness soak", () => {

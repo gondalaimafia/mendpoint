@@ -147,10 +147,23 @@ export function createTransformerAttemptCoordinatorRoutes(options: Readonly<{
       const campaign = authorization
         ? options.store.getCampaign(authorization.tenantId, authorization.campaignId)
         : null;
+      const currentGrant = authorization
+        ? parsedGateConfig?.grants.find((candidate) =>
+          candidate.tenantId === authorization.tenantId &&
+          candidate.environment === authorization.environment &&
+          candidate.boundaries.includes("delivery") &&
+          candidate.productionDeliveryApprovalRefs.includes(authorization.productionApprovalRef))
+        : undefined;
       const durableAuthorizationReplay = Boolean(
-        campaign && authorization &&
+        campaign && authorization && currentGrant &&
         campaign.units.length === authorization.maximumDrafts &&
-        campaign.units.every((unit) => unit.state === "draft"),
+        campaign.units.every((unit) =>
+          unit.state === "draft" &&
+          unit.draftDelivery !== undefined &&
+          (unit.draftDelivery.productionDeliveryApprovalRefs ?? [])
+            .includes(authorization.productionApprovalRef) &&
+          currentGrant.acceptanceEvidenceRefs.every((reference) =>
+            unit.draftDelivery!.authorizationEvidenceRefs.includes(reference))),
       );
       const activeDraftAuthorization =
         draftAuthorizationExpiresAt !== null &&

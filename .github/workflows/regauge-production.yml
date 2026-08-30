@@ -79,7 +79,7 @@ jobs:
     needs: preflight
     if: ${{ inputs.phase == 'activate' && github.repository == 'gondalaimafia/mendpoint' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 85
     environment: regauge-production
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -162,8 +162,8 @@ jobs:
           [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           approval_ref="approval:regauge:${MENDPOINT_REGAUGE_TENANT_ID}:${MENDPOINT_REGAUGE_CAMPAIGN_ID}:repository:${MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID}:revision:${MENDPOINT_REGAUGE_CANARY_REVISION}:draft:1:run:${GITHUB_RUN_ID}:attempt:${GITHUB_RUN_ATTEMPT}"
           evidence_ref="evidence:github:run:${GITHUB_RUN_ID}:attempt:${GITHUB_RUN_ATTEMPT}:revision:${GITHUB_SHA}"
-          activation_expires_at="$(date -u -d '+45 minutes' '+%Y-%m-%dT%H:%M:%S.000Z')"
-          activation_deadline_epoch="$(( $(date -u +%s) + 45 * 60 ))"
+          activation_expires_at="$(date -u -d '+75 minutes' '+%Y-%m-%dT%H:%M:%S.000Z')"
+          activation_deadline_epoch="$(( $(date -u +%s) + 75 * 60 ))"
           gate="$(
             REGAUGE_RUN_APPROVAL="$approval_ref" \
             REGAUGE_RUN_EVIDENCE="$evidence_ref" \
@@ -650,7 +650,7 @@ jobs:
           set -euo pipefail
           now_epoch="$(date -u +%s)"
           remaining_seconds="$((MENDPOINT_REGAUGE_ACTIVATION_DEADLINE_EPOCH - now_epoch))"
-          required_seconds="$((1200 + 150 + 150 + ${{ inputs.readiness_soak_seconds }} + 300))"
+          required_seconds="$((1230 + 610 + 610 + ${{ inputs.readiness_soak_seconds }} + 300))"
           test "$remaining_seconds" -ge "$required_seconds" \
             || { echo "regauge_activation_budget_insufficient"; exit 1; }
           timeout --kill-after=30s 1200s npm run eval:agents:live -- --product=transformer \
@@ -660,8 +660,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          timeout --kill-after=10s 600s bash <<'DRAFT_CANARY_POLL'
+          set -euo pipefail
           for attempt in {1..30}; do
-            if npm run regauge:production:proof -- \
+            if timeout --kill-after=5s 20s npm run regauge:production:proof -- \
               --mode=draft-canary \
               --output=test-results/regauge-production/draft-canary.json; then
               exit 0
@@ -670,12 +672,15 @@ jobs:
             test "$attempt" -lt 30
             sleep 5
           done
+          DRAFT_CANARY_POLL
       - name: Wait for durable DeepSeek advisory evidence
         shell: bash
         run: |
           set -euo pipefail
+          timeout --kill-after=10s 600s bash <<'VERIFIER_EVIDENCE_POLL'
+          set -euo pipefail
           for attempt in {1..30}; do
-            if npm run regauge:production:proof -- \
+            if timeout --kill-after=5s 20s npm run regauge:production:proof -- \
               --mode=verifier-evidence \
               --output=test-results/regauge-production/verifier-evidence.json; then
               exit 0
@@ -684,6 +689,7 @@ jobs:
             test "$attempt" -lt 30
             sleep 5
           done
+          VERIFIER_EVIDENCE_POLL
       - name: Run read only production readiness soak
         shell: bash
         run: |
@@ -853,7 +859,7 @@ jobs:
           if [[ "$mutation_markers" == "0" ]]; then
             containment_verified=true
           else
-            for attempt in {1..20}; do
+            for attempt in {1..15}; do
               machines="$(timeout --kill-after=2s 10s flyctl machines list \
                 --app mendpoint-regauge-production --json)"
               mapfile -t unsafe_worker_ids < <(jq -r '.[] | select(
@@ -876,7 +882,7 @@ jobs:
                   stop_failures="$((stop_failures + 1))"
                 fi
               done
-              test "$attempt" -lt 20
+              if [[ "$attempt" == "15" ]]; then break; fi
               sleep 2
             done
           fi
@@ -912,7 +918,7 @@ jobs:
           set -euo pipefail
           containment_verified=false
           stop_failures=0
-          for attempt in {1..20}; do
+          for attempt in {1..15}; do
             machines="$(timeout --kill-after=2s 10s flyctl machines list \
               --app mendpoint-regauge-production --json)"
             mapfile -t unsafe_worker_ids < <(jq -r '.[] | select(
@@ -934,7 +940,7 @@ jobs:
                 stop_failures="$((stop_failures + 1))"
               fi
             done
-            test "$attempt" -lt 20
+            if [[ "$attempt" == "15" ]]; then break; fi
             sleep 2
           done
           test "$containment_verified" = true
@@ -951,7 +957,7 @@ jobs:
     needs: [preflight, deploy]
     if: ${{ always() && needs.deploy.result != 'success' && needs.deploy.result != 'skipped' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
     steps:
@@ -1050,7 +1056,7 @@ jobs:
           stop_failures=0
           restored_instance_id=""
           restore_health_status="not_required"
-          for attempt in {1..20}; do
+          for attempt in {1..15}; do
             after="$(timeout --kill-after=2s 10s flyctl machines list \
               --app mendpoint-regauge-production --json)"
             printf '%s\n' "$after" > test-results/regauge-cleanup/after-machines.json
@@ -1077,7 +1083,7 @@ jobs:
                     break
                   fi
                   restore_health_status="not_passing"
-                  if [[ "$attempt" == "20" ]]; then
+                  if [[ "$attempt" == "15" ]]; then
                     action="contained_all_workers_after_restore_health_failure"
                   fi
                 else
@@ -1090,6 +1096,8 @@ jobs:
                 == ([$expected[0][] | {id, config, image_ref}] | sort_by(.id))
               ' <<<"$after" >/dev/null; then
                 action="contained_all_workers_after_restore_drift"
+              elif [[ "$attempt" == "15" && "$action" == "restored_prior_worker" ]]; then
+                action="contained_all_workers_after_restore_timeout"
               fi
             elif [[ "$action" == "no_owned_mutation" ]]; then
               if jq -e --slurpfile expected "$snapshot" '
@@ -1121,9 +1129,21 @@ jobs:
                 fi
               done
             fi
-            test "$attempt" -lt 20
+            if [[ "$attempt" == "15" ]]; then break; fi
             sleep 2
           done
+          if [[ "$cleanup_verified" != true && "$action" == contained_all_workers_* ]]; then
+            after="$(timeout --kill-after=2s 10s flyctl machines list \
+              --app mendpoint-regauge-production --json)"
+            printf '%s\n' "$after" > test-results/regauge-cleanup/after-machines.json
+            remaining_unsafe_workers="$(jq '[.[] | select(
+              .config.metadata.fly_process_group == "worker"
+              and .state != "stopped" and .state != "destroyed"
+            )] | length' <<<"$after")"
+            if [[ "$remaining_unsafe_workers" == "0" ]]; then
+              cleanup_verified=true
+            fi
+          fi
           jq -n --arg action "$action" --arg runId "$GITHUB_RUN_ID" \
             --arg runAttempt "$GITHUB_RUN_ATTEMPT" --argjson verified "$cleanup_verified" \
             --argjson stopFailures "$stop_failures" --arg restoredInstanceId "$restored_instance_id" \

@@ -196,6 +196,80 @@ describe("real Transformer multi-node coordinator", () => {
     expect(authorize).not.toHaveBeenCalled();
   });
 
+  it("rejects a previously unseen authority epoch on an expired authorized draft", async () => {
+    const service = new TransformerPilotExecutionService(":memory:", {
+      rawGateConfig: nextGate,
+      environment: "test",
+    });
+    services.push(service);
+    const authorize = vi.spyOn(service.store, "authorizeCurrentWaveDrafts").mockReturnValue([]);
+    vi.spyOn(service.store, "getCampaign").mockReturnValue({
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      environment: "test",
+      units: [{
+        id: "unit-a",
+        state: "draft",
+        snapshot: {
+          repositoryId: "repository-a",
+          snapshotId: "snapshot-a",
+          revision: revision("a"),
+        },
+        draftDelivery: {
+          status: "delivered",
+          authorizationEvidenceRefs: ["acceptance:transformer-pilot:v1"],
+          productionDeliveryApprovalRefs: [draftApproval],
+        },
+      }],
+    } as never);
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("principal", { id: "api-key:worker", tenantId: "tenant-a", role: "agent" });
+      c.set("authScopes", ["transformer:worker"]);
+      await next();
+    });
+    app.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+      enabled: true,
+      store: service.store,
+      now: () => "2026-08-22T05:10:00.000Z",
+      gateConfig: nextGate,
+      draftAuthorization: {
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        remoteRepositoryId: 84,
+        sourceRevision: revision("a"),
+        environment: "test",
+        productionApprovalRef: nextDraftApproval,
+        activationExpiresAt: "2026-08-22T05:10:00.000Z",
+        maximumDrafts: 1,
+      },
+      loadExactSource: () => { throw new Error("must_not_load"); },
+      resolveDraftRepository: () => ({
+        owner: "acme",
+        repo: "repo-a",
+        baseBranch: "main",
+        installationId: 42,
+        remoteRepositoryId: 84,
+      }),
+    }));
+
+    const response = await app.request(
+      "/v1/regauge/attempt-coordinator/operations/authorizeCurrentWaveDrafts",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tenantId: "tenant-a",
+          campaignId: "campaign-a",
+          evidenceRefs: ["evidence:runner-next-authority"],
+          idempotencyKey: "regauge-draft-authorize-next-expired",
+        }),
+      },
+    );
+    expect(response.status).toBe(403);
+    expect(authorize).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["tomorrow", "malformed"],
     ["2026-08-22T06:31:00.000Z", "longer than the protected window"],
