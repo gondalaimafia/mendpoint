@@ -3827,3 +3827,18 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Red-first evidence: the original focused suite failed six hostile assertions at the expected seams. The repaired focused SCIM suite passes 12 of 12 tests; the wider API and database identity matrix passes 52 of 52 tests.
 - Verification passes: complete repository tests, affected and full workspace typechecks, optimized 50-route production build, every GA gate, zero production dependency vulnerabilities, and diff integrity.
 - No push, merge, deployment, enterprise IdP drill, or production claim was performed. Fresh immutable-head independent review and protected CI remain required.
+
+## 2026-08-30 Plan 10-01 strict SCIM active repair
+
+- [x] RED: prove string, null, and numeric `active` values on POST cannot create a membership, audit record, or resource version.
+- [x] RED: prove string, null, and numeric `active` values on PUT cannot change membership bytes, audit history, or ETag.
+- [x] GREEN: route POST, PUT, and PATCH through one strict optional boolean parser while preserving the existing omitted-value default on full-resource writes.
+- [x] Run focused and wider identity tests, affected typechecks, and diff integrity.
+- [x] Inspect and commit the isolated repair without pushing.
+
+### Review
+
+- One shared `active` parser now distinguishes absence from invalid presence. POST and PUT retain their existing omitted-value default, while every present value must be a JSON boolean; PATCH uses the same strict parser.
+- Red-first evidence reproduced six state-changing failures: malformed POST created an active membership, and malformed PUT advanced the ETag. The repaired regressions prove membership rows, audit history, and versions remain unchanged.
+- Verification passes: 19 focused SCIM tests, the 59-test API and database identity matrix, both affected workspace typechecks, and diff integrity.
+- No push, merge, deployment, or production claim was performed. Fresh immutable-head independent review remains required.

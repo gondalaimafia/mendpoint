@@ -169,6 +169,73 @@ describe("SCIM tenant lifecycle", () => {
     expect(listAudit(db, "tenant-a").filter((row) => row.action === "scim.user.provision")).toHaveLength(1);
   });
 
+  it.each([
+    ["string", "false"],
+    ["null", null],
+    ["number", 0],
+  ])("rejects a %s active value on POST without creating identity state", async (_kind, malformedActive) => {
+    const { app, db, key } = fixture();
+    const auditBefore = listAudit(db, "tenant-a");
+
+    const rejected = await app.request("/scim/v2/Users", {
+      method: "POST",
+      headers: headers(key.token),
+      body: JSON.stringify(user({ active: malformedActive })),
+    });
+
+    expect(getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")).toBeUndefined();
+    expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
+    expect(rejected.status).toBe(400);
+  });
+
+  it.each([
+    ["string", "false"],
+    ["null", null],
+    ["number", 0],
+  ])("rejects a %s active value on PUT without changing identity state", async (_kind, malformedActive) => {
+    const { app, db, key } = fixture();
+    const created = await app.request("/scim/v2/Users", {
+      method: "POST", headers: headers(key.token), body: JSON.stringify(user()),
+    });
+    const value = await created.json() as { id: string; meta: { version: string } };
+    const membershipBefore = getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")!;
+    const auditBefore = listAudit(db, "tenant-a");
+
+    const rejected = await app.request(`/scim/v2/Users/${value.id}`, {
+      method: "PUT",
+      headers: headers(key.token, { "if-match": value.meta.version }),
+      body: JSON.stringify(user({ active: malformedActive })),
+    });
+    const observed = await app.request(`/scim/v2/Users/${value.id}`, {
+      headers: headers(key.token),
+    });
+
+    expect(observed.headers.get("etag")).toBe(value.meta.version);
+    expect(getTenantMembership(db, "tenant-a", ISSUER, "idp-user-1")).toEqual(membershipBefore);
+    expect(listAudit(db, "tenant-a")).toEqual(auditBefore);
+    expect(rejected.status).toBe(400);
+  });
+
+  it("preserves the omitted active default on full-resource POST and PUT", async () => {
+    const { app, key } = fixture();
+    const postBody = user({ active: false });
+    const created = await app.request("/scim/v2/Users", {
+      method: "POST", headers: headers(key.token), body: JSON.stringify(postBody),
+    });
+    const value = await created.json() as { id: string; active: boolean; meta: { version: string } };
+    expect(value.active).toBe(false);
+
+    const { active: _omittedActive, ...putBody } = user();
+    const replaced = await app.request(`/scim/v2/Users/${value.id}`, {
+      method: "PUT",
+      headers: headers(key.token, { "if-match": value.meta.version }),
+      body: JSON.stringify(putBody),
+    });
+
+    expect(replaced.status).toBe(200);
+    await expect(replaced.json()).resolves.toMatchObject({ active: true });
+  });
+
   it("accepts Okta and Azure case variants plus pathless Replace while validating schemas", async () => {
     const { app, key } = fixture();
     const created = await app.request("/scim/v2/Users", {

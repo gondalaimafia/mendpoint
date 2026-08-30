@@ -363,3 +363,9 @@
 **Mistake:** I kept the skipped ReGauge activation lane in the active execution path instead of immediately advancing the next dependency-ready wave.
 **Correction:** Talal told me to skip that lane and start from the next wave.
 **Rule:** When a lane is explicitly parked, preserve it unchanged, remove it from the active critical path, and immediately move build and review capacity to the next dependency-ready engineering plan.
+
+### 2026-08-30 — Optional boolean fields still require strict present-value validation
+
+**Mistake:** SCIM POST and PUT treated every `active` value except boolean `false` as active, collapsing malformed strings, nulls, and numbers into the omitted-field default.
+**Correction:** Preserve the existing default only when the attribute is absent. Reject every present non-boolean value before membership, audit, or version mutation.
+**Rule:** For optional typed fields, distinguish absence from invalid presence with one shared parser, and regression-test both acceptance and byte-for-byte non-mutation on every write path.

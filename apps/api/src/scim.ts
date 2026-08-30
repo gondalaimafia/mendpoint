@@ -223,6 +223,15 @@ function email(value: unknown): string {
   return normalized;
 }
 
+function active(value: unknown, defaultValue?: boolean): boolean {
+  if (value === undefined) {
+    if (defaultValue === undefined) throw new Error("scim_active_invalid");
+    return defaultValue;
+  }
+  if (typeof value !== "boolean") throw new Error("scim_active_invalid");
+  return value;
+}
+
 function putScimMembership(
   db: AppDb,
   input: Parameters<typeof putTenantMembership>[1],
@@ -249,8 +258,7 @@ type MutableScimUser = {
 function replaceAttribute(next: MutableScimUser, path: string, value: unknown): void {
   switch (path.toLowerCase()) {
     case "active":
-      if (typeof value !== "boolean") throw new Error("scim_patch_invalid");
-      next.status = value ? "active" : "offboarded";
+      next.status = active(value) ? "active" : "offboarded";
       return;
     case "roles":
       next.role = role(value);
@@ -382,7 +390,7 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
         email: email(attribute(input, "userName")),
         displayName: text(attribute(input, "displayName"), "scim_display_name_invalid", 200),
         role: role(attribute(input, "roles")),
-        status: attribute(input, "active") === false ? "offboarded" as const : "active" as const,
+        status: active(attribute(input, "active"), true) ? "active" as const : "offboarded" as const,
       };
       const result = transact(options.db, () => {
         const existing = getTenantMembership(options.db, binding.tenantId, binding.issuer, subject);
@@ -433,7 +441,7 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
           email: email(attribute(input, "userName")),
           displayName: text(attribute(input, "displayName"), "scim_display_name_invalid", 200),
           role: role(attribute(input, "roles")),
-          status: attribute(input, "active") === false ? "offboarded" : "active",
+          status: active(attribute(input, "active"), true) ? "active" : "offboarded",
           updatedAt,
         });
         if (updated.status === "offboarded") revokeIdentitySessionsForMember(options.db, {
