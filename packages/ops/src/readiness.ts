@@ -146,7 +146,10 @@ export function readiness(opts?: {
   if (process.env.MENDPOINT_DEPLOYMENT_PROFILE === "customer") {
     const customerReadiness = assessCustomerReadiness(process.env, env.errors, {
       ...opts?.customerReadinessAuthority,
-      criticalHealth: checks.map(({ name, ok }) => ({ name, ok })),
+      criticalHealth: [
+        ...(opts?.customerReadinessAuthority?.criticalHealth ?? []),
+        ...checks.map(({ name, ok }) => ({ name, ok })),
+      ],
     });
     checks.push({
       name: "customer_readiness",

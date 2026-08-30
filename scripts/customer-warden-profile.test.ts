@@ -146,6 +146,17 @@ describe("Fettler-only customer Fly profile", () => {
     );
   });
 
+  it("preserves injected critical-health failures in required startup validation", () => {
+    const errors = validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_CUSTOMER_READY: "1",
+      MENDPOINT_CUSTOMER_QUALIFICATION_MODE: "required",
+    }), {
+      criticalHealth: [{ name: "worker", ok: false }],
+      now: "2026-08-30T12:00:00.000Z",
+    });
+    expect(errors.some((error) => error.includes("critical_health_failed"))).toBe(true);
+  });
+
   it("limits each runtime child to the secrets it needs", () => {
     const env = customerRuntime();
     env.MENDPOINT_SANDBOX_FLY_TOKEN = "sandbox-token";

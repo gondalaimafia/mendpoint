@@ -259,7 +259,7 @@ export function validateCustomerWardenRuntime(
     errors.push(`Customer readiness indeterminate: ${readiness.reasons.join(", ")}`);
   } else if (readiness.status === "not_ready" && readiness.declared === "ready") {
     for (const reason of readiness.reasons) {
-      if (reason !== "customer_profile_blocked" && reason !== "critical_health_failed") {
+      if (reason !== "customer_profile_blocked") {
         errors.push(`Customer readiness blocked: ${reason}`);
       }
     }
