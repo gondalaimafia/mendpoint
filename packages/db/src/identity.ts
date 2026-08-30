@@ -317,16 +317,20 @@ export function claimIdentitySession(
       throw new Error("identity_session_membership_invalid");
     }
     const principal = db.raw.prepare(
-      `SELECT id, kind, expires_at, revoked_at FROM principals
+      `SELECT id, kind, subject, audience, expires_at, revoked_at FROM principals
        WHERE tenant_id = ? AND id = ? AND kind = 'human'`,
     ).get(tenantId, principalId) as {
       id: string;
       kind: string;
+      subject: string;
+      audience: string | null;
       expires_at: string | null;
       revoked_at: string | null;
     } | undefined;
     if (
       !principal ||
+      principal.audience !== issuer ||
+      principal.subject !== `${issuer}|${subject}` ||
       principal.revoked_at !== null ||
       (principal.expires_at !== null && principal.expires_at <= observedAt)
     ) throw new Error("identity_session_principal_invalid");

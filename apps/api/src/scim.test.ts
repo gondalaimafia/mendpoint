@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAuthMiddleware, scopeAllows, type ApiEnv } from "./auth.js";
-import { createScimRoutes, scimBindingsFromEnv } from "./scim.js";
+import { createScimRoutes, scimBindingsFromEnv, validateScimBindings } from "./scim.js";
 
 const NOW = "2026-08-30T12:00:00.000Z";
 const ISSUER = "https://identity.example";
@@ -61,7 +61,7 @@ function fixture(audience = "mendpoint-scim") {
   app.use("*", createAuthMiddleware(db, { oidc: null, now: () => new Date(NOW) }));
   app.route("/scim/v2", createScimRoutes({ db, bindings, now: () => new Date(NOW) }));
   process.env.API_AUTH = "required";
-  return { app, db, key };
+  return { app, db, key, bindings, service };
 }
 
 afterEach(() => {
@@ -103,6 +103,20 @@ describe("SCIM tenant lifecycle", () => {
     expect(denied.status).toBe(403);
   });
 
+  it("validates every protected binding against an active SCIM principal and exact credential scope", () => {
+    const valid = fixture();
+    expect(() => validateScimBindings(valid.db, valid.bindings, NOW)).not.toThrow();
+
+    valid.db.raw.prepare("UPDATE api_keys SET scopes_json = ? WHERE id = ?")
+      .run(JSON.stringify(["identity:provision", "graph:read"]), valid.key.id);
+    expect(() => validateScimBindings(valid.db, valid.bindings, NOW))
+      .toThrow("scim_binding_scope_invalid");
+
+    const wrongAudience = fixture("mendpoint-api");
+    expect(() => validateScimBindings(wrongAudience.db, wrongAudience.bindings, NOW))
+      .toThrow("scim_binding_principal_invalid");
+  });
+
   it("provisions, lists, filters, and exactly replays a user without crossing tenants", async () => {
     const { app, db, key } = fixture();
     const created = await app.request("/scim/v2/Users", {
@@ -123,7 +137,61 @@ describe("SCIM tenant lifecycle", () => {
 
     const list = await app.request('/scim/v2/Users?filter=userName%20eq%20%22reviewer%40example.com%22', { headers: headers(key.token) });
     await expect(list.json()).resolves.toMatchObject({ totalResults: 1, Resources: [{ id: payload.id }] });
+    const azureFilter = await app.request('/scim/v2/Users?filter=USERNAME%20EQ%20%22REVIEWER%40EXAMPLE.COM%22', { headers: headers(key.token) });
+    await expect(azureFilter.json()).resolves.toMatchObject({ totalResults: 1, Resources: [{ id: payload.id }] });
     expect(listAudit(db, "tenant-a").filter((row) => row.action === "scim.user.provision")).toHaveLength(1);
+  });
+
+  it("accepts Okta and Azure case variants plus pathless Replace while validating schemas", async () => {
+    const { app, key } = fixture();
+    const created = await app.request("/scim/v2/Users", {
+      method: "POST",
+      headers: headers(key.token),
+      body: JSON.stringify({
+        Schemas: ["URN:IETF:PARAMS:SCIM:SCHEMAS:CORE:2.0:USER"],
+        ExternalId: "azure-user-1",
+        UserName: "Azure.User@example.com",
+        DisplayName: "Azure User",
+        Active: true,
+        Roles: [{ value: "Engineer", primary: true }],
+      }),
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await created.json() as { id: string; meta: { version: string } };
+
+    const patched = await app.request(`/scim/v2/Users/${createdBody.id}`, {
+      method: "PATCH",
+      headers: headers(key.token, { "if-match": createdBody.meta.version }),
+      body: JSON.stringify({
+        SCHEMAS: ["URN:IETF:PARAMS:SCIM:API:MESSAGES:2.0:PATCHOP"],
+        operations: [{ OP: "Replace", VALUE: { ACTIVE: false, DISPLAYNAME: "Disabled Azure User" } }],
+      }),
+    });
+    expect(patched.status).toBe(200);
+    await expect(patched.json()).resolves.toMatchObject({
+      active: false,
+      displayName: "Disabled Azure User",
+    });
+
+    const missingSchema = await app.request("/scim/v2/Users", {
+      method: "POST",
+      headers: headers(key.token),
+      body: JSON.stringify({ ...user(), schemas: [] }),
+    });
+    expect(missingSchema.status).toBe(400);
+  });
+
+  it("enforces case-insensitive userName uniqueness inside one tenant provisioning domain", async () => {
+    const { app, key } = fixture();
+    expect((await app.request("/scim/v2/Users", {
+      method: "POST", headers: headers(key.token), body: JSON.stringify(user()),
+    })).status).toBe(201);
+    const duplicate = await app.request("/scim/v2/Users", {
+      method: "POST",
+      headers: headers(key.token),
+      body: JSON.stringify(user({ externalId: "idp-user-2", userName: "REVIEWER@EXAMPLE.COM" })),
+    });
+    expect(duplicate.status).toBe(409);
   });
 
   it("rejects conflicting replay and stale updates, then deactivates and reactivates the same identity", async () => {

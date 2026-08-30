@@ -40,6 +40,14 @@ const CUSTOMER_WARDEN_ENV = {
   OIDC_REDIRECT_URI: "https://console.example/api/oidc/callback",
   OIDC_TENANT_CLAIM: "tenant_id",
   OIDC_REQUIRED_AMR: "mfa",
+  MENDPOINT_SCIM_BINDINGS_JSON: JSON.stringify({
+    schemaVersion: 1,
+    bindings: [{
+      tenantId: "tenant_default",
+      principalId: "principal-scim-preflight",
+      issuer: "https://identity.example",
+    }],
+  }),
   LLM_AGENT_MODEL: "test-model",
   LLM_AGENT_URL: "https://models.example/v1",
   OPENAI_API_KEY: "preflight-test-model-key",

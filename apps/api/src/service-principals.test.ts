@@ -10,8 +10,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createAuthMiddleware, type ApiEnv } from "./auth.js";
-import { createServicePrincipalRoutes } from "./service-principals.js";
+import { can, permissionsFor } from "@mendpoint/platform";
+import { createAuthMiddleware, scopeAllows, type ApiEnv } from "./auth.js";
+import {
+  createServicePrincipalRoutes,
+  SERVICE_PRINCIPAL_ALLOWED_SCOPES,
+} from "./service-principals.js";
 
 const NOW = "2026-08-30T12:00:00.000Z";
 const EXPIRES = "2026-09-29T12:00:00.000Z";
@@ -102,6 +106,19 @@ async function createPrincipal(app: Hono<ApiEnv>, idempotencyKey = "create-1") {
 }
 
 describe("service principal administration", () => {
+  it("advertises only scopes the production agent role can exercise", () => {
+    expect(SERVICE_PRINCIPAL_ALLOWED_SCOPES).toEqual(permissionsFor("agent").slice().sort());
+    for (const scope of SERVICE_PRINCIPAL_ALLOWED_SCOPES) {
+      expect(can({ id: "service:test", tenantId: "tenant-a", role: "agent" }, scope)).toBe(true);
+      expect(scopeAllows([scope], scope)).toBe(true);
+    }
+    expect(SERVICE_PRINCIPAL_ALLOWED_SCOPES).not.toEqual(expect.arrayContaining([
+      "plan:edit",
+      "pr:write",
+      "dogfood:read",
+    ]));
+  });
+
   it("issues one tenant-bound attenuated credential and authenticates it as a service", async () => {
     const { app, db } = fixture();
     const { response, payload } = await createPrincipal(app);
@@ -158,7 +175,7 @@ describe("service principal administration", () => {
 
   it("rejects wildcard, tenant administration, excessive lifetime, and nonmanager authority", async () => {
     const { app } = fixture();
-    for (const scopes of [["*"], ["tenant:admin"]]) {
+    for (const scopes of [["*"], ["tenant:admin"], ["plan:edit"], ["pr:write"], ["dogfood:read"]]) {
       const response = await app.request("/tenants/service-principals", {
         method: "POST",
         headers: mutationHeaders(`scope-${scopes[0]}`),

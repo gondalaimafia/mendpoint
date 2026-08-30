@@ -15,7 +15,7 @@ import { createMigrationPrReviewRoutes } from "./review-routes.js";
 import { createTenantMembershipRoutes } from "./tenant-memberships.js";
 import { createServicePrincipalRoutes } from "./service-principals.js";
 import { createIdentitySessionRoutes } from "./identity-sessions.js";
-import { createScimRoutes, scimBindingsFromEnv } from "./scim.js";
+import { createScimRoutes, scimBindingsFromEnv, validateScimBindings } from "./scim.js";
 import { initializeApiDurableState } from "./production.js";
 import {
   AWS_SDK_JS_V2_TO_V3_RECIPE,
@@ -48,6 +48,8 @@ export function initializeApiRuntime(
 ) {
   return initializeApiDurableState(() => {
     const db = createDb();
+    const scimBindings = scimBindingsFromEnv(env);
+    validateScimBindings(db, scimBindings);
     const transformerCampaigns = new TransformerCampaignService();
     const transformerExecutions = new TransformerPilotExecutionService();
     const transformerMissionAuthority = createAppDbTransformerMissionAuthority(db);
@@ -91,7 +93,7 @@ export function initializeApiRuntime(
       tenantMembershipRoutes: createTenantMembershipRoutes({ db }),
       servicePrincipalRoutes: createServicePrincipalRoutes({ db }),
       identitySessionRoutes: createIdentitySessionRoutes({ db }),
-      scimRoutes: createScimRoutes({ db, bindings: scimBindingsFromEnv(env) }),
+      scimRoutes: createScimRoutes({ db, bindings: scimBindings }),
     };
   }, env);
 }

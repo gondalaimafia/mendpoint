@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   claimIdentitySession,
@@ -136,6 +137,45 @@ describe("tenant identity memberships", () => {
     ).toThrow();
   });
 
+  it("enforces case-insensitive membership user names and fails legacy conflicts without rewriting data", () => {
+    const db = testDb();
+    putTenantMembership(db, {
+      tenantId: "tenant-a", issuer: "https://id.example.com", subject: "user-123",
+      email: "Reviewer@Example.com", displayName: "Reviewer", role: "engineer",
+      status: "active", updatedAt: "2026-08-02T00:00:00.000Z",
+    });
+    expect(() => putTenantMembership(db, {
+      tenantId: "tenant-a", issuer: "https://id.example.com", subject: "user-456",
+      email: "reviewer@example.com", displayName: "Second reviewer", role: "viewer",
+      status: "active", updatedAt: "2026-08-02T00:00:01.000Z",
+    })).toThrow(/UNIQUE constraint failed/);
+
+    const legacyDirectory = mkdtempSync(join(tmpdir(), "mendpoint-identity-legacy-"));
+    dirs.push(legacyDirectory);
+    const legacyPath = join(legacyDirectory, "identity.sqlite");
+    const legacy = createDb(legacyPath);
+    legacy.raw.exec("DROP INDEX tenant_memberships_username_domain_uidx");
+    legacy.raw.prepare(
+      `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+       VALUES ('tenant-legacy', 'tenant-legacy', 'Legacy', 'enterprise', 'active', 20, ?)`,
+    ).run("2026-08-02T00:00:00.000Z");
+    const insert = legacy.raw.prepare(
+      `INSERT INTO tenant_memberships
+       (tenant_id, issuer, subject, email, display_name, role, status, created_at, updated_at, offboarded_at)
+       VALUES ('tenant-legacy', 'https://id.example.com', ?, ?, ?, 'viewer', 'active', ?, ?, NULL)`,
+    );
+    insert.run("legacy-1", "duplicate@example.com", "Legacy one", "2026-08-02T00:00:00.000Z", "2026-08-02T00:00:00.000Z");
+    insert.run("legacy-2", "DUPLICATE@EXAMPLE.COM", "Legacy two", "2026-08-02T00:00:01.000Z", "2026-08-02T00:00:01.000Z");
+    legacy.raw.close();
+
+    expect(() => createDb(legacyPath)).toThrow("tenant_membership_user_name_conflict");
+    const inspection = new DatabaseSync(legacyPath);
+    expect((inspection.prepare(
+      "SELECT COUNT(*) AS count FROM tenant_memberships WHERE tenant_id = 'tenant-legacy'",
+    ).get() as { count: number }).count).toBe(2);
+    inspection.close();
+  });
+
   it("binds durable sessions to the exact tenant principal and immutable membership authority", () => {
     const db = testDb();
     putTenantMembership(db, {
@@ -156,6 +196,28 @@ describe("tenant identity memberships", () => {
       observedAt: "2026-08-02T00:10:00.000Z",
     });
     expect(JSON.stringify(session)).not.toContain("private-bearer-token");
+    insertPrincipal(db, {
+      id: "principal-human-wrong", tenantId: "tenant-a", kind: "human",
+      subject: "https://id.example.com|other-user", displayName: "Other",
+      audience: "https://id.example.com", createdAt: "2026-08-02T00:00:00.000Z",
+    });
+    expect(() => claimIdentitySession(db, {
+      tenantId: "tenant-a", principalId: "principal-human-wrong", issuer: "https://id.example.com",
+      subject: "user-123", membershipUpdatedAt: "2026-08-02T00:00:00.000Z",
+      authStrength: "amr:mfa", token: "wrong-principal-token",
+      issuedAt: "2026-08-02T00:00:00.000Z", expiresAt: "2026-08-02T01:00:00.000Z",
+      observedAt: "2026-08-02T00:10:00.000Z",
+    })).toThrow("identity_session_principal_invalid");
+    expect(() => db.raw.prepare(
+      `INSERT INTO identity_sessions
+       (id, tenant_id, principal_id, issuer, subject, membership_updated_at, auth_strength,
+        token_sha256, issued_at, expires_at, last_seen_at, created_at)
+       VALUES ('wrong-authority', 'tenant-a', 'principal-human-wrong', 'https://id.example.com',
+        'user-123', ?, 'amr:mfa', ?, ?, ?, ?, ?)`,
+    ).run(
+      "2026-08-02T00:00:00.000Z", "b".repeat(64), "2026-08-02T00:00:00.000Z",
+      "2026-08-02T01:00:00.000Z", "2026-08-02T00:10:00.000Z", "2026-08-02T00:10:00.000Z",
+    )).toThrow("identity_session_principal_authority_mismatch");
     expect(() => db.raw.prepare(
       "UPDATE identity_sessions SET subject = 'other' WHERE id = ?",
     ).run(session.id)).toThrow("identity_session_identity_immutable");
@@ -176,7 +238,7 @@ describe("tenant identity memberships", () => {
     ).run(
       "2026-08-02T00:00:00.000Z", "a".repeat(64), "2026-08-02T00:00:00.000Z",
       "2026-08-02T01:00:00.000Z", "2026-08-02T00:10:00.000Z", "2026-08-02T00:10:00.000Z",
-    )).toThrow(/FOREIGN KEY/);
+    )).toThrow("identity_session_principal_authority_mismatch");
   });
 
   it("requires a current tenant-bound actor when revoking a durable session", () => {

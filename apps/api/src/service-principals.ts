@@ -10,7 +10,7 @@ import {
   type AppDb,
   type ApiKeyRow,
 } from "@mendpoint/db";
-import type { Permission } from "@mendpoint/platform";
+import { permissionsFor, type Permission } from "@mendpoint/platform";
 import { createHash } from "node:crypto";
 import type { Context } from "hono";
 import { Hono } from "hono";
@@ -19,19 +19,11 @@ import type { ApiEnv } from "./auth.js";
 const MAX_BODY_BYTES = 32 * 1_024;
 const MAX_LIFETIME_MS = 90 * 24 * 60 * 60 * 1_000;
 const SUBJECT = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$/;
-const ALLOWED_SCOPES = new Set<Permission>([
-  "graph:read",
-  "graph:write",
-  "plan:read",
-  "plan:edit",
-  "plan:execute",
-  "pr:write",
-  "outcome:label",
-  "dogfood:read",
-  "sandbox:run",
-  "transformer:worker",
-  "identity:provision",
-]);
+/** Scopes a service principal can actually exercise through the agent role. */
+export const SERVICE_PRINCIPAL_ALLOWED_SCOPES = Object.freeze(
+  permissionsFor("agent").slice().sort(),
+) satisfies readonly Permission[];
+const ALLOWED_SCOPES = new Set<Permission>(SERVICE_PRINCIPAL_ALLOWED_SCOPES);
 
 type Options = Readonly<{ db: AppDb; now?: () => Date }>;
 

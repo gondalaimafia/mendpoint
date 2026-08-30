@@ -660,7 +660,19 @@ BEFORE DELETE ON identity_sessions
 BEGIN
   SELECT RAISE(ABORT, 'identity_session_delete_forbidden');
 END;
-
+CREATE TRIGGER IF NOT EXISTS identity_sessions_principal_authority_insert
+BEFORE INSERT ON identity_sessions
+WHEN NOT EXISTS (
+  SELECT 1 FROM principals
+  WHERE id = NEW.principal_id
+    AND tenant_id = NEW.tenant_id
+    AND kind = 'human'
+    AND audience = NEW.issuer
+    AND subject = NEW.issuer || '|' || NEW.subject
+)
+BEGIN
+  SELECT RAISE(ABORT, 'identity_session_principal_authority_mismatch');
+END;
 CREATE TABLE IF NOT EXISTS artifact_manifests (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
@@ -2232,21 +2244,68 @@ export function createDb(urlOrPath?: string): AppDb {
   const path = resolveDbPath(urlOrPath);
   mkdirSync(dirname(path), { recursive: true });
   const raw = new DatabaseSync(path);
-  // Reliability + concurrent reader/writer friendliness on Windows
-  raw.exec("PRAGMA foreign_keys = ON;");
-  raw.exec("PRAGMA journal_mode = WAL;");
-  raw.exec("PRAGMA synchronous = NORMAL;");
-  raw.exec("PRAGMA busy_timeout = 5000;");
-  raw.exec("PRAGMA temp_store = MEMORY;");
-  raw.exec(DDL);
-  migrateRepositorySnapshotIdentity({ raw });
-  migrateProvidersFeedColumns({ raw });
-  migrateAuditIntegrity({ raw });
-  migrateArtifactContent({ raw });
-  migrateWardenTransformerTableNames({ raw });
-  migrateWardenCiAwaitingReview({ raw });
-  installTrustImmutability({ raw });
-  return { raw };
+  try {
+    // Reliability + concurrent reader/writer friendliness on Windows
+    raw.exec("PRAGMA foreign_keys = ON;");
+    raw.exec("PRAGMA journal_mode = WAL;");
+    raw.exec("PRAGMA synchronous = NORMAL;");
+    raw.exec("PRAGMA busy_timeout = 5000;");
+    raw.exec("PRAGMA temp_store = MEMORY;");
+    raw.exec(DDL);
+    migrateTenantMembershipUserNameUniqueness({ raw });
+    validateIdentitySessionPrincipalAuthority({ raw });
+    migrateRepositorySnapshotIdentity({ raw });
+    migrateProvidersFeedColumns({ raw });
+    migrateAuditIntegrity({ raw });
+    migrateArtifactContent({ raw });
+    migrateWardenTransformerTableNames({ raw });
+    migrateWardenCiAwaitingReview({ raw });
+    installTrustImmutability({ raw });
+    return { raw };
+  } catch (error) {
+    raw.close();
+    throw error;
+  }
+}
+
+function validateIdentitySessionPrincipalAuthority(db: AppDb): void {
+  const conflict = db.raw.prepare(
+    `SELECT sessions.id
+     FROM identity_sessions AS sessions
+     LEFT JOIN principals
+       ON principals.id = sessions.principal_id
+      AND principals.tenant_id = sessions.tenant_id
+      AND principals.kind = 'human'
+      AND principals.audience = sessions.issuer
+      AND principals.subject = sessions.issuer || '|' || sessions.subject
+     WHERE principals.id IS NULL
+     LIMIT 1`,
+  ).get();
+  if (conflict) throw new Error("identity_session_principal_authority_mismatch");
+}
+
+function migrateTenantMembershipUserNameUniqueness(db: AppDb): void {
+  db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const conflict = db.raw.prepare(
+      `SELECT tenant_id, issuer, lower(email) AS user_name, COUNT(*) AS count
+       FROM tenant_memberships
+       WHERE email IS NOT NULL
+       GROUP BY tenant_id, issuer, lower(email)
+       HAVING COUNT(*) > 1
+       LIMIT 1`,
+    ).get() as { tenant_id: string; issuer: string; user_name: string; count: number } | undefined;
+    if (conflict) throw new Error("tenant_membership_user_name_conflict");
+    db.raw.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS tenant_memberships_username_domain_uidx
+       ON tenant_memberships(tenant_id, issuer, lower(email))
+       WHERE email IS NOT NULL`,
+    );
+    db.raw.exec("COMMIT");
+  } catch (error) {
+    if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function migrateWardenCiAwaitingReview(db: AppDb): void {

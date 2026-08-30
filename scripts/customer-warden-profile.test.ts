@@ -99,6 +99,7 @@ describe("Fettler-only customer Fly profile", () => {
       "OIDC_CLIENT_ID",
       "OIDC_CLIENT_SECRET",
       "OIDC_REDIRECT_URI",
+      "MENDPOINT_SCIM_BINDINGS_JSON",
       "MENDPOINT_BACKUP_KEY",
       "MENDPOINT_BACKUP_KEY_ID",
       "MENDPOINT_ALLOWED_MACHINE_ID",
@@ -170,6 +171,7 @@ describe("Fettler-only customer Fly profile", () => {
 
     expect(api.GITHUB_APP_PRIVATE_KEY).toBe(env.GITHUB_APP_PRIVATE_KEY);
     expect(api.MENDPOINT_BACKUP_KEY).toBe(env.MENDPOINT_BACKUP_KEY);
+    expect(api.MENDPOINT_SCIM_BINDINGS_JSON).toBe(env.MENDPOINT_SCIM_BINDINGS_JSON);
     expect(api.OPENAI_API_KEY).toBeUndefined();
     expect(api.MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON).toBeUndefined();
     expect(api.AWS_SECRET_ACCESS_KEY).toBeUndefined();
@@ -188,6 +190,7 @@ describe("Fettler-only customer Fly profile", () => {
     );
     expect(worker.GITHUB_APP_PRIVATE_KEY).toBe(env.GITHUB_APP_PRIVATE_KEY);
     expect(worker.MENDPOINT_BACKUP_KEY).toBeUndefined();
+    expect(worker.MENDPOINT_SCIM_BINDINGS_JSON).toBeUndefined();
     expect(worker.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(worker.MENDPOINT_SANDBOX_FLY_TOKEN).toBe(env.MENDPOINT_SANDBOX_FLY_TOKEN);
     expect(worker.MENDPOINT_SANDBOX_KIND).toBe(env.MENDPOINT_SANDBOX_KIND);

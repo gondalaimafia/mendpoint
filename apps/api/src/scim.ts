@@ -1,6 +1,7 @@
 import {
   getPrincipal,
   getTenantMembership,
+  listApiKeys,
   listTenantMemberships,
   putTenantMembership,
   recordAudit,
@@ -23,6 +24,21 @@ const SCIM_ROLES = new Set<ScimRole>(["admin", "engineer", "viewer", "fde"]);
 
 export type ScimBinding = Readonly<{ tenantId: string; principalId: string; issuer: string }>;
 type Options = Readonly<{ db: AppDb; bindings: ReadonlyMap<string, ScimBinding>; now?: () => Date }>;
+
+function attribute(input: Record<string, unknown>, name: string): unknown {
+  const matches = Object.keys(input).filter((key) => key.toLowerCase() === name.toLowerCase());
+  if (matches.length > 1) throw new Error("scim_payload_invalid");
+  return matches[0] === undefined ? undefined : input[matches[0]];
+}
+
+function requireSchema(input: Record<string, unknown>, expected: string, code: string): void {
+  const schemas = attribute(input, "schemas");
+  if (
+    !Array.isArray(schemas) ||
+    schemas.some((value) => typeof value !== "string") ||
+    !schemas.some((value) => value.toLowerCase() === expected.toLowerCase())
+  ) throw new Error(code);
+}
 
 function text(value: unknown, code: string, maximum: number): string {
   if (typeof value !== "string" || !value.trim() || value.trim().length > maximum) throw new Error(code);
@@ -63,6 +79,38 @@ export function scimBindingsFromEnv(
     result.set(tenantId, Object.freeze({ tenantId, principalId, issuer }));
   }
   return result;
+}
+
+export function validateScimBindings(
+  db: AppDb,
+  bindings: ReadonlyMap<string, ScimBinding>,
+  observedAt = new Date().toISOString(),
+): void {
+  if (!Number.isFinite(Date.parse(observedAt)) || new Date(observedAt).toISOString() !== observedAt) {
+    throw new Error("scim_bindings_observed_at_invalid");
+  }
+  for (const binding of bindings.values()) {
+    const principal = getPrincipal(db, binding.tenantId, binding.principalId);
+    if (
+      !principal ||
+      principal.kind !== "service" ||
+      principal.audience !== "mendpoint-scim" ||
+      principal.created_at > observedAt ||
+      principal.revoked_at !== null ||
+      (principal.expires_at !== null && principal.expires_at <= observedAt)
+    ) throw new Error("scim_binding_principal_invalid");
+    const activeKeys = listApiKeys(db, binding.tenantId).filter(
+      (key) => key.principal_id === binding.principalId && key.created_at <= observedAt && key.revoked_at === null,
+    );
+    if (
+      activeKeys.length === 0 ||
+      activeKeys.some((key) => {
+        let scopes: unknown;
+        try { scopes = JSON.parse(key.scopes_json); } catch { return true; }
+        return !Array.isArray(scopes) || scopes.length !== 1 || scopes[0] !== "identity:provision";
+      })
+    ) throw new Error("scim_binding_scope_invalid");
+  }
 }
 
 function scimError(c: Context<ApiEnv>, status: number, detail: string, scimType?: string): Response {
@@ -145,7 +193,7 @@ function role(value: unknown): ScimRole {
     ? (value.find((item) => item && typeof item === "object" && (item as { primary?: unknown }).primary === true) ?? value[0])
     : value;
   const raw = typeof candidate === "object" && candidate !== null ? (candidate as { value?: unknown }).value : candidate;
-  const normalized = text(raw, "scim_role_invalid", 32) as ScimRole;
+  const normalized = text(raw, "scim_role_invalid", 32).toLowerCase() as ScimRole;
   if (!SCIM_ROLES.has(normalized)) throw new Error("scim_role_invalid");
   return normalized;
 }
@@ -154,6 +202,64 @@ function email(value: unknown): string {
   const normalized = text(value, "scim_user_name_invalid", 320).toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) throw new Error("scim_user_name_invalid");
   return normalized;
+}
+
+function putScimMembership(
+  db: AppDb,
+  input: Parameters<typeof putTenantMembership>[1],
+): TenantMembershipRow {
+  try {
+    return putTenantMembership(db, input);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message.includes("tenant_memberships_username_domain_uidx") ||
+        error.message.includes("tenant_memberships.tenant_id, tenant_memberships.issuer"))
+    ) throw new Error("scim_user_conflict");
+    throw error;
+  }
+}
+
+type MutableScimUser = {
+  email: string | null;
+  displayName: string;
+  role: TenantMembershipRow["role"];
+  status: TenantMembershipRow["status"];
+};
+
+function replaceAttribute(next: MutableScimUser, path: string, value: unknown): void {
+  switch (path.toLowerCase()) {
+    case "active":
+      if (typeof value !== "boolean") throw new Error("scim_patch_invalid");
+      next.status = value ? "active" : "offboarded";
+      return;
+    case "roles":
+      next.role = role(value);
+      return;
+    case "displayname":
+      next.displayName = text(value, "scim_display_name_invalid", 200);
+      return;
+    case "username":
+      next.email = email(value);
+      return;
+    default:
+      throw new Error("scim_patch_invalid");
+  }
+}
+
+function applyReplace(next: MutableScimUser, path: unknown, value: unknown): void {
+  if (typeof path === "string") {
+    replaceAttribute(next, path, value);
+    return;
+  }
+  if (path !== undefined || !value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("scim_patch_invalid");
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 0) throw new Error("scim_patch_invalid");
+  for (const [attributeName, attributeValue] of entries) {
+    replaceAttribute(next, attributeName, attributeValue);
+  }
 }
 
 function nextTimestamp(now: Date, previous?: string): string {
@@ -218,9 +324,13 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
       let rows = listTenantMemberships(options.db, binding.tenantId).filter((row) => row.issuer === binding.issuer);
       const filter = c.req.query("filter");
       if (filter) {
-        const match = /^(userName|externalId) eq "([^"]{1,512})"$/.exec(filter);
+        const match = /^(username|externalid)\s+(eq)\s+"([^"]{1,512})"$/i.exec(filter);
         if (!match) throw new Error("scim_filter_invalid");
-        rows = rows.filter((row) => match[1] === "externalId" ? row.subject === match[2] : row.email === match[2]!.toLowerCase());
+        const attributeName = match[1]!.toLowerCase();
+        const expected = match[3]!;
+        rows = rows.filter((row) => attributeName === "externalid"
+          ? row.subject === expected
+          : row.email?.toLowerCase() === expected.toLowerCase());
       }
       const resources = rows.map(dto);
       return c.json({ schemas: [LIST_SCHEMA], totalResults: resources.length, startIndex: 1, itemsPerPage: resources.length, Resources: resources });
@@ -241,12 +351,13 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
     try {
       const binding = authority(c, options);
       const input = await jsonBody(c);
-      const subject = text(input.externalId, "scim_external_id_invalid", 512);
+      requireSchema(input, USER_SCHEMA, "scim_user_schema_invalid");
+      const subject = text(attribute(input, "externalId"), "scim_external_id_invalid", 512);
       const requested = {
-        email: email(input.userName),
-        displayName: text(input.displayName, "scim_display_name_invalid", 200),
-        role: role(input.roles),
-        status: input.active === false ? "offboarded" as const : "active" as const,
+        email: email(attribute(input, "userName")),
+        displayName: text(attribute(input, "displayName"), "scim_display_name_invalid", 200),
+        role: role(attribute(input, "roles")),
+        status: attribute(input, "active") === false ? "offboarded" as const : "active" as const,
       };
       const result = transact(options.db, () => {
         const existing = getTenantMembership(options.db, binding.tenantId, binding.issuer, subject);
@@ -257,7 +368,7 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
           ) return { row: existing, created: false } as const;
           throw new Error("scim_user_conflict");
         }
-        const created = putTenantMembership(options.db, {
+        const created = putScimMembership(options.db, {
           tenantId: binding.tenantId,
           issuer: binding.issuer,
           subject,
@@ -282,21 +393,22 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
     try {
       const binding = authority(c, options);
       const input = await jsonBody(c);
+      requireSchema(input, USER_SCHEMA, "scim_user_schema_invalid");
       const row = transact(options.db, () => {
         const current = memberById(options.db, binding, c.req.param("id"));
         if (!current) throw new Error("scim_not_found");
         if (current.role === "owner") throw new Error("scim_owner_managed_outside_scim");
         requireVersion(c, current);
-        if (text(input.externalId, "scim_external_id_invalid", 512) !== current.subject) throw new Error("scim_external_id_immutable");
+        if (text(attribute(input, "externalId"), "scim_external_id_invalid", 512) !== current.subject) throw new Error("scim_external_id_immutable");
         const updatedAt = nextTimestamp(now(), current.updated_at);
-        const updated = putTenantMembership(options.db, {
+        const updated = putScimMembership(options.db, {
           tenantId: binding.tenantId,
           issuer: binding.issuer,
           subject: current.subject,
-          email: email(input.userName),
-          displayName: text(input.displayName, "scim_display_name_invalid", 200),
-          role: role(input.roles),
-          status: input.active === false ? "offboarded" : "active",
+          email: email(attribute(input, "userName")),
+          displayName: text(attribute(input, "displayName"), "scim_display_name_invalid", 200),
+          role: role(attribute(input, "roles")),
+          status: attribute(input, "active") === false ? "offboarded" : "active",
           updatedAt,
         });
         if (updated.status === "offboarded") revokeIdentitySessionsForMember(options.db, {
@@ -315,7 +427,9 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
     try {
       const binding = authority(c, options);
       const input = await jsonBody(c);
-      if (!Array.isArray(input.schemas) || !input.schemas.includes(PATCH_SCHEMA) || !Array.isArray(input.Operations)) {
+      requireSchema(input, PATCH_SCHEMA, "scim_patch_invalid");
+      const operations = attribute(input, "Operations");
+      if (!Array.isArray(operations)) {
         throw new Error("scim_patch_invalid");
       }
       const row = transact(options.db, () => {
@@ -324,20 +438,17 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
         if (current.role === "owner") throw new Error("scim_owner_managed_outside_scim");
         requireVersion(c, current);
         const next = { email: current.email, displayName: current.display_name, role: current.role, status: current.status };
-        for (const operation of input.Operations as unknown[]) {
+        for (const operation of operations) {
           if (!operation || typeof operation !== "object" || Array.isArray(operation)) throw new Error("scim_patch_invalid");
-          const value = operation as { op?: unknown; path?: unknown; value?: unknown };
-          if (typeof value.op !== "string" || value.op.toLowerCase() !== "replace" || typeof value.path !== "string") {
+          const value = operation as Record<string, unknown>;
+          const op = attribute(value, "op");
+          if (typeof op !== "string" || op.toLowerCase() !== "replace") {
             throw new Error("scim_patch_invalid");
           }
-          if (value.path === "active" && typeof value.value === "boolean") next.status = value.value ? "active" : "offboarded";
-          else if (value.path === "roles") next.role = role(value.value);
-          else if (value.path === "displayName") next.displayName = text(value.value, "scim_display_name_invalid", 200);
-          else if (value.path === "userName") next.email = email(value.value);
-          else throw new Error("scim_patch_invalid");
+          applyReplace(next, attribute(value, "path"), attribute(value, "value"));
         }
         const updatedAt = nextTimestamp(now(), current.updated_at);
-        const updated = putTenantMembership(options.db, {
+        const updated = putScimMembership(options.db, {
           tenantId: binding.tenantId, issuer: binding.issuer, subject: current.subject,
           email: next.email, displayName: next.displayName, role: next.role, status: next.status, updatedAt,
         });
@@ -362,7 +473,7 @@ export function createScimRoutes(options: Options): Hono<ApiEnv> {
         if (current.role === "owner") throw new Error("scim_owner_managed_outside_scim");
         requireVersion(c, current);
         const updatedAt = nextTimestamp(now(), current.updated_at);
-        const updated = putTenantMembership(options.db, {
+        const updated = putScimMembership(options.db, {
           tenantId: binding.tenantId, issuer: binding.issuer, subject: current.subject,
           email: current.email, displayName: current.display_name, role: current.role,
           status: "offboarded", updatedAt,
