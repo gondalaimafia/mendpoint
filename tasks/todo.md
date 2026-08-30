@@ -3655,7 +3655,7 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - [x] Add negative coverage for missing, malformed, mismatched, expired, revoked, unhealthy, and incomplete evidence.
 - [x] Run focused readiness tests, the Ops typecheck, and diff integrity.
 - [x] Repair exact-head review P1 so absent or malformed revocation state is indeterminate and only an explicit array can prove the revocation boundary.
-- [ ] Obtain independent exact-head review, current-base CI, protected merge, and exact-revision deployment proof.
+- [x] Obtain independent exact-head review, current-base CI, protected merge, and exact-revision deployment proof.
 
 ### Review
 
@@ -3663,3 +3663,29 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The focused matrix passes 30 of 30 tests. Root review added a fail-closed `critical_health_indeterminate` result so omitted health evidence cannot qualify a deployment.
 - Runtime packaging and injection of the qualification attestation and expected digests remain a separate activation increment; this slice does not enable required mode in production.
 - Exact-head review found that missing revocation state was normalized to an empty list. Required mode now distinguishes missing or malformed state from the authoritative empty array, includes that distinction in the readiness digest, and fails closed as indeterminate.
+- Exact head `846a679b4c67fe0bb06a8569d7feeb2f284907b7` passed independent review and all six protected checks, then merged as `5b3ff73717a1e18784a288472d7121d8d89dc23c` with `enforce_admins: true`. The exact revision is deployed on `mendpoint-fettler-production`; `/version`, `/livez`, `/healthz`, and `/readyz` all return HTTP 200 after protected backup run `33307659797` refreshed the overdue authenticated recovery evidence.
+
+## 2026-08-30 GSD Plan 09-02 signed invoice export tracer
+
+- [x] RED: specify immutable tenant-scoped invoice derivation, signing, replay, tax, credits, state transitions, tamper reconciliation, and database convergence.
+- [x] GREEN: implement append-only invoice exports, line items, and state-event chains over exact usage price versions.
+- [x] GREEN: extend authenticated billing economics routes for create, read, transition, and reconciliation without any charging transport.
+- [x] Verify focused DB and API tests, DB/API typechecks, fresh and upgrade database convergence, and diff integrity.
+- [x] Record exact review results and keep live charging and external-account claims explicitly absent.
+- [x] Mount invoice export through the existing billing runtime with a fail-closed, exact-grant protected signing binding and verify every generated signature before persistence.
+
+### Review
+
+- `invoice_exports`, immutable line items, and hash-chained state events are created by the canonical database DDL, including fresh and reopen convergence plus update/delete denial triggers.
+- Exports derive only settlement, adjustment, credit, and refund lines inside one explicit UTC period. Every source must retain its exact tenant price version, currency, entitlement contract, and usage-chain integrity. Money and tax arithmetic uses checked integers and `BigInt`, with explicit basis points, jurisdiction, policy version, and deterministic toward-zero money-micros rounding.
+- An injected signer authorizes the exact tenant, actor, currency, contract, and tax policy, then signs the canonical payload. Only its key identifier and signature are stored. State changes require the same injected finance authority and append policy-versioned events; no card, charge, processor, or external-account path exists.
+- Authenticated `/billing/invoice-exports` create, read, transition, and reconciliation routes force tenant and actor from identity. Public responses exclude canonical payload, source hashes, source sequence, actor, tenant, idempotency, and event-chain fields.
+- Verification passed: 4 focused database tests, 5 focused authenticated API tests, DB typecheck, API typecheck, fresh and reopen database convergence, and `git diff --check`. No live charging or external-account claim was added.
+- The existing billing runtime now mounts invoice routes with a versioned exact-grant signer derived only from a protected current key ID, canonical versioned HMAC keyring, and tenant, actor, currency, contract, and tax authority document. Partial or malformed bindings leave signing unavailable and return 503; a signer that cannot verify its own result cannot persist an invoice.
+- Independent exact-head review found two P1 boundaries and one P2 boundary: the same usage entry could be covered by multiple signed invoices under different request IDs, public hash recomputation could make impossible or unauthorized state events reconcile, and a single current key made historical invoices unverifiable after rotation.
+- The repair gives every tenant usage entry one immutable invoice owner, authenticates every state event with its authority key, validates the exact initial event, allowed transition graph, monotonic time, historical actor validity, and signature chain, and refuses public reads or further transitions when reconciliation is incomplete. A versioned keyring signs with the active key while retaining exact historical verification keys. Invoice issuance also rejects an open billing period.
+- The repaired focused matrix passes 12 of 12 tests, including duplicate-source rejection, state-signature corruption, fail-closed public reads, closed-period enforcement, and historical verification after key rotation. DB and API typechecks pass. Exact-head re-review, protected CI, merge, and deployment remain pending.
+- Exact-head re-review then found that issuance and transitions checked current revocation but not principal creation and expiry at the signed occurrence time, and that the authenticated response did not expose enough verification material to validate its signature independently. Persistence now enforces the same historical actor-validity predicate as reconciliation inside the write transaction. A dedicated tenant-scoped signed-document endpoint returns the exact canonical bytes, digest, Ed25519 signature, key identifier, and public SPKI key; a consumer-side test verifies the digest and signature without server secrets.
+- The next exact-head review found that source selection mixed every tenant contract and currency before validation, and that rotation retained historical private signing material. Source selection now filters by the requested contract and currency inside the immutable usage query, with concurrent-contract and concurrent-currency regressions. The keyring now requires private material only for the selected current key and accepts retired public-only verification records.
+- The final repaired matrix passes 12 of 12 focused database and API tests, both affected typechecks, and diff integrity. A fresh immutable-head review and current-base protected CI remain required before merge.
+- Immutable-head review found one final P2: the parser still accepted private material on a noncurrent key even though rotation examples used public-only history. Key selection is now passed into parsing, which rejects retired private material before importing it. The negative rotation regression proves signer construction fails for a keyring retaining an old private key; the public-only historical verification path remains green.

@@ -5,7 +5,10 @@ import { resolveRenamedEnv } from "@mendpoint/shared";
 import { TransformerCampaignService } from "./transformer-control-plane.js";
 import { TransformerPilotExecutionService } from "./transformer-pilot-executions.js";
 import { createChangeSourceRoutes } from "./change-sources.js";
-import { createBillingEconomicsRoutes } from "./billing-economics.js";
+import {
+  createBillingEconomicsRoutes,
+  invoiceExportSignerFromEnv,
+} from "./billing-economics.js";
 import { createDesignPartnerApplicationRoutes } from "./design-partner-applications.js";
 import { createPilotSuccessContractRoutes } from "./pilot-success-contracts.js";
 import { createMigrationPrReviewRoutes } from "./review-routes.js";
@@ -75,7 +78,10 @@ export function initializeApiRuntime(
         appDb: db,
       }),
       changeSourceRoutes: createChangeSourceRoutes(),
-      billingRoutes: createBillingEconomicsRoutes({ db }),
+      billingRoutes: createBillingEconomicsRoutes({
+        db,
+        invoiceSigner: invoiceExportSignerFromEnv(env),
+      }),
       designPartnerRoutes: createDesignPartnerApplicationRoutes({ db, env }),
       pilotSuccessRoutes: createPilotSuccessContractRoutes({ db }),
       migrationPrRoutes: createMigrationPrReviewRoutes({ db }),
