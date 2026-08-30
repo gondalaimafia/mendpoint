@@ -393,3 +393,9 @@
 **Mistake:** SCIM and service-principal handlers read the entire body before checking actual bytes and treated invalid negative content lengths as if no useful declaration existed.
 **Correction:** Validate content length syntax first, count bytes incrementally, cancel the stream when it crosses the ceiling, and reject invalid UTF-8 before JSON parsing.
 **Rule:** A payload limit that runs after full buffering is not a memory boundary; enforce it while streaming and test producer cancellation.
+
+### 2026-08-30 — Prove optional integrations are absent-safe before deployment
+
+**Mistake:** An externally gated SCIM integration became an unconditional customer-profile requirement without proving that production could boot while the binding was absent.
+**Correction:** Keep the integration optional until its protected bindings exist, and test the SCIM-free customer launcher path before release.
+**Rule:** Every optional external integration needs an absent-binding customer-profile deployment regression, and qualification must inventory every newly required runtime binding before merge.

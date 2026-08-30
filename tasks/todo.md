@@ -3907,3 +3907,17 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 - Issue #437 is open again under the existing owner and title. The matrix now records the live `2026-08-30T20:07:33.000Z` authority timestamp. This repairs the observed `ISSUE_METADATA_MISMATCH` without promoting the unfinished identity requirements or changing their supported boundary.
 - Exact-head review found that protected SCIM binding validation still accepted null or malformed service-principal expiry and did not enforce the 90-day authority ceiling after bootstrap. Startup and every request-time authority check now require canonical finite creation and expiry timestamps, active expiry, and a creation-to-expiry lifetime no greater than 90 days. Direct null, malformed, expired, and overlong regressions cover both consumption points. The repaired identity matrix passes 78 of 78 tests, API typecheck passes, and diff integrity is clean.
+
+## 2026-08-30 Optional SCIM production startup repair
+
+- [x] Remove optional enterprise SCIM bindings from the unconditional customer secret set.
+- [x] Require the complete SCIM binding and bootstrap-authority pair only when either trimmed value activates SCIM.
+- [x] Preserve active SCIM parsing, nonempty bindings, issuer validation, and exact model-tenant matching.
+- [x] Run focused customer profile and launcher tests, affected typechecks, config completeness, and diff integrity.
+- [x] Commit the isolated repair without pushing.
+
+### Review
+
+- The customer profile no longer treats enterprise SCIM as an unconditional production secret. Both trimmed values absent means inactive; either value present activates the pair requirement and the existing binding parser, nonempty, issuer, and exact model-tenant checks.
+- The SCIM-free launcher regression reaches the exclusive-backup startup gate instead of failing profile validation. Partial activation, empty bindings, malformed JSON, issuer mismatch, and tenant mismatch remain fail closed; a complete active pair still passes.
+- Focused verification passes 11 of 11 customer profile and launcher tests, 16 of 16 configuration completeness tests, API and Worker typechecks, scripts typecheck, and diff integrity.

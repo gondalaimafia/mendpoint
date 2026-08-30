@@ -19,8 +19,6 @@ export const CUSTOMER_WARDEN_REQUIRED_SECRETS = Object.freeze([
   "OIDC_REDIRECT_URI",
   "OIDC_TENANT_CLAIM",
   "OIDC_REQUIRED_AMR",
-  "MENDPOINT_SCIM_BINDINGS_JSON",
-  "MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON",
   "MENDPOINT_BACKUP_SOURCE_ROOT",
   "MENDPOINT_BACKUP_FENCE_ROOT",
   "MENDPOINT_BACKUP_EVIDENCE_PATH",
@@ -201,25 +199,40 @@ export function validateCustomerWardenRuntime(
   for (const name of CUSTOMER_WARDEN_REQUIRED_SECRETS) {
     if (!resolveEitherRenamedEnv(env, name)?.trim()) errors.push(`Customer Fettler profile requires ${name}`);
   }
-  try {
-    const bindings = scimBindingsFromEnv(env);
-    if (bindings.size === 0) throw new Error("scim_bindings_empty");
-    const expectedTenants = new Set(
-      (resolveEitherRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_SOURCE_TENANTS") ?? "")
-        .split(",")
-        .map((tenantId) => tenantId.trim())
-        .filter(Boolean),
-    );
-    const actualTenants = new Set(bindings.keys());
-    if (
-      expectedTenants.size === 0 ||
-      expectedTenants.size !== actualTenants.size ||
-      [...expectedTenants].some((tenantId) => !actualTenants.has(tenantId))
-    ) throw new Error("scim_binding_tenant_set_mismatch");
-  } catch (error) {
-    errors.push(
-      `Customer Fettler profile has invalid SCIM bindings: ${error instanceof Error ? error.message : "unknown"}`,
-    );
+  const scimBindingsJson = env.MENDPOINT_SCIM_BINDINGS_JSON?.trim();
+  const scimBootstrapAuthoritiesJson = env.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON?.trim();
+  const scimActive = Boolean(scimBindingsJson || scimBootstrapAuthoritiesJson);
+  if (scimActive) {
+    if (!scimBindingsJson) {
+      errors.push("Customer Fettler profile requires MENDPOINT_SCIM_BINDINGS_JSON when SCIM is active");
+    }
+    if (!scimBootstrapAuthoritiesJson) {
+      errors.push(
+        "Customer Fettler profile requires MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON when SCIM is active",
+      );
+    }
+    if (scimBindingsJson) {
+      try {
+        const bindings = scimBindingsFromEnv(env);
+        if (bindings.size === 0) throw new Error("scim_bindings_empty");
+        const expectedTenants = new Set(
+          (resolveEitherRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_SOURCE_TENANTS") ?? "")
+            .split(",")
+            .map((tenantId) => tenantId.trim())
+            .filter(Boolean),
+        );
+        const actualTenants = new Set(bindings.keys());
+        if (
+          expectedTenants.size === 0 ||
+          expectedTenants.size !== actualTenants.size ||
+          [...expectedTenants].some((tenantId) => !actualTenants.has(tenantId))
+        ) throw new Error("scim_binding_tenant_set_mismatch");
+      } catch (error) {
+        errors.push(
+          `Customer Fettler profile has invalid SCIM bindings: ${error instanceof Error ? error.message : "unknown"}`,
+        );
+      }
+    }
   }
   if (env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA !== SANDBOX_EGRESS_ATTESTATION_SCHEMA) {
     errors.push(

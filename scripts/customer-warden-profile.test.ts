@@ -74,6 +74,13 @@ function customerRuntime(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return env;
 }
 
+function customerRuntimeWithoutScim(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = customerRuntime(overrides);
+  delete env.MENDPOINT_SCIM_BINDINGS_JSON;
+  delete env.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON;
+  return env;
+}
+
 describe("Fettler-only customer Fly profile", () => {
   it("declares a single-node Fettler-only production topology without embedding secrets", () => {
     const manifest = readFileSync(manifestPath, "utf8");
@@ -127,8 +134,6 @@ describe("Fettler-only customer Fly profile", () => {
       "OIDC_CLIENT_ID",
       "OIDC_CLIENT_SECRET",
       "OIDC_REDIRECT_URI",
-      "MENDPOINT_SCIM_BINDINGS_JSON",
-      "MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON",
       "MENDPOINT_BACKUP_KEY",
       "MENDPOINT_BACKUP_KEY_ID",
       "MENDPOINT_ALLOWED_MACHINE_ID",
@@ -139,6 +144,10 @@ describe("Fettler-only customer Fly profile", () => {
       "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID",
       "MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST",
     ]));
+    expect(CUSTOMER_WARDEN_REQUIRED_SECRETS).not.toContain("MENDPOINT_SCIM_BINDINGS_JSON");
+    expect(CUSTOMER_WARDEN_REQUIRED_SECRETS).not.toContain(
+      "MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON",
+    );
 
     for (const name of CUSTOMER_WARDEN_REQUIRED_SECRETS) {
       const env = customerRuntime();
@@ -192,6 +201,40 @@ describe("Fettler-only customer Fly profile", () => {
     }))).toContain(
       "Customer Fettler profile has invalid SCIM bindings: scim_bindings_invalid",
     );
+    expect(validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_SCIM_BINDINGS_JSON: JSON.stringify({
+        schemaVersion: 1,
+        bindings: [{
+          tenantId: "tenant-default",
+          principalId: "principal-scim",
+          issuer: "https://different-identity.example",
+        }],
+      }),
+    }))).toContain(
+      "Customer Fettler profile has invalid SCIM bindings: scim_oidc_issuer_mismatch",
+    );
+  });
+
+  it("keeps enterprise SCIM optional and validates the complete pair when activated", () => {
+    expect(validateCustomerWardenRuntime(customerRuntimeWithoutScim())).toEqual([]);
+    expect(validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_SCIM_BINDINGS_JSON: " ",
+      MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON: "",
+    }))).toEqual([]);
+
+    const bindingsOnly = customerRuntime();
+    delete bindingsOnly.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON;
+    expect(validateCustomerWardenRuntime(bindingsOnly)).toContain(
+      "Customer Fettler profile requires MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON when SCIM is active",
+    );
+
+    const authoritiesOnly = customerRuntime();
+    delete authoritiesOnly.MENDPOINT_SCIM_BINDINGS_JSON;
+    expect(validateCustomerWardenRuntime(authoritiesOnly)).toContain(
+      "Customer Fettler profile requires MENDPOINT_SCIM_BINDINGS_JSON when SCIM is active",
+    );
+
+    expect(validateCustomerWardenRuntime(customerRuntime())).toEqual([]);
   });
 
   it("preserves injected critical-health failures in required startup validation", () => {
