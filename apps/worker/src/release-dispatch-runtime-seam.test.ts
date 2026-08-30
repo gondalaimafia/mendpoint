@@ -174,6 +174,7 @@ describe("release dispatch runtime fence to heartbeat to paging seam", () => {
     });
     const snapshot = heartbeat({
       fenceAvailable: false,
+      backoffRequired: true,
       drained: null,
       ...unknown,
     });
@@ -230,6 +231,79 @@ describe("release dispatch runtime fence to heartbeat to paging seam", () => {
     expect(cycle).toMatchObject({
       status: "degraded",
       due: 1,
+      failureStage: "backlog",
+      failureCode: "release_dispatch_overdue",
+    });
+  });
+
+  it("reports a bounded residual backlog without requesting exponential backoff", () => {
+    const value = fixture();
+    for (let index = 0; index < 17; index += 1) {
+      const version = `bounded-${index}`;
+      ingestReleaseDocument(value.store, {
+        tenantId: "tenant-a",
+        providerSlug: "stripe",
+        adapter: "rss",
+        sourceUrl: `https://docs.example.test/${version}.xml`,
+        body: `<?xml version="1.0"?><rss><channel><item><guid>${version}</guid><title>${version}</title><link>https://docs.example.test/${version}</link><pubDate>Thu, 27 Aug 2026 18:00:00 GMT</pubDate><description>${version}</description></item></channel></rss>`,
+        observedAt: NOW,
+        now: NOW,
+      });
+    }
+
+    const cycle = runReleaseDispatchRuntimeCycle({
+      store: value.store,
+      db: value.db,
+      consumers: [value.consumer],
+      workerId: "worker-release-seam",
+      leaseDurationMs: 30_000,
+      maxClaimsPerConsumer: 16,
+      mutationFenceRoot: value.fenceRoot,
+    });
+    expect(cycle).toMatchObject({
+      status: "degraded",
+      due: 1,
+      failureStage: "backlog",
+      failureCode: "release_dispatch_overdue",
+      backoffRequired: false,
+      drained: { claimed: 16, completed: 16 },
+    });
+  });
+
+  it("replaces a stale fence identity with the current backlog cause", () => {
+    const value = fixture();
+    for (const version of ["current-a", "current-b"]) {
+      ingestReleaseDocument(value.store, {
+        tenantId: "tenant-a",
+        providerSlug: "stripe",
+        adapter: "rss",
+        sourceUrl: `https://docs.example.test/${version}.xml`,
+        body: `<?xml version="1.0"?><rss><channel><item><guid>${version}</guid><title>${version}</title><link>https://docs.example.test/${version}</link><pubDate>Thu, 27 Aug 2026 18:00:00 GMT</pubDate><description>${version}</description></item></channel></rss>`,
+        observedAt: NOW,
+        now: NOW,
+      });
+    }
+
+    const cycle = runReleaseDispatchRuntimeCycle({
+      store: value.store,
+      db: value.db,
+      consumers: [value.consumer],
+      workerId: "worker-release-seam",
+      leaseDurationMs: 30_000,
+      maxClaimsPerConsumer: 1,
+      mutationFenceRoot: value.fenceRoot,
+      previous: {
+        pending: null,
+        claimed: null,
+        failed: null,
+        due: null,
+        expiredClaims: null,
+        failureStage: "fence",
+        failureCode: "release_dispatch_mutation_fence_unavailable",
+      },
+    });
+    expect(cycle).toMatchObject({
+      status: "degraded",
       failureStage: "backlog",
       failureCode: "release_dispatch_overdue",
     });

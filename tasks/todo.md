@@ -3711,6 +3711,18 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 ### Review
 
+#### Rejected exact-head repair, 2026-08-30
+
+- [x] Bind human reconciliation authority to the exact OIDC issuer and raw subject.
+- [x] Require post-failure reconciliation evidence bound to the exact action, dispatch, lease generation, failure timestamp and code, artifact kind, and producer.
+- [x] Keep bounded backlog progress at the base interval while preserving degraded readiness and paging until the backlog clears.
+- [x] Use the durable release clock watermark for the final authority check so wall-clock rollback cannot restore expired authority.
+- [x] Replace stale prior failure identity with the current backlog cause.
+- [x] Run focused hostile tests, affected and full typechecks and tests, build, GA, audit, and diff checks; commit without pushing.
+
+- The rejected-head repair binds human membership to the exact issuer and raw OIDC subject, requires exact post-failure evidence lineage, advances the durable clock watermark for final authority validation, separates healthy bounded progress from true backoff, and reports the current backlog cause instead of stale fence state.
+- Hostile verification passes: 14 focused Worker tests, 39 focused Catalog tests, all Worker and Catalog tests, all workspace typechecks, every workspace test assertion, the optimized production build, GA checks, zero production dependency vulnerabilities, and diff integrity. The 475 script assertions also pass; their combined Vitest process reports an internal task-update timeout after the long authority suite, so clean exits were proved by running the other 444 script tests together and the 31-test authority file separately.
+
 - The extracted runtime remains gated only by explicit release polling or dispatch configuration. Customer profile selection alone neither opens the dispatch store nor makes the new binding a boot requirement. `MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON` is declared as identifier-only, optional gated configuration.
 - The catalog schema now converges through v5 and retains append-only acknowledgement and requeue evidence bound to the exact tenant, dispatch, lease generation, terminal time, failure code, actor, evidence digest, and idempotency key. Exact replays are stable, drift conflicts, acknowledgement removes only the matching terminal failure from actionable health, and requeue preserves immutable last-failure history.
 - The operator command resolves the exact tenant consumer but requires a separately authenticated, protected-environment-bound human or dedicated reconciliation principal. It never provisions or reuses the worker consumer identity, holds the operator authority while reconciling, persists that actor, emits identifiers only, and cannot cross tenants. Event replay binds the actor and validates the exact local hash-chain record in bounded time.

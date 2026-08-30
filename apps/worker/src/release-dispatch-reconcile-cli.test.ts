@@ -20,6 +20,8 @@ import {
 import { runReleaseDispatchReconciliationCommand } from "./release-dispatch-reconcile-cli.js";
 
 const NOW = "2026-08-27T15:00:00.000Z";
+const OIDC_ISSUER = "https://identity.example.test";
+const OIDC_SUBJECT = "operator-subject";
 const directories: string[] = [];
 
 afterEach(() => {
@@ -41,15 +43,16 @@ function fixture(options: Readonly<{ expiresAt?: string }> = {}) {
     id: "operator-a",
     tenantId: "tenant-a",
     kind: "human",
-    subject: "operator@example.test",
+    subject: `${OIDC_ISSUER}|${OIDC_SUBJECT}`,
     displayName: "Release operator",
+    audience: OIDC_ISSUER,
     expiresAt: options.expiresAt,
     createdAt: "2026-08-27T14:00:00.000Z",
   });
   createTenantMembership(db, {
     tenantId: "tenant-a",
-    issuer: "https://identity.example.test",
-    subject: "operator@example.test",
+    issuer: OIDC_ISSUER,
+    subject: OIDC_SUBJECT,
     email: "operator@example.test",
     displayName: "Release operator",
     role: "owner",
@@ -79,6 +82,7 @@ function fixture(options: Readonly<{ expiresAt?: string }> = {}) {
     failureCode: "invalid_payload",
     retryable: false,
   });
+  const evidenceCreatedAt = "2026-08-27T15:00:01.500Z";
   for (const [index, evidenceSha256] of ["a".repeat(64), "b".repeat(64)].entries()) {
     const artifactId = `reconciliation-artifact-${index}`;
     insertArtifactManifest(db, {
@@ -90,7 +94,8 @@ function fixture(options: Readonly<{ expiresAt?: string }> = {}) {
       mediaType: "application/json",
       sizeBytes: 1,
       storageRef: `evidence://${artifactId}`,
-      createdAt: "2026-08-27T15:00:00.500Z",
+      producerPrincipalId: "operator-a",
+      createdAt: evidenceCreatedAt,
     });
     insertEvidenceRecord(db, {
       id: `reconciliation-evidence-${index}`,
@@ -98,11 +103,20 @@ function fixture(options: Readonly<{ expiresAt?: string }> = {}) {
       subjectType: "release_dispatch_reconciliation",
       subjectId: failed.id,
       artifactId,
+      producerPrincipalId: "operator-a",
       tool: "operator-review",
+      command: JSON.stringify({
+        action: index === 0 ? "requeue" : "acknowledge",
+        dispatchId: failed.id,
+        expectedLeaseGeneration: failed.leaseGeneration,
+        expectedFailedAt: failed.failedAt,
+        expectedFailureCode: failed.failureCode,
+      }),
       verdict: "passed",
-      createdAt: "2026-08-27T15:00:00.500Z",
+      createdAt: evidenceCreatedAt,
     });
   }
+  clock = "2026-08-27T15:00:01.750Z";
   return {
     directory,
     mutationFenceRoot: join(directory, "mutation-fence"),
@@ -178,7 +192,7 @@ describe("release dispatch reconciliation command", () => {
       expect(output[0]).not.toContain("invalid_payload");
       expect(output[0]).not.toContain("aaaaaaaa");
       expect(getPrincipal(db, "tenant-a", "operator-a")).toMatchObject({
-        kind: "human", subject: "operator@example.test",
+        kind: "human", subject: `${OIDC_ISSUER}|${OIDC_SUBJECT}`, audience: OIDC_ISSUER,
       });
       expect(listReleaseDispatchReconciliations(store, "tenant-a", failed.id)).toEqual([
         expect.objectContaining({ actorPrincipalId: "operator-a" }),
@@ -258,7 +272,7 @@ describe("release dispatch reconciliation command", () => {
         db,
         store,
         mutationFenceRoot,
-      })).toThrow("release_dispatch_reconciliation_stale_failure");
+      })).toThrow("release_dispatch_reconciliation_evidence_unreachable");
     } finally {
       store.close();
       db.raw.close();
@@ -323,7 +337,7 @@ describe("release dispatch reconciliation command", () => {
     const engineer = fixture();
     try {
       engineer.db.raw.prepare(`UPDATE tenant_memberships SET role = 'engineer'
-        WHERE tenant_id = 'tenant-a' AND subject = 'operator@example.test'`).run();
+        WHERE tenant_id = 'tenant-a' AND issuer = ? AND subject = ?`).run(OIDC_ISSUER, OIDC_SUBJECT);
       expect(() => runReleaseDispatchReconciliationCommand(commandInput(engineer)))
         .toThrow("release_dispatch_reconciliation_authority_invalid");
       expect(listReleaseDispatchReconciliations(engineer.store, "tenant-a", engineer.failed.id)).toEqual([]);
@@ -333,15 +347,86 @@ describe("release dispatch reconciliation command", () => {
     }
   });
 
+  it("binds a human principal to the exact OIDC issuer and raw subject", () => {
+    const value = fixture();
+    try {
+      value.db.raw.prepare(`UPDATE tenant_memberships SET role = 'engineer'
+        WHERE tenant_id = 'tenant-a' AND issuer = ? AND subject = ?`).run(OIDC_ISSUER, OIDC_SUBJECT);
+      createTenantMembership(value.db, {
+        tenantId: "tenant-a",
+        issuer: "https://hostile-identity.example.test",
+        subject: OIDC_SUBJECT,
+        email: "hostile@example.test",
+        displayName: "Hostile same subject",
+        role: "owner",
+        createdAt: "2026-08-27T15:00:01.600Z",
+      });
+
+      expect(() => runReleaseDispatchReconciliationCommand(commandInput(value)))
+        .toThrow("release_dispatch_reconciliation_authority_invalid");
+      expect(listReleaseDispatchReconciliations(value.store, "tenant-a", value.failed.id)).toEqual([]);
+    } finally {
+      value.store.close();
+      value.db.raw.close();
+    }
+  });
+
+  it("rejects old or incompletely bound reconciliation evidence", () => {
+    const cases = [
+      { sql: "UPDATE evidence_records SET command = NULL WHERE id = 'reconciliation-evidence-1'" },
+      { sql: `UPDATE evidence_records SET command = replace(command,
+        '"action":"acknowledge"', '"action":"requeue"')
+        WHERE id = 'reconciliation-evidence-1'` },
+      { sql: "UPDATE evidence_records SET producer_principal_id = NULL WHERE id = 'reconciliation-evidence-1'" },
+      { sql: "UPDATE artifact_manifests SET producer_principal_id = NULL WHERE id = 'reconciliation-artifact-1'" },
+      { sql: "UPDATE artifact_manifests SET kind = 'other-kind' WHERE id = 'reconciliation-artifact-1'" },
+      { sql: "UPDATE evidence_records SET created_at = '2026-08-27T15:00:00.500Z' WHERE id = 'reconciliation-evidence-1'" },
+      { sql: "UPDATE artifact_manifests SET created_at = '2026-08-27T15:00:00.500Z' WHERE id = 'reconciliation-artifact-1'" },
+    ] as const;
+    for (const [index, hostile] of cases.entries()) {
+      const value = fixture();
+      try {
+        value.db.raw.exec(`DROP TRIGGER IF EXISTS evidence_records_append_only_update;
+          DROP TRIGGER IF EXISTS artifact_manifests_append_only_update;`);
+        value.db.raw.prepare(hostile.sql).run();
+        expect(() => runReleaseDispatchReconciliationCommand(commandInput(value, {
+          idempotencyKey: `operator:ack:hostile-binding:${index}`,
+        }))).toThrow("release_dispatch_reconciliation_evidence_unreachable");
+        expect(listReleaseDispatchReconciliations(value.store, "tenant-a", value.failed.id)).toEqual([]);
+      } finally {
+        value.store.close();
+        value.db.raw.close();
+      }
+    }
+  });
+
   it("rolls back both databases when authority expires before mutation completion", () => {
     const value = fixture({ expiresAt: "2026-08-27T15:00:02.000Z" });
     let reads = 0;
     value.setClockRead(() => ++reads < 3
-      ? "2026-08-27T15:00:01.000Z"
+      ? "2026-08-27T15:00:01.750Z"
       : "2026-08-27T15:00:03.000Z");
     try {
       expect(() => runReleaseDispatchReconciliationCommand(commandInput(value)))
         .toThrow("release_dispatch_reconciliation_authority_invalid");
+      expect(listReleaseDispatchReconciliations(value.store, "tenant-a", value.failed.id)).toEqual([]);
+    } finally {
+      value.store.close();
+      value.db.raw.close();
+    }
+  });
+
+  it("does not let a wall-clock rollback resurrect authority after the durable watermark crosses expiry", () => {
+    const value = fixture({ expiresAt: "2026-08-27T15:00:02.000Z" });
+    const reads = [
+      "2026-08-27T15:00:01.750Z",
+      "2026-08-27T15:00:03.000Z",
+      "2026-08-27T15:00:01.750Z",
+    ];
+    value.setClockRead(() => reads.shift() ?? "2026-08-27T15:00:01.750Z");
+    try {
+      expect(() => runReleaseDispatchReconciliationCommand(commandInput(value)))
+        .toThrow("release_store_clock_rollback");
       expect(listReleaseDispatchReconciliations(value.store, "tenant-a", value.failed.id)).toEqual([]);
     } finally {
       value.store.close();

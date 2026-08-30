@@ -35,12 +35,19 @@ function assertActiveReconciliationPrincipal(input: Readonly<{
   const expiresAt = principal?.expires_at ? Date.parse(principal.expires_at) : null;
   const identityValid = principal?.kind === "human" ||
     principal?.kind === "service" && principal.subject === "release-dispatch-reconciliation";
-  const privilegedHuman = principal?.kind !== "human" || Boolean(input.db.raw.prepare(
-    `SELECT 1 FROM tenant_memberships
-     WHERE tenant_id = ? AND subject = ? AND status = 'active'
-       AND role IN ('owner', 'admin')
-     LIMIT 1`,
-  ).get(input.tenantId, principal.subject));
+  const issuer = principal?.kind === "human" ? principal.audience : null;
+  const subjectPrefix = issuer ? `${issuer}|` : null;
+  const rawSubject = subjectPrefix && principal?.subject.startsWith(subjectPrefix)
+    ? principal.subject.slice(subjectPrefix.length)
+    : null;
+  const privilegedHuman = principal?.kind !== "human" || Boolean(
+    issuer && rawSubject && input.db.raw.prepare(
+      `SELECT 1 FROM tenant_memberships
+       WHERE tenant_id = ? AND issuer = ? AND subject = ? AND status = 'active'
+         AND role IN ('owner', 'admin')
+       LIMIT 1`,
+    ).get(input.tenantId, issuer, rawSubject),
+  );
   if (
     !principal || !identityValid || !privilegedHuman || !Number.isFinite(observedAt) ||
     !Number.isFinite(createdAt) || createdAt > observedAt ||
@@ -53,11 +60,23 @@ function assertReachableReconciliationEvidence(input: Readonly<{
   db: AppDb;
   tenantId: string;
   dispatchId: string;
+  action: ReleaseDispatchReconciliationAction;
+  actorPrincipalId: string;
   evidenceSha256: string;
+  expectedLeaseGeneration: number;
+  expectedFailedAt: string;
+  expectedFailureCode: string;
   observedAt: string;
 }>): void {
+  const evidenceCommand = JSON.stringify({
+    action: input.action,
+    dispatchId: input.dispatchId,
+    expectedLeaseGeneration: input.expectedLeaseGeneration,
+    expectedFailedAt: input.expectedFailedAt,
+    expectedFailureCode: input.expectedFailureCode,
+  });
   const row = input.db.raw.prepare(
-    `SELECT e.created_at
+    `SELECT e.created_at AS evidence_created_at, a.created_at AS artifact_created_at
      FROM evidence_records e
      JOIN artifact_manifests a
        ON a.id = e.artifact_id AND a.tenant_id = e.tenant_id
@@ -65,13 +84,30 @@ function assertReachableReconciliationEvidence(input: Readonly<{
        AND e.subject_type = 'release_dispatch_reconciliation'
        AND e.subject_id = ?
        AND e.verdict = 'passed'
+       AND e.command = ?
+       AND e.producer_principal_id = ?
+       AND a.kind = 'release_dispatch_reconciliation'
+       AND a.producer_principal_id = ?
        AND a.sha256 = ?
      LIMIT 1`,
-  ).get(input.tenantId, input.dispatchId, input.evidenceSha256) as
-    { created_at: string } | undefined;
-  const createdAt = Date.parse(row?.created_at ?? "");
+  ).get(
+    input.tenantId,
+    input.dispatchId,
+    evidenceCommand,
+    input.actorPrincipalId,
+    input.actorPrincipalId,
+    input.evidenceSha256,
+  ) as { evidence_created_at: string; artifact_created_at: string } | undefined;
+  const evidenceCreatedAt = Date.parse(row?.evidence_created_at ?? "");
+  const artifactCreatedAt = Date.parse(row?.artifact_created_at ?? "");
+  const failedAt = Date.parse(input.expectedFailedAt);
   const observedAt = Date.parse(input.observedAt);
-  if (!row || !Number.isFinite(createdAt) || !Number.isFinite(observedAt) || createdAt > observedAt) {
+  if (
+    !row || !Number.isFinite(evidenceCreatedAt) || !Number.isFinite(artifactCreatedAt) ||
+    !Number.isFinite(failedAt) || !Number.isFinite(observedAt) ||
+    evidenceCreatedAt <= failedAt || artifactCreatedAt <= failedAt ||
+    evidenceCreatedAt > observedAt || artifactCreatedAt > observedAt
+  ) {
     throw new Error("release_dispatch_reconciliation_evidence_unreachable");
   }
 }
@@ -147,7 +183,12 @@ export function runReleaseDispatchReconciliationCommand(input: Readonly<{
       db: input.db,
       tenantId,
       dispatchId: flags["--dispatch"]!,
+      action,
+      actorPrincipalId,
       evidenceSha256: flags["--evidence-sha256"]!,
+      expectedLeaseGeneration,
+      expectedFailedAt: flags["--expected-failed-at"]!,
+      expectedFailureCode: flags["--expected-failure-code"]!,
       observedAt,
     });
     result = reconcileReleaseDispatchFailure(input.store, {
@@ -165,7 +206,7 @@ export function runReleaseDispatchReconciliationCommand(input: Readonly<{
       db: input.db,
       tenantId,
       actorPrincipalId,
-      observedAt: input.store.trustedNow(),
+      observedAt: input.store.advanceClock(),
     });
     input.store.raw.exec("COMMIT");
     input.db.raw.exec("COMMIT");

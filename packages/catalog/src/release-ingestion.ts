@@ -135,6 +135,7 @@ export type ReleaseIngestionStore = Readonly<{
   raw: DatabaseSync;
   path: string;
   trustedNow: () => string;
+  advanceClock: () => string;
   close: () => void;
 }>;
 
@@ -1168,7 +1169,14 @@ export function openReleaseIngestionStore(
   }
   const clock = options.clock ?? (() => new Date().toISOString());
   const trustedNow = () => timestamp("release_store_clock", clock());
-  return Object.freeze({ raw, path, trustedNow, close: () => raw.close() });
+  const store: ReleaseIngestionStore = {
+    raw,
+    path,
+    trustedNow,
+    advanceClock: () => advanceReleaseClock(store),
+    close: () => raw.close(),
+  };
+  return Object.freeze(store);
 }
 
 function latestOverride(store: ReleaseIngestionStore, tenantId: string, artifactId: string): ReleaseReviewerOverride | null {

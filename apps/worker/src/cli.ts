@@ -425,6 +425,7 @@ export function releaseDispatchRuntimeStatus(input: Readonly<{
 
 export type ReleaseDispatchRuntimeCycle = Readonly<{
   fenceAvailable: boolean;
+  backoffRequired: boolean;
   status: WorkerHeartbeat["releaseDispatchStatus"];
   pending: number | null;
   claimed: number | null;
@@ -486,6 +487,7 @@ export function runReleaseDispatchRuntimeCycle(input: Readonly<{
   if (input.mutationFenceRoot && !mutationLease) {
     return Object.freeze({
       fenceAvailable: false,
+      backoffRequired: true,
       status: releaseDispatchRuntimeStatus({
         configured: input.consumers.length > 0,
         fenceAvailable: false,
@@ -526,20 +528,23 @@ export function runReleaseDispatchRuntimeCycle(input: Readonly<{
       (total, summary) => total + summary.expiredClaimed,
       0,
     );
-    const degraded = drained.configurationFailed > 0 || drained.failed > 0 ||
-      drained.retried > 0 || drained.exhausted > 0 || failed > 0 || due > 0 || expiredClaims > 0;
+    const processingFailed = drained.configurationFailed > 0 || drained.failed > 0 ||
+      drained.retried > 0 || drained.exhausted > 0;
+    const degraded = processingFailed || failed > 0 || due > 0 || expiredClaims > 0;
+    const boundedProgress = due > 0 && drained.completed > 0 && !processingFailed &&
+      failed === 0 && expiredClaims === 0;
     const failureStage = degraded
-      ? drained.failureStage ?? input.previous?.failureStage ??
-        (expiredClaims > 0 ? "settlement" : "backlog")
+      ? drained.failureStage ?? (expiredClaims > 0 ? "settlement" : "backlog")
       : null;
     const failureCode = degraded
-      ? drained.failureCode ?? input.previous?.failureCode ??
+      ? drained.failureCode ??
         (expiredClaims > 0
           ? "release_dispatch_expired_claim"
-          : due > 0 ? "release_dispatch_overdue" : "release_dispatch_durable_failure")
+          : failed > 0 ? "release_dispatch_durable_failure" : "release_dispatch_overdue")
       : null;
     return Object.freeze({
       fenceAvailable: true,
+      backoffRequired: degraded && !boundedProgress,
       status: releaseDispatchRuntimeStatus({
         configured: input.consumers.length > 0,
         fenceAvailable: true,
@@ -4867,7 +4872,7 @@ async function runService(intervalMs: number) {
       releaseDispatchStatus = state.status;
       recordReleaseDispatchRuntimeTelemetry(state);
       if (cycle) {
-        failures = cycle.status === "degraded" ? failures + 1 : 0;
+        failures = cycle.backoffRequired ? failures + 1 : 0;
         if (!cycle.fenceAvailable) {
           console.error(
             `Release dispatch: status=degraded failureStage=${state.failureStage} failureCode=${state.failureCode}`,
