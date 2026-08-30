@@ -924,7 +924,10 @@ export function recordExecutionCostFromRoutingLedger(
          SUM(CASE WHEN cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS measured_rows,
          MAX(selected_executor_id) AS model_id
        FROM routing_ledger
-       WHERE tenant_id = ? AND run_id = ?`,
+       WHERE id = (
+         SELECT id FROM routing_ledger WHERE tenant_id = ? AND run_id = ?
+         ORDER BY created_at DESC, id DESC LIMIT 1
+       )`,
       [tenantId, sourceRunId],
     ) ?? {
       input_tokens: null,

@@ -1968,9 +1968,10 @@ function persistFailedAgentJob(
         // Wave 3b: metering entry for the failed/retrying run (cost null when
         // unmeasured), inside the same transaction as the routing outcome.
         recordAgentRunMeter(db, { tenantId: run.tenantId, runId: run.id, meteredAt: nowIso() });
-        if (failure.status === "dead_letter") {
-          recordJobMissionExecutionCost(db, jobId, run.tenantId, run.id);
-        }
+        // Every charged attempt is immutable accounting evidence. Pending retries
+        // must retain their paid work just like dead letters and successes; the
+        // next lease writes a distinct execution id from its lease generation.
+        recordJobMissionExecutionCost(db, jobId, run.tenantId, run.id);
       }
     }
     db.raw.exec("COMMIT");

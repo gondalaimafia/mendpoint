@@ -23,6 +23,7 @@ const fixturesRoot = resolve(import.meta.dirname, "..", "..", "..", "fixtures");
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
+  appendDomainEvent,
   bindConsumerRepoSnapshot,
   bindMissionToPolicyEnvelope,
   claimNextJob,
@@ -59,6 +60,10 @@ import {
   upsertGitHubInstallation,
   getRepairSession,
   listJobs,
+  listActualExecutionCosts,
+  listExecutionCostOutcomes,
+  recordExecutionCostOutcome,
+  verifyExecutionOutcomeIntegrity,
 } from "@mendpoint/db";
 import { nowIso } from "@mendpoint/shared";
 import type { AgentPlanner } from "@mendpoint/agent";
@@ -3624,7 +3629,28 @@ describe("worker runtime", () => {
       checkBody: FAST_CHECK,
       snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
       useLlm: true,
+      missionId: "mission-routing-retry",
     });
+    fixture.db.raw.prepare(
+      `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+       VALUES ('tenant_test','tenant-test','Tenant Test','team','active',10,?)`,
+    ).run(nowIso());
+    insertPrincipal(fixture.db, { id: "owner-routing-retry", tenantId: "tenant_test",
+      kind: "human", subject: "owner-routing-retry", displayName: "Owner", createdAt: nowIso() });
+    createMission(fixture.db, { id: "mission-routing-retry", tenantId: "tenant_test",
+      product: "fettler", triggerKind: "provider_change", objective: "Prove charged retry accounting",
+      ownerPrincipalId: "owner-routing-retry", eventId: "mission-routing-retry-created",
+      idempotencyKey: "mission-routing-retry-created", correlationId: "job-warden-snapshot",
+      createdAt: nowIso() });
+    const retryPolicy = defaultPolicyEnvelope({ tenantId: "tenant_test",
+      policyEnvelopeId: "pe-routing-retry", createdAt: nowIso() });
+    createPolicyEnvelope(fixture.db, { tenantId: "tenant_test", version: 1,
+      policyEnvelopeId: retryPolicy.policyEnvelopeId,
+      envelopeJson: canonicalPolicyEnvelopeJson(retryPolicy), createdAt: nowIso() });
+    bindMissionToPolicyEnvelope(fixture.db, { tenantId: "tenant_test",
+      missionId: "mission-routing-retry", version: 1, actorPrincipalId: "owner-routing-retry",
+      eventId: "mission-routing-retry-policy", idempotencyKey: "mission-routing-retry-policy",
+      correlationId: "job-warden-snapshot", createdAt: nowIso() });
     const repairPlanner = meteredWardenPlanner();
     let failFirstExecution = true;
     const planner: AgentPlanner = async (input, options) => {
@@ -3663,9 +3689,17 @@ describe("worker runtime", () => {
       status: "dead_letter",
       lease_generation: 1,
     });
+    expect(listActualExecutionCosts(fixture.db, "tenant_test")).toEqual([
+      expect.objectContaining({
+        executionId: "session-warden-snapshot:lease-1:attempt-1",
+        attemptNumber: 1,
+        outcomeStatus: "unresolved",
+      }),
+    ]);
     expect(retryJob(fixture.db, "job-warden-snapshot", {
       tenantId: "tenant_test",
       now: "2000-01-01T00:00:00.000Z",
+      resetAttempts: false,
     })).toBe(true);
 
     const second = await processJobsOnce(fixture.db, {
@@ -3681,6 +3715,34 @@ describe("worker runtime", () => {
       status: "done",
       lease_generation: 2,
     });
+    const attemptCosts = listActualExecutionCosts(fixture.db, "tenant_test");
+    expect(attemptCosts.map((entry) => entry.executionId).sort()).toEqual([
+      "session-warden-snapshot:lease-1:attempt-1",
+      "session-warden-snapshot:lease-2:attempt-2",
+    ]);
+    expect(attemptCosts.find((entry) => entry.attemptNumber === 2)).toMatchObject({
+      retryNumber: 1,
+      fallbackFromExecutionId: "session-warden-snapshot:lease-1:attempt-1",
+    });
+    const acceptedAttempt = attemptCosts.find((entry) => entry.attemptNumber === 2)!;
+    const authority = appendDomainEvent(fixture.db, {
+      id: "delivery-routing-retry", tenantId: "tenant_test", schemaVersion: 1,
+      eventType: "execution_cost.delivered", aggregateType: "execution_cost",
+      aggregateId: acceptedAttempt.executionId, actorPrincipalId: "owner-routing-retry",
+      correlationId: "job-warden-snapshot", idempotencyKey: "delivery-routing-retry",
+      payload: { outcomeId: "candidate-routing-retry" }, createdAt: nowIso(),
+    });
+    recordExecutionCostOutcome(fixture.db, {
+      id: "outcome-routing-retry", tenantId: "tenant_test", idempotencyKey: "outcome-routing-retry",
+      executionId: acceptedAttempt.executionId, outcomeStatus: "accepted",
+      acceptedOutcomeId: "candidate-routing-retry", authorityKind: "delivery",
+      authorityDigest: authority.row.event_hash, actorPrincipalId: "owner-routing-retry",
+      createdAt: authority.row.created_at,
+    });
+    expect(listExecutionCostOutcomes(fixture.db, "tenant_test", acceptedAttempt.executionId))
+      .toHaveLength(1);
+    expect(verifyExecutionOutcomeIntegrity(fixture.db, "tenant_test"))
+      .toEqual({ ok: true, checked: 1 });
     const ledger = getRoutingLedgerForJob(
       fixture.db,
       "job-warden-snapshot",
