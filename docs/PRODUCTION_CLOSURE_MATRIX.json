@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-30T04:52:14.394Z",
-    "observedMainRevision": "07012e61c451100118297677abf50eb8c53495d3",
-    "observationDigest": "sha256:c620861be8e06938260d5087bbe247c9bdd72c363ac759daf0b797ac4f30c76c",
+    "observedAt": "2026-08-30T08:43:52.527Z",
+    "observedMainRevision": "cf236a9adcc9a5d547e0fb0758ad54ad2331ae54",
+    "observationDigest": "sha256:00a15b02e728f50afa52fa5c64023d9ffffa8437b7b0d8ec2746e82495a0d3b2",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 554,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/554",
-      "title": "Start and prove the exact ReGauge production worker",
+      "number": 555,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/555",
+      "title": "Scope the customer deploy gate to what a deploy controls",
       "baseBranch": "main",
-      "headBranch": "codex/regauge-worker-start",
+      "headBranch": "claude/deploy-gate-drop-healthz",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2085,7 +2085,15 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": []
+      "remediatesPullRequests": [],
+      "authorityRotation": {
+        "rotationId": "rotation-20260828-010",
+        "kind": "runtime",
+        "issuedAt": "2026-08-30T08:43:52.527Z",
+        "expiresAt": "2026-08-31T08:43:52.527Z",
+        "basePolicySha256": "sha256:465a91d74119edaaa8a0bf8f81281856ac3428b9ff389b40f7c3794b524b00d9",
+        "proposedPolicySha256": "sha256:e1c13a09fd9b00b2b0f0a509f7ffec56649676a08379931508d5dadeb4f62215"
+      }
     },
     "pullRequests": [
       {
