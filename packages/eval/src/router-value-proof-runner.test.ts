@@ -61,6 +61,24 @@ describe("router value proof artifact runner", () => {
     expect(() => persistRouterValueProofReport(second.input, second.output)).toThrow("router_value_output_exists");
   });
 
+  it("rejects string booleans from untyped JSON artifacts", () => {
+    const heldOut = fixture();
+    const heldOutValue = JSON.parse(readFileSync(heldOut.input, "utf8"));
+    heldOutValue.cohort.heldOut = "false";
+    writeFileSync(heldOut.input, JSON.stringify(heldOutValue));
+    expect(() => runRouterValueProofArtifact(heldOut.input)).toThrow(
+      "router_value_cohort_not_held_out",
+    );
+
+    const accepted = fixture();
+    const acceptedValue = JSON.parse(readFileSync(accepted.input, "utf8"));
+    acceptedValue.observations[0].accepted = "false";
+    writeFileSync(accepted.input, JSON.stringify(acceptedValue));
+    expect(() => runRouterValueProofArtifact(accepted.input)).toThrow(
+      "router_value_acceptance_invalid",
+    );
+  });
+
   it("refuses empty, oversized, and structurally incomplete cohort artifacts", () => {
     const empty = fixture();
     writeFileSync(empty.input, "");

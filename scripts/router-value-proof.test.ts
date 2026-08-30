@@ -99,10 +99,10 @@ describe("production router value proof caller", () => {
   });
 
   it.each([
-    ["security", { securityFindings: 1 }],
-    ["cost", { costUsd: 1 }],
-    ["latency", { latencyMs: 2_001 }],
-  ])("returns a policy failure for a %s regression", (_name, candidatePatch) => {
+    ["security", { securityFindings: 1 }, { securityRegressionTaskIds: ["task-a"] }],
+    ["cost", { costUsd: 1 }, { acceptedOutputCostRegressionTaskIds: ["task-a"] }],
+    ["latency", { latencyMs: 2_001 }, { latencyObjectiveExceededTaskIds: ["task-a"] }],
+  ])("returns a policy failure with task attribution for a %s regression", (_name, candidatePatch, expected) => {
     const original = input();
     const observations = original.observations.map((observation) =>
       observation.arm === "candidate" ? { ...observation, ...candidatePatch } : observation,
@@ -112,7 +112,24 @@ describe("production router value proof caller", () => {
       `--input=${item.inputPath}`,
       `--output=${item.outputPath}`,
     ], item.io)).toBe(1);
-    expect(JSON.parse(readFileSync(item.outputPath, "utf8"))).toMatchObject({ ok: false });
+    expect(JSON.parse(readFileSync(item.outputPath, "utf8"))).toMatchObject({
+      ok: false,
+      ...expected,
+    });
+  });
+
+  it.each([
+    ["held-out cohort", (value: any) => { value.cohort.heldOut = "false"; }, "router_value_cohort_not_held_out"],
+    ["accepted observation", (value: any) => { value.observations[0].accepted = "false"; }, "router_value_acceptance_invalid"],
+  ])("rejects a string boolean for %s", (_name, mutate, error) => {
+    const value: any = input();
+    mutate(value);
+    const item = fixture(value);
+    expect(runRouterValueProofCli([
+      `--input=${item.inputPath}`,
+      `--output=${item.outputPath}`,
+    ], item.io)).toBe(2);
+    expect(JSON.parse(item.stderr.join(""))).toEqual({ ok: false, error });
   });
 
   it("binds the report digest to the exact held-out cohort bytes", () => {

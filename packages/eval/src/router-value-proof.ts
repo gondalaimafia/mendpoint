@@ -42,8 +42,10 @@ export type RouterValueProofReport = {
   acceptanceRegressionTaskIds: string[];
   securityRegressionTaskIds: string[];
   acceptedOutputCostUsd: { baseline: number; candidate: number };
+  acceptedOutputCostRegressionTaskIds: string[];
   candidateLatencyP95Ms: number;
   latencyObjectiveMs: number;
+  latencyObjectiveExceededTaskIds: string[];
   evidenceRefs: string[];
 };
 
@@ -79,7 +81,9 @@ export function evaluateRouterValueProof(
   contract: RouterValueProofContract,
 ): RouterValueProofReport {
   if (contract.version !== ROUTER_VALUE_PROOF_VERSION) fail("router_value_version_invalid");
-  if (!contract.cohort.heldOut) fail("router_value_cohort_not_held_out");
+  if (typeof contract.cohort.heldOut !== "boolean" || contract.cohort.heldOut !== true) {
+    fail("router_value_cohort_not_held_out");
+  }
   if (!ID.test(contract.cohort.id)) fail("router_value_cohort_id_invalid");
   if (!REVISION.test(contract.cohort.revision)) fail("router_value_revision_invalid");
   if (!DIGEST.test(contract.cohort.digest)) fail("router_value_digest_invalid");
@@ -106,6 +110,7 @@ export function evaluateRouterValueProof(
     if (observation.arm !== "baseline" && observation.arm !== "candidate") {
       fail("router_value_arm_invalid");
     }
+    if (typeof observation.accepted !== "boolean") fail("router_value_acceptance_invalid");
     finiteNonnegative(observation.securityFindings, "router_value_security_invalid");
     if (!Number.isSafeInteger(observation.securityFindings)) fail("router_value_security_invalid");
     finiteNonnegative(observation.costUsd, "router_value_cost_invalid");
@@ -146,7 +151,25 @@ export function evaluateRouterValueProof(
     baseline: acceptedCost(baseline),
     candidate: acceptedCost(candidate),
   };
+  const baselineAccepted = baseline.filter((item) => item.accepted);
+  const candidateAccepted = candidate.filter((item) => item.accepted);
+  const acceptedOutputCostRegressionTaskIds =
+    baselineAccepted.length === 0 || candidateAccepted.length === 0
+      ? taskIds.filter((taskId) => {
+          const arms = byTask.get(taskId)!;
+          return !arms.get("baseline")!.accepted || !arms.get("candidate")!.accepted;
+        })
+      : acceptedOutputCostUsd.candidate >= acceptedOutputCostUsd.baseline
+        ? taskIds.filter((taskId) => {
+            const item = byTask.get(taskId)!.get("candidate")!;
+            return item.accepted && item.costUsd >= acceptedOutputCostUsd.baseline;
+          })
+        : [];
   const candidateLatencyP95Ms = nearestRank(candidate.map((item) => item.latencyMs), 0.95);
+  const latencyObjectiveExceededTaskIds = taskIds.filter(
+    (taskId) =>
+      byTask.get(taskId)!.get("candidate")!.latencyMs > contract.policy.latencyP95Ms,
+  );
   const acceptance = {
     baseline: rate(baseline.filter((item) => item.accepted).length, baseline.length),
     candidate: rate(candidate.filter((item) => item.accepted).length, candidate.length),
@@ -155,9 +178,7 @@ export function evaluateRouterValueProof(
     acceptanceRegressionTaskIds.length === 0 &&
     securityRegressionTaskIds.length === 0 &&
     acceptance.candidate >= acceptance.baseline &&
-    Number.isFinite(acceptedOutputCostUsd.baseline) &&
-    Number.isFinite(acceptedOutputCostUsd.candidate) &&
-    acceptedOutputCostUsd.candidate < acceptedOutputCostUsd.baseline &&
+    acceptedOutputCostRegressionTaskIds.length === 0 &&
     candidateLatencyP95Ms <= contract.policy.latencyP95Ms;
 
   return Object.freeze({
@@ -171,8 +192,10 @@ export function evaluateRouterValueProof(
     acceptanceRegressionTaskIds,
     securityRegressionTaskIds,
     acceptedOutputCostUsd,
+    acceptedOutputCostRegressionTaskIds,
     candidateLatencyP95Ms,
     latencyObjectiveMs: contract.policy.latencyP95Ms,
+    latencyObjectiveExceededTaskIds,
     evidenceRefs: [...evidenceRefs].sort(),
   });
 }

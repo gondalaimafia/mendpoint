@@ -40,7 +40,9 @@ describe("router value proof", () => {
       securityRegressionTaskIds: [],
       acceptanceRegressionTaskIds: [],
       acceptedOutputCostUsd: { baseline: 1, candidate: 0.4 },
+      acceptedOutputCostRegressionTaskIds: [],
       candidateLatencyP95Ms: 1_200,
+      latencyObjectiveExceededTaskIds: [],
     });
     expect(report.evidenceRefs).toEqual([
       "eval:base-a",
@@ -61,17 +63,37 @@ describe("router value proof", () => {
 
     const cost = contract();
     cost.observations.find((item) => item.taskId === "task-a" && item.arm === "candidate")!.costUsd = 2;
-    expect(evaluateRouterValueProof(cost).ok).toBe(false);
+    expect(evaluateRouterValueProof(cost)).toMatchObject({
+      ok: false,
+      acceptedOutputCostRegressionTaskIds: ["task-a"],
+    });
 
     const latency = contract();
     latency.observations.find((item) => item.taskId === "task-b" && item.arm === "candidate")!.latencyMs = 2_001;
-    expect(evaluateRouterValueProof(latency).ok).toBe(false);
+    expect(evaluateRouterValueProof(latency)).toMatchObject({
+      ok: false,
+      latencyObjectiveExceededTaskIds: ["task-b"],
+    });
   });
 
   it("rejects training cohorts, missing arms, duplicate arms, and uncited observations", () => {
     const training = contract();
     training.cohort.heldOut = false;
     expect(() => evaluateRouterValueProof(training)).toThrow("router_value_cohort_not_held_out");
+
+    const stringTraining = contract() as unknown as { cohort: { heldOut: string } };
+    stringTraining.cohort.heldOut = "false";
+    expect(() => evaluateRouterValueProof(stringTraining as never)).toThrow(
+      "router_value_cohort_not_held_out",
+    );
+
+    const stringAccepted = contract() as unknown as {
+      observations: Array<{ accepted: string }>;
+    };
+    stringAccepted.observations[0]!.accepted = "false";
+    expect(() => evaluateRouterValueProof(stringAccepted as never)).toThrow(
+      "router_value_acceptance_invalid",
+    );
 
     const missing = contract();
     missing.observations.pop();
