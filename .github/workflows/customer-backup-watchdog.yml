@@ -129,7 +129,14 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}
           CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
         run: |
-          set -uo pipefail
+          # Strict mode, stated to MATCH the runner rather than disagree with
+          # it. GitHub already invokes this step as `bash --noprofile --norc -e
+          # -o pipefail`; the previous `set -uo pipefail` did not cancel that
+          # `-e`, it merely hid it, and the one command whose non-zero exit IS
+          # the signal was killed before that exit could be recorded. Capturing
+          # it is now the job of `||` below, which reads the same under any
+          # flags, so the script and its harness cannot silently disagree again.
+          set -euo pipefail
           mkdir -p test-results/customer-backup-watchdog
           capture=test-results/customer-backup-watchdog/evidence-capture.json
           : > "$capture"
@@ -138,12 +145,26 @@ jobs:
             echo "customer_backup_watchdog_binding_missing" >&2
             status=78
           else
+            # `--command` is NOT evaluated by a shell on the machine: flyctl
+            # word-splits the string and execs the result directly. A bare
+            # `cat "$MENDPOINT_BACKUP_EVIDENCE_PATH"` therefore arrives with the
+            # literal characters `$MENDPOINT_BACKUP_EVIDENCE_PATH` as its
+            # filename and `cat` exits 1 every single run. The explicit `sh -c`
+            # is what makes the MACHINE expand its own value, which is the whole
+            # point of taking the path from the machine instead of restating it.
+            #
+            # `|| status=$?` rather than `set +e` or a shell override: the exit
+            # of this ONE command is the data we need, and only this one. Every
+            # surrounding line keeps its `-e` protection, and this form is
+            # invariant under the harness's flags, which is the property whose
+            # absence produced the defect.
+            #
             # </dev/null so an unset remote path cannot leave `cat` blocked on
             # stdin; timeout so a hung session becomes a status, not a hang.
             timeout 300 flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
-              --command "cat \"\$MENDPOINT_BACKUP_EVIDENCE_PATH\"" \
-              </dev/null >"$capture" 2>test-results/customer-backup-watchdog/read-stderr.log
-            status=$?
+              --command "sh -c 'cat \"\$MENDPOINT_BACKUP_EVIDENCE_PATH\"'" \
+              </dev/null >"$capture" 2>test-results/customer-backup-watchdog/read-stderr.log \
+              || status=$?
           fi
           echo "status=$status" >> "$GITHUB_OUTPUT"
           # The capture holds the evidence keyId and integrity digest. It is
@@ -153,7 +174,15 @@ jobs:
       # Exits non-zero for stale AND for every indeterminate reason, so this step
       # fails the job either way and the alert below fires. There is no path from
       # an unreadable source to a green step.
+      #
+      # `!cancelled()` so this runs even when the read step failed outright. A
+      # read that aborted before writing its status leaves the status output
+      # empty, which resolves to `capture_status_unknown` — a named third state
+      # with a verdict on disk. Left as a plain step it was SKIPPED instead, and
+      # the failure re-surfaced two steps later as a missing artifact, which is
+      # the same "could not look" defect this watchdog exists to prevent.
       - name: Judge backup freshness against the policy RPO
+        if: ${{ !cancelled() }}
         shell: bash
         env:
           MENDPOINT_BACKUP_EVIDENCE_CAPTURE_PATH: test-results/customer-backup-watchdog/evidence-capture.json
@@ -162,6 +191,40 @@ jobs:
         run: |
           set -euo pipefail
           node --import tsx scripts/check-customer-backup-freshness.ts
+
+      # The meta case: the judge itself did not run to completion, so nothing
+      # named a reason. `watchdog_produced_no_verdict` is deliberately NOT a
+      # member of BACKUP_FRESHNESS_INDETERMINATE_REASONS — that list enumerates
+      # answers the CHECK can reach, and this one is only reachable when the
+      # check could not run at all. Writing it here makes the retained artifact a
+      # complete record of every outcome including the watchdog's own failure,
+      # keeps `if-no-files-found: error` below meaningful, and matches the string
+      # the alert step already reports for this case.
+      #
+      # This never rescues the job: it exits 0, and the conclusion of the step
+      # that actually failed still stands.
+      - name: Record the meta verdict when the watchdog produced none
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          report=test-results/customer-backup-watchdog/verdict.json
+          if [ -s "$report" ]; then
+            exit 0
+          fi
+          mkdir -p "$(dirname "$report")"
+          # rpoSeconds is absent on purpose: the step that knows the policy is
+          # the step that did not run, and restating the number here would be the
+          # second definition that resolveBackupRpoSeconds() exists to prevent.
+          cat >"$report" <<JSON
+          {
+            "checkedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "state": "indeterminate",
+            "summary": "The backup freshness watchdog produced no verdict; the backup age was NOT determined",
+            "reason": "watchdog_produced_no_verdict"
+          }
+          JSON
+          echo "wrote meta verdict: watchdog_produced_no_verdict"
 
       - name: Retain the redacted freshness verdict
         if: ${{ always() }}
