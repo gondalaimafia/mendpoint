@@ -47,7 +47,7 @@ Submit a versioned provider schema or poll an approved feed, then inspect the no
 | POST /providers/:slug/versions | API | Store a versioned provider schema. |
 | POST /providers/:slug/publish-version | API | Publish and classify a version. |
 | POST /feeds/poll | API | Poll configured feeds. |
-| POST /graphql/schemas | API | Store and diff GraphQL SDL or introspection when enabled. |
+| POST /graphql/schemas/:sourceKey/versions | API | Store and diff GraphQL SDL or introspection when enabled. |
 | POST /change-sources | API | Submit reviewed manual change evidence when enabled. |
 
 ## Evidence and verification

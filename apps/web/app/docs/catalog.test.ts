@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { PUBLIC_DOCS_API_ROUTES } from "@mendpoint/contract";
 import {
   DOC_CATEGORIES,
   PRODUCT_DOCS,
@@ -99,6 +100,13 @@ describe("public product documentation catalog", () => {
       expect(page.limitations.length).toBeGreaterThan(0);
       expect(page.related.length).toBeGreaterThan(0);
     }
+  });
+
+  it("uses the complete versioned runtime route contract for every documented API interface", () => {
+    const documented = PRODUCT_DOCS.flatMap((page) => page.interfaces)
+      .filter((item) => item.kind === "API")
+      .map((item) => item.name);
+    expect([...new Set(documented)].sort()).toEqual([...PUBLIC_DOCS_API_ROUTES].sort());
   });
 
   it("does not exceed the registered public availability posture", () => {

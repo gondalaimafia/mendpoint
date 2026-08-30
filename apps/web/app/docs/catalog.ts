@@ -1,3 +1,5 @@
+import { assertPublicDocsApiRoute } from "@mendpoint/contract";
+
 export const DOC_CATEGORIES = [
   "Specialist agents",
   "Understand change",
@@ -129,7 +131,7 @@ export const PRODUCT_DOCS: readonly ProductDoc[] = Object.freeze([
     capabilities: ["OpenAPI JSON structural normalization and diffing", "GraphQL SDL and introspection normalization with canonical digests", "Breaking, dangerous, non-breaking, and additive classification with migration hints", "npm SDK release probes and compatibility signals", "RSS, Atom, GitHub Releases, provider-page, and registry document adapters as tested library components", "Manual provider announcements and redacted incident evidence"],
     useWhen: ["A provider publishes a new schema or SDK release.", "A team needs exact compatibility evidence before impact analysis.", "A manual announcement or incident must enter the same review trail."],
     howItWorks: ["Source bytes are bounded, normalized, and content addressed.", "The selected baseline and new version are compared structurally rather than by prose alone.", "Each change receives a stable identity, severity, location, and migration hint.", "Reviewed changes can fan out into graph impact and Fettler planning."],
-    interfaces: [api("POST /providers/:slug/versions", "Store a versioned provider schema."), api("POST /providers/:slug/publish-version", "Publish and classify a version."), api("POST /feeds/poll", "Poll configured feeds."), api("POST /graphql/schemas", "Store and diff GraphQL SDL or introspection when enabled."), api("POST /change-sources", "Submit reviewed manual change evidence when enabled.")],
+    interfaces: [api("POST /providers/:slug/versions", "Store a versioned provider schema."), api("POST /providers/:slug/publish-version", "Publish and classify a version."), api("POST /feeds/poll", "Poll configured feeds."), api("POST /graphql/schemas/:sourceKey/versions", "Store and diff GraphQL SDL or introspection when enabled."), api("POST /change-sources", "Submit reviewed manual change evidence when enabled.")],
     evidence: [evidence("OpenAPI normalization and diff", "packages/change-intel/src/index.test.ts"), evidence("GraphQL normalization and diff", "packages/change-intel/src/graphql-schema.test.ts"), evidence("Catalog polling", "packages/catalog/src/poll.test.ts")],
     guardrails: ["Tenant and source identity are derived from authenticated authority, not request claims.", "Immutable version labels reject changed-content replay.", "Oversized, malformed, contradictory, or cross-tenant evidence fails closed."],
     limitations: ["GraphQL ingestion is gated by MENDPOINT_GRAPHQL_INGESTION_ENABLED.", "PyPI is declared as a signal type but no live PyPI probe is implemented.", "General changelog ingestion adapters are tested library code; continuous production use is not implied."],
@@ -201,7 +203,7 @@ export const PRODUCT_DOCS: readonly ProductDoc[] = Object.freeze([
     capabilities: ["Allowlisted npm, Node, Python, Go, Rust, Maven, Gradle, and RSpec verification profiles", "OpenAPI breaking gates and API design review", "Baseline versus post-edit comparison and scoped waivers", "Immutable evidence records and verification artifacts", "in-toto Statement v1 inside DSSE with Ed25519 thresholds, expiry, revocation, and exact scope verification"],
     useWhen: ["A candidate must prove configured checks before delivery.", "A reviewer needs immutable evidence rather than a success label.", "A downstream system requires a signed software statement."],
     howItWorks: ["Repository policy supplies the only commands eligible for execution.", "The runner records exact inputs, outputs, status, timestamps, and digests.", "Delivery gates consume authenticated evidence and fail on stale or mismatched scope.", "The optional attestation service signs the exact deterministic statement bytes and verifies signatures before parsing payload content."],
-    interfaces: [configuration("Repository verification profile", "Approved commands, bounds, environment, and waiver authority."), artifact("Verification evidence", "Command, result, output digests, and source/candidate binding."), api("POST /advanced-ai/attestations", "Issue an attestation when advanced AI applications are enabled."), api("GET /advanced-ai/attestations/:id", "Retrieve and verify stored attestation evidence.")],
+    interfaces: [configuration("Repository verification profile", "Approved commands, bounds, environment, and waiver authority."), artifact("Verification evidence", "Command, result, output digests, and source/candidate binding."), api("POST /advanced-ai/attestations", "Issue an attestation when advanced AI applications are enabled."), api("GET /advanced-ai/attestations/:attestationId", "Retrieve and verify stored attestation evidence.")],
     evidence: [evidence("Repository command verifier", "packages/repair/src/verify.test.ts"), evidence("Contract gates", "packages/contract/src/contract.test.ts"), evidence("DSSE and in-toto", "packages/contract/src/software-attestation.test.ts")],
     guardrails: ["Arbitrary shell syntax is rejected and production commands come from approved policy.", "Waivers are attributable, scoped, and expiring.", "Attestation keys are injected authority; private keys never enter the statement or evidence.", "Signature verification happens before JSON parsing and exact scope checks."],
     limitations: ["Network isolation is supplied by deployment infrastructure, not the command parser alone.", "Security scan evidence can be caller-supplied unless a configured scanner produces it.", "Formal attestations are gated by MENDPOINT_ADVANCED_AI_APPLICATIONS_ENABLED and signing configuration."],
@@ -533,7 +535,10 @@ function page(
   }) as ProductDoc;
 }
 
-function api(name: string, detail: string) { return Object.freeze({ name, kind: "API" as const, detail }); }
+function api(name: string, detail: string) {
+  assertPublicDocsApiRoute(name);
+  return Object.freeze({ name, kind: "API" as const, detail });
+}
 function command(name: string, detail: string) { return Object.freeze({ name, kind: "Command" as const, detail }); }
 function event(name: string, detail: string) { return Object.freeze({ name, kind: "Event" as const, detail }); }
 function configuration(name: string, detail: string) { return Object.freeze({ name, kind: "Configuration" as const, detail }); }

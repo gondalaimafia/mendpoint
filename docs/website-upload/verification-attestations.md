@@ -46,7 +46,7 @@ Define a repository verification profile, run it against the immutable candidate
 | Repository verification profile | Configuration | Approved commands, bounds, environment, and waiver authority. |
 | Verification evidence | Artifact | Command, result, output digests, and source/candidate binding. |
 | POST /advanced-ai/attestations | API | Issue an attestation when advanced AI applications are enabled. |
-| GET /advanced-ai/attestations/:id | API | Retrieve and verify stored attestation evidence. |
+| GET /advanced-ai/attestations/:attestationId | API | Retrieve and verify stored attestation evidence. |
 
 ## Evidence and verification
 
