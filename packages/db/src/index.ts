@@ -4916,6 +4916,7 @@ export {
   listExecutionCostOutcomes,
   recordExecutionCostFromRoutingLedger,
   verifyExecutionCostIntegrity,
+  verifyExecutionOutcomeIntegrity,
 } from "./gross-margin.js";
 
 export type SuppressedPattern = {

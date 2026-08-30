@@ -18,6 +18,8 @@ import {
   ensureMissionTaskForJob,
   getPrincipalBySubject,
   insertTenant,
+  insertArtifactManifest,
+  insertReviewDecision,
   listActualExecutionCosts,
   missionTaskIdForJob,
   recordActualExecutionCost,
@@ -818,14 +820,26 @@ describe("billing economics API routes", () => {
       actorPrincipalId: actor!.id,
       missionId: "mission-production-a",
     });
+    const evidenceContent = JSON.stringify({ decision: "approve", executionId: "job-production-a" });
+    insertArtifactManifest(db, {
+      id: "pull-request-a", tenantId: "billing-tenant-a", kind: "review-evidence",
+      schemaVersion: 1, sha256: createHash("sha256").update(evidenceContent).digest("hex"),
+      mediaType: "application/json", sizeBytes: Buffer.byteLength(evidenceContent),
+      storageRef: "evidence://pull-request-a", content: evidenceContent,
+      producerPrincipalId: actor!.id, createdAt: "2026-09-02T00:00:00.000Z",
+    });
+    insertReviewDecision(db, {
+      id: "review-production-a", tenantId: "billing-tenant-a",
+      subjectType: "execution_cost", subjectId: "job-production-a",
+      candidateArtifactId: "pull-request-a", reviewerPrincipalId: actor!.id,
+      decision: "approve", rationale: "Approved durable production outcome",
+      createdAt: "2026-09-02T00:00:00.000Z",
+    });
     const accepted = await app.request("/billing/execution-costs/job-production-a/outcomes", {
       method: "POST",
       headers: headers(tenantA, "mission-outcome-a"),
       body: JSON.stringify({
-        outcomeStatus: "accepted",
-        acceptedOutcomeId: "pull-request-a",
-        authorityKind: "reviewer",
-        authorityDigest: "a".repeat(64),
+        authorityEvidenceId: "review-production-a",
       }),
     });
     expect(accepted.status).toBe(201);

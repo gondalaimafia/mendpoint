@@ -286,6 +286,12 @@ export type ExecutionCostIntegrity = Readonly<{
   error?: string;
 }>;
 
+export type ExecutionOutcomeIntegrity = Readonly<{
+  ok: boolean;
+  checked: number;
+  error?: string;
+}>;
+
 function one<T>(db: AppDb, sql: string, params: SQLInputValue[] = []): T | undefined {
   return db.raw.prepare(sql).get(...params) as T | undefined;
 }
@@ -477,7 +483,7 @@ export function recordExecutionCostOutcome(
        WHERE tenant_id = ? AND cost_entry_id = ? ORDER BY outcome_sequence DESC LIMIT 1`,
       [input.tenantId, cost.id]);
     const allowed: Record<ExecutionOutcomeResolutionStatus | "none", ExecutionOutcomeResolutionStatus[]> = {
-      none: ["accepted", "rejected", "corrected", "rolled_back"],
+      none: ["accepted", "rejected"],
       accepted: ["rolled_back", "corrected"],
       rejected: ["corrected"],
       corrected: ["rolled_back"],
@@ -486,7 +492,7 @@ export function recordExecutionCostOutcome(
     if (!allowed[previous?.outcome_status ?? "none"].includes(input.outcomeStatus)) {
       throw new Error("execution_cost_outcome_transition_invalid");
     }
-    if (input.authorityKind === "rollback" && input.outcomeStatus !== "rolled_back") {
+    if ((input.authorityKind === "rollback") !== (input.outcomeStatus === "rolled_back")) {
       throw new Error("execution_cost_outcome_authority_kind_invalid");
     }
     const entry: Omit<ExecutionCostOutcome, "entryHash"> = Object.freeze({
@@ -546,6 +552,7 @@ function hashEntry(entry: Omit<ActualExecutionCostEntry, "entryHash">): string {
       graphCostMeasured: _graphCostMeasured,
       sandboxCostMeasured: _sandboxCostMeasured,
       verificationCostMeasured: _verificationCostMeasured,
+      measurementProvenance: _measurementProvenance,
       costSchemaVersion: _costSchemaVersion,
       ...legacy
     } = entry;
@@ -1083,6 +1090,61 @@ export function verifyExecutionCostIntegrity(
   return { ok: true, checked: entries.length, totalCostMoneyMicros };
 }
 
+export function verifyExecutionOutcomeIntegrity(
+  db: AppDb,
+  tenantId: string,
+): ExecutionOutcomeIntegrity {
+  const rows = many<OutcomeRow>(db,
+    `SELECT * FROM actual_execution_cost_outcomes
+     WHERE tenant_id = ? ORDER BY cost_entry_id, outcome_sequence`, [tenantId]);
+  const state = new Map<string, { sequence: number; hash: string | null; createdAt: number }>();
+  for (const [index, row] of rows.entries()) {
+    const entry = outcomeFromRow(row);
+    const prior = state.get(entry.costEntryId) ?? { sequence: 0, hash: null, createdAt: -Infinity };
+    const cost = one<{ tenant_id: string; execution_id: string }>(db,
+      `SELECT tenant_id, execution_id FROM actual_execution_cost_entries WHERE id = ?`,
+      [entry.costEntryId]);
+    const actor = one<{ id: string }>(db,
+      `SELECT id FROM principals WHERE id = ? AND tenant_id = ? AND created_at <= ?
+       AND (expires_at IS NULL OR expires_at > ?) AND (revoked_at IS NULL OR revoked_at > ?)`,
+      [entry.actorPrincipalId, tenantId, entry.createdAt, entry.createdAt, entry.createdAt]);
+    const createdAt = Date.parse(entry.createdAt);
+    const { entryHash: _entryHash, ...hashInput } = entry;
+    if (!cost || cost.tenant_id !== tenantId || cost.execution_id !== entry.executionId || !actor ||
+        entry.outcomeSequence !== prior.sequence + 1 || entry.previousHash !== prior.hash ||
+        !Number.isFinite(createdAt) || createdAt < prior.createdAt ||
+        outcomeHash(hashInput) !== entry.entryHash) {
+      return { ok: false, checked: index, error: `execution_outcome_chain_integrity:${entry.id}` };
+    }
+    const accepted = entry.outcomeStatus === "accepted" || entry.outcomeStatus === "corrected";
+    if ((accepted && !entry.acceptedOutcomeId) || (!accepted && entry.acceptedOutcomeId) ||
+        (entry.outcomeStatus === "rolled_back") !== (entry.authorityKind === "rollback")) {
+      return { ok: false, checked: index, error: `execution_outcome_authority_binding:${entry.id}` };
+    }
+    const authorityBound = entry.authorityKind === "reviewer"
+      ? one<{ id: string }>(db,
+        `SELECT r.id FROM review_decisions r JOIN artifact_manifests a
+           ON a.id = r.candidate_artifact_id AND a.tenant_id = r.tenant_id
+         WHERE r.tenant_id = ? AND r.subject_type = 'execution_cost' AND r.subject_id = ?
+           AND r.reviewer_principal_id = ? AND r.created_at = ? AND a.sha256 = ?
+           AND ((r.decision = 'approve' AND ? IN ('accepted','corrected') AND r.candidate_artifact_id = ?)
+             OR (r.decision = 'reject' AND ? = 'rejected' AND ? IS NULL))`,
+        [tenantId, entry.executionId, entry.actorPrincipalId, entry.createdAt, entry.authorityDigest,
+          entry.outcomeStatus, entry.acceptedOutcomeId, entry.outcomeStatus, entry.acceptedOutcomeId])
+      : one<{ id: string }>(db,
+        `SELECT id FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'execution_cost'
+           AND aggregate_id = ? AND actor_principal_id = ? AND created_at = ? AND event_hash = ?
+           AND event_type = ?`,
+        [tenantId, entry.executionId, entry.actorPrincipalId, entry.createdAt, entry.authorityDigest,
+          entry.authorityKind === "rollback" ? "execution_cost.rolled_back" : "execution_cost.delivered"]);
+    if (!authorityBound) {
+      return { ok: false, checked: index, error: `execution_outcome_authority_evidence:${entry.id}` };
+    }
+    state.set(entry.costEntryId, { sequence: entry.outcomeSequence, hash: entry.entryHash, createdAt });
+  }
+  return { ok: true, checked: rows.length };
+}
+
 function issueKey(issue: GrossMarginIncompleteAttribution): string {
   return `${issue.code}\u0000${issue.taskId ?? ""}\u0000${issue.sourceId ?? ""}`;
 }
@@ -1116,8 +1178,7 @@ function durableRevenueJobForCost(
      JOIN mission m
        ON m.id = mt.mission_id
       AND m.tenant_id = mt.tenant_id
-     WHERE j.id = ?
-       AND j.tenant_id = ?
+     WHERE j.tenant_id = ?
        AND EXISTS (
          SELECT 1
          FROM domain_events e
@@ -1127,7 +1188,7 @@ function durableRevenueJobForCost(
            AND e.event_type = 'mission_task.created'
            AND e.correlation_id = j.id
        )`,
-    [entry.taskId, entry.missionId, entry.executionId, entry.tenantId],
+    [entry.taskId, entry.missionId, entry.tenantId],
   );
   return row?.job_id ?? null;
 }
@@ -1139,6 +1200,7 @@ export function reconcileGrossMargin(
   text("tenant_id", tenantId);
   const usageIntegrity = reconcileUsageLedger(db, tenantId);
   const costIntegrity = verifyExecutionCostIntegrity(db, tenantId);
+  const outcomeIntegrity = verifyExecutionOutcomeIntegrity(db, tenantId);
   const issues = new Map<string, GrossMarginIncompleteAttribution>();
   if (!usageIntegrity.ok) {
     addIssue(issues, {
@@ -1152,6 +1214,13 @@ export function reconcileGrossMargin(
       code: "cost_ledger_integrity",
       taskId: null,
       sourceId: costIntegrity.error ?? null,
+    });
+  }
+  if (!outcomeIntegrity.ok) {
+    addIssue(issues, {
+      code: "cost_ledger_integrity",
+      taskId: null,
+      sourceId: outcomeIntegrity.error ?? null,
     });
   }
 

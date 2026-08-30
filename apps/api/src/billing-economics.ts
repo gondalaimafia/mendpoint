@@ -10,6 +10,7 @@ import {
   createInvoiceExport,
   getInvoiceExport,
   listActualExecutionCosts,
+  listExecutionCostOutcomes,
   reconcileInvoiceExport,
   reconcileGrossMargin,
   recordActualExecutionCost,
@@ -486,17 +487,60 @@ export function createBillingEconomicsRoutes({
     if (!idempotencyKey) return errorResponse(c, "request_id_invalid", "A valid request ID is required", 400);
     try {
       const body = await c.req.json<JsonRecord>();
+      const evidenceId = typeof body.authorityEvidenceId === "string"
+        ? body.authorityEvidenceId.trim() : "";
+      if (!evidenceId) {
+        return errorResponse(c, "execution_cost_outcome_evidence_required", "Durable outcome evidence is required", 400);
+      }
+      const executionId = c.req.param("executionId");
+      const review = db.raw.prepare(
+        `SELECT r.id, r.decision, r.candidate_artifact_id, r.reviewer_principal_id,
+                r.created_at, a.sha256 AS content_sha256
+         FROM review_decisions r JOIN artifact_manifests a
+           ON a.id = r.candidate_artifact_id AND a.tenant_id = r.tenant_id
+         WHERE r.id = ? AND r.tenant_id = ?
+           AND r.subject_type = 'execution_cost' AND r.subject_id = ?`,
+      ).get(evidenceId, identity.tenantId, executionId) as {
+        id: string; decision: string; candidate_artifact_id: string;
+        reviewer_principal_id: string; created_at: string; content_sha256: string;
+      } | undefined;
+      const event = review ? undefined : db.raw.prepare(
+        `SELECT id, event_type, actor_principal_id, payload_json, payload_sha256, event_hash, created_at
+         FROM domain_events WHERE id = ? AND tenant_id = ?
+           AND aggregate_type = 'execution_cost' AND aggregate_id = ?
+           AND event_type IN ('execution_cost.delivered','execution_cost.rolled_back')`,
+      ).get(evidenceId, identity.tenantId, executionId) as {
+        id: string; event_type: string; actor_principal_id: string; payload_json: string;
+        payload_sha256: string; event_hash: string; created_at: string;
+      } | undefined;
+      if (!review && !event) {
+        return errorResponse(c, "execution_cost_outcome_evidence_invalid", "Tenant-bound outcome evidence was not found", 409);
+      }
+      const prior = listExecutionCostOutcomes(db, identity.tenantId, executionId).at(-1);
+      const payload = event ? JSON.parse(event.payload_json) as JsonRecord : undefined;
+      const approved = review?.decision === "approve" || event?.event_type === "execution_cost.delivered";
+      const rejected = review?.decision === "reject";
+      const rolledBack = event?.event_type === "execution_cost.rolled_back";
+      if (!approved && !rejected && !rolledBack) {
+        return errorResponse(c, "execution_cost_outcome_evidence_invalid", "Evidence does not authorize an accounting outcome", 409);
+      }
+      const outcomeStatus = rolledBack ? "rolled_back"
+        : approved && prior && ["rejected", "rolled_back"].includes(prior.outcomeStatus)
+          ? "corrected" : approved ? "accepted" : "rejected";
+      const acceptedOutcomeId = approved
+        ? (event ? String(payload?.outcomeId ?? event.id) : review!.candidate_artifact_id)
+        : null;
       const outcome = recordExecutionCostOutcome(db, {
         id: recordId(identity.tenantId, `outcome:${idempotencyKey}`),
         tenantId: identity.tenantId,
         idempotencyKey,
-        executionId: c.req.param("executionId"),
-        outcomeStatus: body.outcomeStatus as "accepted" | "rejected" | "corrected" | "rolled_back",
-        acceptedOutcomeId: body.acceptedOutcomeId as string | null | undefined,
-        authorityKind: body.authorityKind as "reviewer" | "delivery" | "rollback",
-        authorityDigest: body.authorityDigest as string,
-        actorPrincipalId: identity.actorPrincipalId,
-        createdAt: now(),
+        executionId,
+        outcomeStatus,
+        acceptedOutcomeId,
+        authorityKind: rolledBack ? "rollback" : event ? "delivery" : "reviewer",
+        authorityDigest: event?.event_hash ?? review!.content_sha256,
+        actorPrincipalId: event?.actor_principal_id ?? review!.reviewer_principal_id,
+        createdAt: event?.created_at ?? review!.created_at,
       });
       return c.json({ data: outcome }, 201);
     } catch (error) {

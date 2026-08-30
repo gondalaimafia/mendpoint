@@ -37,6 +37,7 @@ export type BridgedJob = Readonly<{
   status?: string;
   result_json?: string | null;
   attempts?: number;
+  lease_generation?: number;
 }>;
 
 function payloadRecord(job: BridgedJob): Record<string, unknown> | undefined {
@@ -205,13 +206,15 @@ export function recordBoundMissionExecutionCost(
   const payload = payloadRecord(input.job);
   const taskId = missionTaskIdForJob(input.job.id);
   const attemptNumber = Math.max(1, input.job.attempts ?? 1);
+  const leaseGeneration = Math.max(1, input.job.lease_generation ?? attemptNumber);
+  const executionId = `${input.sourceRunId}:lease-${leaseGeneration}:attempt-${attemptNumber}`;
   const prior = listActualExecutionCosts(db, input.job.tenant_id)
-    .filter((entry) => entry.taskId === taskId && entry.executionId !== input.sourceRunId)
+    .filter((entry) => entry.taskId === taskId && entry.executionId !== executionId)
     .at(-1);
   return recordExecutionCostFromRoutingLedger(db, {
     tenantId: input.job.tenant_id,
     sourceRunId: input.sourceRunId,
-    executionId: input.sourceRunId,
+    executionId,
     taskId,
     taskClass: input.job.type,
     route: mission.product,

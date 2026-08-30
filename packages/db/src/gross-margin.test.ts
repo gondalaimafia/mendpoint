@@ -1,9 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
+  appendDomainEvent,
   createMission,
   createUsageEntitlement,
   createUsagePriceVersion,
@@ -12,6 +14,8 @@ import {
   ensureMissionTaskForJob,
   insertPrincipal,
   insertTenant,
+  insertArtifactManifest,
+  insertReviewDecision,
   listActualExecutionCosts,
   listExecutionCostOutcomes,
   reconcileGrossMargin,
@@ -20,6 +24,7 @@ import {
   reserveUsage,
   settleUsageReservation,
   verifyExecutionCostIntegrity,
+  verifyExecutionOutcomeIntegrity,
   type ActualExecutionCostInput,
   type AppDb,
 } from "./index.js";
@@ -425,7 +430,31 @@ describe("actual execution cost and gross margin", () => {
       acceptedOutcomeId?: string | null;
       authorityKind: "reviewer" | "rollback";
       authorityDigest: string;
-    }) => recordExecutionCostOutcome(db, {
+    }) => {
+      let authorityDigest: string;
+      if (input.authorityKind === "reviewer") {
+        const artifactId = input.acceptedOutcomeId ?? `rejected-artifact-${suffix}`;
+        const content = JSON.stringify({ suffix, decision: input.outcomeStatus });
+        authorityDigest = createHash("sha256").update(content).digest("hex");
+        insertArtifactManifest(db, { id: artifactId, tenantId: "tenant_default",
+          kind: "review-evidence", schemaVersion: 1, sha256: authorityDigest,
+          mediaType: "application/json", sizeBytes: Buffer.byteLength(content),
+          storageRef: `evidence://${artifactId}`, content, producerPrincipalId: "principal-a",
+          createdAt: `2026-08-01T12:0${3 + listExecutionCostOutcomes(db, "tenant_default").length}:00.000Z` });
+        insertReviewDecision(db, { id: `review-${suffix}`, tenantId: "tenant_default",
+          subjectType: "execution_cost", subjectId: "execution-a", candidateArtifactId: artifactId,
+          reviewerPrincipalId: "principal-a",
+          decision: input.outcomeStatus === "rejected" ? "reject" : "approve",
+          rationale: "Durable test outcome", createdAt: `2026-08-01T12:0${3 + listExecutionCostOutcomes(db, "tenant_default").length}:00.000Z` });
+      } else {
+        const event = appendDomainEvent(db, { id: `rollback-${suffix}`, tenantId: "tenant_default",
+          schemaVersion: 1, eventType: "execution_cost.rolled_back", aggregateType: "execution_cost",
+          aggregateId: "execution-a", actorPrincipalId: "principal-a", correlationId: "execution-a",
+          idempotencyKey: `rollback-${suffix}`, payload: {},
+          createdAt: `2026-08-01T12:0${3 + listExecutionCostOutcomes(db, "tenant_default").length}:00.000Z` });
+        authorityDigest = event.row.event_hash;
+      }
+      return recordExecutionCostOutcome(db, {
       id: `outcome-${suffix}`,
       tenantId: "tenant_default",
       idempotencyKey: `outcome-${suffix}`,
@@ -433,7 +462,9 @@ describe("actual execution cost and gross margin", () => {
       actorPrincipalId: "principal-a",
       createdAt: `2026-08-01T12:0${3 + listExecutionCostOutcomes(db, "tenant_default").length}:00.000Z`,
       ...input,
+      authorityDigest,
     });
+    };
 
     outcome("rejected", {
       outcomeStatus: "rejected",
@@ -464,9 +495,23 @@ describe("actual execution cost and gross margin", () => {
     });
     expect(listExecutionCostOutcomes(db, "tenant_default", "execution-a").map((row) => row.outcomeStatus))
       .toEqual(["rejected", "corrected", "rolled_back"]);
+    expect(verifyExecutionOutcomeIntegrity(db, "tenant_default")).toEqual({ ok: true, checked: 3 });
     expect(() => db.raw.prepare(
       "UPDATE actual_execution_cost_outcomes SET outcome_status = 'accepted' WHERE id = 'outcome-rejected'",
     ).run()).toThrow("actual_execution_cost_outcomes_append_only");
+
+    db.raw.exec("DROP TRIGGER actual_execution_cost_outcomes_append_only_update");
+    db.raw.prepare(
+      "UPDATE actual_execution_cost_outcomes SET authority_digest = ? WHERE id = ?",
+    ).run("d".repeat(64), "outcome-corrected");
+    expect(verifyExecutionOutcomeIntegrity(db, "tenant_default")).toMatchObject({
+      ok: false,
+      error: "execution_outcome_chain_integrity:outcome-corrected",
+    });
+    expect(reconcileGrossMargin(db, "tenant_default")).toMatchObject({
+      complete: false,
+      exactGrossMarginMoneyMicros: null,
+    });
   });
 
   it("enforces tenant isolation, actor ownership, idempotency, and append-only rows", () => {

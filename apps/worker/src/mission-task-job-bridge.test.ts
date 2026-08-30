@@ -142,7 +142,7 @@ describe("mission-task job bridge", () => {
     expect(cost).toMatchObject({
       missionId: "m1",
       taskId: missionTaskIdForJob("job-1"),
-      executionId: "session-1",
+      executionId: "session-1:lease-1:attempt-1",
       route: "fettler",
       taskClass: "agent.run",
       outcomeStatus: "unresolved",
@@ -162,10 +162,10 @@ describe("mission-task job bridge", () => {
       createdAt: at,
     });
     expect(retry).toMatchObject({
-      executionId: "session-2",
+      executionId: "session-2:lease-2:attempt-2",
       attemptNumber: 2,
       retryNumber: 1,
-      fallbackFromExecutionId: "session-1",
+      fallbackFromExecutionId: "session-1:lease-1:attempt-1",
       outcomeStatus: "unresolved",
     });
     expect(listActualExecutionCosts(db, "t1")).toHaveLength(2);
