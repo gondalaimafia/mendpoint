@@ -52,6 +52,7 @@ export * from "./mission-handoff.js";
 export * from "./mission-task.js";
 export * from "./policy-envelope.js";
 export * from "./task-ownership.js";
+export * from "./secret-lifecycle.js";
 
 export type AppDb = {
   raw: DatabaseSync;
@@ -1564,6 +1565,85 @@ CREATE TABLE IF NOT EXISTS scm_connections (
   UNIQUE (tenant_id, provider, external_account_id)
 );
 CREATE INDEX IF NOT EXISTS scm_connections_tenant_idx ON scm_connections(tenant_id, provider);
+
+-- Durable encrypted secret generations. SCM rows keep their scheme://id reference;
+-- source_ref resolves that compatibility locator to the current lifecycle record.
+-- There is deliberately no plaintext column.
+CREATE TABLE IF NOT EXISTS secret_lifecycle_versions (
+  tenant_id TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
+  source_ref TEXT NOT NULL,
+  generation INTEGER NOT NULL CHECK (generation >= 1),
+  state TEXT NOT NULL CHECK (state IN ('active', 'retired', 'revoked')),
+  audiences_json TEXT NOT NULL,
+  expires_at TEXT,
+  issued_at TEXT NOT NULL,
+  rotate_after TEXT,
+  retired_at TEXT,
+  revoked_at TEXT,
+  revocation_reason TEXT,
+  key_provider TEXT NOT NULL,
+  key_id TEXT NOT NULL,
+  key_version TEXT NOT NULL,
+  customer_managed INTEGER NOT NULL CHECK (customer_managed IN (0, 1)),
+  envelope_schema_version INTEGER NOT NULL CHECK (envelope_schema_version = 1),
+  algorithm TEXT NOT NULL CHECK (algorithm = 'AES-256-GCM'),
+  wrapped_data_key TEXT NOT NULL,
+  iv TEXT NOT NULL,
+  auth_tag TEXT NOT NULL,
+  ciphertext TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, credential_id, generation),
+  UNIQUE (tenant_id, source_ref, generation),
+  CHECK ((state = 'active' AND retired_at IS NULL AND revoked_at IS NULL AND revocation_reason IS NULL)
+    OR (state = 'retired' AND retired_at IS NOT NULL AND revoked_at IS NULL AND revocation_reason IS NULL)
+    OR (state = 'revoked' AND revoked_at IS NOT NULL AND length(trim(revocation_reason)) > 0))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS secret_lifecycle_one_active_idx
+  ON secret_lifecycle_versions(tenant_id, credential_id) WHERE state = 'active';
+CREATE UNIQUE INDEX IF NOT EXISTS secret_lifecycle_one_active_source_ref_idx
+  ON secret_lifecycle_versions(tenant_id, source_ref) WHERE state = 'active';
+CREATE INDEX IF NOT EXISTS secret_lifecycle_source_ref_idx
+  ON secret_lifecycle_versions(tenant_id, source_ref, generation);
+
+CREATE TRIGGER IF NOT EXISTS secret_lifecycle_versions_no_delete
+BEFORE DELETE ON secret_lifecycle_versions
+BEGIN
+  SELECT RAISE(ABORT, 'secret_lifecycle_delete_forbidden');
+END;
+
+CREATE TRIGGER IF NOT EXISTS secret_lifecycle_versions_guard_update
+BEFORE UPDATE ON secret_lifecycle_versions
+WHEN
+  NEW.tenant_id IS NOT OLD.tenant_id OR
+  NEW.credential_id IS NOT OLD.credential_id OR
+  NEW.source_ref IS NOT OLD.source_ref OR
+  NEW.generation IS NOT OLD.generation OR
+  NEW.audiences_json IS NOT OLD.audiences_json OR
+  NEW.expires_at IS NOT OLD.expires_at OR
+  NEW.issued_at IS NOT OLD.issued_at OR
+  NEW.rotate_after IS NOT OLD.rotate_after OR
+  NEW.key_provider IS NOT OLD.key_provider OR
+  NEW.key_id IS NOT OLD.key_id OR
+  NEW.key_version IS NOT OLD.key_version OR
+  NEW.customer_managed IS NOT OLD.customer_managed OR
+  NEW.envelope_schema_version IS NOT OLD.envelope_schema_version OR
+  NEW.algorithm IS NOT OLD.algorithm OR
+  NEW.wrapped_data_key IS NOT OLD.wrapped_data_key OR
+  NEW.iv IS NOT OLD.iv OR
+  NEW.auth_tag IS NOT OLD.auth_tag OR
+  NEW.ciphertext IS NOT OLD.ciphertext OR
+  NEW.created_at IS NOT OLD.created_at OR
+  NOT (
+    (OLD.state = 'active' AND NEW.state = 'retired' AND
+      NEW.retired_at IS NOT NULL AND NEW.revoked_at IS NULL AND NEW.revocation_reason IS NULL) OR
+    (OLD.state IN ('active', 'retired') AND NEW.state = 'revoked' AND
+      NEW.retired_at IS OLD.retired_at AND NEW.revoked_at IS NOT NULL AND
+      length(trim(NEW.revocation_reason)) > 0)
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'secret_lifecycle_transition_invalid');
+END;
 
 CREATE TABLE IF NOT EXISTS connected_repositories (
   id TEXT PRIMARY KEY,

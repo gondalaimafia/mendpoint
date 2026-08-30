@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDb,
+  createSecretLifecycle,
   getConsumerRepo,
   getRepositorySnapshotPolicy,
   insertConsumer,
@@ -23,19 +24,26 @@ import {
   listRepositorySnapshotFiles,
   listRepositorySnapshots,
   recordRepositorySnapshotDeletion,
+  revokeSecretLifecycle,
+  rotateSecretLifecycle,
   type AppDb,
 } from "@mendpoint/db";
 import {
   CredentialBroker,
+  EnvelopeKeyLifecycleRegistry,
+  EnvelopeSecretVault,
+  LocalEnvelopeKeyProvider,
   MemorySecretProvider,
   type CredentialAccessAuditEvent,
   type CredentialDescriptor,
+  type EnvelopeAccessAuditEvent,
   type GitHubRepositoryTransport,
   type GitHubTransportRequest,
   type GitHubTransportResponse,
 } from "@mendpoint/platform";
 import {
   materializeConnectedRepository,
+  createRepositoryCredentialDependencies,
   purgeExpiredSnapshots,
   registerConnectedRepository,
   registerScmConnection,
@@ -55,11 +63,13 @@ const GITHUB_BLOB = "3".repeat(40);
 class FakeGitHubTransport implements GitHubRepositoryTransport {
   readonly provenance = "test" as const;
   readonly requests: GitHubTransportRequest[] = [];
+  readonly credentials: string[] = [];
 
   constructor(private readonly forbidden = false) {}
 
   async request(input: GitHubTransportRequest): Promise<GitHubTransportResponse> {
     this.requests.push(input);
+    this.credentials.push(input.credential.reveal());
     if (this.forbidden) return { status: 403, body: { message: "secret-installation-token" } };
     if (input.path === "/repositories/98765") {
       return {
@@ -103,6 +113,69 @@ class FakeGitHubTransport implements GitHubRepositoryTransport {
     }
     return { status: 404, body: { message: "Not Found" } };
   }
+}
+
+async function durableCredential(
+  db: AppDb,
+  provider: LocalEnvelopeKeyProvider,
+  input: {
+    credentialId: string;
+    sourceRef: string;
+    generation: number;
+    value: string;
+    rotate?: boolean;
+  },
+) {
+  const key = {
+    provider: "local-envelope",
+    keyId: "tenant-key",
+    version: String(input.generation),
+    customerManaged: false,
+  } as const;
+  provider.putKey("tenant-a", key, Buffer.alloc(32, input.generation));
+  const lifecycle = new EnvelopeKeyLifecycleRegistry();
+  lifecycle.register({
+    tenantId: "tenant-a",
+    key,
+    generation: input.generation,
+    state: "active",
+    createdAt: `2026-08-0${input.generation}T00:00:00.000Z`,
+  });
+  const vault = new EnvelopeSecretVault(lifecycle, [provider], () => undefined);
+  const envelope = await vault.encrypt(input.credentialId, input.value, key, {
+    tenantId: "tenant-a",
+    actorId: "service:provisioner",
+    correlationId: `provision-${input.generation}`,
+    purpose: input.rotate ? "rotate scm credential" : "create scm credential",
+    at: `2026-08-0${input.generation}T00:00:00.000Z`,
+  });
+  const version = {
+    tenantId: "tenant-a",
+    credentialId: input.credentialId,
+    sourceRef: input.sourceRef,
+    generation: input.generation,
+    audiences: ["github:installation:12345"],
+    expiresAt: "2026-09-01T00:00:00.000Z",
+    issuedAt: `2026-08-0${input.generation}T00:00:00.000Z`,
+    key,
+    envelope: {
+      schemaVersion: envelope.schemaVersion,
+      algorithm: envelope.algorithm,
+      wrappedDataKey: envelope.wrappedDataKey,
+      iv: envelope.iv,
+      authTag: envelope.authTag,
+      ciphertext: envelope.ciphertext,
+      createdAt: envelope.createdAt,
+    },
+  };
+  if (input.rotate) {
+    return rotateSecretLifecycle(db, {
+      expectedGeneration: input.generation - 1,
+      rotatedAt: `2026-08-0${input.generation}T00:00:00.000Z`,
+      next: version,
+    });
+  }
+  return createSecretLifecycle(db, version);
 }
 
 function githubRuntime(input: {
@@ -651,6 +724,123 @@ describe("repository connection service", () => {
       errorCode: "github_snapshot_permission_denied",
     });
     expect(JSON.stringify(scmOverview(db, "tenant-a"))).not.toContain("secret-installation-token");
+  });
+
+  it("uses durable lifecycle metadata, observes rotation, and denies revocation before transport", async () => {
+    const { db } = fixture();
+    const { connection, repository } = registerGitHub(db);
+    const keyProvider = new LocalEnvelopeKeyProvider();
+    await durableCredential(db, keyProvider, {
+      credentialId: connection.id,
+      sourceRef: "memory://github/installations/12345",
+      generation: 1,
+      value: "durable-token-one",
+    });
+    const transport = new FakeGitHubTransport();
+    const credentialAudits: CredentialAccessAuditEvent[] = [];
+    const envelopeAudits: EnvelopeAccessAuditEvent[] = [];
+    let accessTime = new Date("2026-08-10T00:00:00.000Z");
+    const dependencies = createRepositoryCredentialDependencies(db, {
+      tenantId: "tenant-a",
+      actorId: "operator:test",
+      requestId: "request-test",
+      keyProviders: [keyProvider],
+      githubTransport: transport,
+      credentialAudit: (event) => {
+        credentialAudits.push(event);
+      },
+      envelopeAudit: (event) => {
+        envelopeAudits.push(event);
+      },
+      now: () => accessTime,
+    });
+
+    await materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+    }, dependencies);
+    expect(new Set(transport.credentials)).toEqual(new Set(["durable-token-one"]));
+    expect(credentialAudits.at(-1)).toMatchObject({
+      outcome: "granted",
+      rotation: { generation: 1 },
+    });
+    expect(envelopeAudits.at(-1)).toMatchObject({ operation: "decrypt", outcome: "granted" });
+
+    await durableCredential(db, keyProvider, {
+      credentialId: connection.id,
+      sourceRef: "memory://github/installations/12345",
+      generation: 2,
+      value: "durable-token-two",
+      rotate: true,
+    });
+    transport.credentials.length = 0;
+    await materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+    }, dependencies);
+    expect(new Set(transport.credentials)).toEqual(new Set(["durable-token-two"]));
+    expect(credentialAudits.at(-1)).toMatchObject({
+      outcome: "granted",
+      rotation: { generation: 2 },
+    });
+
+    accessTime = new Date("2026-09-01T00:00:00.000Z");
+    transport.credentials.length = 0;
+    transport.requests.length = 0;
+    await expect(materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+    }, dependencies)).rejects.toThrow("github_credential_expired");
+    expect(transport.requests).toHaveLength(0);
+    expect(credentialAudits.at(-1)).toMatchObject({ outcome: "denied", reason: "expired" });
+
+    revokeSecretLifecycle(db, {
+      tenantId: "tenant-a",
+      credentialId: connection.id,
+      generation: 2,
+      revokedAt: "2026-08-11T00:00:00.000Z",
+      reason: "incident response",
+    });
+    accessTime = new Date("2026-08-11T00:00:00.000Z");
+    transport.credentials.length = 0;
+    transport.requests.length = 0;
+    await expect(materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+    }, dependencies)).rejects.toThrow("github_credential_revoked");
+    expect(transport.requests).toHaveLength(0);
+    expect(credentialAudits.at(-1)).toMatchObject({ outcome: "denied", reason: "revoked" });
+  });
+
+  it("denies plaintext before GitHub transport when canonical access audit fails", async () => {
+    const { db } = fixture();
+    const { connection, repository } = registerGitHub(db);
+    const keyProvider = new LocalEnvelopeKeyProvider();
+    await durableCredential(db, keyProvider, {
+      credentialId: connection.id,
+      sourceRef: "memory://github/installations/12345",
+      generation: 1,
+      value: "durable-token-one",
+    });
+    const transport = new FakeGitHubTransport();
+    const dependencies = createRepositoryCredentialDependencies(db, {
+      tenantId: "tenant-a",
+      actorId: "operator:test",
+      requestId: "request-test",
+      keyProviders: [keyProvider],
+      githubTransport: transport,
+      envelopeAudit: () => undefined,
+      credentialAudit: () => {
+        throw new Error("audit unavailable");
+      },
+      now: () => new Date("2026-08-10T00:00:00.000Z"),
+    });
+
+    await expect(materializeConnectedRepository(db, {
+      tenantId: "tenant-a",
+      repositoryId: repository.id,
+    }, dependencies)).rejects.toThrow("github_credential_audit_failed");
+    expect(transport.requests).toHaveLength(0);
   });
 
   it("rolls back database state and removes GitHub output after a later binding failure", async () => {

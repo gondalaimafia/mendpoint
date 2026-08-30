@@ -230,6 +230,7 @@ export {
   DisabledExternalVaultProvider,
   LocalEnvelopeKeyProvider,
   EnvelopeSecretVault,
+  DurableEnvelopeSecretProvider,
   type EnvelopeKeyReference,
   type EnvelopeKeyState,
   type EnvelopeKeyLifecycle,
@@ -237,6 +238,8 @@ export {
   type EnvelopeSecret,
   type EnvelopeAccessAuditEvent,
   type KeyEncryptionKeyProvider,
+  type DurableEnvelopeSecretVersion,
+  type DurableEnvelopeSecretProviderOptions,
 } from "./vault-envelope.js";
 
 export {

@@ -1,5 +1,31 @@
 /** Table name constants + row types (node:sqlite, no ORM). */
 
+export type SecretLifecycleVersionRow = {
+  tenant_id: string;
+  credential_id: string;
+  source_ref: string;
+  generation: number;
+  state: "active" | "retired" | "revoked";
+  audiences_json: string;
+  expires_at: string | null;
+  issued_at: string;
+  rotate_after: string | null;
+  retired_at: string | null;
+  revoked_at: string | null;
+  revocation_reason: string | null;
+  key_provider: string;
+  key_id: string;
+  key_version: string;
+  customer_managed: number;
+  envelope_schema_version: number;
+  algorithm: "AES-256-GCM";
+  wrapped_data_key: string;
+  iv: string;
+  auth_tag: string;
+  ciphertext: string;
+  created_at: string;
+};
+
 export type Provider = {
   id: string;
   slug: string;

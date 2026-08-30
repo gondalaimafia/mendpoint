@@ -1,5 +1,21 @@
 # Mendpoint 101 production closure (2026-08-28)
 
+## Plan 01-01: Durable secret lifecycle SCM tracer
+
+- [x] RED: add database lifecycle tests for encrypted envelopes, tenant scope, rotation, expiry, retirement, and immutable incident revocation.
+- [x] GREEN: implement the additive secret lifecycle schema and atomic persistence module.
+- [x] RED: add provider and SCM materialization tests for durable lifecycle resolution, fail-closed audit, rotation, revocation, and pre-transport denial.
+- [x] GREEN: wire the existing vault envelope and SCM snapshot seam without changing `scheme://id` references.
+- [x] Verify fresh and aged database behavior, focused tests, affected typechecks, and the complete diff.
+- [ ] Root: inspect and commit the scoped files on the assigned `codex/` branch.
+
+### Review
+
+- New additive tables converge on fresh and pre-change databases with no existing-table alteration.
+- SCM materialization resolves durable metadata separately from the stored `scheme://id` reference, reloads exact generations, and denies expiry or revocation before GitHub transport.
+- The production KEK seam remains provider neutral and disabled. A provider-specific implementation, authority configuration, deployment secret wiring, and live decrypt proof remain outside this slice.
+
+
 Observed `origin/main`: `96801a319fc3d355cb2b28b4167b83023a192042`.
 
 - [x] Convert the approved eleven-phase plan into the exhaustive 101-row execution ledger (`docs/PRODUCTION_CLOSURE_EXECUTION_LEDGER.json`).
