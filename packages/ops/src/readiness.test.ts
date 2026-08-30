@@ -284,6 +284,19 @@ describe("readiness storage boundary", () => {
       process.env.MENDPOINT_CUSTOMER_READY = "1";
       expect(readinessCheck()).toEqual({ name: "customer_readiness", ok: true, detail: "ready" });
 
+      process.env.MENDPOINT_CUSTOMER_QUALIFICATION_MODE = "required";
+      const failedExternalHealth = readiness({
+        dbPath: join(root, "mendpoint.sqlite"),
+        dbPing: () => true,
+        customerReadinessAuthority: {
+          criticalHealth: [{ name: "worker", ok: false }],
+          now: "2026-08-30T12:00:00.000Z",
+        },
+      }).checks.find((check) => check.name === "customer_readiness");
+      expect(failedExternalHealth?.ok).toBe(false);
+      expect(failedExternalHealth?.detail).toContain("critical_health_failed");
+      delete process.env.MENDPOINT_CUSTOMER_QUALIFICATION_MODE;
+
       process.env.MENDPOINT_CUSTOMER_READY = "0";
       const notReady = readinessCheck();
       expect(notReady?.ok).toBe(false);

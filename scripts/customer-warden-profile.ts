@@ -171,6 +171,7 @@ const REQUIRED_SETTINGS = Object.freeze({
 
 export function validateCustomerWardenRuntime(
   env: Readonly<Record<string, string | undefined>>,
+  readinessAuthority: CustomerReadinessAuthority = {},
 ): string[] {
   const errors: string[] = [];
   for (const [name, expected] of Object.entries(REQUIRED_SETTINGS)) {
@@ -253,13 +254,22 @@ export function validateCustomerWardenRuntime(
   // here is an indeterminate declaration, which must fail closed rather than be
   // read as ready. A declared not-ready deployment (=0) still boots as an honest
   // hold; the readiness probe reports it as not ready.
-  const readiness = assessCustomerReadiness(env, errors);
+  const readiness = assessCustomerReadiness(env, errors, readinessAuthority);
   if (readiness.status === "indeterminate") {
-    errors.push(...readiness.reasons);
+    errors.push(`Customer readiness indeterminate: ${readiness.reasons.join(", ")}`);
+  } else if (readiness.status === "not_ready" && readiness.declared === "ready") {
+    for (const reason of readiness.reasons) {
+      if (reason !== "customer_profile_blocked") {
+        errors.push(`Customer readiness blocked: ${reason}`);
+      }
+    }
   }
   return errors;
 }
 import { loadCustomerObjectStoreConfig } from "./customer-object-store.js";
 import { assessModelEgress, resolveEitherRenamedEnv } from "@mendpoint/shared";
 import { SANDBOX_EGRESS_ATTESTATION_SCHEMA } from "@mendpoint/platform";
-import { assessCustomerReadiness } from "@mendpoint/ops";
+import {
+  assessCustomerReadiness,
+  type CustomerReadinessAuthority,
+} from "@mendpoint/ops";

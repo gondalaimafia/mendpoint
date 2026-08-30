@@ -146,6 +146,17 @@ describe("Fettler-only customer Fly profile", () => {
     );
   });
 
+  it("preserves injected critical-health failures in required startup validation", () => {
+    const errors = validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_CUSTOMER_READY: "1",
+      MENDPOINT_CUSTOMER_QUALIFICATION_MODE: "required",
+    }), {
+      criticalHealth: [{ name: "worker", ok: false }],
+      now: "2026-08-30T12:00:00.000Z",
+    });
+    expect(errors.some((error) => error.includes("critical_health_failed"))).toBe(true);
+  });
+
   it("limits each runtime child to the secrets it needs", () => {
     const env = customerRuntime();
     env.MENDPOINT_SANDBOX_FLY_TOKEN = "sandbox-token";
@@ -256,17 +267,17 @@ describe("Fettler-only customer Fly profile", () => {
     delete unset.MENDPOINT_CUSTOMER_READY;
     const unsetErrors = validateCustomerWardenRuntime(unset);
     expect(unsetErrors).not.toEqual([]);
-    expect(unsetErrors.some((e) => e.includes("MENDPOINT_CUSTOMER_READY could not be determined")))
-      .toBe(true);
-    expect(unsetErrors.some((e) => e.includes("got unset"))).toBe(true);
+    expect(unsetErrors).toContain(
+      "Customer readiness indeterminate: customer_declaration_indeterminate",
+    );
 
     // Indeterminate (unrecognized value) fails closed at boot, named.
     const garbageErrors = validateCustomerWardenRuntime(
       customerRuntime({ MENDPOINT_CUSTOMER_READY: "maybe" }),
     );
-    expect(garbageErrors.some((e) => e.includes("MENDPOINT_CUSTOMER_READY could not be determined")))
-      .toBe(true);
-    expect(garbageErrors.some((e) => e.includes('got "maybe"'))).toBe(true);
+    expect(garbageErrors).toContain(
+      "Customer readiness indeterminate: customer_declaration_indeterminate",
+    );
   });
 
   it("asserts a local model endpoint at boot under local_only egress", () => {

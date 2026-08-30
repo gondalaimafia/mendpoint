@@ -3646,3 +3646,20 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - RED passed the 20 existing router tests and failed all three new boundary tests: versioned registry binding was absent, cross-tenant fallback still selected an executor, and a tampered route collapsed into ordinary fallback exhaustion.
 - GREEN binds schema version, registry identity, registry version, and a deterministic registry fingerprint into every plan and decision. Every route now binds tenant, policy, registry, executor version, price version, region, quality, latency, and cost under a deterministic route fingerprint. Tenant mismatch, malformed bindings, unavailable fallbacks, and exhausted chains end in typed human handoff.
 - Verification is green: 23 of 23 focused router tests, all 237 platform tests, the complete repository workspace and scripts typecheck, and `git diff --check`. No Worker or Pipeline consumer change was required, and no push, pull request, deployment, or production authority action occurred.
+
+## 2026-08-30 Plan 00-03: computed customer readiness authority
+
+- [x] Add one pure readiness decision bound to the exact release revision, requirement-register digest, public-claims digest, evidence-manifest digest, 101-of-101 attestation, sandbox authority, critical health, and revocation state.
+- [x] Route customer startup validation and the runtime readiness probe through the same evaluator.
+- [x] Preserve explicit inactive compatibility until qualification artifacts are packaged; fail closed when required mode is selected.
+- [x] Add negative coverage for missing, malformed, mismatched, expired, revoked, unhealthy, and incomplete evidence.
+- [x] Run focused readiness tests, the Ops typecheck, and diff integrity.
+- [x] Repair exact-head review P1 so absent or malformed revocation state is indeterminate and only an explicit array can prove the revocation boundary.
+- [ ] Obtain independent exact-head review, current-base CI, protected merge, and exact-revision deployment proof.
+
+### Review
+
+- The deployment declaration is only an upper bound. Required mode cannot become ready without all three matching digests, exact qualified revision, 101 of 101 outcome, fresh sandbox receipt, nonempty passing critical-health evidence, and no revocation or profile blocker.
+- The focused matrix passes 30 of 30 tests. Root review added a fail-closed `critical_health_indeterminate` result so omitted health evidence cannot qualify a deployment.
+- Runtime packaging and injection of the qualification attestation and expected digests remain a separate activation increment; this slice does not enable required mode in production.
+- Exact-head review found that missing revocation state was normalized to an empty list. Required mode now distinguishes missing or malformed state from the authoritative empty array, includes that distinction in the readiness digest, and fails closed as indeterminate.
