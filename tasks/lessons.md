@@ -319,8 +319,8 @@
 ### 2026-08-30 — Restore the whole topology or contain it
 
 **Mistake:** Rollback verified the prior coordinator and target worker records but did not compare the complete Machine set, so an extra active worker could escape restoration proof.
-**Correction:** Require exact full-snapshot equality across cardinality, IDs, instances, states, configurations, and images; switch any incompatible drift to global worker containment.
-**Rule:** Production rollback is a topology assertion, not a pair of object checks. Restoration passes only when the entire pre-mutation topology is exact; otherwise fail closed and contain every unsafe worker.
+**Correction:** Require exact full-snapshot equality across cardinality, Machine IDs, states, configurations, and images; record and health-check the new process incarnation when rollback legitimately restarts a worker; switch any incompatible drift to global worker containment.
+**Rule:** Production rollback is a topology assertion, not a pair of object checks. Restoration passes only when the entire configurable topology and expected state are exact and any restarted process is healthy; otherwise fail closed and contain every unsafe worker.
 
 ### 2026-08-30 — Make control-plane state transitions explicit
 
@@ -333,3 +333,9 @@
 **Mistake:** The first exact-restore path ran under `set -e`, so a failed update, inventory, start, or stop could terminate cleanup before global containment ran.
 **Correction:** Check every restore operation explicitly, preserve a transition result, and switch any failure to the bounded global containment path.
 **Rule:** Rollback failure is an expected safety transition, not an unhandled shell error. Every rollback operation must have a bounded failure edge that reaches containment and terminal-state proof.
+
+### 2026-08-30 — Scope workflow artifacts to the exact attempt
+
+**Mistake:** ReGauge preflight and production evidence artifact names used only the commit SHA, so a GitHub rerun could collide with attempt-one artifacts or consume stale topology.
+**Correction:** Bind every upload and matching download to commit SHA, workflow run ID, and run attempt.
+**Rule:** Any artifact that carries production authority or rollback state must be uniquely named by the exact execution attempt. A rerun may reuse source, but it must never reuse mutable control evidence.

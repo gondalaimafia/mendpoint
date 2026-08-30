@@ -70,7 +70,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: regauge-fly-preflight-${{ github.sha }}
+          name: regauge-fly-preflight-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: test-results/regauge-production/preflight/
           if-no-files-found: error
           retention-days: 90
@@ -138,7 +138,7 @@ jobs:
       - name: Download pre-mutation topology
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: regauge-fly-preflight-${{ github.sha }}
+          name: regauge-fly-preflight-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: test-results/regauge-production/preflight/
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
@@ -901,7 +901,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: regauge-production-evidence-${{ github.sha }}
+          name: regauge-production-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: test-results/regauge-production/
           if-no-files-found: error
           retention-days: 90
@@ -961,7 +961,7 @@ jobs:
       - name: Download pre-mutation topology
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: regauge-fly-preflight-${{ github.sha }}
+          name: regauge-fly-preflight-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: test-results/regauge-production/preflight/
       - name: Restore or contain the exact activation worker
         shell: bash
@@ -1048,21 +1048,46 @@ jobs:
           fi
           cleanup_verified=false
           stop_failures=0
+          restored_instance_id=""
+          restore_health_status="not_required"
           for attempt in {1..20}; do
             after="$(timeout --kill-after=2s 10s flyctl machines list \
               --app mendpoint-regauge-production --json)"
             printf '%s\n' "$after" > test-results/regauge-cleanup/after-machines.json
             if [[ "$action" == "restored_prior_worker" ]]; then
               if jq -e --slurpfile expected "$snapshot" '
-                ([.[] | {id, instance_id, state, config, image_ref}] | sort_by(.id))
-                == ([$expected[0][] | {id, instance_id, state, config, image_ref}] | sort_by(.id))
+                ([.[] | {id, state, config, image_ref}] | sort_by(.id))
+                == ([$expected[0][] | {id, state, config, image_ref}] | sort_by(.id))
               ' <<<"$after" >/dev/null; then
-                cleanup_verified=true
-                break
+                if ! restored_instance_id="$(jq -er --arg id "$worker_id" \
+                  '.[] | select(.id == $id) | .instance_id' <<<"$after")"; then
+                  restore_health_status="instance_missing"
+                  action="contained_all_workers_after_restore_instance_failure"
+                elif [[ "$prior_state" == "started" ]]; then
+                  checks_json="{}"
+                  if ! checks_json="$(timeout --kill-after=2s 10s flyctl checks list \
+                    --app mendpoint-regauge-production --json)"; then
+                    checks_json="{}"
+                  fi
+                  if jq -e --arg id "$worker_id" '
+                    (.[$id] // []) | any(.name == "regauge_worker" and .status == "passing")
+                  ' <<<"$checks_json" >/dev/null; then
+                    restore_health_status="passing"
+                    cleanup_verified=true
+                    break
+                  fi
+                  restore_health_status="not_passing"
+                  if [[ "$attempt" == "20" ]]; then
+                    action="contained_all_workers_after_restore_health_failure"
+                  fi
+                else
+                  cleanup_verified=true
+                  break
+                fi
               fi
               if ! jq -e --slurpfile expected "$snapshot" '
-                ([.[] | {id, instance_id, config, image_ref}] | sort_by(.id))
-                == ([$expected[0][] | {id, instance_id, config, image_ref}] | sort_by(.id))
+                ([.[] | {id, config, image_ref}] | sort_by(.id))
+                == ([$expected[0][] | {id, config, image_ref}] | sort_by(.id))
               ' <<<"$after" >/dev/null; then
                 action="contained_all_workers_after_restore_drift"
               fi
@@ -1101,9 +1126,11 @@ jobs:
           done
           jq -n --arg action "$action" --arg runId "$GITHUB_RUN_ID" \
             --arg runAttempt "$GITHUB_RUN_ATTEMPT" --argjson verified "$cleanup_verified" \
-            --argjson stopFailures "$stop_failures" \
+            --argjson stopFailures "$stop_failures" --arg restoredInstanceId "$restored_instance_id" \
+            --arg restoreHealthStatus "$restore_health_status" \
             '{action: $action, runId: $runId, runAttempt: $runAttempt,
-              verified: $verified, stopFailures: $stopFailures}' \
+              verified: $verified, stopFailures: $stopFailures,
+              restoredInstanceId: $restoredInstanceId, restoreHealthStatus: $restoreHealthStatus}' \
             > test-results/regauge-cleanup/result.json
           test "$cleanup_verified" = true
       - name: Upload cleanup evidence

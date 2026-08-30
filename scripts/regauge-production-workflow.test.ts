@@ -53,7 +53,10 @@ describe("Regauge production workflow", () => {
     expect(source).toContain("flyctl auth whoami");
     expect(source).toContain("flyctl orgs list --json");
     expect(source).toContain("flyctl status --app mendpoint-regauge-production --json");
-    expect(source).toContain("regauge-fly-preflight-${{ github.sha }}");
+    expect(source.match(/name: regauge-fly-preflight-\$\{\{ github\.sha \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/g)).toHaveLength(3);
+    expect(source).toContain(
+      "name: regauge-production-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+    );
     expect(preflightRun).not.toMatch(/flyctl (?:apps create|deploy|scale|secrets set|volumes create)/);
   });
 
@@ -564,6 +567,8 @@ describe("Regauge production workflow", () => {
     expect(restore).toContain('action="contained_all_workers_after_topology_drift"');
     expect(restore).toContain('action="contained_all_workers_after_restore_failure"');
     expect(restore).toContain('action="contained_all_workers_after_restore_drift"');
+    expect(restore).toContain('action="contained_all_workers_after_restore_health_failure"');
+    expect(restore).toContain('action="contained_all_workers_after_restore_instance_failure"');
     expect(restore.indexOf('if [[ "$quiesce_markers" == "1" ]]')).toBeLessThan(
       restore.indexOf('--machine-config test-results/regauge-cleanup/prior-worker-config.json'),
     );
@@ -581,8 +586,13 @@ describe("Regauge production workflow", () => {
     expect(restore).toContain('if ! wait "$stop_pid"');
     expect(restore).toContain('stop_failures="$((stop_failures + 1))"');
     expect(restore).not.toContain("|| true");
-    expect(restore).toContain('{id, instance_id, state, config, image_ref}');
-    expect(restore).toContain('{id, instance_id, config, image_ref}');
+    expect(restore).toContain('{id, state, config, image_ref}');
+    expect(restore).toContain('{id, config, image_ref}');
+    expect(restore).toContain('flyctl checks list');
+    expect(restore).toContain('--app mendpoint-regauge-production --json');
+    expect(restore).toContain('.name == "regauge_worker" and .status == "passing"');
+    expect(restore).toContain('restoredInstanceId: $restoredInstanceId');
+    expect(restore).toContain('restoreHealthStatus: $restoreHealthStatus');
     expect(restore).toContain('test "$cleanup_verified" = true');
     expect(cleanup.steps.some(
       (step: Record<string, unknown>) => step.name === "Upload cleanup evidence",
