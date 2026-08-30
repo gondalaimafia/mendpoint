@@ -657,7 +657,7 @@ export function createAuthMiddleware(
           subject: `api-key-authority:${key.id}`,
           displayName: `${key.name} authority`,
           audience: "mendpoint-api",
-          createdAt: nowIso(),
+          createdAt: observedAt.toISOString(),
         });
         try {
           bindApiKeyAuthorityPrincipal(db, {
