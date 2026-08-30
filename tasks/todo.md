@@ -4064,6 +4064,26 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The SCIM-free launcher regression reaches the exclusive-backup startup gate instead of failing profile validation. Partial activation, empty bindings, malformed JSON, issuer mismatch, and tenant mismatch remain fail closed; a complete active pair still passes.
 - Focused verification passes 11 of 11 customer profile and launcher tests, 16 of 16 configuration completeness tests, API and Worker typechecks, scripts typecheck, and diff integrity.
 
+## 2026-08-30 GSD Plan 08-02A: production router value proof caller
+
+- [x] Rebase the bounded create-only proof caller onto current production main without overlapping the MCU, Organization Memory, graph fallback, or authority lanes.
+- [x] Preserve exact held-out cohort, policy, cost, latency, and evidence-digest validation with no model or provider dispatch.
+- [x] Expose the caller through the root package command and verify focused tests plus Eval and scripts typechecks.
+- [x] Reject string booleans from runtime JSON so training cohorts and rejected observations cannot pass through truthiness.
+- [x] Attribute accepted-output cost and latency policy failures to the exact contributing task IDs.
+- [ ] Obtain independent exact-head review, current-base protected CI, normal protected merge, exact-revision production deployment, and live health proof.
+
+### Scope and rollback
+
+- Primary requirement: `ME-RTR-009`; `ME-RTR-005` is supporting only. This slice does not promote `ME-RTR-006`, any requirement status, GA availability, or public claim.
+- Rollback removes only the root command and proof caller. Evidence is create-only, retained proof files are never overwritten, and no provider, model, database, worker, API, or production mutation is performed by the evaluator.
+
+### Review
+
+- The first independent review blocked the slice because untyped JSON string booleans were treated as true and cost or latency failures were aggregate-only. The repair validates both boolean fields before evaluation and preserves task-level failure attribution in the immutable report.
+- The next review found an overflow case where finite task costs produced non-finite aggregates that serialized as null but could pass policy. Aggregate cost is now an explicit number-or-null contract, strict finite-and-lower evaluation remains authoritative, and undefined or overflowed aggregates fail with all cohort task IDs retained.
+- Focused proof, artifact-runner, and CLI coverage passes 19 of 19 tests. Eval and scripts typechecks pass. The initial root test command was invalid for focused execution and hit the desktop filesystem boundary; the direct focused Vitest command passed outside that boundary.
+
 ## 2026-08-30 GSD Plan 11-02: protected qualification authority loader (#430)
 
 - [x] Create an isolated `codex/430-qualification-authority-loader` worktree from current `origin/main`.
