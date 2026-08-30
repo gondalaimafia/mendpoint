@@ -418,6 +418,25 @@ describe("production closure execution ledger", () => {
     ];
     expect(runnableClosurePlans(queue)).toEqual(["08-01", "09-01"]);
     expect(finalQualificationReady(queue)).toBe(false);
-    expect(finalQualificationReady(queue.map((item) => ({ ...item, outcome: "succeeded" as const })))).toBe(true);
+
+    const completeQueue = Object.keys(APPROVED_PRIMARY_PLAN_CATALOG).map((planId) => ({
+      planId,
+      queueState: planId === "06-05" ? "external-proof" as const : "ship" as const,
+      outcome: "succeeded" as const,
+      dependencies: [] as readonly string[],
+    }));
+    expect(finalQualificationReady(completeQueue)).toBe(true);
+    expect(finalQualificationReady(completeQueue.slice(1))).toBe(false);
+    expect(finalQualificationReady([
+      ...completeQueue.slice(0, -1),
+      { ...completeQueue[0]! },
+    ])).toBe(false);
+    expect(finalQualificationReady([
+      ...completeQueue.slice(0, -1),
+      { ...completeQueue.at(-1)!, planId: "unknown-plan" },
+    ])).toBe(false);
+    expect(finalQualificationReady(
+      completeQueue.filter((item) => item.planId !== "06-05"),
+    )).toBe(false);
   });
 });

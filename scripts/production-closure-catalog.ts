@@ -366,5 +366,16 @@ export function runnableClosurePlans(items: readonly ClosurePlanQueueItem[]): st
 }
 
 export function finalQualificationReady(items: readonly ClosurePlanQueueItem[]): boolean {
-  return items.length > 0 && items.every((item) => item.outcome === "succeeded");
+  const approvedPlanIds = Object.keys(APPROVED_PRIMARY_PLAN_CATALOG);
+  if (items.length !== approvedPlanIds.length) return false;
+
+  const suppliedPlanIds = new Set<string>();
+  for (const item of items) {
+    if (!(item.planId in APPROVED_PRIMARY_PLAN_CATALOG)) return false;
+    if (suppliedPlanIds.has(item.planId)) return false;
+    if (item.outcome !== "succeeded") return false;
+    suppliedPlanIds.add(item.planId);
+  }
+
+  return approvedPlanIds.every((planId) => suppliedPlanIds.has(planId));
 }
