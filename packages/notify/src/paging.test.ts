@@ -357,6 +357,87 @@ describe("paging best-effort wiring", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  it("serializes overlapping compound heartbeats to one delivery per key and dedupe window", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    let releaseFirstDelivery: (() => void) | undefined;
+    const releaseFirstStarted = new Promise<void>((resolve) => {
+      releaseFirstDelivery = resolve;
+    });
+    let allowDeliveries: (() => void) | undefined;
+    const deliveriesAllowed = new Promise<void>((resolve) => {
+      allowDeliveries = resolve;
+    });
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      releaseFirstDelivery?.();
+      await deliveriesAllowed;
+      return { ok: true, status: 200 };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const input = {
+      workerId: "w-overlap",
+      ok: false,
+      stale: true,
+      expiredLeases: 1,
+      deadLetter: 1,
+      releaseDispatchDegraded: true,
+    } as const;
+
+    const first = pageWorkerHeartbeat(input);
+    await releaseFirstStarted;
+    const second = pageWorkerHeartbeat(input);
+    await Promise.resolve();
+    allowDeliveries?.();
+    const results = await Promise.all([first, second]);
+
+    expect(results.every((result) => result?.ok)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls.map((call) => JSON.parse(call[1].body as string).type).sort()).toEqual([
+      "dead_letter_growth",
+      "expired_lease_uncertain_side_effect",
+      "release_dispatch_degraded",
+      "worker_heartbeat_stale",
+    ]);
+  });
+
+  it("releases only a failed compound-page key so an overlapping invocation retries it", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const attempts = new Map<string, number>();
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const type = JSON.parse(init.body as string).type as string;
+      const attempt = (attempts.get(type) ?? 0) + 1;
+      attempts.set(type, attempt);
+      await Promise.resolve();
+      return {
+        ok: type !== "release_dispatch_degraded" || attempt > 1,
+        status: type !== "release_dispatch_degraded" || attempt > 1 ? 200 : 503,
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const input = {
+      workerId: "w-overlap-retry",
+      ok: false,
+      stale: true,
+      expiredLeases: 1,
+      deadLetter: 1,
+      releaseDispatchDegraded: true,
+    } as const;
+
+    const [first, second] = await Promise.all([
+      pageWorkerHeartbeat(input),
+      pageWorkerHeartbeat(input),
+    ]);
+
+    expect(first?.ok).toBe(false);
+    expect(second?.ok).toBe(true);
+    expect(attempts).toEqual(new Map([
+      ["worker_heartbeat_stale", 1],
+      ["release_dispatch_degraded", 2],
+      ["expired_lease_uncertain_side_effect", 1],
+      ["dead_letter_growth", 1],
+    ]));
+  });
+
   it("pages when the readiness probe is failing (the real /ready path)", async () => {
     process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });

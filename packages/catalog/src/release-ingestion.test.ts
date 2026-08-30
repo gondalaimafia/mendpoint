@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  claimExpiredFinalReleaseDispatchForRecovery,
   claimReleaseDispatch,
   completeReleaseDispatch,
   failReleaseDispatch,
@@ -1138,7 +1139,7 @@ describe("release ingestion", () => {
     })).toBeNull();
   });
 
-  it("terminates an expired final attempt instead of leaving an unclaimable lease", () => {
+  it("reserves an expired final attempt for evidence recovery instead of terminalizing it", () => {
     let clock = NOW;
     const ledger = store(":memory:", () => clock);
     ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
@@ -1152,11 +1153,19 @@ describe("release ingestion", () => {
       tenantId: "tenant-a", workerId: "worker-after-limit", leaseDurationMs: 1_000,
     })).toBeNull();
     expect(listReleaseDispatches(ledger, "tenant-a")[0]).toMatchObject({
-      status: "failed",
+      status: "claimed",
       attemptCount: 5,
-      failedAt: clock,
-      failureCode: "dispatch_attempts_exhausted",
-      lastFailureCode: "dispatch_attempts_exhausted",
+      leaseOwner: "worker-5",
+      failedAt: null,
+      failureCode: null,
+    });
+    expect(claimExpiredFinalReleaseDispatchForRecovery(ledger, {
+      tenantId: "tenant-a", workerId: "recovery-worker", leaseDurationMs: 1_000,
+    })).toMatchObject({
+      status: "claimed",
+      attemptCount: 5,
+      leaseOwner: "recovery-worker",
+      leaseGeneration: 6,
     });
   });
 

@@ -362,6 +362,46 @@ describe("release dispatch drainer", () => {
     expect(listDomainEvents(appDb, "tenant-a")).toHaveLength(1);
   });
 
+  it("leaves a fifth attempt for recovery when its lease expires between recovery scan and normal claim", () => {
+    let raceActive = false;
+    let raceClockReads = 0;
+    const releaseStore = store(() => {
+      if (!raceActive) return NOW;
+      raceClockReads += 1;
+      return raceClockReads === 1
+        ? "2026-08-27T15:00:00.499Z"
+        : "2026-08-27T15:00:00.500Z";
+    });
+    const appDb = db();
+    ingest(releaseStore, "tenant-a");
+    addPrincipal(appDb, { tenantId: "tenant-a", id: "release-service-a" });
+    releaseStore.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET status = 'claimed', lease_owner = 'fifth-attempt-worker', claimed_at = ?,
+          lease_expires_at = ?, lease_generation = 5, attempt_count = max_attempts
+      WHERE tenant_id = 'tenant-a'`).run(
+        "2026-08-27T14:59:59.500Z",
+        "2026-08-27T15:00:00.500Z",
+      );
+
+    raceActive = true;
+    expect(run({
+      store: releaseStore,
+      db: appDb,
+      consumers: [consumer("tenant-a", "release-service-a")],
+      now: () => NOW,
+    })).toMatchObject({ claimed: 0, completed: 0, failed: 0, exhausted: 0 });
+    expect(raceClockReads).toBe(2);
+    expect(listReleaseDispatches(releaseStore, "tenant-a")[0]).toMatchObject({
+      status: "claimed",
+      leaseOwner: "fifth-attempt-worker",
+      leaseExpiresAt: "2026-08-27T15:00:00.500Z",
+      attemptCount: 5,
+      leaseGeneration: 5,
+      failedAt: null,
+      failureCode: null,
+    });
+  });
+
   it("exhausts an expired final claim when no exact emitted event exists", () => {
     let clock = NOW;
     const releaseStore = store(() => clock);

@@ -47,6 +47,7 @@ const DEFAULT_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
 const MAX_PAGING_COUNT = 1_000_000_000;
 
 const dedupeSeen = new Map<string, number>();
+const dedupeInFlight = new Map<string, Promise<void>>();
 
 function dedupeWindowMs(): number {
   const raw = process.env.PAGING_DEDUPE_WINDOW_MS?.trim();
@@ -58,6 +59,7 @@ function dedupeWindowMs(): number {
 /** Reset in-memory dedupe state (test helper; mirrors clearRateLimits/clearAlerts). */
 export function clearPagingDedupe(): void {
   dedupeSeen.clear();
+  dedupeInFlight.clear();
 }
 
 function resolveDedupeKey(event: PagingEvent): string {
@@ -89,6 +91,21 @@ function markPaged(key: string, now: number, windowMs: number): void {
     for (const [existingKey, seenAt] of dedupeSeen) {
       if (now - seenAt >= windowMs) dedupeSeen.delete(existingKey);
     }
+  }
+}
+
+async function withDedupeReservation<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const previous = dedupeInFlight.get(key) ?? Promise.resolve();
+  let release = (): void => {};
+  const turn = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.catch(() => undefined).then(() => turn);
+  dedupeInFlight.set(key, tail);
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (dedupeInFlight.get(key) === tail) dedupeInFlight.delete(key);
   }
 }
 
@@ -133,23 +150,25 @@ export async function notifyPaging(event: PagingEvent): Promise<NotifyPagingResu
   }
 
   const dedupeKey = resolveDedupeKey(event);
-  const now = Date.now();
-  const windowMs = dedupeWindowMs();
-  if (wasRecentlyPaged(dedupeKey, now, windowMs)) {
-    return { ok: true, skipped: true, reason: "deduped" };
-  }
+  return withDedupeReservation(dedupeKey, async () => {
+    const now = Date.now();
+    const windowMs = dedupeWindowMs();
+    if (wasRecentlyPaged(dedupeKey, now, windowMs)) {
+      return { ok: true, skipped: true, reason: "deduped" };
+    }
 
-  const ts = new Date().toISOString();
-  const deliveries: PagingDelivery[] = [
-    await post("webhook", webhookUrl, webhookPayload(event, dedupeKey, ts)),
-  ];
-  // Stamp the dedupe key only after a page actually reached the sink. On a
-  // delivery failure we leave the key unset so the next call (e.g. the 30s
-  // retry) tries again instead of returning a phantom "deduped" success.
-  if (deliveries.some((delivery) => delivery.ok)) {
-    markPaged(dedupeKey, now, windowMs);
-  }
-  return { ok: deliveries.every((delivery) => delivery.ok), deliveries };
+    const ts = new Date().toISOString();
+    const deliveries: PagingDelivery[] = [
+      await post("webhook", webhookUrl, webhookPayload(event, dedupeKey, ts)),
+    ];
+    // Stamp the dedupe key only after a page actually reached the sink. On a
+    // delivery failure we leave the key unset so the next reserved call retries
+    // instead of returning a phantom "deduped" success.
+    if (deliveries.some((delivery) => delivery.ok)) {
+      markPaged(dedupeKey, now, windowMs);
+    }
+    return { ok: deliveries.every((delivery) => delivery.ok), deliveries };
+  });
 }
 
 /**

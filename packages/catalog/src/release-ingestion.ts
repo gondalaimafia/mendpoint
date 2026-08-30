@@ -1606,13 +1606,6 @@ export function claimReleaseDispatch(
   try {
     const now = advanceReleaseClock(store);
     const leaseExpiresAt = new Date(Date.parse(now) + input.leaseDurationMs).toISOString();
-    store.raw.prepare(`UPDATE release_ingestion_dispatches
-      SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
-          failed_at = ?, failure_code = 'dispatch_attempts_exhausted',
-          last_failure_at = ?, last_failure_code = 'dispatch_attempts_exhausted'
-      WHERE tenant_id = ? AND status = 'claimed' AND lease_expires_at <= ?
-        AND attempt_count >= max_attempts`)
-      .run(now, now, tenantId, now);
     const candidate = one<{ id: string }>(store, `SELECT id FROM release_ingestion_dispatches
       WHERE tenant_id = ? AND available_at <= ?
         AND attempt_count < max_attempts
