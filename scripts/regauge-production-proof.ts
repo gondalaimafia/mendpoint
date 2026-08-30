@@ -2,6 +2,11 @@ import { constants, copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { REGAUGE_DEEPSEEK_APPROVED_SCOPE } from "@mendpoint/pipeline";
+import {
+  createAppDelivery,
+  type ExactDraftObservation,
+  type ExactDraftObservationInput,
+} from "@mendpoint/github";
 
 const API_KEY = /^me_[A-Za-z0-9_-]{32,}$/;
 const REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -27,9 +32,18 @@ export type RegaugeDraftCanaryEvidence = Readonly<{
     owner: string;
     repository: string;
     commitSha: string;
+    baseBranch: string;
+    baseRevision: string;
+    headBranch: string;
+    matchingOpenDrafts: 1;
     evidenceRefs: readonly string[];
   }>[];
 }>;
+
+type RegaugeDraftObserver = (
+  input: ExactDraftObservationInput,
+  authority: Readonly<{ installationId: number; repositoryId: number }>,
+) => Promise<ExactDraftObservation>;
 
 export type RegaugeVerifierEvidence = Readonly<{
   schemaVersion: 1;
@@ -76,6 +90,16 @@ export type RegaugeReadinessSoakReport = Readonly<{
 function requiredId(value: string, code: string): string {
   if (!ID.test(value)) throw new Error(code);
   return value;
+}
+
+function validGitBranch(value: unknown): value is string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 255 ||
+      value.startsWith("/") || value.endsWith("/") || value.endsWith(".") ||
+      value.includes("//") || value.includes("..") || value.includes("@{") ||
+      value.includes("\\") || value.split("/").some((part) => !part || part.endsWith(".lock"))) {
+    return false;
+  }
+  return !/[\u0000-\u0020\u007f~^:?*\[]/.test(value);
 }
 
 function exactCoordinatorUrl(value: string): string {
@@ -146,6 +170,9 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
   campaignId: string;
   expectedOwner: string;
   expectedRepository: string;
+  expectedInstallationId: number;
+  expectedRepositoryId: number;
+  observeDraft?: RegaugeDraftObserver;
 }>): Promise<RegaugeDraftCanaryEvidence> {
   const coordinatorUrl = exactCoordinatorUrl(input.coordinatorUrl);
   if (!API_KEY.test(input.token)) throw new Error("regauge_production_token_invalid");
@@ -153,6 +180,10 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
   const campaignId = requiredId(input.campaignId, "regauge_production_campaign_invalid");
   const expectedOwner = requiredId(input.expectedOwner, "regauge_production_repository_invalid");
   const expectedRepository = requiredId(input.expectedRepository, "regauge_production_repository_invalid");
+  if (!Number.isSafeInteger(input.expectedInstallationId) || input.expectedInstallationId < 1 ||
+      !Number.isSafeInteger(input.expectedRepositoryId) || input.expectedRepositoryId < 1) {
+    throw new Error("regauge_production_repository_invalid");
+  }
   const payload = await boundedJson(
     new URL("v1/regauge/attempt-coordinator/draft-observations", coordinatorUrl).toString(),
     {
@@ -168,11 +199,17 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
   if (!Array.isArray(payload.result) || payload.result.length === 0) {
     throw new Error("regauge_production_draft_canary_missing");
   }
+  if (payload.result.length !== 1) {
+    throw new Error("regauge_production_draft_canary_cardinality_invalid");
+  }
   const observedAt = String(payload.serverTime ?? "");
   if (!Number.isFinite(Date.parse(observedAt))) {
     throw new Error("regauge_production_draft_canary_invalid");
   }
-  const pullRequests = payload.result.map((value) => {
+  const observeDraft = input.observeDraft ?? (async (draftInput, authority) =>
+    createAppDelivery(authority.installationId, undefined, [authority.repositoryId])
+      .observeExactDraft(draftInput));
+  const pullRequests = await Promise.all(payload.result.map(async (value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       throw new Error("regauge_production_draft_canary_invalid");
     }
@@ -181,10 +218,38 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
     if (!draft || !target || draft.tenantId !== tenantId || draft.campaignId !== campaignId ||
         !ID.test(String(draft.unitId ?? "")) || !match || target.owner !== expectedOwner ||
         target.repo !== expectedRepository || target.owner !== match[1] || target.repo !== match[2] ||
+        !validGitBranch(draft.baseBranch) || !validGitBranch(draft.branchName) ||
+        target.baseBranch !== draft.baseBranch ||
+        target.installationId !== input.expectedInstallationId ||
+        target.remoteRepositoryId !== input.expectedRepositoryId ||
         Number(draft.pullRequestNumber) !== Number(match[3]) ||
-        !REVISION.test(String(draft.commitSha ?? "")) || !Array.isArray(draft.evidenceRefs) ||
+        !REVISION.test(String(draft.baseRevision ?? "")) || !REVISION.test(String(draft.commitSha ?? "")) ||
+        !Array.isArray(draft.evidenceRefs) ||
         draft.evidenceRefs.length === 0 || draft.evidenceRefs.some((item: unknown) => typeof item !== "string" || !item)) {
       throw new Error("regauge_production_draft_canary_invalid");
+    }
+    const observation = await observeDraft({
+      owner: expectedOwner,
+      repo: expectedRepository,
+      pullRequestNumber: Number(draft.pullRequestNumber),
+      expectedBaseBranch: String(draft.baseBranch),
+      expectedBaseSha: String(draft.baseRevision),
+      expectedHeadBranch: String(draft.branchName),
+      expectedHeadSha: String(draft.commitSha),
+      expectedRepositoryId: input.expectedRepositoryId,
+      expectedInstallationId: input.expectedInstallationId,
+      requireExactDraft: true,
+      includeDeliveryEvidence: true,
+    }, {
+      installationId: input.expectedInstallationId,
+      repositoryId: input.expectedRepositoryId,
+    });
+    if (observation.state !== "draft" || observation.baseRevision !== draft.baseRevision ||
+        observation.headRevision !== draft.commitSha ||
+        observation.repositoryId !== input.expectedRepositoryId ||
+        observation.installationId !== input.expectedInstallationId ||
+        observation.matchingOpenDrafts !== 1) {
+      throw new Error("regauge_production_draft_canary_remote_invalid");
     }
     return Object.freeze({
       unitId: draft.unitId as string,
@@ -193,9 +258,16 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
       owner: target.owner as string,
       repository: target.repo as string,
       commitSha: draft.commitSha as string,
-      evidenceRefs: Object.freeze([...new Set(draft.evidenceRefs as string[])].sort()),
+      baseBranch: draft.baseBranch as string,
+      baseRevision: draft.baseRevision as string,
+      headBranch: draft.branchName as string,
+      matchingOpenDrafts: 1 as const,
+      evidenceRefs: Object.freeze([
+        ...new Set([...(draft.evidenceRefs as string[]), ...observation.evidenceRefs]),
+      ].sort()),
     });
-  }).sort((left, right) => left.unitId < right.unitId ? -1 : left.unitId > right.unitId ? 1 : 0);
+  }));
+  pullRequests.sort((left, right) => left.unitId < right.unitId ? -1 : left.unitId > right.unitId ? 1 : 0);
   return Object.freeze({
     schemaVersion: 1,
     tenantId,
@@ -372,6 +444,8 @@ async function main(): Promise<void> {
       campaignId: process.env.MENDPOINT_REGAUGE_CAMPAIGN_ID ?? "",
       expectedOwner: process.env.MENDPOINT_REGAUGE_CANARY_OWNER ?? "",
       expectedRepository: process.env.MENDPOINT_REGAUGE_CANARY_REPOSITORY ?? "",
+      expectedInstallationId: Number(process.env.MENDPOINT_REGAUGE_GITHUB_INSTALLATION_ID),
+      expectedRepositoryId: Number(process.env.MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID),
     });
     persistRegaugeProductionEvidence(output, evidence);
     return;

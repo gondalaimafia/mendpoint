@@ -5,25 +5,62 @@ import {
   runRegaugeReadinessSoak,
 } from "./regauge-production-proof.js";
 
+const installationId = 151_614_362;
+const repositoryId = 84;
+const baseRevision = "b".repeat(40);
+const headRevision = "a".repeat(40);
+
+function deliveredDraftResult() {
+  return {
+    draft: {
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      unitId: "unit-a",
+      wave: 1,
+      deliveryId: "delivery-a",
+      pullRequestNumber: 17,
+      pullRequestUrl: "https://github.com/acme/repo/pull/17",
+      baseBranch: "main",
+      baseRevision,
+      branchName: "mendpoint/regauge-unit-a",
+      commitSha: headRevision,
+      evidenceRefs: ["github:draft:17"],
+    },
+    target: { owner: "acme", repo: "repo", baseBranch: "main", installationId, remoteRepositoryId: repositoryId },
+  };
+}
+
+function exactDraftObservation(overrides: Record<string, unknown> = {}) {
+  return {
+    state: "draft",
+    baseRevision,
+    headRevision,
+    checks: "running",
+    checkRevision: null,
+    approvals: 0,
+    approvalRevision: null,
+    conversationsResolved: true,
+    failures: [],
+    checkIdentities: [],
+    checkResults: [],
+    reviewFeedback: { verdict: "none", changeRequests: [], comments: [] },
+    repositoryId,
+    installationId,
+    matchingOpenDrafts: 1,
+    changedPaths: ["src/example.ts"],
+    remoteTreeSha: "c".repeat(40),
+    evidenceRefs: ["github:repository:84"],
+    ...overrides,
+  } as const;
+}
+
 describe("Regauge production proof", () => {
   it("accepts only an exact tenant and campaign draft observation from GitHub", async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
-      result: [{
-        draft: {
-          tenantId: "tenant-a",
-          campaignId: "campaign-a",
-          unitId: "unit-a",
-          wave: 1,
-          deliveryId: "delivery-a",
-          pullRequestNumber: 17,
-          pullRequestUrl: "https://github.com/acme/repo/pull/17",
-          commitSha: "a".repeat(40),
-          evidenceRefs: ["github:draft:17"],
-        },
-        target: { owner: "acme", repo: "repo" },
-      }],
+      result: [deliveredDraftResult()],
       serverTime: "2026-08-14T12:00:00.000Z",
     }), { status: 200, headers: { "content-type": "application/json" } }));
+    const observeDraft = vi.fn(async () => exactDraftObservation());
 
     const evidence = await observeRegaugeDraftCanary({
       coordinatorUrl: "https://mendpoint-regauge-production.fly.dev/",
@@ -32,6 +69,9 @@ describe("Regauge production proof", () => {
       campaignId: "campaign-a",
       expectedOwner: "acme",
       expectedRepository: "repo",
+      expectedInstallationId: installationId,
+      expectedRepositoryId: repositoryId,
+      observeDraft,
       fetchImpl,
     });
 
@@ -41,6 +81,19 @@ describe("Regauge production proof", () => {
       campaignId: "campaign-a",
       pullRequests: [{ number: 17, url: "https://github.com/acme/repo/pull/17" }],
     });
+    expect(observeDraft).toHaveBeenCalledWith(expect.objectContaining({
+      owner: "acme",
+      repo: "repo",
+      pullRequestNumber: 17,
+      expectedBaseBranch: "main",
+      expectedBaseSha: baseRevision,
+      expectedHeadBranch: "mendpoint/regauge-unit-a",
+      expectedHeadSha: headRevision,
+      expectedInstallationId: installationId,
+      expectedRepositoryId: repositoryId,
+      requireExactDraft: true,
+      includeDeliveryEvidence: true,
+    }), { installationId, repositoryId });
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://mendpoint-regauge-production.fly.dev/v1/regauge/attempt-coordinator/draft-observations",
       expect.objectContaining({ method: "POST" }),
@@ -59,6 +112,9 @@ describe("Regauge production proof", () => {
       campaignId: "campaign-a",
       expectedOwner: "acme",
       expectedRepository: "repo",
+      expectedInstallationId: installationId,
+      expectedRepositoryId: repositoryId,
+      observeDraft: vi.fn(async () => exactDraftObservation()),
     };
     await expect(observeRegaugeDraftCanary({ ...input, fetchImpl: response([]) }))
       .rejects.toThrow("regauge_production_draft_canary_missing");
@@ -78,6 +134,51 @@ describe("Regauge production proof", () => {
         target: { owner: "acme", repo: "repo" },
       }]),
     })).rejects.toThrow("regauge_production_draft_canary_invalid");
+  });
+
+  it("rejects multiple durable drafts before remote observation", async () => {
+    const observeDraft = vi.fn(async () => exactDraftObservation());
+    await expect(observeRegaugeDraftCanary({
+      coordinatorUrl: "https://mendpoint-regauge-production.fly.dev/",
+      token: `me_${"a".repeat(40)}`,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      expectedOwner: "acme",
+      expectedRepository: "repo",
+      expectedInstallationId: installationId,
+      expectedRepositoryId: repositoryId,
+      observeDraft,
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+        result: [deliveredDraftResult(), deliveredDraftResult()],
+        serverTime: "2026-08-14T12:00:00.000Z",
+      }), { status: 200, headers: { "content-type": "application/json" } })),
+    })).rejects.toThrow("regauge_production_draft_canary_cardinality_invalid");
+    expect(observeDraft).not.toHaveBeenCalled();
+  });
+
+  it("rejects a durable draft unless GitHub proves one matching open draft", async () => {
+    const input = {
+      coordinatorUrl: "https://mendpoint-regauge-production.fly.dev/",
+      token: `me_${"a".repeat(40)}`,
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      expectedOwner: "acme",
+      expectedRepository: "repo",
+      expectedInstallationId: installationId,
+      expectedRepositoryId: repositoryId,
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+        result: [deliveredDraftResult()],
+        serverTime: "2026-08-14T12:00:00.000Z",
+      }), { status: 200, headers: { "content-type": "application/json" } })),
+    };
+    await expect(observeRegaugeDraftCanary({
+      ...input,
+      observeDraft: vi.fn(async () => exactDraftObservation({ state: "closed" })),
+    })).rejects.toThrow("regauge_production_draft_canary_remote_invalid");
+    await expect(observeRegaugeDraftCanary({
+      ...input,
+      observeDraft: vi.fn(async () => exactDraftObservation({ matchingOpenDrafts: 2 })),
+    })).rejects.toThrow("regauge_production_draft_canary_remote_invalid");
   });
 
   it("requires exact durable DeepSeek advisory provider evidence", async () => {

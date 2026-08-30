@@ -256,3 +256,8 @@
 **Mistake:** I initially blamed the repeated readiness sentinel because it used `createOnly`, without checking that the backend contract explicitly returns `exists` as a successful idempotent outcome.
 **Correction:** Live status-only probes showed the real chain: listener bound, coordinator passed, Tigris returned `NoSuchBucket`, then 403 after the bucket name was corrected because the failed create attempt had also replaced credentials.
 **Rule:** Before changing code, inspect every called contract and test the complete live failure chain. A plausible explanation is not a root cause. On the second hidden layer, enumerate configuration, authentication, transport, provider status, and containment evidence before another retry.
+
+### 2026-08-29 — Prove the runtime state transition after deployment
+**Mistake:** The protected workflow treated a successful worker deployment as if it started an existing stopped non-service Machine.
+**Correction:** The exact live evidence showed the worker image and revision updated successfully while the Machine remained stopped and its only check reported that it had not started.
+**Rule:** Deployment success proves configuration publication, not runtime state. For every required process, select the exact intended Machine, perform any required start transition explicitly, and wait for its named health check before declaring deployment healthy or advancing the release.

@@ -3576,3 +3576,30 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Live localhost inspection proved the worker listener was bound and the coordinator probe passed. Signed Tigris GET and PUT calls first returned `NoSuchBucket`; after restoring `BUCKET_NAME` to the attached private bucket, both returned 403, proving the failed create attempt had also replaced the bucket credentials. The worker remains stopped while replacement scoped credentials are pending.
 - The code now emits only structured, allowlisted readiness stage and error codes, and the protected workflow captures worker inventory, checks, and scoped logs before containment. S3 access denial and missing-bucket failures are distinct without retaining provider response bodies.
 - Local verification is green on the rebased code: 23 affected tests; the full Worker suite with 67 files, 648 passes, and one intentional skip; full workspace typecheck; optimized production build; all GA gates across 101 registered requirements; zero production dependency vulnerabilities; and clean diff integrity. Independent exact-head review found no P0, P1, or P2 defects before the provider-resolved PR #549 bootstrap was added; final-head review and protected CI remain required.
+
+## 2026-08-29 ReGauge stopped-worker activation transition
+
+- [x] Capture the exact protected run and prove the storage credential rotation cleared the previous worker boot failure.
+- [x] Enumerate the complete post-deploy machine state, revision, role, mount, and check predicates before another retry.
+- [x] RED: require the workflow to select the exact current-revision volume-free worker, explicitly start it when stopped, and wait for its named health check.
+- [x] GREEN: implement the bounded exact-worker start and readiness transition without creating or scaling inferred capacity.
+- [x] Close the discovered false-green gaps for exact open-draft cardinality, worker-aware soak, and immutable continuous topology.
+- [x] Run focused workflow and proof tests, YAML parsing, workspace typecheck, optimized build, GA gates, dependency audit, and diff integrity.
+- [ ] Obtain exact-head independent Codex review.
+- [ ] Push a narrow PR, require current-base protected CI, merge under intact branch protection, and deploy exact main.
+- [ ] Rerun the protected activation and prove three live evaluations, one draft PR, durable consent-before-processing DeepSeek evidence, replay safety, and a five-minute readiness soak.
+
+### Activation invariants
+
+- A successful `flyctl deploy` is image and configuration evidence, not proof that an existing stopped Machine transitioned to started.
+- Select exactly one worker by process group, exact release revision, exact image revision, and absence of mounts before starting it.
+- Never infer capacity with `scale count` or create an additional worker during this repair.
+- Do not proceed to live evaluation until the exact selected worker is started and its `regauge_worker` check is passing.
+- Preserve failure diagnostics and containment for every unsuccessful transition.
+
+### Review
+
+- Protected run `33292391960` deployed exact main `4ae3c8d022d79b3329d96cc4fed99d0bb28e7277`. The coordinator was started and healthy on the retained encrypted volume. The worker was updated to the exact revision and image but remained stopped; Fly reported only `the machine hasn't started`. The workflow then failed its two-started-Machine assertion and containment confirmed zero remaining started workers. No live evaluation, delivery, advisory processing, or soak step ran.
+- The repair selects the sole exact-revision, exact-image, volume-free worker after deployment, explicitly starts that Machine when needed, and condition-polls its `regauge_worker` check. It records the exact coordinator and worker IDs and rejects replacement, revision drift, image drift, volume drift, extra capacity, or a nonpassing worker during every readiness-soak sample and final continuity proof. Final proof is read only and no longer scales capacity to make evidence pass.
+- Draft evidence now requires exactly one durable delivery and uses the existing repository-scoped GitHub App observer to prove that exact PR is currently open, still a draft, bound to the approved repository, installation, base, head branch, base revision, and head revision, with exactly one matching open draft.
+- Verification is green: 21 focused proof and workflow tests, full workspace typecheck, optimized 50-route production build, workflow YAML parse, all GA gates, zero production dependency vulnerabilities, and clean diff integrity.

@@ -280,9 +280,16 @@ describe("Regauge production workflow", () => {
     expect(continuous).toBeDefined();
     expect(continuous.if).toBe("${{ success() }}");
     expect(continuous.run).toContain("flyctl machines list --app mendpoint-regauge-production --json");
-    expect(continuous.run).toContain("flyctl scale count coordinator=1 worker=1");
+    expect(continuous.run).toContain("coordinator-volume.json");
+    expect(continuous.run).toContain("worker-id.txt");
+    expect(continuous.run).toContain(".config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA");
+    expect(continuous.run).toContain(".image_ref.labels.GH_SHA == env.GITHUB_SHA");
+    expect(continuous.run).toContain(
+      '.checks[] | select(.name == "regauge_worker" and .status == "passing")',
+    );
     expect(continuous.run).toContain("continuous-production.json");
     expect(continuous.run).not.toContain("worker=0");
+    expect(continuous.run).not.toContain("flyctl scale count");
     expect(continuousIndex).toBeGreaterThan(-1);
     expect(uploadIndex).toBeGreaterThan(continuousIndex);
   });
@@ -311,6 +318,20 @@ describe("Regauge production workflow", () => {
       "insufficient resources to create new machine with existing volume",
     );
     expect(steps[workerIndex].run).toContain("--process-groups worker");
+    expect(steps[workerIndex].run).toContain('worker_id="$(jq -er');
+    expect(steps[workerIndex].run).toContain(
+      '.config.metadata.fly_process_group == "worker"',
+    );
+    expect(steps[workerIndex].run).toContain(
+      ".config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA",
+    );
+    expect(steps[workerIndex].run).toContain(
+      ".image_ref.labels.GH_SHA == env.GITHUB_SHA",
+    );
+    expect(steps[workerIndex].run).toContain("(.config.mounts // [] | length) == 0");
+    expect(steps[workerIndex].run).toContain('flyctl machine start "$worker_id"');
+    expect(steps[workerIndex].run).toContain("worker-id.txt");
+    expect(steps[workerIndex].run).not.toContain("flyctl scale count");
     expect(steps[coordinatorHealthIndex].run).toContain(
       "https://mendpoint-regauge-production.fly.dev/version",
     );
@@ -343,6 +364,12 @@ describe("Regauge production workflow", () => {
     expect(proof).toContain(".image_ref.labels.GH_SHA == env.GITHUB_SHA");
     expect(proof).toContain(".config.mounts[] | select(.volume == $volume_id)");
     expect(proof).toContain("(.config.mounts // [] | length) == 0");
+    expect(proof).toContain('worker_id="$(cat test-results/regauge-production/worker-id.txt)"');
+    expect(proof).toContain("for attempt in {1..60}");
+    expect(proof).toContain(
+      '.checks[] | select(.name == "regauge_worker" and .status == "passing")',
+    );
+    expect(proof).toContain('test "$attempt" -lt 60');
     expect(proof).toContain("machine-topology.json");
   });
 
@@ -432,6 +459,27 @@ describe("Regauge production workflow", () => {
     expect(workflow.jobs.deploy["timeout-minutes"]).toBe(60);
     expect(validation).toContain('test "$READINESS_SOAK_SECONDS" -le 1800');
     expect(validation).not.toContain('test "$READINESS_SOAK_SECONDS" -le 21600');
+  });
+
+  it("samples the exact worker identity and health throughout the readiness soak", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const soak = (workflow.jobs.deploy.steps as Record<string, any>[]).find(
+      (step) => step.name === "Run read only production readiness soak",
+    )!.run as string;
+
+    expect(soak).toContain("flyctl machines list");
+    expect(soak).toContain("--app mendpoint-regauge-production --json");
+    expect(soak).toContain("coordinator-volume.json");
+    expect(soak).toContain("worker-id.txt");
+    expect(soak).toContain(".config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA");
+    expect(soak).toContain(".image_ref.labels.GH_SHA == env.GITHUB_SHA");
+    expect(soak).toContain(
+      '.checks[] | select(.name == "regauge_worker" and .status == "passing")',
+    );
+    expect(soak).toContain("runtime-soak.json");
+    expect(soak).toContain('wait "$runtime_soak_pid"');
   });
 
   it("retains workflow context even when activation fails before deployment", () => {
