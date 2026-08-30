@@ -45,6 +45,28 @@ export type SecretLifecycleCredentialDescriptor = Readonly<{
   }>;
 }>;
 
+export type SecretLifecycleOperationIdentity = Readonly<{
+  idempotencyKey: string;
+  requestDigest: string;
+  actorId: string;
+}>;
+
+export type SecretLifecycleMutationOptions = Readonly<{
+  operation?: SecretLifecycleOperationIdentity;
+  audit?: (row: SecretLifecycleVersionRow) => void;
+}>;
+
+type SecretLifecycleOperationRow = Readonly<{
+  tenant_id: string;
+  idempotency_key: string;
+  operation: "create" | "rotate";
+  request_digest: string;
+  actor_id: string;
+  credential_id: string;
+  result_generation: number;
+  completed_at: string;
+}>;
+
 function one<T>(db: AppDb, sql: string, params: SQLInputValue[] = []): T | undefined {
   return db.raw.prepare(sql).get(...params) as T | undefined;
 }
@@ -101,6 +123,65 @@ function transaction<T>(db: AppDb, fn: () => T): T {
   }
 }
 
+function validateOperation(operation: SecretLifecycleOperationIdentity): void {
+  if (!ID.test(operation.idempotencyKey)) throw new Error("secret_lifecycle_idempotency_key_invalid");
+  if (!/^[a-f0-9]{64}$/.test(operation.requestDigest)) {
+    throw new Error("secret_lifecycle_request_digest_invalid");
+  }
+  if (!ID.test(operation.actorId)) throw new Error("secret_lifecycle_actor_invalid");
+}
+
+function replayedOperation(
+  db: AppDb,
+  input: SecretLifecycleInput,
+  kind: "create" | "rotate",
+  operation: SecretLifecycleOperationIdentity,
+): SecretLifecycleVersionRow | undefined {
+  validateOperation(operation);
+  const existing = one<SecretLifecycleOperationRow>(
+    db,
+    `SELECT * FROM secret_lifecycle_operations WHERE tenant_id = ? AND idempotency_key = ?`,
+    [input.tenantId, operation.idempotencyKey],
+  );
+  if (!existing) return undefined;
+  if (
+    existing.operation !== kind || existing.request_digest !== operation.requestDigest ||
+    existing.actor_id !== operation.actorId || existing.credential_id !== input.credentialId ||
+    existing.result_generation !== input.generation
+  ) throw new Error("secret_lifecycle_idempotency_conflict");
+  const row = getSecretLifecycleVersion(
+    db,
+    input.tenantId,
+    existing.credential_id,
+    existing.result_generation,
+  );
+  if (!row) throw new Error("secret_lifecycle_idempotency_corrupt");
+  return row;
+}
+
+function completeOperation(
+  db: AppDb,
+  input: SecretLifecycleInput,
+  kind: "create" | "rotate",
+  operation: SecretLifecycleOperationIdentity,
+): void {
+  db.raw.prepare(`
+    INSERT INTO secret_lifecycle_operations (
+      tenant_id, idempotency_key, operation, request_digest, actor_id,
+      credential_id, result_generation, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    input.tenantId,
+    operation.idempotencyKey,
+    kind,
+    operation.requestDigest,
+    operation.actorId,
+    input.credentialId,
+    input.generation,
+    input.issuedAt,
+  );
+}
+
 function insertVersion(db: AppDb, input: SecretLifecycleInput): SecretLifecycleVersionRow {
   db.raw.prepare(`
     INSERT INTO secret_lifecycle_versions (
@@ -141,10 +222,20 @@ function insertVersion(db: AppDb, input: SecretLifecycleInput): SecretLifecycleV
 export function createSecretLifecycle(
   db: AppDb,
   input: SecretLifecycleInput,
+  options: SecretLifecycleMutationOptions = {},
 ): SecretLifecycleVersionRow {
   validateInput(input);
   if (input.generation !== 1) throw new Error("secret_initial_generation_invalid");
-  return transaction(db, () => insertVersion(db, input));
+  return transaction(db, () => {
+    const replay = options.operation
+      ? replayedOperation(db, input, "create", options.operation)
+      : undefined;
+    if (replay) return replay;
+    const row = insertVersion(db, input);
+    options.audit?.(row);
+    if (options.operation) completeOperation(db, input, "create", options.operation);
+    return row;
+  });
 }
 
 export function rotateSecretLifecycle(
@@ -154,10 +245,15 @@ export function rotateSecretLifecycle(
     rotatedAt: string;
     next: SecretLifecycleInput;
   }>,
+  options: SecretLifecycleMutationOptions = {},
 ): SecretLifecycleVersionRow {
   validateInput(input.next);
   validTimestamp("secret_rotated_at", input.rotatedAt);
   return transaction(db, () => {
+    const replay = options.operation
+      ? replayedOperation(db, input.next, "rotate", options.operation)
+      : undefined;
+    if (replay) return replay;
     const current = one<SecretLifecycleVersionRow>(
       db,
       `SELECT * FROM secret_lifecycle_versions
@@ -178,8 +274,23 @@ export function rotateSecretLifecycle(
       SET state = 'retired', retired_at = ?
       WHERE tenant_id = ? AND credential_id = ? AND generation = ? AND state = 'active'
     `).run(input.rotatedAt, current.tenant_id, current.credential_id, current.generation);
-    return insertVersion(db, input.next);
+    const row = insertVersion(db, input.next);
+    options.audit?.(row);
+    if (options.operation) completeOperation(db, input.next, "rotate", options.operation);
+    return row;
   });
+}
+
+export function getSecretLifecycleOperation(
+  db: AppDb,
+  tenantId: string,
+  idempotencyKey: string,
+): SecretLifecycleOperationRow | undefined {
+  return one(
+    db,
+    `SELECT * FROM secret_lifecycle_operations WHERE tenant_id = ? AND idempotency_key = ?`,
+    [tenantId, idempotencyKey],
+  );
 }
 
 export function revokeSecretLifecycle(
@@ -191,6 +302,7 @@ export function revokeSecretLifecycle(
     revokedAt: string;
     reason: string;
   }>,
+  options: Readonly<{ audit?: (row: SecretLifecycleVersionRow) => void }> = {},
 ): SecretLifecycleVersionRow {
   validTimestamp("secret_revoked_at", input.revokedAt);
   if (!input.reason.trim()) throw new Error("secret_revocation_reason_required");
@@ -214,13 +326,28 @@ export function revokeSecretLifecycle(
       input.credentialId,
       input.generation,
     );
-    return getSecretLifecycleVersion(
+    const row = getSecretLifecycleVersion(
       db,
       input.tenantId,
       input.credentialId,
       input.generation,
     )!;
+    options.audit?.(row);
+    return row;
   });
+}
+
+export function getActiveSecretLifecycle(
+  db: AppDb,
+  tenantId: string,
+  credentialId: string,
+): SecretLifecycleVersionRow | undefined {
+  return one(
+    db,
+    `SELECT * FROM secret_lifecycle_versions
+     WHERE tenant_id = ? AND credential_id = ? AND state = 'active'`,
+    [tenantId, credentialId],
+  );
 }
 
 export function getSecretLifecycleVersion(

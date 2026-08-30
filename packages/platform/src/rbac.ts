@@ -219,7 +219,7 @@ export function permissionForRoute(
       path.startsWith("/warden/plans")
     )
       return "plan:read";
-    if (path.startsWith("/platform/scm")) return "tenant:admin";
+    if (path.startsWith("/platform/scm") || path.startsWith("/platform/secrets")) return "tenant:admin";
     if (path.startsWith("/billing/")) return "tenant:admin";
     if (
       path.startsWith("/graph-learn") ||
@@ -243,7 +243,7 @@ export function permissionForRoute(
     return "plan:edit";
   if (m === "POST" && /^\/agent\/runs\/[^/]+\/candidate\/review$/.test(path))
     return "plan:edit";
-  if (path.startsWith("/platform/scm")) return "tenant:admin";
+  if (path.startsWith("/platform/scm") || path.startsWith("/platform/secrets")) return "tenant:admin";
   if (path.startsWith("/billing/")) return "tenant:admin";
   if (path.includes("/feedback") || path.includes("/outcome"))
     return "outcome:label";

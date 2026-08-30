@@ -7,13 +7,19 @@
 - [x] RED: add provider and SCM materialization tests for durable lifecycle resolution, fail-closed audit, rotation, revocation, and pre-transport denial.
 - [x] GREEN: wire the existing vault envelope and SCM snapshot seam without changing `scheme://id` references.
 - [x] Verify fresh and aged database behavior, focused tests, affected typechecks, and the complete diff.
-- [ ] Root: inspect and commit the scoped files on the assigned `codex/` branch.
+- [x] RED: cover provider-authoritative KEK classification, disabled production wiring, lifecycle authorization, cross-tenant denial, idempotent replay, and restart-safe atomic rotation failures.
+- [x] GREEN: replace caller-asserted KEK metadata and split in-memory lifecycle publication with one durable provider-attested lifecycle service.
+- [x] GREEN: expose tenant-admin create, rotate, revoke, and break-glass operations with policy-bound audit and fail-closed replay.
+- [x] Verify focused Platform, DB, and API suites, affected typechecks, diff integrity, and commit the final repair locally without pushing.
 
 ### Review
 
 - New additive tables converge on fresh and pre-change databases with no existing-table alteration.
 - SCM materialization resolves durable metadata separately from the stored `scheme://id` reference, reloads exact generations, and denies expiry or revocation before GitHub transport.
-- The production KEK seam remains provider neutral and disabled. A provider-specific implementation, authority configuration, deployment secret wiring, and live decrypt proof remain outside this slice.
+- Production now constructs one validated provider-authoritative key catalog from protected environment configuration and otherwise retains an explicitly disabled provider. The provider, not request metadata, supplies customer-managed classification and a digest-bound attestation; both wrap and unwrap reject relabeling.
+- Durable reads no longer rebuild an in-memory lifecycle registry. Create and rotation stage provider-attested envelopes, then commit required durable audit, immutable replay identity, and the visible lifecycle generation in one SQLite transaction. Failed audit or operation persistence leaves the previous active generation exact.
+- Tenant-admin HTTP entry points cover create, rotate, and revoke. Break glass additionally requires owner role, an explicit production policy flag, and a nonempty audited reason. Tenant and actor always come from the authenticated principal; responses never return envelope material, and only the gated break-glass response can return plaintext with `Cache-Control: no-store`.
+- Verification passes all 252 Platform tests; 30 focused DB, lifecycle API, route, and SCM tests; Platform, DB, and API typechecks; and `git diff --check`. The regressions include false customer-managed relabeling, missing and malformed provider configuration, failed-audit rollback, process-restart create and rotation replay, replay mismatch, non-admin denial, cross-tenant denial, disabled break glass, and all four authorized lifecycle entry points.
 
 
 Observed `origin/main`: `96801a319fc3d355cb2b28b4167b83023a192042`.

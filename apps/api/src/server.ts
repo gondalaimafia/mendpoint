@@ -182,7 +182,7 @@ import {
   can,
   canMutateSystemCatalog,
   permissionForRoute,
-  DisabledExternalVaultProvider,
+  envelopeKeyProvidersFromEnvironment,
   EnvSecretProvider,
   estimateCost,
   MCU_VERSION,
@@ -308,6 +308,7 @@ import { createLearningConsentRoutes } from "./learning-consent-routes.js";
 import { createOrganizationMemoryRoutes } from "./organization-memory-routes.js";
 import { createPlatformSandboxRoutes } from "./platform-sandbox.js";
 import { createPlatformStateRoutes } from "./platform-state-routes.js";
+import { createSecretLifecycleRoutes } from "./secret-lifecycle-routes.js";
 import { createTenantCreationRoutes } from "./tenant-creation-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { regaugeProductionBootstrapInputFromEnvironment } from "./regauge-production-bootstrap-runtime.js";
@@ -358,6 +359,9 @@ const {
 } = durableState;
 const app = new Hono<ApiEnv>();
 const startedAt = Date.now();
+const envelopeKeyProviders = envelopeKeyProvidersFromEnvironment(
+  process.env.MENDPOINT_ENVELOPE_KEY_CATALOG_JSON,
+);
 
 function apiReadiness() {
   return readiness({
@@ -682,9 +686,7 @@ function repositoryCredentialDependencies(c: Context<ApiEnv>) {
     tenantId: principal.tenantId,
     actorId: principal.id,
     requestId: c.get("requestId") ?? undefined,
-    // Provider-specific KEK activation is intentionally external to this slice.
-    // Durable records fail closed until a matching enabled provider is configured.
-    keyProviders: [new DisabledExternalVaultProvider()],
+    keyProviders: envelopeKeyProviders,
     fallbackProviders: [
       new EnvSecretProvider({
         GITHUB_TOKEN: process.env.GITHUB_TOKEN,
@@ -845,6 +847,11 @@ app.use("*", tenantQuotaMiddleware());
 app.route("/graphql/schemas", createGraphQLSchemaIngestionRoutes({
   db,
   enabled: graphqlSchemaIngestionEnabled(process.env),
+}));
+app.route("/platform/secrets", createSecretLifecycleRoutes({
+  db,
+  providers: envelopeKeyProviders,
+  breakGlassEnabled: process.env.MENDPOINT_SECRET_BREAK_GLASS === "true",
 }));
 app.route("/advanced-ai", createAdvancedAiApplicationRoutes({
   db,

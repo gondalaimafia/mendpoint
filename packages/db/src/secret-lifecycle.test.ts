@@ -100,6 +100,75 @@ describe.each([
 });
 
 describe("secret lifecycle transitions", () => {
+  it("replays completed create and rotate operations but rejects mismatched identities", () => {
+    const db = freshDb();
+    const created = createSecretLifecycle(db, version(1), {
+      operation: {
+        idempotencyKey: "create-one",
+        requestDigest: "a".repeat(64),
+        actorId: "operator-a",
+      },
+    });
+    expect(createSecretLifecycle(db, version(1), {
+      operation: {
+        idempotencyKey: "create-one",
+        requestDigest: "a".repeat(64),
+        actorId: "operator-a",
+      },
+    })).toEqual(created);
+    expect(() => createSecretLifecycle(db, version(1), {
+      operation: {
+        idempotencyKey: "create-one",
+        requestDigest: "b".repeat(64),
+        actorId: "operator-a",
+      },
+    })).toThrow("secret_lifecycle_idempotency_conflict");
+
+    const rotated = rotateSecretLifecycle(db, {
+      expectedGeneration: 1,
+      rotatedAt: "2026-08-02T01:00:00.000Z",
+      next: version(2),
+    }, {
+      operation: {
+        idempotencyKey: "rotate-one",
+        requestDigest: "c".repeat(64),
+        actorId: "operator-a",
+      },
+    });
+    expect(rotateSecretLifecycle(db, {
+      expectedGeneration: 1,
+      rotatedAt: "2026-08-02T01:00:00.000Z",
+      next: version(2),
+    }, {
+      operation: {
+        idempotencyKey: "rotate-one",
+        requestDigest: "c".repeat(64),
+        actorId: "operator-a",
+      },
+    })).toEqual(rotated);
+  });
+
+  it("rolls back lifecycle publication when its required durable audit fails", () => {
+    const db = freshDb();
+    createSecretLifecycle(db, version(1));
+    expect(() => rotateSecretLifecycle(db, {
+      expectedGeneration: 1,
+      rotatedAt: "2026-08-02T01:00:00.000Z",
+      next: version(2),
+    }, {
+      operation: {
+        idempotencyKey: "rotate-audit-failure",
+        requestDigest: "d".repeat(64),
+        actorId: "operator-a",
+      },
+      audit: () => {
+        throw new Error("audit unavailable");
+      },
+    })).toThrow("audit unavailable");
+    expect(getSecretLifecycleVersion(db, "tenant-a", "scm-credential-a", 1)?.state).toBe("active");
+    expect(getSecretLifecycleVersion(db, "tenant-a", "scm-credential-a", 2)).toBeUndefined();
+  });
+
   it("rotates atomically with one active monotonic generation", () => {
     const db = freshDb();
     createSecretLifecycle(db, version(1));

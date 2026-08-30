@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  ConfiguredEnvelopeKeyProvider,
   DisabledExternalVaultProvider,
   DurableEnvelopeSecretProvider,
   EnvelopeKeyLifecycleRegistry,
   EnvelopeSecretVault,
   LocalEnvelopeKeyProvider,
+  envelopeKeyProvidersFromEnvironment,
   type EnvelopeAccessAuditEvent,
   type EnvelopeKeyLifecycle,
   type EnvelopeKeyReference,
@@ -45,6 +47,41 @@ function setup() {
 }
 
 describe("envelope secret lifecycle", () => {
+  it("derives customer managed classification from provider attestation", async () => {
+    const provider = ConfiguredEnvelopeKeyProvider.fromJson(JSON.stringify({
+      schemaVersion: 1,
+      keys: [{
+        tenantId: "tenant-a",
+        provider: "external-vault",
+        keyId: "tenant-key",
+        version: "1",
+        customerManaged: true,
+        attestation: "kms:key/tenant-key:1",
+        materialBase64: Buffer.alloc(32, 7).toString("base64"),
+      }],
+    }));
+
+    await expect(provider.attestKey({
+      provider: "external-vault",
+      keyId: "tenant-key",
+      version: "1",
+    }, "tenant-a")).resolves.toMatchObject({ customerManaged: true });
+    await expect(provider.wrapDataKey({
+      provider: "external-vault",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: false,
+    }, "tenant-a", Buffer.alloc(32, 1))).rejects.toThrow("vault_key_attestation_mismatch");
+  });
+
+  it("keeps production provider wiring disabled when configuration is absent or invalid", () => {
+    expect(envelopeKeyProvidersFromEnvironment(undefined)[0]).toBeInstanceOf(
+      DisabledExternalVaultProvider,
+    );
+    expect(() => envelopeKeyProvidersFromEnvironment("{not-json"))
+      .toThrow("external_vault_configuration_invalid");
+  });
+
   it("encrypts with a data key and audits metadata without exposing plaintext", async () => {
     const { vault, events } = setup();
     const envelope = await vault.encrypt("github-token", "customer-secret", key1, context);

@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { SecretProvider, SecretReference } from "./credentials.js";
 
 export const ENVELOPE_SECRET_SCHEMA_VERSION = 1 as const;
@@ -8,6 +8,13 @@ export type EnvelopeKeyReference = Readonly<{
   keyId: string;
   version: string;
   customerManaged: boolean;
+}>;
+
+export type EnvelopeKeyLocator = Readonly<Omit<EnvelopeKeyReference, "customerManaged">>;
+
+export type EnvelopeKeyAttestation = Readonly<EnvelopeKeyReference & {
+  attestation: string;
+  attestationSha256: string;
 }>;
 
 export type EnvelopeKeyState = "active" | "retired" | "revoked";
@@ -61,6 +68,7 @@ export type EnvelopeAccessAuditEvent = Readonly<{
 export interface KeyEncryptionKeyProvider {
   readonly provider: string;
   readonly enabled: boolean;
+  attestKey(key: EnvelopeKeyLocator, tenantId: string): Promise<EnvelopeKeyAttestation>;
   wrapDataKey(
     key: EnvelopeKeyReference,
     tenantId: string,
@@ -104,6 +112,153 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 
 function keyIdentity(tenantId: string, key: EnvelopeKeyReference): string {
   return `${tenantId}\0${key.provider}\0${key.keyId}\0${key.version}\0${key.customerManaged ? "1" : "0"}`;
+}
+
+function locatorIdentity(tenantId: string, key: EnvelopeKeyLocator): string {
+  return `${tenantId}\0${key.provider}\0${key.keyId}\0${key.version}`;
+}
+
+function attestationDigest(input: Omit<EnvelopeKeyAttestation, "attestationSha256">): string {
+  return createHash("sha256").update(JSON.stringify({
+    provider: input.provider,
+    keyId: input.keyId,
+    version: input.version,
+    customerManaged: input.customerManaged,
+    attestation: input.attestation,
+  })).digest("hex");
+}
+
+async function assertProviderAttestation(
+  provider: KeyEncryptionKeyProvider,
+  tenantId: string,
+  key: EnvelopeKeyReference,
+): Promise<EnvelopeKeyAttestation> {
+  const attested = await provider.attestKey(key, tenantId);
+  if (
+    attested.provider !== key.provider ||
+    attested.keyId !== key.keyId ||
+    attested.version !== key.version ||
+    attested.customerManaged !== key.customerManaged ||
+    attested.attestationSha256 !== attestationDigest(attested)
+  ) throw new Error("vault_key_attestation_mismatch");
+  return attested;
+}
+
+export async function attestEnvelopeKey(
+  providers: readonly KeyEncryptionKeyProvider[],
+  tenantId: string,
+  locator: EnvelopeKeyLocator,
+): Promise<EnvelopeKeyAttestation> {
+  const provider = providers.find((candidate) => candidate.provider === locator.provider);
+  if (!provider?.enabled) throw new Error("vault_provider_disabled");
+  const attested = await provider.attestKey(locator, tenantId);
+  if (
+    attested.provider !== locator.provider || attested.keyId !== locator.keyId ||
+    attested.version !== locator.version || attested.attestationSha256 !== attestationDigest(attested)
+  ) throw new Error("vault_key_attestation_mismatch");
+  return attested;
+}
+
+export async function sealEnvelopeSecret(
+  secretId: string,
+  plaintext: string,
+  generation: number,
+  key: EnvelopeKeyReference,
+  context: SecretAccessContext,
+  providers: readonly KeyEncryptionKeyProvider[],
+): Promise<EnvelopeSecret> {
+  validContext(context);
+  if (!ID.test(secretId) || !Number.isSafeInteger(generation) || generation < 1) {
+    throw new Error("vault_secret_generation_invalid");
+  }
+  const provider = providers.find((candidate) => candidate.provider === key.provider);
+  if (!provider?.enabled) throw new Error("vault_provider_disabled");
+  await assertProviderAttestation(provider, context.tenantId, key);
+  const dataKey = randomBytes(32);
+  const wrappedDataKey = await provider.wrapDataKey(key, context.tenantId, dataKey);
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", dataKey, iv);
+  cipher.setAAD(envelopeAad(context.tenantId, secretId, generation, key));
+  const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  return Object.freeze({
+    schemaVersion: ENVELOPE_SECRET_SCHEMA_VERSION,
+    tenantId: context.tenantId,
+    secretId,
+    generation,
+    key: Object.freeze({ ...key }),
+    algorithm: "AES-256-GCM" as const,
+    wrappedDataKey,
+    iv: iv.toString("base64"),
+    authTag: cipher.getAuthTag().toString("base64"),
+    ciphertext: ciphertext.toString("base64"),
+    createdAt: context.at,
+  });
+}
+
+async function emitAudit(
+  audit: (event: EnvelopeAccessAuditEvent) => void | Promise<void>,
+  event: EnvelopeAccessAuditEvent,
+): Promise<void> {
+  try {
+    await audit(Object.freeze(event));
+  } catch {
+    throw new Error("vault_access_audit_failed");
+  }
+}
+
+export async function openEnvelopeSecret(
+  envelope: EnvelopeSecret,
+  context: SecretAccessContext,
+  providers: readonly KeyEncryptionKeyProvider[],
+  audit: (event: EnvelopeAccessAuditEvent) => void | Promise<void>,
+): Promise<string> {
+  validContext(context);
+  if (envelope.tenantId !== context.tenantId) throw new Error("tenant_mismatch");
+  try {
+    const provider = providers.find((candidate) => candidate.provider === envelope.key.provider);
+    if (!provider?.enabled) throw new Error("vault_provider_disabled");
+    await assertProviderAttestation(provider, context.tenantId, envelope.key);
+    const dataKey = await provider.unwrapDataKey(
+      envelope.key,
+      context.tenantId,
+      envelope.wrappedDataKey,
+    );
+    const decipher = createDecipheriv("aes-256-gcm", dataKey, Buffer.from(envelope.iv, "base64"));
+    decipher.setAAD(envelopeAad(context.tenantId, envelope.secretId, envelope.generation, envelope.key));
+    decipher.setAuthTag(Buffer.from(envelope.authTag, "base64"));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(envelope.ciphertext, "base64")),
+      decipher.final(),
+    ]).toString("utf8");
+    await emitAudit(audit, {
+      tenantId: context.tenantId,
+      secretId: envelope.secretId,
+      actorId: context.actorId,
+      correlationId: context.correlationId,
+      purpose: context.purpose,
+      operation: "decrypt",
+      outcome: "granted",
+      reason: "granted",
+      key: envelope.key,
+      occurredAt: context.at,
+    });
+    return plaintext;
+  } catch (error) {
+    if (error instanceof Error && error.message === "vault_access_audit_failed") throw error;
+    await emitAudit(audit, {
+      tenantId: context.tenantId,
+      secretId: envelope.secretId,
+      actorId: context.actorId,
+      correlationId: context.correlationId,
+      purpose: context.purpose,
+      operation: "decrypt",
+      outcome: "denied",
+      reason: "vault_decrypt_denied",
+      key: envelope.key,
+      occurredAt: context.at,
+    });
+    throw new Error("vault_decrypt_denied");
+  }
 }
 
 function envelopeAad(
@@ -226,6 +381,9 @@ export class EnvelopeKeyLifecycleRegistry {
 export class DisabledExternalVaultProvider implements KeyEncryptionKeyProvider {
   readonly enabled = false;
   constructor(readonly provider = "external-vault") {}
+  async attestKey(): Promise<EnvelopeKeyAttestation> {
+    throw new Error("external_vault_disabled");
+  }
   async wrapDataKey(): Promise<string> {
     throw new Error("external_vault_disabled");
   }
@@ -238,22 +396,34 @@ export class DisabledExternalVaultProvider implements KeyEncryptionKeyProvider {
 export class LocalEnvelopeKeyProvider implements KeyEncryptionKeyProvider {
   readonly provider = "local-envelope";
   readonly enabled = true;
-  readonly #keys = new Map<string, Buffer>();
+  readonly #keys = new Map<string, { key: EnvelopeKeyReference; material: Buffer }>();
 
   putKey(tenantId: string, key: EnvelopeKeyReference, material: Uint8Array): void {
     if (key.provider !== this.provider || material.byteLength !== 32) {
       throw new Error("local_envelope_key_invalid");
     }
-    this.#keys.set(keyIdentity(tenantId, key), Buffer.from(material));
+    this.#keys.set(locatorIdentity(tenantId, key), { key: Object.freeze({ ...key }), material: Buffer.from(material) });
   }
 
   removeKey(tenantId: string, key: EnvelopeKeyReference): void {
-    this.#keys.delete(keyIdentity(tenantId, key));
+    this.#keys.delete(locatorIdentity(tenantId, key));
+  }
+
+  async attestKey(key: EnvelopeKeyLocator, tenantId: string): Promise<EnvelopeKeyAttestation> {
+    const record = this.#keys.get(locatorIdentity(tenantId, key));
+    if (!record) throw new Error("local_envelope_key_missing");
+    const base = {
+      ...record.key,
+      attestation: `local:${tenantId}:${record.key.keyId}:${record.key.version}`,
+    };
+    return Object.freeze({ ...base, attestationSha256: attestationDigest(base) });
   }
 
   async wrapDataKey(key: EnvelopeKeyReference, tenantId: string, dataKey: Uint8Array): Promise<string> {
-    const material = this.#keys.get(keyIdentity(tenantId, key));
-    if (!material) throw new Error("local_envelope_key_missing");
+    const record = this.#keys.get(locatorIdentity(tenantId, key));
+    if (!record) throw new Error("local_envelope_key_missing");
+    await assertProviderAttestation(this, tenantId, key);
+    const material = record.material;
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", material, iv);
     cipher.setAAD(Buffer.from(`${tenantId}\0${key.keyId}\0${key.version}`));
@@ -262,8 +432,10 @@ export class LocalEnvelopeKeyProvider implements KeyEncryptionKeyProvider {
   }
 
   async unwrapDataKey(key: EnvelopeKeyReference, tenantId: string, wrappedDataKey: string): Promise<Uint8Array> {
-    const material = this.#keys.get(keyIdentity(tenantId, key));
-    if (!material) throw new Error("local_envelope_key_missing");
+    const record = this.#keys.get(locatorIdentity(tenantId, key));
+    if (!record) throw new Error("local_envelope_key_missing");
+    await assertProviderAttestation(this, tenantId, key);
+    const material = record.material;
     const [iv, tag, ciphertext, extra] = wrappedDataKey.split(".");
     if (!iv || !tag || !ciphertext || extra) throw new Error("wrapped_data_key_invalid");
     const decipher = createDecipheriv("aes-256-gcm", material, Buffer.from(iv, "base64"));
@@ -271,6 +443,98 @@ export class LocalEnvelopeKeyProvider implements KeyEncryptionKeyProvider {
     decipher.setAuthTag(Buffer.from(tag, "base64"));
     return Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64")), decipher.final()]);
   }
+}
+
+type ConfiguredKeyRecord = Readonly<{
+  tenantId: string;
+  provider: string;
+  keyId: string;
+  version: string;
+  customerManaged: boolean;
+  attestation: string;
+  materialBase64: string;
+}>;
+
+/** Environment-backed production adapter. Configuration is validated as one authoritative key catalog. */
+export class ConfiguredEnvelopeKeyProvider implements KeyEncryptionKeyProvider {
+  readonly enabled = true;
+  readonly provider: string;
+  readonly #records = new Map<string, { key: EnvelopeKeyAttestation; material: Buffer }>();
+
+  private constructor(records: readonly ConfiguredKeyRecord[]) {
+    if (records.length === 0) throw new Error("external_vault_configuration_invalid");
+    this.provider = records[0]!.provider;
+    for (const record of records) {
+      const material = Buffer.from(record.materialBase64, "base64");
+      if (
+        record.provider !== this.provider || !ID.test(record.tenantId) || !ID.test(record.provider) ||
+        !ID.test(record.keyId) || !ID.test(record.version) || typeof record.customerManaged !== "boolean" ||
+        !record.attestation.trim() || material.byteLength !== 32
+      ) throw new Error("external_vault_configuration_invalid");
+      const base = {
+        provider: record.provider,
+        keyId: record.keyId,
+        version: record.version,
+        customerManaged: record.customerManaged,
+        attestation: record.attestation,
+      };
+      const identity = locatorIdentity(record.tenantId, base);
+      if (this.#records.has(identity)) throw new Error("external_vault_configuration_invalid");
+      this.#records.set(identity, {
+        key: Object.freeze({ ...base, attestationSha256: attestationDigest(base) }),
+        material,
+      });
+    }
+  }
+
+  static fromJson(value: string): ConfiguredEnvelopeKeyProvider {
+    try {
+      const parsed = JSON.parse(value) as { schemaVersion?: unknown; keys?: unknown };
+      if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.keys)) {
+        throw new Error("external_vault_configuration_invalid");
+      }
+      return new ConfiguredEnvelopeKeyProvider(parsed.keys as ConfiguredKeyRecord[]);
+    } catch (error) {
+      if (error instanceof Error && error.message === "external_vault_configuration_invalid") throw error;
+      throw new Error("external_vault_configuration_invalid");
+    }
+  }
+
+  async attestKey(key: EnvelopeKeyLocator, tenantId: string): Promise<EnvelopeKeyAttestation> {
+    const record = this.#records.get(locatorIdentity(tenantId, key));
+    if (!record) throw new Error("external_vault_key_not_attested");
+    return record.key;
+  }
+
+  async wrapDataKey(key: EnvelopeKeyReference, tenantId: string, dataKey: Uint8Array): Promise<string> {
+    const record = this.#records.get(locatorIdentity(tenantId, key));
+    if (!record) throw new Error("external_vault_key_not_attested");
+    await assertProviderAttestation(this, tenantId, key);
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", record.material, iv);
+    cipher.setAAD(Buffer.from(`${tenantId}\0${key.keyId}\0${key.version}`));
+    const ciphertext = Buffer.concat([cipher.update(dataKey), cipher.final()]);
+    return `${iv.toString("base64")}.${cipher.getAuthTag().toString("base64")}.${ciphertext.toString("base64")}`;
+  }
+
+  async unwrapDataKey(key: EnvelopeKeyReference, tenantId: string, wrappedDataKey: string): Promise<Uint8Array> {
+    const record = this.#records.get(locatorIdentity(tenantId, key));
+    if (!record) throw new Error("external_vault_key_not_attested");
+    await assertProviderAttestation(this, tenantId, key);
+    const [iv, tag, ciphertext, extra] = wrappedDataKey.split(".");
+    if (!iv || !tag || !ciphertext || extra) throw new Error("wrapped_data_key_invalid");
+    const decipher = createDecipheriv("aes-256-gcm", record.material, Buffer.from(iv, "base64"));
+    decipher.setAAD(Buffer.from(`${tenantId}\0${key.keyId}\0${key.version}`));
+    decipher.setAuthTag(Buffer.from(tag, "base64"));
+    return Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64")), decipher.final()]);
+  }
+}
+
+export function envelopeKeyProvidersFromEnvironment(
+  configuration: string | undefined,
+): readonly KeyEncryptionKeyProvider[] {
+  if (!configuration?.trim()) return Object.freeze([new DisabledExternalVaultProvider()]);
+  return Object.freeze([ConfiguredEnvelopeKeyProvider.fromJson(configuration)]);
 }
 
 export class EnvelopeSecretVault {
@@ -311,6 +575,7 @@ export class EnvelopeSecretVault {
       throw new Error("vault_provider_disabled");
     }
     try {
+      await assertProviderAttestation(provider, context.tenantId, key);
       const dataKey = randomBytes(32);
       const wrappedDataKey = await provider.wrapDataKey(key, context.tenantId, dataKey);
       const iv = randomBytes(12);
@@ -356,6 +621,7 @@ export class EnvelopeSecretVault {
       }
       const provider = this.#providers.get(envelope.key.provider);
       if (!provider || !provider.enabled) throw new Error("vault_provider_disabled");
+      await assertProviderAttestation(provider, context.tenantId, envelope.key);
       const dataKey = await provider.unwrapDataKey(envelope.key, context.tenantId, envelope.wrappedDataKey);
       const decipher = createDecipheriv("aes-256-gcm", dataKey, Buffer.from(envelope.iv, "base64"));
       decipher.setAAD(envelopeAad(context.tenantId, envelope.secretId, envelope.generation, envelope.key));
@@ -456,24 +722,12 @@ export class DurableEnvelopeSecretProvider implements SecretProvider {
     }
     if (version.state !== "active") throw new Error("vault_secret_generation_inactive");
 
-    const lifecycle = new EnvelopeKeyLifecycleRegistry();
-    lifecycle.register({
-      tenantId: this.options.tenantId,
-      key: version.key,
-      generation: version.generation,
-      state: version.state,
-      createdAt: version.issuedAt,
-      rotatedAt: version.retiredAt,
-      revokedAt: version.revokedAt,
-      revocationReason: version.revocationReason,
-    });
-    const vault = new EnvelopeSecretVault(lifecycle, this.options.keyProviders, this.options.audit);
-    return vault.decrypt(Object.freeze({ ...version.envelope, generation }), {
+    return openEnvelopeSecret(Object.freeze({ ...version.envelope, generation }), {
       tenantId: this.options.tenantId,
       actorId: this.options.actorId,
       correlationId: this.options.correlationId,
       purpose: this.options.purpose,
       at: this.options.at?.() ?? new Date().toISOString(),
-    });
+    }, this.options.keyProviders, this.options.audit);
   }
 }

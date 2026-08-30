@@ -1785,6 +1785,32 @@ CREATE UNIQUE INDEX IF NOT EXISTS secret_lifecycle_one_active_source_ref_idx
 CREATE INDEX IF NOT EXISTS secret_lifecycle_source_ref_idx
   ON secret_lifecycle_versions(tenant_id, source_ref, generation);
 
+CREATE TABLE IF NOT EXISTS secret_lifecycle_operations (
+  tenant_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  operation TEXT NOT NULL CHECK (operation IN ('create', 'rotate')),
+  request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+  actor_id TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
+  result_generation INTEGER NOT NULL CHECK (result_generation >= 1),
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, idempotency_key),
+  FOREIGN KEY (tenant_id, credential_id, result_generation)
+    REFERENCES secret_lifecycle_versions(tenant_id, credential_id, generation)
+);
+CREATE INDEX IF NOT EXISTS secret_lifecycle_operations_result_idx
+  ON secret_lifecycle_operations(tenant_id, credential_id, result_generation);
+CREATE TRIGGER IF NOT EXISTS secret_lifecycle_operations_no_update
+BEFORE UPDATE ON secret_lifecycle_operations
+BEGIN
+  SELECT RAISE(ABORT, 'secret_lifecycle_operation_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS secret_lifecycle_operations_no_delete
+BEFORE DELETE ON secret_lifecycle_operations
+BEGIN
+  SELECT RAISE(ABORT, 'secret_lifecycle_operation_delete_forbidden');
+END;
+
 CREATE TRIGGER IF NOT EXISTS secret_lifecycle_versions_no_delete
 BEFORE DELETE ON secret_lifecycle_versions
 BEGIN
