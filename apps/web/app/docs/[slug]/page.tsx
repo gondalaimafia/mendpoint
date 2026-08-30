@@ -46,7 +46,7 @@ export default async function ProductDocumentationPage({ params }: PageInput) {
         <DocSection id="start-here" title="Start here">
           <p>{page.startHere.intro}</p>
           <ol>{page.startHere.steps.map((step) => <li key={step}>{step}</li>)}</ol>
-          {page.startHere.command ? <pre><code>{page.startHere.command}</code></pre> : null}
+          {page.startHere.command ? <pre aria-label={`${page.title} quickstart command`} tabIndex={0}><code>{page.startHere.command}</code></pre> : null}
         </DocSection>
         <ListSection id="what-it-does" title="What it does" items={page.capabilities} />
         <ListSection id="when-to-use" title="When to use it" items={page.useWhen} />

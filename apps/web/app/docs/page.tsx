@@ -34,7 +34,7 @@ export default function DocumentationPage() {
           <h2 id="docs-start-title">Run the local evidence-backed demo</h2>
           <p>Use synthetic fixtures and mock source control. No external account is required.</p>
         </div>
-        <pre aria-label="Quickstart command"><code>npm install{"\n"}npm run demo</code></pre>
+        <pre aria-label="Quickstart command" tabIndex={0}><code>npm install{"\n"}npm run demo</code></pre>
       </section>
 
       {docsByCategory().map(({ category, pages }) => (
