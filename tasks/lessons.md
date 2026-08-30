@@ -428,3 +428,21 @@
 **Mistake:** Break-glass audit IDs were derived from credential, generation, and reason, collapsing a later authorized attempt into an earlier event.
 **Correction:** Bind the operation to an explicit request or attempt identity and use exact replay comparison for deliberate retries.
 **Rule:** Security-sensitive idempotency identities distinguish exact replay from new authority. Similar payloads do not make separate access attempts the same event.
+
+### 2026-08-30 — Transport request IDs are context, not replay authority
+
+**Mistake:** Stable lifecycle audit IDs were compared against per-request transport IDs, so a legitimate retry with the same idempotency key conflicted after a partial failure.
+**Correction:** Persist replay authority from the semantic request and keep transport request IDs only on attempt-specific evidence.
+**Rule:** Idempotency identity must survive HTTP retries. Never include an ephemeral request ID in the exact comparison for a committed operation or resumable staged step.
+
+### 2026-08-30 — Audit denials before every break-glass exit
+
+**Mistake:** Break-glass validation returned before the audit callback for role, feature flag, reason, idempotency, and tenant failures.
+**Correction:** Funnel every denial through one truthful attempt audit carrying the actual principal and request context, and replace the denial with a fail-closed audit error if persistence fails.
+**Rule:** A secret access boundary has no unaudited rejection branch. Validation, authorization, policy, lookup, and decrypt failures all persist denied evidence before returning.
+
+### 2026-08-30 — Secret-bearing replay digests require keyed commitments
+
+**Mistake:** The lifecycle operation table stored a deterministic SHA-256 request digest whose plaintext component could be tested offline against a small candidate dictionary.
+**Correction:** Compute a versioned HMAC commitment with an external key, persist its key ID, bind every semantic request field, and reject legacy or wrong-key replay.
+**Rule:** Durable idempotency evidence for secret-bearing requests must be a domain-separated keyed commitment. An unkeyed digest is an offline oracle even when raw plaintext is absent.

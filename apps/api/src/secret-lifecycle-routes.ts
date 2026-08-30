@@ -3,11 +3,16 @@ import { recordAudit, type AppDb } from "@mendpoint/db";
 import type { EnvelopeKeyLocator, KeyEncryptionKeyProvider } from "@mendpoint/platform";
 import type { ApiEnv } from "./auth.js";
 import { mappedErrorResponse, type PublicErrorRule } from "./error-boundary.js";
-import { DurableSecretLifecycleService } from "./secret-lifecycle-service.js";
+import {
+  DurableSecretLifecycleService,
+  isAuditedBreakGlassError,
+  type SecretLifecycleRequestCommitment,
+} from "./secret-lifecycle-service.js";
 
 const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "authenticated_principal_required", publicCode: "unauthorized", status: 401 },
   { internalCode: "secret_lifecycle_authority_required", publicCode: "forbidden", status: 403 },
+  { internalCode: "secret_lifecycle_authority_invalid", publicCode: "forbidden", status: 403 },
   { internalCode: "secret_break_glass_owner_required", publicCode: "forbidden", status: 403 },
   { internalCode: "secret_break_glass_disabled", status: 403 },
   { internalCode: "secret_lifecycle_not_found", publicCode: "not_found", status: 404 },
@@ -19,6 +24,8 @@ const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "vault_key_attestation_mismatch", status: 503 },
   { internalCode: "secret_lifecycle_idempotency_key_invalid", status: 400 },
   { internalCode: "secret_lifecycle_request_digest_invalid", status: 400 },
+  { internalCode: "secret_lifecycle_commitment_unconfigured", status: 503 },
+  { internalCode: "vault_access_audit_failed", status: 503 },
   { internalCode: "secret_credential_id_invalid", status: 400 },
   { internalCode: "secret_source_reference_invalid", status: 400 },
   { internalCode: "secret_audiences_invalid", status: 400 },
@@ -30,6 +37,7 @@ export function createSecretLifecycleRoutes(options: Readonly<{
   db: AppDb;
   providers: readonly KeyEncryptionKeyProvider[];
   breakGlassEnabled: boolean;
+  requestCommitment?: SecretLifecycleRequestCommitment;
 }>) {
   const routes = new Hono<ApiEnv>();
 
@@ -43,13 +51,16 @@ export function createSecretLifecycleRoutes(options: Readonly<{
       role: principal.role,
       providers: options.providers,
       breakGlassEnabled: options.breakGlassEnabled,
+      requestId: c.get("requestId") ?? null,
+      apiKeyId: c.get("apiKeyId") ?? null,
+      requestCommitment: options.requestCommitment,
       audit: (event) => recordAudit(options.db, {
         id: event.id,
         tenantId: event.tenantId,
         actor: "operator",
         principalId: event.actorId,
-        apiKeyId: c.get("apiKeyId") ?? null,
-        requestId: c.get("requestId") ?? null,
+        apiKeyId: event.apiKeyId,
+        requestId: event.requestId,
         action: event.action,
         resourceType: "secret_lifecycle",
         resourceId: event.credentialId,
@@ -101,16 +112,47 @@ export function createSecretLifecycleRoutes(options: Readonly<{
   });
 
   routes.post("/:id/break-glass", async (c) => {
+    let reason: unknown;
     try {
-      const body = await c.req.json<{ reason: string }>();
+      const body = await c.req.json<unknown>();
+      reason = body !== null && typeof body === "object"
+        ? (body as { reason?: unknown }).reason
+        : undefined;
       const plaintext = await service(c).breakGlass({
         credentialId: c.req.param("id"),
-        reason: body.reason,
+        reason,
         idempotencyKey: c.req.header("Idempotency-Key") ?? "",
       });
       c.header("Cache-Control", "no-store");
       return c.json({ secret: plaintext });
     } catch (error) {
+      if (!isAuditedBreakGlassError(error)) {
+        const principal = c.get("principal");
+        try {
+          recordAudit(options.db, {
+            tenantId: principal?.tenantId || "tenant_unattributed",
+            actor: "operator",
+            principalId: c.get("trustPrincipalId") ?? principal?.id ?? null,
+            apiKeyId: c.get("apiKeyId") ?? null,
+            requestId: c.get("requestId") ?? null,
+            action: "secret.break_glass.denied",
+            resourceType: "secret_lifecycle",
+            resourceId: c.req.param("id") || null,
+            metadata: {
+              outcome: "denied",
+              failure: error instanceof Error ? error.message : "secret_break_glass_denied",
+              role: principal?.role ?? null,
+              tenantId: principal?.tenantId ?? null,
+              actorId: c.get("trustPrincipalId") ?? principal?.id ?? null,
+              requestId: c.get("requestId") ?? null,
+              reason: typeof reason === "string" ? reason.trim() || null : null,
+              idempotencyKey: c.req.header("Idempotency-Key") ?? null,
+            },
+          });
+        } catch {
+          return mappedErrorResponse(c, new Error("vault_access_audit_failed"), ERRORS);
+        }
+      }
       return mappedErrorResponse(c, error, ERRORS);
     }
   });

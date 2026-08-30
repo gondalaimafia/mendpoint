@@ -16,6 +16,11 @@
 - [x] RED: prove tenant-created SCM connections cannot select deployment-global environment secrets or another tenant's lifecycle reference.
 - [x] GREEN: persist and AAD-bind provider attestation, make lifecycle access audit outcome-aware, remove tenant-selectable env fallback, and bind break-glass replay identity.
 - [x] Re-run Platform, DB, API, and SCM suites, affected typechecks, diff integrity, and commit the audit repair locally without pushing.
+- [x] RED: prove break-glass HTTP replay and interrupted rotation recovery are independent of transport request IDs.
+- [x] RED: prove every pre-decrypt break-glass denial is durably audited with actual request context and audit failure remains fail closed.
+- [x] RED: prove lifecycle request commitments resist offline plaintext guessing, bind every semantic field and key ID, and reject legacy or wrong-key replay.
+- [x] GREEN: persist versioned keyed commitments, add durable break-glass replay evidence, and separate stable operation audit identity from denied-attempt identity.
+- [x] Re-run focused and complete Platform, DB, API, and SCM suites, affected typechecks, diff integrity, and commit locally without pushing.
 
 ### Review
 
@@ -29,6 +34,10 @@
 - Secret access audit records the actual grant or denial. Rotation source unwrap is durably audited before a replacement generation can publish, while break-glass attempts use caller-supplied idempotency keys so exact retries reuse one record and new authorized attempts receive distinct identities.
 - Production SCM resolution accepts only tenant-scoped lifecycle records. Caller-supplied environment fallback providers are ignored, and both deployment-global references and another tenant's lifecycle reference are denied before transport.
 - Final audit-repair evidence passes all 253 Platform tests and 35 focused DB, lifecycle service, route, and SCM tests. Platform, DB, and API typechecks pass, and `git diff --check` is clean.
+- Lifecycle create, rotation, and break-glass replay now persist a versioned HMAC-SHA-256 commitment under a deployment-owned key ID. The canonical commitment binds every semantic request field while excluding transport request and API-key identifiers; legacy unkeyed operation rows, wrong keys, wrong key IDs, and payload drift fail closed.
+- Break-glass grant replay is an immutable tenant-scoped operation. Exact HTTP retries across new request IDs and API keys return the committed generation without another grant audit, while payload mismatches are denied and every distinct denial attempt records its actual principal, request, API key, role, reason, and failure before the response. Missing audit durability returns `vault_access_audit_failed` and never plaintext.
+- Rotation source access audit uses a stable operation identity, so retries after an audited unwrap or replacement-stage failure resume without duplicate or conflicting access evidence and cannot publish a new generation until the required audit and lifecycle transaction commit.
+- Final verification passes 28 focused lifecycle and database tests, 1,449 complete Platform, DB, API, and SCM tests across 157 files, all four affected package typechecks, and `git diff --check`.
 
 
 Observed `origin/main`: `96801a319fc3d355cb2b28b4167b83023a192042`.

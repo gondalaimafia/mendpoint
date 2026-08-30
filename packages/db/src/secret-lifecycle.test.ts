@@ -7,6 +7,7 @@ import { createDb, type AppDb } from "./index.js";
 import {
   createSecretLifecycle,
   getActiveSecretLifecycleByReference,
+  getSecretLifecycleOperation,
   getSecretLifecycleVersion,
   listSecretLifecycleVersions,
   revokeSecretLifecycle,
@@ -59,6 +60,19 @@ function legacySecretDb(): AppDb {
       '["legacy"]', NULL, '2026-08-01T00:00:00.000Z', NULL, NULL, NULL, NULL,
       'external-vault', 'legacy-key', '1', 1, 1, 'AES-256-GCM', 'wrapped',
       'iv', 'tag', 'ciphertext', '2026-08-01T00:00:00.000Z'
+    );
+    CREATE TABLE secret_lifecycle_operations (
+      tenant_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, operation TEXT NOT NULL,
+      request_digest TEXT NOT NULL, actor_id TEXT NOT NULL, credential_id TEXT NOT NULL,
+      result_generation INTEGER NOT NULL, completed_at TEXT NOT NULL,
+      PRIMARY KEY (tenant_id, idempotency_key)
+    );
+    CREATE TRIGGER secret_lifecycle_operations_no_update
+    BEFORE UPDATE ON secret_lifecycle_operations
+    BEGIN SELECT RAISE(ABORT, 'secret_lifecycle_operation_immutable'); END;
+    INSERT INTO secret_lifecycle_operations VALUES (
+      'tenant-a', 'legacy-create', 'create', '${"a".repeat(64)}', 'operator-a',
+      'legacy-credential', 1, '2026-08-01T00:00:00.000Z'
     );
   `);
   legacy.close();
@@ -143,6 +157,20 @@ describe("secret lifecycle transitions", () => {
       UPDATE secret_lifecycle_versions SET key_attestation_sha256 = ?
       WHERE tenant_id = 'tenant-a' AND credential_id = 'legacy-credential' AND generation = 1
     `).run("a".repeat(64))).toThrow("secret_lifecycle_transition_invalid");
+    expect(getSecretLifecycleOperation(db, "tenant-a", "legacy-create"))
+      .toMatchObject({ request_commitment_key_id: null });
+    expect(() => createSecretLifecycle(db, {
+      ...version(1),
+      credentialId: "legacy-credential",
+      sourceRef: "vault://legacy/credential",
+    }, {
+      operation: {
+        idempotencyKey: "legacy-create",
+        requestDigest: "a".repeat(64),
+        requestCommitmentKeyId: "secret-request-v1",
+        actorId: "operator-a",
+      },
+    })).toThrow("secret_lifecycle_idempotency_conflict");
   });
 
   it("replays completed create and rotate operations but rejects mismatched identities", () => {
@@ -151,6 +179,7 @@ describe("secret lifecycle transitions", () => {
       operation: {
         idempotencyKey: "create-one",
         requestDigest: "a".repeat(64),
+        requestCommitmentKeyId: "secret-request-v1",
         actorId: "operator-a",
       },
     });
@@ -158,6 +187,7 @@ describe("secret lifecycle transitions", () => {
       operation: {
         idempotencyKey: "create-one",
         requestDigest: "a".repeat(64),
+        requestCommitmentKeyId: "secret-request-v1",
         actorId: "operator-a",
       },
     })).toEqual(created);
@@ -165,6 +195,7 @@ describe("secret lifecycle transitions", () => {
       operation: {
         idempotencyKey: "create-one",
         requestDigest: "b".repeat(64),
+        requestCommitmentKeyId: "secret-request-v1",
         actorId: "operator-a",
       },
     })).toThrow("secret_lifecycle_idempotency_conflict");
@@ -177,6 +208,7 @@ describe("secret lifecycle transitions", () => {
       operation: {
         idempotencyKey: "rotate-one",
         requestDigest: "c".repeat(64),
+        requestCommitmentKeyId: "secret-request-v1",
         actorId: "operator-a",
       },
     });
@@ -188,6 +220,7 @@ describe("secret lifecycle transitions", () => {
       operation: {
         idempotencyKey: "rotate-one",
         requestDigest: "c".repeat(64),
+        requestCommitmentKeyId: "secret-request-v1",
         actorId: "operator-a",
       },
     })).toEqual(rotated);
@@ -204,6 +237,7 @@ describe("secret lifecycle transitions", () => {
       operation: {
         idempotencyKey: "rotate-audit-failure",
         requestDigest: "d".repeat(64),
+        requestCommitmentKeyId: "secret-request-v1",
         actorId: "operator-a",
       },
       audit: () => {

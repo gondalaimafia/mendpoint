@@ -1791,6 +1791,7 @@ CREATE TABLE IF NOT EXISTS secret_lifecycle_operations (
   idempotency_key TEXT NOT NULL,
   operation TEXT NOT NULL CHECK (operation IN ('create', 'rotate')),
   request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+  request_commitment_key_id TEXT NOT NULL,
   actor_id TEXT NOT NULL,
   credential_id TEXT NOT NULL,
   result_generation INTEGER NOT NULL CHECK (result_generation >= 1),
@@ -1805,6 +1806,32 @@ CREATE TRIGGER IF NOT EXISTS secret_lifecycle_operations_no_update
 BEFORE UPDATE ON secret_lifecycle_operations
 BEGIN
   SELECT RAISE(ABORT, 'secret_lifecycle_operation_immutable');
+END;
+
+CREATE TABLE IF NOT EXISTS secret_break_glass_operations (
+  tenant_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+  request_commitment_key_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
+  generation INTEGER NOT NULL CHECK (generation >= 1),
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, idempotency_key),
+  FOREIGN KEY (tenant_id, credential_id, generation)
+    REFERENCES secret_lifecycle_versions(tenant_id, credential_id, generation)
+);
+CREATE INDEX IF NOT EXISTS secret_break_glass_operations_result_idx
+  ON secret_break_glass_operations(tenant_id, credential_id, generation);
+CREATE TRIGGER IF NOT EXISTS secret_break_glass_operations_no_update
+BEFORE UPDATE ON secret_break_glass_operations
+BEGIN
+  SELECT RAISE(ABORT, 'secret_break_glass_operation_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS secret_break_glass_operations_no_delete
+BEFORE DELETE ON secret_break_glass_operations
+BEGIN
+  SELECT RAISE(ABORT, 'secret_break_glass_operation_delete_forbidden');
 END;
 CREATE TRIGGER IF NOT EXISTS secret_lifecycle_operations_no_delete
 BEFORE DELETE ON secret_lifecycle_operations
@@ -2367,6 +2394,7 @@ export function createDb(urlOrPath?: string): AppDb {
     migrateAuditIntegrity({ raw });
     migrateArtifactContent({ raw });
     migrateSecretLifecycleAttestation({ raw });
+    migrateSecretLifecycleOperationCommitments({ raw });
     migrateWardenTransformerTableNames({ raw });
     migrateWardenCiAwaitingReview({ raw });
     installTrustImmutability({ raw });
@@ -2415,6 +2443,24 @@ function migrateTenantMembershipUserNameUniqueness(db: AppDb): void {
     if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
     throw error;
   }
+}
+
+function migrateSecretLifecycleOperationCommitments(db: AppDb): void {
+  const columns = all<{ name: string }>(
+    db,
+    "PRAGMA table_info(secret_lifecycle_operations)",
+  ).map((column) => column.name);
+  if (!columns.includes("request_commitment_key_id")) {
+    run(db, "ALTER TABLE secret_lifecycle_operations ADD COLUMN request_commitment_key_id TEXT");
+  }
+  db.raw.exec(`
+    CREATE TRIGGER IF NOT EXISTS secret_lifecycle_operations_commitment_required
+    BEFORE INSERT ON secret_lifecycle_operations
+    WHEN NEW.request_commitment_key_id IS NULL OR length(trim(NEW.request_commitment_key_id)) = 0
+    BEGIN
+      SELECT RAISE(ABORT, 'secret_lifecycle_commitment_key_required');
+    END;
+  `);
 }
 
 function migrateSecretLifecycleAttestation(db: AppDb): void {

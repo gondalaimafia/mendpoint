@@ -308,6 +308,7 @@ import { createOrganizationMemoryRoutes } from "./organization-memory-routes.js"
 import { createPlatformSandboxRoutes } from "./platform-sandbox.js";
 import { createPlatformStateRoutes } from "./platform-state-routes.js";
 import { createSecretLifecycleRoutes } from "./secret-lifecycle-routes.js";
+import { secretLifecycleRequestCommitmentFromEnvironment } from "./secret-lifecycle-service.js";
 import { createTenantCreationRoutes } from "./tenant-creation-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { regaugeProductionBootstrapInputFromEnvironment } from "./regauge-production-bootstrap-runtime.js";
@@ -847,6 +848,7 @@ app.route("/platform/secrets", createSecretLifecycleRoutes({
   db,
   providers: envelopeKeyProviders,
   breakGlassEnabled: process.env.MENDPOINT_SECRET_BREAK_GLASS === "true",
+  requestCommitment: secretLifecycleRequestCommitmentFromEnvironment(process.env),
 }));
 app.route("/advanced-ai", createAdvancedAiApplicationRoutes({
   db,

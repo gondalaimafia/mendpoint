@@ -49,6 +49,7 @@ export type SecretLifecycleCredentialDescriptor = Readonly<{
 export type SecretLifecycleOperationIdentity = Readonly<{
   idempotencyKey: string;
   requestDigest: string;
+  requestCommitmentKeyId: string;
   actorId: string;
 }>;
 
@@ -57,11 +58,12 @@ export type SecretLifecycleMutationOptions = Readonly<{
   audit?: (row: SecretLifecycleVersionRow) => void;
 }>;
 
-type SecretLifecycleOperationRow = Readonly<{
+export type SecretLifecycleOperationRow = Readonly<{
   tenant_id: string;
   idempotency_key: string;
   operation: "create" | "rotate";
   request_digest: string;
+  request_commitment_key_id: string | null;
   actor_id: string;
   credential_id: string;
   result_generation: number;
@@ -130,6 +132,9 @@ function validateOperation(operation: SecretLifecycleOperationIdentity): void {
   if (!/^[a-f0-9]{64}$/.test(operation.requestDigest)) {
     throw new Error("secret_lifecycle_request_digest_invalid");
   }
+  if (!ID.test(operation.requestCommitmentKeyId)) {
+    throw new Error("secret_lifecycle_commitment_key_id_invalid");
+  }
   if (!ID.test(operation.actorId)) throw new Error("secret_lifecycle_actor_invalid");
 }
 
@@ -148,6 +153,7 @@ function replayedOperation(
   if (!existing) return undefined;
   if (
     existing.operation !== kind || existing.request_digest !== operation.requestDigest ||
+    existing.request_commitment_key_id !== operation.requestCommitmentKeyId ||
     existing.actor_id !== operation.actorId || existing.credential_id !== input.credentialId ||
     existing.result_generation !== input.generation
   ) throw new Error("secret_lifecycle_idempotency_conflict");
@@ -169,14 +175,15 @@ function completeOperation(
 ): void {
   db.raw.prepare(`
     INSERT INTO secret_lifecycle_operations (
-      tenant_id, idempotency_key, operation, request_digest, actor_id,
+      tenant_id, idempotency_key, operation, request_digest, request_commitment_key_id, actor_id,
       credential_id, result_generation, completed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.tenantId,
     operation.idempotencyKey,
     kind,
     operation.requestDigest,
+    operation.requestCommitmentKeyId,
     operation.actorId,
     input.credentialId,
     input.generation,
@@ -294,6 +301,87 @@ export function getSecretLifecycleOperation(
     `SELECT * FROM secret_lifecycle_operations WHERE tenant_id = ? AND idempotency_key = ?`,
     [tenantId, idempotencyKey],
   );
+}
+
+export type SecretBreakGlassOperationRow = Readonly<{
+  tenant_id: string;
+  idempotency_key: string;
+  request_digest: string;
+  request_commitment_key_id: string;
+  actor_id: string;
+  credential_id: string;
+  generation: number;
+  completed_at: string;
+}>;
+
+export function getSecretBreakGlassOperation(
+  db: AppDb,
+  tenantId: string,
+  idempotencyKey: string,
+): SecretBreakGlassOperationRow | undefined {
+  return one(
+    db,
+    `SELECT * FROM secret_break_glass_operations WHERE tenant_id = ? AND idempotency_key = ?`,
+    [tenantId, idempotencyKey],
+  );
+}
+
+export function completeSecretBreakGlassOperation(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    idempotencyKey: string;
+    requestDigest: string;
+    requestCommitmentKeyId: string;
+    actorId: string;
+    credentialId: string;
+    generation: number;
+    completedAt: string;
+  }>,
+  options: Readonly<{ audit: () => void }>,
+): Readonly<{ replayed: boolean }> {
+  validateOperation({
+    idempotencyKey: input.idempotencyKey,
+    requestDigest: input.requestDigest,
+    requestCommitmentKeyId: input.requestCommitmentKeyId,
+    actorId: input.actorId,
+  });
+  if (!ID.test(input.tenantId) || !ID.test(input.credentialId)) {
+    throw new Error("secret_lifecycle_authority_invalid");
+  }
+  if (!Number.isSafeInteger(input.generation) || input.generation < 1) {
+    throw new Error("secret_generation_invalid");
+  }
+  validTimestamp("secret_break_glass_completed_at", input.completedAt);
+  return transaction(db, () => {
+    const existing = getSecretBreakGlassOperation(db, input.tenantId, input.idempotencyKey);
+    if (existing) {
+      if (
+        existing.request_digest !== input.requestDigest ||
+        existing.request_commitment_key_id !== input.requestCommitmentKeyId ||
+        existing.actor_id !== input.actorId || existing.credential_id !== input.credentialId ||
+        existing.generation !== input.generation
+      ) throw new Error("secret_lifecycle_idempotency_conflict");
+      return Object.freeze({ replayed: true });
+    }
+    options.audit();
+    db.raw.prepare(`
+      INSERT INTO secret_break_glass_operations (
+        tenant_id, idempotency_key, request_digest, request_commitment_key_id,
+        actor_id, credential_id, generation, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.tenantId,
+      input.idempotencyKey,
+      input.requestDigest,
+      input.requestCommitmentKeyId,
+      input.actorId,
+      input.credentialId,
+      input.generation,
+      input.completedAt,
+    );
+    return Object.freeze({ replayed: false });
+  });
 }
 
 export function revokeSecretLifecycle(
