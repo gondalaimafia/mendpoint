@@ -18,8 +18,8 @@ function engineSource(): string {
  */
 function extractRotationShell(): string {
   const source = engineSource();
-  const start = source.indexOf("            assert_mutable_image() {");
-  expect(start, "guard function not found in workflow").toBeGreaterThan(-1);
+  const start = source.indexOf("            mutable_image_jq='");
+  expect(start, "image normalisation not found in workflow").toBeGreaterThan(-1);
   const endMarker = "            ] | @tsv' <<<\"$machines_json\")";
   const end = source.indexOf(endMarker, start);
   expect(end, "mutation loop terminator not found in workflow").toBeGreaterThan(-1);
@@ -106,7 +106,7 @@ function runRotation(machinesJson: string, derivation?: string): HarnessResult {
   if (derivation) {
     // Swap only the tsv derivation, to compare old vs new behaviour through
     // the identical guard and loop.
-    shell = shell.replace("  .config.image,\n", `  ${derivation},\n`);
+    shell = shell.replace("  (.config.image | mutable_image),\n", `  ${derivation},\n`);
   }
 
   const harness = [
@@ -182,13 +182,38 @@ describe("sandbox egress rotation — the image passed to a production mutation"
     );
   });
 
-  it("REJECTS an already digest-pinned config.image, because flyctl appends a second digest", () => {
+  it("normalises a digest-pinned config.image back to its tag and mutates exactly once", () => {
+    // This is the shape Fly stores AFTER a successful rotation, so it is what
+    // the NEXT rotation reads back. Before normalisation the guard rejected it
+    // and every run after the first failed safely but permanently.
     const machines = JSON.parse(productionMachinesJson());
     machines[0].config.image = `${PRODUCTION_TAG_IMAGE}@${PRODUCTION_DIGEST}`;
     const result = runRotation(JSON.stringify(machines));
 
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+    const updates = result.calls.filter((line) => line.includes("machine update"));
+    expect(updates).toHaveLength(1);
+    const passedImage = /--image (\S+)/.exec(updates[0])?.[1];
+    // Byte-equal to the tag the digest was pinned from. flyctl re-appends the
+    // digest itself, so passing the pinned form through would produce
+    // "repo:tag@sha256:X@sha256:X" and "config.image: invalid image identifier".
+    expect(passedImage).toBe(PRODUCTION_TAG_IMAGE);
+    expect(passedImage).not.toContain("@sha256:");
+    expect(result.recovery).toBe("");
+  });
+
+  it("still REJECTS a BARE digest pin, because stripping it would resolve :latest", () => {
+    // "repo@sha256:X" carries no tag, so stripping the suffix yields "repo",
+    // which resolves ":latest" - a DIFFERENT image - and passes the reference
+    // regex because the tag group is optional. This is the one shape the
+    // normalisation must not touch.
+    const machines = JSON.parse(productionMachinesJson());
+    machines[0].config.image = `registry.fly.io/mendpoint-fettler-production@${PRODUCTION_DIGEST}`;
+    const result = runRotation(JSON.stringify(machines));
+
     expect(result.status).not.toBe(0);
     expect(result.mutatingCalls).toEqual([]);
+    expect(result.calls.filter((l) => l.includes("machine update"))).toHaveLength(0);
     expect(result.recovery).toContain("image_guard_digest_form");
   });
 
@@ -255,6 +280,16 @@ describe("sandbox egress rotation — a successful rollback is not scored as a f
     const restored = JSON.parse(productionMachinesJson());
     restored[0].config.image = `${PRODUCTION_TAG_IMAGE}@${PRODUCTION_DIGEST}`;
     expect(rollbackVerdict(productionMachinesJson(), JSON.stringify(restored))).toBe(true);
+  });
+
+  it("scores an exact restore as a match when the BEFORE state is already digest-pinned", () => {
+    // The steady state after this change: config.image is read back
+    // digest-pinned on every rotation after the first. Both sides normalise,
+    // so the baseline must not drift into a false rollback_failed.
+    const pinned = JSON.parse(productionMachinesJson());
+    pinned[0].config.image = `${PRODUCTION_TAG_IMAGE}@${PRODUCTION_DIGEST}`;
+    const json = JSON.stringify(pinned);
+    expect(rollbackVerdict(json, json)).toBe(true);
   });
 
   it("still detects a genuinely wrong restore", () => {
