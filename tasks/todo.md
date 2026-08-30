@@ -3616,7 +3616,6 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - A stopped and restarted worker cannot retain its preflight process incarnation. Rollback now proves the complete Machine topology and expected state, records the observed restored instance ID, and requires the exact worker health check to pass when the prior worker was running. A health failure enters global containment. Every uploaded and downloaded activation artifact is also scoped to the exact GitHub run ID and run attempt, preventing reruns from colliding with or consuming stale topology evidence.
 - Exact-head review closed three further authority and timing gaps. Expired coordinator authority now permits only a nonmutating replay whose exact current approval and every current acceptance reference are already durable on every authorized draft; an expired unseen authority epoch is rejected. The activation authority lasts 75 minutes, the deployment watchdog is 85 minutes, live evaluation budgets its full 1,230-second kill window, and both proof polls have a 610-second whole-step bound included in the pre-evaluation guard. Cleanup uses 15 rounds, includes every `--kill-after` allowance, converts final restore uncertainty to containment, and performs a final terminal inventory; its proven worst case is 799 seconds under the 1,200-second independent watchdog, leaving 401 seconds for setup, artifact transfer, evidence publication, and runner overhead.
 - Compatibility review found that legacy `mendpoint/transformer/` drafts were included in repository-wide cardinality but could not themselves be selected as the exact durable canary. Exact draft validation now permits the expected branch to use either the canonical `mendpoint/regauge/` prefix or an explicitly configured compatibility prefix, while still counting both namespaces together and rejecting unrelated branches. The GitHub and production-proof regressions pass 39 of 39.
-
 ## 2026-08-30 Plan 00-01: canonical closure matrix and non-blocking queue
 
 - [x] RED: add contract regressions for the exact 101-row approved primary-plan catalog, acceptance coverage, evidence partitions, target states, production bindings, and the four queue states.
@@ -3632,3 +3631,18 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The queue contract keeps `external-proof` as a waiting lane, leaves unrelated dependency-ready `build`, `repair`, and `ship` work runnable when another item is broken or externally pending, and requires every row to succeed before final qualification.
 - Verification is green: `npm run ledger:check`; `npm run closure:check` with 33 tests over 101 requirements and 81 static pull requests; `npm run spec:check`; `npm run claims:check`; full workspace `npm run typecheck`; complete `npm test`; optimized 50-route `npm run build`; and `git diff --check`. No protected GitHub, deployment, or production authority is claimed.
 - Root review tightened the qualification boundary: every row targets `verified`, GA requires exact-revision production evidence, and no qualified row may retain a planned evidence locator.
+
+## 2026-08-30 Plan 08-01: typed router registry tracer
+
+- [x] Prove the literal ME-RTR-001 through ME-RTR-004 gap against the existing `router.ts` and `router-runtime.ts` contracts.
+- [x] RED: add focused regressions for a versioned typed registry, complete policy-bound eligibility, deterministic replay and fallback, and fail-closed handoff.
+- [x] GREEN: extend the existing platform router with the smallest compatible registry and routing contract that satisfies those regressions.
+- [x] Run the focused platform tests, affected typechecks, and `git diff --check`; inspect the complete scoped diff.
+- [ ] Commit only if the isolated worktree branch passes the mandatory commit guard. Do not push, open a pull request, deploy, or change production authority.
+
+### Review
+
+- The literal gap was narrower than the registered requirement status implied: executor descriptors were typed, but the registry had no versioned identity bound into routing decisions, and a policy-bound fallback plan could be replayed with another tenant identifier. A spread copy could also retain the internal route marker while changing a cost or latency constraint.
+- RED passed the 20 existing router tests and failed all three new boundary tests: versioned registry binding was absent, cross-tenant fallback still selected an executor, and a tampered route collapsed into ordinary fallback exhaustion.
+- GREEN binds schema version, registry identity, registry version, and a deterministic registry fingerprint into every plan and decision. Every route now binds tenant, policy, registry, executor version, price version, region, quality, latency, and cost under a deterministic route fingerprint. Tenant mismatch, malformed bindings, unavailable fallbacks, and exhausted chains end in typed human handoff.
+- Verification is green: 23 of 23 focused router tests, all 237 platform tests, the complete repository workspace and scripts typecheck, and `git diff --check`. No Worker or Pipeline consumer change was required, and no push, pull request, deployment, or production authority action occurred.

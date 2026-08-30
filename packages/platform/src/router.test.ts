@@ -651,4 +651,127 @@ describe("Gate 7 policy router", () => {
       }),
     ).toThrow("Task product is invalid");
   });
+
+  it("binds a versioned registry contract into deterministic decisions", () => {
+    expect(() => new ExecutorRegistry({
+      schemaVersion: 1,
+      registryId: "invalid registry id",
+      version: 1,
+    })).toThrow("Executor registry contract is invalid");
+
+    const a = executor("executor-a");
+    const b = executor("executor-b", { qualityScore: 0.85 });
+    const routeWith = (
+      version: number,
+      descriptors: readonly ExecutorDescriptor[],
+    ) => {
+      const versioned = new ExecutorRegistry({
+        schemaVersion: 1,
+        registryId: "router-registry",
+        version,
+      });
+      for (const descriptor of descriptors) versioned.register(descriptor);
+      return routeTask({
+        task: task(),
+        policy: policy(),
+        registry: versioned,
+        circuitBreaker: new ExecutorCircuitBreaker(),
+        remainingBudgetUsd: 5,
+        decidedAt,
+      });
+    };
+
+    const first = routeWith(7, [b, a]);
+    const replay = routeWith(7, [a, b]);
+    const advanced = routeWith(8, [a, b]);
+    if (
+      first.action !== "execute" ||
+      replay.action !== "execute" ||
+      advanced.action !== "execute"
+    ) {
+      throw new Error("expected execution");
+    }
+
+    expect(first.plan.registry).toEqual({
+      schemaVersion: 1,
+      registryId: "router-registry",
+      version: 7,
+      fingerprint: replay.plan.registry.fingerprint,
+    });
+    expect(first.decision).toEqual(replay.decision);
+    expect(advanced.plan.registry.fingerprint).not.toBe(
+      first.plan.registry.fingerprint,
+    );
+    expect(advanced.decision.decisionId).not.toBe(first.decision.decisionId);
+  });
+
+  it("refuses fallback replay across a tenant boundary", () => {
+    const outcome = routeTask({
+      task: task(),
+      policy: policy(),
+      registry: registry(
+        executor("primary", { qualityScore: 0.95 }),
+        executor("fallback", { qualityScore: 0.9 }),
+      ),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    if (outcome.action !== "execute") throw new Error("expected execution");
+
+    const fallback = selectPolicyBoundFallback({
+      plan: outcome.plan,
+      failedExecutorIds: ["primary"],
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      at: decidedAt,
+      tenantId: "tenant-2",
+    });
+
+    expect("action" in fallback && fallback.action).toBe("human_handoff");
+    if (!("action" in fallback)) throw new Error("expected handoff");
+    expect(fallback.reason).toBe("tenant_mismatch");
+  });
+
+  it("fails closed to human handoff for malformed or unavailable fallback routes", () => {
+    const outcome = routeTask({
+      task: task(),
+      policy: policy(),
+      registry: registry(
+        executor("primary", { qualityScore: 0.95 }),
+        executor("fallback", { qualityScore: 0.9 }),
+      ),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    if (outcome.action !== "execute") throw new Error("expected execution");
+
+    const malformed = selectPolicyBoundFallback({
+      plan: {
+        ...outcome.plan,
+        fallbacks: [{ ...outcome.plan.fallbacks[0], expectedCostUsd: 0 }],
+      },
+      failedExecutorIds: ["primary"],
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      at: decidedAt,
+      tenantId: "tenant-1",
+    });
+    expect("action" in malformed && malformed.action).toBe("human_handoff");
+    if (!("action" in malformed)) throw new Error("expected handoff");
+    expect(malformed.reason).toBe("route_invalid");
+
+    const unavailable = selectPolicyBoundFallback({
+      plan: outcome.plan,
+      failedExecutorIds: ["primary"],
+      circuitBreaker: { allows: () => false },
+      remainingBudgetUsd: 5,
+      at: decidedAt,
+      tenantId: "tenant-1",
+    });
+    expect("action" in unavailable && unavailable.action).toBe("human_handoff");
+    if (!("action" in unavailable)) throw new Error("expected handoff");
+    expect(unavailable.reason).toBe("fallback_exhausted");
+  });
 });

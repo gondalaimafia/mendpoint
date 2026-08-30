@@ -242,6 +242,7 @@ export {
 export {
   ExecutorRegistry,
   ExecutorCircuitBreaker,
+  ROUTER_REGISTRY_SCHEMA_VERSION,
   ROUTER_FAILURE_CODES,
   routeTask,
   selectPolicyBoundFallback,
@@ -255,6 +256,8 @@ export {
   type RouterTaskSpec,
   type RouterPolicySnapshot,
   type ExecutorDescriptor,
+  type ExecutorRegistryContract,
+  type ExecutorRegistryBinding,
   type CircuitBreakerConfig,
   type CircuitBreakerState,
   type ExecutorAvailability,
