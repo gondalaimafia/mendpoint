@@ -492,21 +492,22 @@ jobs:
         with:
           version: "0.4.79"
       # Prove this credential actually has authority over the customer app
-      # BEFORE mutating anything. FLY_API_TOKEN is the established deploy secret
-      # (it deploys mendpoint-talal above), but nothing in this repo previously
-      # exercised it against mendpoint-fettler-production, so its scope over this
-      # app is asserted here rather than assumed. Read-only: `status` mutates
-      # nothing. The token is never echoed -- only its presence is tested.
+      # BEFORE mutating anything. FLY_API_TOKEN_CUSTOMER is a deploy token scoped
+      # to mendpoint-fettler-production alone -- deliberately NOT the repo-wide
+      # FLY_API_TOKEN that deploys mendpoint-talal above, which this preflight
+      # proved has no authority over this app. Its scope is asserted here rather
+      # than assumed. Read-only: `status` mutates nothing. The token is never
+      # echoed -- only its presence is tested.
       - name: Prove deploy authority over the customer app
         if: steps.head.outputs.superseded != 'true'
         shell: bash
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_CUSTOMER }}
         run: |
           set -euo pipefail
-          test -n "$FLY_API_TOKEN" || { echo "::error::FLY_API_TOKEN is empty; cannot deploy the customer app."; exit 1; }
+          test -n "$FLY_API_TOKEN" || { echo "::error::FLY_API_TOKEN_CUSTOMER is empty; cannot deploy the customer app."; exit 1; }
           if ! flyctl status --app mendpoint-fettler-production >/dev/null 2>&1; then
-            echo "::error::FLY_API_TOKEN cannot read mendpoint-fettler-production. The repository-level deploy token does not cover this app; scope a token to it rather than widening this job."
+            echo "::error::FLY_API_TOKEN_CUSTOMER cannot read mendpoint-fettler-production. Re-scope the FLY_API_TOKEN_CUSTOMER repository secret to that app; do not widen this job to the repository-wide FLY_API_TOKEN."
             exit 1
           fi
           echo "Deploy credential has authority over mendpoint-fettler-production."
@@ -527,7 +528,7 @@ jobs:
           --config fly.customer-warden.toml
           --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_CUSTOMER }}
       # Bounded verification, mirroring the mendpoint-talal deploy: every curl
       # carries --max-time and the loop has an explicit deadline, so an
       # unresponsive app fails fast rather than burning the job timeout. An

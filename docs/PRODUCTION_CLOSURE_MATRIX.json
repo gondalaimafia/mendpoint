@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-29T23:14:49.708Z",
-    "observedMainRevision": "c009a973011c7d4c3075e1c414f870a492f541c3",
-    "observationDigest": "sha256:07a002bab00dcd0107bb1cf79b58522d0c743ffe14bf2c812fdc44c61b130e71",
+    "observedAt": "2026-08-30T03:18:22.875Z",
+    "observedMainRevision": "aa90be01c014ac281c1dccab0147224b078e9ccf",
+    "observationDigest": "sha256:a8f02a61b59ce0566d1e95ad64237651cad3d327470de491fa786b9e2b665b0d",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 545,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/545",
-      "title": "Event-source the current-PR bootstrap to de-serialize the closure queue",
+      "number": 550,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/550",
+      "title": "Deploy the customer app with its app-scoped Fly token",
       "baseBranch": "main",
-      "headBranch": "claude/bootstrap-event-sourced",
+      "headBranch": "codex/customer-deploy-token",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2087,12 +2087,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260828-007",
+        "rotationId": "rotation-20260828-008",
         "kind": "runtime",
-        "issuedAt": "2026-08-29T23:14:49.708Z",
-        "expiresAt": "2026-08-30T23:14:49.708Z",
-        "basePolicySha256": "sha256:2bff9bc2eabf2123cd829b2930834b83afff8a40e599995f7cef65e1c37a89e0",
-        "proposedPolicySha256": "sha256:6c50d01909e29fab574e56b62eff1c42fb8d87cac46771d76d6d1ff55b0a30f3"
+        "issuedAt": "2026-08-30T03:18:22.875Z",
+        "expiresAt": "2026-08-31T03:18:22.875Z",
+        "basePolicySha256": "sha256:6c50d01909e29fab574e56b62eff1c42fb8d87cac46771d76d6d1ff55b0a30f3",
+        "proposedPolicySha256": "sha256:f4c8e3fe31ed296e400de63483d44c62baf3a7976b39b4cd2a71bd276f4befcf"
       }
     },
     "pullRequests": [
