@@ -79,6 +79,7 @@ export type GrossMarginIncompleteAttribution = Readonly<{
     | "accepted_outcome_missing"
     | "accepted_outcome_ambiguous"
     | "task_attribution_ambiguous"
+    | "execution_cost_component_unmeasured"
     | "settlement_missing"
     | "campaign_mismatch";
   taskId: string | null;
@@ -490,7 +491,8 @@ export function recordActualExecutionCost(
     return entry;
   }
 
-  db.raw.exec("BEGIN IMMEDIATE");
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
   try {
     const actor = one<{ id: string }>(
       db,
@@ -635,10 +637,10 @@ export function recordActualExecutionCost(
       [entry.id],
     );
     if (!inserted) throw new Error("execution_cost_insert_failed");
-    db.raw.exec("COMMIT");
+    if (owns) db.raw.exec("COMMIT");
     return entryFromRow(inserted);
   } catch (error) {
-    db.raw.exec("ROLLBACK");
+    if (owns) db.raw.exec("ROLLBACK");
     throw error;
   }
 }
@@ -877,6 +879,44 @@ function addIssue(
   issues.set(issueKey(issue), Object.freeze(issue));
 }
 
+/**
+ * Resolve the revenue job for a mission-bound cost through persisted lineage.
+ * The execution id alone is caller-controlled data and is never sufficient:
+ * the job, MissionTask, Mission, and MissionTask creation event must all agree
+ * inside the tenant before revenue may be attributed across task identifiers.
+ */
+function durableRevenueJobForCost(
+  db: AppDb,
+  entry: ActualExecutionCostEntry,
+): string | null {
+  if (!entry.missionId) return null;
+  const row = one<{ job_id: string }>(
+    db,
+    `SELECT j.id AS job_id
+     FROM jobs j
+     JOIN mission_task mt
+       ON mt.id = ?
+      AND mt.tenant_id = j.tenant_id
+      AND mt.mission_id = ?
+     JOIN mission m
+       ON m.id = mt.mission_id
+      AND m.tenant_id = mt.tenant_id
+     WHERE j.id = ?
+       AND j.tenant_id = ?
+       AND EXISTS (
+         SELECT 1
+         FROM domain_events e
+         WHERE e.tenant_id = j.tenant_id
+           AND e.aggregate_type = 'mission_task'
+           AND e.aggregate_id = mt.id
+           AND e.event_type = 'mission_task.created'
+           AND e.correlation_id = j.id
+       )`,
+    [entry.taskId, entry.missionId, entry.executionId, entry.tenantId],
+  );
+  return row?.job_id ?? null;
+}
+
 export function reconcileGrossMargin(
   db: AppDb,
   tenantId: string,
@@ -1033,7 +1073,8 @@ export function reconcileGrossMargin(
     const candidates = new Set<string>();
     if (taskRevenue.has(costTaskId)) candidates.add(costTaskId);
     for (const entry of entries) {
-      if (taskRevenue.has(entry.executionId)) candidates.add(entry.executionId);
+      const durableJobId = durableRevenueJobForCost(db, entry);
+      if (durableJobId && taskRevenue.has(durableJobId)) candidates.add(durableJobId);
     }
     candidateRevenueTasksByCostTask.set(costTaskId, candidates);
   }
@@ -1083,6 +1124,20 @@ export function reconcileGrossMargin(
     const entries = costsByTask.get(reconciliationTaskId) ?? [];
     entries.push(entry);
     costsByTask.set(reconciliationTaskId, entries);
+    if (
+      !entry.modelCostMeasured ||
+      !entry.cacheCostMeasured ||
+      !entry.gpuCostMeasured ||
+      !entry.graphCostMeasured ||
+      !entry.sandboxCostMeasured ||
+      !entry.verificationCostMeasured
+    ) {
+      addIssue(issues, {
+        code: "execution_cost_component_unmeasured",
+        taskId: reconciliationTaskId,
+        sourceId: entry.id,
+      });
+    }
   }
 
   let unattributedRevenueMoneyMicros = 0;
@@ -1092,6 +1147,16 @@ export function reconcileGrossMargin(
     const costs = costsByTask.get(taskId) ?? [];
     const accepted = costs.filter((entry) => entry.outcomeStatus === "accepted");
     let complete = (revenue?.complete ?? true) && !ambiguousReconciliationTasks.has(taskId);
+    if (costs.some((entry) =>
+      !entry.modelCostMeasured ||
+      !entry.cacheCostMeasured ||
+      !entry.gpuCostMeasured ||
+      !entry.graphCostMeasured ||
+      !entry.sandboxCostMeasured ||
+      !entry.verificationCostMeasured
+    )) {
+      complete = false;
+    }
     if (revenue && costs.length === 0) {
       complete = false;
       addIssue(issues, { code: "actual_cost_missing", taskId, sourceId: null });

@@ -11,12 +11,16 @@ import { join } from "node:path";
 import {
   createApiKey,
   createDb,
+  createMission,
   createUsageEntitlement,
   createUsagePriceVersion,
+  enqueueJob,
+  ensureMissionTaskForJob,
   getPrincipalBySubject,
   insertTenant,
   listActualExecutionCosts,
   missionTaskIdForJob,
+  recordActualExecutionCost,
   reserveUsage,
   settleUsageReservation,
   type AppDb,
@@ -705,6 +709,9 @@ describe("billing economics API routes", () => {
     expect(missingSigner.status).toBe(503);
     await expect(missingSigner.json()).resolves.toMatchObject({
       error: { code: "invoice_export_signer_required" },
+    });
+  });
+
   it("reconciles a settled job to its mission task through the exact execution ID", async () => {
     const { db, tenantA } = fixture();
     const app = appFor(db);
@@ -714,12 +721,51 @@ describe("billing economics API routes", () => {
     const actor = getPrincipalBySubject(db, "billing-tenant-a", "api_key", "billing-key-a");
     expect(actor).not.toBeNull();
     settleRevenue(db, actor!.id, "job-production-a", "campaign-a");
-    const created = await postCost(app, tenantA, "mission-cost", executionCostBody({
+    createMission(db, {
+      id: "mission-production-a",
+      tenantId: "billing-tenant-a",
+      product: "fettler",
+      triggerKind: "provider_change",
+      objective: "Complete production work",
+      ownerPrincipalId: actor!.id,
+      eventId: "event-mission-production-a",
+      idempotencyKey: "mission-production-a",
+      correlationId: "job-production-a",
+      createdAt: NOW,
+    });
+    enqueueJob(db, {
+      id: "job-production-a",
+      tenantId: "billing-tenant-a",
+      type: "agent.run",
+      payload: { missionId: "mission-production-a" },
+      createdAt: NOW,
+    });
+    const missionTask = ensureMissionTaskForJob(db, {
+      tenantId: "billing-tenant-a",
+      jobId: "job-production-a",
+      missionId: "mission-production-a",
+      taskType: "agent.run",
+      acceptanceCriteria: "Produce the verified result.",
+      risk: "medium",
+      actorPrincipalId: actor!.id,
+      assignedPrincipalId: actor!.id,
+      createdAt: NOW,
+      correlationId: "job-production-a",
+    });
+    const body = executionCostBody({
       executionId: "job-production-a",
-      taskId: missionTaskIdForJob("job-production-a"),
+      taskId: missionTask.id,
       campaignId: "campaign-a",
-    }));
-    expect(created.status).toBe(201);
+    });
+    recordActualExecutionCost(db, {
+      ...(body as Omit<Parameters<typeof recordActualExecutionCost>[1],
+        "id" | "tenantId" | "idempotencyKey" | "actorPrincipalId" | "missionId">),
+      id: "cost-production-a",
+      tenantId: "billing-tenant-a",
+      idempotencyKey: "cost-production-a",
+      actorPrincipalId: actor!.id,
+      missionId: "mission-production-a",
+    });
 
     const margin = await app.request("/billing/gross-margin", {
       headers: headers(tenantA, "mission-margin"),

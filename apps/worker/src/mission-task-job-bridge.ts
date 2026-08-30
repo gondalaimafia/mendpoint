@@ -33,6 +33,8 @@ export type BridgedJob = Readonly<{
   tenant_id: string;
   type: string;
   payload_json: string;
+  status?: string;
+  result_json?: string | null;
 }>;
 
 function payloadRecord(job: BridgedJob): Record<string, unknown> | undefined {
@@ -180,9 +182,12 @@ export function handoffCompletedJobToMissionReview(
 }
 
 /**
- * Attribute a settled run's routing-ledger cost to its bound mission. No-op
- * when unbound. Best-effort at the call site: a completed job must not be
- * un-completed because cost rollup failed. Does not write the usage ledger.
+ * Attribute a terminal run's routing-ledger cost to its bound mission. No-op
+ * when unbound. Callers persist this in the same transaction as the terminal
+ * job state, so a transient accounting failure leaves the job under its
+ * recoverable lease rather than committing an outcome that can never acquire
+ * an immutable cost row.
+ * Does not write the usage ledger.
  */
 export function recordBoundMissionExecutionCost(
   db: AppDb,
@@ -190,7 +195,8 @@ export function recordBoundMissionExecutionCost(
     job: BridgedJob;
     sourceRunId: string;
     createdAt: string;
-    outcomeStatus?: "accepted" | "rejected" | "unresolved";
+    outcomeStatus: "accepted" | "rejected";
+    acceptedOutcomeId?: string | null;
   }>,
 ): ActualExecutionCostEntry | undefined {
   const mission = resolveBoundMissionForJob(db, input.job);
@@ -208,6 +214,9 @@ export function recordBoundMissionExecutionCost(
     missionId: mission.id,
     actorPrincipalId: mission.ownerPrincipalId,
     createdAt: input.createdAt,
-    outcomeStatus: input.outcomeStatus ?? "unresolved",
+    outcomeStatus: input.outcomeStatus,
+    acceptedOutcomeId: input.outcomeStatus === "accepted"
+      ? input.acceptedOutcomeId ?? input.job.id
+      : null,
   });
 }

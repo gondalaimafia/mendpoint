@@ -4,9 +4,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
+  createMission,
   createUsageEntitlement,
   createUsagePriceVersion,
   creditUsage,
+  enqueueJob,
+  ensureMissionTaskForJob,
   insertPrincipal,
   insertTenant,
   listActualExecutionCosts,
@@ -156,6 +159,40 @@ function costInput(
   };
 }
 
+function bindMissionJob(db: AppDb, jobId: string, missionId = "mission-a"): string {
+  createMission(db, {
+    id: missionId,
+    tenantId: "tenant_default",
+    product: "fettler",
+    triggerKind: "provider_change",
+    objective: "Complete the billed work",
+    ownerPrincipalId: "principal-a",
+    eventId: `event-${missionId}`,
+    idempotencyKey: `create-${missionId}`,
+    correlationId: jobId,
+    createdAt: at,
+  });
+  enqueueJob(db, {
+    id: jobId,
+    tenantId: "tenant_default",
+    type: "agent.run",
+    payload: { missionId },
+    createdAt: at,
+  });
+  return ensureMissionTaskForJob(db, {
+    tenantId: "tenant_default",
+    jobId,
+    missionId,
+    taskType: "agent.run",
+    acceptanceCriteria: "Produce the verified result.",
+    risk: "medium",
+    actorPrincipalId: "principal-a",
+    assignedPrincipalId: "principal-a",
+    createdAt: at,
+    correlationId: jobId,
+  }).id;
+}
+
 describe("actual execution cost and gross margin", () => {
   it("counts every retry and fallback exactly once and ties totals to both ledgers", () => {
     const db = setupDb();
@@ -298,10 +335,12 @@ describe("actual execution cost and gross margin", () => {
   it("keeps an execution-ID bridge closed when campaign attribution disagrees", () => {
     const db = setupDb();
     settle(db, { taskId: "job-a", campaignId: "campaign-a" });
+    const missionTaskId = bindMissionJob(db, "job-a");
     recordActualExecutionCost(db, costInput({
       executionId: "job-a",
-      taskId: "mission-task-a",
+      taskId: missionTaskId,
       campaignId: "campaign-b",
+      missionId: "mission-a",
     }));
 
     const report = reconcileGrossMargin(db, "tenant_default");
@@ -314,25 +353,20 @@ describe("actual execution cost and gross margin", () => {
     ]);
     expect(report.attributions[0]).toMatchObject({
       executionId: "job-a",
-      taskId: "mission-task-a",
+      taskId: missionTaskId,
       campaignId: "campaign-b",
       attributedNetRevenueMoneyMicros: null,
       attributedGrossMarginMoneyMicros: null,
     });
   });
 
-  it("keeps margin closed when task and execution IDs point at different revenue tasks", () => {
+  it("does not trust a forged execution ID without durable job and MissionTask lineage", () => {
     const db = setupDb();
     settle(db, { suffix: "a", taskId: "job-a", campaignId: "campaign-a" });
-    settle(db, {
-      suffix: "b",
-      taskId: "job-b",
-      campaignId: "campaign-a",
-      actorPrincipalId: "principal-a",
-    });
     recordActualExecutionCost(db, costInput({
       executionId: "job-a",
-      taskId: "job-b",
+      taskId: "mission-task-forged",
+      missionId: null,
     }));
 
     const report = reconcileGrossMargin(db, "tenant_default");
@@ -341,14 +375,39 @@ describe("actual execution cost and gross margin", () => {
     expect(report.attributedGrossMarginMoneyMicros).toBeNull();
     expect(report.attributions[0]).toMatchObject({
       executionId: "job-a",
-      taskId: "job-b",
+      taskId: "mission-task-forged",
       attributedNetRevenueMoneyMicros: null,
       attributedGrossMarginMoneyMicros: null,
     });
+    expect(report.incompleteAttributions.map((issue) => issue.code)).toEqual([
+      "accepted_outcome_missing",
+      "actual_cost_missing",
+      "settlement_missing",
+    ]);
+  });
+
+  it("marks margin incomplete when any cost component is unmeasured", () => {
+    const db = setupDb();
+    settle(db);
+    recordActualExecutionCost(db, costInput({
+      cacheCostMoneyMicros: 0,
+      cacheCostMeasured: false,
+    }));
+
+    const report = reconcileGrossMargin(db, "tenant_default");
+    expect(report.complete).toBe(false);
+    expect(report.actualCostMoneyMicros).toBe(2_400);
+    expect(report.exactGrossMarginMoneyMicros).toBeNull();
+    expect(report.attributedGrossMarginMoneyMicros).toBeNull();
+    expect(report.unattributedRevenueMoneyMicros).toBe(80_000);
     expect(report.incompleteAttributions).toContainEqual({
-      code: "task_attribution_ambiguous",
-      taskId: "job-b",
-      sourceId: null,
+      code: "execution_cost_component_unmeasured",
+      taskId: "task-a",
+      sourceId: "cost-a",
+    });
+    expect(report.attributions[0]).toMatchObject({
+      attributedNetRevenueMoneyMicros: null,
+      attributedGrossMarginMoneyMicros: null,
     });
   });
 

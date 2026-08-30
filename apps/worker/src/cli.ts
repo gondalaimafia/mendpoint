@@ -1912,13 +1912,13 @@ async function persistCompletedAgentJob(
       runId: completedRun.id,
       meteredAt: nowIso(),
     });
+    recordJobMissionExecutionCost(db, jobId, completedRun.tenantId, completedRun.id);
     db.raw.exec("COMMIT");
   } catch (error) {
     db.raw.exec("ROLLBACK");
     if (routingFinalizationStarted) throw new WardenAtomicFinalizationError(error);
     throw error;
   }
-  recordJobMissionExecutionCost(db, jobId, run.tenantId, run.id);
 }
 
 function persistFailedAgentJob(
@@ -1968,6 +1968,9 @@ function persistFailedAgentJob(
         // Wave 3b: metering entry for the failed/retrying run (cost null when
         // unmeasured), inside the same transaction as the routing outcome.
         recordAgentRunMeter(db, { tenantId: run.tenantId, runId: run.id, meteredAt: nowIso() });
+        if (failure.status === "dead_letter") {
+          recordJobMissionExecutionCost(db, jobId, run.tenantId, run.id);
+        }
       }
     }
     db.raw.exec("COMMIT");
@@ -2010,10 +2013,12 @@ function fanoutRunMeterSignalsFromReport(report: PipelineReport): FanoutRunMeter
  * logged for reconciliation and never breaks job processing.
  */
 /**
- * Best-effort MCU rollup onto a bound mission. Usage-ledger hashes stay
- * untouched; this writes `actual_execution_cost_entries.mission_id` only when
- * `resolveBoundMissionForJob` finds a real mission. Failures are logged, never
- * used to un-complete the job (same convention as ReGauge trajectory emit).
+ * Durable MCU rollup onto a bound mission. Usage-ledger hashes stay untouched;
+ * this writes `actual_execution_cost_entries.mission_id` only when
+ * `resolveBoundMissionForJob` finds a real mission. Callers execute it inside
+ * the terminal job transaction. An accounting failure therefore rolls back the
+ * terminal state; the existing lease then retries normally or is recovered on
+ * expiry instead of leaving an unrepairable post-settlement gap.
  */
 function recordJobMissionExecutionCost(
   db: AppDb,
@@ -2021,21 +2026,36 @@ function recordJobMissionExecutionCost(
   tenantId: string,
   sourceRunId: string,
 ): void {
-  try {
-    const completed = getJob(db, jobId, tenantId);
-    if (!completed) return;
-    recordBoundMissionExecutionCost(db, {
-      job: completed,
-      sourceRunId,
-      createdAt: nowIso(),
-    });
-  } catch (error) {
-    console.error(
-      `  mission execution-cost skipped job=${jobId}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
+  const completed = getJob(db, jobId, tenantId);
+  if (!completed) throw new Error("mission_execution_cost_job_missing");
+  const result = (() => {
+    try {
+      const value: unknown = JSON.parse(completed.result_json ?? "null");
+      return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+    } catch {
+      return {};
+    }
+  })();
+  const rejected = completed.status === "dead_letter" ||
+    result.ok === false ||
+    ["rejected", "failed", "rolled_back", "reverted", "closed_unmerged"]
+      .includes(String(result.outcomeStatus ?? result.deliveryOutcome ?? result.status ?? ""));
+  const acceptedOutcomeId = [
+    result.acceptedOutcomeId,
+    result.pullRequestId,
+    result.prUrl,
+    result.changeId,
+    completed.id,
+  ].find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  recordBoundMissionExecutionCost(db, {
+    job: completed,
+    sourceRunId,
+    createdAt: nowIso(),
+    outcomeStatus: rejected ? "rejected" : "accepted",
+    acceptedOutcomeId: rejected ? null : acceptedOutcomeId,
+  });
 }
 
 function settleFanoutRunUsage(
@@ -3287,8 +3307,16 @@ if (job.type === "warden.candidate.cleanup") {
           // Settle the execute under the lease FIRST. A lost fence throws here, so
           // the MissionTask is never advanced to review on the strength of an
           // outcome the system then declares unowned.
-          if (!completeJob(db, job.id, outcome, nowIso(), { ...fence })) {
-            throw new Error("warden_campaign_execute_lease_lost");
+          db.raw.exec("BEGIN IMMEDIATE");
+          try {
+            if (!completeJob(db, job.id, outcome, nowIso(), { ...fence })) {
+              throw new Error("warden_campaign_execute_lease_lost");
+            }
+            recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
+            db.raw.exec("COMMIT");
+          } catch (error) {
+            if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+            throw error;
           }
           try {
             const claimed = parseWardenCampaignExecuteJob(job);
@@ -3308,7 +3336,6 @@ if (job.type === "warden.candidate.cleanup") {
               }`,
             );
           }
-          recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
           result.succeeded++;
           continue;
         }
@@ -4348,34 +4375,41 @@ if (job.type === "warden.candidate.cleanup") {
           ) {
             throw new Error("lease_lost_before_pipeline_completion");
           }
+          recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
           db.raw.exec("COMMIT");
         } catch (error) {
           if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
           throw error;
         }
         settleFanoutRunUsage(db, job.tenant_id, payload, report);
-        recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
         result.succeeded++;
         console.log(`  done change=${report.changeId}`);
         continue;
       }
-      if (
-        !completeJob(
-          db,
-          job.id,
-          {
-            changeId: report.changeId,
-            consumers: report.consumers,
-            wardenRuns: [],
-          },
-          nowIso(),
-          fence,
-        )
-      ) {
-        throw new Error("lease_lost_before_pipeline_completion");
+      db.raw.exec("BEGIN IMMEDIATE");
+      try {
+        if (
+          !completeJob(
+            db,
+            job.id,
+            {
+              changeId: report.changeId,
+              consumers: report.consumers,
+              wardenRuns: [],
+            },
+            nowIso(),
+            fence,
+          )
+        ) {
+          throw new Error("lease_lost_before_pipeline_completion");
+        }
+        recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
+        db.raw.exec("COMMIT");
+      } catch (error) {
+        if (db.raw.isTransaction) db.raw.exec("ROLLBACK");
+        throw error;
       }
       settleFanoutRunUsage(db, job.tenant_id, payload, report);
-      recordJobMissionExecutionCost(db, job.id, job.tenant_id, job.id);
       result.succeeded++;
       console.log(`  done change=${report.changeId}`);
     } catch (error) {

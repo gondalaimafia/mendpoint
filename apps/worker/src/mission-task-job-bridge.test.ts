@@ -6,6 +6,10 @@ import {
   createDb,
   createMission,
   createWardenCampaign,
+  claimNextJob,
+  completeJob,
+  enqueueJob,
+  getJob,
   getMissionTask,
   insertPrincipal,
   linkFettlerCampaignToMission,
@@ -100,7 +104,12 @@ describe("mission-task job bridge", () => {
     const unbound = job({ goal: "repair", consumerId: "c1" });
     expect(resolveBoundMissionForJob(db, unbound)).toBeUndefined();
     expect(bridgeClaimedJobToMissionTask(db, unbound, at)).toBeUndefined();
-    expect(recordBoundMissionExecutionCost(db, { job: unbound, sourceRunId: "run-1", createdAt: at })).toBeUndefined();
+    expect(recordBoundMissionExecutionCost(db, {
+      job: unbound,
+      sourceRunId: "run-1",
+      createdAt: at,
+      outcomeStatus: "accepted",
+    })).toBeUndefined();
     expect(getMissionTask(db, "t1", missionTaskIdForJob("job-1"))).toBeUndefined();
   });
 
@@ -128,6 +137,7 @@ describe("mission-task job bridge", () => {
       job: claimed,
       sourceRunId: "session-1",
       createdAt: at,
+      outcomeStatus: "accepted",
     });
     expect(cost).toMatchObject({
       missionId: "m1",
@@ -135,6 +145,8 @@ describe("mission-task job bridge", () => {
       executionId: "job-1",
       route: "fettler",
       taskClass: "agent.run",
+      outcomeStatus: "accepted",
+      acceptedOutcomeId: "job-1",
       modelCostMeasured: true,
       modelCostMoneyMicros: 50_000,
     });
@@ -142,8 +154,80 @@ describe("mission-task job bridge", () => {
       job: claimed,
       sourceRunId: "session-1",
       createdAt: at,
+      outcomeStatus: "accepted",
     })?.id).toBe(cost!.id);
     expect(listActualExecutionCosts(db, "t1")).toHaveLength(1);
+  });
+
+  it("joins the terminal job transaction so accounting failures remain retryable", () => {
+    const db = fixture();
+    const failed = job(
+      { missionId: "m1", goal: "repair", consumerId: "c1" },
+      { id: "job-rejected" },
+    );
+    bridgeClaimedJobToMissionTask(db, failed, at);
+    seedRouting(db, "session-rejected", "job-rejected");
+
+    db.raw.exec("BEGIN IMMEDIATE");
+    const rejected = recordBoundMissionExecutionCost(db, {
+      job: failed,
+      sourceRunId: "session-rejected",
+      createdAt: at,
+      outcomeStatus: "rejected",
+    });
+    expect(rejected).toMatchObject({
+      outcomeStatus: "rejected",
+      acceptedOutcomeId: null,
+    });
+    db.raw.exec("ROLLBACK");
+    expect(listActualExecutionCosts(db, "t1")).toEqual([]);
+
+    expect(recordBoundMissionExecutionCost(db, {
+      job: failed,
+      sourceRunId: "session-rejected",
+      createdAt: at,
+      outcomeStatus: "rejected",
+    })).toMatchObject({ outcomeStatus: "rejected" });
+  });
+
+  it("rolls back terminal job state when immutable cost persistence fails", () => {
+    const db = fixture();
+    const claimedJob = job(
+      { missionId: "m1", goal: "repair", consumerId: "c1" },
+      { id: "job-atomic" },
+    );
+    bridgeClaimedJobToMissionTask(db, claimedJob, at);
+    seedRouting(db, "session-atomic", "job-atomic");
+    enqueueJob(db, {
+      id: "job-atomic",
+      tenantId: "t1",
+      type: "agent.run",
+      payload: { missionId: "m1", goal: "repair", consumerId: "c1" },
+      createdAt: at,
+    });
+    const lease = claimNextJob(db, ["agent.run"], {
+      tenantId: "t1",
+      workerId: "worker-atomic",
+      leaseMs: 60_000,
+      now: at,
+    })!;
+
+    db.raw.exec("BEGIN IMMEDIATE");
+    db.raw.prepare("UPDATE principals SET revoked_at = ? WHERE id = 'p1'").run(at);
+    expect(completeJob(db, "job-atomic", { ok: true }, at, {
+      workerId: lease.lease_owner!,
+      leaseGeneration: lease.lease_generation,
+    })).toBe(true);
+    expect(() => recordBoundMissionExecutionCost(db, {
+      job: getJob(db, "job-atomic", "t1")!,
+      sourceRunId: "session-atomic",
+      createdAt: at,
+      outcomeStatus: "accepted",
+    })).toThrow("execution_cost_actor_tenant_mismatch");
+    db.raw.exec("ROLLBACK");
+
+    expect(getJob(db, "job-atomic", "t1")).toMatchObject({ status: "running" });
+    expect(listActualExecutionCosts(db, "t1")).toEqual([]);
   });
 
   it("resolves a Fettler campaignId to the linked mission and skips an unlinked campaign", () => {
