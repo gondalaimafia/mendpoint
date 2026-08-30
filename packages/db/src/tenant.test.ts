@@ -3,10 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  bindApiKeyAuthorityPrincipal,
+  bindOwnerApiKeyAuthority,
+  createApiKey,
   createDb,
   createTenant,
+  ensureDeploymentBootstrapOwnerPrincipal,
   findApiKeyByToken,
+  getPrincipal,
+  getPrincipalBySubject,
   getTenantMembership,
+  insertPrincipal,
   listApiKeys,
   listTenantMemberships,
   type AppDb,
@@ -59,8 +66,99 @@ describe("createTenant self-serve provisioning", () => {
 
     // The issued key resolves to the new tenant.
     const resolved = findApiKeyByToken(db, result.apiKey!.token);
-    expect(resolved?.tenant_id).toBe("tenant-acme");
+    expect(resolved).toMatchObject({
+      tenant_id: "tenant-acme",
+      authority_role: "owner",
+    });
+    const authority = getPrincipal(db, "tenant-acme", resolved!.authority_principal_id!);
+    expect(authority).toMatchObject({
+      kind: "human",
+      subject: `${owner.issuer}|${owner.subject}`,
+      audience: owner.issuer,
+    });
     expect(getTenantMembership(db, "tenant-acme", owner.issuer, owner.subject)).toBeDefined();
+  });
+
+  it("safely migrates a legacy key-specific authority to one stable owner", () => {
+    const db = testDb();
+    const createdAt = "2026-08-13T00:00:00.000Z";
+    const ownerAuthority = insertPrincipal(db, {
+      id: "principal-stable-owner",
+      tenantId: "tenant_default",
+      kind: "service",
+      subject: "deployment-bootstrap-owner",
+      displayName: "Deployment bootstrap owner",
+      audience: "mendpoint-api",
+      createdAt,
+    });
+    const legacy = createApiKey(db, {
+      id: "key-legacy-owner",
+      name: "Legacy owner",
+      tenantId: "tenant_default",
+      scopes: ["*"],
+      createdAt,
+    });
+    const legacyAuthority = insertPrincipal(db, {
+      id: "principal-legacy-owner",
+      tenantId: "tenant_default",
+      kind: "service",
+      subject: `api-key-authority:${legacy.id}`,
+      displayName: "Legacy owner authority",
+      audience: "mendpoint-api",
+      createdAt,
+    });
+    bindApiKeyAuthorityPrincipal(db, {
+      apiKeyId: legacy.id,
+      tenantId: "tenant_default",
+      authorityPrincipalId: legacyAuthority.id,
+    });
+
+    bindOwnerApiKeyAuthority(db, {
+      apiKeyId: legacy.id,
+      tenantId: "tenant_default",
+      authorityPrincipalId: ownerAuthority.id,
+    });
+    expect(findApiKeyByToken(db, legacy.token)).toMatchObject({
+      authority_principal_id: ownerAuthority.id,
+      authority_role: "owner",
+    });
+    expect(getPrincipalBySubject(
+      db,
+      "tenant_default",
+      "service",
+      `api-key-authority:${legacy.id}`,
+    )).toBeDefined();
+  });
+
+  it("keeps deployment bootstrap owner authority stable across key rotation", () => {
+    const db = testDb();
+    const createdAt = "2026-08-13T00:00:00.000Z";
+    const firstAuthority = ensureDeploymentBootstrapOwnerPrincipal(
+      db,
+      "tenant_default",
+      createdAt,
+    );
+    const secondAuthority = ensureDeploymentBootstrapOwnerPrincipal(
+      db,
+      "tenant_default",
+      "2026-08-13T00:01:00.000Z",
+    );
+    expect(secondAuthority.id).toBe(firstAuthority.id);
+    for (const id of ["bootstrap-key-one", "bootstrap-key-two"]) {
+      const key = createApiKey(db, {
+        id,
+        name: id,
+        tenantId: "tenant_default",
+        scopes: ["*"],
+        authorityPrincipalId: firstAuthority.id,
+        authorityRole: "owner",
+        createdAt,
+      });
+      expect(findApiKeyByToken(db, key.token)).toMatchObject({
+        authority_principal_id: firstAuthority.id,
+        authority_role: "owner",
+      });
+    }
   });
 
   it("is idempotent for the founding owner and never mints a second key", () => {

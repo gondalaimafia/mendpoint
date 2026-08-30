@@ -68,6 +68,7 @@ function service(db: AppDb, provider: KeyEncryptionKeyProvider, options?: {
   commitmentKeyId?: string;
   commitmentConfigured?: boolean;
   revalidateAuthority?: (requiredRole: "admin" | "owner") => Readonly<{ version: string }>;
+  afterAudit?: (action: string) => void;
 }) {
   return new DurableSecretLifecycleService({
     db,
@@ -99,6 +100,7 @@ function service(db: AppDb, provider: KeyEncryptionKeyProvider, options?: {
         resourceId: event.credentialId,
         metadata: event.metadata,
       });
+      options?.afterAudit?.(event.action);
     },
     revalidateAuthority: options?.revalidateAuthority,
   });
@@ -316,6 +318,94 @@ describe("durable secret lifecycle service", () => {
     },
   );
 
+  it.each(["create", "rotate", "rewrap", "revoke"] as const)(
+    "rolls back %s when stable authority is lost before durable commit",
+    async (operation) => {
+      const { db, provider } = fixture();
+      if (operation !== "create") await service(db, provider).create(createInput);
+      let active = true;
+      const revalidateAuthority = () => {
+        if (!active) throw new Error("secret_lifecycle_authority_invalid");
+        return Object.freeze({ version: "authority-v1" });
+      };
+      const racingProvider: KeyEncryptionKeyProvider = {
+        provider: provider.provider,
+        enabled: true,
+        keyMaterialFingerprints: () => provider.keyMaterialFingerprints(),
+        keyMaterialFingerprint: (key, tenantId) => provider.keyMaterialFingerprint(key, tenantId),
+        attestKey: (key, tenantId) => provider.attestKey(key, tenantId),
+        unwrapDataKey: (key, tenantId, wrappedDataKey) =>
+          provider.unwrapDataKey(key, tenantId, wrappedDataKey),
+        wrapDataKey: async (key, tenantId, dataKey) => {
+          const wrapped = await provider.wrapDataKey(key, tenantId, dataKey);
+          active = false;
+          return wrapped;
+        },
+      };
+      const lifecycle = service(db, racingProvider, {
+        revalidateAuthority,
+        afterAudit: (action) => {
+          if (operation === "revoke" && action === "secret.lifecycle.revoked") active = false;
+        },
+      });
+
+      const attempt = operation === "create"
+        ? lifecycle.create({ ...createInput, idempotencyKey: "authority-race-create" })
+        : operation === "rotate"
+          ? lifecycle.rotate({
+              idempotencyKey: "authority-race-rotate",
+              credentialId: "credential-a",
+              expectedGeneration: 1,
+              plaintext: "replacement-secret",
+              key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+            })
+          : operation === "rewrap"
+            ? lifecycle.rewrap({
+                idempotencyKey: "authority-race-rewrap",
+                credentialId: "credential-a",
+                expectedGeneration: 1,
+                key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+              })
+            : Promise.resolve().then(() => lifecycle.revoke({
+                idempotencyKey: "authority-race-revoke",
+                credentialId: "credential-a",
+                generation: 1,
+                reason: "confirmed incident",
+              }));
+
+      await expect(attempt).rejects.toThrow("secret_lifecycle_authority_invalid");
+      const rows = listSecretLifecycleVersions(db, "tenant-a", "credential-a");
+      if (operation === "create") {
+        expect(rows).toHaveLength(0);
+      } else {
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ generation: 1, state: "active" });
+      }
+      expect(getSecretLifecycleOperation(
+        db,
+        "tenant-a",
+        `authority-race-${operation}`,
+      )).toBeUndefined();
+      const operationTable = operation === "rewrap"
+        ? "secret_rewrap_operations"
+        : operation === "revoke"
+          ? "secret_revoke_operations"
+          : "secret_lifecycle_operations";
+      expect(db.raw.prepare(`SELECT COUNT(*) AS count FROM ${operationTable}
+        WHERE tenant_id = ? AND idempotency_key = ?`)
+        .get("tenant-a", `authority-race-${operation}`)).toMatchObject({ count: 0 });
+      const committedAction = {
+        create: "secret.lifecycle.created",
+        rotate: "secret.lifecycle.rotated",
+        rewrap: "secret.lifecycle.rewrapped",
+        revoke: "secret.lifecycle.revoked",
+      }[operation];
+      expect(listAudit(db, "tenant-a").some((event) =>
+        event.action === committedAction
+      )).toBe(false);
+    },
+  );
+
   it("requires the stable current authority to be owner for break glass", async () => {
     const { db, provider } = fixture();
     await service(db, provider).create(createInput);
@@ -327,6 +417,41 @@ describe("durable secret lifecycle service", () => {
       reason: "attempted elevation",
       idempotencyKey: "break-glass-amplified",
     })).rejects.toThrow("secret_break_glass_owner_required");
+  });
+
+  it("bounds direct lifecycle inputs before provider work or persistence", async () => {
+    const { db, provider } = fixture();
+    await expect(service(db, provider).create({
+      ...createInput,
+      plaintext: "x".repeat(1_048_577),
+    })).rejects.toThrow("secret_rotation_material_required");
+    await expect(service(db, provider).create({
+      ...createInput,
+      audiences: Array.from({ length: 65 }, (_, index) => `audience-${index}`),
+    })).rejects.toThrow("secret_audiences_invalid");
+    await expect(service(db, provider).create({
+      ...createInput,
+      unexpected: true,
+    } as typeof createInput)).rejects.toThrow("secret_lifecycle_request_invalid");
+    expect(listSecretLifecycleVersions(db, "tenant-a", "credential-a")).toHaveLength(0);
+
+    await service(db, provider).create(createInput);
+    expect(() => service(db, provider).revoke({
+      idempotencyKey: "overlong-revoke-reason",
+      credentialId: "credential-a",
+      generation: 1,
+      reason: "x".repeat(4_097),
+    })).toThrow("secret_revocation_reason_invalid");
+    await expect(service(db, provider, { role: "owner" }).breakGlass({
+      credentialId: "credential-a",
+      idempotencyKey: "overlong-break-glass-reason",
+      reason: "sensitive".repeat(513),
+    })).rejects.toThrow("secret_break_glass_reason_invalid");
+    const denied = listAudit(db, "tenant-a").find(
+      (event) => event.action === "secret.break_glass.denied" &&
+        event.request_id === "secret-service-request",
+    );
+    expect(denied?.metadata_json).not.toContain("sensitivesensitive");
   });
 
   it("does not advance the visible generation when required audit fails", async () => {

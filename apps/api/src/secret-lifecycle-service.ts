@@ -27,6 +27,48 @@ import {
 } from "@mendpoint/platform";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
+const SECRET_REF = /^[a-z][a-z0-9+.-]*:\/\/[A-Za-z0-9._/@:-]+$/;
+const MAX_SECRET_MATERIAL_CHARS = 1_048_576;
+const MAX_REASON_CHARS = 4_096;
+const MAX_AUDIENCES = 64;
+
+function exactKeys(value: unknown, allowed: readonly string[]): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function validateLocator(value: unknown): asserts value is EnvelopeKeyLocator {
+  if (!exactKeys(value, ["provider", "keyId", "version"]) ||
+      typeof value.provider !== "string" || typeof value.keyId !== "string" ||
+      typeof value.version !== "string" || !ID.test(value.provider) || !ID.test(value.keyId) ||
+      !ID.test(value.version)) {
+    throw new Error("secret_key_reference_invalid");
+  }
+}
+
+function validateCommonMutationInput(
+  input: Readonly<{ idempotencyKey: unknown; credentialId: unknown }>,
+): void {
+  if (!ID.test(typeof input.idempotencyKey === "string" ? input.idempotencyKey : "")) {
+    throw new Error("secret_lifecycle_idempotency_key_invalid");
+  }
+  if (!ID.test(typeof input.credentialId === "string" ? input.credentialId : "")) {
+    throw new Error("secret_credential_id_invalid");
+  }
+}
+
+function validateTimestamp(value: unknown, code: string): void {
+  if (value === undefined) return;
+  if (typeof value !== "string" || value.length > 64 || !Number.isFinite(Date.parse(value)) ||
+      new Date(value).toISOString() !== value) {
+    throw new Error(code);
+  }
+}
+
+function boundedAuditReason(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > MAX_REASON_CHARS) return null;
+  return value.trim() || null;
+}
 
 export type SecretLifecycleAudit = Readonly<{
   id: string;
@@ -225,7 +267,7 @@ export class DurableSecretLifecycleService {
     return this.options.now?.() ?? new Date().toISOString();
   }
 
-  #authorizeAdmin(): void {
+  #authorizeAdmin(): string | null {
     if (this.options.role !== "owner" && this.options.role !== "admin") {
       throw new Error("secret_lifecycle_authority_required");
     }
@@ -235,7 +277,14 @@ export class DurableSecretLifecycleService {
     if (this.options.authorityRole !== "owner" && this.options.authorityRole !== "admin") {
       throw new Error("secret_lifecycle_authority_required");
     }
-    this.options.revalidateAuthority?.("admin");
+    return this.options.revalidateAuthority?.("admin").version ?? null;
+  }
+
+  #authorizeCommit(expectedVersion: string | null, requiredRole: "admin" | "owner" = "admin"): void {
+    const current = this.options.revalidateAuthority?.(requiredRole);
+    if (expectedVersion !== null && current && current.version !== expectedVersion) {
+      throw new Error("secret_lifecycle_authority_changed");
+    }
   }
 
   #replay(
@@ -430,7 +479,9 @@ export class DurableSecretLifecycleService {
     const auditActorId = ID.test(this.options.actorId)
       ? this.options.actorId
       : "principal_unattributed";
-    const auditIdempotencyKey = input.idempotencyKey || "invalid-idempotency-key";
+    const auditIdempotencyKey = ID.test(input.idempotencyKey)
+      ? input.idempotencyKey
+      : "invalid-idempotency-key";
     this.options.audit(Object.freeze({
       id: digest({
         tenantId: auditTenantId,
@@ -454,8 +505,8 @@ export class DurableSecretLifecycleService {
         authorityPrincipalId: this.options.actorId,
         credentialPrincipalId: this.options.credentialPrincipalId,
         requestId: this.options.requestId,
-        reason: typeof input.reason === "string" ? input.reason.trim() || null : null,
-        idempotencyKey: input.idempotencyKey || null,
+        reason: boundedAuditReason(input.reason),
+        idempotencyKey: ID.test(input.idempotencyKey) ? input.idempotencyKey : null,
         generation: current?.generation ?? null,
         accessReason: access?.reason ?? null,
         keyProvider: access?.key.provider ?? current?.key_provider ?? null,
@@ -467,7 +518,27 @@ export class DurableSecretLifecycleService {
   }
 
   async create(input: CreateInput) {
-    this.#authorizeAdmin();
+    const authorityVersion = this.#authorizeAdmin();
+    if (!exactKeys(input, [
+      "idempotencyKey", "credentialId", "sourceRef", "plaintext", "audiences",
+      "expiresAt", "rotateAfter", "key",
+    ])) throw new Error("secret_lifecycle_request_invalid");
+    validateCommonMutationInput(input);
+    if (typeof input.sourceRef !== "string" || input.sourceRef.length > 512 ||
+        !SECRET_REF.test(input.sourceRef)) throw new Error("secret_source_reference_invalid");
+    if (typeof input.plaintext !== "string" || input.plaintext.length === 0 ||
+        input.plaintext.length > MAX_SECRET_MATERIAL_CHARS) {
+      throw new Error("secret_rotation_material_required");
+    }
+    if (!Array.isArray(input.audiences) || input.audiences.length < 1 ||
+        input.audiences.length > MAX_AUDIENCES ||
+        input.audiences.some((audience) => typeof audience !== "string" || !ID.test(audience)) ||
+        new Set(input.audiences).size !== input.audiences.length) {
+      throw new Error("secret_audiences_invalid");
+    }
+    validateTimestamp(input.expiresAt, "secret_expires_at_invalid");
+    validateTimestamp(input.rotateAfter, "secret_rotate_after_invalid");
+    validateLocator(input.key);
     const commitment = this.#commitRequest({
       operation: "create",
       idempotencyKey: input.idempotencyKey,
@@ -544,15 +615,25 @@ export class DurableSecretLifecycleService {
         customerManaged: attested.customerManaged,
         attestationSha256: attested.attestationSha256,
       }),
+      authorizeCommit: () => this.#authorizeCommit(authorityVersion),
     });
     return publicResult(row);
   }
 
   async rotate(input: RotateInput) {
-    this.#authorizeAdmin();
-    if (typeof input.plaintext !== "string" || input.plaintext.length === 0) {
+    const authorityVersion = this.#authorizeAdmin();
+    if (!exactKeys(input, ["idempotencyKey", "credentialId", "expectedGeneration", "plaintext", "key"])) {
+      throw new Error("secret_lifecycle_request_invalid");
+    }
+    validateCommonMutationInput(input);
+    if (!Number.isSafeInteger(input.expectedGeneration) || input.expectedGeneration < 1) {
+      throw new Error("secret_generation_invalid");
+    }
+    if (typeof input.plaintext !== "string" || input.plaintext.length === 0 ||
+        input.plaintext.length > MAX_SECRET_MATERIAL_CHARS) {
       throw new Error("secret_rotation_material_required");
     }
+    validateLocator(input.key);
     const nextGeneration = input.expectedGeneration + 1;
     const commitment = this.#commitRequest({
       operation: "rotate",
@@ -632,12 +713,21 @@ export class DurableSecretLifecycleService {
         attestationSha256: attested.attestationSha256,
         materialReplaced: true,
       }),
+      authorizeCommit: () => this.#authorizeCommit(authorityVersion),
     });
     return publicResult(row);
   }
 
   async rewrap(input: RewrapInput) {
-    this.#authorizeAdmin();
+    const authorityVersion = this.#authorizeAdmin();
+    if (!exactKeys(input, ["idempotencyKey", "credentialId", "expectedGeneration", "key"])) {
+      throw new Error("secret_lifecycle_request_invalid");
+    }
+    validateCommonMutationInput(input);
+    if (!Number.isSafeInteger(input.expectedGeneration) || input.expectedGeneration < 1) {
+      throw new Error("secret_generation_invalid");
+    }
+    validateLocator(input.key);
     const nextGeneration = input.expectedGeneration + 1;
     const commitment = this.#commitRequest({
       operation: "rewrap",
@@ -743,6 +833,7 @@ export class DurableSecretLifecycleService {
           attestationSha256: attested.attestationSha256,
         });
       },
+      authorizeCommit: () => this.#authorizeCommit(authorityVersion),
     });
     return publicResult(row);
   }
@@ -753,7 +844,17 @@ export class DurableSecretLifecycleService {
     generation: number;
     reason: string;
   }>) {
-    this.#authorizeAdmin();
+    const authorityVersion = this.#authorizeAdmin();
+    if (!exactKeys(input, ["idempotencyKey", "credentialId", "generation", "reason"])) {
+      throw new Error("secret_lifecycle_request_invalid");
+    }
+    validateCommonMutationInput(input);
+    if (!Number.isSafeInteger(input.generation) || input.generation < 1) {
+      throw new Error("secret_generation_invalid");
+    }
+    if (typeof input.reason !== "string" || input.reason.length > MAX_REASON_CHARS) {
+      throw new Error("secret_revocation_reason_invalid");
+    }
     const reason = typeof input.reason === "string" ? input.reason.trim() : "";
     const commitment = this.#commitRequest({
       operation: "revoke",
@@ -788,6 +889,7 @@ export class DurableSecretLifecycleService {
         input.credentialId,
         input.generation,
       ),
+      authorizeCommit: () => this.#authorizeCommit(authorityVersion),
     });
     return publicResult(row);
   }
@@ -801,11 +903,18 @@ export class DurableSecretLifecycleService {
     let denialAudited = false;
     try {
       this.#authorizeAdmin();
+      if (!exactKeys(input, ["credentialId", "reason", "idempotencyKey"])) {
+        throw new Error("secret_lifecycle_request_invalid");
+      }
+      validateCommonMutationInput(input);
       if (this.options.role !== "owner") throw new Error("secret_break_glass_owner_required");
       if (this.options.authorityRole !== "owner") throw new Error("secret_break_glass_owner_required");
       if (!this.options.breakGlassEnabled) throw new Error("secret_break_glass_disabled");
       const reason = typeof input.reason === "string" ? input.reason.trim() : "";
       if (!reason) throw new Error("secret_break_glass_reason_required");
+      if ((input.reason as string).length > MAX_REASON_CHARS) {
+        throw new Error("secret_break_glass_reason_invalid");
+      }
       if (!ID.test(input.idempotencyKey)) throw new Error("secret_lifecycle_idempotency_key_invalid");
       const commitment = this.#commitRequest({
         operation: "break_glass",

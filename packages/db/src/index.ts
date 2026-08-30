@@ -7,6 +7,7 @@ import { computeProductMetrics } from "./metrics.js";
 import { settleExpiredWardenModelReservations } from "./warden-model-accounting.js";
 import { assertTenantScope } from "./tenant-scope.js";
 import { createTenantMembership, getTenantMembership } from "./identity.js";
+import { insertPrincipal } from "./trust.js";
 import type {
   ApiChange,
   ApiKeyRow,
@@ -5087,6 +5088,121 @@ export function bindApiKeyAuthorityPrincipal(
   }
 }
 
+/**
+ * Bind a wildcard owner key to one durable authority. The only replaceable
+ * legacy binding is the exact key-specific service principal created by the
+ * pre-authority authentication compatibility path, and only while its role is
+ * still unbound. This keeps migration from amplifying arbitrary legacy keys.
+ */
+export function bindOwnerApiKeyAuthority(
+  db: AppDb,
+  input: Readonly<{
+    apiKeyId: string;
+    tenantId: string;
+    authorityPrincipalId: string;
+  }>,
+): ApiKeyRow {
+  const authorityPrincipalId = validatedApiKeyAuthorityPrincipal(
+    db,
+    input.tenantId,
+    input.authorityPrincipalId,
+  );
+  if (!authorityPrincipalId) throw new Error("api_key_authority_binding_invalid");
+  const key = get<ApiKeyRow>(db, `SELECT * FROM api_keys WHERE id = ? AND tenant_id = ?`, [
+    input.apiKeyId,
+    input.tenantId,
+  ]);
+  if (!key) throw new Error("api_key_authority_binding_invalid");
+  let scopes: unknown;
+  try {
+    scopes = JSON.parse(key.scopes_json);
+  } catch {
+    throw new Error("api_key_authority_binding_invalid");
+  }
+  if (!Array.isArray(scopes) || scopes.length !== 1 || scopes[0] !== "*") {
+    throw new Error("api_key_authority_binding_invalid");
+  }
+  if (key.authority_principal_id === authorityPrincipalId && key.authority_role === "owner") {
+    return key;
+  }
+  const legacy = key.authority_principal_id === null
+    ? null
+    : get<PrincipalRow>(db, `SELECT * FROM principals WHERE id = ? AND tenant_id = ?`, [
+        key.authority_principal_id,
+        input.tenantId,
+      ]);
+  const exactLegacyCompatibilityBinding = key.authority_role === null && legacy?.kind === "service" &&
+    legacy.subject === `api-key-authority:${key.id}` && legacy.audience === "mendpoint-api";
+  const replaceable = key.authority_role === null && (
+    key.authority_principal_id === null ||
+    key.authority_principal_id === authorityPrincipalId ||
+    exactLegacyCompatibilityBinding
+  );
+  if (!replaceable) throw new Error("api_key_authority_binding_conflict");
+  const updated = db.raw.prepare(
+    `UPDATE api_keys SET authority_principal_id = ?, authority_role = 'owner'
+     WHERE id = ? AND tenant_id = ? AND authority_role IS NULL
+       AND authority_principal_id IS ?`,
+  ).run(authorityPrincipalId, key.id, input.tenantId, key.authority_principal_id);
+  if (updated.changes !== 1) throw new Error("api_key_authority_binding_conflict");
+  return get<ApiKeyRow>(db, `SELECT * FROM api_keys WHERE id = ?`, [key.id])!;
+}
+
+export function ensureDeploymentBootstrapOwnerPrincipal(
+  db: AppDb,
+  tenantId: string,
+  createdAt: string,
+): PrincipalRow {
+  const subject = "deployment-bootstrap-owner";
+  return insertPrincipal(db, {
+    id: `principal-service-${createHash("sha256")
+      .update(`${tenantId}\n${subject}`)
+      .digest("hex")
+      .slice(0, 32)}`,
+    tenantId,
+    kind: "service",
+    subject,
+    displayName: "Deployment bootstrap owner",
+    audience: "mendpoint-api",
+    createdAt,
+  });
+}
+
+export function migrateLegacySelfServeOwnerKeyAuthority(
+  db: AppDb,
+  apiKeyId: string,
+): ApiKeyRow {
+  const key = get<ApiKeyRow>(db, `SELECT * FROM api_keys WHERE id = ?`, [apiKeyId]);
+  if (!key || !key.id.startsWith("key_ss_") || !key.tenant_id.startsWith("tenant_ss_")) {
+    throw new Error("api_key_authority_binding_invalid");
+  }
+  const memberships = all<TenantMembershipRow>(db, `SELECT * FROM tenant_memberships
+    WHERE tenant_id = ? AND issuer = ? AND role = 'owner' AND status = 'active'`, [
+    key.tenant_id,
+    "https://self-serve.mendpoint.ai",
+  ]);
+  if (memberships.length !== 1) throw new Error("api_key_authority_binding_invalid");
+  const membership = memberships[0]!;
+  const trustSubject = `${membership.issuer}|${membership.subject}`;
+  const principal = insertPrincipal(db, {
+    id: `principal-human-${createHash("sha256")
+      .update(`${key.tenant_id}\n${trustSubject}`)
+      .digest("hex")
+      .slice(0, 32)}`,
+    tenantId: key.tenant_id,
+    kind: "human",
+    subject: trustSubject,
+    displayName: membership.display_name,
+    audience: membership.issuer,
+    createdAt: membership.created_at,
+  });
+  return bindOwnerApiKeyAuthority(db, {
+    apiKeyId: key.id,
+    tenantId: key.tenant_id,
+    authorityPrincipalId: principal.id,
+  });
+}
+
 export type CreateTenantResult = {
   /** false when the tenant already existed and no second key was minted. */
   created: boolean;
@@ -5163,11 +5279,26 @@ export function createTenant(
       role: "owner",
       createdAt: input.createdAt,
     });
+    const trustSubject = `${input.owner.issuer}|${input.owner.subject}`;
+    const ownerAuthority = insertPrincipal(db, {
+      id: `principal-human-${createHash("sha256")
+        .update(`${tenantId}\n${trustSubject}`)
+        .digest("hex")
+        .slice(0, 32)}`,
+      tenantId,
+      kind: "human",
+      subject: trustSubject,
+      displayName: input.owner.displayName,
+      audience: input.owner.issuer,
+      createdAt: input.createdAt,
+    });
     const apiKey = createApiKey(db, {
       id: input.apiKeyId,
       name: input.apiKeyName ?? `${name} owner key`,
       tenantId,
       scopes: input.apiKeyScopes ?? ["*"],
+      authorityPrincipalId: ownerAuthority.id,
+      authorityRole: "owner",
       createdAt: input.createdAt,
     });
     const tenant = get<TenantRow>(db, `SELECT * FROM tenants WHERE id = ?`, [tenantId])!;

@@ -89,7 +89,11 @@ const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "secret_audiences_invalid", status: 400 },
   { internalCode: "secret_revocation_reason_required", status: 400 },
   { internalCode: "secret_break_glass_reason_required", status: 400 },
+  { internalCode: "secret_break_glass_reason_invalid", status: 400 },
+  { internalCode: "secret_revocation_reason_invalid", status: 400 },
   { internalCode: "secret_lifecycle_request_invalid", status: 400 },
+  { internalCode: "secret_lifecycle_payload_too_large", status: 413 },
+  { internalCode: "secret_lifecycle_content_type_invalid", status: 400 },
   { internalCode: "secret_generation_invalid", status: 400 },
   { internalCode: "secret_key_reference_invalid", status: 400 },
   { internalCode: "secret_expires_at_invalid", status: 400 },
@@ -99,19 +103,65 @@ const ERRORS: readonly PublicErrorRule[] = [
 
 const BOUNDED_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
 const SOURCE_REF = /^[a-z][a-z0-9+.-]*:\/\/[A-Za-z0-9._/@:-]+$/u;
+const MAX_LIFECYCLE_BODY_BYTES = 1_100_000;
+const MAX_REASON_CHARS = 4_096;
+const CREATE_FIELDS = new Set([
+  "credentialId", "sourceRef", "plaintext", "audiences", "expiresAt", "rotateAfter", "key",
+]);
+const ROTATE_FIELDS = new Set(["expectedGeneration", "plaintext", "key"]);
+const REWRAP_FIELDS = new Set(["expectedGeneration", "key"]);
+const REVOKE_FIELDS = new Set(["generation", "reason"]);
+const BREAK_GLASS_FIELDS = new Set(["reason"]);
+const KEY_FIELDS = new Set(["provider", "keyId", "version"]);
 
-function objectBody(value: unknown): Record<string, unknown> {
+function objectBody(value: unknown, allowed?: ReadonlySet<string>): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("secret_lifecycle_request_invalid");
   }
-  return value as Record<string, unknown>;
+  const record = value as Record<string, unknown>;
+  if (allowed && Object.keys(record).some((key) => !allowed.has(key))) {
+    throw new Error("secret_lifecycle_request_invalid");
+  }
+  return record;
 }
 
-async function requestBody(c: Context<ApiEnv>): Promise<Record<string, unknown>> {
+async function requestBody(
+  c: Context<ApiEnv>,
+  allowed: ReadonlySet<string>,
+): Promise<Record<string, unknown>> {
+  const contentType = c.req.header("content-type")?.toLowerCase() ?? "";
+  if (!contentType.startsWith("application/json")) {
+    throw new Error("secret_lifecycle_content_type_invalid");
+  }
+  const declaredHeader = c.req.header("content-length");
+  if (declaredHeader !== undefined) {
+    if (!/^\d+$/u.test(declaredHeader)) throw new Error("secret_lifecycle_request_invalid");
+    if (Number(declaredHeader) > MAX_LIFECYCLE_BODY_BYTES) {
+      throw new Error("secret_lifecycle_payload_too_large");
+    }
+  }
   try {
-    return objectBody(await c.req.json<unknown>());
+    const reader = c.req.raw.body?.getReader();
+    if (!reader) throw new Error("secret_lifecycle_request_invalid");
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > MAX_LIFECYCLE_BODY_BYTES) {
+        await reader.cancel();
+        throw new Error("secret_lifecycle_payload_too_large");
+      }
+      chunks.push(value);
+    }
+    const raw = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+    return objectBody(JSON.parse(raw) as unknown, allowed);
   } catch (error) {
-    if (error instanceof Error && error.message === "secret_lifecycle_request_invalid") throw error;
+    if (error instanceof Error && [
+      "secret_lifecycle_request_invalid",
+      "secret_lifecycle_payload_too_large",
+    ].includes(error.message)) throw error;
     throw new Error("secret_lifecycle_request_invalid");
   }
 }
@@ -140,7 +190,7 @@ function timestamp(value: unknown, code: string): string | undefined {
 }
 
 function keyLocator(value: unknown): EnvelopeKeyLocator {
-  const key = objectBody(value);
+  const key = objectBody(value, KEY_FIELDS);
   return Object.freeze({
     provider: identifier(key.provider, "secret_key_reference_invalid"),
     keyId: identifier(key.keyId, "secret_key_reference_invalid"),
@@ -271,7 +321,7 @@ export function createSecretLifecycleRoutes(options: Readonly<{
 
   routes.post("/", async (c) => {
     try {
-      const raw = await requestBody(c);
+      const raw = await requestBody(c, CREATE_FIELDS);
       const expiresAt = timestamp(raw.expiresAt, "secret_expires_at_invalid");
       const rotateAfter = timestamp(raw.rotateAfter, "secret_rotate_after_invalid");
       if (expiresAt && rotateAfter && Date.parse(rotateAfter) >= Date.parse(expiresAt)) {
@@ -302,7 +352,7 @@ export function createSecretLifecycleRoutes(options: Readonly<{
 
   routes.post("/:id/rotate", async (c) => {
     try {
-      const raw = await requestBody(c);
+      const raw = await requestBody(c, ROTATE_FIELDS);
       const body = {
         expectedGeneration: generation(raw.expectedGeneration),
         plaintext: text(raw.plaintext, "secret_rotation_material_required", 1_048_576),
@@ -321,7 +371,7 @@ export function createSecretLifecycleRoutes(options: Readonly<{
 
   routes.post("/:id/rewrap", async (c) => {
     try {
-      const raw = await requestBody(c);
+      const raw = await requestBody(c, REWRAP_FIELDS);
       const body = { expectedGeneration: generation(raw.expectedGeneration), key: keyLocator(raw.key) };
       const result = await service(c).rewrap({
         ...body,
@@ -336,10 +386,10 @@ export function createSecretLifecycleRoutes(options: Readonly<{
 
   routes.post("/:id/revoke", async (c) => {
     try {
-      const raw = await requestBody(c);
+      const raw = await requestBody(c, REVOKE_FIELDS);
       const body = {
         generation: generation(raw.generation),
-        reason: text(raw.reason, "secret_revocation_reason_required", 4_096).trim(),
+        reason: text(raw.reason, "secret_revocation_reason_invalid", MAX_REASON_CHARS).trim(),
       };
       if (!body.reason) throw new Error("secret_revocation_reason_required");
       return c.json(service(c).revoke({
@@ -355,8 +405,8 @@ export function createSecretLifecycleRoutes(options: Readonly<{
   routes.post("/:id/break-glass", async (c) => {
     let reason: unknown;
     try {
-      const body = await requestBody(c);
-      reason = body.reason;
+      const body = await requestBody(c, BREAK_GLASS_FIELDS);
+      reason = text(body.reason, "secret_break_glass_reason_invalid", MAX_REASON_CHARS);
       const plaintext = await service(c).breakGlass({
         credentialId: identifier(c.req.param("id"), "secret_credential_id_invalid"),
         reason,
@@ -376,7 +426,7 @@ export function createSecretLifecycleRoutes(options: Readonly<{
             requestId: c.get("requestId") ?? null,
             action: "secret.break_glass.denied",
             resourceType: "secret_lifecycle",
-            resourceId: c.req.param("id") || null,
+            resourceId: BOUNDED_ID.test(c.req.param("id")) ? c.req.param("id") : null,
             metadata: {
               outcome: "denied",
               failure: error instanceof Error ? error.message : "secret_break_glass_denied",
@@ -386,8 +436,12 @@ export function createSecretLifecycleRoutes(options: Readonly<{
               authorityPrincipalId: c.get("authorityPrincipalId") ?? null,
               credentialPrincipalId: c.get("trustPrincipalId") ?? null,
               requestId: c.get("requestId") ?? null,
-              reason: typeof reason === "string" ? reason.trim() || null : null,
-              idempotencyKey: c.req.header("Idempotency-Key") ?? null,
+              reason: typeof reason === "string" && reason.length <= MAX_REASON_CHARS
+                ? reason.trim() || null
+                : null,
+              idempotencyKey: BOUNDED_ID.test(c.req.header("Idempotency-Key") ?? "")
+                ? c.req.header("Idempotency-Key")!
+                : null,
             },
           });
           c.set("secretBreakGlassAuditHandled", true);

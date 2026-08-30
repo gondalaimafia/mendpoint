@@ -447,6 +447,16 @@ describe("secret lifecycle routes", () => {
 
   it("returns bounded client errors for malformed lifecycle payloads", async () => {
     const { app } = fixture();
+    const invalidContentType = await app.request("/platform/secrets", {
+      method: "POST",
+      headers: {
+        "X-Request-Id": "invalid-content-type",
+        "Idempotency-Key": "invalid-content-type",
+      },
+      body: JSON.stringify(createBody),
+    });
+    expect(invalidContentType.status).toBe(400);
+
     const cases = [
       ["/platform/secrets", "{", "bad-json"],
       ["/platform/secrets", JSON.stringify({ ...createBody, plaintext: "" }), "empty-material"],
@@ -463,6 +473,74 @@ describe("secret lifecycle routes", () => {
       });
       expect(response.status, idempotencyKey).toBe(400);
     }
+  });
+
+  it("rejects unknown fields and oversized lifecycle JSON before persistence", async () => {
+    const { app, db } = fixture();
+    const unknownCases = [
+      ["/platform/secrets", { ...createBody, unexpected: true }, "unknown-create"],
+      ["/platform/secrets", {
+        ...createBody,
+        key: { ...createBody.key, customerManaged: true },
+      }, "unknown-key"],
+      ["/platform/secrets/credential-a/rotate", {
+        expectedGeneration: 1,
+        plaintext: "next",
+        key: createBody.key,
+        unexpected: true,
+      }, "unknown-rotate"],
+      ["/platform/secrets/credential-a/rewrap", {
+        expectedGeneration: 1,
+        key: createBody.key,
+        unexpected: true,
+      }, "unknown-rewrap"],
+      ["/platform/secrets/credential-a/revoke", {
+        generation: 1,
+        reason: "incident",
+        unexpected: true,
+      }, "unknown-revoke"],
+      ["/platform/secrets/credential-a/break-glass", {
+        reason: "incident",
+        unexpected: true,
+      }, "unknown-break-glass"],
+    ] as const;
+    for (const [path, body, idempotencyKey] of unknownCases) {
+      const response = await app.request(path, {
+        method: "POST",
+        headers: headers({ "X-Role": "owner", "Idempotency-Key": idempotencyKey }),
+        body: JSON.stringify(body),
+      });
+      expect(response.status, idempotencyKey).toBe(400);
+    }
+
+    const oversized = await app.request("/platform/secrets", {
+      method: "POST",
+      headers: headers({ "Idempotency-Key": "oversized-json" }),
+      body: JSON.stringify({ ...createBody, plaintext: "x".repeat(1_100_000) }),
+    });
+    expect(oversized.status).toBe(413);
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM secret_lifecycle_versions").get())
+      .toMatchObject({ count: 0 });
+  });
+
+  it("bounds break-glass reasons without persisting the rejected value", async () => {
+    const { app, db } = fixture();
+    const response = await app.request("/platform/secrets/credential-a/break-glass", {
+      method: "POST",
+      headers: headers({
+        "X-Role": "owner",
+        "X-Request-Id": "oversized-break-glass-reason",
+        "Idempotency-Key": "oversized-break-glass-reason",
+      }),
+      body: JSON.stringify({ reason: "sensitive".repeat(513) }),
+    });
+    expect(response.status).toBe(400);
+    const denied = listAudit(db, "tenant-a").find(
+      (event) => event.request_id === "oversized-break-glass-reason",
+    );
+    expect(denied).toBeDefined();
+    expect(JSON.parse(denied!.metadata_json!)).toMatchObject({ reason: null });
+    expect(denied!.metadata_json).not.toContain("sensitivesensitive");
   });
 
   it("audits real authentication and RBAC break-glass denials before route dispatch", async () => {

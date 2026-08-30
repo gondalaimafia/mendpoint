@@ -4,6 +4,8 @@ import type { SecretLifecycleVersionRow } from "./schema.js";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 const SECRET_REF = /^[a-z][a-z0-9+.-]*:\/\/[A-Za-z0-9._/@:-]+$/;
+const MAX_AUDIENCES = 64;
+const MAX_REASON_CHARS = 4_096;
 
 export type SecretLifecycleInput = Readonly<{
   tenantId: string;
@@ -57,6 +59,7 @@ export type SecretLifecycleOperationIdentity = Readonly<{
 export type SecretLifecycleMutationOptions = Readonly<{
   operation?: SecretLifecycleOperationIdentity;
   audit?: (row: SecretLifecycleVersionRow) => void;
+  authorizeCommit?: () => void;
 }>;
 
 export type SecretLifecycleOperationRow = Readonly<{
@@ -80,7 +83,9 @@ function many<T>(db: AppDb, sql: string, params: SQLInputValue[] = []): T[] {
 }
 
 function validTimestamp(name: string, value: string | undefined): void {
-  if (value !== undefined && !Number.isFinite(Date.parse(value))) {
+  if (value !== undefined && (
+    value.length > 64 || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value
+  )) {
     throw new Error(`${name}_invalid`);
   }
 }
@@ -88,11 +93,15 @@ function validTimestamp(name: string, value: string | undefined): void {
 function validateInput(input: SecretLifecycleInput): void {
   if (!ID.test(input.tenantId)) throw new Error("secret_tenant_invalid");
   if (!ID.test(input.credentialId)) throw new Error("secret_credential_id_invalid");
-  if (!SECRET_REF.test(input.sourceRef)) throw new Error("secret_source_reference_invalid");
+  if (input.sourceRef.length > 512 || !SECRET_REF.test(input.sourceRef)) {
+    throw new Error("secret_source_reference_invalid");
+  }
   if (!Number.isSafeInteger(input.generation) || input.generation < 1) {
     throw new Error("secret_generation_invalid");
   }
-  if (input.audiences.length < 1 || input.audiences.some((audience) => !ID.test(audience))) {
+  if (input.audiences.length < 1 || input.audiences.length > MAX_AUDIENCES ||
+      input.audiences.some((audience) => !ID.test(audience)) ||
+      new Set(input.audiences).size !== input.audiences.length) {
     throw new Error("secret_audiences_invalid");
   }
   validTimestamp("secret_issued_at", input.issuedAt);
@@ -108,10 +117,10 @@ function validateInput(input: SecretLifecycleInput): void {
   if (
     input.envelope.schemaVersion !== 1 ||
     input.envelope.algorithm !== "AES-256-GCM" ||
-    !input.envelope.wrappedDataKey ||
-    !input.envelope.iv ||
-    !input.envelope.authTag ||
-    !input.envelope.ciphertext
+    !input.envelope.wrappedDataKey || input.envelope.wrappedDataKey.length > 16_384 ||
+    !input.envelope.iv || input.envelope.iv.length > 512 ||
+    !input.envelope.authTag || input.envelope.authTag.length > 512 ||
+    !input.envelope.ciphertext || input.envelope.ciphertext.length > 1_500_000
     || !/^[a-f0-9]{64}$/.test(input.envelope.keyAttestationSha256)
   ) {
     throw new Error("secret_envelope_invalid");
@@ -246,10 +255,14 @@ export function createSecretLifecycle(
     const replay = options.operation
       ? replayedOperation(db, input, "create", options.operation)
       : undefined;
-    if (replay) return replay;
+    if (replay) {
+      options.authorizeCommit?.();
+      return replay;
+    }
     const row = insertVersion(db, input);
     options.audit?.(row);
     if (options.operation) completeOperation(db, input, "create", options.operation);
+    options.authorizeCommit?.();
     return row;
   });
 }
@@ -269,7 +282,10 @@ export function rotateSecretLifecycle(
     const replay = options.operation
       ? replayedOperation(db, input.next, "rotate", options.operation)
       : undefined;
-    if (replay) return replay;
+    if (replay) {
+      options.authorizeCommit?.();
+      return replay;
+    }
     const current = one<SecretLifecycleVersionRow>(
       db,
       `SELECT * FROM secret_lifecycle_versions
@@ -293,6 +309,7 @@ export function rotateSecretLifecycle(
     const row = insertVersion(db, input.next);
     options.audit?.(row);
     if (options.operation) completeOperation(db, input.next, "rotate", options.operation);
+    options.authorizeCommit?.();
     return row;
   });
 }
@@ -330,6 +347,7 @@ export function rewrapSecretLifecycle(
   options: Readonly<{
     operation: SecretLifecycleOperationIdentity;
     audit?: (row: SecretLifecycleVersionRow) => void;
+    authorizeCommit?: () => void;
   }>,
 ): SecretLifecycleVersionRow {
   validateOperation(options.operation);
@@ -347,6 +365,7 @@ export function rewrapSecretLifecycle(
         db, input.next.tenantId, existing.credential_id, existing.result_generation,
       );
       if (!replay) throw new Error("secret_lifecycle_idempotency_corrupt");
+      options.authorizeCommit?.();
       return replay;
     }
     const row = rotateSecretLifecycle(db, input, { audit: options.audit });
@@ -359,6 +378,7 @@ export function rewrapSecretLifecycle(
         options.operation.requestCommitmentKeyId, options.operation.actorId,
         input.next.credentialId, input.next.generation, input.next.issuedAt,
       );
+    options.authorizeCommit?.();
     return row;
   });
 }
@@ -487,10 +507,12 @@ export function revokeSecretLifecycle(
     operation?: SecretLifecycleOperationIdentity;
     audit?: (row: SecretLifecycleVersionRow) => void;
     replayAudit?: (row: SecretLifecycleVersionRow) => void;
+    authorizeCommit?: () => void;
   }> = {},
 ): SecretLifecycleVersionRow {
   validTimestamp("secret_revoked_at", input.revokedAt);
   if (!input.reason.trim()) throw new Error("secret_revocation_reason_required");
+  if (input.reason.length > MAX_REASON_CHARS) throw new Error("secret_revocation_reason_invalid");
   return transaction(db, () => {
     if (options.operation) {
       validateOperation(options.operation);
@@ -512,6 +534,7 @@ export function revokeSecretLifecycle(
         const row = getSecretLifecycleVersion(db, input.tenantId, input.credentialId, input.generation);
         if (!row) throw new Error("secret_lifecycle_idempotency_corrupt");
         options.replayAudit?.(row);
+        options.authorizeCommit?.();
         return row;
       }
     }
@@ -555,6 +578,7 @@ export function revokeSecretLifecycle(
           input.credentialId, input.generation, input.revokedAt,
         );
     }
+    options.authorizeCommit?.();
     return row;
   });
 }

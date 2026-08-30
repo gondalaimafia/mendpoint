@@ -5,11 +5,13 @@
  *   npm run auth:bootstrap
  */
 import {
+  bindOwnerApiKeyAuthority,
   countActiveApiKeys,
   createApiKey,
   createApiKeyFromToken,
   createDb,
   findApiKeyByToken,
+  ensureDeploymentBootstrapOwnerPrincipal,
 } from "@mendpoint/db";
 import { newId, nowIso } from "@mendpoint/shared";
 
@@ -19,6 +21,8 @@ const force = process.argv.includes("--force");
 const configuredToken = process.env.MENDPOINT_BOOTSTRAP_API_KEY?.trim();
 const tenantId = process.env.MENDPOINT_BOOTSTRAP_TENANT ?? "tenant_default";
 const name = process.env.MENDPOINT_BOOTSTRAP_KEY_NAME ?? "bootstrap-owner";
+const createdAt = nowIso();
+const ownerAuthority = () => ensureDeploymentBootstrapOwnerPrincipal(db, tenantId, createdAt);
 
 if (configuredToken) {
   if (!/^me_[A-Za-z0-9_-]{32,}$/.test(configuredToken)) {
@@ -33,6 +37,12 @@ if (configuredToken) {
       console.error("Configured bootstrap key belongs to a different tenant.");
       process.exit(1);
     }
+    const authority = ownerAuthority();
+    bindOwnerApiKeyAuthority(db, {
+      apiKeyId: existing.id,
+      tenantId,
+      authorityPrincipalId: authority.id,
+    });
     console.log("Mendpoint bootstrap API key already configured.");
     console.log(`tenant=${tenantId}`);
     process.exit(0);
@@ -43,13 +53,16 @@ if (configuredToken) {
     );
     process.exit(1);
   }
+  const authority = ownerAuthority();
   createApiKeyFromToken(db, {
     id: newId(),
     name,
     tenantId,
     token: configuredToken,
     scopes: ["*"],
-    createdAt: nowIso(),
+    authorityPrincipalId: authority.id,
+    authorityRole: "owner",
+    createdAt,
   });
   console.log("Mendpoint bootstrap API key configured.");
   console.log(`tenant=${tenantId}`);
@@ -63,12 +76,15 @@ if (active > 0 && !force) {
   process.exit(1);
 }
 
+const authority = ownerAuthority();
 const created = createApiKey(db, {
   id: newId(),
   name,
   tenantId,
   scopes: ["*"],
-  createdAt: nowIso(),
+  authorityPrincipalId: authority.id,
+  authorityRole: "owner",
+  createdAt,
 });
 
 console.log("Mendpoint bootstrap API key created.");

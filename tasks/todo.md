@@ -1,5 +1,23 @@
 # Mendpoint 101 production closure (2026-08-28)
 
+## Issue 433 independent review repair: 2026-08-30
+
+- [x] Trace the exact create, rotate, rewrap, and revoke commit boundaries and reproduce authority loss during asynchronous provider work.
+- [x] RED: prove every lifecycle mutation revalidates the stable principal and credential binding immediately before durable publication and cleans up staged provider state on loss.
+- [x] RED: prove self-serve and production-bootstrap owner keys retain a stable owner authority binding, including safe compatibility for legacy rows.
+- [x] RED: reject oversized JSON, unknown fields, overlong identifiers, lifecycle values, arrays, and break-glass reasons before persistence.
+- [x] GREEN: implement the smallest transactional authority fences, owner-binding migration, and bounded strict parsers.
+- [x] Verify focused suites, affected typechecks, complete tests, build, GA gates, dependency audit, and diff integrity.
+- [x] Review the complete diff, record evidence below, and commit locally without pushing.
+
+### Issue 433 repair review
+
+- Create, rotate, rewrap, and revoke now capture the exact stable authority version before provider work and revalidate it inside the final SQLite transaction after lifecycle rows, operation rows, and audit rows are staged. Authority loss throws before commit, so the transaction removes every staged durable effect and preserves the prior active generation.
+- Fresh self-serve tenants bind their wildcard owner key to a deterministic human authority principal. Legacy self-serve keys migrate only when exactly one active self-serve owner membership exists. Production bootstrap keys bind to a deterministic deployment owner principal, and existing configured keys can receive only that exact owner binding under a narrow fail-closed compatibility rule.
+- Lifecycle HTTP bodies are byte bounded before JSON parsing, require JSON media type, reject unknown top-level and nested fields, and cap identifiers, source references, secret material, audiences, timestamps, envelope values, revocation reasons, and break-glass reasons. Rejected oversized break-glass values are not copied into audit metadata.
+- Hostile regressions cover authority loss during provider wrapping for create, rotate, and rewrap, authority loss inside revoke audit persistence, stable authority migration and rotation, unknown fields, oversized bodies, invalid media type, and direct-service bypass attempts.
+- Verification: 62 focused API and database tests pass; all workspace typechecks pass; the complete workspace and root test runner passes, including 586 API tests, 237 web tests, 648 worker tests with 1 skipped, and 476 root tests; the optimized 50-route production build passes; GA preflight passes; `npm audit --omit=dev` reports 0 vulnerabilities; `git diff --check` is clean.
+
 ## Plan 01-01: Durable secret lifecycle SCM tracer
 
 - [x] RED: add database lifecycle tests for encrypted envelopes, tenant scope, rotation, expiry, retirement, and immutable incident revocation.

@@ -25,6 +25,7 @@ import {
   getPrincipal,
   getPrincipalBySubject,
   insertPrincipal,
+  migrateLegacySelfServeOwnerKeyAuthority,
   touchApiKey,
   type AppDb,
 } from "@mendpoint/db";
@@ -411,7 +412,15 @@ export function createAuthMiddleware(
       return c.json({ error: "unauthorized", message: "API key required (Bearer or X-API-Key)" }, 401);
     }
 
-    const key = findApiKeyByToken(db, raw);
+    let key = findApiKeyByToken(db, raw);
+    if (key?.id.startsWith("key_ss_") &&
+        (key.authority_principal_id === null || key.authority_role === null)) {
+      try {
+        key = migrateLegacySelfServeOwnerKeyAuthority(db, key.id);
+      } catch {
+        return c.json({ error: "unauthorized", message: "api_key_authority_invalid" }, 401);
+      }
+    }
     if (!key) {
       if (raw.split(".").length !== 3) {
         return c.json({ error: "unauthorized", message: "invalid API key" }, 401);
