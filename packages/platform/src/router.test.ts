@@ -7,6 +7,7 @@ import {
   type ExecutorDescriptor,
   type RouterPolicySnapshot,
   type RouterTaskSpec,
+  type RoutingPlan,
 } from "./router.js";
 import type {
   AdaptiveRoutingStats,
@@ -773,6 +774,55 @@ describe("Gate 7 policy router", () => {
     expect("action" in unavailable && unavailable.action).toBe("human_handoff");
     if (!("action" in unavailable)) throw new Error("expected handoff");
     expect(unavailable.reason).toBe("fallback_exhausted");
+  });
+
+  it("totally validates malformed replay plans before reading their identities or routes", () => {
+    const outcome = routeTask({
+      task: task(),
+      policy: policy(),
+      registry: registry(
+        executor("primary", { qualityScore: 0.95 }),
+        executor("fallback", { qualityScore: 0.9 }),
+      ),
+      circuitBreaker: new ExecutorCircuitBreaker(),
+      remainingBudgetUsd: 5,
+      decidedAt,
+    });
+    if (outcome.action !== "execute") throw new Error("expected execution");
+
+    const malformedPlans: readonly [string, unknown][] = [
+      ["null plan", null],
+      ["missing primary", { ...outcome.plan, primary: undefined }],
+      ["null primary", { ...outcome.plan, primary: null }],
+      ["null fallback", { ...outcome.plan, fallbacks: [null] }],
+      ["numeric task identity", { ...outcome.plan, taskId: 42 }],
+      ["object tenant identity", { ...outcome.plan, tenantId: {} }],
+      ["numeric policy identity", { ...outcome.plan, policySnapshotId: 42 }],
+      [
+        "numeric registry identity",
+        { ...outcome.plan, registry: { ...outcome.plan.registry, registryId: 42 } },
+      ],
+      [
+        "numeric executor identity",
+        { ...outcome.plan, primary: { ...outcome.plan.primary, executorId: 42 } },
+      ],
+    ];
+
+    for (const [label, malformedPlan] of malformedPlans) {
+      const fallback = selectPolicyBoundFallback({
+        plan: malformedPlan as RoutingPlan,
+        failedExecutorIds: ["primary"],
+        circuitBreaker: new ExecutorCircuitBreaker(),
+        remainingBudgetUsd: 5,
+        at: decidedAt,
+        tenantId: "tenant-1",
+      });
+
+      expect(fallback, label).toMatchObject({
+        action: "human_handoff",
+        reason: "route_invalid",
+      });
+    }
   });
 
   it("rejects a fallback route spliced from another task plan", () => {

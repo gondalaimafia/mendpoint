@@ -652,18 +652,18 @@ export function selectPolicyBoundFallback(
     throw new Error("Invalid remaining budget");
   }
   validTime(input.at);
-  if (input.plan.tenantId !== input.tenantId) {
-    return fallbackHandoff(
-      input,
-      "tenant_mismatch",
-      "Fallback plan belongs to a different tenant",
-    );
-  }
   if (!isValidRoutingPlan(input.plan)) {
     return fallbackHandoff(
       input,
       "route_invalid",
       "Fallback plan is malformed or no longer policy bound",
+    );
+  }
+  if (input.plan.tenantId !== input.tenantId) {
+    return fallbackHandoff(
+      input,
+      "tenant_mismatch",
+      "Fallback plan belongs to a different tenant",
     );
   }
   const failed = new Set(input.failedExecutorIds);
@@ -703,13 +703,14 @@ function fallbackHandoff(
   reason: HumanHandoffReason,
   summary: string,
 ): HumanHandoff {
+  const plan = input.plan as Partial<RoutingPlan> | null | undefined;
   return Object.freeze({
     action: "human_handoff",
-    taskId: typeof input.plan.taskId === "string" ? input.plan.taskId : "unknown",
+    taskId: typeof plan?.taskId === "string" ? plan.taskId : "unknown",
     tenantId: input.tenantId,
     policySnapshotId:
-      typeof input.plan.policySnapshotId === "string"
-        ? input.plan.policySnapshotId
+      typeof plan?.policySnapshotId === "string"
+        ? plan.policySnapshotId
         : "unknown",
     reason,
     summary,
@@ -718,54 +719,87 @@ function fallbackHandoff(
   });
 }
 
-function isValidRoutingPlan(plan: RoutingPlan): boolean {
+function isValidRoutingPlan(plan: unknown): plan is RoutingPlan {
+  if (!isObjectRecord(plan)) return false;
+  const registry = plan.registry;
   if (
-    !plan.taskId?.trim() ||
-    !plan.tenantId?.trim() ||
-    !/^[a-f0-9]{64}$/.test(plan.taskFingerprint) ||
-    !plan.policySnapshotId?.trim() ||
-    !/^[a-f0-9]{64}$/.test(plan.policyFingerprint) ||
+    !isNonEmptyString(plan.taskId) ||
+    !isNonEmptyString(plan.tenantId) ||
+    !isSha256(plan.taskFingerprint) ||
+    !isNonEmptyString(plan.policySnapshotId) ||
+    !isSha256(plan.policyFingerprint) ||
     !Number.isFinite(plan.maximumCostUsd) ||
-    plan.maximumCostUsd < 0 ||
-    !plan.registry ||
-    !/^[a-f0-9]{64}$/.test(plan.registry.fingerprint) ||
+    (plan.maximumCostUsd as number) < 0 ||
+    !isObjectRecord(registry) ||
+    !isSha256(registry.fingerprint) ||
+    !isObjectRecord(plan.primary) ||
     !Array.isArray(plan.fallbacks) ||
-    !/^[a-f0-9]{64}$/.test(plan.planFingerprint)
+    !isSha256(plan.planFingerprint)
   ) {
     return false;
   }
   try {
-    validateRegistryContract(plan.registry);
+    validateRegistryContract(registry as ExecutorRegistryContract);
   } catch {
     return false;
   }
-  const routes = [plan.primary, ...plan.fallbacks];
-  if (plan.planFingerprint !== routingPlanFingerprint(plan)) return false;
-  return routes.every(
-    (candidate, routePosition) =>
-      candidate?.[POLICY_BOUND_ROUTE] === true &&
-      candidate.tenantId === plan.tenantId &&
-      candidate.taskFingerprint === plan.taskFingerprint &&
-      candidate.policySnapshotId === plan.policySnapshotId &&
-      candidate.policyFingerprint === plan.policyFingerprint &&
-      candidate.registryFingerprint === plan.registry.fingerprint &&
-      candidate.maximumCostUsd === plan.maximumCostUsd &&
-      candidate.routePosition === routePosition &&
-      candidate.routeFingerprint === routeFingerprint(candidate) &&
-      typeof candidate.executorId === "string" &&
-      candidate.executorId.trim().length > 0 &&
-      typeof candidate.providerId === "string" &&
-      candidate.providerId.trim().length > 0 &&
-      typeof candidate.executionRegion === "string" &&
-      candidate.executionRegion.trim().length > 0 &&
-      Number.isFinite(candidate.expectedQualityScore) &&
-      candidate.expectedQualityScore >= 0 &&
-      candidate.expectedQualityScore <= 1 &&
-      Number.isFinite(candidate.expectedLatencyMs) &&
-      candidate.expectedLatencyMs >= 0 &&
-      Number.isFinite(candidate.expectedCostUsd) &&
-      candidate.expectedCostUsd >= 0,
+  const typedPlan = plan as unknown as RoutingPlan;
+  const routes: readonly unknown[] = [plan.primary, ...plan.fallbacks];
+  if (
+    !routes.every((route, routePosition) =>
+      isValidPolicyBoundRoute(route, typedPlan, routePosition),
+    )
+  ) {
+    return false;
+  }
+  return typedPlan.planFingerprint === routingPlanFingerprint(typedPlan);
+}
+
+function isValidPolicyBoundRoute(
+  route: unknown,
+  plan: RoutingPlan,
+  routePosition: number,
+): route is PolicyBoundExecutorRoute {
+  if (!isObjectRecord(route)) return false;
+  const candidate = route as unknown as PolicyBoundExecutorRoute;
+  return (
+    candidate[POLICY_BOUND_ROUTE] === true &&
+    candidate.tenantId === plan.tenantId &&
+    candidate.taskFingerprint === plan.taskFingerprint &&
+    candidate.policySnapshotId === plan.policySnapshotId &&
+    candidate.policyFingerprint === plan.policyFingerprint &&
+    candidate.registryFingerprint === plan.registry.fingerprint &&
+    candidate.maximumCostUsd === plan.maximumCostUsd &&
+    candidate.routePosition === routePosition &&
+    isNonEmptyString(candidate.executorId) &&
+    isNonEmptyString(candidate.providerId) &&
+    (["deterministic_recipe", "adapter", "local_model", "open_model", "frontier_model"] as const)
+      .includes(candidate.executorKind) &&
+    isNonEmptyString(candidate.executorVersion) &&
+    isNonEmptyString(candidate.priceVersion) &&
+    isNonEmptyString(candidate.executionRegion) &&
+    isSha256(candidate.routeFingerprint) &&
+    candidate.routeFingerprint === routeFingerprint(candidate) &&
+    Number.isFinite(candidate.expectedQualityScore) &&
+    candidate.expectedQualityScore >= 0 &&
+    candidate.expectedQualityScore <= 1 &&
+    Number.isFinite(candidate.expectedLatencyMs) &&
+    candidate.expectedLatencyMs >= 0 &&
+    Number.isFinite(candidate.expectedCostUsd) &&
+    candidate.expectedCostUsd >= 0
   );
+}
+
+function isObjectRecord(value: unknown): value is Record<PropertyKey, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 
 function evaluateExecutor(
