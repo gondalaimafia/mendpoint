@@ -411,7 +411,24 @@ describe("real Transformer multi-node coordinator", () => {
     expect(loseDraftCompletionResponse).toBe(false);
     expect(draftCalls).toBe(2);
     expect(draftBranches[1]).toBe(draftBranches[0]);
-    expect(service.store.getCampaign("tenant-a", "campaign-a")?.units[0]?.draftDelivery).toMatchObject({ status: "delivered", pullRequestNumber: 7, commitSha: revision("d") });
+    expect(service.store.getCampaign("tenant-a", "campaign-a")?.units[0]?.draftDelivery).toMatchObject({
+      status: "delivered",
+      pullRequestNumber: 7,
+      commitSha: revision("d"),
+      productionDeliveryApprovalRefs: [draftApproval],
+    });
+    const draftObservationResponse = await app.request(
+      "/v1/regauge/attempt-coordinator/draft-observations",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-test-tenant": "tenant-a" },
+        body: JSON.stringify({ tenantId: "tenant-a", campaignId: "campaign-a" }),
+      },
+    );
+    expect(draftObservationResponse.status).toBe(200);
+    expect(await draftObservationResponse.json()).toMatchObject({
+      result: [{ draft: { productionDeliveryApprovalRefs: [draftApproval] } }],
+    });
     await expect(replacement.runDeliveryOnce()).resolves.toEqual({ status: "idle" });
     expect(draftCalls).toBe(2);
     await expect(replacement.runObservationOnce()).resolves.toEqual({ status: "observed", wave: 1, campaignState: "paused" });

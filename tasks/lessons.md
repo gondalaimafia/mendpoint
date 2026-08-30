@@ -273,3 +273,9 @@
 **Mistake:** The first stopped-worker repair focused on the observed state transition but left later containment ordering, pre-mutation topology, process restart continuity, and feature-state proof as separate hidden layers.
 **Correction:** Review every mutation, proof, failure edge, and terminal step as one state machine before sending another protected run.
 **Rule:** After a second activation defect appears, stop patching individual symptoms. Model preconditions, allowed transitions, continuous identity, all late failures, evidence publication, and containment together, then test adversarial fixtures for each edge.
+
+### 2026-08-30 — Persist approval lineage separately from execution evidence
+
+**Mistake:** The production gate validated the current delivery approval, but the durable draft record retained only execution and acceptance evidence, so a later proof could not establish which protected run authorized the existing draft.
+**Correction:** Carry the configured approval allowlist through the gate decision, persist the exact matched approval on the draft, and append later-run authority without changing or redelivering the live pull request.
+**Rule:** Authorization evidence is its own durable contract. Keep it distinct from execution and SCM evidence, update it idempotently on replay, and make the production proof consume the exact stored field rather than inferring authority from adjacent evidence.

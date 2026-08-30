@@ -37,6 +37,7 @@ export type RegaugeDraftCanaryEvidence = Readonly<{
     headBranch: string;
     matchingOpenDrafts: 1;
     evidenceRefs: readonly string[];
+    productionDeliveryApprovalRefs: readonly string[];
   }>[];
 }>;
 
@@ -343,7 +344,7 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
     requiredEvidenceRef(value, "regauge_production_draft_canary_authority_invalid")));
   if (expectedEvidenceRefs.length === 0 ||
       new Set(expectedEvidenceRefs).size !== expectedEvidenceRefs.length ||
-      !expectedEvidenceRefs.includes(expectedApprovalRef)) {
+      expectedEvidenceRefs.includes(expectedApprovalRef)) {
     throw new Error("regauge_production_draft_canary_authority_invalid");
   }
   const expectedOwner = requiredId(input.expectedOwner, "regauge_production_repository_invalid");
@@ -386,6 +387,9 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
     const draftEvidenceRefs = Array.isArray(draft?.evidenceRefs)
       ? draft.evidenceRefs as unknown[]
       : [];
+    const productionDeliveryApprovalRefs = Array.isArray(draft?.productionDeliveryApprovalRefs)
+      ? draft.productionDeliveryApprovalRefs as unknown[]
+      : [];
     if (!draft || !target || draft.tenantId !== tenantId || draft.campaignId !== campaignId ||
         !ID.test(String(draft.unitId ?? "")) || !match || target.owner !== expectedOwner ||
         target.repo !== expectedRepository || target.owner !== match[1] || target.repo !== match[2] ||
@@ -397,6 +401,9 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
         !REVISION.test(String(draft.baseRevision ?? "")) || !REVISION.test(String(draft.commitSha ?? "")) ||
         draftEvidenceRefs.length === 0 ||
         draftEvidenceRefs.some((item: unknown) => typeof item !== "string" || !item) ||
+        productionDeliveryApprovalRefs.length === 0 ||
+        productionDeliveryApprovalRefs.some((item: unknown) => typeof item !== "string" || !item) ||
+        !productionDeliveryApprovalRefs.includes(expectedApprovalRef) ||
         expectedEvidenceRefs.some((reference) => !draftEvidenceRefs.includes(reference))) {
       throw new Error("regauge_production_draft_canary_invalid");
     }
@@ -436,6 +443,9 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
       matchingOpenDrafts: 1 as const,
       evidenceRefs: Object.freeze([
         ...new Set([...(draftEvidenceRefs as string[]), ...observation.evidenceRefs]),
+      ].sort()),
+      productionDeliveryApprovalRefs: Object.freeze([
+        ...new Set(productionDeliveryApprovalRefs as string[]),
       ].sort()),
     });
   }));
@@ -675,15 +685,16 @@ async function main(): Promise<void> {
     return;
   }
   if (mode === "draft-canary") {
+    const expectedApprovalRef = process.env.MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF ?? "";
     const evidence = await observeRegaugeDraftCanary({
       coordinatorUrl: process.env.MENDPOINT_REGAUGE_COORDINATOR_URL ?? "",
       token: process.env.MENDPOINT_REGAUGE_COORDINATOR_TOKEN ?? "",
       tenantId: process.env.MENDPOINT_REGAUGE_TENANT_ID ?? "",
       campaignId: process.env.MENDPOINT_REGAUGE_CAMPAIGN_ID ?? "",
-      expectedApprovalRef: process.env.MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF ?? "",
+      expectedApprovalRef,
       expectedEvidenceRefs: (process.env.MENDPOINT_REGAUGE_EVIDENCE_REFS ?? "")
         .split(",")
-        .filter((value) => value.length > 0),
+        .filter((value) => value.length > 0 && value !== expectedApprovalRef),
       expectedOwner: process.env.MENDPOINT_REGAUGE_CANARY_OWNER ?? "",
       expectedRepository: process.env.MENDPOINT_REGAUGE_CANARY_REPOSITORY ?? "",
       expectedInstallationId: Number(process.env.MENDPOINT_REGAUGE_GITHUB_INSTALLATION_ID),

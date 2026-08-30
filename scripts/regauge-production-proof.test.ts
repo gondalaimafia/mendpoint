@@ -14,7 +14,7 @@ const baseRevision = "b".repeat(40);
 const headRevision = "a".repeat(40);
 const approvalRef = "approval:regauge:tenant-a:campaign-a:repository:84:revision:baseline:draft:1:run:9:attempt:1";
 const runEvidenceRef = "evidence:github:run:9:attempt:1:revision:exact-head";
-const currentEvidenceRefs = [approvalRef, runEvidenceRef] as const;
+const currentEvidenceRefs = [runEvidenceRef] as const;
 const releaseRevision = "d".repeat(40);
 const volumeId = "vol_regauge";
 
@@ -59,6 +59,7 @@ function deliveredDraftResult() {
       branchName: "mendpoint/regauge-unit-a",
       commitSha: headRevision,
       evidenceRefs: [...currentEvidenceRefs, "github:draft:17"],
+      productionDeliveryApprovalRefs: [approvalRef],
     },
     target: { owner: "acme", repo: "repo", baseBranch: "main", installationId, remoteRepositoryId: repositoryId },
   };
@@ -274,9 +275,11 @@ describe("Regauge production proof", () => {
   it("rejects a durable draft authorized by a prior protected run", async () => {
     const stale = deliveredDraftResult();
     stale.draft.evidenceRefs = [
-      "approval:regauge:tenant-a:campaign-a:repository:84:revision:baseline:draft:1:run:8:attempt:1",
       "evidence:github:run:8:attempt:1:revision:old-head",
       "github:draft:17",
+    ];
+    stale.draft.productionDeliveryApprovalRefs = [
+      "approval:regauge:tenant-a:campaign-a:repository:84:revision:baseline:draft:1:run:8:attempt:1",
     ];
     const baseInput = {
       coordinatorUrl: "https://mendpoint-regauge-production.fly.dev/",
