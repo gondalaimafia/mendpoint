@@ -18,6 +18,7 @@ import {
   recordReleaseReviewerOverride,
   recordReleaseReviewerOverrideCas,
   rehydrateReleaseArtifact,
+  ReleaseCatalogError,
   reconcileReleaseDispatchFailure,
   summarizeReleaseDispatchBacklog,
   type ReleaseIngestionStore,
@@ -769,6 +770,51 @@ describe("release ingestion", () => {
     expect(tenantB.tenantId).toBe("tenant-b");
   });
 
+  it("types rehydration infrastructure failures as retryable and artifact corruption as terminal", () => {
+    const infrastructureStore = store(":memory:");
+    const infrastructureArtifact = ingestReleaseDocument(
+      infrastructureStore,
+      input("rss", fixture("stripe-rss.xml")),
+    ).artifacts[0]!;
+    infrastructureStore.close();
+    stores.splice(stores.indexOf(infrastructureStore), 1);
+    try {
+      rehydrateReleaseArtifact(infrastructureStore, {
+        tenantId: "tenant-a",
+        artifactId: infrastructureArtifact.id,
+        expectedContentSha256: infrastructureArtifact.contentSha256,
+      });
+      throw new Error("expected rehydration infrastructure failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ReleaseCatalogError);
+      expect(error).toMatchObject({
+        code: "release_catalog_infrastructure_unavailable",
+        retryable: true,
+      });
+    }
+
+    const corruptStore = store(":memory:");
+    const corruptArtifact = ingestReleaseDocument(
+      corruptStore,
+      input("rss", fixture("stripe-rss.xml")),
+    ).artifacts[0]!;
+    corruptStore.raw.exec("DROP TRIGGER release_ingestion_artifacts_no_update");
+    corruptStore.raw.prepare(
+      "UPDATE release_ingestion_artifacts SET change_hints_json = '{' WHERE id = ?",
+    ).run(corruptArtifact.id);
+    try {
+      rehydrateReleaseArtifact(corruptStore, {
+        tenantId: "tenant-a",
+        artifactId: corruptArtifact.id,
+        expectedContentSha256: corruptArtifact.contentSha256,
+      });
+      throw new Error("expected deterministic artifact decode failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ReleaseCatalogError);
+      expect(error).toMatchObject({ code: "release_artifact_decode_invalid", retryable: false });
+    }
+  });
+
   it("durably acknowledges or requeues the exact terminal failure without hiding a newer failure", () => {
     let clock = NOW;
     const ledger = store(":memory:", () => clock);
@@ -1310,6 +1356,67 @@ describe("release ingestion", () => {
     expect(listReleaseArtifacts(restarted, "tenant-v1")).toEqual(artifacts);
     expect(listReleaseObservations(restarted, "tenant-v1", "rel_v1")).toHaveLength(2);
     expect(listReleaseDispatches(restarted, "tenant-v1")).toHaveLength(1);
+  });
+
+  it("rebuilds a constraint-drifted v5 reconciliation schema without losing evidence", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-v5-drift-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    let ledger = store(path);
+    ingestReleaseDocument(ledger, input("rss", fixture("stripe-rss.xml")));
+    const claim = claimReleaseDispatch(ledger, {
+      tenantId: "tenant-a", workerId: "worker-a", leaseDurationMs: 10_000,
+    })!;
+    const failure = failReleaseDispatch(ledger, {
+      tenantId: "tenant-a", dispatchId: claim.id, workerId: "worker-a",
+      leaseGeneration: claim.leaseGeneration, failureCode: "invalid_payload", retryable: false,
+    });
+    reconcileReleaseDispatchFailure(ledger, {
+      tenantId: "tenant-a", dispatchId: failure.id, action: "acknowledge",
+      actorPrincipalId: "operator-a", evidenceSha256: "d".repeat(64),
+      expectedLeaseGeneration: failure.leaseGeneration, expectedFailedAt: failure.failedAt!,
+      expectedFailureCode: failure.failureCode!, idempotencyKey: "ack:before-drift",
+    });
+    ledger.close();
+    stores.splice(stores.indexOf(ledger), 1);
+
+    const drifted = new DatabaseSync(path);
+    drifted.exec(`PRAGMA foreign_keys = OFF;
+      DROP INDEX release_ingestion_dispatches_identity_idx;
+      CREATE INDEX release_ingestion_dispatches_identity_idx
+        ON release_ingestion_dispatches(tenant_id, id);
+      DROP TRIGGER release_ingestion_dispatch_reconciliations_no_update;
+      DROP TRIGGER release_ingestion_dispatch_reconciliations_no_delete;
+      DROP INDEX release_ingestion_dispatch_reconciliations_lookup_idx;
+      ALTER TABLE release_ingestion_dispatch_reconciliations RENAME TO reconciliation_old;
+      CREATE TABLE release_ingestion_dispatch_reconciliations (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, dispatch_id TEXT NOT NULL,
+        action TEXT NOT NULL, actor_principal_id TEXT NOT NULL, evidence_sha256 TEXT NOT NULL,
+        expected_lease_generation INTEGER NOT NULL, expected_failed_at TEXT NOT NULL,
+        expected_failure_code TEXT NOT NULL, idempotency_key TEXT NOT NULL, created_at TEXT NOT NULL,
+        UNIQUE (tenant_id, idempotency_key),
+        FOREIGN KEY (dispatch_id) REFERENCES release_ingestion_dispatches(id)
+      );
+      INSERT INTO release_ingestion_dispatch_reconciliations SELECT * FROM reconciliation_old;
+      DROP TABLE reconciliation_old;`);
+    drifted.close();
+
+    ledger = store(path);
+    expect(listReleaseDispatchReconciliations(ledger, "tenant-a", failure.id)).toEqual([
+      expect.objectContaining({ idempotencyKey: "ack:before-drift", actorPrincipalId: "operator-a" }),
+    ]);
+    const foreignKeys = ledger.raw.prepare(
+      "PRAGMA foreign_key_list(release_ingestion_dispatch_reconciliations)",
+    ).all() as unknown as Array<{ from: string; to: string }>;
+    expect(foreignKeys).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: "dispatch_id", to: "id" }),
+      expect.objectContaining({ from: "tenant_id", to: "tenant_id" }),
+    ]));
+    expect(() => ledger.raw.prepare(`INSERT INTO release_ingestion_dispatch_reconciliations
+      (id, tenant_id, dispatch_id, action, actor_principal_id, evidence_sha256,
+       expected_lease_generation, expected_failed_at, expected_failure_code, idempotency_key, created_at)
+      VALUES ('bad', 'tenant-b', ?, 'invalid', 'operator-b', 'short', 0, ?, 'x', 'bad', ?)`)
+      .run(failure.id, NOW, NOW)).toThrow();
   });
 
   it("upgrades the exact immediate-parent v2 schema and safely recovers active leases", () => {

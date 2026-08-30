@@ -3,6 +3,7 @@ import {
   completeReleaseDispatch,
   failReleaseDispatch,
   rehydrateReleaseArtifact,
+  ReleaseCatalogError,
   type ReleaseDispatch,
   type ReleaseIngestionStore,
 } from "@mendpoint/catalog";
@@ -37,7 +38,32 @@ export type ReleaseDispatchDrainSummary = Readonly<{
   failed: number;
   retried: number;
   exhausted: number;
+  failureStage: ReleaseDispatchFailureStage | null;
+  failureCode: string | null;
 }>;
+
+export type ReleaseDispatchFailureStage =
+  | "configuration"
+  | "claim"
+  | "artifact_rehydration"
+  | "event_append"
+  | "settlement"
+  | "backlog"
+  | "fence"
+  | "runtime";
+
+export class ReleaseDispatchRuntimeError extends Error {
+  readonly stage: ReleaseDispatchFailureStage;
+  readonly code: string;
+  readonly retryable = true;
+
+  constructor(stage: ReleaseDispatchFailureStage, code: string) {
+    super(code);
+    this.name = "ReleaseDispatchRuntimeError";
+    this.stage = stage;
+    this.code = code;
+  }
+}
 
 type ReleaseDispatchSink = typeof acceptReleaseDispatchDomainEvent;
 
@@ -99,6 +125,9 @@ function classifyFailure(error: unknown): Readonly<{
   code: string;
   retryable: boolean;
 }> {
+  if (error instanceof ReleaseCatalogError) {
+    return Object.freeze({ code: error.code, retryable: error.retryable });
+  }
   const sinkFailure = error as Partial<ReleaseDispatchSinkError>;
   if (
     typeof sinkFailure.code === "string" &&
@@ -128,8 +157,10 @@ function classifyFailure(error: unknown): Readonly<{
 }
 
 function normalizeLeaseFailure(error: unknown): never {
-  if (error instanceof Error && error.message === "release_dispatch_lease_lost") throw error;
-  throw new Error("release_dispatch_settlement_unavailable");
+  if (error instanceof Error && error.message === "release_dispatch_lease_lost") {
+    throw new ReleaseDispatchRuntimeError("settlement", "release_dispatch_lease_lost");
+  }
+  throw new ReleaseDispatchRuntimeError("settlement", "release_dispatch_settlement_unavailable");
 }
 
 function settleFailure(input: Readonly<{
@@ -164,6 +195,7 @@ export function drainReleaseDispatchesOnce(input: Readonly<{
   maxClaimsPerConsumer: number;
   now?: () => string;
   sink?: ReleaseDispatchSink;
+  rehydrate?: typeof rehydrateReleaseArtifact;
   shouldContinue?: () => boolean;
 }>): ReleaseDispatchDrainSummary {
   const workerId = requireIdentifier(input.workerId);
@@ -179,6 +211,7 @@ export function drainReleaseDispatchesOnce(input: Readonly<{
   if (!Array.isArray(input.consumers) || input.consumers.length > MAX_CONSUMERS) configurationError();
   const now = input.now ?? (() => new Date().toISOString());
   const sink = input.sink ?? acceptReleaseDispatchDomainEvent;
+  const rehydrate = input.rehydrate ?? rehydrateReleaseArtifact;
   const shouldContinue = input.shouldContinue ?? (() => true);
   let configurationFailed = 0;
   let claimed = 0;
@@ -186,6 +219,8 @@ export function drainReleaseDispatchesOnce(input: Readonly<{
   let failed = 0;
   let retried = 0;
   let exhausted = 0;
+  let failureStage: ReleaseDispatchFailureStage | null = null;
+  let failureCode: string | null = null;
 
   consumerLoop: for (const consumer of input.consumers) {
     if (!shouldContinue()) break;
@@ -200,8 +235,10 @@ export function drainReleaseDispatchesOnce(input: Readonly<{
         actorPrincipalId: parsedConsumer.actorPrincipalId,
         observedAt: configurationObservedAt,
       });
-    } catch {
+    } catch (error) {
       configurationFailed += 1;
+      failureStage = "configuration";
+      failureCode = classifyFailure(error).code;
       continue;
     }
 
@@ -215,21 +252,37 @@ export function drainReleaseDispatchesOnce(input: Readonly<{
           leaseDurationMs: input.leaseDurationMs,
         });
       } catch {
-        throw new Error("release_dispatch_claim_unavailable");
+        throw new ReleaseDispatchRuntimeError("claim", "release_dispatch_claim_unavailable");
       }
       if (!dispatch) break;
       if (dispatch.tenantId !== parsedConsumer.tenantId) {
         throw new Error("release_dispatch_claim_tenant_mismatch");
       }
       claimed += 1;
+      let artifact: ReturnType<typeof rehydrateReleaseArtifact>;
       try {
-        const observedAt = nowIso(now);
-        const artifact = rehydrateReleaseArtifact(input.store, {
+        artifact = rehydrate(input.store, {
           tenantId: dispatch.tenantId,
           artifactId: dispatch.artifactId,
           expectedContentSha256: dispatch.artifactContentSha256,
         });
+      } catch (error) {
         if (!shouldContinue()) break consumerLoop;
+        const classification = classifyFailure(error);
+        failureStage = "artifact_rehydration";
+        failureCode = classification.code;
+        const outcome = settleFailure({
+          store: input.store, dispatch, workerId,
+          code: classification.code, retryable: classification.retryable,
+        });
+        if (outcome === "failed") failed += 1;
+        else if (outcome === "retried") retried += 1;
+        else exhausted += 1;
+        continue;
+      }
+      if (!shouldContinue()) break consumerLoop;
+      try {
+        const observedAt = nowIso(now);
         sink({
           db: input.db,
           actorPrincipalId: parsedConsumer.actorPrincipalId,
@@ -245,6 +298,8 @@ export function drainReleaseDispatchesOnce(input: Readonly<{
       } catch (error) {
         if (!shouldContinue()) break consumerLoop;
         const classification = classifyFailure(error);
+        failureStage = "event_append";
+        failureCode = classification.code;
         const outcome = settleFailure({
           store: input.store,
           dispatch,
@@ -280,5 +335,7 @@ export function drainReleaseDispatchesOnce(input: Readonly<{
     failed,
     retried,
     exhausted,
+    failureStage,
+    failureCode,
   });
 }

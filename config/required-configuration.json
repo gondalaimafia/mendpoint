@@ -257,6 +257,16 @@
       "note": "identifier-only tenant and service-principal bindings; repository content and credentials are prohibited"
     },
     {
+      "name": "MENDPOINT_RELEASE_DISPATCH_RECONCILIATION_PRINCIPAL_ID",
+      "type": "variable",
+      "scope": {
+        "kind": "repo"
+      },
+      "status": "optional_gated",
+      "gatedBy": "the reconciliation CLI fails closed unless an active tenant-bound human or dedicated reconciliation service principal is bound and differs from the dispatch worker",
+      "note": "identifier only; this binding grants no dispatch execution authority"
+    },
+    {
       "name": "REGAUGE_CANARY_BRANCH",
       "type": "variable",
       "scope": {

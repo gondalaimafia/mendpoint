@@ -575,6 +575,8 @@ describe("worker runtime", () => {
       releaseDispatchClaimed: 0,
       releaseDispatchFailed: 0,
       releaseDispatchExpiredClaims: 0,
+      releaseDispatchFailureStage: null,
+      releaseDispatchFailureCode: null,
     });
 
     expect(JSON.parse(readFileSync(heartbeatPath, "utf8"))).toMatchObject({
@@ -614,6 +616,8 @@ describe("worker runtime", () => {
         releaseDispatchClaimed: 0,
         releaseDispatchFailed: 0,
         releaseDispatchExpiredClaims: 0,
+        releaseDispatchFailureStage: null,
+        releaseDispatchFailureCode: null,
       }),
     ).toThrow(/absolute/i);
   });

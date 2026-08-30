@@ -102,6 +102,7 @@ export {
   clearPagingDedupe,
   pagingEventForReadiness,
   pagingEventForWorkerHeartbeat,
+  pagingEventsForWorkerHeartbeat,
   pagingEventForEgressReceipt,
   pageReadiness,
   pageWorkerHeartbeat,

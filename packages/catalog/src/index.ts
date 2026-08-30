@@ -85,6 +85,7 @@ export {
   recordReleaseReviewerOverride,
   recordReleaseReviewerOverrideCas,
   rehydrateReleaseArtifact,
+  ReleaseCatalogError,
   reconcileReleaseDispatchFailure,
   summarizeReleaseDispatchBacklog,
   type ReleaseAdapter,

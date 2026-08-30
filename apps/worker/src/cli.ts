@@ -106,6 +106,7 @@ import {
   initializeWithMutationLease,
   flushTelemetry,
   isTelemetryEnabled,
+  recordCounter,
 } from "@mendpoint/ops";
 import { checkAuditIntegrityForAllTenants } from "./audit-integrity.js";
 import { createWardenCheckpointJobJournal } from "./warden-checkpoint-journal.js";
@@ -113,6 +114,8 @@ import {
   drainReleaseDispatchesOnce,
   parseReleaseDispatchConsumersFromEnv,
   type ReleaseDispatchConsumer,
+  type ReleaseDispatchFailureStage,
+  ReleaseDispatchRuntimeError,
 } from "./release-dispatch-drainer.js";
 import { runReleaseDispatchReconciliationCommand } from "./release-dispatch-reconcile-cli.js";
 
@@ -406,6 +409,8 @@ export type WorkerHeartbeat = {
   releaseDispatchClaimed: number | null;
   releaseDispatchFailed: number | null;
   releaseDispatchExpiredClaims: number | null;
+  releaseDispatchFailureStage: ReleaseDispatchFailureStage | null;
+  releaseDispatchFailureCode: string | null;
 };
 
 export function releaseDispatchRuntimeStatus(input: Readonly<{
@@ -424,15 +429,22 @@ export type ReleaseDispatchRuntimeCycle = Readonly<{
   claimed: number | null;
   failed: number | null;
   expiredClaims: number | null;
+  failureStage: ReleaseDispatchFailureStage | null;
+  failureCode: string | null;
   drained: ReturnType<typeof drainReleaseDispatchesOnce> | null;
 }>;
 
-export function releaseDispatchRuntimeUnknownState(): Readonly<{
+export function releaseDispatchRuntimeUnknownState(
+  failureStage: ReleaseDispatchFailureStage = "runtime",
+  failureCode = "release_dispatch_runtime_unavailable",
+): Readonly<{
   status: "unknown";
   pending: null;
   claimed: null;
   failed: null;
   expiredClaims: null;
+  failureStage: ReleaseDispatchFailureStage;
+  failureCode: string;
 }> {
   return Object.freeze({
     status: "unknown",
@@ -440,6 +452,8 @@ export function releaseDispatchRuntimeUnknownState(): Readonly<{
     claimed: null,
     failed: null,
     expiredClaims: null,
+    failureStage,
+    failureCode,
   });
 }
 
@@ -457,6 +471,8 @@ export function runReleaseDispatchRuntimeCycle(input: Readonly<{
     claimed: number | null;
     failed: number | null;
     expiredClaims: number | null;
+    failureStage?: ReleaseDispatchFailureStage | null;
+    failureCode?: string | null;
   }>;
 }>): ReleaseDispatchRuntimeCycle {
   const mutationLease = input.mutationFenceRoot
@@ -474,6 +490,8 @@ export function runReleaseDispatchRuntimeCycle(input: Readonly<{
       claimed: input.previous?.claimed ?? null,
       failed: input.previous?.failed ?? null,
       expiredClaims: input.previous?.expiredClaims ?? null,
+      failureStage: "fence",
+      failureCode: "release_dispatch_mutation_fence_unavailable",
       drained: null,
     });
   }
@@ -487,8 +505,13 @@ export function runReleaseDispatchRuntimeCycle(input: Readonly<{
       maxClaimsPerConsumer: input.maxClaimsPerConsumer,
       shouldContinue: input.shouldContinue,
     });
-    const backlog = input.consumers.map((consumer) =>
-      summarizeReleaseDispatchBacklog(input.store, consumer.tenantId));
+    let backlog: ReturnType<typeof summarizeReleaseDispatchBacklog>[];
+    try {
+      backlog = input.consumers.map((consumer) =>
+        summarizeReleaseDispatchBacklog(input.store, consumer.tenantId));
+    } catch {
+      throw new ReleaseDispatchRuntimeError("backlog", "release_dispatch_backlog_unavailable");
+    }
     const pending = backlog.reduce((total, summary) => total + summary.pending, 0);
     const claimed = backlog.reduce((total, summary) => total + summary.claimed, 0);
     const failed = backlog.reduce((total, summary) => total + summary.failed, 0);
@@ -498,6 +521,16 @@ export function runReleaseDispatchRuntimeCycle(input: Readonly<{
     );
     const degraded = drained.configurationFailed > 0 || drained.failed > 0 ||
       drained.retried > 0 || drained.exhausted > 0 || failed > 0 || expiredClaims > 0;
+    const failureStage = degraded
+      ? drained.failureStage ?? input.previous?.failureStage ??
+        (expiredClaims > 0 ? "settlement" : "backlog")
+      : null;
+    const failureCode = degraded
+      ? drained.failureCode ?? input.previous?.failureCode ??
+        (expiredClaims > 0
+          ? "release_dispatch_expired_claim"
+          : "release_dispatch_durable_failure")
+      : null;
     return Object.freeze({
       fenceAvailable: true,
       status: releaseDispatchRuntimeStatus({
@@ -509,6 +542,8 @@ export function runReleaseDispatchRuntimeCycle(input: Readonly<{
       claimed,
       failed,
       expiredClaims,
+      failureStage,
+      failureCode,
       drained,
     });
   } finally {
@@ -526,6 +561,8 @@ export function runReleaseDispatchServiceIteration(input: Parameters<
     claimed: number | null;
     failed: number | null;
     expiredClaims: number | null;
+    failureStage: ReleaseDispatchFailureStage | null;
+    failureCode: string | null;
   }>;
 }> {
   try {
@@ -538,11 +575,31 @@ export function runReleaseDispatchServiceIteration(input: Parameters<
         claimed: cycle.claimed,
         failed: cycle.failed,
         expiredClaims: cycle.expiredClaims,
+        failureStage: cycle.failureStage,
+        failureCode: cycle.failureCode,
       }),
     });
-  } catch {
-    return Object.freeze({ cycle: null, state: releaseDispatchRuntimeUnknownState() });
+  } catch (error) {
+    const failure = error instanceof ReleaseDispatchRuntimeError
+      ? error
+      : new ReleaseDispatchRuntimeError("runtime", "release_dispatch_runtime_unavailable");
+    return Object.freeze({
+      cycle: null,
+      state: releaseDispatchRuntimeUnknownState(failure.stage, failure.code),
+    });
   }
+}
+
+export function recordReleaseDispatchRuntimeTelemetry(input: Readonly<{
+  status: WorkerHeartbeat["releaseDispatchStatus"];
+  failureStage: ReleaseDispatchFailureStage | null;
+  failureCode: string | null;
+}>): void {
+  recordCounter("release_dispatch_cycle_total", 1, {
+    status: input.status,
+    failure_stage: input.failureStage ?? "none",
+    failure_code: input.failureCode ?? "none",
+  });
 }
 
 const RELEASE_POLL_CONFIGURATIONS_ERROR =
@@ -4491,6 +4548,8 @@ async function runService(intervalMs: number) {
   let releaseDispatchClaimed: number | null = releaseDispatchConsumers.length > 0 ? null : 0;
   let releaseDispatchFailed: number | null = releaseDispatchConsumers.length > 0 ? null : 0;
   let releaseDispatchExpiredClaims: number | null = releaseDispatchConsumers.length > 0 ? null : 0;
+  let releaseDispatchFailureStage: ReleaseDispatchFailureStage | null = null;
+  let releaseDispatchFailureCode: string | null = null;
   let jobs: JobDrainResult = {
     claimed: 0,
     succeeded: 0,
@@ -4564,6 +4623,8 @@ async function runService(intervalMs: number) {
         releaseDispatchClaimed,
         releaseDispatchFailed,
         releaseDispatchExpiredClaims,
+        releaseDispatchFailureStage,
+        releaseDispatchFailureCode,
         ...(feedEvidence.lastSuccessAt
           ? { feedLastSuccessAt: feedEvidence.lastSuccessAt }
           : {}),
@@ -4588,6 +4649,8 @@ async function runService(intervalMs: number) {
         releaseDispatchClaimed,
         releaseDispatchFailed,
         releaseDispatchExpiredClaims,
+        releaseDispatchFailureStage,
+        releaseDispatchFailureCode,
       }).catch(() => undefined);
     } catch (error) {
       console.error(error);
@@ -4773,6 +4836,8 @@ async function runService(intervalMs: number) {
             claimed: releaseDispatchClaimed,
             failed: releaseDispatchFailed,
             expiredClaims: releaseDispatchExpiredClaims,
+            failureStage: releaseDispatchFailureStage,
+            failureCode: releaseDispatchFailureCode,
           },
         })
         : Object.freeze({ cycle: null, state: releaseDispatchRuntimeUnknownState() });
@@ -4781,19 +4846,26 @@ async function runService(intervalMs: number) {
       releaseDispatchClaimed = state.claimed;
       releaseDispatchFailed = state.failed;
       releaseDispatchExpiredClaims = state.expiredClaims;
+      releaseDispatchFailureStage = state.failureStage;
+      releaseDispatchFailureCode = state.failureCode;
       releaseDispatchStatus = state.status;
+      recordReleaseDispatchRuntimeTelemetry(state);
       if (cycle) {
         failures = cycle.status === "degraded" ? failures + 1 : 0;
         if (!cycle.fenceAvailable) {
-          console.error("Release dispatch: status=degraded reason=mutation_fence_unavailable");
+          console.error(
+            `Release dispatch: status=degraded failureStage=${state.failureStage} failureCode=${state.failureCode}`,
+          );
         } else if (cycle.drained) {
           console.log(
-            `Release dispatch: configured=${cycle.drained.configured} claimed=${cycle.drained.claimed} completed=${cycle.drained.completed} failed=${cycle.drained.failed} retried=${cycle.drained.retried} exhausted=${cycle.drained.exhausted} configurationFailed=${cycle.drained.configurationFailed} pending=${releaseDispatchPending} durableFailed=${releaseDispatchFailed} expired=${releaseDispatchExpiredClaims} status=${releaseDispatchStatus}`,
+            `Release dispatch: configured=${cycle.drained.configured} claimed=${cycle.drained.claimed} completed=${cycle.drained.completed} failed=${cycle.drained.failed} retried=${cycle.drained.retried} exhausted=${cycle.drained.exhausted} configurationFailed=${cycle.drained.configurationFailed} pending=${releaseDispatchPending} durableFailed=${releaseDispatchFailed} expired=${releaseDispatchExpiredClaims} status=${releaseDispatchStatus} failureStage=${state.failureStage ?? "none"} failureCode=${state.failureCode ?? "none"}`,
           );
         }
       } else {
         failures += 1;
-        console.error("Release dispatch: status=unknown");
+        console.error(
+          `Release dispatch: status=unknown failureStage=${state.failureStage} failureCode=${state.failureCode}`,
+        );
       }
       emitHeartbeat();
       const delay = failures ? retryDelayMs(failures, intervalMs) : intervalMs;
@@ -5028,7 +5100,7 @@ async function main() {
   run-transformer-service
   sdk-signals [--local]
   reconcile-installations [--tenant tenant_default] [--installation 151614362]
-  reconcile-release-dispatch --tenant <id> --dispatch <id> --action <acknowledge|requeue> --evidence-sha256 <sha256> --expected-lease-generation <n> --expected-failed-at <iso> --expected-failure-code <code> --idempotency-key <key>
+  reconcile-release-dispatch --tenant <id> --dispatch <id> --action <acknowledge|requeue> --evidence-sha256 <sha256> --expected-lease-generation <n> --expected-failed-at <iso> --expected-failure-code <code> --idempotency-key <key> --actor-principal-id <id>
   learning-corpus --tenant <id> --purpose <purpose> --cutoff <iso> --actor <principal-id> --idempotency-key <key> [--created-at <iso>]`);
     process.exitCode = 1;
   }

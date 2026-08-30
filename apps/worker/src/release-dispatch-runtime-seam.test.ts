@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { openReleaseIngestionStore, type ReleaseIngestionStore } from "@mendpoint/catalog";
 import { createDb, insertPrincipal, type AppDb } from "@mendpoint/db";
 import { pagingEventForWorkerHeartbeat } from "@mendpoint/notify";
+import { drainTelemetry, resetTelemetry } from "@mendpoint/ops";
 import {
+  recordReleaseDispatchRuntimeTelemetry,
   runReleaseDispatchRuntimeCycle,
   runReleaseDispatchServiceIteration,
   writeWorkerHeartbeat,
@@ -86,6 +88,8 @@ function heartbeat(cycle: ReleaseDispatchRuntimeCycle): WorkerHeartbeat {
     releaseDispatchClaimed: cycle.claimed,
     releaseDispatchFailed: cycle.failed,
     releaseDispatchExpiredClaims: cycle.expiredClaims,
+    releaseDispatchFailureStage: cycle.failureStage,
+    releaseDispatchFailureCode: cycle.failureCode,
   };
 }
 
@@ -162,6 +166,10 @@ describe("release dispatch runtime fence to heartbeat to paging seam", () => {
     });
     expect(iteration.cycle).toBeNull();
     const unknown = iteration.state;
+    expect(unknown).toMatchObject({
+      failureStage: "claim",
+      failureCode: "release_dispatch_claim_unavailable",
+    });
     const snapshot = heartbeat({
       fenceAvailable: false,
       drained: null,
@@ -190,5 +198,33 @@ describe("release dispatch runtime fence to heartbeat to paging seam", () => {
       type: "release_dispatch_degraded",
       details: { pending: null, claimed: null, failed: null, expiredClaims: null },
     });
+  });
+
+  it("records the same bounded failure identity in telemetry", () => {
+    const previousEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "https://otel.example.test";
+    resetTelemetry();
+    try {
+      recordReleaseDispatchRuntimeTelemetry({
+        status: "unknown",
+        failureStage: "claim",
+        failureCode: "release_dispatch_claim_unavailable",
+      });
+      expect(drainTelemetry().counters).toEqual([
+        expect.objectContaining({
+          name: "release_dispatch_cycle_total",
+          value: 1,
+          attributes: {
+            status: "unknown",
+            failure_stage: "claim",
+            failure_code: "release_dispatch_claim_unavailable",
+          },
+        }),
+      ]);
+    } finally {
+      resetTelemetry();
+      if (previousEndpoint === undefined) delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      else process.env.OTEL_EXPORTER_OTLP_ENDPOINT = previousEndpoint;
+    }
   });
 });

@@ -42,6 +42,20 @@ function database(): AppDb {
   return db;
 }
 
+function databasePair(): readonly [AppDb, AppDb] {
+  const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-sink-pair-"));
+  directories.push(directory);
+  const path = join(directory, "app.sqlite");
+  const first = createDb(path);
+  const second = createDb(path);
+  opened.push(first, second);
+  first.raw.prepare(`INSERT INTO tenants
+    (id, slug, name, plan, billing_status, seat_limit, created_at)
+    VALUES ('tenant-a', 'tenant-a', 'tenant-a', 'team', 'active', 10, ?)`)
+    .run("2026-08-27T14:00:00.000Z");
+  return [first, second] as const;
+}
+
 function principal(db: AppDb, input: Readonly<{
   id?: string;
   tenantId?: string;
@@ -124,10 +138,65 @@ describe("release dispatch domain event sink", () => {
       actorPrincipalId: replacementPrincipalId,
       envelope: envelope(),
       observedAt: "2026-08-27T15:01:00.000Z",
-    })).toThrow(RELEASE_DISPATCH_SINK_FAILURE_CODES.authorityInvalid);
+    })).toThrow(RELEASE_DISPATCH_SINK_FAILURE_CODES.idempotencyConflict);
     const events = listDomainEvents(db, "tenant-a");
     expect(events).toHaveLength(1);
     expect(events[0]!.actor_principal_id).toBe(originalPrincipalId);
+  });
+
+  it.each([
+    ["revoked", { revokeAt: "2026-08-27T15:00:30.000Z", expiresAt: null }],
+    ["expired", { revokeAt: null, expiresAt: "2026-08-27T15:00:30.000Z" }],
+  ])("accepts an exact crash replay using historically valid authority after it is %s", (_label, state) => {
+    const [first, second] = databasePair();
+    const actorPrincipalId = principal(first, {
+      expiresAt: state.expiresAt,
+    });
+    const inserted = acceptReleaseDispatchDomainEvent({
+      db: first, actorPrincipalId, envelope: envelope(), observedAt: NOW,
+    });
+    if (state.revokeAt) {
+      first.raw.prepare("UPDATE principals SET revoked_at = ? WHERE tenant_id = ? AND id = ?")
+        .run(state.revokeAt, "tenant-a", actorPrincipalId);
+    }
+    const replay = acceptReleaseDispatchDomainEvent({
+      db: second,
+      actorPrincipalId,
+      envelope: envelope(),
+      observedAt: "2026-08-27T15:01:00.000Z",
+    });
+    expect(replay).toEqual({ eventId: inserted.eventId, inserted: false });
+    expect(listDomainEvents(second, "tenant-a")).toHaveLength(1);
+  });
+
+  it("serializes two connections and turns lock contention into retryable replay", () => {
+    const [first, second] = databasePair();
+    const actorPrincipalId = principal(first);
+    second.raw.exec("PRAGMA busy_timeout = 1");
+    first.raw.exec("BEGIN IMMEDIATE");
+    let blocked: unknown;
+    try {
+      acceptReleaseDispatchDomainEvent({
+        db: second, actorPrincipalId, envelope: envelope(), observedAt: NOW,
+      });
+    } catch (error) {
+      blocked = error;
+    } finally {
+      first.raw.exec("ROLLBACK");
+    }
+    expect(blocked).toMatchObject({
+      code: RELEASE_DISPATCH_SINK_FAILURE_CODES.infrastructureUnavailable,
+      retryable: true,
+    });
+    const inserted = acceptReleaseDispatchDomainEvent({
+      db: first, actorPrincipalId, envelope: envelope(), observedAt: NOW,
+    });
+    expect(acceptReleaseDispatchDomainEvent({
+      db: second,
+      actorPrincipalId,
+      envelope: envelope(),
+      observedAt: "2026-08-27T15:01:00.000Z",
+    })).toEqual({ eventId: inserted.eventId, inserted: false });
   });
 
   it("provisions the exact tenant service principal and refuses a conflicting identity", () => {

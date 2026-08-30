@@ -80,6 +80,8 @@ describe("public deployment health", () => {
       releaseDispatchClaimed: 0,
       releaseDispatchFailed: 0,
       releaseDispatchExpiredClaims: 0,
+      releaseDispatchFailureStage: null,
+      releaseDispatchFailureCode: null,
       jobs: { failed: 0 },
     };
     writeFileSync(heartbeatPath, JSON.stringify(base));
@@ -103,6 +105,8 @@ describe("public deployment health", () => {
       ...base,
       recordedAt: new Date().toISOString(),
       releaseDispatchStatus: "degraded",
+      releaseDispatchFailureStage: "event_append",
+      releaseDispatchFailureCode: "release_dispatch_validation_failed",
       releaseDispatchPending: 1,
       releaseDispatchFailed: 1,
     }));
@@ -186,6 +190,8 @@ describe("public deployment health", () => {
     ["releaseDispatchClaimed", 1.5],
     ["releaseDispatchFailed", "0"],
     ["releaseDispatchExpiredClaims", -1],
+    ["releaseDispatchFailureStage", "provider-secret-stage"],
+    ["releaseDispatchFailureCode", "RAW Provider Error"],
   ])("fails closed when present heartbeat field %s is malformed", async (field, value) => {
     const dir = mkdtempSync(join(tmpdir(), "mendpoint-health-release-malformed-"));
     dirs.push(dir);

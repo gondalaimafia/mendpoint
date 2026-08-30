@@ -9,7 +9,7 @@ import {
   listReleaseDispatchReconciliations,
   openReleaseIngestionStore,
 } from "@mendpoint/catalog";
-import { createDb, getPrincipal } from "@mendpoint/db";
+import { createDb, getPrincipal, insertPrincipal } from "@mendpoint/db";
 import { runReleaseDispatchReconciliationCommand } from "./release-dispatch-reconcile-cli.js";
 
 const NOW = "2026-08-27T15:00:00.000Z";
@@ -29,6 +29,14 @@ function fixture() {
     (id, slug, name, plan, billing_status, seat_limit, created_at)
     VALUES ('tenant-a', 'tenant-a', 'Tenant A', 'team', 'active', 10, ?)`)
     .run("2026-08-27T14:00:00.000Z");
+  insertPrincipal(db, {
+    id: "operator-a",
+    tenantId: "tenant-a",
+    kind: "human",
+    subject: "operator@example.test",
+    displayName: "Release operator",
+    createdAt: "2026-08-27T14:00:00.000Z",
+  });
   ingestReleaseDocument(store, {
     tenantId: "tenant-a",
     providerSlug: "stripe",
@@ -71,6 +79,7 @@ describe("release dispatch reconciliation command", () => {
           "--expected-failed-at", failed.failedAt!,
           "--expected-failure-code", failed.failureCode!,
           "--idempotency-key", "operator:requeue:1",
+          "--actor-principal-id", "operator-a",
         ],
         env: {
           MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON: JSON.stringify([{
@@ -78,6 +87,7 @@ describe("release dispatch reconciliation command", () => {
             tenantId: "tenant-a",
             actorPrincipalId: "release-service-a",
           }]),
+          MENDPOINT_RELEASE_DISPATCH_RECONCILIATION_PRINCIPAL_ID: "operator-a",
         },
         db,
         store,
@@ -87,10 +97,12 @@ describe("release dispatch reconciliation command", () => {
       expect(output).toEqual([JSON.stringify(result)]);
       expect(output[0]).not.toContain("invalid_payload");
       expect(output[0]).not.toContain("aaaaaaaa");
-      expect(getPrincipal(db, "tenant-a", "release-service-a")).toMatchObject({
-        kind: "service", subject: "release-dispatch",
+      expect(getPrincipal(db, "tenant-a", "operator-a")).toMatchObject({
+        kind: "human", subject: "operator@example.test",
       });
-      expect(listReleaseDispatchReconciliations(store, "tenant-a", failed.id)).toHaveLength(1);
+      expect(listReleaseDispatchReconciliations(store, "tenant-a", failed.id)).toEqual([
+        expect.objectContaining({ actorPrincipalId: "operator-a" }),
+      ]);
     } finally {
       store.close();
       db.raw.close();
@@ -108,6 +120,7 @@ describe("release dispatch reconciliation command", () => {
       "--expected-failed-at", failed.failedAt!,
       "--expected-failure-code", failed.failureCode!,
       "--idempotency-key", "operator:ack:1",
+      "--actor-principal-id", "operator-a",
     ];
     try {
       expect(() => runReleaseDispatchReconciliationCommand({
@@ -122,6 +135,32 @@ describe("release dispatch reconciliation command", () => {
         db,
         store,
       })).toThrow("release_dispatch_reconciliation_arguments_invalid");
+      const boundEnv = {
+        MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON: JSON.stringify([{
+          contractVersion: "catalog.release-dispatch.v1",
+          tenantId: "tenant-a",
+          actorPrincipalId: "release-service-a",
+        }]),
+        MENDPOINT_RELEASE_DISPATCH_RECONCILIATION_PRINCIPAL_ID: "operator-a",
+      };
+      expect(() => runReleaseDispatchReconciliationCommand({
+        argv: base.map((value) => value === "operator-a" ? "release-service-a" : value),
+        env: {
+          ...boundEnv,
+          MENDPOINT_RELEASE_DISPATCH_RECONCILIATION_PRINCIPAL_ID: "release-service-a",
+        },
+        db,
+        store,
+      })).toThrow("release_dispatch_reconciliation_authority_binding_required");
+      expect(() => runReleaseDispatchReconciliationCommand({
+        argv: base.map((value) => value === "operator-a" ? "missing-operator" : value),
+        env: {
+          ...boundEnv,
+          MENDPOINT_RELEASE_DISPATCH_RECONCILIATION_PRINCIPAL_ID: "missing-operator",
+        },
+        db,
+        store,
+      })).toThrow("release_dispatch_reconciliation_authority_invalid");
       expect(() => runReleaseDispatchReconciliationCommand({
         argv: base.map((value) => value === failed.failedAt ? NOW : value),
         env: {
@@ -130,6 +169,7 @@ describe("release dispatch reconciliation command", () => {
             tenantId: "tenant-a",
             actorPrincipalId: "release-service-a",
           }]),
+          MENDPOINT_RELEASE_DISPATCH_RECONCILIATION_PRINCIPAL_ID: "operator-a",
         },
         db,
         store,

@@ -1,11 +1,13 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ingestReleaseDocument,
   listReleaseDispatches,
   openReleaseIngestionStore,
+  ReleaseCatalogError,
   type ReleaseIngestionStore,
 } from "@mendpoint/catalog";
 import {
@@ -113,6 +115,7 @@ function run(input: Readonly<{
   maxClaimsPerConsumer?: number;
   now?: () => string;
   sink?: typeof acceptReleaseDispatchDomainEvent;
+  rehydrate?: Parameters<typeof drainReleaseDispatchesOnce>[0]["rehydrate"];
   shouldContinue?: () => boolean;
 }>) {
   return drainReleaseDispatchesOnce({
@@ -175,6 +178,8 @@ describe("release dispatch drainer", () => {
       failed: 0,
       retried: 0,
       exhausted: 0,
+      failureStage: "configuration",
+      failureCode: RELEASE_DISPATCH_SINK_FAILURE_CODES.authorityInvalid,
     });
   });
 
@@ -194,6 +199,8 @@ describe("release dispatch drainer", () => {
       failed: 0,
       retried: 0,
       exhausted: 0,
+      failureStage: null,
+      failureCode: null,
     });
     expect(getPrincipal(appDb, "tenant-a", "release-service-a")).toMatchObject({
       kind: "service",
@@ -227,6 +234,8 @@ describe("release dispatch drainer", () => {
       failed: 0,
       retried: 0,
       exhausted: 0,
+      failureStage: null,
+      failureCode: null,
     });
     expect(listReleaseDispatches(releaseStore, "tenant-a").map((item) => item.status).sort())
       .toEqual(["completed", "pending"]);
@@ -317,9 +326,64 @@ describe("release dispatch drainer", () => {
     })).toMatchObject({ claimed: 1, failed: 1, retried: 0 });
     expect(listReleaseDispatches(releaseStore, "tenant-a")[0]).toMatchObject({
       status: "failed",
-      failureCode: RELEASE_DISPATCH_SINK_FAILURE_CODES.validationFailed,
+      failureCode: "release_artifact_digest_mismatch",
     });
     expect(listDomainEvents(appDb, "tenant-a")).toEqual([]);
+  });
+
+  it("retries typed catalog infrastructure failures but terminates deterministic artifact failures", () => {
+    const releaseStore = store();
+    const appDb = db();
+    ingest(releaseStore, "tenant-a", "a");
+    ingest(releaseStore, "tenant-a", "b");
+    addPrincipal(appDb, { tenantId: "tenant-a", id: "release-service-a" });
+    let calls = 0;
+    const summary = run({
+      store: releaseStore,
+      db: appDb,
+      consumers: [consumer("tenant-a", "release-service-a")],
+      maxClaimsPerConsumer: 2,
+      rehydrate: ((...args: Parameters<NonNullable<Parameters<typeof drainReleaseDispatchesOnce>[0]["rehydrate"]>>) => {
+        calls += 1;
+        if (calls === 1) throw new ReleaseCatalogError("release_catalog_io_unavailable", true);
+        throw new ReleaseCatalogError("release_artifact_decode_invalid", false);
+      }) as NonNullable<Parameters<typeof drainReleaseDispatchesOnce>[0]["rehydrate"]>,
+    });
+    expect(summary).toMatchObject({
+      claimed: 2, retried: 1, failed: 1,
+      failureStage: "artifact_rehydration", failureCode: "release_artifact_decode_invalid",
+    });
+    expect(listReleaseDispatches(releaseStore, "tenant-a").map((dispatch) => dispatch.status).sort())
+      .toEqual(["failed", "pending"]);
+  });
+
+  it("reports a locked catalog claim as retryable runtime degradation without terminal settlement", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-release-drainer-lock-"));
+    directories.push(directory);
+    const path = join(directory, "release.sqlite");
+    const releaseStore = openReleaseIngestionStore(path, { clock: () => NOW });
+    stores.push(releaseStore);
+    const appDb = db();
+    ingest(releaseStore, "tenant-a");
+    addPrincipal(appDb, { tenantId: "tenant-a", id: "release-service-a" });
+    releaseStore.raw.exec("PRAGMA busy_timeout = 1");
+    const blocker = new DatabaseSync(path);
+    blocker.exec("PRAGMA journal_mode = WAL; BEGIN IMMEDIATE");
+    try {
+      expect(() => run({
+        store: releaseStore,
+        db: appDb,
+        consumers: [consumer("tenant-a", "release-service-a")],
+      })).toThrow(expect.objectContaining({
+        stage: "claim", code: "release_dispatch_claim_unavailable",
+      }));
+      expect(listReleaseDispatches(releaseStore, "tenant-a")[0]).toMatchObject({
+        status: "pending", attemptCount: 0, failureCode: null,
+      });
+    } finally {
+      blocker.exec("ROLLBACK");
+      blocker.close();
+    }
   });
 
   it("records unknown programming failures as terminal fixed-code failures without retry", () => {

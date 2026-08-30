@@ -3,12 +3,8 @@ import {
   type ReleaseDispatchReconciliationAction,
   type ReleaseIngestionStore,
 } from "@mendpoint/catalog";
-import type { AppDb } from "@mendpoint/db";
+import { getPrincipal, type AppDb } from "@mendpoint/db";
 import { parseReleaseDispatchConsumersFromEnv } from "./release-dispatch-drainer.js";
-import {
-  assertActiveReleaseDispatchPrincipal,
-  ensureReleaseDispatchPrincipal,
-} from "./release-dispatch-domain-event-sink.js";
 
 const FLAGS = Object.freeze([
   "--tenant",
@@ -19,7 +15,32 @@ const FLAGS = Object.freeze([
   "--expected-failed-at",
   "--expected-failure-code",
   "--idempotency-key",
+  "--actor-principal-id",
 ]);
+
+export const RELEASE_DISPATCH_RECONCILIATION_PRINCIPAL_ENV =
+  "MENDPOINT_RELEASE_DISPATCH_RECONCILIATION_PRINCIPAL_ID" as const;
+
+function assertActiveReconciliationPrincipal(input: Readonly<{
+  db: AppDb;
+  tenantId: string;
+  actorPrincipalId: string;
+  observedAt: string;
+}>): void {
+  const principal = getPrincipal(input.db, input.tenantId, input.actorPrincipalId);
+  const observedAt = Date.parse(input.observedAt);
+  const createdAt = principal ? Date.parse(principal.created_at) : Number.NaN;
+  const revokedAt = principal?.revoked_at ? Date.parse(principal.revoked_at) : null;
+  const expiresAt = principal?.expires_at ? Date.parse(principal.expires_at) : null;
+  const identityValid = principal?.kind === "human" ||
+    principal?.kind === "service" && principal.subject === "release-dispatch-reconciliation";
+  if (
+    !principal || !identityValid || !Number.isFinite(observedAt) ||
+    !Number.isFinite(createdAt) || createdAt > observedAt ||
+    (revokedAt !== null && (!Number.isFinite(revokedAt) || revokedAt <= observedAt)) ||
+    (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= observedAt))
+  ) throw new Error("release_dispatch_reconciliation_authority_invalid");
+}
 
 function parseExactFlags(argv: readonly string[]): Readonly<Record<string, string>> {
   if (argv.length !== FLAGS.length * 2) {
@@ -67,37 +88,36 @@ export function runReleaseDispatchReconciliationCommand(input: Readonly<{
     throw new Error("release_dispatch_reconciliation_consumer_binding_required");
   }
   const consumer = consumers[0]!;
-  ensureReleaseDispatchPrincipal({
-    db: input.db,
-    tenantId,
-    actorPrincipalId: consumer.actorPrincipalId,
-    observedAt: input.store.trustedNow(),
-  });
+  const actorPrincipalId = flags["--actor-principal-id"]!;
+  if (
+    actorPrincipalId === consumer.actorPrincipalId ||
+    input.env[RELEASE_DISPATCH_RECONCILIATION_PRINCIPAL_ENV]?.trim() !== actorPrincipalId
+  ) throw new Error("release_dispatch_reconciliation_authority_binding_required");
   input.db.raw.exec("BEGIN IMMEDIATE");
   let result: ReturnType<typeof reconcileReleaseDispatchFailure>;
   try {
     const observedAt = input.store.trustedNow();
-    assertActiveReleaseDispatchPrincipal({
+    assertActiveReconciliationPrincipal({
       db: input.db,
       tenantId,
-      actorPrincipalId: consumer.actorPrincipalId,
+      actorPrincipalId,
       observedAt,
     });
     result = reconcileReleaseDispatchFailure(input.store, {
       tenantId,
       dispatchId: flags["--dispatch"]!,
       action,
-      actorPrincipalId: consumer.actorPrincipalId,
+      actorPrincipalId,
       evidenceSha256: flags["--evidence-sha256"]!,
       expectedLeaseGeneration,
       expectedFailedAt: flags["--expected-failed-at"]!,
       expectedFailureCode: flags["--expected-failure-code"]!,
       idempotencyKey: flags["--idempotency-key"]!,
     });
-    assertActiveReleaseDispatchPrincipal({
+    assertActiveReconciliationPrincipal({
       db: input.db,
       tenantId,
-      actorPrincipalId: consumer.actorPrincipalId,
+      actorPrincipalId,
       observedAt,
     });
     input.db.raw.exec("COMMIT");

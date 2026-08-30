@@ -9,6 +9,7 @@ import {
   pagingEventForEgressReceipt,
   pagingEventForReadiness,
   pagingEventForWorkerHeartbeat,
+  pagingEventsForWorkerHeartbeat,
 } from "./index.js";
 
 beforeEach(() => {
@@ -203,6 +204,30 @@ describe("paging adapters", () => {
       details: { pending: null, claimed: null, failed: null, expiredClaims: null },
     });
   });
+
+  it("keeps stale feed and release dispatch degradation as independent pages", () => {
+    expect(pagingEventsForWorkerHeartbeat({
+      workerId: "w1",
+      ok: false,
+      stale: true,
+      releaseDispatchDegraded: true,
+      releaseDispatchPending: null,
+      releaseDispatchClaimed: null,
+      releaseDispatchFailed: null,
+      releaseDispatchExpiredClaims: null,
+      releaseDispatchFailureStage: "claim",
+      releaseDispatchFailureCode: "release_dispatch_claim_unavailable",
+    })).toEqual([
+      expect.objectContaining({ type: "worker_heartbeat_stale" }),
+      expect.objectContaining({
+        type: "release_dispatch_degraded",
+        details: expect.objectContaining({
+          failureStage: "claim",
+          failureCode: "release_dispatch_claim_unavailable",
+        }),
+      }),
+    ]);
+  });
 });
 
 describe("paging best-effort wiring", () => {
@@ -251,7 +276,32 @@ describe("paging best-effort wiring", () => {
     expect(res.ok).toBe(true);
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
     expect(body.type).toBe("release_dispatch_degraded");
-    expect(body.details).toEqual({ pending: 4, claimed: 1, failed: 2, expiredClaims: 1 });
+    expect(body.details).toEqual({
+      pending: 4, claimed: 1, failed: 2, expiredClaims: 1,
+      failureStage: null, failureCode: null,
+    });
+  });
+
+  it("delivers stale-feed and release-dispatch degradation as two independent pages", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await pageWorkerHeartbeat({
+      workerId: "w-compound",
+      ok: false,
+      stale: true,
+      releaseDispatchDegraded: true,
+      releaseDispatchFailureStage: "claim",
+      releaseDispatchFailureCode: "release_dispatch_claim_unavailable",
+    });
+    if (!res || res.skipped) throw new Error("expected delivered pages");
+    expect(res.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map((call) => JSON.parse(call[1].body as string).type)).toEqual([
+      "worker_heartbeat_stale",
+      "release_dispatch_degraded",
+    ]);
   });
 
   it("pages when the readiness probe is failing (the real /ready path)", async () => {

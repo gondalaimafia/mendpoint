@@ -142,6 +142,18 @@ export type ReleaseIngestionStoreOptions = Readonly<{
   clock?: () => string;
 }>;
 
+export class ReleaseCatalogError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+
+  constructor(code: string, retryable: boolean) {
+    super(code);
+    this.name = "ReleaseCatalogError";
+    this.code = code;
+    this.retryable = retryable;
+  }
+}
+
 export type ReleaseDocumentInput = Readonly<{
   tenantId: string;
   providerSlug: string;
@@ -429,8 +441,8 @@ BEFORE DELETE ON release_ingestion_identity_aliases
 BEGIN SELECT RAISE(ABORT, 'release_ingestion_identity_aliases_append_only'); END;
 `;
 
-const MIGRATION_V5_DISPATCH_RECONCILIATION_SCHEMA = `
-CREATE TABLE IF NOT EXISTS release_ingestion_dispatch_reconciliations (
+const MIGRATION_V5_DISPATCH_RECONCILIATION_TABLE = `
+CREATE TABLE release_ingestion_dispatch_reconciliations (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
   dispatch_id TEXT NOT NULL,
@@ -443,17 +455,151 @@ CREATE TABLE IF NOT EXISTS release_ingestion_dispatch_reconciliations (
   idempotency_key TEXT NOT NULL,
   created_at TEXT NOT NULL,
   UNIQUE (tenant_id, idempotency_key),
-  FOREIGN KEY (dispatch_id) REFERENCES release_ingestion_dispatches(id)
+  FOREIGN KEY (dispatch_id, tenant_id) REFERENCES release_ingestion_dispatches(id, tenant_id)
 );
-CREATE INDEX IF NOT EXISTS release_ingestion_dispatch_reconciliations_lookup_idx
+`;
+
+const MIGRATION_V5_DISPATCH_RECONCILIATION_AUXILIARY = `
+CREATE INDEX release_ingestion_dispatch_reconciliations_lookup_idx
   ON release_ingestion_dispatch_reconciliations(tenant_id, dispatch_id, created_at, id);
-CREATE TRIGGER IF NOT EXISTS release_ingestion_dispatch_reconciliations_no_update
+CREATE TRIGGER release_ingestion_dispatch_reconciliations_no_update
 BEFORE UPDATE ON release_ingestion_dispatch_reconciliations
 BEGIN SELECT RAISE(ABORT, 'release_ingestion_dispatch_reconciliations_append_only'); END;
-CREATE TRIGGER IF NOT EXISTS release_ingestion_dispatch_reconciliations_no_delete
+CREATE TRIGGER release_ingestion_dispatch_reconciliations_no_delete
 BEFORE DELETE ON release_ingestion_dispatch_reconciliations
 BEGIN SELECT RAISE(ABORT, 'release_ingestion_dispatch_reconciliations_append_only'); END;
 `;
+
+const V5_RECONCILIATION_COLUMN_CONTRACT = Object.freeze([
+  { name: "id", type: "TEXT", notnull: 0, pk: 1 },
+  { name: "tenant_id", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "dispatch_id", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "action", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "actor_principal_id", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "evidence_sha256", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "expected_lease_generation", type: "INTEGER", notnull: 1, pk: 0 },
+  { name: "expected_failed_at", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "expected_failure_code", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "idempotency_key", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "created_at", type: "TEXT", notnull: 1, pk: 0 },
+]);
+
+const V5_RECONCILIATION_COLUMNS = Object.freeze(
+  V5_RECONCILIATION_COLUMN_CONTRACT.map((column) => column.name),
+);
+
+function normalizedSql(value: string | null | undefined): string {
+  return (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function releaseIngestionV5TableExists(raw: DatabaseSync): boolean {
+  return raw.prepare(`SELECT 1 AS present FROM sqlite_master
+    WHERE type = 'table' AND name = 'release_ingestion_dispatch_reconciliations'`).get() !== undefined;
+}
+
+function releaseIngestionV5SchemaValid(raw: DatabaseSync): boolean {
+  if (!releaseIngestionV5TableExists(raw)) return false;
+  const dispatchIdentityColumns = raw.prepare(
+    "PRAGMA index_info(release_ingestion_dispatches_identity_idx)",
+  ).all() as unknown as Array<{ name: string }>;
+  if (dispatchIdentityColumns.map((column) => column.name).join("\0") !==
+      ["id", "tenant_id"].join("\0")) return false;
+  const dispatchIdentityIndex = raw.prepare("PRAGMA index_list(release_ingestion_dispatches)")
+    .all() as unknown as Array<{ name: string; unique: number }>;
+  if (!dispatchIdentityIndex.some((index) =>
+    index.name === "release_ingestion_dispatches_identity_idx" && index.unique === 1)) return false;
+  const columns = raw.prepare("PRAGMA table_info(release_ingestion_dispatch_reconciliations)")
+    .all() as unknown as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+      pk: number;
+    }>;
+  if (
+    columns.length !== V5_RECONCILIATION_COLUMN_CONTRACT.length ||
+    columns.some((column, index) => {
+      const expected = V5_RECONCILIATION_COLUMN_CONTRACT[index]!;
+      return column.name !== expected.name || column.type.toUpperCase() !== expected.type ||
+        column.notnull !== expected.notnull || column.pk !== expected.pk || column.dflt_value !== null;
+    })
+  ) return false;
+  const tableSql = normalizedSql((raw.prepare(`SELECT sql FROM sqlite_master
+    WHERE type = 'table' AND name = 'release_ingestion_dispatch_reconciliations'`).get() as
+      { sql?: string } | undefined)?.sql);
+  if (
+    !tableSql.includes("check (action in ('acknowledge', 'requeue'))") ||
+    !tableSql.includes("check (length(evidence_sha256) = 64)") ||
+    !tableSql.includes("check (expected_lease_generation > 0)") ||
+    !tableSql.includes("unique (tenant_id, idempotency_key)") ||
+    !tableSql.includes("foreign key (dispatch_id, tenant_id) references release_ingestion_dispatches(id, tenant_id)")
+  ) return false;
+  const foreignKeys = raw.prepare("PRAGMA foreign_key_list(release_ingestion_dispatch_reconciliations)")
+    .all() as unknown as Array<{ table: string; from: string; to: string }>;
+  if (
+    foreignKeys.length !== 2 ||
+    !foreignKeys.every((row) => row.table === "release_ingestion_dispatches") ||
+    !foreignKeys.some((row) => row.from === "dispatch_id" && row.to === "id") ||
+    !foreignKeys.some((row) => row.from === "tenant_id" && row.to === "tenant_id")
+  ) return false;
+  const lookupColumns = raw.prepare(
+    "PRAGMA index_info(release_ingestion_dispatch_reconciliations_lookup_idx)",
+  ).all() as unknown as Array<{ name: string }>;
+  if (lookupColumns.map((column) => column.name).join("\0") !==
+      ["tenant_id", "dispatch_id", "created_at", "id"].join("\0")) return false;
+  for (const [name, marker] of [
+    ["release_ingestion_dispatch_reconciliations_no_update", "before update"],
+    ["release_ingestion_dispatch_reconciliations_no_delete", "before delete"],
+  ] as const) {
+    const triggerSql = normalizedSql((raw.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+    ).get(name) as { sql?: string } | undefined)?.sql);
+    if (
+      !triggerSql.includes(marker) || !triggerSql.includes("raise(abort") ||
+      !triggerSql.includes("release_ingestion_dispatch_reconciliations_append_only")
+    ) return false;
+  }
+  return true;
+}
+
+function ensureReleaseDispatchIdentityIndex(raw: DatabaseSync): void {
+  const columns = raw.prepare("PRAGMA index_info(release_ingestion_dispatches_identity_idx)")
+    .all() as unknown as Array<{ name: string }>;
+  const indexes = raw.prepare("PRAGMA index_list(release_ingestion_dispatches)")
+    .all() as unknown as Array<{ name: string; unique: number }>;
+  const valid = columns.map((column) => column.name).join("\0") === ["id", "tenant_id"].join("\0") &&
+    indexes.some((index) => index.name === "release_ingestion_dispatches_identity_idx" && index.unique === 1);
+  if (!valid) raw.exec("DROP INDEX IF EXISTS release_ingestion_dispatches_identity_idx");
+  raw.exec(`CREATE UNIQUE INDEX IF NOT EXISTS release_ingestion_dispatches_identity_idx
+    ON release_ingestion_dispatches(id, tenant_id);`);
+}
+
+function createReleaseIngestionV5Schema(raw: DatabaseSync): void {
+  ensureReleaseDispatchIdentityIndex(raw);
+  raw.exec(MIGRATION_V5_DISPATCH_RECONCILIATION_TABLE);
+  raw.exec(MIGRATION_V5_DISPATCH_RECONCILIATION_AUXILIARY);
+}
+
+function rebuildReleaseIngestionV5Schema(raw: DatabaseSync): void {
+  const mismatch = raw.prepare(`SELECT reconciliation.id FROM release_ingestion_dispatch_reconciliations AS reconciliation
+    LEFT JOIN release_ingestion_dispatches AS dispatch
+      ON dispatch.id = reconciliation.dispatch_id AND dispatch.tenant_id = reconciliation.tenant_id
+    WHERE dispatch.id IS NULL LIMIT 1`).get();
+  if (mismatch) throw new Error("release_ingestion_v5_tenant_dispatch_mismatch");
+  raw.exec(`
+    DROP TRIGGER IF EXISTS release_ingestion_dispatch_reconciliations_no_update;
+    DROP TRIGGER IF EXISTS release_ingestion_dispatch_reconciliations_no_delete;
+    DROP INDEX IF EXISTS release_ingestion_dispatch_reconciliations_lookup_idx;
+    ALTER TABLE release_ingestion_dispatch_reconciliations
+      RENAME TO release_ingestion_dispatch_reconciliations_legacy;
+  `);
+  createReleaseIngestionV5Schema(raw);
+  raw.exec(`INSERT INTO release_ingestion_dispatch_reconciliations
+    (${V5_RECONCILIATION_COLUMNS.join(", ")})
+    SELECT ${V5_RECONCILIATION_COLUMNS.join(", ")}
+    FROM release_ingestion_dispatch_reconciliations_legacy;
+    DROP TABLE release_ingestion_dispatch_reconciliations_legacy;`);
+}
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -652,17 +798,10 @@ function migrateReleaseIngestionV4(raw: DatabaseSync, appliedAt: string): void {
 }
 
 function migrateReleaseIngestionV5(raw: DatabaseSync, appliedAt: string): void {
-  raw.exec(MIGRATION_V5_DISPATCH_RECONCILIATION_SCHEMA);
-  const columns = raw.prepare("PRAGMA table_info(release_ingestion_dispatch_reconciliations)")
-    .all() as unknown as Array<{ name: string }>;
-  const expectedColumns = [
-    "id", "tenant_id", "dispatch_id", "action", "actor_principal_id", "evidence_sha256",
-    "expected_lease_generation", "expected_failed_at", "expected_failure_code",
-    "idempotency_key", "created_at",
-  ];
-  if (columns.map((column) => column.name).join("\0") !== expectedColumns.join("\0")) {
-    throw new Error("release_ingestion_v5_schema_invalid");
-  }
+  ensureReleaseDispatchIdentityIndex(raw);
+  if (!releaseIngestionV5TableExists(raw)) createReleaseIngestionV5Schema(raw);
+  else if (!releaseIngestionV5SchemaValid(raw)) rebuildReleaseIngestionV5Schema(raw);
+  if (!releaseIngestionV5SchemaValid(raw)) throw new Error("release_ingestion_v5_schema_invalid");
   raw.prepare("INSERT INTO release_ingestion_schema_migrations (version, applied_at) VALUES (5, ?)")
     .run(appliedAt);
 }
@@ -694,6 +833,10 @@ function convergeReleaseIngestionSchema(raw: DatabaseSync, appliedAt: string): v
     const afterV4 = raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations")
       .get() as { version: number | null };
     if (Number(afterV4.version ?? 0) === 4) migrateReleaseIngestionV5(raw, appliedAt);
+    ensureReleaseDispatchIdentityIndex(raw);
+    if (!releaseIngestionV5TableExists(raw)) createReleaseIngestionV5Schema(raw);
+    else if (!releaseIngestionV5SchemaValid(raw)) rebuildReleaseIngestionV5Schema(raw);
+    if (!releaseIngestionV5SchemaValid(raw)) throw new Error("release_ingestion_v5_schema_invalid");
     const foreignKeyViolation = raw.prepare("PRAGMA foreign_key_check").get();
     if (foreignKeyViolation) throw new Error("release_ingestion_v5_foreign_key_check_failed");
     raw.exec("COMMIT");
@@ -1420,11 +1563,25 @@ export function rehydrateReleaseArtifact(
   const tenantId = required("release_tenant_id", input.tenantId, 256);
   const artifactId = required("release_artifact_id", input.artifactId, 128);
   const expectedContentSha256 = contentDigest(input.expectedContentSha256);
-  const artifact = one<ArtifactRow>(store,
-    "SELECT * FROM release_ingestion_artifacts WHERE tenant_id = ? AND id = ?", [tenantId, artifactId]);
-  if (!artifact) throw new Error("release_artifact_not_found");
-  if (artifact.content_sha256 !== expectedContentSha256) throw new Error("release_artifact_digest_mismatch");
-  return fromRow(store, artifact);
+  let artifact: ArtifactRow | undefined;
+  try {
+    artifact = one<ArtifactRow>(store,
+      "SELECT * FROM release_ingestion_artifacts WHERE tenant_id = ? AND id = ?", [tenantId, artifactId]);
+  } catch {
+    throw new ReleaseCatalogError("release_catalog_infrastructure_unavailable", true);
+  }
+  if (!artifact) throw new ReleaseCatalogError("release_artifact_not_found", false);
+  if (artifact.content_sha256 !== expectedContentSha256) {
+    throw new ReleaseCatalogError("release_artifact_digest_mismatch", false);
+  }
+  try {
+    return fromRow(store, artifact);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new ReleaseCatalogError("release_artifact_decode_invalid", false);
+    }
+    throw new ReleaseCatalogError("release_catalog_infrastructure_unavailable", true);
+  }
 }
 
 export function claimReleaseDispatch(

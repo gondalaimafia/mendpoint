@@ -50,6 +50,15 @@ function sinkError(code: ReleaseDispatchSinkFailureCode, retryable: boolean): Re
   return Object.assign(new Error(code), { code, retryable });
 }
 
+function isSinkError(error: unknown): error is ReleaseDispatchSinkError {
+  const candidate = error as Partial<ReleaseDispatchSinkError>;
+  return typeof candidate.retryable === "boolean" &&
+    typeof candidate.code === "string" &&
+    Object.values(RELEASE_DISPATCH_SINK_FAILURE_CODES).includes(
+      candidate.code as ReleaseDispatchSinkFailureCode,
+    );
+}
+
 function validTimestamp(value: string): boolean {
   const milliseconds = Date.parse(value);
   return Number.isFinite(milliseconds) && new Date(milliseconds).toISOString() === value;
@@ -152,7 +161,7 @@ export function ensureReleaseDispatchPrincipal(input: Readonly<{
       throw sinkError(RELEASE_DISPATCH_SINK_FAILURE_CODES.authorityInvalid, false);
     }
   } catch (error) {
-    if ((error as ReleaseDispatchSinkError)?.code) throw error;
+    if (isSinkError(error)) throw error;
     if (error instanceof Error && error.message === "principal_identity_conflict") {
       throw sinkError(RELEASE_DISPATCH_SINK_FAILURE_CODES.authorityInvalid, false);
     }
@@ -243,16 +252,13 @@ export function acceptReleaseDispatchDomainEvent(input: Readonly<{
 }>): Readonly<{ eventId: string; inserted: boolean }> {
   const envelope = parseReleaseDispatchEnvelope(input.envelope);
   const actorPrincipalId = requireIdentifier(input.actorPrincipalId);
-  assertActiveReleaseDispatchPrincipal({
-    db: input.db,
-    tenantId: envelope.tenantId,
-    actorPrincipalId,
-    observedAt: input.observedAt,
-  });
   const expectedEventId = eventId(envelope);
   const expectedPayloadJson = JSON.stringify(envelope);
   const idempotencyKey = `catalog-release:${envelope.dispatchId}`;
+  let ownsTransaction = false;
   try {
+    ownsTransaction = !input.db.raw.isTransaction;
+    if (ownsTransaction) input.db.raw.exec("BEGIN IMMEDIATE");
     const existing = existingReleaseDispatchEvent({
       db: input.db,
       tenantId: envelope.tenantId,
@@ -267,8 +273,19 @@ export function acceptReleaseDispatchDomainEvent(input: Readonly<{
         expectedEventId,
         expectedPayloadJson,
       });
+      if (ownsTransaction) input.db.raw.exec("COMMIT");
       return Object.freeze({ eventId: existing.id, inserted: false });
     }
+    // Once the write lock is held, authority and append are one decision. An
+    // exact crash replay is handled above using the authority that was valid at
+    // the historical event time; only a genuinely new append requires current
+    // authority at the supplied observation time.
+    assertActiveReleaseDispatchPrincipal({
+      db: input.db,
+      tenantId: envelope.tenantId,
+      actorPrincipalId,
+      observedAt: input.observedAt,
+    });
     const appended = appendDomainEvent(input.db, {
       id: expectedEventId,
       tenantId: envelope.tenantId,
@@ -290,9 +307,17 @@ export function acceptReleaseDispatchDomainEvent(input: Readonly<{
       expectedEventId,
       expectedPayloadJson,
     });
+    if (ownsTransaction) input.db.raw.exec("COMMIT");
     return Object.freeze({ eventId: appended.row.id, inserted: appended.inserted });
   } catch (error) {
-    if ((error as ReleaseDispatchSinkError)?.code) throw error;
+    if (ownsTransaction) {
+      try {
+        if (input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
+      } catch {
+        // A closed or failed connection cannot retain a usable transaction.
+      }
+    }
+    if (isSinkError(error)) throw error;
     if (error instanceof Error && error.message === "domain_event_idempotency_conflict") {
       try {
         const raced = existingReleaseDispatchEvent({
@@ -313,7 +338,7 @@ export function acceptReleaseDispatchDomainEvent(input: Readonly<{
         });
         return Object.freeze({ eventId: raced.id, inserted: false });
       } catch (replayError) {
-        if ((replayError as ReleaseDispatchSinkError)?.code) throw replayError;
+        if (isSinkError(replayError)) throw replayError;
         throw sinkError(RELEASE_DISPATCH_SINK_FAILURE_CODES.infrastructureUnavailable, true);
       }
     }
