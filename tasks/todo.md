@@ -3689,3 +3689,26 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The next exact-head review found that source selection mixed every tenant contract and currency before validation, and that rotation retained historical private signing material. Source selection now filters by the requested contract and currency inside the immutable usage query, with concurrent-contract and concurrent-currency regressions. The keyring now requires private material only for the selected current key and accepts retired public-only verification records.
 - The final repaired matrix passes 12 of 12 focused database and API tests, both affected typechecks, and diff integrity. A fresh immutable-head review and current-base protected CI remain required before merge.
 - Immutable-head review found one final P2: the parser still accepted private material on a noncurrent key even though rotation examples used public-only history. Key selection is now passed into parsing, which rejects retired private material before importing it. The negative rotation regression proves signer construction fails for a keyring retaining an old private key; the public-only historical verification path remains green.
+
+## 2026-08-30 GSD Plan 10-03: production dispatch observability and horizontal reliability
+
+- [ ] Recover only the tenant-scoped release-dispatch runtime from closed PR #507 on current `main`; keep customer activation bindings optional and leave the documented operator hold intact.
+- [ ] Add one durable operator reconciliation path for exhausted dispatches, including authenticated requeue or acknowledgement evidence, bounded retry state, exact tenant scope, and immutable failure history.
+- [ ] Provision the dispatch service principal through the existing production identity bootstrap and require its active tenant-bound identity at every event write.
+- [ ] Bind replay to tenant, dispatch, actor principal, source digest, payload digest, and exact domain-event identity; reject unknown or malformed runtime state instead of normalizing it to zero or healthy.
+- [ ] Wire the release-dispatch drainer into the real worker lifecycle with lease-generation fencing, exact claim ownership, bounded integrity verification, shutdown containment, and a test that fails when the live caller is removed.
+- [ ] Surface identifier-and-digest-only dispatch health through the existing tenant health, paging, and error-budget path without source, prompts, credentials, or raw provider payloads.
+- [ ] Verify duplicate delivery, poisoned-row recovery, crash takeover, stale lease rejection, cross-tenant denial, principal revocation, malformed configuration, unknown health, shutdown, and restored-database replay.
+- [ ] Run focused Catalog, Worker, Notify, Web, API, and Ops tests; affected typechecks; fresh and upgrade database convergence; production build; configuration checks; and `git diff --check`.
+- [ ] Obtain independent exact-head Codex review, rebase on current `main`, pass all six protected checks with `enforce_admins: true`, merge normally, and verify the exact Fettler production revision and capability health.
+
+### Scope and safety
+
+- Requirements: `ME-ENT-005-AC01`, `ME-ENT-006-AC01`; issue #438; primary plan `10-03`.
+- Initial files: `packages/catalog/src/release-ingestion.ts`, `packages/catalog/src/release-ingestion.test.ts`, `apps/worker/src/release-dispatch-domain-event-sink.ts`, its focused test, `apps/worker/src/release-dispatch-drainer.ts`, its focused test, `apps/worker/src/cli.ts`, and `apps/worker/src/cli.test.ts`. Health and paging integration follows as a second narrow commit only after the live worker tracer is green.
+- Threats: one poisoned row permanently degrading readiness, a missing or revoked service principal, a stale worker writing after takeover, actor or tenant replay substitution, unbounded domain-log rehash under the global lease, unknown state appearing healthy, and accidental customer boot hard-failure.
+- Rollback: revert the implementing commits, stop the dispatch lane by removing its optional consumer binding, retain immutable dispatch and domain-event ledgers, and never delete or rewrite authenticated historical outcomes.
+
+### Review
+
+- Pending implementation and exact-head evidence.
