@@ -3,13 +3,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDb, listAudit, type AppDb } from "@mendpoint/db";
+import {
+  createApiKey,
+  createDb,
+  getPrincipalBySubject,
+  insertPrincipal,
+  listAudit,
+  type AppDb,
+} from "@mendpoint/db";
 import { LocalEnvelopeKeyProvider, type Role } from "@mendpoint/platform";
-import type { ApiEnv } from "./auth.js";
-import { createSecretLifecycleRoutes } from "./secret-lifecycle-routes.js";
+import { createAuthMiddleware, createRbacMiddleware, type ApiEnv } from "./auth.js";
+import {
+  createSecretBreakGlassDenialAuditMiddleware,
+  createSecretLifecycleRoutes,
+} from "./secret-lifecycle-routes.js";
 
 const open: AppDb[] = [];
+const originalAuth = process.env.API_AUTH;
 afterEach(() => {
+  if (originalAuth === undefined) delete process.env.API_AUTH;
+  else process.env.API_AUTH = originalAuth;
   while (open.length) open.pop()?.raw.close();
 });
 
@@ -63,7 +76,316 @@ const createBody = {
   key: { provider: "local-envelope", keyId: "tenant-key", version: "1" },
 };
 
+function realAuthFixture(options: Readonly<{
+  denialAudit?: Parameters<typeof createSecretBreakGlassDenialAuditMiddleware>[0]["audit"];
+  installDenialMiddleware?: boolean;
+}> = {}) {
+  process.env.API_AUTH = "required";
+  const db = createDb(join(mkdtempSync(join(tmpdir(), "mp-secret-real-auth-")), "db.sqlite"));
+  open.push(db);
+  db.raw.prepare(`INSERT OR IGNORE INTO tenants
+    (id, slug, name, plan, billing_status, seat_limit, created_at)
+    VALUES ('tenant-a', 'tenant-a', 'Tenant A', 'enterprise', 'active', 20, ?)`)
+    .run("2026-08-30T00:00:00.000Z");
+  for (const [id, subject] of [
+    ["principal-service-owner", "lifecycle-owner"],
+    ["principal-service-other", "unrelated-owner"],
+  ] as const) {
+    insertPrincipal(db, {
+      id,
+      tenantId: "tenant-a",
+      kind: "service",
+      subject,
+      displayName: subject,
+      audience: "mendpoint-api",
+      createdAt: "2026-08-30T00:00:00.000Z",
+    });
+  }
+  const first = createApiKey(db, {
+    id: "lifecycle-key-one",
+    name: "Lifecycle key one",
+    tenantId: "tenant-a",
+    scopes: ["*"],
+    authorityPrincipalId: "principal-service-owner",
+    createdAt: "2026-08-30T00:00:00.000Z",
+  });
+  const second = createApiKey(db, {
+    id: "lifecycle-key-two",
+    name: "Lifecycle key two",
+    tenantId: "tenant-a",
+    scopes: ["*"],
+    authorityPrincipalId: "principal-service-owner",
+    createdAt: "2026-08-30T00:01:00.000Z",
+  });
+  const unrelated = createApiKey(db, {
+    id: "lifecycle-key-other",
+    name: "Unrelated lifecycle key",
+    tenantId: "tenant-a",
+    scopes: ["*"],
+    authorityPrincipalId: "principal-service-other",
+    createdAt: "2026-08-30T00:02:00.000Z",
+  });
+  const viewer = createApiKey(db, {
+    id: "lifecycle-key-viewer",
+    name: "Lifecycle viewer",
+    tenantId: "tenant-a",
+    scopes: ["role:viewer", "tenant:admin"],
+    authorityPrincipalId: "principal-service-other",
+    createdAt: "2026-08-30T00:03:00.000Z",
+  });
+  const provider = new LocalEnvelopeKeyProvider();
+  for (const version of ["1", "2"]) {
+    provider.putKey("tenant-a", {
+      provider: "local-envelope",
+      keyId: "tenant-key",
+      version,
+      customerManaged: true,
+    }, Buffer.alloc(32, Number(version)));
+  }
+  const app = new Hono<ApiEnv>();
+  app.use("*", async (c, next) => {
+    c.set("requestId", c.req.header("X-Request-Id") ?? "real-auth-request");
+    await next();
+  });
+  if (options.installDenialMiddleware) {
+    app.use("*", createSecretBreakGlassDenialAuditMiddleware({
+      db,
+      audit: options.denialAudit,
+    }));
+  }
+  app.use("*", createAuthMiddleware(db, { oidc: null }));
+  app.use("*", createRbacMiddleware());
+  app.route("/platform/secrets", createSecretLifecycleRoutes({
+    db,
+    providers: [provider],
+    breakGlassEnabled: true,
+    requestCommitment: { keyId: "secret-request-v1", key: Buffer.alloc(32, 9) },
+  }));
+  return { app, db, provider, first, second, unrelated, viewer };
+}
+
+function authenticatedHeaders(token: string, requestId: string, idempotencyKey: string) {
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+    "X-Request-Id": requestId,
+    "Idempotency-Key": idempotencyKey,
+  };
+}
+
 describe("secret lifecycle routes", () => {
+  it("rejects identical envelope and commitment key material when routes are constructed", () => {
+    const db = createDb(join(mkdtempSync(join(tmpdir(), "mp-secret-key-separation-")), "db.sqlite"));
+    open.push(db);
+    const provider = new LocalEnvelopeKeyProvider();
+    provider.putKey("tenant-a", {
+      provider: "local-envelope",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: true,
+    }, Buffer.alloc(32, 9));
+    expect(() => createSecretLifecycleRoutes({
+      db,
+      providers: [provider],
+      breakGlassEnabled: true,
+      requestCommitment: { keyId: "secret-request-v1", key: Buffer.alloc(32, 9) },
+    })).toThrow("secret_lifecycle_key_material_reuse");
+  });
+
+  it("replays lifecycle operations across rotated API keys bound to one stable authority", async () => {
+    const { app, db, first, second, unrelated } = realAuthFixture();
+    const create = (token: string, requestId: string) => app.request("/platform/secrets", {
+      method: "POST",
+      headers: authenticatedHeaders(token, requestId, "stable-create"),
+      body: JSON.stringify(createBody),
+    });
+    expect((await create(first.token, "create-one")).status).toBe(201);
+    expect((await create(second.token, "create-two")).status).toBe(201);
+    expect((await create(unrelated.token, "create-other")).status).toBe(409);
+
+    const rotate = (token: string, requestId: string) => app.request(
+      "/platform/secrets/credential-a/rotate",
+      {
+        method: "POST",
+        headers: authenticatedHeaders(token, requestId, "stable-rotate"),
+        body: JSON.stringify({
+          expectedGeneration: 1,
+          key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+        }),
+      },
+    );
+    expect((await rotate(first.token, "rotate-one")).status).toBe(200);
+    expect((await rotate(second.token, "rotate-two")).status).toBe(200);
+
+    const reveal = (token: string, requestId: string) => app.request(
+      "/platform/secrets/credential-a/break-glass",
+      {
+        method: "POST",
+        headers: authenticatedHeaders(token, requestId, "stable-break-glass"),
+        body: JSON.stringify({ reason: "incident" }),
+      },
+    );
+    expect((await reveal(first.token, "break-glass-one")).status).toBe(200);
+    expect((await reveal(second.token, "break-glass-two")).status).toBe(200);
+    expect((await reveal(unrelated.token, "break-glass-other")).status).toBe(409);
+
+    const credentialPrincipal = getPrincipalBySubject(
+      db,
+      "tenant-a",
+      "api_key",
+      second.id,
+    )!;
+    for (const action of [
+      "secret.lifecycle.create_replayed",
+      "secret.lifecycle.rotate_replayed",
+      "secret.break_glass.replayed",
+    ]) {
+      const replay = listAudit(db, "tenant-a").find((event) => event.action === action);
+      expect(replay, action).toMatchObject({
+        principal_id: "principal-service-owner",
+        api_key_id: second.id,
+      });
+      expect(JSON.parse(replay!.metadata_json!), action).toMatchObject({
+        authorityPrincipalId: "principal-service-owner",
+        credentialPrincipalId: credentialPrincipal.id,
+      });
+    }
+  });
+
+  it("resumes an audited rotation failure across rotated API keys without source-audit conflict", async () => {
+    const { app, db, provider, first, second } = realAuthFixture();
+    expect((await app.request("/platform/secrets", {
+      method: "POST",
+      headers: authenticatedHeaders(first.token, "rotation-create", "rotation-create"),
+      body: JSON.stringify(createBody),
+    })).status).toBe(201);
+    provider.removeKey("tenant-a", {
+      provider: "local-envelope",
+      keyId: "tenant-key",
+      version: "2",
+      customerManaged: true,
+    });
+    const rotate = (token: string, requestId: string) => app.request(
+      "/platform/secrets/credential-a/rotate",
+      {
+        method: "POST",
+        headers: authenticatedHeaders(token, requestId, "rotation-resume"),
+        body: JSON.stringify({
+          expectedGeneration: 1,
+          key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+        }),
+      },
+    );
+    expect((await rotate(first.token, "rotation-failed-one")).status).toBe(500);
+    provider.putKey("tenant-a", {
+      provider: "local-envelope",
+      keyId: "tenant-key",
+      version: "2",
+      customerManaged: true,
+    }, Buffer.alloc(32, 2));
+    expect((await rotate(second.token, "rotation-retry-two")).status).toBe(200);
+    expect(listAudit(db, "tenant-a").filter(
+      (event) => event.action === "secret.lifecycle.rotation_source.granted",
+    )).toHaveLength(1);
+    expect(listAudit(db, "tenant-a").filter(
+      (event) => event.action === "secret.lifecycle.rotation_source.attempted",
+    ).map((event) => event.api_key_id).sort()).toEqual([first.id, second.id].sort());
+  });
+
+  it("audits real authentication and RBAC break-glass denials before route dispatch", async () => {
+    const { app, db, first, viewer } = realAuthFixture({ installDenialMiddleware: true });
+    const anonymous = await app.request("/platform/secrets/credential-a/break-glass", {
+      method: "POST",
+      headers: { "X-Request-Id": "anonymous-real-denial" },
+      body: JSON.stringify({ reason: "incident" }),
+    });
+    expect(anonymous.status).toBe(401);
+    expect(listAudit(db, "tenant_unattributed")).toEqual([
+      expect.objectContaining({
+        action: "secret.break_glass.denied",
+        principal_id: null,
+        request_id: "anonymous-real-denial",
+      }),
+    ]);
+
+    const forbidden = await app.request("/platform/secrets/credential-a/break-glass", {
+      method: "POST",
+      headers: authenticatedHeaders(viewer.token, "viewer-real-denial", "viewer-denial"),
+      body: JSON.stringify({ reason: "incident" }),
+    });
+    expect(forbidden.status).toBe(403);
+    expect(listAudit(db, "tenant-a").find(
+      (event) => event.request_id === "viewer-real-denial",
+    )).toMatchObject({
+      action: "secret.break_glass.denied",
+      principal_id: "principal-service-other",
+      api_key_id: viewer.id,
+    });
+
+    await app.request("/platform/secrets", {
+      method: "POST",
+      headers: authenticatedHeaders(first.token, "allowed-create", "allowed-create"),
+      body: JSON.stringify(createBody),
+    });
+    const allowed = await app.request("/platform/secrets/credential-a/break-glass", {
+      method: "POST",
+      headers: authenticatedHeaders(first.token, "allowed-break-glass", "allowed-break-glass"),
+      body: JSON.stringify({ reason: "incident" }),
+    });
+    expect(allowed.status).toBe(200);
+  });
+
+  it("fails closed when pre-route break-glass denial audit persistence fails", async () => {
+    const { app } = realAuthFixture({
+      installDenialMiddleware: true,
+      denialAudit: () => {
+        throw new Error("audit unavailable");
+      },
+    });
+    const response = await app.request("/platform/secrets/credential-a/break-glass", {
+      method: "POST",
+      headers: { "X-Request-Id": "anonymous-audit-failure" },
+      body: JSON.stringify({ reason: "incident" }),
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "service_unavailable" });
+  });
+
+  it("does not attribute pre-route denial audit to unauthenticated compatibility headers", async () => {
+    process.env.API_AUTH = "off";
+    const db = createDb(join(mkdtempSync(join(tmpdir(), "mp-secret-header-spoof-")), "db.sqlite"));
+    open.push(db);
+    const app = new Hono<ApiEnv>();
+    app.use("*", async (c, next) => {
+      c.set("requestId", "header-spoof-denial");
+      await next();
+    });
+    app.use("*", createSecretBreakGlassDenialAuditMiddleware({ db }));
+    app.use("*", createAuthMiddleware(db, { oidc: null }));
+    app.use("*", createRbacMiddleware());
+    app.post("/platform/secrets/:id/break-glass", (c) => c.json({ unexpected: true }));
+
+    const response = await app.request("/platform/secrets/credential-a/break-glass", {
+      method: "POST",
+      headers: {
+        "X-Tenant-Id": "tenant-spoofed",
+        "X-User-Id": "operator-spoofed",
+        "X-Role": "viewer",
+      },
+    });
+
+    expect(response.status).toBe(403);
+    expect(listAudit(db, "tenant-spoofed")).toEqual([]);
+    expect(listAudit(db, "tenant_unattributed")).toEqual([
+      expect.objectContaining({
+        action: "secret.break_glass.denied",
+        principal_id: null,
+        api_key_id: null,
+        request_id: "header-spoof-denial",
+      }),
+    ]);
+  });
+
   it("exposes authorized create, rotate, revoke, and owner break glass operations", async () => {
     const { app, db } = fixture();
     const created = await app.request("/platform/secrets", {

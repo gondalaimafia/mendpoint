@@ -446,3 +446,21 @@
 **Mistake:** The lifecycle operation table stored a deterministic SHA-256 request digest whose plaintext component could be tested offline against a small candidate dictionary.
 **Correction:** Compute a versioned HMAC commitment with an external key, persist its key ID, bind every semantic request field, and reject legacy or wrong-key replay.
 **Rule:** Durable idempotency evidence for secret-bearing requests must be a domain-separated keyed commitment. An unkeyed digest is an offline oracle even when raw plaintext is absent.
+
+### 2026-08-30 — Cryptographic purposes need distinct key material
+
+**Mistake:** The envelope KEK catalog and request-commitment authority were validated independently, so identical 256-bit material could be configured for encryption and HMAC purposes.
+**Correction:** Compare one-way key fingerprints at construction time and reject any commitment key that equals a configured envelope KEK without logging either value.
+**Rule:** Separate cryptographic purposes at the configuration boundary. Distinct algorithms or domain strings do not make reused root key material safe.
+
+### 2026-08-30 — Replay actors outlive credentials
+
+**Mistake:** Lifecycle replay bound the semantic actor to an API-key-specific trust principal, so rotating the credential changed the replay identity even when the same owner or service remained authorized.
+**Correction:** Bind replay to a stable human or service authority and record the current API key and credential principal separately on every audit event.
+**Rule:** Credentials authenticate an actor but are not the actor. Durable replay identities follow stable authority; request evidence retains the exact credential used.
+
+### 2026-08-30 — Security audit begins before route dispatch
+
+**Mistake:** Break-glass denial auditing lived inside the route, so authentication and RBAC middleware could return 401 or 403 before the audit boundary ran.
+**Correction:** Wrap the exact break-glass path before authentication and RBAC, audit unresolved or resolved denial context without changing successful dispatch, and return a fail-closed service error if audit persistence fails.
+**Rule:** If middleware can deny a security-sensitive operation, its durable denial audit must wrap that middleware rather than depend on the route handler.

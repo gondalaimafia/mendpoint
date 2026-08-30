@@ -231,6 +231,7 @@ export {
   DisabledExternalVaultProvider,
   ConfiguredEnvelopeKeyProvider,
   LocalEnvelopeKeyProvider,
+  cryptographicKeyMaterialFingerprint,
   envelopeKeyProvidersFromEnvironment,
   attestEnvelopeKey,
   sealEnvelopeSecret,

@@ -21,6 +21,11 @@
 - [x] RED: prove lifecycle request commitments resist offline plaintext guessing, bind every semantic field and key ID, and reject legacy or wrong-key replay.
 - [x] GREEN: persist versioned keyed commitments, add durable break-glass replay evidence, and separate stable operation audit identity from denied-attempt identity.
 - [x] Re-run focused and complete Platform, DB, API, and SCM suites, affected typechecks, diff integrity, and commit locally without pushing.
+- [x] RED: reject identical commitment and envelope key material at both route startup and direct service construction without exposing key material.
+- [x] RED: prove exact create, rotate, and break-glass replay across two rotated API keys bound to one stable authority, with unrelated-authority denial and dual attribution.
+- [x] RED: prove real authentication and RBAC middleware durably audit anonymous and non-admin break-glass denials, preserve the original 401 or 403, and fail closed when audit persistence fails.
+- [x] GREEN: add provider key fingerprints, stable API-key authority binding, dual audit attribution, and a narrow pre-route break-glass denial audit middleware.
+- [x] Re-run focused and broad Platform, DB, API, auth, and SCM suites, affected typechecks, diff integrity, and commit locally without pushing.
 
 ### Review
 
@@ -38,6 +43,11 @@
 - Break-glass grant replay is an immutable tenant-scoped operation. Exact HTTP retries across new request IDs and API keys return the committed generation without another grant audit, while payload mismatches are denied and every distinct denial attempt records its actual principal, request, API key, role, reason, and failure before the response. Missing audit durability returns `vault_access_audit_failed` and never plaintext.
 - Rotation source access audit uses a stable operation identity, so retries after an audited unwrap or replacement-stage failure resume without duplicate or conflicting access evidence and cannot publish a new generation until the required audit and lifecycle transaction commit.
 - Final verification passes 28 focused lifecycle and database tests, 1,449 complete Platform, DB, API, and SCM tests across 157 files, all four affected package typechecks, and `git diff --check`.
+- Envelope and commitment authorities now publish only domain-separated one-way key fingerprints for construction-time equality checks. Route startup and direct service construction reject identical material without logging or persisting the key or fingerprint.
+- API keys carry an additive stable human or service authority binding. Exact create, rotate, and break-glass retries survive credential rotation because semantic commitments bind the stable authority, while every attempt and replay audit separately records the current API key and credential principal. A different stable authority cannot consume the replay.
+- The exact break-glass path is wrapped before authentication and RBAC. Anonymous and non-admin 401 or 403 responses receive truthful durable denial evidence, compatibility headers cannot spoof attribution, successful dispatch is not double-audited, and audit persistence failure replaces the denial with a generic fail-closed 503.
+- Rotation records a credential-specific source attempt before unwrap and one stable source outcome for the semantic operation. A retry under a rotated key after pre-publication failure resumes without a source-audit conflict or duplicate grant.
+- Final verification passes 27 focused lifecycle tests, 115 affected tests, and 1,456 complete Platform, DB, API, auth, and SCM tests across 157 files. Platform, DB, API, and GitHub typechecks pass, and `git diff --check` is clean.
 
 
 Observed `origin/main`: `96801a319fc3d355cb2b28b4167b83023a192042`.

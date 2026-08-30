@@ -178,10 +178,7 @@ import {
   vmStatusReport,
   startLiveSandbox,
   evaluateLatencyAlerts,
-  parsePrincipalFromHeaders,
-  can,
   canMutateSystemCatalog,
-  permissionForRoute,
   envelopeKeyProvidersFromEnvironment,
   estimateCost,
   MCU_VERSION,
@@ -248,8 +245,8 @@ import {
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
   createAuthMiddleware,
+  createRbacMiddleware,
   effectiveAuthMode,
-  scopeAllows,
   type ApiEnv,
 } from "./auth.js";
 import {
@@ -307,7 +304,10 @@ import { createLearningConsentRoutes } from "./learning-consent-routes.js";
 import { createOrganizationMemoryRoutes } from "./organization-memory-routes.js";
 import { createPlatformSandboxRoutes } from "./platform-sandbox.js";
 import { createPlatformStateRoutes } from "./platform-state-routes.js";
-import { createSecretLifecycleRoutes } from "./secret-lifecycle-routes.js";
+import {
+  createSecretBreakGlassDenialAuditMiddleware,
+  createSecretLifecycleRoutes,
+} from "./secret-lifecycle-routes.js";
 import { secretLifecycleRequestCommitmentFromEnvironment } from "./secret-lifecycle-service.js";
 import { createTenantCreationRoutes } from "./tenant-creation-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
@@ -795,46 +795,12 @@ app.use("*", async (c, next) => {
 // Rate limit before auth so credential stuffing is throttled
 app.use("*", rateLimitMiddleware({ identity: "network" }));
 app.use("*", mutationAdmissionMiddleware());
+app.use("*", createSecretBreakGlassDenialAuditMiddleware({ db }));
 app.use("*", createAuthMiddleware(db));
 app.use("*", rateLimitMiddleware({ identity: "principal" }));
 
 /** RBAC identity comes from the authenticated API key in protected modes. */
-app.use("*", async (c, next) => {
-  const path = new URL(c.req.url).pathname;
-  const method = c.req.method;
-  if (method === "OPTIONS") return next();
-  const need = permissionForRoute(method, path);
-  if (!need) return next();
-  const mode = effectiveAuthMode();
-  const authenticated = c.get("principal");
-  const principal =
-    authenticated ??
-    (mode === "off"
-      ? parsePrincipalFromHeaders({
-          "x-tenant-id": c.req.header("x-tenant-id") ?? undefined,
-          "x-role": c.req.header("x-role") ?? undefined,
-          "x-user-id": c.req.header("x-user-id") ?? undefined,
-        })
-      : undefined);
-  if (!principal) {
-    return c.json({ error: "unauthorized", message: "authenticated principal required" }, 401);
-  }
-  const scopes = c.get("authScopes");
-  const scopeAllowed = mode === "off" || scopeAllows(scopes, need);
-  if (!can(principal, need) || !scopeAllowed) {
-    return c.json(
-      {
-        error: "rbac_denied",
-        need,
-        role: principal.role,
-        message: `role ${principal.role} or API key scope lacks ${need}`,
-      },
-      403,
-    );
-  }
-  c.set("principal", principal);
-  return next();
-});
+app.use("*", createRbacMiddleware());
 
 // Per-tenant quota runs after the principal (API key, OIDC, or header-parsed) is resolved,
 // so it can budget by tenant. Disabled by default; see tenantQuotaMiddleware.
@@ -2312,6 +2278,7 @@ app.post("/keys", async (c) => {
     name: body.name,
     tenantId: principal.tenantId,
     scopes: body.scopes,
+    authorityPrincipalId: c.get("authorityPrincipalId"),
     createdAt: nowIso(),
   });
   requestAudit(c, {

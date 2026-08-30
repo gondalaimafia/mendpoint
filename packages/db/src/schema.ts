@@ -51,6 +51,7 @@ export type ApiKeyRow = {
   tenant_id: string;
   principal_id: string | null;
   scopes_json: string;
+  authority_principal_id: string | null;
   created_at: string;
   last_used_at: string | null;
   revoked_at: string | null;

@@ -14,6 +14,7 @@ import {
 } from "@mendpoint/db";
 import {
   attestEnvelopeKey,
+  cryptographicKeyMaterialFingerprint,
   openEnvelopeSecret,
   sealEnvelopeSecret,
   type EnvelopeKeyLocator,
@@ -29,16 +30,21 @@ export type SecretLifecycleAudit = Readonly<{
   id: string;
   tenantId: string;
   actorId: string;
+  credentialPrincipalId: string;
   idempotencyKey: string;
   requestId: string | null;
   apiKeyId: string | null;
   action:
     | "secret.lifecycle.created"
+    | "secret.lifecycle.create_replayed"
     | "secret.lifecycle.rotated"
+    | "secret.lifecycle.rotate_replayed"
     | "secret.lifecycle.revoked"
     | "secret.lifecycle.rotation_source.granted"
     | "secret.lifecycle.rotation_source.denied"
+    | "secret.lifecycle.rotation_source.attempted"
     | "secret.break_glass.granted"
+    | "secret.break_glass.replayed"
     | "secret.break_glass.denied";
   credentialId: string;
   metadata: Readonly<Record<string, unknown>>;
@@ -53,6 +59,7 @@ export type DurableSecretLifecycleServiceOptions = Readonly<{
   db: AppDb;
   tenantId: string;
   actorId: string;
+  credentialPrincipalId: string;
   role: Role;
   providers: readonly KeyEncryptionKeyProvider[];
   breakGlassEnabled: boolean;
@@ -121,6 +128,19 @@ export function secretLifecycleRequestCommitmentFromEnvironment(
   return Object.freeze({ keyId, key });
 }
 
+export function assertSecretLifecycleKeySeparation(
+  providers: readonly KeyEncryptionKeyProvider[],
+  requestCommitment?: SecretLifecycleRequestCommitment,
+): void {
+  if (!requestCommitment) return;
+  const commitmentFingerprint = cryptographicKeyMaterialFingerprint(requestCommitment.key);
+  for (const provider of providers) {
+    if (provider.keyMaterialFingerprints().includes(commitmentFingerprint)) {
+      throw new Error("secret_lifecycle_key_material_reuse");
+    }
+  }
+}
+
 function errorCode(error: unknown): string {
   return error instanceof Error && error.message ? error.message : "secret_break_glass_denied";
 }
@@ -174,6 +194,7 @@ export class DurableSecretLifecycleService {
   private readonly requestCommitment?: Readonly<{ keyId: string; key: Buffer }>;
 
   constructor(private readonly options: DurableSecretLifecycleServiceOptions) {
+    assertSecretLifecycleKeySeparation(options.providers, options.requestCommitment);
     if (options.requestCommitment) {
       if (!ID.test(options.requestCommitment.keyId) || options.requestCommitment.key.byteLength !== 32) {
         throw new Error("secret_lifecycle_commitment_configuration_invalid");
@@ -232,18 +253,48 @@ export class DurableSecretLifecycleService {
     identity: string = action,
     requestId: string | null = this.options.requestId,
     apiKeyId: string | null = this.options.apiKeyId,
+    credentialPrincipalId: string = this.options.credentialPrincipalId,
   ): void {
     this.options.audit(Object.freeze({
       id: digest({ tenantId: this.options.tenantId, idempotencyKey, identity }),
       tenantId: this.options.tenantId,
       actorId: this.options.actorId,
+      credentialPrincipalId,
       idempotencyKey,
       requestId,
       apiKeyId,
       action,
       credentialId,
-      metadata,
+      metadata: Object.freeze({
+        ...metadata,
+        authorityPrincipalId: this.options.actorId,
+        credentialPrincipalId,
+      }),
     }));
+  }
+
+  #auditReplay(
+    action: Extract<
+      SecretLifecycleAudit["action"],
+      | "secret.lifecycle.create_replayed"
+      | "secret.lifecycle.rotate_replayed"
+      | "secret.break_glass.replayed"
+    >,
+    idempotencyKey: string,
+    credentialId: string,
+    generation: number,
+  ): void {
+    try {
+      this.#audit(
+        action,
+        idempotencyKey,
+        credentialId,
+        { replayed: true, generation },
+        `${action}:${this.options.requestId ?? randomUUID()}:${this.options.credentialPrincipalId}:${this.options.apiKeyId ?? "no-api-key"}`,
+      );
+    } catch {
+      throw new Error("vault_access_audit_failed");
+    }
   }
 
   #commitRequest(value: unknown): Readonly<{ digest: string; keyId: string }> {
@@ -280,10 +331,11 @@ export class DurableSecretLifecycleService {
       id: digest({
         tenantId: auditTenantId,
         idempotencyKey: auditIdempotencyKey,
-        identity: `secret.break_glass.denied:${attemptIdentity}`,
+        identity: `secret.break_glass.denied:${attemptIdentity}:${this.options.credentialPrincipalId}:${this.options.apiKeyId ?? "no-api-key"}`,
       }),
       tenantId: auditTenantId,
       actorId: auditActorId,
+      credentialPrincipalId: this.options.credentialPrincipalId,
       idempotencyKey: auditIdempotencyKey,
       requestId: this.options.requestId,
       apiKeyId: this.options.apiKeyId,
@@ -295,6 +347,8 @@ export class DurableSecretLifecycleService {
         role: this.options.role,
         tenantId: this.options.tenantId,
         actorId: this.options.actorId,
+        authorityPrincipalId: this.options.actorId,
+        credentialPrincipalId: this.options.credentialPrincipalId,
         requestId: this.options.requestId,
         reason: typeof input.reason === "string" ? input.reason.trim() || null : null,
         idempotencyKey: input.idempotencyKey || null,
@@ -331,7 +385,15 @@ export class DurableSecretLifecycleService {
       input.credentialId,
       1,
     );
-    if (replay) return publicResult(replay);
+    if (replay) {
+      this.#auditReplay(
+        "secret.lifecycle.create_replayed",
+        input.idempotencyKey,
+        input.credentialId,
+        replay.generation,
+      );
+      return publicResult(replay);
+    }
 
     const at = this.#now();
     const attested = await attestEnvelopeKey(this.options.providers, this.options.tenantId, input.key);
@@ -393,11 +455,30 @@ export class DurableSecretLifecycleService {
       input.credentialId,
       nextGeneration,
     );
-    if (replay) return publicResult(replay);
+    if (replay) {
+      this.#auditReplay(
+        "secret.lifecycle.rotate_replayed",
+        input.idempotencyKey,
+        input.credentialId,
+        replay.generation,
+      );
+      return publicResult(replay);
+    }
     const current = getActiveSecretLifecycle(this.options.db, this.options.tenantId, input.credentialId);
     if (!current) throw new Error("secret_lifecycle_not_found");
     if (current.generation !== input.expectedGeneration) throw new Error("secret_rotation_generation_conflict");
     const at = this.#now();
+    try {
+      this.#audit(
+        "secret.lifecycle.rotation_source.attempted",
+        input.idempotencyKey,
+        input.credentialId,
+        { generation: current.generation, outcome: "attempted" },
+        `secret.lifecycle.rotation_source.attempted:${this.options.requestId ?? randomUUID()}:${this.options.credentialPrincipalId}:${this.options.apiKeyId ?? "no-api-key"}`,
+      );
+    } catch {
+      throw new Error("vault_access_audit_failed");
+    }
     let sourceAccess: EnvelopeAccessAuditEvent | undefined;
     const plaintext = await openEnvelopeSecret(envelopeFromRow(current), {
       tenantId: this.options.tenantId,
@@ -427,6 +508,7 @@ export class DurableSecretLifecycleService {
           : "secret.lifecycle.rotation_source.denied",
         input.idempotencyKey,
         null,
+        this.options.actorId,
       );
     });
     if (!sourceAccess || sourceAccess.outcome !== "granted") {
@@ -552,7 +634,7 @@ export class DurableSecretLifecycleService {
       if (!access || access.outcome !== "granted") {
         throw new Error("secret_break_glass_access_audit_missing");
       }
-      completeSecretBreakGlassOperation(this.options.db, {
+      const completion = completeSecretBreakGlassOperation(this.options.db, {
         tenantId: this.options.tenantId,
         idempotencyKey: input.idempotencyKey,
         requestDigest: commitment.digest,
@@ -574,6 +656,14 @@ export class DurableSecretLifecycleService {
           requestCommitmentKeyId: commitment.keyId,
         }, "secret.break_glass.operation"),
       });
+      if (completion.replayed) {
+        this.#auditReplay(
+          "secret.break_glass.replayed",
+          input.idempotencyKey,
+          input.credentialId,
+          current.generation,
+        );
+      }
       return plaintext;
     } catch (error) {
       if (isAuditedBreakGlassError(error)) throw error;

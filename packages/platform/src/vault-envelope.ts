@@ -69,6 +69,7 @@ export type EnvelopeAccessAuditEvent = Readonly<{
 export interface KeyEncryptionKeyProvider {
   readonly provider: string;
   readonly enabled: boolean;
+  keyMaterialFingerprints(): readonly string[];
   attestKey(key: EnvelopeKeyLocator, tenantId: string): Promise<EnvelopeKeyAttestation>;
   wrapDataKey(
     key: EnvelopeKeyReference,
@@ -115,6 +116,14 @@ export type DurableEnvelopeSecretProviderOptions = Readonly<{
 }>;
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
+const KEY_MATERIAL_FINGERPRINT_DOMAIN = "mendpoint:cryptographic-key-material-fingerprint:v1\0";
+
+export function cryptographicKeyMaterialFingerprint(material: Uint8Array): string {
+  return createHash("sha256")
+    .update(KEY_MATERIAL_FINGERPRINT_DOMAIN, "utf8")
+    .update(material)
+    .digest("hex");
+}
 
 function keyIdentity(tenantId: string, key: EnvelopeKeyReference): string {
   return `${tenantId}\0${key.provider}\0${key.keyId}\0${key.version}\0${key.customerManaged ? "1" : "0"}`;
@@ -407,6 +416,9 @@ export class EnvelopeKeyLifecycleRegistry {
 export class DisabledExternalVaultProvider implements KeyEncryptionKeyProvider {
   readonly enabled = false;
   constructor(readonly provider = "external-vault") {}
+  keyMaterialFingerprints(): readonly string[] {
+    return Object.freeze([]);
+  }
   async attestKey(): Promise<EnvelopeKeyAttestation> {
     throw new Error("external_vault_disabled");
   }
@@ -433,6 +445,12 @@ export class LocalEnvelopeKeyProvider implements KeyEncryptionKeyProvider {
 
   removeKey(tenantId: string, key: EnvelopeKeyReference): void {
     this.#keys.delete(locatorIdentity(tenantId, key));
+  }
+
+  keyMaterialFingerprints(): readonly string[] {
+    return Object.freeze([...new Set(
+      [...this.#keys.values()].map((record) => cryptographicKeyMaterialFingerprint(record.material)),
+    )].sort());
   }
 
   async attestKey(key: EnvelopeKeyLocator, tenantId: string): Promise<EnvelopeKeyAttestation> {
@@ -524,6 +542,12 @@ export class ConfiguredEnvelopeKeyProvider implements KeyEncryptionKeyProvider {
       if (error instanceof Error && error.message === "external_vault_configuration_invalid") throw error;
       throw new Error("external_vault_configuration_invalid");
     }
+  }
+
+  keyMaterialFingerprints(): readonly string[] {
+    return Object.freeze([...new Set(
+      [...this.#records.values()].map((record) => cryptographicKeyMaterialFingerprint(record.material)),
+    )].sort());
   }
 
   async attestKey(key: EnvelopeKeyLocator, tenantId: string): Promise<EnvelopeKeyAttestation> {

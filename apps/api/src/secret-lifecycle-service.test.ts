@@ -13,7 +13,9 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import {
+  ConfiguredEnvelopeKeyProvider,
   DisabledExternalVaultProvider,
+  type KeyEncryptionKeyProvider,
   LocalEnvelopeKeyProvider,
 } from "@mendpoint/platform";
 import {
@@ -48,7 +50,7 @@ function fixture() {
   return { db, path, provider };
 }
 
-function service(db: AppDb, provider: LocalEnvelopeKeyProvider | DisabledExternalVaultProvider, options?: {
+function service(db: AppDb, provider: KeyEncryptionKeyProvider, options?: {
   tenantId?: string;
   actorId?: string;
   role?: "owner" | "admin" | "engineer";
@@ -63,6 +65,7 @@ function service(db: AppDb, provider: LocalEnvelopeKeyProvider | DisabledExterna
     db,
     tenantId: options?.tenantId ?? "tenant-a",
     actorId: options?.actorId ?? "operator-a",
+    credentialPrincipalId: options?.actorId ?? "operator-a",
     role: options?.role ?? "admin",
     providers: [provider],
     breakGlassEnabled: options?.breakGlassEnabled ?? true,
@@ -350,6 +353,7 @@ describe("durable secret lifecycle service", () => {
       operation: "create",
       tenantId: "tenant-a",
       actorId: "operator-a",
+      credentialPrincipalId: "operator-a",
       credentialId: createInput.credentialId,
       sourceRef: createInput.sourceRef,
       plaintextSha256: createHash("sha256").update(createInput.plaintext).digest("hex"),
@@ -394,6 +398,25 @@ describe("durable secret lifecycle service", () => {
     })).toMatchObject({ keyId: COMMITMENT_KEY_ID, key: COMMITMENT_KEY });
   });
 
+  it("rejects commitment key material reused by an envelope KEK at service construction", () => {
+    const { db } = fixture();
+    const material = Buffer.alloc(32, 1);
+    const provider = ConfiguredEnvelopeKeyProvider.fromJson(JSON.stringify({
+      schemaVersion: 1,
+      keys: [{
+        tenantId: "tenant-a",
+        provider: "external-vault",
+        keyId: "tenant-key",
+        version: "1",
+        customerManaged: true,
+        attestation: "provider-attestation",
+        materialBase64: material.toString("base64"),
+      }],
+    }));
+    expect(() => service(db, provider, { commitmentKey: material }))
+      .toThrow("secret_lifecycle_key_material_reuse");
+  });
+
   it("fails closed for disabled providers and unauthorized actors", async () => {
     const { db, provider } = fixture();
     await expect(service(db, new DisabledExternalVaultProvider("local-envelope")).create(createInput))
@@ -419,6 +442,7 @@ describe("durable secret lifecycle service", () => {
       db,
       tenantId: "tenant-a",
       actorId: "operator-a",
+      credentialPrincipalId: "operator-a",
       role: "owner",
       providers: [provider],
       breakGlassEnabled: false,

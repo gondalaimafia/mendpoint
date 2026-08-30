@@ -23,6 +23,7 @@ import type {
   ImpactFindingRow,
   MigrationPrRow,
   MonitoredApi,
+  PrincipalRow,
   Provider,
   RoutingExecutorHealthRow,
   RoutingLedgerRow,
@@ -370,6 +371,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   tenant_id TEXT NOT NULL DEFAULT 'default',
   principal_id TEXT,
   scopes_json TEXT NOT NULL DEFAULT '["*"]',
+  authority_principal_id TEXT,
   created_at TEXT NOT NULL,
   last_used_at TEXT,
   revoked_at TEXT
@@ -2988,6 +2990,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
     // catalog, byte-identical). No static index/view/constraint references it, so an existing
     // DB that has not run this migration never touches the column in the static DDL.
     { table: "providers", name: "tenant_id", sql: "TEXT" },
+    { table: "api_keys", name: "authority_principal_id", sql: "TEXT" },
     { table: "jobs", name: "tenant_id", sql: "TEXT NOT NULL DEFAULT 'tenant_default'" },
     { table: "api_keys", name: "principal_id", sql: "TEXT" },
     { table: "jobs", name: "lease_owner", sql: "TEXT" },
@@ -4873,17 +4876,23 @@ export function createApiKey(
     tenantId: string;
     principalId?: string | null;
     scopes?: string[];
+    authorityPrincipalId?: string;
     createdAt: string;
   },
 ): { id: string; token: string; prefix: string; tenantId: string } {
   const token = `me_${randomBytes(24).toString("base64url")}`;
   const prefix = token.slice(0, 10);
   const keyHash = hashApiKey(token);
+  const authorityPrincipalId = validatedApiKeyAuthorityPrincipal(
+    db,
+    row.tenantId,
+    row.authorityPrincipalId,
+  );
   run(
     db,
     `INSERT INTO api_keys
-       (id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     (id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json, authority_principal_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.name,
@@ -4892,6 +4901,7 @@ export function createApiKey(
       row.tenantId,
       row.principalId ?? null,
       JSON.stringify(row.scopes ?? ["*"]),
+      authorityPrincipalId,
       row.createdAt,
     ],
   );
@@ -4913,15 +4923,21 @@ export function createApiKeyFromToken(
     principalId?: string | null;
     token: string;
     scopes?: string[];
+    authorityPrincipalId?: string;
     createdAt: string;
   },
 ): { id: string; prefix: string; tenantId: string } {
   const prefix = row.token.slice(0, 10);
+  const authorityPrincipalId = validatedApiKeyAuthorityPrincipal(
+    db,
+    row.tenantId,
+    row.authorityPrincipalId,
+  );
   run(
     db,
     `INSERT INTO api_keys
-       (id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     (id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json, authority_principal_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.name,
@@ -4930,10 +4946,68 @@ export function createApiKeyFromToken(
       row.tenantId,
       row.principalId ?? null,
       JSON.stringify(row.scopes ?? ["*"]),
+      authorityPrincipalId,
       row.createdAt,
     ],
   );
   return { id: row.id, prefix, tenantId: row.tenantId };
+}
+
+function validatedApiKeyAuthorityPrincipal(
+  db: AppDb,
+  tenantId: string,
+  authorityPrincipalId: string | undefined,
+): string | null {
+  if (authorityPrincipalId === undefined) return null;
+  const principal = get<PrincipalRow>(
+    db,
+    `SELECT * FROM principals WHERE tenant_id = ? AND id = ?`,
+    [tenantId, authorityPrincipalId],
+  );
+  const now = Date.now();
+  const createdAt = principal ? Date.parse(principal.created_at) : Number.NaN;
+  const expiresAt = principal?.expires_at === null ? null : Date.parse(principal?.expires_at ?? "");
+  if (
+    !principal ||
+    (principal.kind !== "human" && principal.kind !== "service") ||
+    principal.revoked_at !== null ||
+    !Number.isFinite(createdAt) ||
+    createdAt > now ||
+    (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= now))
+  ) {
+    throw new Error("api_key_authority_principal_invalid");
+  }
+  return principal.id;
+}
+
+export function bindApiKeyAuthorityPrincipal(
+  db: AppDb,
+  input: Readonly<{ apiKeyId: string; tenantId: string; authorityPrincipalId: string }>,
+): void {
+  const authorityPrincipalId = validatedApiKeyAuthorityPrincipal(
+    db,
+    input.tenantId,
+    input.authorityPrincipalId,
+  );
+  const key = get<Pick<ApiKeyRow, "tenant_id" | "authority_principal_id">>(
+    db,
+    `SELECT tenant_id, authority_principal_id FROM api_keys WHERE id = ?`,
+    [input.apiKeyId],
+  );
+  if (!key || key.tenant_id !== input.tenantId || !authorityPrincipalId) {
+    throw new Error("api_key_authority_binding_invalid");
+  }
+  if (key.authority_principal_id !== null && key.authority_principal_id !== authorityPrincipalId) {
+    throw new Error("api_key_authority_binding_conflict");
+  }
+  if (key.authority_principal_id === null) {
+    run(
+      db,
+      `UPDATE api_keys SET authority_principal_id = ?
+       WHERE id = ? AND tenant_id = ? AND authority_principal_id IS NULL`,
+      [authorityPrincipalId, input.apiKeyId, input.tenantId],
+    );
+  }
 }
 
 export type CreateTenantResult = {
