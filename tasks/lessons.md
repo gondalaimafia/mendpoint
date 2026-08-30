@@ -357,3 +357,9 @@
 **Mistake:** The remote proof counted legacy ReGauge branches for cardinality but required the exact expected branch to use only the new canonical prefix.
 **Correction:** Accept the expected branch from either the canonical prefix or an explicitly validated compatibility prefix, while continuing to count every compatible namespace as one shared campaign boundary.
 **Rule:** A compatibility alias cannot be observation-only. If durable state may legally retain the old identifier, every exact read, replay, proof, and cardinality check must accept that identifier without creating new work.
+
+### 2026-08-30 — Park one lane without pausing the next wave
+
+**Mistake:** I kept the skipped ReGauge activation lane in the active execution path instead of immediately advancing the next dependency-ready wave.
+**Correction:** Talal told me to skip that lane and start from the next wave.
+**Rule:** When a lane is explicitly parked, preserve it unchanged, remove it from the active critical path, and immediately move build and review capacity to the next dependency-ready engineering plan.

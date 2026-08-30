@@ -18,6 +18,7 @@ export type CustomerReadinessReason =
   | "customer_declaration_indeterminate"
   | "customer_declared_not_ready"
   | "customer_profile_blocked"
+  | "evidence_revocation_state_indeterminate"
   | "evidence_revoked"
   | "qualification_activation_invalid"
   | "qualification_attestation_malformed"
@@ -192,6 +193,8 @@ export function computeCustomerReadiness(input: CustomerReadinessInput): Custome
     ? input.releaseRevision
     : null;
   const nowMs = Date.parse(input.now);
+  const revocationStateAuthoritative = Array.isArray(input.revokedEvidenceIds) &&
+    input.revokedEvidenceIds.every((evidenceId) => typeof evidenceId === "string" && evidenceId.trim().length > 0);
 
   if (declared === "indeterminate") reasons.add("customer_declaration_indeterminate");
   else if (declared === "not_ready") reasons.add("customer_declared_not_ready");
@@ -207,7 +210,8 @@ export function computeCustomerReadiness(input: CustomerReadinessInput): Custome
     } else if (input.criticalHealth.some((check) => !check.ok)) {
       reasons.add("critical_health_failed");
     }
-    if ((input.revokedEvidenceIds?.length ?? 0) > 0) reasons.add("evidence_revoked");
+    if (!revocationStateAuthoritative) reasons.add("evidence_revocation_state_indeterminate");
+    else if (input.revokedEvidenceIds.length > 0) reasons.add("evidence_revoked");
     if (!sourceRevision) reasons.add("release_revision_indeterminate");
     const trustRoots = input.trustRoots;
     if (
@@ -262,6 +266,7 @@ export function computeCustomerReadiness(input: CustomerReadinessInput): Custome
   const indeterminateReasons = new Set<CustomerReadinessReason>([
     "critical_health_indeterminate",
     "customer_declaration_indeterminate",
+    "evidence_revocation_state_indeterminate",
     "qualification_activation_invalid",
     "qualification_attestation_malformed",
     "qualification_attestation_missing",
@@ -291,7 +296,7 @@ export function computeCustomerReadiness(input: CustomerReadinessInput): Custome
       criticalHealth: [...(input.criticalHealth ?? [])]
         .map(({ name, ok }) => ({ name, ok }))
         .sort((left, right) => left.name.localeCompare(right.name)),
-      revokedEvidenceIds: [...(input.revokedEvidenceIds ?? [])].sort(),
+      revokedEvidenceIds: revocationStateAuthoritative ? [...input.revokedEvidenceIds].sort() : null,
       trustRoots: input.trustRoots ?? null,
       qualificationAttestation: parseQualificationAttestation(input.qualificationAttestation),
       sandboxReceipt: input.sandboxReceipt ?? null,

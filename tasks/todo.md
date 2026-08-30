@@ -3654,6 +3654,7 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - [x] Preserve explicit inactive compatibility until qualification artifacts are packaged; fail closed when required mode is selected.
 - [x] Add negative coverage for missing, malformed, mismatched, expired, revoked, unhealthy, and incomplete evidence.
 - [x] Run focused readiness tests, the Ops typecheck, and diff integrity.
+- [x] Repair exact-head review P1 so absent or malformed revocation state is indeterminate and only an explicit array can prove the revocation boundary.
 - [ ] Obtain independent exact-head review, current-base CI, protected merge, and exact-revision deployment proof.
 
 ### Review
@@ -3661,3 +3662,4 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The deployment declaration is only an upper bound. Required mode cannot become ready without all three matching digests, exact qualified revision, 101 of 101 outcome, fresh sandbox receipt, nonempty passing critical-health evidence, and no revocation or profile blocker.
 - The focused matrix passes 30 of 30 tests. Root review added a fail-closed `critical_health_indeterminate` result so omitted health evidence cannot qualify a deployment.
 - Runtime packaging and injection of the qualification attestation and expected digests remain a separate activation increment; this slice does not enable required mode in production.
+- Exact-head review found that missing revocation state was normalized to an empty list. Required mode now distinguishes missing or malformed state from the authoritative empty array, includes that distinction in the readiness digest, and fails closed as indeterminate.

@@ -174,6 +174,18 @@ describe("computed customer readiness", () => {
     expect(assessment.reasons).toContain("critical_health_indeterminate");
   });
 
+  it.each([
+    ["absent", undefined],
+    ["malformed", [""]],
+  ])("fails closed when required revocation evidence is %s", (_name, revokedEvidenceIds) => {
+    const assessment = computeCustomerReadiness(readyInput({
+      revokedEvidenceIds: revokedEvidenceIds as readonly string[] | undefined,
+    }));
+    expect(assessment.status).toBe("indeterminate");
+    expect(assessment.reasons).toContain("evidence_revocation_state_indeterminate");
+    expect(assessment.digest).not.toBe(computeCustomerReadiness(readyInput()).digest);
+  });
+
   it("produces a stable canonical digest independent of object and set ordering", () => {
     const first = computeCustomerReadiness(readyInput({
       criticalHealth: [{ name: "worker", ok: true }, { name: "database", ok: true }],
