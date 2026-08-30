@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDb,
+  disableOrganizationMemory,
+  getOrganizationMemoryHead,
   grantLearningConsent,
   insertPrincipal,
   insertTenant,
@@ -19,6 +21,7 @@ import {
   admitGovernedLearningOutcome,
   type GovernedLearningOutcomeFacts,
 } from "./governed-learning-producer.js";
+import { projectGovernedOutcomeToOrganizationMemory } from "./governed-learning-memory.js";
 
 // These tests pin the corpus-integrity fix: the sole production producer used to
 // assert `verdict: "passed"` and `contaminationFree: true` as literals, so the
@@ -167,6 +170,126 @@ function storedLesson(db: AppDb, eventId: string): {
 }
 
 describe("governed producer derives the verification verdict from the recorded authority", () => {
+  it("projects both product outcomes into tenant-bound, non-active memory candidates", () => {
+    const db = setup();
+    const fettlerFacts = facts(db, "run-memory-fettler");
+    const fettler = admitGovernedLearningOutcome(fettlerFacts);
+    const regaugeFacts: GovernedLearningOutcomeFacts = {
+      ...facts(db, "candidate-memory-regauge"),
+      product: "regauge",
+      sourceObjectType: "transformer_adaptive_candidate",
+      repositoryId: "regauge-repo-verdict",
+      taskType: "legacy_migration",
+      specialization: {
+        ...fettlerFacts.specialization,
+        migrationFamily: "adaptive_repair",
+      },
+      reviewRationale: `Keep the compatibility adapter; ghp_${"aB1".repeat(14)} must never persist.`,
+    };
+    const regauge = admitGovernedLearningOutcome(regaugeFacts);
+
+    expect(fettler.memoryProjection?.status).toBe("observed");
+    expect(regauge.memoryProjection?.status).toBe("observed");
+    for (const result of [fettler, regauge]) {
+      if (result.memoryProjection?.status !== "observed") throw new Error("memory projection missing");
+      const head = getOrganizationMemoryHead(db, TENANT, result.memoryProjection.memoryId);
+      expect(head?.status).toBe("MEMORY_CANDIDATE");
+      expect(head?.trainingEligible).toBe(false);
+      expect(head?.source).toBe("reviewer_correction");
+      expect(head?.sourceRefs).toContain(`learning-event:${result.eventId}`);
+    }
+    if (regauge.memoryProjection?.status !== "observed") throw new Error("regauge projection missing");
+    const regaugeHead = getOrganizationMemoryHead(db, TENANT, regauge.memoryProjection.memoryId);
+    expect(regaugeHead?.statement).not.toContain("ghp_");
+    expect(regaugeHead?.statement).toContain("[REDACTED_GITHUB_TOKEN]");
+  });
+
+  it("replays the memory projection idempotently", () => {
+    const db = setup();
+    const input = facts(db, "run-memory-replay");
+    const first = admitGovernedLearningOutcome(input);
+    const replay = admitGovernedLearningOutcome(input);
+
+    expect(first.admitted).toBe(true);
+    expect(replay.reason).toBe("already_admitted");
+    expect(replay.memoryProjection).toEqual(first.memoryProjection);
+  });
+
+  it("keeps a disabled memory chain from blocking an idempotent admission replay", () => {
+    const db = setup();
+    const input = facts(db, "run-memory-disabled");
+    const first = admitGovernedLearningOutcome(input);
+    if (first.memoryProjection?.status !== "observed") throw new Error("memory projection missing");
+    disableOrganizationMemory(db, {
+      tenantId: TENANT,
+      memoryId: first.memoryProjection.memoryId,
+      actorPrincipalId: HUMAN,
+      reason: "operator rollback",
+      at: "2026-08-01T13:00:00.000Z",
+    });
+    const replay = admitGovernedLearningOutcome({
+      ...input,
+      now: "2026-08-01T14:00:00.000Z",
+    });
+
+    expect(first.admitted).toBe(true);
+    expect(replay.admitted).toBe(true);
+    expect(replay.reason).toBe("already_admitted");
+    expect(replay.memoryProjection).toMatchObject({
+      status: "failed",
+      reason: "organization_memory_not_open",
+    });
+    const persisted = db.raw
+      .prepare("SELECT COUNT(*) AS count FROM learning_records WHERE tenant_id = ?")
+      .get(TENANT) as { count: number };
+    expect(persisted.count).toBe(1);
+  });
+
+  it("rejects a reviewer principal from another tenant", () => {
+    const db = setup();
+    insertTenant(db, {
+      id: "tenant-other",
+      slug: "tenant-other",
+      name: "Other tenant",
+      createdAt: AT,
+    });
+    insertPrincipal(db, {
+      id: "human-other",
+      tenantId: "tenant-other",
+      kind: "human",
+      subject: "other-reviewer",
+      displayName: "Other Reviewer",
+      createdAt: AT,
+    });
+
+    const projection = projectGovernedOutcomeToOrganizationMemory({
+      db,
+      tenantId: TENANT,
+      product: "fettler",
+      repositoryId: "warden-repo-verdict",
+      taskType: "api_remediation",
+      migrationFamily: "api_remediation",
+      outcomeStatus: "corrected",
+      reviewerDecision: "accepted",
+      reviewerPrincipalId: "human-other",
+      reviewRationale: "Prefer the compatibility adapter.",
+      eventId: "event-cross-tenant",
+      learningRecordId: "record-cross-tenant",
+      revision: "b".repeat(40),
+      snapshotDigest: `sha256:${"c".repeat(64)}`,
+      observedAt: NOW,
+    });
+
+    expect(projection).toMatchObject({
+      status: "failed",
+      reason: "organization_memory_observer_authority_invalid",
+    });
+    const persisted = db.raw
+      .prepare("SELECT COUNT(*) AS count FROM organization_memory WHERE tenant_id = ?")
+      .get(TENANT) as { count: number };
+    expect(persisted.count).toBe(0);
+  });
+
   it("a soft model_verifier authority cannot produce a passed verdict; the lesson reads insufficient", () => {
     const db = setup();
     const result = admitGovernedLearningOutcome(facts(db, "run-soft", { signalClass: "soft" }));
