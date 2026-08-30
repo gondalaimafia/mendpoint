@@ -7,6 +7,7 @@ import {
   type ExactDraftObservation,
   type ExactDraftObservationInput,
 } from "@mendpoint/github";
+import { REGAUGE_DRAFT_BRANCH_PREFIX } from "@mendpoint/worker/transformer-multinode-service";
 
 const API_KEY = /^me_[A-Za-z0-9_-]{32,}$/;
 const REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -90,6 +91,7 @@ export type RegaugeReadinessSoakReport = Readonly<{
 
 export type RegaugeWorkerStartPlan = Readonly<{
   schemaVersion: 1;
+  runId: string;
   revision: string;
   volumeId: string;
   coordinatorId: string;
@@ -100,6 +102,7 @@ export type RegaugeWorkerStartPlan = Readonly<{
 
 export type RegaugeMachineContinuityEvidence = Readonly<{
   schemaVersion: 1;
+  runId: string;
   revision: string;
   volumeId: string;
   coordinator: Readonly<{ machineId: string; instanceId: string }>;
@@ -140,28 +143,34 @@ function exactCoordinator(
   machine: Record<string, any>,
   revision: string,
   volumeId: string,
+  runId: string,
 ): boolean {
   const mounts = Array.isArray(machine.config?.mounts) ? machine.config.mounts : [];
   return machine.state === "started" &&
     machine.config?.metadata?.fly_process_group === "coordinator" &&
     machineMatchesRevision(machine, revision) &&
+    machine.config?.env?.MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ID === runId &&
     mounts.length === 1 &&
     mounts[0]?.volume === volumeId &&
     mounts[0]?.path === "/data";
 }
 
-function exactWorker(machine: Record<string, any>, revision: string): boolean {
+function exactWorker(machine: Record<string, any>, revision: string, runId: string): boolean {
   const mounts = Array.isArray(machine.config?.mounts) ? machine.config.mounts : [];
   return machine.config?.metadata?.fly_process_group === "worker" &&
-    machineMatchesRevision(machine, revision) && mounts.length === 0;
+    machineMatchesRevision(machine, revision) &&
+    machine.config?.env?.MENDPOINT_REGAUGE_ACTIVATION_RUN_ID === runId &&
+    mounts.length === 0;
 }
 
 function exactMachinePair(
   machines: unknown,
   revision: string,
   volumeId: string,
+  runId: string,
 ): Readonly<{ coordinator: Record<string, any>; worker: Record<string, any> }> {
-  if (!REVISION.test(revision) || !ID.test(volumeId) || !Array.isArray(machines) || machines.length !== 2) {
+  if (!REVISION.test(revision) || !ID.test(volumeId) || !ID.test(runId) ||
+      !Array.isArray(machines) || machines.length !== 2) {
     throw new Error("regauge_production_machine_topology_invalid");
   }
   const values = machines.map(record);
@@ -169,8 +178,8 @@ function exactMachinePair(
     throw new Error("regauge_production_machine_topology_invalid");
   }
   const records = values as Record<string, any>[];
-  const coordinators = records.filter((machine) => exactCoordinator(machine, revision, volumeId));
-  const workers = records.filter((machine) => exactWorker(machine, revision));
+  const coordinators = records.filter((machine) => exactCoordinator(machine, revision, volumeId, runId));
+  const workers = records.filter((machine) => exactWorker(machine, revision, runId));
   if (coordinators.length !== 1 || workers.length !== 1 ||
       machineId(coordinators[0]!) === machineId(workers[0]!)) {
     throw new Error("regauge_production_machine_topology_invalid");
@@ -182,8 +191,14 @@ export function planRegaugeWorkerStart(input: Readonly<{
   machines: unknown;
   expectedRevision: string;
   expectedVolumeId: string;
+  expectedRunId: string;
 }>): RegaugeWorkerStartPlan {
-  const pair = exactMachinePair(input.machines, input.expectedRevision, input.expectedVolumeId);
+  const pair = exactMachinePair(
+    input.machines,
+    input.expectedRevision,
+    input.expectedVolumeId,
+    input.expectedRunId,
+  );
   const workerState = String(pair.worker.state ?? "");
   const action = workerState === "started" ? "observe"
     : workerState === "starting" ? "wait"
@@ -192,6 +207,7 @@ export function planRegaugeWorkerStart(input: Readonly<{
   if (!action) throw new Error("regauge_production_worker_state_invalid");
   return Object.freeze({
     schemaVersion: 1,
+    runId: input.expectedRunId,
     revision: input.expectedRevision,
     volumeId: input.expectedVolumeId,
     coordinatorId: machineId(pair.coordinator),
@@ -205,8 +221,14 @@ export function establishRegaugeMachineContinuity(input: Readonly<{
   machines: unknown;
   expectedRevision: string;
   expectedVolumeId: string;
+  expectedRunId: string;
 }>): RegaugeMachineContinuityEvidence {
-  const pair = exactMachinePair(input.machines, input.expectedRevision, input.expectedVolumeId);
+  const pair = exactMachinePair(
+    input.machines,
+    input.expectedRevision,
+    input.expectedVolumeId,
+    input.expectedRunId,
+  );
   const checks = Array.isArray(pair.worker.checks) ? pair.worker.checks : [];
   if (pair.worker.state !== "started" ||
       checks.filter((check: unknown) => record(check)?.name === "regauge_worker" &&
@@ -223,6 +245,7 @@ export function establishRegaugeMachineContinuity(input: Readonly<{
   );
   return Object.freeze({
     schemaVersion: 1,
+    runId: input.expectedRunId,
     revision: input.expectedRevision,
     volumeId: input.expectedVolumeId,
     coordinator: Object.freeze({
@@ -245,6 +268,7 @@ export function verifyRegaugeMachineContinuity(input: Readonly<{
     machines: input.machines,
     expectedRevision: input.expected.revision,
     expectedVolumeId: input.expected.volumeId,
+    expectedRunId: input.expected.runId,
   });
   if (current.coordinator.machineId !== input.expected.coordinator.machineId ||
       current.coordinator.instanceId !== input.expected.coordinator.instanceId ||
@@ -415,6 +439,7 @@ export async function observeRegaugeDraftCanary(input: FetchInput & Readonly<{
       expectedBaseSha: String(draft.baseRevision),
       expectedHeadBranch: String(draft.branchName),
       expectedHeadSha: String(draft.commitSha),
+      expectedCampaignBranchPrefix: REGAUGE_DRAFT_BRANCH_PREFIX,
       expectedRepositoryId: input.expectedRepositoryId,
       expectedInstallationId: input.expectedInstallationId,
       requireExactDraft: true,
@@ -620,13 +645,15 @@ function parseMachineContinuityEvidence(value: unknown): RegaugeMachineContinuit
   const parsed = record(value);
   const coordinator = record(parsed?.coordinator);
   const worker = record(parsed?.worker);
-  if (parsed?.schemaVersion !== 1 || !REVISION.test(String(parsed?.revision ?? "")) ||
+  if (parsed?.schemaVersion !== 1 || !ID.test(String(parsed?.runId ?? "")) ||
+      !REVISION.test(String(parsed?.revision ?? "")) ||
       !ID.test(String(parsed?.volumeId ?? "")) || !coordinator || !worker ||
       worker.check !== "passing") {
     throw new Error("regauge_production_machine_continuity_invalid");
   }
   return Object.freeze({
     schemaVersion: 1,
+    runId: requiredId(String(parsed.runId), "regauge_production_machine_continuity_invalid"),
     revision: String(parsed.revision),
     volumeId: requiredId(String(parsed.volumeId), "regauge_production_machine_continuity_invalid"),
     coordinator: Object.freeze({
@@ -663,6 +690,7 @@ async function main(): Promise<void> {
       machines: readBoundedJsonFile(option("input")),
       expectedRevision: process.env.MENDPOINT_RELEASE_REVISION ?? "",
       expectedVolumeId: option("volume-id") ?? "",
+      expectedRunId: process.env.MENDPOINT_REGAUGE_ACTIVATION_RUN_ID ?? "",
     });
     persistRegaugeProductionEvidence(output, evidence);
     return;
@@ -672,6 +700,7 @@ async function main(): Promise<void> {
       machines: readBoundedJsonFile(option("input")),
       expectedRevision: process.env.MENDPOINT_RELEASE_REVISION ?? "",
       expectedVolumeId: option("volume-id") ?? "",
+      expectedRunId: process.env.MENDPOINT_REGAUGE_ACTIVATION_RUN_ID ?? "",
     });
     persistRegaugeProductionEvidence(output, evidence);
     return;

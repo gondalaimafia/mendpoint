@@ -24,6 +24,8 @@ afterEach(() => { while (services.length) services.pop()?.close(); while (roots.
 const revision = (character: string) => character.repeat(40);
 const draftApproval = "approval:regauge:exact";
 const gate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["test"], grants: [{ tenantId: "tenant-a", environment: "test", boundaries: ["api_control_plane", "worker_action", "delivery", "ui"], acceptanceEvidenceRefs: ["acceptance:transformer-pilot:v1"], productionDeliveryApprovalRefs: [draftApproval] }] });
+const nextDraftApproval = "approval:regauge:next-run";
+const nextGate = JSON.stringify({ schemaVersion: TRANSFORMER_GATE_SCHEMA_VERSION, tenantAllowlist: ["tenant-a"], environmentAllowlist: ["test"], grants: [{ tenantId: "tenant-a", environment: "test", boundaries: ["api_control_plane", "worker_action", "delivery", "ui"], acceptanceEvidenceRefs: ["acceptance:transformer-next-run:v1"], productionDeliveryApprovalRefs: [nextDraftApproval] }] });
 
 describe("real Transformer multi-node coordinator", () => {
   it("exposes only server-produced verifier observations to the authenticated worker scope", async () => {
@@ -428,6 +430,60 @@ describe("real Transformer multi-node coordinator", () => {
     expect(draftObservationResponse.status).toBe(200);
     expect(await draftObservationResponse.json()).toMatchObject({
       result: [{ draft: { productionDeliveryApprovalRefs: [draftApproval] } }],
+    });
+    const nextApp = new Hono<ApiEnv>();
+    nextApp.use("*", async (c, next) => {
+      c.set("requestId", "request-next-authority");
+      c.set("principal", { id: "api-key:worker", tenantId: "tenant-a", role: "agent" });
+      c.set("authScopes", ["transformer:worker"]);
+      await next();
+    });
+    nextApp.route("/v1/regauge/attempt-coordinator", createTransformerAttemptCoordinatorRoutes({
+      enabled: true,
+      store: service.store,
+      now: () => coordinatorNow,
+      gateConfig: nextGate,
+      draftAuthorization: {
+        tenantId: "tenant-a",
+        campaignId: "campaign-a",
+        environment: "test",
+        remoteRepositoryId: 84,
+        sourceRevision: revision("a"),
+        productionApprovalRef: nextDraftApproval,
+        activationExpiresAt: new Date(Date.parse(coordinatorNow) + 60 * 60_000).toISOString(),
+        maximumDrafts: 1,
+      },
+      loadExactSource: () => ({ repositoryId: "repo-a", revision: revision("a"), digest: snapshotDigest, files, fileModes: { "package.json": "100644" } }),
+      resolveDraftRepository: () => ({ owner: "acme", repo: "repo-a", baseBranch: "main", installationId: 42, remoteRepositoryId: 84 }),
+    }));
+    const nextTransport: TransformerMultinodeTransport = {
+      request: async ({ path, body }) => {
+        const response = await nextApp.request(path, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const parsed = await response.json() as Record<string, unknown>;
+        if (!response.ok) throw new Error(String(parsed.error));
+        return parsed;
+      },
+    };
+    const nextRunner = createTransformerMultinodeService({
+      ...runnerConfig,
+      workerId: "worker-next-authority",
+      gateConfig: nextGate,
+      evidenceRefs: ["evidence:runner-next-authority"],
+      deliverDraft: async () => { throw new Error("must_not_redeliver"); },
+    }, nextTransport, artifactBackend);
+    await expect(nextRunner.runDeliveryOnce()).resolves.toEqual({ status: "idle" });
+    expect(draftCalls).toBe(2);
+    expect(service.store.getCampaign("tenant-a", "campaign-a")?.units[0]?.draftDelivery).toMatchObject({
+      status: "delivered",
+      productionDeliveryApprovalRefs: [draftApproval, nextDraftApproval],
+      authorizationEvidenceRefs: expect.arrayContaining([
+        "acceptance:transformer-pilot:v1",
+        "acceptance:transformer-next-run:v1",
+      ]),
     });
     await expect(replacement.runDeliveryOnce()).resolves.toEqual({ status: "idle" });
     expect(draftCalls).toBe(2);

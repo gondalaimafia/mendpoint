@@ -29,6 +29,8 @@ import type { TransformerCheckpointArtifactBackend } from "./transformer-checkpo
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 
+export const REGAUGE_DRAFT_BRANCH_PREFIX = "mendpoint/regauge/" as const;
+
 export type TransformerMultinodeTransport = Readonly<{
   request(input: Readonly<{ path: string; body: unknown; signal?: AbortSignal }>): Promise<unknown>;
 }>;
@@ -299,7 +301,7 @@ export function createTransformerMultinodeService(inputConfig: Readonly<{
           });
         });
         const title = cleanTitle(claim.title);
-        const branch = `mendpoint/transformer/${campaignStable(`draft:${claim.deliveryId}`).slice(0, 32)}`;
+        const branch = `${REGAUGE_DRAFT_BRANCH_PREFIX}${campaignStable(`draft:${claim.deliveryId}`).slice(0, 32)}`;
         const intent: ExactDraftDeliveryInput = Object.freeze({
           owner: target.owner,
           repo: target.repo,

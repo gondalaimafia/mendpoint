@@ -279,3 +279,15 @@
 **Mistake:** The production gate validated the current delivery approval, but the durable draft record retained only execution and acceptance evidence, so a later proof could not establish which protected run authorized the existing draft.
 **Correction:** Carry the configured approval allowlist through the gate decision, persist the exact matched approval on the draft, and append later-run authority without changing or redelivering the live pull request.
 **Rule:** Authorization evidence is its own durable contract. Keep it distinct from execution and SCM evidence, update it idempotently on replay, and make the production proof consume the exact stored field rather than inferring authority from adjacent evidence.
+
+### 2026-08-30 — Rotate idempotency with trusted authority epochs
+
+**Mistake:** The worker reused one campaign-stable authorization idempotency key even when a later protected run supplied a new production approval and acceptance evidence, causing the durable store to reject legitimate reauthorization as a conflict.
+**Correction:** Derive the effective mutation key at the trusted coordinator from the client operation key plus the exact server-validated approval and acceptance evidence.
+**Rule:** Idempotency must be stable within one authority epoch and distinct across authority epochs. Never let an untrusted client select the authority component of a privileged mutation key.
+
+### 2026-08-30 — Put production rollback outside the mutation job
+
+**Mistake:** ReGauge activation relied on late steps in the same timeout-bounded job to contain failure, without an immutable pre-mutation snapshot or exact run ownership.
+**Correction:** Snapshot and revalidate topology before mutation, quiesce the prior worker, mark every committed process with the exact activation run, and run rollback or containment in a separate always-evaluated job.
+**Rule:** A production mutation job cannot be its own only watchdog. Preserve an exact rollback boundary before mutation, make the commit boundary machine-readable, and independently prove either exact restoration or run-scoped containment after failure or cancellation.

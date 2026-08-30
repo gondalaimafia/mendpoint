@@ -17,6 +17,7 @@ const runEvidenceRef = "evidence:github:run:9:attempt:1:revision:exact-head";
 const currentEvidenceRefs = [runEvidenceRef] as const;
 const releaseRevision = "d".repeat(40);
 const volumeId = "vol_regauge";
+const activationRunId = "33293506997";
 
 function machinePair(workerState = "started") {
   return [{
@@ -25,7 +26,10 @@ function machinePair(workerState = "started") {
     state: "started",
     config: {
       metadata: { fly_process_group: "coordinator" },
-      env: { MENDPOINT_RELEASE_REVISION: releaseRevision },
+      env: {
+        MENDPOINT_RELEASE_REVISION: releaseRevision,
+        MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ID: activationRunId,
+      },
       mounts: [{ volume: volumeId, path: "/data" }],
     },
     image_ref: { labels: { GH_SHA: releaseRevision } },
@@ -36,7 +40,10 @@ function machinePair(workerState = "started") {
     state: workerState,
     config: {
       metadata: { fly_process_group: "worker" },
-      env: { MENDPOINT_RELEASE_REVISION: releaseRevision },
+      env: {
+        MENDPOINT_RELEASE_REVISION: releaseRevision,
+        MENDPOINT_REGAUGE_ACTIVATION_RUN_ID: activationRunId,
+      },
       mounts: [],
     },
     image_ref: { labels: { GH_SHA: releaseRevision } },
@@ -56,7 +63,7 @@ function deliveredDraftResult() {
       pullRequestUrl: "https://github.com/acme/repo/pull/17",
       baseBranch: "main",
       baseRevision,
-      branchName: "mendpoint/regauge-unit-a",
+      branchName: "mendpoint/regauge/unit-a",
       commitSha: headRevision,
       evidenceRefs: [...currentEvidenceRefs, "github:draft:17"],
       productionDeliveryApprovalRefs: [approvalRef],
@@ -95,27 +102,32 @@ describe("Regauge production proof", () => {
       machines: machinePair("stopped"),
       expectedRevision: releaseRevision,
       expectedVolumeId: volumeId,
+      expectedRunId: activationRunId,
     })).toMatchObject({ workerId: "worker-a", workerState: "stopped", action: "start" });
     expect(planRegaugeWorkerStart({
       machines: machinePair("starting"),
       expectedRevision: releaseRevision,
       expectedVolumeId: volumeId,
+      expectedRunId: activationRunId,
     })).toMatchObject({ workerState: "starting", action: "wait" });
     expect(planRegaugeWorkerStart({
       machines: machinePair("started"),
       expectedRevision: releaseRevision,
       expectedVolumeId: volumeId,
+      expectedRunId: activationRunId,
     })).toMatchObject({ workerState: "started", action: "observe" });
 
     expect(() => planRegaugeWorkerStart({
       machines: [...machinePair("stopped"), machinePair("started")[1]],
       expectedRevision: releaseRevision,
       expectedVolumeId: volumeId,
+      expectedRunId: activationRunId,
     })).toThrow("regauge_production_machine_topology_invalid");
     expect(() => planRegaugeWorkerStart({
       machines: machinePair("stopping"),
       expectedRevision: releaseRevision,
       expectedVolumeId: volumeId,
+      expectedRunId: activationRunId,
     })).toThrow("regauge_production_worker_state_invalid");
   });
 
@@ -124,6 +136,7 @@ describe("Regauge production proof", () => {
       machines: machinePair(),
       expectedRevision: releaseRevision,
       expectedVolumeId: volumeId,
+      expectedRunId: activationRunId,
     });
     expect(verifyRegaugeMachineContinuity({ machines: machinePair(), expected })).toEqual(expected);
 
@@ -172,7 +185,7 @@ describe("Regauge production proof", () => {
       pullRequestNumber: 17,
       expectedBaseBranch: "main",
       expectedBaseSha: baseRevision,
-      expectedHeadBranch: "mendpoint/regauge-unit-a",
+      expectedHeadBranch: "mendpoint/regauge/unit-a",
       expectedHeadSha: headRevision,
       expectedInstallationId: installationId,
       expectedRepositoryId: repositoryId,

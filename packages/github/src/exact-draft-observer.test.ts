@@ -4,6 +4,16 @@ import { observeExactDraftWithOctokit } from "./exact-draft-observer.js";
 
 const sha = (value: string) => value.repeat(40);
 
+type OpenPullFixture = Readonly<{
+  number: number;
+  headBranch: string;
+  baseBranch?: string;
+  baseSha?: string;
+  headSha?: string;
+  draft?: boolean;
+  repositoryId?: number;
+}>;
+
 function octokit(input: Readonly<{
   baseSha?: string;
   headSha?: string;
@@ -16,10 +26,12 @@ function octokit(input: Readonly<{
   checkCount?: number;
   draft?: boolean;
   repositoryId?: number;
+  headBranch?: string;
   changedFiles?: Array<Readonly<{ filename: string; previous_filename?: string; status?: string }>>;
   compareNextPage?: boolean;
   matchingDrafts?: number;
   pullsNextPage?: boolean;
+  openPullPages?: Array<Array<OpenPullFixture>>;
   checkDetailsUrl?: string;
   reviews?: Array<Readonly<{
     id: number;
@@ -44,6 +56,7 @@ function octokit(input: Readonly<{
   }>>;
 }> = {}): Octokit {
   const head = input.headSha ?? sha("b");
+  const headBranch = input.headBranch ?? "mendpoint/change";
   const checkRuns = Array.from({ length: input.checkCount ?? 1 }, (_, index) => ({
     id: 9 + index,
     name: `test-${index}`,
@@ -61,7 +74,7 @@ function octokit(input: Readonly<{
     pulls: {
       get: vi.fn(async () => ({ data: {
         base: { ref: "main", sha: input.baseSha ?? sha("a"), repo: { id: input.repositoryId ?? 101 } },
-        head: { ref: "mendpoint/change", sha: head, repo: { id: input.repositoryId ?? 101 } },
+        head: { ref: headBranch, sha: head, repo: { id: input.repositoryId ?? 101 } },
         state: "open",
         draft: input.draft ?? true,
         merged_at: null,
@@ -78,16 +91,35 @@ function octokit(input: Readonly<{
         })),
         headers: {},
       })),
-      list: vi.fn(async () => ({
-        data: Array.from({ length: input.matchingDrafts ?? 1 }, (_, index) => ({
-          number: 3 + index,
-          state: "open",
-          draft: true,
-          base: { ref: "main", sha: input.baseSha ?? sha("a") },
-          head: { ref: "mendpoint/change", sha: head },
-        })),
-        headers: input.pullsNextPage ? { link: '<https://api.github.test/pulls?page=2>; rel="next"' } : {},
-      })),
+      list: vi.fn(async (request: Readonly<{ page?: number }>) => {
+        const page = request.page ?? 1;
+        const configuredPages = input.openPullPages;
+        const pageValues: readonly OpenPullFixture[] = configuredPages?.[page - 1] ??
+          (configuredPages ? [] : Array.from({ length: input.matchingDrafts ?? 1 }, (_, index) => ({
+            number: 3 + index,
+            headBranch,
+          })));
+        return {
+          data: pageValues.map((pull) => ({
+            number: pull.number,
+            state: "open",
+            draft: pull.draft ?? true,
+            base: {
+              ref: pull.baseBranch ?? "main",
+              sha: pull.baseSha ?? input.baseSha ?? sha("a"),
+              repo: { id: pull.repositoryId ?? input.repositoryId ?? 101 },
+            },
+            head: {
+              ref: pull.headBranch,
+              sha: pull.headSha ?? head,
+              repo: { id: pull.repositoryId ?? input.repositoryId ?? 101 },
+            },
+          })),
+          headers: input.pullsNextPage || (configuredPages !== undefined && page < configuredPages.length)
+            ? { link: `<https://api.github.test/pulls?page=${page + 1}>; rel="next"` }
+            : {},
+        };
+      }),
     },
     checks: {
       listForRef: vi.fn(async () => ({ data: {
@@ -167,7 +199,8 @@ describe("exact GitHub draft observation", () => {
     });
     expect(observed).toMatchObject({ repositoryId: 101, installationId: 202, matchingOpenDrafts: 1,
       changedPaths: ["src/client.ts"], remoteTreeSha: sha("c") });
-    expect(client.pulls.list).toHaveBeenCalledWith(expect.objectContaining({ state: "open", head: "acme:mendpoint/change" }));
+    expect(client.pulls.list).toHaveBeenCalledWith(expect.objectContaining({ state: "open", page: 1, per_page: 100 }));
+    expect(client.pulls.list).not.toHaveBeenCalledWith(expect.objectContaining({ head: expect.anything() }));
     expect(client.repos.compareCommitsWithBasehead).toHaveBeenCalledWith(expect.objectContaining({
       basehead: `${sha("a")}...${sha("b")}`,
     }));
@@ -175,6 +208,59 @@ describe("exact GitHub draft observation", () => {
       "github:installation:202", "github:repository:101", `github:tree:${sha("c")}`,
       "github:changed-path-sha256:25d66d74617fe2e23d7946bd6e3ba95640ab1b9bc8947445d604fc271c7c1f12",
     ]));
+  });
+
+  it("rejects an exact draft when another open draft exists in the campaign namespace", async () => {
+    await expect(observeExactDraftWithOctokit(octokit({
+      headBranch: "mendpoint/regauge/unit-a",
+      openPullPages: [[
+        { number: 3, headBranch: "mendpoint/regauge/unit-a" },
+        { number: 91, headBranch: "mendpoint/regauge/stale-unit", headSha: sha("d") },
+      ]],
+    }), {
+      ...input,
+      expectedHeadBranch: "mendpoint/regauge/unit-a",
+      expectedCampaignBranchPrefix: "mendpoint/regauge/",
+      expectedRepositoryId: 101,
+      expectedInstallationId: 202,
+      requireExactDraft: true,
+      includeDeliveryEvidence: true,
+    })).rejects.toThrow("github_exact_draft_observation_authority_mismatch");
+  });
+
+  it("enumerates every open pull page before proving campaign draft cardinality", async () => {
+    const client = octokit({
+      headBranch: "mendpoint/regauge/unit-a",
+      openPullPages: [
+        [{ number: 81, headBranch: "feature/unrelated" }],
+        [{ number: 3, headBranch: "mendpoint/regauge/unit-a" }],
+      ],
+    });
+    await expect(observeExactDraftWithOctokit(client, {
+      ...input,
+      expectedHeadBranch: "mendpoint/regauge/unit-a",
+      expectedCampaignBranchPrefix: "mendpoint/regauge/",
+      expectedRepositoryId: 101,
+      expectedInstallationId: 202,
+      requireExactDraft: true,
+      includeDeliveryEvidence: true,
+    })).resolves.toMatchObject({ matchingOpenDrafts: 1 });
+    expect(client.pulls.list).toHaveBeenNthCalledWith(1, expect.objectContaining({ page: 1 }));
+    expect(client.pulls.list).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 2 }));
+  });
+
+  it("fails closed when the campaign namespace is invalid or does not contain the expected head", async () => {
+    const client = octokit({ headBranch: "mendpoint/regauge/unit-a" });
+    await expect(observeExactDraftWithOctokit(client, {
+      ...input,
+      expectedHeadBranch: "mendpoint/regauge/unit-a",
+      expectedCampaignBranchPrefix: "mendpoint/fettler-",
+      expectedRepositoryId: 101,
+      expectedInstallationId: 202,
+      requireExactDraft: true,
+      includeDeliveryEvidence: true,
+    })).rejects.toThrow("github_exact_draft_observation_invalid");
+    expect(client.pulls.get).not.toHaveBeenCalled();
   });
 
   it.each([

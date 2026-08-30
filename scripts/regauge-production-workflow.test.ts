@@ -163,7 +163,8 @@ describe("Regauge production workflow", () => {
     expect(authority).toContain("MENDPOINT_REGAUGE_PRODUCTION_APPROVAL_REF=");
     expect(authority).toContain("MENDPOINT_REGAUGE_GATE=");
     expect(authority).toContain("MENDPOINT_REGAUGE_EVIDENCE_REFS=");
-    expect(authority).toContain("date -u -d '+70 minutes'");
+    expect(authority).toContain("date -u -d '+45 minutes'");
+    expect(authority).toContain("MENDPOINT_REGAUGE_ACTIVATION_DEADLINE_EPOCH=");
     expect(authority).toContain("MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT=");
     expect(authority).toContain("MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT=2026-08-24T00:00:00.000Z");
     expect(authority).toContain("MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT=2026-11-20T23:59:59.000Z");
@@ -250,7 +251,7 @@ describe("Regauge production workflow", () => {
       "MENDPOINT_AGENT_VERIFIER_PIVOTS=1",
       "MENDPOINT_AGENT_VERIFIER_MAXIMUM_CANDIDATES=1",
       "MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD=0.05",
-      "MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS=660000",
+      "MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS=300000",
       "MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES=0",
       "MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON=\"$MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON\"",
       "MENDPOINT_AGENT_VERIFIER_PRICING_JSON=\"$MENDPOINT_AGENT_VERIFIER_PRICING_JSON\"",
@@ -470,8 +471,71 @@ describe("Regauge production workflow", () => {
     )!.run as string;
 
     expect(workflow.jobs.deploy["timeout-minutes"]).toBe(60);
-    expect(validation).toContain('test "$READINESS_SOAK_SECONDS" -le 1800');
+    expect(validation).toContain('test "$LIVE_EVAL_REPETITIONS" = 3');
+    expect(validation).toContain('test "$READINESS_SOAK_SECONDS" -le 600');
     expect(validation).not.toContain('test "$READINESS_SOAK_SECONDS" -le 21600');
+    const liveEvaluation = (workflow.jobs.deploy.steps as Record<string, any>[]).find(
+      (step) => step.name === "Run budget bounded live Regauge evaluation",
+    )!.run as string;
+    expect(liveEvaluation).toContain("MENDPOINT_REGAUGE_ACTIVATION_DEADLINE_EPOCH");
+    expect(liveEvaluation).toContain("required_seconds=");
+    expect(liveEvaluation).toContain("regauge_activation_budget_insufficient");
+    expect(liveEvaluation).toContain("timeout --kill-after=30s 1200s");
+  });
+
+  it("quiesces an immutable topology and gives every production mutation exact run ownership", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const preflight = workflow.jobs.preflight.steps as Record<string, any>[];
+    const deploy = workflow.jobs.deploy.steps as Record<string, any>[];
+    const discovery = preflight.find(
+      (step) => step.name === "Prove Fly authority without mutation",
+    )!.run as string;
+    const quiesceIndex = deploy.findIndex(
+      (step) => step.name === "Quiesce and snapshot the existing worker",
+    );
+    const stageIndex = deploy.findIndex((step) => step.name === "Stage production secrets");
+    const coordinator = deploy.find((step) => step.name === "Deploy coordinator")!.run as string;
+    const worker = deploy.find((step) => step.name === "Deploy worker")!.run as string;
+
+    expect(discovery).toContain("pre-mutation-machines.json");
+    expect(deploy.some((step) => step.name === "Download pre-mutation topology")).toBe(true);
+    expect(quiesceIndex).toBeGreaterThan(-1);
+    expect(quiesceIndex).toBeLessThan(stageIndex);
+    const quiesce = deploy[quiesceIndex]!.run as string;
+    expect(quiesce).toContain("regauge_pre_mutation_topology_drift");
+    expect(quiesce).toContain("pre-mutation-worker-config.json");
+    expect(quiesce).toContain('flyctl machine stop "$worker_id"');
+    expect(coordinator).toContain("MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ID");
+    expect(coordinator).toContain("MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ATTEMPT");
+    expect(worker).toContain("MENDPOINT_REGAUGE_ACTIVATION_RUN_ID");
+    expect(worker).toContain("MENDPOINT_REGAUGE_ACTIVATION_RUN_ATTEMPT");
+  });
+
+  it("runs independent exact rollback or containment after failed and cancelled mutations", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/regauge-production.yml", "utf8"),
+    ) as Record<string, any>;
+    const cleanup = workflow.jobs.cleanup;
+    expect(cleanup.needs).toEqual(["preflight", "deploy"]);
+    expect(cleanup.if).toContain("always()");
+    expect(cleanup.if).toContain("needs.deploy.result != 'success'");
+    expect(cleanup.if).toContain("needs.deploy.result != 'skipped'");
+    expect(cleanup["timeout-minutes"]).toBe(15);
+    const restore = cleanup.steps.find(
+      (step: Record<string, unknown>) => step.name === "Restore or contain the exact activation worker",
+    ).run as string;
+    expect(restore).toContain("pre-mutation-machines.json");
+    expect(restore).toContain('[[ "$live_coordinator" == "$prior_coordinator" ]]');
+    expect(restore).toContain("--machine-config test-results/regauge-cleanup/prior-worker-config.json");
+    expect(restore).toContain('if [[ "$prior_state" == "started" ]]');
+    expect(restore).toContain("MENDPOINT_REGAUGE_ACTIVATION_RUN_ID");
+    expect(restore).toContain("MENDPOINT_REGAUGE_ACTIVATION_RUN_ATTEMPT");
+    expect(restore).toContain('test "$remaining_owned_started" = "0"');
+    expect(cleanup.steps.some(
+      (step: Record<string, unknown>) => step.name === "Upload cleanup evidence",
+    )).toBe(true);
   });
 
   it("samples the exact worker identity and health throughout the readiness soak", () => {
