@@ -238,6 +238,26 @@ function roleWithinStableAuthority(role: Role, authorityRole: Role): boolean {
   );
 }
 
+function humanMembershipForAuthority(
+  db: AppDb,
+  tenantId: string,
+  principal: NonNullable<ReturnType<typeof getPrincipal>>,
+) {
+  if (principal.kind !== "human" || !principal.audience) return null;
+  const prefix = `${principal.audience}|`;
+  if (!principal.subject.startsWith(prefix)) return null;
+  const subject = principal.subject.slice(prefix.length);
+  if (!subject) return null;
+  return getTenantMembership(db, tenantId, principal.audience, subject) ?? null;
+}
+
+function effectiveHumanAuthorityRole(stableRole: Role | null, currentRole: Role): Role | null {
+  if (stableRole === null) return currentRole;
+  if (roleWithinStableAuthority(stableRole, currentRole)) return stableRole;
+  if (roleWithinStableAuthority(currentRole, stableRole)) return currentRole;
+  return null;
+}
+
 export function attenuateApiKeyScopes(input: Readonly<{
   principalRole: Role;
   currentScopes: readonly string[];
@@ -558,10 +578,27 @@ export function createAuthMiddleware(
           401,
         );
       }
+      if (
+        key.authority_principal_id !== trustPrincipal.id ||
+        key.authority_role === null ||
+        !API_KEY_ROLES.has(key.authority_role)
+      ) {
+        return c.json(
+          { error: "unauthorized", message: "delegated_actor_authority_unbound" },
+          401,
+        );
+      }
+      const effectiveRole = effectiveHumanAuthorityRole(key.authority_role, membership.role);
+      if (!effectiveRole) {
+        return c.json(
+          { error: "unauthorized", message: "api_key_authority_amplification" },
+          401,
+        );
+      }
       principal = {
         id: `human:${trustPrincipal.subject}`,
         tenantId: key.tenant_id,
-        role: membership.role,
+        role: effectiveRole,
         ...(membership.email ? { email: membership.email } : {}),
       };
       authorityPrincipal = trustPrincipal;
@@ -634,6 +671,20 @@ export function createAuthMiddleware(
     ) {
       return c.json({ error: "unauthorized", message: "api_key_authority_invalid" }, 401);
     }
+    let currentAuthorityRole = key.authority_role;
+    if (authorityPrincipal.kind === "human") {
+      const membership = humanMembershipForAuthority(db, key.tenant_id, authorityPrincipal);
+      if (!membership || membership.status !== "active") {
+        return c.json({ error: "unauthorized", message: "api_key_authority_membership_inactive" }, 401);
+      }
+      if (currentAuthorityRole === null || !API_KEY_ROLES.has(currentAuthorityRole)) {
+        return c.json({ error: "unauthorized", message: "api_key_authority_invalid" }, 401);
+      }
+      currentAuthorityRole = effectiveHumanAuthorityRole(currentAuthorityRole, membership.role);
+      if (!currentAuthorityRole) {
+        return c.json({ error: "unauthorized", message: "api_key_authority_amplification" }, 401);
+      }
+    }
     c.set("tenantId", key.tenant_id);
     c.set("apiKeyId", key.id);
     c.set("authScopes", scopes);
@@ -645,7 +696,7 @@ export function createAuthMiddleware(
     }
     const authorityRole = delegatedActor
       ? principal.role
-      : key.authority_role ?? undefined;
+      : currentAuthorityRole ?? undefined;
     if (
       authorityRole !== undefined &&
       !roleWithinStableAuthority(principal.role, authorityRole)

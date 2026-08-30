@@ -70,6 +70,7 @@ export interface KeyEncryptionKeyProvider {
   readonly provider: string;
   readonly enabled: boolean;
   keyMaterialFingerprints(): readonly string[];
+  keyMaterialFingerprint(key: EnvelopeKeyLocator, tenantId: string): Promise<string>;
   attestKey(key: EnvelopeKeyLocator, tenantId: string): Promise<EnvelopeKeyAttestation>;
   wrapDataKey(
     key: EnvelopeKeyReference,
@@ -419,6 +420,9 @@ export class DisabledExternalVaultProvider implements KeyEncryptionKeyProvider {
   keyMaterialFingerprints(): readonly string[] {
     return Object.freeze([]);
   }
+  async keyMaterialFingerprint(): Promise<string> {
+    throw new Error("external_vault_disabled");
+  }
   async attestKey(): Promise<EnvelopeKeyAttestation> {
     throw new Error("external_vault_disabled");
   }
@@ -454,6 +458,13 @@ export class LocalEnvelopeKeyProvider implements KeyEncryptionKeyProvider {
     return Object.freeze([...new Set(
       [...this.#keys.values()].map((record) => cryptographicKeyMaterialFingerprint(record.material)),
     )].sort());
+  }
+
+  async keyMaterialFingerprint(key: EnvelopeKeyLocator, tenantId: string): Promise<string> {
+    const record = this.#keys.get(locatorIdentity(tenantId, key));
+    if (!record) throw new Error("local_envelope_key_missing");
+    await this.attestKey(key, tenantId);
+    return cryptographicKeyMaterialFingerprint(record.material);
   }
 
   async attestKey(key: EnvelopeKeyLocator, tenantId: string): Promise<EnvelopeKeyAttestation> {
@@ -557,6 +568,13 @@ export class ConfiguredEnvelopeKeyProvider implements KeyEncryptionKeyProvider {
     return Object.freeze([...new Set(
       [...this.#records.values()].map((record) => cryptographicKeyMaterialFingerprint(record.material)),
     )].sort());
+  }
+
+  async keyMaterialFingerprint(key: EnvelopeKeyLocator, tenantId: string): Promise<string> {
+    const record = this.#records.get(locatorIdentity(tenantId, key));
+    if (!record) throw new Error("external_vault_key_not_attested");
+    await this.attestKey(key, tenantId);
+    return cryptographicKeyMaterialFingerprint(record.material);
   }
 
   async attestKey(key: EnvelopeKeyLocator, tenantId: string): Promise<EnvelopeKeyAttestation> {

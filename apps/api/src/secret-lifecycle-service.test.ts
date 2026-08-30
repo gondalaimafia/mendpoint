@@ -47,6 +47,12 @@ function fixture() {
     version: "2",
     customerManaged: false,
   }, Buffer.alloc(32, 2));
+  provider.putKey("tenant-a", {
+    provider: "local-envelope",
+    keyId: "tenant-key-alias",
+    version: "3",
+    customerManaged: false,
+  }, Buffer.alloc(32, 1));
   return { db, path, provider };
 }
 
@@ -173,6 +179,24 @@ describe("durable secret lifecycle service", () => {
     expect(typeof rewrap).toBe("function");
   });
 
+  it("rejects an unchanged rewrap locator and provider-attested identical key material", async () => {
+    const { db, provider } = fixture();
+    await service(db, provider).create(createInput);
+    await expect(service(db, provider).rewrap({
+      idempotencyKey: "rewrap-same-locator",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "1" },
+    })).rejects.toThrow("secret_rewrap_key_unchanged");
+    await expect(service(db, provider).rewrap({
+      idempotencyKey: "rewrap-same-material",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      key: { provider: "local-envelope", keyId: "tenant-key-alias", version: "3" },
+    })).rejects.toThrow("secret_rewrap_key_material_unchanged");
+    expect(listSecretLifecycleVersions(db, "tenant-a", "credential-a")).toHaveLength(1);
+  });
+
   it("revokes every successor generation that retains compromised credential material", async () => {
     const { db, provider } = fixture();
     await service(db, provider).create(createInput);
@@ -198,6 +222,7 @@ describe("durable secret lifecycle service", () => {
       provider: provider.provider,
       enabled: true,
       keyMaterialFingerprints: () => provider.keyMaterialFingerprints(),
+      keyMaterialFingerprint: (key, tenantId) => provider.keyMaterialFingerprint(key, tenantId),
       attestKey: (key, tenantId) => provider.attestKey(key, tenantId),
       wrapDataKey: (key, tenantId, dataKey) => provider.wrapDataKey(key, tenantId, dataKey),
       unwrapDataKey: async (key, tenantId, wrappedDataKey) => {
@@ -218,7 +243,7 @@ describe("durable secret lifecycle service", () => {
     })).rejects.toThrow("secret_break_glass_generation_inactive");
   });
 
-  it("commitment-binds and audits revoke replay while rejecting actor or reason drift", async () => {
+  it("commitment-binds revoke replay and rejects drift without contradictory audit", async () => {
     const { db, provider } = fixture();
     await service(db, provider).create(createInput);
     const revoke = {
@@ -238,7 +263,10 @@ describe("durable secret lifecycle service", () => {
       .toThrow("secret_lifecycle_idempotency_conflict");
     expect(listAudit(db, "tenant-a").filter(
       (event) => event.action === "secret.lifecycle.revoke_denied",
-    )).toHaveLength(2);
+    )).toHaveLength(0);
+    expect(listAudit(db, "tenant-a").filter(
+      (event) => event.action === "secret.lifecycle.revoked",
+    )).toHaveLength(1);
   });
 
   it("requires the stable current authority to be owner for break glass", async () => {

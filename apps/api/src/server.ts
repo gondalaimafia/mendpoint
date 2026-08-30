@@ -814,6 +814,7 @@ app.route("/graphql/schemas", createGraphQLSchemaIngestionRoutes({
 app.route("/platform/secrets", createSecretLifecycleRoutes({
   db,
   providers: envelopeKeyProviders,
+  enabled: process.env.MENDPOINT_SECRET_LIFECYCLE_ENABLED === "1",
   breakGlassEnabled: process.env.MENDPOINT_SECRET_BREAK_GLASS === "true",
   requestCommitment: secretLifecycleRequestCommitmentFromEnvironment(process.env),
 }));

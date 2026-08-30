@@ -180,6 +180,19 @@ function authenticatedHeaders(token: string, requestId: string, idempotencyKey: 
 }
 
 describe("secret lifecycle routes", () => {
+  it("keeps the lifecycle surface unreachable outside its explicit activation scope", async () => {
+    const db = createDb(join(mkdtempSync(join(tmpdir(), "mp-secret-disabled-")), "db.sqlite"));
+    open.push(db);
+    const app = new Hono<ApiEnv>();
+    app.route("/platform/secrets", createSecretLifecycleRoutes({
+      db,
+      providers: [new LocalEnvelopeKeyProvider()],
+      enabled: false,
+      breakGlassEnabled: false,
+    }));
+    expect((await app.request("/platform/secrets", { method: "POST" })).status).toBe(404);
+  });
+
   it("rejects identical envelope and commitment key material when routes are constructed", () => {
     const db = createDb(join(mkdtempSync(join(tmpdir(), "mp-secret-key-separation-")), "db.sqlite"));
     open.push(db);

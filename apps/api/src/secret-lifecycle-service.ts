@@ -655,6 +655,13 @@ export class DurableSecretLifecycleService {
     if (!current) throw new Error("secret_lifecycle_not_found");
     if (current.generation !== input.expectedGeneration) throw new Error("secret_rotation_generation_conflict");
     if (!current.material_lineage_id) throw new Error("secret_material_lineage_missing");
+    if (
+      input.key.provider === current.key_provider &&
+      input.key.keyId === current.key_id &&
+      input.key.version === current.key_version
+    ) {
+      throw new Error("secret_rewrap_key_unchanged");
+    }
     const at = this.#now();
     const plaintext = await this.#openMutationSource(
       current,
@@ -663,6 +670,24 @@ export class DurableSecretLifecycleService {
       "rewrap durable credential material",
     );
     const attested = await attestEnvelopeKey(this.options.providers, this.options.tenantId, input.key);
+    const currentProvider = this.options.providers.find(
+      (provider) => provider.provider === current.key_provider && provider.enabled,
+    );
+    const targetProvider = this.options.providers.find(
+      (provider) => provider.provider === attested.provider && provider.enabled,
+    );
+    if (!currentProvider || !targetProvider) throw new Error("vault_provider_disabled");
+    const [currentMaterial, targetMaterial] = await Promise.all([
+      currentProvider.keyMaterialFingerprint({
+        provider: current.key_provider,
+        keyId: current.key_id,
+        version: current.key_version,
+      }, this.options.tenantId),
+      targetProvider.keyMaterialFingerprint(input.key, this.options.tenantId),
+    ]);
+    if (currentMaterial === targetMaterial) {
+      throw new Error("secret_rewrap_key_material_unchanged");
+    }
     const envelope = await sealEnvelopeSecret(input.credentialId, plaintext, nextGeneration, attested, {
       tenantId: this.options.tenantId,
       actorId: this.options.actorId,
@@ -727,46 +752,31 @@ export class DurableSecretLifecycleService {
       reason,
     });
     const at = this.#now();
-    try {
-      const row = revokeSecretLifecycle(this.options.db, {
-        tenantId: this.options.tenantId,
-        credentialId: input.credentialId,
+    const row = revokeSecretLifecycle(this.options.db, {
+      tenantId: this.options.tenantId,
+      credentialId: input.credentialId,
+      generation: input.generation,
+      revokedAt: at,
+      reason,
+    }, {
+      operation: {
+        idempotencyKey: input.idempotencyKey,
+        requestDigest: commitment.digest,
+        requestCommitmentKeyId: commitment.keyId,
+        actorId: this.options.actorId,
+      },
+      audit: () => this.#audit("secret.lifecycle.revoked", input.idempotencyKey, input.credentialId, {
         generation: input.generation,
-        revokedAt: at,
         reason,
-      }, {
-        operation: {
-          idempotencyKey: input.idempotencyKey,
-          requestDigest: commitment.digest,
-          requestCommitmentKeyId: commitment.keyId,
-          actorId: this.options.actorId,
-        },
-        audit: () => this.#audit("secret.lifecycle.revoked", input.idempotencyKey, input.credentialId, {
-          generation: input.generation,
-          reason,
-        }),
-        replayAudit: () => this.#auditReplay(
-          "secret.lifecycle.revoke_replayed",
-          input.idempotencyKey,
-          input.credentialId,
-          input.generation,
-        ),
-      });
-      return publicResult(row);
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== "secret_lifecycle_idempotency_conflict") throw error;
-      try {
-        this.#audit("secret.lifecycle.revoke_denied", input.idempotencyKey, input.credentialId, {
-          generation: input.generation,
-          reason,
-          outcome: "denied",
-          failure: error.message,
-        }, `secret.lifecycle.revoke_denied:${this.options.requestId ?? randomUUID()}:${this.options.credentialPrincipalId}:${this.options.apiKeyId ?? "no-api-key"}`);
-      } catch {
-        throw new Error("vault_access_audit_failed");
-      }
-      throw error;
-    }
+      }),
+      replayAudit: () => this.#auditReplay(
+        "secret.lifecycle.revoke_replayed",
+        input.idempotencyKey,
+        input.credentialId,
+        input.generation,
+      ),
+    });
+    return publicResult(row);
   }
 
   async breakGlass(input: Readonly<{

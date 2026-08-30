@@ -415,13 +415,6 @@ describe("API authentication identity", () => {
   it("accepts delegated human identity only for an active verified membership", async () => {
     process.env.API_AUTH = "required";
     const db = testDb();
-    const created = createApiKey(db, {
-      id: "key-proxy",
-      name: "web proxy",
-      tenantId: "tenant-a",
-      scopes: ["*"],
-      createdAt: new Date().toISOString(),
-    });
     const app = new Hono<ApiEnv>();
     app.use("*", createAuthMiddleware(db));
     app.post("/reviews", (c) => c.json({ principal: c.get("principal") }));
@@ -447,6 +440,15 @@ describe("API authentication identity", () => {
       subject: `${issuer}|${subject}`,
       displayName: "Verified Reviewer",
       audience: issuer,
+      createdAt: new Date().toISOString(),
+    });
+    const created = createApiKey(db, {
+      id: "key-proxy",
+      name: "web proxy",
+      tenantId: "tenant-a",
+      scopes: ["*"],
+      authorityPrincipalId: actor,
+      authorityRole: "owner",
       createdAt: new Date().toISOString(),
     });
     const signature = delegatedActorSignature(created.token, {
@@ -532,6 +534,117 @@ describe("API authentication identity", () => {
     expect(invalidRequest.status).toBe(401);
     await expect(invalidRequest.json()).resolves.toMatchObject({
       message: "delegated_actor_request_invalid",
+    });
+  });
+
+  it("does not let an API key delegate to an unrelated provisioned owner", async () => {
+    process.env.API_AUTH = "required";
+    const db = testDb();
+    const issuer = "https://identity.example.com";
+    const createdAt = new Date().toISOString();
+    for (const owner of ["owner-a", "owner-b"]) {
+      putTenantMembership(db, {
+        tenantId: "tenant-a",
+        issuer,
+        subject: owner,
+        email: `${owner}@example.com`,
+        displayName: owner,
+        role: "owner",
+        status: "active",
+        updatedAt: createdAt,
+      });
+      insertPrincipal(db, {
+        id: `principal-${owner}`,
+        tenantId: "tenant-a",
+        kind: "human",
+        subject: `${issuer}|${owner}`,
+        displayName: owner,
+        audience: issuer,
+        createdAt,
+      });
+    }
+    const created = createApiKey(db, {
+      id: "key-owner-a",
+      name: "Owner A key",
+      tenantId: "tenant-a",
+      scopes: ["*"],
+      authorityPrincipalId: "principal-owner-a",
+      authorityRole: "owner",
+      createdAt,
+    });
+    const requestId = "delegate-unrelated-owner";
+    const timestamp = new Date().toISOString();
+    const app = new Hono<ApiEnv>();
+    app.use("*", createAuthMiddleware(db));
+    app.post("/private", (c) => c.json({ principal: c.get("principal") }));
+
+    const response = await app.request("/private", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${created.token}`,
+        "X-Request-Id": requestId,
+        "X-Mendpoint-Actor": "principal-owner-b",
+        "X-Mendpoint-Actor-Timestamp": timestamp,
+        "X-Mendpoint-Actor-Signature": delegatedActorSignature(created.token, {
+          actor: "principal-owner-b",
+          timestamp,
+          requestId,
+          method: "POST",
+          path: "/private",
+        }),
+      },
+    });
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({
+      message: "delegated_actor_authority_unbound",
+    });
+  });
+
+  it("rechecks the current membership behind a human-bound API key", async () => {
+    process.env.API_AUTH = "required";
+    const db = testDb();
+    const issuer = "https://identity.example.com";
+    const subject = "owner-current-authority";
+    const principalId = "principal-owner-current-authority";
+    const createdAt = new Date().toISOString();
+    putTenantMembership(db, {
+      tenantId: "tenant-a", issuer, subject, email: null, displayName: "Owner",
+      role: "owner", status: "active", updatedAt: createdAt,
+    });
+    insertPrincipal(db, {
+      id: principalId, tenantId: "tenant-a", kind: "human",
+      subject: `${issuer}|${subject}`, displayName: "Owner", audience: issuer, createdAt,
+    });
+    const created = createApiKey(db, {
+      id: "key-human-owner", name: "Human owner key", tenantId: "tenant-a", scopes: ["*"],
+      authorityPrincipalId: principalId, authorityRole: "owner", createdAt,
+    });
+    const app = new Hono<ApiEnv>();
+    app.use("*", createAuthMiddleware(db));
+    app.get("/private", (c) => c.json({ principal: c.get("principal") }));
+    const headers = { Authorization: `Bearer ${created.token}` };
+    expect((await app.request("/private", { headers })).status).toBe(200);
+
+    const downgradedAt = new Date(Date.parse(createdAt) + 1_000).toISOString();
+    putTenantMembership(db, {
+      tenantId: "tenant-a", issuer, subject, email: null, displayName: "Owner",
+      role: "viewer", status: "active", updatedAt: downgradedAt,
+    });
+    const downgraded = await app.request("/private", { headers });
+    expect(downgraded.status).toBe(401);
+    await expect(downgraded.json()).resolves.toMatchObject({
+      message: "api_key_authority_amplification",
+    });
+
+    setTenantMembershipStatus(db, {
+      tenantId: "tenant-a", issuer, subject, status: "offboarded",
+      updatedAt: new Date(Date.parse(createdAt) + 2_000).toISOString(),
+    });
+    const offboarded = await app.request("/private", { headers });
+    expect(offboarded.status).toBe(401);
+    await expect(offboarded.json()).resolves.toMatchObject({
+      message: "api_key_authority_membership_inactive",
     });
   });
 
