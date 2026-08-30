@@ -3689,7 +3689,6 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The next exact-head review found that source selection mixed every tenant contract and currency before validation, and that rotation retained historical private signing material. Source selection now filters by the requested contract and currency inside the immutable usage query, with concurrent-contract and concurrent-currency regressions. The keyring now requires private material only for the selected current key and accepts retired public-only verification records.
 - The final repaired matrix passes 12 of 12 focused database and API tests, both affected typechecks, and diff integrity. A fresh immutable-head review and current-base protected CI remain required before merge.
 - Immutable-head review found one final P2: the parser still accepted private material on a noncurrent key even though rotation examples used public-only history. Key selection is now passed into parsing, which rejects retired private material before importing it. The negative rotation regression proves signer construction fails for a keyring retaining an old private key; the public-only historical verification path remains green.
-
 ## 2026-08-30 GSD Plan 10-03: production dispatch observability and horizontal reliability
 
 - [x] Recover only the tenant-scoped release-dispatch runtime from closed PR #507 on current `main`; keep customer activation bindings optional and leave the documented operator hold intact.
@@ -3744,3 +3743,26 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The final-attempt terminal sweep is removed from ordinary claims. Exhausted claimed work is now exclusively eligible for the fenced recovery claim, which must reconcile exact evidence before completion or failure. A deterministic two-clock regression proves a fifth lease expiring between the two claim calls remains claimed for recovery.
 - Paging now serializes work per dedupe key. A successful delivery stamps the window before the next waiter evaluates it; a failed delivery releases only that key without stamping it, so the waiting invocation retries while the other simultaneous conditions stay deduplicated.
 - Final repair verification passes 87 focused race and authority tests, all 170 Catalog tests, all 36 Notify tests, 700 Worker tests with one explicitly skipped, all three affected typechecks, the optimized 50-route production build, and `git diff --check`. Immutable-head review, protected CI, merge, deployment, and live proof remain pending.
+## 2026-08-30 Plan 11-01 generated production documentation contract (#572)
+
+- [x] Create and claim issue #572 on an isolated `codex/572-public-docs-contract` branch from current `origin/main`.
+- [ ] Inventory the public route, schema, requirement, claim, and existing documentation catalogs; identify unsupported claims and missing production components.
+- [ ] Extend the canonical documentation catalog with authentication and tenancy, Mission and Policy Envelope, API semantics, webhooks, idempotency, pagination, errors, retries, runbooks, and executable examples without duplicating product contracts.
+- [ ] Generate deterministic HTML, Markdown, and machine-readable website-upload artifacts from that catalog, with exact source and claim lineage.
+- [ ] Add hostile drift checks for broken links, stale schemas, unsafe examples, naming regressions, inaccessible markup, and claims that exceed verified requirement status.
+- [ ] Regenerate the website-upload bundle and run focused tests, documentation checks, naming and claims gates, full typecheck, production build, dependency audit, and diff integrity.
+- [ ] Inspect the exact diff, obtain independent exact-head Codex review, fix every P0 to P2 finding, and rerun the affected gates.
+- [ ] Rebase onto current `origin/main`, push one protected PR, require current-base CI and all protected checks, then merge and verify the exact deployed revision before treating any page as published evidence.
+
+### Plan 11-01 contracts
+
+- Source of truth remains the v4 product specification, registered requirements, public claims registry, real route and schema contracts, and accepted ADRs. Documentation cannot create product authority.
+- Each generated page records its supported production boundary, availability, requirement IDs, claim IDs, route or schema sources, limitations, security boundary, and last verified revision or an explicit not-yet-live state.
+- Examples must be executable against the documented contract, use placeholder credentials, refuse redirects where credentials are present, and avoid secrets or real tenant data.
+- Links are relative within the upload bundle; output is create-or-update only under the ownership sentinel and rejects unexpected entries or path escape.
+- Fettler and ReGauge are the only customer-facing product names. Historical identifiers may appear only in explicit compatibility notes.
+- No requirement, availability, or public claim is promoted by this plan. Final GA qualification remains Plan 11-02.
+
+### Review
+
+- In progress. Plan committed before implementation; recovery Plan 10-04 and ReGauge activation remain parked untouched per the user instruction to start the next wave.
