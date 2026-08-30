@@ -282,10 +282,11 @@ describe("Regauge production workflow", () => {
     expect(continuous.run).toContain("flyctl machines list --app mendpoint-regauge-production --json");
     expect(continuous.run).toContain("coordinator-volume.json");
     expect(continuous.run).toContain("worker-id.txt");
-    expect(continuous.run).toContain(".config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA");
-    expect(continuous.run).toContain(".image_ref.labels.GH_SHA == env.GITHUB_SHA");
+    expect(continuous.run).toContain("--mode=machine-continuity");
+    expect(continuous.run).toContain("--expected=test-results/regauge-production/runtime-identity.json");
+    expect(continuous.run).toContain("continuous-machine-proof.json");
     expect(continuous.run).toContain(
-      '.checks[] | select(.name == "regauge_worker" and .status == "passing")',
+      '.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "experimental" and .enabled == true)',
     );
     expect(continuous.run).toContain("continuous-production.json");
     expect(continuous.run).not.toContain("worker=0");
@@ -318,18 +319,17 @@ describe("Regauge production workflow", () => {
       "insufficient resources to create new machine with existing volume",
     );
     expect(steps[workerIndex].run).toContain("--process-groups worker");
-    expect(steps[workerIndex].run).toContain('worker_id="$(jq -er');
-    expect(steps[workerIndex].run).toContain(
-      '.config.metadata.fly_process_group == "worker"',
-    );
-    expect(steps[workerIndex].run).toContain(
-      ".config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA",
-    );
-    expect(steps[workerIndex].run).toContain(
-      ".image_ref.labels.GH_SHA == env.GITHUB_SHA",
-    );
-    expect(steps[workerIndex].run).toContain("(.config.mounts // [] | length) == 0");
-    expect(steps[workerIndex].run).toContain('flyctl machine start "$worker_id"');
+    expect(steps[workerIndex].run).toContain("--mode=worker-start-plan");
+    expect(steps[workerIndex].run).toContain("prestart-machines.json");
+    expect(steps[workerIndex].run).toContain("worker-start-plan.json");
+    expect(steps[workerIndex].run).toContain('worker_action="$(jq -er');
+    const planIndex = (steps[workerIndex].run as string).indexOf("--mode=worker-start-plan");
+    const startIndex = (steps[workerIndex].run as string).indexOf('flyctl machine start "$worker_id"');
+    expect(planIndex).toBeGreaterThan(-1);
+    expect(startIndex).toBeGreaterThan(planIndex);
+    expect(steps[workerIndex].run).toContain("observe|wait)");
+    expect(steps[workerIndex].run).toContain("start)");
+    expect(steps[workerIndex].run).toContain("timeout --kill-after=5s 60s flyctl machine start");
     expect(steps[workerIndex].run).toContain("worker-id.txt");
     expect(steps[workerIndex].run).not.toContain("flyctl scale count");
     expect(steps[coordinatorHealthIndex].run).toContain(
@@ -358,17 +358,12 @@ describe("Regauge production workflow", () => {
     )!.run as string;
 
     expect(proof).toContain("coordinator-volume.json");
-    expect(proof).toContain(".config.metadata.fly_process_group == \"coordinator\"");
-    expect(proof).toContain(".config.metadata.fly_process_group == \"worker\"");
-    expect(proof).toContain(".config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA");
-    expect(proof).toContain(".image_ref.labels.GH_SHA == env.GITHUB_SHA");
-    expect(proof).toContain(".config.mounts[] | select(.volume == $volume_id)");
-    expect(proof).toContain("(.config.mounts // [] | length) == 0");
+    expect(proof).toContain("--mode=machine-establish");
+    expect(proof).toContain("runtime-identity.json");
+    expect(proof).toContain(".coordinator.machineId");
+    expect(proof).toContain(".worker.machineId");
     expect(proof).toContain('worker_id="$(cat test-results/regauge-production/worker-id.txt)"');
     expect(proof).toContain("for attempt in {1..60}");
-    expect(proof).toContain(
-      '.checks[] | select(.name == "regauge_worker" and .status == "passing")',
-    );
     expect(proof).toContain('test "$attempt" -lt 60');
     expect(proof).toContain("machine-topology.json");
   });
@@ -410,7 +405,9 @@ describe("Regauge production workflow", () => {
     expect(diagnostics.run).toContain('timeout --kill-after=2s 10s flyctl logs --app mendpoint-regauge-production');
     expect(diagnostics.run).toContain('> "test-results/regauge-production/worker-${machine_id}.log" 2>&1 || true) &');
     expect(diagnostics.run).toContain("wait || true");
+    const continuous = steps.find((step) => step.name === "Preserve continuous production after activation")!;
     expect(steps.indexOf(diagnostics)).toBeLessThan(steps.indexOf(failure));
+    expect(steps.indexOf(continuous)).toBeLessThan(steps.indexOf(diagnostics));
     expect(failure.if).toBe("${{ failure() }}");
     expect(failure.run).toContain("flyctl machines list --app mendpoint-regauge-production --json");
     expect(failure.run).toContain('flyctl machine stop "$machine_id"');
@@ -418,6 +415,22 @@ describe("Regauge production workflow", () => {
     expect(failure.run).toContain("failure-containment.json");
     expect(failure.run).not.toContain("flyctl scale count worker=0");
     expect(failure.run).not.toContain("volumes delete");
+    const upload = steps.find((step) => step.name === "Upload Regauge production evidence")!;
+    const publicationContainment = steps.find(
+      (step) => step.name === "Contain target after evidence publication failure",
+    )!;
+    const publicationEnforcement = steps.find(
+      (step) => step.name === "Enforce production evidence publication",
+    )!;
+    expect(steps.indexOf(failure)).toBeLessThan(steps.indexOf(upload));
+    expect(upload.id).toBe("evidence_upload");
+    expect(upload["continue-on-error"]).toBe(true);
+    expect(publicationContainment.if).toBe("${{ steps.evidence_upload.outcome == 'failure' }}");
+    expect(steps.indexOf(publicationContainment)).toBeGreaterThan(steps.indexOf(upload));
+    expect(publicationContainment.run).toContain('flyctl machine stop "$machine_id"');
+    expect(steps.indexOf(publicationEnforcement)).toBeGreaterThan(
+      steps.indexOf(publicationContainment),
+    );
     // Transfer authority is enforced only when a transfer is configured, but a
     // partial transfer config (id set, key or fence missing) still hard-fails.
     const validation = steps.find(
@@ -473,11 +486,9 @@ describe("Regauge production workflow", () => {
     expect(soak).toContain("--app mendpoint-regauge-production --json");
     expect(soak).toContain("coordinator-volume.json");
     expect(soak).toContain("worker-id.txt");
-    expect(soak).toContain(".config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA");
-    expect(soak).toContain(".image_ref.labels.GH_SHA == env.GITHUB_SHA");
-    expect(soak).toContain(
-      '.checks[] | select(.name == "regauge_worker" and .status == "passing")',
-    );
+    expect(soak).toContain("--mode=machine-continuity");
+    expect(soak).toContain("--expected=test-results/regauge-production/runtime-identity.json");
+    expect(soak).toContain("${sample}-validated.json");
     expect(soak).toContain("runtime-soak.json");
     expect(soak).toContain('wait "$runtime_soak_pid"');
   });

@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  establishRegaugeMachineContinuity,
   observeRegaugeDraftCanary,
   observeRegaugeVerifierEvidence,
+  planRegaugeWorkerStart,
   runRegaugeReadinessSoak,
+  verifyRegaugeMachineContinuity,
 } from "./regauge-production-proof.js";
 
 const installationId = 151_614_362;
@@ -12,6 +15,34 @@ const headRevision = "a".repeat(40);
 const approvalRef = "approval:regauge:tenant-a:campaign-a:repository:84:revision:baseline:draft:1:run:9:attempt:1";
 const runEvidenceRef = "evidence:github:run:9:attempt:1:revision:exact-head";
 const currentEvidenceRefs = [approvalRef, runEvidenceRef] as const;
+const releaseRevision = "d".repeat(40);
+const volumeId = "vol_regauge";
+
+function machinePair(workerState = "started") {
+  return [{
+    id: "coordinator-a",
+    instance_id: "instance-coordinator-a",
+    state: "started",
+    config: {
+      metadata: { fly_process_group: "coordinator" },
+      env: { MENDPOINT_RELEASE_REVISION: releaseRevision },
+      mounts: [{ volume: volumeId, path: "/data" }],
+    },
+    image_ref: { labels: { GH_SHA: releaseRevision } },
+    checks: [{ name: "regauge_coordinator", status: "passing" }],
+  }, {
+    id: "worker-a",
+    instance_id: "instance-worker-a",
+    state: workerState,
+    config: {
+      metadata: { fly_process_group: "worker" },
+      env: { MENDPOINT_RELEASE_REVISION: releaseRevision },
+      mounts: [],
+    },
+    image_ref: { labels: { GH_SHA: releaseRevision } },
+    checks: [{ name: "regauge_worker", status: "passing" }],
+  }];
+}
 
 function deliveredDraftResult() {
   return {
@@ -58,6 +89,54 @@ function exactDraftObservation(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Regauge production proof", () => {
+  it("plans only a bounded worker start after exact pre-start topology validation", () => {
+    expect(planRegaugeWorkerStart({
+      machines: machinePair("stopped"),
+      expectedRevision: releaseRevision,
+      expectedVolumeId: volumeId,
+    })).toMatchObject({ workerId: "worker-a", workerState: "stopped", action: "start" });
+    expect(planRegaugeWorkerStart({
+      machines: machinePair("starting"),
+      expectedRevision: releaseRevision,
+      expectedVolumeId: volumeId,
+    })).toMatchObject({ workerState: "starting", action: "wait" });
+    expect(planRegaugeWorkerStart({
+      machines: machinePair("started"),
+      expectedRevision: releaseRevision,
+      expectedVolumeId: volumeId,
+    })).toMatchObject({ workerState: "started", action: "observe" });
+
+    expect(() => planRegaugeWorkerStart({
+      machines: [...machinePair("stopped"), machinePair("started")[1]],
+      expectedRevision: releaseRevision,
+      expectedVolumeId: volumeId,
+    })).toThrow("regauge_production_machine_topology_invalid");
+    expect(() => planRegaugeWorkerStart({
+      machines: machinePair("stopping"),
+      expectedRevision: releaseRevision,
+      expectedVolumeId: volumeId,
+    })).toThrow("regauge_production_worker_state_invalid");
+  });
+
+  it("rejects machine replacement, restart, or worker health drift during continuity", () => {
+    const expected = establishRegaugeMachineContinuity({
+      machines: machinePair(),
+      expectedRevision: releaseRevision,
+      expectedVolumeId: volumeId,
+    });
+    expect(verifyRegaugeMachineContinuity({ machines: machinePair(), expected })).toEqual(expected);
+
+    const restarted = machinePair();
+    restarted[1]!.instance_id = "instance-worker-b";
+    expect(() => verifyRegaugeMachineContinuity({ machines: restarted, expected }))
+      .toThrow("regauge_production_machine_continuity_invalid");
+
+    const unhealthy = machinePair();
+    unhealthy[1]!.checks = [{ name: "regauge_worker", status: "critical" }];
+    expect(() => verifyRegaugeMachineContinuity({ machines: unhealthy, expected }))
+      .toThrow("regauge_production_machine_topology_invalid");
+  });
+
   it("accepts only an exact tenant and campaign draft observation from GitHub", async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       result: [deliveredDraftResult()],

@@ -267,3 +267,9 @@
 **Mistake:** The ReGauge draft proof established exact remote PR state but accepted any nonempty durable authorization references, so an older run's draft could satisfy a new activation.
 **Correction:** Require the current protected run's independently derived approval and evidence references on the durable delivery before remote state can count.
 **Rule:** Every production proof must bind both the live object and its durable lineage to the exact current authority. Remote state alone cannot promote stale authorization.
+
+### 2026-08-30 — Enumerate the entire activation failure chain before retrying
+
+**Mistake:** The first stopped-worker repair focused on the observed state transition but left later containment ordering, pre-mutation topology, process restart continuity, and feature-state proof as separate hidden layers.
+**Correction:** Review every mutation, proof, failure edge, and terminal step as one state machine before sending another protected run.
+**Rule:** After a second activation defect appears, stop patching individual symptoms. Model preconditions, allowed transitions, continuous identity, all late failures, evidence publication, and containment together, then test adversarial fixtures for each edge.
