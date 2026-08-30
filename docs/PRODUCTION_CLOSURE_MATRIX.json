@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-30T04:30:39.324Z",
-    "observedMainRevision": "4ae3c8d022d79b3329d96cc4fed99d0bb28e7277",
-    "observationDigest": "sha256:231f2e3e01f960d66947e429d13345cdf014c2f9d2df24b8199eeb0dce280b09",
+    "observedAt": "2026-08-30T04:52:14.394Z",
+    "observedMainRevision": "07012e61c451100118297677abf50eb8c53495d3",
+    "observationDigest": "sha256:c620861be8e06938260d5087bbe247c9bdd72c363ac759daf0b797ac4f30c76c",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 553,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/553",
-      "title": "Guarantee the customer app is running after its deploy",
+      "number": 554,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/554",
+      "title": "Start and prove the exact ReGauge production worker",
       "baseBranch": "main",
-      "headBranch": "codex/customer-deploy-machine-start",
+      "headBranch": "codex/regauge-worker-start",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2085,15 +2085,7 @@
       },
       "requirementIds": [],
       "blockers": [],
-      "remediatesPullRequests": [],
-      "authorityRotation": {
-        "rotationId": "rotation-20260828-009",
-        "kind": "runtime",
-        "issuedAt": "2026-08-30T04:30:39.324Z",
-        "expiresAt": "2026-08-31T04:30:39.324Z",
-        "basePolicySha256": "sha256:f4c8e3fe31ed296e400de63483d44c62baf3a7976b39b4cd2a71bd276f4befcf",
-        "proposedPolicySha256": "sha256:465a91d74119edaaa8a0bf8f81281856ac3428b9ff389b40f7c3794b524b00d9"
-      }
+      "remediatesPullRequests": []
     },
     "pullRequests": [
       {
