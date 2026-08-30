@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   ROUTER_VALUE_PROOF_VERSION,
@@ -20,12 +20,28 @@ export type RouterValueProofInput = Readonly<{
   observations: readonly RouterValueObservation[];
 }>;
 
+export const ROUTER_VALUE_INPUT_MAX_BYTES = 5 * 1024 * 1024;
+
 function digest(value: string | Buffer): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
 export function runRouterValueProofArtifact(inputPath: string): RouterValueProofReport {
-  const raw = readFileSync(inputPath);
+  const inputFile = resolve(inputPath);
+  let stat;
+  try {
+    stat = lstatSync(inputFile);
+  } catch {
+    throw new Error("router_value_input_unavailable");
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("router_value_input_not_regular");
+  if (stat.size < 1 || stat.size > ROUTER_VALUE_INPUT_MAX_BYTES) {
+    throw new Error("router_value_input_size_invalid");
+  }
+  const raw = readFileSync(inputFile);
+  if (raw.length < 1 || raw.length > ROUTER_VALUE_INPUT_MAX_BYTES) {
+    throw new Error("router_value_input_size_invalid");
+  }
   let input: RouterValueProofInput;
   try {
     input = JSON.parse(raw.toString("utf8")) as RouterValueProofInput;
@@ -35,6 +51,7 @@ export function runRouterValueProofArtifact(inputPath: string): RouterValueProof
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("router_value_input_invalid");
   }
+  if (!Array.isArray(input.observations)) throw new Error("router_value_observations_required");
   return evaluateRouterValueProof({
     ...input,
     cohort: { ...input.cohort, digest: digest(raw) },
@@ -54,7 +71,10 @@ export function persistRouterValueProofReport(
   const temporary = resolve(dirname(output), `.${randomUUID()}.router-value.tmp`);
   try {
     writeFileSync(temporary, `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
-    renameSync(temporary, output);
+    // A hard-link publication is both atomic and create-only. renameSync would
+    // overwrite a destination created after the existsSync preflight.
+    linkSync(temporary, output);
+    rmSync(temporary);
   } catch (error) {
     rmSync(temporary, { force: true });
     throw error;

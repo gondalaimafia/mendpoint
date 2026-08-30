@@ -1,4 +1,6 @@
 export const ROUTER_VALUE_PROOF_VERSION = "2026-08-02.v1" as const;
+export const ROUTER_VALUE_MAX_OBSERVATIONS = 10_000;
+export const ROUTER_VALUE_MAX_EVIDENCE_REFS_PER_OBSERVATION = 20;
 
 export type RouterValueArm = "baseline" | "candidate";
 
@@ -89,7 +91,11 @@ export function evaluateRouterValueProof(
   ) {
     fail("router_value_policy_incomplete");
   }
-  if (!Array.isArray(contract.observations) || contract.observations.length === 0) {
+  if (
+    !Array.isArray(contract.observations) ||
+    contract.observations.length === 0 ||
+    contract.observations.length > ROUTER_VALUE_MAX_OBSERVATIONS
+  ) {
     fail("router_value_observations_required");
   }
 
@@ -107,7 +113,11 @@ export function evaluateRouterValueProof(
     if (
       !Array.isArray(observation.evidenceRefs) ||
       observation.evidenceRefs.length === 0 ||
-      observation.evidenceRefs.some((reference) => !reference.trim())
+      observation.evidenceRefs.length > ROUTER_VALUE_MAX_EVIDENCE_REFS_PER_OBSERVATION ||
+      observation.evidenceRefs.some(
+        (reference) =>
+          typeof reference !== "string" || !reference.trim() || reference.length > 512,
+      )
     ) {
       fail("router_value_evidence_required");
     }

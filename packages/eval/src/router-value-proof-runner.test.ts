@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  ROUTER_VALUE_INPUT_MAX_BYTES,
   persistRouterValueProofReport,
   runRouterValueProofArtifact,
   type RouterValueProofInput,
@@ -58,5 +59,27 @@ describe("router value proof artifact runner", () => {
     const second = fixture();
     persistRouterValueProofReport(second.input, second.output);
     expect(() => persistRouterValueProofReport(second.input, second.output)).toThrow("router_value_output_exists");
+  });
+
+  it("refuses empty, oversized, and structurally incomplete cohort artifacts", () => {
+    const empty = fixture();
+    writeFileSync(empty.input, "");
+    expect(() => runRouterValueProofArtifact(empty.input)).toThrow("router_value_input_size_invalid");
+
+    const oversized = fixture();
+    writeFileSync(oversized.input, Buffer.alloc(ROUTER_VALUE_INPUT_MAX_BYTES + 1, "x"));
+    expect(() => runRouterValueProofArtifact(oversized.input)).toThrow(
+      "router_value_input_size_invalid",
+    );
+
+    const incomplete = fixture();
+    writeFileSync(incomplete.input, JSON.stringify({
+      version: "2026-08-02.v1",
+      cohort: { id: "held-out-v1", revision: "a".repeat(40), heldOut: true },
+      policy: {},
+    }));
+    expect(() => runRouterValueProofArtifact(incomplete.input)).toThrow(
+      "router_value_observations_required",
+    );
   });
 });
