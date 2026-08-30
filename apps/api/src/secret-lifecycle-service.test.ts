@@ -7,8 +7,10 @@ import {
   createDb,
   getSecretLifecycleOperation,
   getSecretLifecycleVersion,
+  insertPrincipal,
   listSecretLifecycleVersions,
   listAudit,
+  putTenantMembership,
   recordAudit,
   type AppDb,
 } from "@mendpoint/db";
@@ -219,6 +221,70 @@ describe("durable secret lifecycle service", () => {
     expect(getSecretLifecycleVersion(db, "tenant-a", "credential-a", 2)?.state).toBe("revoked");
   });
 
+  it("binds material lineage to credential plaintext across A to B to A and prevents resurrection", async () => {
+    const { db, provider } = fixture();
+    const lifecycle = service(db, provider);
+    await lifecycle.create(createInput);
+    await lifecycle.rotate({
+      idempotencyKey: "rotate-lineage-a-to-b",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      plaintext: "customer-secret-b",
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    });
+    await lifecycle.rotate({
+      idempotencyKey: "rotate-lineage-b-to-a",
+      credentialId: "credential-a",
+      expectedGeneration: 2,
+      plaintext: createInput.plaintext,
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "1" },
+    });
+
+    const beforeRevocation = listSecretLifecycleVersions(db, "tenant-a", "credential-a");
+    const createOperation = getSecretLifecycleOperation(db, "tenant-a", createInput.idempotencyKey)!;
+    expect(beforeRevocation[0]!.material_lineage_id).not.toBe(createOperation.request_digest);
+    expect(beforeRevocation[0]!.material_lineage_id).toBe(beforeRevocation[2]!.material_lineage_id);
+    expect(beforeRevocation[1]!.material_lineage_id).not.toBe(beforeRevocation[0]!.material_lineage_id);
+
+    lifecycle.revoke({
+      idempotencyKey: "revoke-lineage-a",
+      credentialId: "credential-a",
+      generation: 1,
+      reason: "material A compromised",
+    });
+    expect(listSecretLifecycleVersions(db, "tenant-a", "credential-a").map((row) => row.state))
+      .toEqual(["revoked", "retired", "revoked"]);
+
+    await lifecycle.create({
+      ...createInput,
+      idempotencyKey: "create-lineage-resurrection",
+      credentialId: "credential-resurrection",
+      sourceRef: "vault://github/installations/resurrection",
+    });
+    await lifecycle.rotate({
+      idempotencyKey: "rotate-resurrection-a-to-b",
+      credentialId: "credential-resurrection",
+      expectedGeneration: 1,
+      plaintext: "customer-secret-b",
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    });
+    lifecycle.revoke({
+      idempotencyKey: "revoke-resurrection-a",
+      credentialId: "credential-resurrection",
+      generation: 1,
+      reason: "material A compromised",
+    });
+    await expect(lifecycle.rotate({
+      idempotencyKey: "rotate-resurrection-b-to-a",
+      credentialId: "credential-resurrection",
+      expectedGeneration: 2,
+      plaintext: createInput.plaintext,
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "1" },
+    })).rejects.toThrow("secret_material_lineage_revoked");
+    expect(getSecretLifecycleVersion(db, "tenant-a", "credential-resurrection", 2))
+      .toMatchObject({ state: "active" });
+  });
+
   it("denies break glass when the exact generation is revoked during provider decrypt", async () => {
     const { db, provider } = fixture();
     await service(db, provider).create(createInput);
@@ -317,6 +383,77 @@ describe("durable secret lifecycle service", () => {
         .get()).toMatchObject({ count: 0 });
     },
   );
+
+  it("revalidates live owner authority inside the break-glass commit transaction", async () => {
+    const { db, path, provider } = fixture();
+    await service(db, provider).create(createInput);
+    db.raw.prepare(`INSERT INTO tenants
+      (id, slug, name, plan, billing_status, seat_limit, created_at)
+      VALUES (?, ?, ?, 'enterprise', 'active', 20, ?)`)
+      .run("tenant-a", "tenant-a", "Tenant A", "2026-08-30T00:00:00.000Z");
+    const issuer = "https://identity.example.com";
+    const subject = "break-glass-race-owner";
+    putTenantMembership(db, {
+      tenantId: "tenant-a",
+      issuer,
+      subject,
+      email: null,
+      displayName: "Break glass race owner",
+      role: "owner",
+      status: "active",
+      updatedAt: "2026-08-30T00:00:00.000Z",
+    });
+    insertPrincipal(db, {
+      id: "principal-break-glass-race",
+      tenantId: "tenant-a",
+      kind: "human",
+      subject: `${issuer}|${subject}`,
+      displayName: "Break glass race owner",
+      audience: issuer,
+      createdAt: "2026-08-30T00:00:00.000Z",
+    });
+    const competing = createDb(path);
+    open.push(competing);
+    let ownerChecks = 0;
+    const revalidateAuthority = (requiredRole: "admin" | "owner") => {
+      if (requiredRole === "owner") ownerChecks += 1;
+      const membership = competing.raw.prepare(`SELECT role, status, updated_at
+        FROM tenant_memberships WHERE tenant_id = ? AND issuer = ? AND subject = ?`)
+        .get("tenant-a", issuer, subject) as {
+          role: string;
+          status: string;
+          updated_at: string;
+        } | undefined;
+      if (!membership || membership.status !== "active") {
+        throw new Error("secret_lifecycle_authority_invalid");
+      }
+      if (requiredRole === "owner" && membership.role !== "owner") {
+        throw new Error("secret_lifecycle_authority_required");
+      }
+      const version = `${membership.role}:${membership.status}:${membership.updated_at}`;
+      if (requiredRole === "owner" && ownerChecks === 2) {
+        competing.raw.prepare(`UPDATE tenant_memberships SET role = 'viewer', updated_at = ?
+          WHERE tenant_id = ? AND issuer = ? AND subject = ?`)
+          .run("2026-08-30T00:01:00.000Z", "tenant-a", issuer, subject);
+      }
+      return Object.freeze({ version });
+    };
+
+    await expect(service(db, provider, {
+      role: "owner",
+      authorityRole: "owner",
+      revalidateAuthority,
+    }).breakGlass({
+      credentialId: "credential-a",
+      reason: "hostile concurrent downgrade",
+      idempotencyKey: "break-glass-second-connection-race",
+    })).rejects.toThrow("secret_lifecycle_authority_required");
+    expect(ownerChecks).toBe(3);
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM secret_break_glass_operations").get())
+      .toMatchObject({ count: 0 });
+    expect(listAudit(db, "tenant-a").some((event) => event.action === "secret.break_glass.granted"))
+      .toBe(false);
+  });
 
   it.each(["create", "rotate", "rewrap", "revoke"] as const)(
     "rolls back %s when stable authority is lost before durable commit",

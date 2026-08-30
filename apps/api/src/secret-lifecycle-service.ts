@@ -149,6 +149,7 @@ function digest(value: unknown): string {
 }
 
 const REQUEST_COMMITMENT_DOMAIN = "mendpoint:secret-lifecycle:request-commitment:v1\0";
+const MATERIAL_LINEAGE_DOMAIN = "mendpoint:secret-lifecycle:material-lineage:v1\0";
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
@@ -405,6 +406,21 @@ export class DurableSecretLifecycleService {
     });
   }
 
+  #materialLineageId(credentialId: string, plaintext: string): string {
+    if (!this.requestCommitment) throw new Error("secret_lifecycle_commitment_unconfigured");
+    const canonical = canonicalJson({
+      schemaVersion: 1,
+      keyId: this.requestCommitment.keyId,
+      tenantId: this.options.tenantId,
+      credentialId,
+      plaintext,
+    });
+    return createHmac("sha256", this.requestCommitment.key)
+      .update(MATERIAL_LINEAGE_DOMAIN, "utf8")
+      .update(canonical, "utf8")
+      .digest("hex");
+  }
+
   async #openMutationSource(
     current: SecretLifecycleVersionRow,
     idempotencyKey: string,
@@ -596,7 +612,7 @@ export class DurableSecretLifecycleService {
       issuedAt: at,
       rotateAfter: input.rotateAfter,
       key: attested,
-      materialLineageId: commitment.digest,
+      materialLineageId: this.#materialLineageId(input.credentialId, input.plaintext),
       envelope,
     };
     const row = createSecretLifecycle(this.options.db, lifecycle, {
@@ -688,7 +704,7 @@ export class DurableSecretLifecycleService {
       issuedAt: at,
       rotateAfter: current.rotate_after ?? undefined,
       key: attested,
-      materialLineageId: commitment.digest,
+      materialLineageId: this.#materialLineageId(input.credentialId, input.plaintext),
       envelope,
     };
     const row = rotateSecretLifecycle(this.options.db, {
@@ -978,6 +994,7 @@ export class DurableSecretLifecycleService {
         },
         completedAt: at,
       }, {
+        authorizeCommit: () => this.#authorizeCommit(authority?.version ?? null, "owner"),
         audit: () => this.#audit("secret.break_glass.granted", input.idempotencyKey, input.credentialId, {
           generation: current!.generation,
           reason,

@@ -1,3 +1,15 @@
+### 2026-08-30 — Operation commitments are not material lineage
+
+**Mistake:** Credential material lineage reused the complete operation commitment, so rotating A to B to A assigned the second A a different identity and let compromised material escape lineage revocation.
+**Correction:** Derive lineage from a domain-separated keyed fingerprint of tenant, credential, and plaintext, then revoke every matching generation and reject later resurrection.
+**Rule:** Idempotency answers whether one operation is an exact replay. Material lineage answers whether two generations contain the same credential. Keep those identities separate and make revocation follow the material across every generation.
+
+### 2026-08-30 — Plaintext release authority commits inside the transaction
+
+**Mistake:** Break glass revalidated owner authority after decrypt but before opening the completion transaction, leaving one final time-of-check to time-of-use window before the grant audit and operation row committed.
+**Correction:** Revalidate live owner authority under the same transaction immediately before the grant audit and operation insert, including exact replay.
+**Rule:** Every plaintext-release path places its final mutable authority check inside the durable commit boundary. An outside-transaction check is preparation, never release authority.
+
 ### 2026-08-02 — Classify partial requirements precisely
 **Mistake:** I described all partial requirements as waiting on external acceptance evidence before checking the registry categories.
 **Correction:** Talal asked why 61 requirements were partial instead of fully done.

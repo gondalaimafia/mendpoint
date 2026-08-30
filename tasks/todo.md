@@ -2,6 +2,21 @@
 
 ## Issue 433 independent review repair: 2026-08-30
 
+### Exact-head follow-up for `744e5aa8`
+
+- [x] RED: prove operation commitments cannot stand in for credential-material lineage across A to B to A rotation.
+- [x] RED: prove revoking compromised material revokes every historical reuse and prevents later resurrection.
+- [x] RED: prove a second connection can downgrade owner authority after the post-decrypt check without permitting a break-glass grant.
+- [x] GREEN: derive a separate domain-bound keyed material lineage, reject revoked-lineage rotation, and revalidate owner authority inside the break-glass transaction immediately before grant audit and operation persistence.
+- [x] Run focused DB and API lifecycle tests, DB, API, and Platform typechecks, and diff integrity; commit locally without pushing.
+
+#### Follow-up review
+
+- Material lineage is now a domain-separated HMAC over the tenant, credential, and plaintext. It is independent of the semantic operation commitment and neither plaintext nor a guessable unkeyed digest is logged or persisted.
+- A to B to A produces the same lineage for both A generations. Revoking the first A generation revokes the active reused A generation atomically, while a later attempt to resurrect any already-revoked lineage is rejected before the current B generation is retired.
+- Break-glass completion revalidates the live owner authority inside the database transaction immediately before grant audit and operation insertion. A hostile second connection that downgrades the owner after the last outside-transaction observation now causes rollback with no grant operation or granted audit.
+- Verification: 62 focused lifecycle tests pass, DB, API, and Platform typechecks pass, and `git diff --check` is clean.
+
 ### Exact-head follow-up for `8b39ac8`
 
 - [x] RED: prove every physical rotation or rewrap source decrypt emits its own granted or denied outcome with the actual request, API key, and credential principal attribution.

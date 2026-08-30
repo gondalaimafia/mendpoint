@@ -79,6 +79,7 @@ const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "secret_lifecycle_commitment_unconfigured", status: 503 },
   { internalCode: "secret_rotation_material_required", status: 400 },
   { internalCode: "secret_rotation_material_unchanged", status: 409 },
+  { internalCode: "secret_material_lineage_revoked", status: 409 },
   { internalCode: "secret_rewrap_key_unchanged", status: 409 },
   { internalCode: "secret_rewrap_key_material_unchanged", status: 409 },
   { internalCode: "secret_material_lineage_missing", status: 409 },

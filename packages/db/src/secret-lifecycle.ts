@@ -301,6 +301,14 @@ export function rotateSecretLifecycle(
     ) {
       throw new Error("secret_rotation_target_invalid");
     }
+    const revokedLineage = one<{ generation: number }>(
+      db,
+      `SELECT generation FROM secret_lifecycle_versions
+       WHERE tenant_id = ? AND credential_id = ? AND material_lineage_id = ? AND state = 'revoked'
+       LIMIT 1`,
+      [input.next.tenantId, input.next.credentialId, input.next.materialLineageId],
+    );
+    if (revokedLineage) throw new Error("secret_material_lineage_revoked");
     db.raw.prepare(`
       UPDATE secret_lifecycle_versions
       SET state = 'retired', retired_at = ?
@@ -436,7 +444,7 @@ export function completeSecretBreakGlassOperation(
     }>;
     completedAt: string;
   }>,
-  options: Readonly<{ audit: () => void }>,
+  options: Readonly<{ audit: () => void; authorizeCommit?: () => void }>,
 ): Readonly<{ replayed: boolean }> {
   validateOperation({
     idempotencyKey: input.idempotencyKey,
@@ -472,8 +480,10 @@ export function completeSecretBreakGlassOperation(
         existing.actor_id !== input.actorId || existing.credential_id !== input.credentialId ||
         existing.generation !== input.generation
       ) throw new Error("secret_lifecycle_idempotency_conflict");
+      options.authorizeCommit?.();
       return Object.freeze({ replayed: true });
     }
+    options.authorizeCommit?.();
     options.audit();
     db.raw.prepare(`
       INSERT INTO secret_break_glass_operations (
