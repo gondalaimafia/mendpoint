@@ -50,7 +50,10 @@ type InvoiceSigningKey = Readonly<{
   publicKeySpkiBase64: string;
 }>;
 
-function invoiceExportSigningKeys(value: string): ReadonlyMap<string, InvoiceSigningKey> | null {
+function invoiceExportSigningKeys(
+  value: string,
+  currentKeyId: string,
+): ReadonlyMap<string, InvoiceSigningKey> | null {
   try {
     const parsed = JSON.parse(value) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
@@ -73,6 +76,9 @@ function invoiceExportSigningKeys(value: string): ReadonlyMap<string, InvoiceSig
           typeof keyRecord.privateKeyPkcs8Base64 !== "string") ||
         typeof keyRecord.publicKeySpkiBase64 !== "string"
       ) return null;
+      if (keyRecord.keyId !== currentKeyId && keyRecord.privateKeyPkcs8Base64 !== undefined) {
+        return null;
+      }
       const privateDer = keyRecord.privateKeyPkcs8Base64 === undefined
         ? null
         : Buffer.from(keyRecord.privateKeyPkcs8Base64, "base64");
@@ -153,7 +159,7 @@ export function invoiceExportSignerFromEnv(
   const keyringJson = env.MENDPOINT_INVOICE_EXPORT_SIGNING_KEYS_JSON?.trim();
   const authorityJson = env.MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON?.trim();
   if (!keyId || !keyringJson || !authorityJson || keyId.length > 200) return undefined;
-  const keys = invoiceExportSigningKeys(keyringJson);
+  const keys = invoiceExportSigningKeys(keyringJson, keyId);
   const currentKey = keys?.get(keyId);
   if (!keys || !currentKey?.privateKey) return undefined;
   const grants = invoiceExportAuthorityGrants(authorityJson);

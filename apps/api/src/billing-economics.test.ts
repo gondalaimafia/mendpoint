@@ -351,11 +351,12 @@ describe("billing economics API routes", () => {
           keys,
         }),
         MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON: authority,
-      })!;
+      });
+    expect(signerFor("invoice-key-new", [oldKey, newKey])).toBeUndefined();
     const issuedApp = appFor(
       db,
       () => "2026-09-02T12:00:00.000Z",
-      signerFor("invoice-key-old", [oldKey]),
+      signerFor("invoice-key-old", [oldKey])!,
     );
     const created = await issuedApp.request("/billing/invoice-exports", {
       method: "POST",
@@ -371,7 +372,7 @@ describe("billing economics API routes", () => {
       signerFor("invoice-key-new", [
         publicSigningKey(oldKey),
         newKey,
-      ]),
+      ])!,
     );
     const reconciliation = await rotatedApp.request(
       `/billing/invoice-exports/${invoice.data.id}/reconciliation`,
