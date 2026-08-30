@@ -1,0 +1,238 @@
+name: Customer production backup watchdog
+
+# Detects customer backups that STOP HAPPENING.
+#
+# customer-backup.yml alerts with `if: failure()` inside its job, so it only
+# reports "a run executed and failed". GitHub's scheduler drops its `*/30` cron
+# badly enough that hours pass with no run at all; every run that did execute
+# reported success, so nothing alerted and the silence read as health. Meanwhile
+# `last_verified_backup` goes stale, /healthz (== /readyz) goes red, and the
+# post-rotation probe in sandbox-egress-acceptance.yml contains the customer
+# machines. A skipped backup can hard-stop customer production with nothing
+# having failed anywhere.
+#
+# This workflow is driven by the AGE of the newest verified backup, never by
+# whether a run happened, so a skipped run and a failed run raise the same alarm.
+# It changes nothing about customer-backup.yml: not its schedule, not its RPO,
+# not its failure alert.
+#
+# Not a single point of failure on the same dropped schedule
+# ----------------------------------------------------------
+# A `*/30` watchdog would be dropped by the same scheduler that caused the
+# problem, so this has two independent delivery paths:
+#
+#   schedule      hourly at :29. Hourly is materially more reliably delivered
+#                 than */30, an off-the-hour minute avoids the top-of-hour
+#                 congestion where drops concentrate, and hourly resolution is
+#                 the right granularity for a 3600s RPO.
+#   workflow_run  fires when CI completes on the default branch. This path is
+#                 delivered by a real event, not by the cron scheduler, so a
+#                 total scheduler outage still leaves the watchdog running on
+#                 every merge to main. Bursts of merges collapse via the
+#                 concurrency group below rather than queueing.
+#
+# workflow_dispatch is the manual path. No new secret or variable is introduced:
+# this reuses the backup workflow's existing app-scoped token and app binding.
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "29 * * * *"
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch: {}
+
+# Cron and manual runs each get their own group so they are never cancelled: a
+# cancelled watchdog alerts nothing, which is the silence this exists to end.
+# Only the high-frequency workflow_run path shares a group, where collapsing to
+# the newest run is correct because it reads the same live state.
+concurrency:
+  group: >-
+    customer-backup-watchdog-${{
+      github.event_name == 'workflow_run' && 'merge-event' || github.run_id
+    }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_run' }}
+
+jobs:
+  # Same explicit third state as customer-backup.yml: while the owner still runs
+  # the demo profile there is no customer backup to be stale, and alarming would
+  # be a permanent false alarm. That is reported out loud every run rather than
+  # passing silently as "backups are fine".
+  profile-gate:
+    # The workflow_run path fires for every CI completion; only default-branch
+    # completions are used, so PR CI does not drive production reads.
+    if: >-
+      ${{ github.event_name != 'workflow_run'
+          || github.event.workflow_run.head_branch == github.event.repository.default_branch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      active: ${{ steps.check.outputs.active }}
+    steps:
+      - name: Report whether the customer profile is active
+        id: check
+        shell: bash
+        env:
+          ACTIVE: ${{ vars.MENDPOINT_CUSTOMER_PROFILE_ACTIVE }}
+        run: |
+          set -euo pipefail
+          if [ "$ACTIVE" = "true" ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            echo "customer profile active — backup freshness will be checked"
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Backup freshness not applicable::NOT-CONFIGURED — the customer profile is not active, so no backup exists to be stale. Backup freshness was NOT determined. Flip repo variable MENDPOINT_CUSTOMER_PROFILE_ACTIVE=true when activating."
+          fi
+
+  freshness:
+    needs: profile-gate
+    # Default branch only, matching customer-backup.yml: schedule and
+    # workflow_run always run there, and a manual dispatch from a side branch
+    # must not read production with an unreviewed script.
+    if: ${{ needs.profile-gate.outputs.active == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: customer-production-backup
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+
+      # The authoritative source is the evidence file ON the machine: it is the
+      # exact file assessCustomerBackupReadiness reads, so this measures the same
+      # quantity that turns /healthz red. The remote path is taken from the
+      # machine's own MENDPOINT_BACKUP_EVIDENCE_PATH rather than restated here,
+      # so it cannot drift from the deployed configuration.
+      #
+      # Every failure of this read (ssh refused, machine stopped, file absent,
+      # empty output, timeout) is preserved as a non-zero status or empty capture
+      # and becomes a LOUD indeterminate verdict downstream. It is never swallowed.
+      - name: Read backup evidence from the customer machine
+        id: capture
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}
+          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
+        run: |
+          set -uo pipefail
+          mkdir -p test-results/customer-backup-watchdog
+          capture=test-results/customer-backup-watchdog/evidence-capture.json
+          : > "$capture"
+          status=0
+          if [ -z "${FLY_API_TOKEN:-}" ] || [ -z "${CUSTOMER_APP:-}" ]; then
+            echo "customer_backup_watchdog_binding_missing" >&2
+            status=78
+          else
+            # </dev/null so an unset remote path cannot leave `cat` blocked on
+            # stdin; timeout so a hung session becomes a status, not a hang.
+            timeout 300 flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
+              --command "cat \"\$MENDPOINT_BACKUP_EVIDENCE_PATH\"" \
+              </dev/null >"$capture" 2>test-results/customer-backup-watchdog/read-stderr.log
+            status=$?
+          fi
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          # The capture holds the evidence keyId and integrity digest. It is
+          # never echoed, and never uploaded; only byte count is reported.
+          echo "read exit status: $status, captured bytes: $(wc -c <"$capture")"
+
+      # Exits non-zero for stale AND for every indeterminate reason, so this step
+      # fails the job either way and the alert below fires. There is no path from
+      # an unreadable source to a green step.
+      - name: Judge backup freshness against the policy RPO
+        shell: bash
+        env:
+          MENDPOINT_BACKUP_EVIDENCE_CAPTURE_PATH: test-results/customer-backup-watchdog/evidence-capture.json
+          MENDPOINT_BACKUP_EVIDENCE_CAPTURE_STATUS: ${{ steps.capture.outputs.status }}
+          MENDPOINT_BACKUP_FRESHNESS_REPORT_PATH: test-results/customer-backup-watchdog/verdict.json
+        run: |
+          set -euo pipefail
+          node --import tsx scripts/check-customer-backup-freshness.ts
+
+      - name: Retain the redacted freshness verdict
+        if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: customer-backup-watchdog-${{ github.run_id }}-${{ github.run_attempt }}
+          # Only the redacted verdict. The raw capture is deliberately excluded:
+          # it carries the evidence keyId and integrity digest.
+          path: test-results/customer-backup-watchdog/verdict.json
+          if-no-files-found: error
+          retention-days: 90
+
+      # Reuses customer-backup.yml's proven issue-open / comment / auto-close
+      # mechanism rather than inventing a second alert channel, but under its own
+      # label. The labels must stay distinct: the backup workflow CLOSES every
+      # open `customer-production-backup-failure` issue whenever a single run
+      # succeeds, and a run succeeding is strictly weaker than the fleet being
+      # back inside its RPO. Sharing the label would let one late success silence
+      # a still-stale fleet — exactly the false reassurance this exists to remove.
+      - name: Alert on stale or undetermined backup freshness
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          report=test-results/customer-backup-watchdog/verdict.json
+          if [ -s "$report" ]; then
+            summary="$(jq -r '.summary' "$report")"
+            state="$(jq -r '.state' "$report")"
+            reason="$(jq -r '.reason // "n/a"' "$report")"
+          else
+            # The watchdog itself failed to produce a verdict. That is still an
+            # undetermined backup age, so it alerts — it does not pass.
+            summary="The backup freshness watchdog produced no verdict"
+            state="indeterminate"
+            reason="watchdog_produced_no_verdict"
+          fi
+          label="customer-production-backup-stale"
+          gh label create "$label" --repo "$GH_REPO" --color b60205 \
+            --description "Automated: customer production backup is stale or its age is undetermined" >/dev/null 2>&1 || true
+          body="$(printf 'state=%s reason=%s\n\n%s\n\nDetected by the backup freshness watchdog (age-driven, so this fires whether the backup run failed OR never happened). Run: %s. Runbook: docs/CUSTOMER_INCIDENT_RUNBOOK.md' \
+            "$state" "$reason" "$summary" "$RUN_URL")"
+          existing="$(gh issue list --repo "$GH_REPO" --state open --label "$label" \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GH_REPO" --body "$body"
+          else
+            gh issue create --repo "$GH_REPO" --label "$label" \
+              --title "Customer production backup is STALE or undetermined" \
+              --body "$body"
+          fi
+
+      # Closes only on a PROVEN fresh verdict. An indeterminate verdict never
+      # reaches this step (the judge step exits non-zero), so "we could not look"
+      # can never resolve the alarm.
+      - name: Resolve the staleness alert once backups are provably current
+        if: ${{ success() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          label="customer-production-backup-stale"
+          summary="$(jq -r '.summary' test-results/customer-backup-watchdog/verdict.json)"
+          for number in $(gh issue list --repo "$GH_REPO" --state open --label "$label" \
+            --json number --jq '.[].number'); do
+            gh issue close "$number" --repo "$GH_REPO" --reason completed \
+              --comment "$summary. Verified by $RUN_URL. Closing automatically."
+          done
