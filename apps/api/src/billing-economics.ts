@@ -499,7 +499,8 @@ export function createBillingEconomicsRoutes({
          FROM review_decisions r JOIN artifact_manifests a
            ON a.id = r.candidate_artifact_id AND a.tenant_id = r.tenant_id
          WHERE r.id = ? AND r.tenant_id = ?
-           AND r.subject_type = 'execution_cost' AND r.subject_id = ?`,
+           AND r.subject_type = 'execution_cost' AND r.subject_id = ?
+           AND NOT EXISTS (SELECT 1 FROM review_decisions s WHERE s.supersedes_id = r.id)`,
       ).get(evidenceId, identity.tenantId, executionId) as {
         id: string; decision: string; candidate_artifact_id: string;
         reviewer_principal_id: string; created_at: string; content_sha256: string;
@@ -508,7 +509,12 @@ export function createBillingEconomicsRoutes({
         `SELECT id, event_type, actor_principal_id, payload_json, payload_sha256, event_hash, created_at
          FROM domain_events WHERE id = ? AND tenant_id = ?
            AND aggregate_type = 'execution_cost' AND aggregate_id = ?
-           AND event_type IN ('execution_cost.delivered','execution_cost.rolled_back')`,
+           AND event_type IN ('execution_cost.delivered','execution_cost.rolled_back')
+           AND event_sequence = (SELECT MAX(e2.event_sequence) FROM domain_events e2
+             WHERE e2.tenant_id = domain_events.tenant_id
+               AND e2.aggregate_type = 'execution_cost'
+               AND e2.aggregate_id = domain_events.aggregate_id
+               AND e2.event_type IN ('execution_cost.delivered','execution_cost.rolled_back'))`,
       ).get(evidenceId, identity.tenantId, executionId) as {
         id: string; event_type: string; actor_principal_id: string; payload_json: string;
         payload_sha256: string; event_hash: string; created_at: string;
@@ -525,8 +531,7 @@ export function createBillingEconomicsRoutes({
         return errorResponse(c, "execution_cost_outcome_evidence_invalid", "Evidence does not authorize an accounting outcome", 409);
       }
       const outcomeStatus = rolledBack ? "rolled_back"
-        : approved && prior && ["rejected", "rolled_back"].includes(prior.outcomeStatus)
-          ? "corrected" : approved ? "accepted" : "rejected";
+        : approved && prior ? "corrected" : approved ? "accepted" : "rejected";
       const acceptedOutcomeId = approved
         ? (event ? String(payload?.outcomeId ?? event.id) : review!.candidate_artifact_id)
         : null;

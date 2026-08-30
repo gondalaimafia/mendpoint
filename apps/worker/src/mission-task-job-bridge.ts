@@ -205,12 +205,13 @@ export function recordBoundMissionExecutionCost(
   if (!mission) return undefined;
   const payload = payloadRecord(input.job);
   const taskId = missionTaskIdForJob(input.job.id);
-  const attemptNumber = Math.max(1, input.job.attempts ?? 1);
-  const leaseGeneration = Math.max(1, input.job.lease_generation ?? attemptNumber);
+  // lease_generation is monotonic across operator reopen; attempts is not.
+  const leaseGeneration = Math.max(1, input.job.lease_generation ?? input.job.attempts ?? 1);
+  const attemptNumber = leaseGeneration;
   const executionId = `${input.sourceRunId}:lease-${leaseGeneration}:attempt-${attemptNumber}`;
   const prior = listActualExecutionCosts(db, input.job.tenant_id)
-    .filter((entry) => entry.taskId === taskId && entry.executionId !== executionId)
-    .at(-1);
+    .filter((entry) => entry.taskId === taskId && entry.attemptNumber < leaseGeneration)
+    .sort((a, b) => b.attemptNumber - a.attemptNumber)[0];
   return recordExecutionCostFromRoutingLedger(db, {
     tenantId: input.job.tenant_id,
     sourceRunId: input.sourceRunId,

@@ -784,6 +784,7 @@ describe("Transformer production pilot lane", () => {
 
   it("records a review-pending adaptive candidate after the deterministic gate fails", async () => {
     const { root, db, store } = setup();
+    registerTenantA(db);
     const adapter = adaptiveAdapter();
     const recorder = vi.fn<typeof dbModule.recordAdaptiveCandidate>((candidateDb, input) => {
       expect(store.getCampaign("tenant-a", "campaign-a")!.units[0]!.adaptiveCandidateHandoff)
@@ -1325,14 +1326,14 @@ describe("Transformer production pilot lane", () => {
     expect(trajectories[0]!.mission_id).toBeNull();
   });
 
-  it("does not abort ReGauge candidate delivery when the Mission trajectory emit fails", async () => {
+  it("rolls back ReGauge candidate persistence when trajectory accounting fails", async () => {
     const fixture = setup();
     // tenant-a is deliberately NOT registered, so recordTrajectory (which asserts
-    // the tenant exists) fails closed inside the best-effort emit. The candidate
-    // must still be recorded and the lane must still complete its attempt.
+    // the tenant exists) fails closed. Candidate + trajectory accounting are one
+    // App DB transaction, so neither may become visible independently.
     const result = await runAdaptiveLaneOnce(fixture);
     expect(result).toMatchObject({ attempted: 1, failed: 1 });
-    expect(listAdaptiveCandidates(fixture.db, "tenant-a")).toHaveLength(1);
+    expect(listAdaptiveCandidates(fixture.db, "tenant-a")).toHaveLength(0);
     const count = fixture.db.raw
       .prepare(`SELECT COUNT(*) AS n FROM trajectories WHERE tenant_id = ?`)
       .get("tenant-a") as { n: number };
@@ -1341,6 +1342,7 @@ describe("Transformer production pilot lane", () => {
 
   it("records an escalated tier when a review-tier policy is configured", async () => {
     const { root, db, store } = setup();
+    registerTenantA(db);
     const adapter = adaptiveAdapter();
     const recorder = vi.fn<typeof dbModule.recordAdaptiveCandidate>((candidateDb, input) =>
       dbModule.recordAdaptiveCandidate(candidateDb, input),
@@ -1399,6 +1401,7 @@ describe("Transformer production pilot lane", () => {
 
   it("recovers the exact fenced seal after App DB import fails", async () => {
     const { root, db, store } = setup();
+    registerTenantA(db);
     const recorder = vi.fn<typeof dbModule.recordAdaptiveCandidate>(() => {
       throw new Error("database unavailable");
     });
@@ -1478,11 +1481,7 @@ describe("Transformer production pilot lane", () => {
       adaptiveRecovered: 1,
     });
     expect(listAdaptiveCandidates(db, "tenant-a")).toEqual([
-      expect.objectContaining({
-        campaignId: "campaign-a",
-        unitId: "unit-a",
-        status: "review_pending",
-      }),
+      expect.objectContaining({ campaignId: "campaign-a", unitId: "unit-a", status: "review_pending" }),
     ]);
     expect(store.getCampaign("tenant-a", "campaign-a")).toMatchObject({
       units: [{ adaptiveCandidateHandoff: { importedAt: RUN_AT } }],

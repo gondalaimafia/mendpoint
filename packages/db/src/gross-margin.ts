@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { AppDb } from "./index.js";
 import { reconcileUsageLedger } from "./usage.js";
+import { verifyDomainEventIntegrity } from "./trust.js";
 
 export type ExecutionOutcomeStatus = "accepted" | "rejected" | "unresolved";
 export type ExecutionOutcomeResolutionStatus =
@@ -334,6 +335,24 @@ function moneyForMcu(mcuMicros: number, pricePerMcuMoneyMicros: number): number 
   return Number(value);
 }
 
+const MEASUREMENT_COMPONENTS = ["model", "cache", "gpu", "graph", "sandbox", "verification"] as const;
+function canonicalMeasurementProvenance(
+  value: ActualExecutionCostInput["measurementProvenance"],
+): ActualExecutionCostEntry["measurementProvenance"] {
+  const source = value ?? {};
+  for (const key of Object.keys(source)) {
+    if (!(MEASUREMENT_COMPONENTS as readonly string[]).includes(key)) {
+      throw new Error("execution_cost_measurement_provenance_key_invalid");
+    }
+  }
+  const canonical: Partial<Record<(typeof MEASUREMENT_COMPONENTS)[number], string>> = {};
+  for (const component of MEASUREMENT_COMPONENTS) {
+    const raw = source[component];
+    if (raw !== undefined) canonical[component] = text(`execution_cost_${component}_provenance`, raw);
+  }
+  return Object.freeze(canonical);
+}
+
 function entryFromRow(row: CostRow): ActualExecutionCostEntry {
   return Object.freeze({
     id: row.id,
@@ -482,6 +501,9 @@ export function recordExecutionCostOutcome(
       `SELECT * FROM actual_execution_cost_outcomes
        WHERE tenant_id = ? AND cost_entry_id = ? ORDER BY outcome_sequence DESC LIMIT 1`,
       [input.tenantId, cost.id]);
+    if (previous && Date.parse(input.createdAt) < Date.parse(previous.created_at)) {
+      throw new Error("execution_cost_outcome_chronology_invalid");
+    }
     const allowed: Record<ExecutionOutcomeResolutionStatus | "none", ExecutionOutcomeResolutionStatus[]> = {
       none: ["accepted", "rejected"],
       accepted: ["rolled_back", "corrected"],
@@ -605,7 +627,8 @@ function sameRequest(
     entry.graphCostMeasured === (input.graphCostMeasured ?? true) &&
     entry.sandboxCostMeasured === (input.sandboxCostMeasured ?? true) &&
     entry.verificationCostMeasured === (input.verificationCostMeasured ?? true)
-    && JSON.stringify(entry.measurementProvenance) === JSON.stringify(input.measurementProvenance ?? {})
+    && JSON.stringify(entry.measurementProvenance) ===
+      JSON.stringify(canonicalMeasurementProvenance(input.measurementProvenance))
   );
 }
 
@@ -650,11 +673,7 @@ function validateInput(input: ActualExecutionCostInput): number {
   text("execution_cost_actor_principal_id", input.actorPrincipalId);
   timestamp("execution_cost_created_at", input.createdAt);
   if (input.missionId) text("execution_cost_mission_id", input.missionId);
-  const provenance = input.measurementProvenance ?? {};
-  for (const component of ["model", "cache", "gpu", "graph", "sandbox", "verification"] as const) {
-    const value = provenance[component];
-    if (value !== undefined) text(`execution_cost_${component}_provenance`, value);
-  }
+  canonicalMeasurementProvenance(input.measurementProvenance);
   // A component that was not measured must carry zero money-micros. This keeps
   // the arithmetic total honest (unmeasured contributes 0) while the flag stays
   // the sole carrier of "not measured". A measured=false component with a
@@ -781,8 +800,7 @@ export function recordActualExecutionCost(
       graphCostMeasured: input.graphCostMeasured ?? true,
       sandboxCostMeasured: input.sandboxCostMeasured ?? true,
       verificationCostMeasured: input.verificationCostMeasured ?? true,
-      measurementProvenance: Object.freeze({ ...(input.measurementProvenance ?? {}) }) as
-        ActualExecutionCostEntry["measurementProvenance"],
+      measurementProvenance: canonicalMeasurementProvenance(input.measurementProvenance),
       costSchemaVersion: 3,
     });
     const entryHash = hashEntry(entry);
@@ -880,12 +898,15 @@ export type ExecutionCostFromRoutingLedgerInput = Readonly<{
 }>;
 
 type LedgerAggregateRow = Readonly<{
+  id: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
   total_tokens: number | null;
   cost_usd: number | null;
   measured_rows: number | null;
   model_id: string | null;
+  decision_json: string | null;
+  outcome: string | null;
 }>;
 
 /**
@@ -913,32 +934,43 @@ export function recordExecutionCostFromRoutingLedger(
 ): ActualExecutionCostEntry {
   const tenantId = text("tenant_id", input.tenantId);
   const sourceRunId = text("execution_cost_source_run_id", input.sourceRunId);
-  const aggregate =
-    (one<LedgerAggregateRow>(
-      db,
-      `SELECT
-         SUM(input_tokens) AS input_tokens,
-         SUM(output_tokens) AS output_tokens,
-         SUM(total_tokens) AS total_tokens,
-         SUM(cost_usd) AS cost_usd,
-         SUM(CASE WHEN cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS measured_rows,
-         MAX(selected_executor_id) AS model_id
-       FROM routing_ledger
-       WHERE id = (
-         SELECT id FROM routing_ledger WHERE tenant_id = ? AND run_id = ?
-         ORDER BY created_at DESC, id DESC LIMIT 1
-       )`,
-      [tenantId, sourceRunId],
-    ) ?? {
+  const routingRows = many<LedgerAggregateRow>(db,
+    `SELECT id, input_tokens, output_tokens, total_tokens, cost_usd,
+       CASE WHEN cost_usd IS NOT NULL THEN 1 ELSE 0 END AS measured_rows,
+       executed_executor_id AS model_id, decision_json, outcome
+     FROM routing_ledger WHERE tenant_id = ? AND run_id = ?
+     ORDER BY created_at, id`, [tenantId, sourceRunId]);
+  const aggregate = routingRows.length > 0 ? {
+    id: routingRows.map((row) => row.id).join(","),
+    input_tokens: routingRows.reduce((sum, row) => sum + (row.input_tokens ?? 0), 0),
+    output_tokens: routingRows.reduce((sum, row) => sum + (row.output_tokens ?? 0), 0),
+    total_tokens: routingRows.reduce((sum, row) => sum + (row.total_tokens ?? 0), 0),
+    cost_usd: routingRows.reduce((sum, row) => sum + (row.cost_usd ?? 0), 0),
+    measured_rows: routingRows.filter((row) => row.cost_usd !== null).length,
+    model_id: [...new Set(routingRows.map((row) => row.model_id ?? "unknown"))].join("+"),
+    decision_json: null,
+    outcome: null,
+  } : {
       input_tokens: null,
       output_tokens: null,
       total_tokens: null,
       cost_usd: null,
       measured_rows: 0,
       model_id: null,
-    });
+      id: null,
+      decision_json: null,
+      outcome: null,
+    };
 
-  const modelMeasured = (aggregate.measured_rows ?? 0) > 0;
+  const modelMeasured = routingRows.length > 0 && aggregate.measured_rows === routingRows.length;
+  const routingEvidenceDigest = routingRows.length > 0 ? createHash("sha256").update(JSON.stringify(
+    routingRows.map((row) => ({
+      id: row.id, decisionJson: row.decision_json, outcome: row.outcome,
+      inputTokens: row.input_tokens, outputTokens: row.output_tokens,
+      totalTokens: row.total_tokens, costUsd: row.cost_usd,
+      executedExecutorId: row.model_id,
+    })),
+  )).digest("hex") : null;
   // USD is REAL in routing_ledger; convert to integer micros once, fail closed
   // on an unsafe value rather than writing a rounded lie.
   const modelCostMoneyMicros = modelMeasured
@@ -996,7 +1028,9 @@ export function recordExecutionCostFromRoutingLedger(
     sandboxCostMeasured: false,
     verificationCostMeasured: false,
     measurementProvenance: {
-      model: modelMeasured ? `routing_ledger:${sourceRunId}` : "unmeasured:routing_ledger_cost_absent",
+      model: modelMeasured
+        ? `routing_ledger_rows:${aggregate.id}:sha256:${routingEvidenceDigest}`
+        : `unmeasured:routing_ledger:${aggregate.id ?? "absent"}:cost_absent`,
       cache: "unmeasured:no_cache_meter",
       gpu: "unmeasured:no_gpu_meter",
       graph: "unmeasured:no_graph_meter",
@@ -1101,6 +1135,7 @@ export function verifyExecutionOutcomeIntegrity(
     `SELECT * FROM actual_execution_cost_outcomes
      WHERE tenant_id = ? ORDER BY cost_entry_id, outcome_sequence`, [tenantId]);
   const state = new Map<string, { sequence: number; hash: string | null; createdAt: number }>();
+  const domainIntegrity = verifyDomainEventIntegrity(db, tenantId);
   for (const [index, row] of rows.entries()) {
     const entry = outcomeFromRow(row);
     const prior = state.get(entry.costEntryId) ?? { sequence: 0, hash: null, createdAt: -Infinity };
@@ -1134,12 +1169,16 @@ export function verifyExecutionOutcomeIntegrity(
              OR (r.decision = 'reject' AND ? = 'rejected' AND ? IS NULL))`,
         [tenantId, entry.executionId, entry.actorPrincipalId, entry.createdAt, entry.authorityDigest,
           entry.outcomeStatus, entry.acceptedOutcomeId, entry.outcomeStatus, entry.acceptedOutcomeId])
-      : one<{ id: string }>(db,
+      : domainIntegrity.ok ? one<{ id: string }>(db,
         `SELECT id FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'execution_cost'
            AND aggregate_id = ? AND actor_principal_id = ? AND created_at = ? AND event_hash = ?
-           AND event_type = ?`,
+           AND event_type = ?
+           AND ((event_type = 'execution_cost.rolled_back' AND ? IS NULL)
+             OR (event_type = 'execution_cost.delivered'
+               AND json_extract(payload_json, '$.outcomeId') = ?))`,
         [tenantId, entry.executionId, entry.actorPrincipalId, entry.createdAt, entry.authorityDigest,
-          entry.authorityKind === "rollback" ? "execution_cost.rolled_back" : "execution_cost.delivered"]);
+          entry.authorityKind === "rollback" ? "execution_cost.rolled_back" : "execution_cost.delivered",
+          entry.acceptedOutcomeId, entry.acceptedOutcomeId]) : undefined;
     if (!authorityBound) {
       return { ok: false, checked: index, error: `execution_outcome_authority_evidence:${entry.id}` };
     }

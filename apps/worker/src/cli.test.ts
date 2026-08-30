@@ -3699,7 +3699,6 @@ describe("worker runtime", () => {
     expect(retryJob(fixture.db, "job-warden-snapshot", {
       tenantId: "tenant_test",
       now: "2000-01-01T00:00:00.000Z",
-      resetAttempts: false,
     })).toBe(true);
 
     const second = await processJobsOnce(fixture.db, {

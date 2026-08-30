@@ -222,7 +222,7 @@ function stableId(prefix: string, ...parts: readonly string[]): string {
 }
 
 /**
- * Best-effort ReGauge trajectory emit (spec 6.1 / 8.6). A recorded adaptive
+ * Transactional ReGauge trajectory emit (spec 6.1 / 8.6). A recorded adaptive
  * candidate is the observable output of one ReGauge attempt; persisting a
  * trajectory keyed by the campaign's Mission is what makes a later delivery
  * outcome joinable back to the attempt that produced it — the seam PR #191 could
@@ -231,10 +231,9 @@ function stableId(prefix: string, ...parts: readonly string[]): string {
  * regauge_adaptive_deliveries.candidate_id -> regauge_adaptive_candidates.campaign_id
  * -> mission.regauge_campaign_id -> mission.id -> trajectories.mission_id.
  *
- * Mission bookkeeping is metadata: it MUST NEVER abort candidate recording or the
- * lane. Any failure is logged with enough context to diagnose and swallowed
- * (matching the best-effort convention in packages/pipeline/src/index.ts), never
- * a bare catch. `mission_id` is nullable: a campaign created before the Mission
+ * Candidate, trajectory, and MCU accounting persistence form one unit: failure
+ * aborts and rolls back candidate recording so replay can retry without losing
+ * paid work. `mission_id` is nullable: a campaign created before the Mission
  * primitive was wired resolves to no mission, and the trajectory is written with
  * mission_id NULL rather than fabricating one. `run_id` stays populated with the
  * attempt id so the existing per-attempt key is preserved, not replaced.
@@ -306,12 +305,9 @@ function emitRegaugeAdaptiveTrajectory(
       });
     }
   } catch (error) {
-    console.error(
-      `regauge trajectory emit failed tenant=${input.tenantId} campaign=${input.campaignId} ` +
-        `unit=${input.unitId} attempt=${input.attemptId} candidate=${input.candidateId}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-    );
+    // Completion must not acknowledge while trajectory or MCU accounting is
+    // missing. The caller's attempt lease/replay path owns the retry.
+    throw new Error("regauge_accounting_persistence_failed", { cause: error });
   }
 }
 
@@ -561,6 +557,8 @@ export async function runTransformerPilotLaneOnce(
       ) {
         throw new Error("transformer_adaptive_candidate_handoff_seal_mismatch");
       }
+      const ownsCandidateTransaction = !input.db.raw.isTransaction;
+      if (ownsCandidateTransaction) input.db.raw.exec("BEGIN IMMEDIATE");
       const recordedCandidate = (input.adaptiveCandidateRecorder ?? recordAdaptiveCandidate)(input.db, {
         tenantId: pending.tenantId,
         campaignId: pending.campaignId,
@@ -582,6 +580,18 @@ export async function runTransformerPilotLaneOnce(
         expiresAt: pending.handoff.expiresAt,
         now: pending.handoff.observedAt,
       });
+      emitRegaugeAdaptiveTrajectory(input.db, {
+        tenantId: pending.tenantId,
+        campaignId: pending.campaignId,
+        unitId: pending.unitId,
+        attemptId: pending.handoff.attemptId,
+        candidateId: recordedCandidate.id,
+        family: pending.handoff.family ?? null,
+        provider: pending.handoff.provider ?? null,
+        framework: pending.handoff.framework ?? null,
+        createdAt: pending.handoff.observedAt,
+      });
+      if (ownsCandidateTransaction) input.db.raw.exec("COMMIT");
       input.store.markAdaptiveCandidateHandoffImported({
         tenantId: pending.tenantId,
         campaignId: pending.campaignId,
@@ -611,19 +621,9 @@ export async function runTransformerPilotLaneOnce(
         ),
         gateConfig: rawGate,
       });
-      emitRegaugeAdaptiveTrajectory(input.db, {
-        tenantId: pending.tenantId,
-        campaignId: pending.campaignId,
-        unitId: pending.unitId,
-        attemptId: pending.handoff.attemptId,
-        candidateId: recordedCandidate.id,
-        family: pending.handoff.family ?? null,
-        provider: pending.handoff.provider ?? null,
-        framework: pending.handoff.framework ?? null,
-        createdAt: pending.handoff.observedAt,
-      });
       adaptiveRecovered++;
     } catch (error) {
+      if (input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
       const code = boundedError(error);
       errors.push(code);
       infrastructureError ??= code;
@@ -1018,6 +1018,8 @@ export async function runTransformerPilotLaneOnce(
                 },
                 reviewTierPolicy,
               );
+              const ownsCandidateTransaction = !input.db.raw.isTransaction;
+              if (ownsCandidateTransaction) input.db.raw.exec("BEGIN IMMEDIATE");
               const recordedCandidate = (input.adaptiveCandidateRecorder ?? recordAdaptiveCandidate)(input.db, {
                 tenantId: handoff.tenantId,
                 campaignId: handoff.campaignId,
@@ -1040,6 +1042,18 @@ export async function runTransformerPilotLaneOnce(
                 expiresAt,
                 now: observedAt,
               });
+              emitRegaugeAdaptiveTrajectory(input.db, {
+                tenantId: handoff.tenantId,
+                campaignId: handoff.campaignId,
+                unitId: handoff.unitId,
+                attemptId: handoff.attemptId,
+                candidateId: recordedCandidate.id,
+                family: handoff.family ?? null,
+                provider: handoff.provider ?? null,
+                framework: handoff.framework ?? null,
+                createdAt: observedAt,
+              });
+              if (ownsCandidateTransaction) input.db.raw.exec("COMMIT");
               input.store.markAdaptiveCandidateHandoffImported({
                 tenantId: handoff.tenantId,
                 campaignId: handoff.campaignId,
@@ -1070,18 +1084,8 @@ export async function runTransformerPilotLaneOnce(
                 gateConfig: rawGate,
               });
               adaptiveModelEvidence.push(modelEvidence);
-              emitRegaugeAdaptiveTrajectory(input.db, {
-                tenantId: handoff.tenantId,
-                campaignId: handoff.campaignId,
-                unitId: handoff.unitId,
-                attemptId: handoff.attemptId,
-                candidateId: recordedCandidate.id,
-                family: handoff.family ?? null,
-                provider: handoff.provider ?? null,
-                framework: handoff.framework ?? null,
-                createdAt: observedAt,
-              });
             } catch (error) {
+              if (input.db.raw.isTransaction) input.db.raw.exec("ROLLBACK");
               if (!handoffRecorded && modelEvidence?.created) {
                 discardTransformerAdaptiveModelEvidence(resolve(input.evidenceRoot), modelEvidence);
               }

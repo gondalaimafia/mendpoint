@@ -8,6 +8,7 @@ import {
   createDb,
   createMission,
   insertPrincipal,
+  listActualExecutionCosts,
   recordActualExecutionCost,
   recordExecutionCostFromRoutingLedger,
   recordRoutingDecision,
@@ -409,8 +410,9 @@ describe("execution cost attribution", () => {
     // 3) The legacy (version-1) row still verifies after the schema change.
     expect(verifyExecutionCostIntegrity(db, "tenant_default").ok).toBe(true);
 
-    // 4) Appending a version-2 row keeps the mixed chain verifying.
-    recordActualExecutionCost(db, {
+    // 4) Materialize an authentic historical v2 payload (mission + measurement
+    // flags, but no provenance in its hash), then append today's v3 writer.
+    const writtenV2 = recordActualExecutionCost(db, {
       id: "cost-v2",
       tenantId: "tenant_default",
       idempotencyKey: "cost-v2",
@@ -439,8 +441,31 @@ describe("execution cost attribution", () => {
       createdAt: at,
       gpuCostMeasured: false,
     });
+    const { entryHash: _v3Hash, measurementProvenance: _v3Provenance,
+      ...historicalV2Base } = writtenV2;
+    const historicalV2 = { ...historicalV2Base, costSchemaVersion: 2 };
+    const historicalV2Hash = createHash("sha256")
+      .update(JSON.stringify(historicalV2)).digest("hex");
+    db.raw.exec("DROP TRIGGER actual_execution_cost_entries_append_only_update");
+    db.raw.prepare(`UPDATE actual_execution_cost_entries
+      SET cost_schema_version = 2, measurement_provenance_json = '{}', entry_hash = ?
+      WHERE id = ?`).run(historicalV2Hash, writtenV2.id);
+    recordActualExecutionCost(db, {
+      id: "cost-v3", tenantId: "tenant_default", idempotencyKey: "cost-v3",
+      executionId: "execution-v3", taskId: "task-v3", taskClass: "api-migration",
+      route: "regauge", attemptNumber: 1, retryNumber: 0, outcomeStatus: "unresolved",
+      inputTokens: 2, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0,
+      modelId: "model-v3", modelPriceVersion: "v3", modelCostMoneyMicros: 7,
+      cacheCostMoneyMicros: 0, gpuMillis: 0, gpuCostMoneyMicros: 0,
+      graphCostMoneyMicros: 0, sandboxCostMoneyMicros: 0,
+      verificationCostMoneyMicros: 0, currency: "USD",
+      actorPrincipalId: "principal-legacy", createdAt: at,
+      measurementProvenance: { model: "  invoice:model-v3  " },
+    });
     const integrity = verifyExecutionCostIntegrity(db, "tenant_default");
     expect(integrity.ok).toBe(true);
-    expect(integrity.checked).toBe(2);
+    expect(integrity.checked).toBe(3);
+    expect(listActualExecutionCosts(db, "tenant_default")[0]?.measurementProvenance)
+      .toEqual({ model: "invoice:model-v3" });
   });
 });
