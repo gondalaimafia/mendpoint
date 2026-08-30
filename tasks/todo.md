@@ -3895,3 +3895,14 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Service-principal create, rotate, and revoke obtain the authoritative clock only after `BEGIN IMMEDIATE` succeeds. Real two-connection SQLite regressions hold the write lock past session and principal expiry, and revoke delegated API-key authority before releasing it. All three requests fail without principal, credential, target, or audit mutation.
 - Tenant-membership JSON is decoded from bounded byte chunks with fatal UTF-8 validation. Invalid content lengths cancel immediately; a streamed body crossing 32 KiB cancels its reader and returns 413. Hostile regressions prove no membership or audit entry is created.
 - Verification passes: 37 of 37 focused API, launcher, and customer-profile tests; API and Worker typechecks; scripts typecheck; and `git diff --check`. The protected bootstrap also enforces the same maximum 90-day lifetime as the service-principal API. No push, merge, deployment, enterprise IdP drill, or production claim was performed. Fresh immutable-head independent review remains required.
+
+## 2026-08-30 Plan 10-01 protected authority refresh
+
+- [x] Reopen unfinished authority issue #437 after its live state diverged from the canonical closure matrix.
+- [x] Bind the matrix to the exact live `updated_at` value returned after the state transition.
+- [x] Run the local closure structure and digest checks.
+- [ ] Commit the metadata-only repair, obtain fresh exact-head review, and rerun all six protected checks. The protected proposal check remains fail-closed outside its GitHub authority context.
+
+### Review
+
+- Issue #437 is open again under the existing owner and title. The matrix now records the live `2026-08-30T20:07:33.000Z` authority timestamp. This repairs the observed `ISSUE_METADATA_MISMATCH` without promoting the unfinished identity requirements or changing their supported boundary.
