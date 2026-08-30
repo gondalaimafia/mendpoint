@@ -69,6 +69,39 @@ describe("envelope secret lifecycle", () => {
     );
   });
 
+  it.each([
+    [false, true],
+    [true, false],
+  ] as const)(
+    "rejects customer-managed relabeling from %s to %s",
+    async (customerManaged, relabeled) => {
+      const key = { ...key1, customerManaged };
+      const material = Buffer.alloc(32, 1);
+      const registry = new EnvelopeKeyLifecycleRegistry();
+      registry.register(lifecycle(key, 1));
+      const provider = new LocalEnvelopeKeyProvider();
+      provider.putKey("tenant-a", key, material);
+      const vault = new EnvelopeSecretVault(registry, [provider], () => undefined);
+      const envelope = await vault.encrypt("github-token", "customer-secret", key, context);
+
+      const relabeledKey = { ...key, customerManaged: relabeled };
+      const relabeledRegistry = new EnvelopeKeyLifecycleRegistry();
+      relabeledRegistry.register(lifecycle(relabeledKey, 1));
+      const relabeledProvider = new LocalEnvelopeKeyProvider();
+      relabeledProvider.putKey("tenant-a", relabeledKey, material);
+      const relabeledVault = new EnvelopeSecretVault(
+        relabeledRegistry,
+        [relabeledProvider],
+        () => undefined,
+      );
+
+      await expect(relabeledVault.decrypt({
+        ...envelope,
+        key: relabeledKey,
+      }, context)).rejects.toThrow("vault_decrypt_denied");
+    },
+  );
+
   it("rotates to a versioned key and retains old decryptability", async () => {
     const { vault, registry } = setup();
     const envelope = await vault.encrypt("github-token", "customer-secret", key1, context);
@@ -183,6 +216,51 @@ describe("durable envelope secret provider", () => {
       version: "2",
     })).rejects.toThrow("vault_secret_binding_invalid");
   });
+
+  it.each([
+    [false, true],
+    [true, false],
+  ] as const)(
+    "rejects durable metadata relabeled from customerManaged %s to %s",
+    async (customerManaged, relabeled) => {
+      const key = { ...key1, customerManaged };
+      const registry = new EnvelopeKeyLifecycleRegistry();
+      registry.register(lifecycle(key, 1));
+      const provider = new LocalEnvelopeKeyProvider();
+      provider.putKey("tenant-a", key, Buffer.alloc(32, 1));
+      const vault = new EnvelopeSecretVault(registry, [provider], () => undefined);
+      const envelope = await vault.encrypt(
+        "scm-credential-a",
+        "customer-secret",
+        key,
+        context,
+      );
+      const stored: DurableEnvelopeSecretVersion = {
+        credentialId: "scm-credential-a",
+        generation: 1,
+        state: "active",
+        key: { ...key, customerManaged: relabeled },
+        envelope,
+        issuedAt: at,
+      };
+      const durable = new DurableEnvelopeSecretProvider({
+        tenantId: "tenant-a",
+        actorId: "service:api",
+        correlationId: "request-1",
+        purpose: "materialize_read_only_repository_snapshot",
+        at: () => at,
+        keyProviders: [provider],
+        resolve: async () => stored,
+        audit: () => undefined,
+      });
+
+      await expect(durable.read({
+        provider: "durable-envelope",
+        id: "scm-credential-a",
+        version: "1",
+      })).rejects.toThrow("vault_secret_binding_invalid");
+    },
+  );
 
   it("reloads lifecycle state for every read so rotation and revocation invalidate material", async () => {
     const { vault, provider } = setup();

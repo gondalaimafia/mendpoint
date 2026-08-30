@@ -103,7 +103,7 @@ export type DurableEnvelopeSecretProviderOptions = Readonly<{
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 
 function keyIdentity(tenantId: string, key: EnvelopeKeyReference): string {
-  return `${tenantId}\0${key.provider}\0${key.keyId}\0${key.version}`;
+  return `${tenantId}\0${key.provider}\0${key.keyId}\0${key.version}\0${key.customerManaged ? "1" : "0"}`;
 }
 
 function envelopeAad(
@@ -112,7 +112,9 @@ function envelopeAad(
   generation: number,
   key: EnvelopeKeyReference,
 ): Buffer {
-  return Buffer.from(`${tenantId}\0${secretId}\0${generation}\0${key.provider}\0${key.keyId}\0${key.version}`);
+  return Buffer.from(
+    `${tenantId}\0${secretId}\0${generation}\0${key.provider}\0${key.keyId}\0${key.version}\0${key.customerManaged ? "1" : "0"}`,
+  );
 }
 
 function validContext(context: SecretAccessContext): void {
@@ -124,7 +126,12 @@ function validContext(context: SecretAccessContext): void {
 }
 
 function validKey(key: EnvelopeKeyReference): void {
-  if (!ID.test(key.provider) || !ID.test(key.keyId) || !ID.test(key.version)) {
+  if (
+    !ID.test(key.provider)
+    || !ID.test(key.keyId)
+    || !ID.test(key.version)
+    || typeof key.customerManaged !== "boolean"
+  ) {
     throw new Error("vault_key_reference_invalid");
   }
 }
