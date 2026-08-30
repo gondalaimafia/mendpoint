@@ -3663,3 +3663,21 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The focused matrix passes 30 of 30 tests. Root review added a fail-closed `critical_health_indeterminate` result so omitted health evidence cannot qualify a deployment.
 - Runtime packaging and injection of the qualification attestation and expected digests remain a separate activation increment; this slice does not enable required mode in production.
 - Exact-head review found that missing revocation state was normalized to an empty list. Required mode now distinguishes missing or malformed state from the authoritative empty array, includes that distinction in the readiness digest, and fails closed as indeterminate.
+
+## 2026-08-30 GSD Plan 09-02 signed invoice export tracer
+
+- [x] RED: specify immutable tenant-scoped invoice derivation, signing, replay, tax, credits, state transitions, tamper reconciliation, and database convergence.
+- [x] GREEN: implement append-only invoice exports, line items, and state-event chains over exact usage price versions.
+- [x] GREEN: extend authenticated billing economics routes for create, read, transition, and reconciliation without any charging transport.
+- [x] Verify focused DB and API tests, DB/API typechecks, fresh and upgrade database convergence, and diff integrity.
+- [x] Record exact review results and keep live charging and external-account claims explicitly absent.
+- [x] Mount invoice export through the existing billing runtime with a fail-closed, exact-grant protected signing binding and verify every generated signature before persistence.
+
+### Review
+
+- `invoice_exports`, immutable line items, and hash-chained state events are created by the canonical database DDL, including fresh and reopen convergence plus update/delete denial triggers.
+- Exports derive only settlement, adjustment, credit, and refund lines inside one explicit UTC period. Every source must retain its exact tenant price version, currency, entitlement contract, and usage-chain integrity. Money and tax arithmetic uses checked integers and `BigInt`, with explicit basis points, jurisdiction, policy version, and deterministic toward-zero money-micros rounding.
+- An injected signer authorizes the exact tenant, actor, currency, contract, and tax policy, then signs the canonical payload. Only its key identifier and signature are stored. State changes require the same injected finance authority and append policy-versioned events; no card, charge, processor, or external-account path exists.
+- Authenticated `/billing/invoice-exports` create, read, transition, and reconciliation routes force tenant and actor from identity. Public responses exclude canonical payload, source hashes, source sequence, actor, tenant, idempotency, and event-chain fields.
+- Verification passed: 4 focused database tests, 5 focused authenticated API tests, DB typecheck, API typecheck, fresh and reopen database convergence, and `git diff --check`. No live charging or external-account claim was added.
+- The existing billing runtime now mounts invoice routes with a versioned exact-grant signer derived only from a protected key ID, canonical base64 HMAC key, and tenant, actor, currency, contract, and tax authority document. Partial or malformed bindings leave signing unavailable and return 503; a signer that cannot verify its own result cannot persist an invoice.

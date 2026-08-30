@@ -1,12 +1,19 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
+  createInvoiceExport,
+  getInvoiceExport,
   listActualExecutionCosts,
+  reconcileInvoiceExport,
   reconcileGrossMargin,
   recordActualExecutionCost,
+  transitionInvoiceExportState,
   type ActualExecutionCostEntry,
   type ActualExecutionCostInput,
   type AppDb,
   type GrossMarginReconciliation,
+  type InvoiceExport,
+  type InvoiceExportSigner,
+  type InvoiceExportState,
 } from "@mendpoint/db";
 import { Hono, type Context, type Next } from "hono";
 import type { ApiEnv } from "./auth.js";
@@ -14,12 +21,144 @@ import type { ApiEnv } from "./auth.js";
 export type BillingEconomicsRouteDeps = Readonly<{
   db: AppDb;
   now?: () => string;
+  invoiceSigner?: InvoiceExportSigner;
 }>;
+
+type InvoiceExportAuthorityGrant = Readonly<{
+  tenantId: string;
+  actorPrincipalId: string;
+  currency: string;
+  contractReference: string;
+  taxBasisPoints: number;
+  taxJurisdiction: string;
+  taxPolicyVersion: string;
+}>;
+
+const INVOICE_EXPORT_AUTHORITY_SCHEMA = "invoice-export-authority/1" as const;
+
+function invoiceExportAuthorityGrants(value: string): readonly InvoiceExportAuthorityGrant[] | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    if (record.schemaVersion !== INVOICE_EXPORT_AUTHORITY_SCHEMA || !Array.isArray(record.grants)) return null;
+    if (Object.keys(record).sort().join(",") !== "grants,schemaVersion") return null;
+    const grants: InvoiceExportAuthorityGrant[] = [];
+    for (const valueGrant of record.grants) {
+      if (!valueGrant || typeof valueGrant !== "object" || Array.isArray(valueGrant)) return null;
+      const grant = valueGrant as Record<string, unknown>;
+      if (Object.keys(grant).sort().join(",") !==
+          "actorPrincipalId,contractReference,currency,taxBasisPoints,taxJurisdiction,taxPolicyVersion,tenantId") return null;
+      if (
+        typeof grant.tenantId !== "string" || grant.tenantId.trim() !== grant.tenantId || !grant.tenantId ||
+        typeof grant.actorPrincipalId !== "string" || grant.actorPrincipalId.trim() !== grant.actorPrincipalId || !grant.actorPrincipalId ||
+        typeof grant.currency !== "string" || !/^[A-Z]{3}$/u.test(grant.currency) ||
+        typeof grant.contractReference !== "string" || grant.contractReference.trim() !== grant.contractReference || !grant.contractReference ||
+        !Number.isSafeInteger(grant.taxBasisPoints) || (grant.taxBasisPoints as number) < 0 || (grant.taxBasisPoints as number) > 10_000 ||
+        typeof grant.taxJurisdiction !== "string" || grant.taxJurisdiction.trim() !== grant.taxJurisdiction || !grant.taxJurisdiction ||
+        typeof grant.taxPolicyVersion !== "string" || grant.taxPolicyVersion.trim() !== grant.taxPolicyVersion || !grant.taxPolicyVersion
+      ) return null;
+      grants.push(Object.freeze({
+        tenantId: grant.tenantId,
+        actorPrincipalId: grant.actorPrincipalId,
+        currency: grant.currency,
+        contractReference: grant.contractReference,
+        taxBasisPoints: grant.taxBasisPoints,
+        taxJurisdiction: grant.taxJurisdiction,
+        taxPolicyVersion: grant.taxPolicyVersion,
+      }) as InvoiceExportAuthorityGrant);
+    }
+    return grants.length > 0 ? Object.freeze(grants) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function invoiceExportSignerFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+): InvoiceExportSigner | undefined {
+  const keyId = env.MENDPOINT_INVOICE_EXPORT_SIGNING_KEY_ID?.trim();
+  const encodedKey = env.MENDPOINT_INVOICE_EXPORT_HMAC_KEY_BASE64?.trim();
+  const authorityJson = env.MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON?.trim();
+  if (!keyId || !encodedKey || !authorityJson || keyId.length > 200) return undefined;
+  const key = Buffer.from(encodedKey, "base64");
+  if (key.length < 32 || key.toString("base64") !== encodedKey) return undefined;
+  const grants = invoiceExportAuthorityGrants(authorityJson);
+  if (!grants) return undefined;
+  const signatureFor = (payload: string) => createHmac("sha256", key).update(payload, "utf8").digest();
+  return Object.freeze({
+    keyId,
+    authorize: (input) => grants.some((grant) =>
+      grant.tenantId === input.tenantId &&
+      grant.actorPrincipalId === input.actorPrincipalId &&
+      grant.currency === input.currency &&
+      grant.contractReference === input.contractReference &&
+      grant.taxBasisPoints === input.tax.basisPoints &&
+      grant.taxJurisdiction === input.tax.jurisdiction &&
+      grant.taxPolicyVersion === input.tax.policyVersion),
+    sign: (payload) => signatureFor(payload).toString("hex"),
+    verify: (payload, signature) => {
+      if (!/^[a-f0-9]{64}$/u.test(signature)) return false;
+      const supplied = Buffer.from(signature, "hex");
+      const expected = signatureFor(payload);
+      return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+    },
+  });
+}
 
 type JsonRecord = Record<string, unknown>;
 
-function errorResponse(c: Context<ApiEnv>, code: string, message: string, status: 400 | 401 | 403 | 409) {
+function errorResponse(
+  c: Context<ApiEnv>,
+  code: string,
+  message: string,
+  status: 400 | 401 | 403 | 404 | 409 | 503,
+) {
   return c.json({ error: { code, message } }, status);
+}
+
+function invoiceId(tenantId: string, idempotencyKey: string): string {
+  return `invoice-export-${createHash("sha256")
+    .update(`${tenantId}\n${idempotencyKey}`)
+    .digest("hex")
+    .slice(0, 32)}`;
+}
+
+function publicInvoice(invoice: InvoiceExport) {
+  return {
+    id: invoice.id,
+    periodStart: invoice.periodStart,
+    periodEnd: invoice.periodEnd,
+    currency: invoice.currency,
+    contractReference: invoice.contractReference,
+    tax: invoice.tax,
+    subtotalMoneyMicros: invoice.subtotalMoneyMicros,
+    taxMoneyMicros: invoice.taxMoneyMicros,
+    totalMoneyMicros: invoice.totalMoneyMicros,
+    payloadDigest: invoice.payloadDigest,
+    signingKeyId: invoice.signingKeyId,
+    signature: invoice.signature,
+    state: invoice.state,
+    issuedAt: invoice.issuedAt,
+    lines: invoice.lines.map((line) => ({
+      kind: line.kind,
+      taskId: line.taskId,
+      campaignId: line.campaignId,
+      priceVersionId: line.priceVersionId,
+      formulaVersion: line.formulaVersion,
+      contractReference: line.contractReference,
+      currency: line.currency,
+      mcuMicros: line.mcuMicros,
+      moneyMicros: line.moneyMicros,
+      reason: line.reason,
+    })),
+    stateHistory: invoice.stateHistory.map((event) => ({
+      state: event.state,
+      policyVersion: event.policyVersion,
+      reason: event.reason,
+      occurredAt: event.occurredAt,
+    })),
+  };
 }
 
 function authenticatedPrincipal(c: Context<ApiEnv>) {
@@ -162,9 +301,33 @@ function handleRecordError(c: Context<ApiEnv>, error: unknown) {
   return errorResponse(c, code, "The execution cost request is invalid", 400);
 }
 
+function handleInvoiceError(c: Context<ApiEnv>, error: unknown) {
+  const code = error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
+    ? error.message
+    : "invoice_export_request_invalid";
+  if (code === "invoice_export_not_found") {
+    return errorResponse(c, code, "The invoice export was not found", 404);
+  }
+  if (code === "invoice_export_signer_required" ||
+      code === "invoice_export_state_authority_required") {
+    return errorResponse(c, code, "Invoice signing authority is unavailable", 503);
+  }
+  if (code === "invoice_export_actor_tenant_mismatch" ||
+      code === "invoice_export_signing_not_authorized" ||
+      code === "invoice_export_state_not_authorized") {
+    return errorResponse(c, code, "The authenticated principal is not authorized", 403);
+  }
+  if (code.includes("conflict") || code === "invoice_export_id_tenant_mismatch" ||
+      code === "invoice_export_state_transition_invalid") {
+    return errorResponse(c, code, "The request conflicts with the invoice export", 409);
+  }
+  return errorResponse(c, code, "The invoice export request is invalid", 400);
+}
+
 export function createBillingEconomicsRoutes({
   db,
   now = () => new Date().toISOString(),
+  invoiceSigner,
 }: BillingEconomicsRouteDeps) {
   const routes = new Hono<ApiEnv>({ strict: false });
   routes.use("*", requireAuthenticatedPrincipal);
@@ -209,6 +372,100 @@ export function createBillingEconomicsRoutes({
   routes.get("/gross-margin", (c) => {
     const identity = authenticatedPrincipal(c)!;
     return c.json({ data: publicGrossMargin(reconcileGrossMargin(db, identity.tenantId)) });
+  });
+
+  routes.post("/invoice-exports", async (c) => {
+    const identity = authenticatedPrincipal(c)!;
+    const idempotencyKey = requestId(c);
+    if (!idempotencyKey) {
+      return errorResponse(c, "request_id_invalid", "A valid request ID is required", 400);
+    }
+    try {
+      const body = await c.req.json<unknown>();
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return errorResponse(c, "invoice_export_request_invalid", "The invoice export request is invalid", 400);
+      }
+      const request = body as JsonRecord;
+      const tax = request.tax;
+      if (!tax || typeof tax !== "object" || Array.isArray(tax)) {
+        return errorResponse(c, "invoice_export_tax_required", "Explicit tax policy is required", 400);
+      }
+      const taxRecord = tax as JsonRecord;
+      const invoice = createInvoiceExport(db, {
+        id: invoiceId(identity.tenantId, idempotencyKey),
+        tenantId: identity.tenantId,
+        idempotencyKey,
+        periodStart: request.periodStart as string,
+        periodEnd: request.periodEnd as string,
+        currency: request.currency as string,
+        contractReference: request.contractReference as string,
+        tax: {
+          basisPoints: taxRecord.basisPoints as number,
+          jurisdiction: taxRecord.jurisdiction as string,
+          policyVersion: taxRecord.policyVersion as string,
+        },
+        actorPrincipalId: identity.actorPrincipalId,
+        issuedAt: now(),
+        signer: invoiceSigner,
+      });
+      return c.json({ data: publicInvoice(invoice) }, 201);
+    } catch (error) {
+      return handleInvoiceError(c, error);
+    }
+  });
+
+  routes.get("/invoice-exports/:id", (c) => {
+    const identity = authenticatedPrincipal(c)!;
+    try {
+      const invoice = getInvoiceExport(db, identity.tenantId, c.req.param("id"));
+      if (!invoice) return errorResponse(c, "invoice_export_not_found", "The invoice export was not found", 404);
+      return c.json({ data: publicInvoice(invoice) });
+    } catch (error) {
+      return handleInvoiceError(c, error);
+    }
+  });
+
+  routes.post("/invoice-exports/:id/transitions", async (c) => {
+    const identity = authenticatedPrincipal(c)!;
+    const idempotencyKey = requestId(c);
+    if (!idempotencyKey) {
+      return errorResponse(c, "request_id_invalid", "A valid request ID is required", 400);
+    }
+    try {
+      const body = await c.req.json<unknown>();
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return errorResponse(c, "invoice_export_request_invalid", "The invoice export request is invalid", 400);
+      }
+      const invoice = transitionInvoiceExportState(db, {
+        tenantId: identity.tenantId,
+        invoiceId: c.req.param("id"),
+        idempotencyKey,
+        state: (body as JsonRecord).state as InvoiceExportState,
+        policyVersion: (body as JsonRecord).policyVersion as string,
+        reason: (body as JsonRecord).reason as string,
+        actorPrincipalId: identity.actorPrincipalId,
+        occurredAt: now(),
+        authority: invoiceSigner,
+      });
+      return c.json({ data: publicInvoice(invoice) });
+    } catch (error) {
+      return handleInvoiceError(c, error);
+    }
+  });
+
+  routes.get("/invoice-exports/:id/reconciliation", (c) => {
+    const identity = authenticatedPrincipal(c)!;
+    try {
+      const reconciliation = reconcileInvoiceExport(
+        db,
+        identity.tenantId,
+        c.req.param("id"),
+        invoiceSigner,
+      );
+      return c.json({ data: reconciliation });
+    } catch (error) {
+      return handleInvoiceError(c, error);
+    }
   });
 
   return routes;

@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,11 +13,15 @@ import {
   reserveUsage,
   settleUsageReservation,
   type AppDb,
+  type InvoiceExportSigner,
 } from "@mendpoint/db";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAuthMiddleware, type ApiEnv } from "./auth.js";
-import { createBillingEconomicsRoutes } from "./billing-economics.js";
+import {
+  createBillingEconomicsRoutes,
+  invoiceExportSignerFromEnv,
+} from "./billing-economics.js";
 import { requestIdMiddleware } from "./production.js";
 
 const NOW = "2026-08-01T15:00:00.000Z";
@@ -69,12 +74,89 @@ function fixture() {
   return { db, tenantA: tenantA.token, tenantB: tenantB.token };
 }
 
-function appFor(db: AppDb, now: () => string = () => NOW) {
+function appFor(
+  db: AppDb,
+  now: () => string = () => NOW,
+  invoiceSigner?: InvoiceExportSigner,
+) {
   const app = new Hono<ApiEnv>();
   app.use("*", requestIdMiddleware());
   app.use("*", createAuthMiddleware(db));
-  app.route("/billing", createBillingEconomicsRoutes({ db, now }));
+  app.route("/billing", createBillingEconomicsRoutes({ db, now, invoiceSigner }));
   return app;
+}
+
+function invoiceSigner(): InvoiceExportSigner {
+  const secret = "test-only-api-invoice-signing-secret";
+  return {
+    keyId: "invoice-api-key-1",
+    authorize: ({ tenantId }) => tenantId === "billing-tenant-a",
+    sign: (payload) => createHmac("sha256", secret).update(payload).digest("hex"),
+    verify: (payload, signature) =>
+      createHmac("sha256", secret).update(payload).digest("hex") === signature,
+  };
+}
+
+function seedInvoiceUsage(db: AppDb) {
+  createUsagePriceVersion(db, {
+    id: "invoice-price-a",
+    tenantId: "billing-tenant-a",
+    formulaVersion: "mcu-v1",
+    currency: "USD",
+    pricePerMcuMoneyMicros: 20_000,
+    effectiveAt: "2026-08-01T00:00:00.000Z",
+    expiresAt: "2026-09-01T00:00:00.000Z",
+    contractReference: "invoice-contract-a",
+    createdAt: NOW,
+  });
+  createUsageEntitlement(db, {
+    id: "invoice-entitlement-a",
+    tenantId: "billing-tenant-a",
+    priceVersionId: "invoice-price-a",
+    quotaMcuMicros: 20_000_000,
+    features: ["fettler", "regauge"],
+    contractReference: "invoice-contract-a",
+    periodStart: "2026-08-01T00:00:00.000Z",
+    periodEnd: "2026-09-01T00:00:00.000Z",
+    createdAt: NOW,
+  });
+  const reservation = reserveUsage(db, {
+    id: "invoice-reservation-a",
+    tenantId: "billing-tenant-a",
+    idempotencyKey: "invoice-reserve-a",
+    taskId: "invoice-task-a",
+    campaignId: "invoice-campaign-a",
+    mcuMicros: 5_000_000,
+    reason: "bounded invoice work",
+    createdAt: "2026-08-10T00:00:00.000Z",
+  });
+  settleUsageReservation(db, {
+    id: "invoice-settlement-a",
+    tenantId: "billing-tenant-a",
+    idempotencyKey: "invoice-settle-a",
+    reservationId: reservation.id,
+    actualMcuMicros: 4_000_000,
+    reason: "accepted invoice work",
+    createdAt: "2026-08-10T00:01:00.000Z",
+  });
+}
+
+function invoiceBody(overrides: Record<string, unknown> = {}) {
+  return {
+    periodStart: "2026-08-01T00:00:00.000Z",
+    periodEnd: "2026-09-01T00:00:00.000Z",
+    currency: "USD",
+    contractReference: "invoice-contract-a",
+    tax: {
+      basisPoints: 0,
+      jurisdiction: "US-IL",
+      policyVersion: "tax-policy-zero-v1",
+    },
+    tenantId: "billing-tenant-b",
+    actorPrincipalId: "attacker",
+    chargeCustomer: true,
+    ...overrides,
+  };
 }
 
 function headers(token: string, requestId: string) {
@@ -125,6 +207,50 @@ async function postCost(app: Hono<ApiEnv>, token: string, requestId: string, bod
 }
 
 describe("billing economics API routes", () => {
+  it("constructs a signer only from a complete exact protected authority binding", () => {
+    const authority = JSON.stringify({
+      schemaVersion: "invoice-export-authority/1",
+      grants: [{
+        tenantId: "tenant-a",
+        actorPrincipalId: "user-a",
+        currency: "USD",
+        contractReference: "contract-a",
+        taxBasisPoints: 625,
+        taxJurisdiction: "US-IL",
+        taxPolicyVersion: "tax-2026-08",
+      }],
+    });
+    const env = {
+      MENDPOINT_INVOICE_EXPORT_SIGNING_KEY_ID: "invoice-key-1",
+      MENDPOINT_INVOICE_EXPORT_HMAC_KEY_BASE64: Buffer.alloc(32, 7).toString("base64"),
+      MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON: authority,
+    };
+    const signer = invoiceExportSignerFromEnv(env);
+    expect(signer?.authorize({
+      tenantId: "tenant-a",
+      actorPrincipalId: "user-a",
+      currency: "USD",
+      contractReference: "contract-a",
+      tax: { basisPoints: 625, jurisdiction: "US-IL", policyVersion: "tax-2026-08" },
+    })).toBe(true);
+    expect(signer?.authorize({
+      tenantId: "tenant-b",
+      actorPrincipalId: "user-a",
+      currency: "USD",
+      contractReference: "contract-a",
+      tax: { basisPoints: 625, jurisdiction: "US-IL", policyVersion: "tax-2026-08" },
+    })).toBe(false);
+    const payload = "signed invoice payload";
+    const signature = signer!.sign(payload);
+    expect(signer?.verify(payload, signature)).toBe(true);
+    expect(signer?.verify(`${payload}.`, signature)).toBe(false);
+    expect(invoiceExportSignerFromEnv({ ...env, MENDPOINT_INVOICE_EXPORT_HMAC_KEY_BASE64: "short" })).toBeUndefined();
+    expect(invoiceExportSignerFromEnv({ ...env, MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON: "{}" })).toBeUndefined();
+    expect(invoiceExportSignerFromEnv({
+      ...env,
+      MENDPOINT_INVOICE_EXPORT_AUTHORITY_JSON: authority.replace("tenant-a", " tenant-a"),
+    })).toBeUndefined();
+  });
   it("requires authentication and forces tenant and actor from the authenticated principal", async () => {
     const { db, tenantA, tenantB } = fixture();
     const app = appFor(db);
@@ -283,6 +409,111 @@ describe("billing economics API routes", () => {
     expect(tenantBMargin.status).toBe(200);
     await expect(tenantBMargin.json()).resolves.toMatchObject({
       data: { netRevenueMoneyMicros: 0, actualCostMoneyMicros: 0 },
+    });
+  });
+
+  it("creates, reads, transitions, and reconciles a public signed export without charging", async () => {
+    const { db, tenantA, tenantB } = fixture();
+    seedInvoiceUsage(db);
+    const app = appFor(db, () => "2026-09-02T12:00:00.000Z", invoiceSigner());
+    const created = await app.request("/billing/invoice-exports", {
+      method: "POST",
+      headers: headers(tenantA, "invoice-create-a"),
+      body: JSON.stringify(invoiceBody()),
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await created.json() as { data: Record<string, unknown> };
+    expect(createdBody.data).toMatchObject({
+      currency: "USD",
+      contractReference: "invoice-contract-a",
+      subtotalMoneyMicros: 80_000,
+      taxMoneyMicros: 0,
+      totalMoneyMicros: 80_000,
+      signingKeyId: "invoice-api-key-1",
+      state: "issued",
+    });
+    for (const privateField of [
+      "tenantId",
+      "actorPrincipalId",
+      "idempotencyKey",
+      "canonicalPayload",
+      "previousHash",
+      "eventHash",
+    ]) {
+      expect(createdBody.data).not.toHaveProperty(privateField);
+    }
+    expect(createdBody.data).not.toHaveProperty("chargeCustomer");
+    const lines = createdBody.data.lines as Array<Record<string, unknown>>;
+    expect(lines[0]).not.toHaveProperty("usageEntryId");
+    expect(lines[0]).not.toHaveProperty("usageEntryHash");
+
+    const id = createdBody.data.id as string;
+    const tenantBRead = await app.request(`/billing/invoice-exports/${id}`, {
+      headers: headers(tenantB, "invoice-read-b"),
+    });
+    expect(tenantBRead.status).toBe(404);
+    const exported = await app.request(`/billing/invoice-exports/${id}/transitions`, {
+      method: "POST",
+      headers: headers(tenantA, "invoice-export-a"),
+      body: JSON.stringify({
+        state: "exported",
+        policyVersion: "dunning-policy-v1",
+        reason: "exported to approved finance channel",
+        tenantId: "billing-tenant-b",
+      }),
+    });
+    expect(exported.status).toBe(200);
+    await expect(exported.json()).resolves.toMatchObject({ data: { state: "exported" } });
+    const reconciliation = await app.request(`/billing/invoice-exports/${id}/reconciliation`, {
+      headers: headers(tenantA, "invoice-reconcile-a"),
+    });
+    expect(reconciliation.status).toBe(200);
+    await expect(reconciliation.json()).resolves.toMatchObject({
+      data: { complete: true, issues: [] },
+    });
+    expect((await app.request("/billing/charges", {
+      method: "POST",
+      headers: headers(tenantA, "no-charge-path"),
+    })).status).toBe(404);
+  });
+
+  it("replays identical invoice requests, rejects changed replay, and fails closed without signer", async () => {
+    const { db, tenantA } = fixture();
+    seedInvoiceUsage(db);
+    let current = "2026-09-02T12:00:00.000Z";
+    const app = appFor(db, () => current, invoiceSigner());
+    const request = {
+      method: "POST",
+      headers: headers(tenantA, "invoice-replay-a"),
+      body: JSON.stringify(invoiceBody()),
+    };
+    const first = await app.request("/billing/invoice-exports", request);
+    expect(first.status).toBe(201);
+    const firstBody = await first.json();
+    current = "2026-09-03T00:00:00.000Z";
+    const replay = await app.request("/billing/invoice-exports", request);
+    expect(replay.status).toBe(201);
+    expect(await replay.json()).toEqual(firstBody);
+    const changed = await app.request("/billing/invoice-exports", {
+      ...request,
+      body: JSON.stringify(invoiceBody({
+        tax: { basisPoints: 100, jurisdiction: "US-IL", policyVersion: "tax-policy-v2" },
+      })),
+    });
+    expect(changed.status).toBe(409);
+    await expect(changed.json()).resolves.toMatchObject({
+      error: { code: "invoice_export_idempotency_conflict" },
+    });
+
+    const missingSignerApp = appFor(db);
+    const missingSigner = await missingSignerApp.request("/billing/invoice-exports", {
+      method: "POST",
+      headers: headers(tenantA, "invoice-no-signer"),
+      body: JSON.stringify(invoiceBody()),
+    });
+    expect(missingSigner.status).toBe(503);
+    await expect(missingSigner.json()).resolves.toMatchObject({
+      error: { code: "invoice_export_signer_required" },
     });
   });
 });

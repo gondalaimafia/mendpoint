@@ -708,6 +708,100 @@ BEFORE DELETE ON usage_ledger_entries BEGIN
   SELECT RAISE(ABORT, 'usage_ledger_entries_append_only');
 END;
 
+CREATE TABLE IF NOT EXISTS invoice_exports (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  idempotency_key TEXT NOT NULL,
+  period_start TEXT NOT NULL,
+  period_end TEXT NOT NULL,
+  currency TEXT NOT NULL,
+  contract_reference TEXT NOT NULL,
+  tax_basis_points INTEGER NOT NULL CHECK (tax_basis_points >= 0 AND tax_basis_points <= 10000),
+  tax_jurisdiction TEXT NOT NULL,
+  tax_policy_version TEXT NOT NULL,
+  subtotal_money_micros INTEGER NOT NULL,
+  tax_money_micros INTEGER NOT NULL,
+  total_money_micros INTEGER NOT NULL,
+  canonical_payload TEXT NOT NULL,
+  payload_digest TEXT NOT NULL,
+  signing_key_id TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  initial_state TEXT NOT NULL CHECK (initial_state = 'issued'),
+  actor_principal_id TEXT NOT NULL REFERENCES principals(id),
+  issued_at TEXT NOT NULL,
+  UNIQUE (tenant_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS invoice_exports_tenant_period_idx
+  ON invoice_exports(tenant_id, period_start, period_end, issued_at, id);
+
+CREATE TABLE IF NOT EXISTS invoice_export_lines (
+  id TEXT PRIMARY KEY,
+  invoice_id TEXT NOT NULL REFERENCES invoice_exports(id),
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  ordinal INTEGER NOT NULL CHECK (ordinal > 0),
+  usage_entry_id TEXT NOT NULL REFERENCES usage_ledger_entries(id),
+  usage_entry_sequence INTEGER NOT NULL CHECK (usage_entry_sequence > 0),
+  usage_entry_hash TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('usage', 'adjustment', 'credit', 'refund')),
+  task_id TEXT NOT NULL,
+  campaign_id TEXT,
+  price_version_id TEXT NOT NULL REFERENCES usage_price_versions(id),
+  formula_version TEXT NOT NULL,
+  contract_reference TEXT NOT NULL,
+  currency TEXT NOT NULL,
+  mcu_micros INTEGER NOT NULL,
+  money_micros INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  UNIQUE (tenant_id, invoice_id, ordinal),
+  UNIQUE (tenant_id, invoice_id, usage_entry_id)
+);
+CREATE INDEX IF NOT EXISTS invoice_export_lines_source_idx
+  ON invoice_export_lines(tenant_id, usage_entry_id, invoice_id);
+
+CREATE TABLE IF NOT EXISTS invoice_export_state_events (
+  id TEXT PRIMARY KEY,
+  invoice_id TEXT NOT NULL REFERENCES invoice_exports(id),
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  idempotency_key TEXT NOT NULL,
+  sequence INTEGER NOT NULL CHECK (sequence > 0),
+  state TEXT NOT NULL CHECK (state IN ('issued', 'exported', 'acknowledged', 'overdue', 'resolved', 'void')),
+  policy_version TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  actor_principal_id TEXT NOT NULL REFERENCES principals(id),
+  prev_hash TEXT,
+  event_hash TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  UNIQUE (tenant_id, invoice_id, idempotency_key),
+  UNIQUE (tenant_id, invoice_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS invoice_export_state_events_tenant_idx
+  ON invoice_export_state_events(tenant_id, invoice_id, sequence);
+
+CREATE TRIGGER IF NOT EXISTS invoice_exports_append_only_update
+BEFORE UPDATE ON invoice_exports BEGIN
+  SELECT RAISE(ABORT, 'invoice_exports_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS invoice_exports_append_only_delete
+BEFORE DELETE ON invoice_exports BEGIN
+  SELECT RAISE(ABORT, 'invoice_exports_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS invoice_export_lines_append_only_update
+BEFORE UPDATE ON invoice_export_lines BEGIN
+  SELECT RAISE(ABORT, 'invoice_export_lines_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS invoice_export_lines_append_only_delete
+BEFORE DELETE ON invoice_export_lines BEGIN
+  SELECT RAISE(ABORT, 'invoice_export_lines_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS invoice_export_state_events_append_only_update
+BEFORE UPDATE ON invoice_export_state_events BEGIN
+  SELECT RAISE(ABORT, 'invoice_export_state_events_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS invoice_export_state_events_append_only_delete
+BEFORE DELETE ON invoice_export_state_events BEGIN
+  SELECT RAISE(ABORT, 'invoice_export_state_events_append_only');
+END;
+
 CREATE TABLE IF NOT EXISTS actual_execution_cost_entries (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id),
@@ -4056,6 +4150,7 @@ export type {
   UsageLedgerEntry,
   UsageSummary,
 } from "./usage.js";
+export * from "./invoice-export.js";
 
 export type {
   ActualExecutionCostInput,
