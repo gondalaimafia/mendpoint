@@ -664,6 +664,7 @@ export function createAuthMiddleware(
             apiKeyId: key.id,
             tenantId: key.tenant_id,
             authorityPrincipalId: authorityPrincipal.id,
+            observedAt: observedAt.toISOString(),
           });
         } catch {
           return c.json({ error: "unauthorized", message: "api_key_authority_invalid" }, 401);
@@ -676,7 +677,7 @@ export function createAuthMiddleware(
     if (
       !authorityPrincipal ||
       (authorityPrincipal.kind !== "human" && authorityPrincipal.kind !== "service") ||
-      !activeTrustPrincipal(authorityPrincipal)
+      !activeTrustPrincipal(authorityPrincipal, observedAtMs)
     ) {
       return c.json({ error: "unauthorized", message: "api_key_authority_invalid" }, 401);
     }

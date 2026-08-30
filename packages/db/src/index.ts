@@ -5069,6 +5069,7 @@ function validatedApiKeyAuthorityPrincipal(
   db: AppDb,
   tenantId: string,
   authorityPrincipalId: string | undefined,
+  observedAtMs = Date.now(),
 ): string | null {
   if (authorityPrincipalId === undefined) return null;
   const principal = get<PrincipalRow>(
@@ -5076,16 +5077,16 @@ function validatedApiKeyAuthorityPrincipal(
     `SELECT * FROM principals WHERE tenant_id = ? AND id = ?`,
     [tenantId, authorityPrincipalId],
   );
-  const now = Date.now();
   const createdAt = principal ? Date.parse(principal.created_at) : Number.NaN;
   const expiresAt = principal?.expires_at === null ? null : Date.parse(principal?.expires_at ?? "");
   if (
     !principal ||
+    !Number.isFinite(observedAtMs) ||
     (principal.kind !== "human" && principal.kind !== "service") ||
     principal.revoked_at !== null ||
     !Number.isFinite(createdAt) ||
-    createdAt > now ||
-    (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= now))
+    createdAt > observedAtMs ||
+    (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= observedAtMs))
   ) {
     throw new Error("api_key_authority_principal_invalid");
   }
@@ -5099,12 +5100,14 @@ export function bindApiKeyAuthorityPrincipal(
     tenantId: string;
     authorityPrincipalId: string;
     authorityRole?: Exclude<ApiKeyRow["authority_role"], null>;
+    observedAt?: string;
   }>,
 ): void {
   const authorityPrincipalId = validatedApiKeyAuthorityPrincipal(
     db,
     input.tenantId,
     input.authorityPrincipalId,
+    input.observedAt === undefined ? undefined : Date.parse(input.observedAt),
   );
   const authorityRole = validatedApiKeyAuthorityRole(input.authorityRole);
   const key = get<Pick<ApiKeyRow, "tenant_id" | "authority_principal_id" | "authority_role">>(
@@ -5410,7 +5413,8 @@ export function listApiKeys(
   assertTenantScope(tenantId);
   return all<ApiKeyRow>(
     db,
-    `SELECT id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json, created_at, last_used_at, revoked_at
+    `SELECT id, name, key_hash, key_prefix, tenant_id, principal_id, scopes_json,
+            authority_principal_id, authority_role, created_at, last_used_at, revoked_at
      FROM api_keys
      ${tenantId ? "WHERE tenant_id = ?" : ""}
      ORDER BY created_at DESC`,

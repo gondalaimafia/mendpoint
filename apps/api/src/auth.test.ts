@@ -170,6 +170,31 @@ describe("API authentication identity", () => {
     });
   });
 
+  it("validates a backfilled bare-key authority at the request observation time", async () => {
+    process.env.API_AUTH = "required";
+    const db = testDb();
+    const created = createApiKey(db, {
+      id: "key-future-observation",
+      name: "future observation",
+      tenantId: "tenant-a",
+      scopes: ["*"],
+      createdAt: new Date().toISOString(),
+    });
+    const observedAt = new Date(Date.now() + 60 * 60 * 1_000);
+    const app = new Hono<ApiEnv>();
+    app.use("*", createAuthMiddleware(db, { now: () => observedAt }));
+    app.get("/private", (c) => c.json({ authorityPrincipalId: c.get("authorityPrincipalId") }));
+
+    const response = await app.request("/private", {
+      headers: { Authorization: `Bearer ${created.token}` },
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      authorityPrincipalId: expect.stringMatching(/^principal-service-/),
+    });
+  });
+
   it("rejects a wildcard API key whose scopes exceed its stable admin authority", async () => {
     process.env.API_AUTH = "required";
     const db = testDb();
