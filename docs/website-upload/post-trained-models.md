@@ -5,6 +5,9 @@ Govern external adapter training, evaluation, consent, canary admission, routing
 Status: Configured integration preview
 Availability: Implemented control plane; no first-party trainer or shipped Mendpoint-trained model
 Last verified: 2026-08-14
+Publication evidence: not live; no deployed revision or live evidence digest recorded
+Requirements: ME-FND-004, ME-RTR-007, ME-RTR-008, ME-RTR-009
+Public claims: None
 
 ## Start here
 
@@ -55,6 +58,11 @@ Enable the advanced AI application surface only after an approved external train
 - Training execution: `packages/pipeline/src/post-trained-training.test.ts`
 - Lifecycle registration: `packages/pipeline/src/post-trained-application.test.ts`
 - Router admission: `packages/platform/src/post-trained-runtime.test.ts`
+
+## Contract sources
+
+- `packages/platform/src/adapter-lifecycle.ts`
+- `apps/api/src/advanced-ai-applications.ts`
 
 ## Safety model
 

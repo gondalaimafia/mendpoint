@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { PUBLIC_DOCS_API_ROUTES } from "@mendpoint/contract";
 import {
   DOC_CATEGORIES,
   PRODUCT_DOCS,
@@ -14,10 +15,20 @@ const claimRegistry = JSON.parse(
 ) as {
   claims: Array<{
     id: string;
+    requirementIds: string[];
     state: string;
     wording: string;
     scope: string;
     limitations: string[];
+  }>;
+};
+const requirementRegistry = JSON.parse(
+  readFileSync(resolve(repoRoot, "docs/PRODUCT_REQUIREMENTS.json"), "utf8"),
+) as {
+  requirements: Array<{
+    id: string;
+    implementationStatus: string;
+    availability: string;
   }>;
 };
 
@@ -41,6 +52,13 @@ const requiredSlugs = [
   "billing-usage",
   "security-governance",
   "deployment-operations",
+  "authentication-tenancy",
+  "mission-policy",
+  "api-conventions",
+  "webhooks-events",
+  "audit-compliance",
+  "recovery-reliability",
+  "limits-errors",
 ] as const;
 
 describe("public product documentation catalog", () => {
@@ -51,7 +69,8 @@ describe("public product documentation catalog", () => {
     expect(PRODUCT_DOCS.find((page) => page.slug === "fettler")?.title)
       .toBe("Fettler — the first AI API Engineer");
     expect(PRODUCT_DOCS.find((page) => page.slug === "regauge")?.title)
-      .toBe("Regauge — the first AI Legacy Engineer");
+      .toBe("ReGauge — the first AI Legacy Engineer");
+    expect(JSON.stringify(PRODUCT_DOCS)).not.toMatch(/\bRegauge\b/);
     expect(PRODUCT_DOCS.map((page) => page.slug)).not.toEqual(
       expect.arrayContaining(["warden", "transformer"]),
     );
@@ -63,6 +82,16 @@ describe("public product documentation catalog", () => {
       expect(["production", "limited_availability", "preview", "internal"]).toContain(page.status);
       expect(page.availability.length).toBeGreaterThan(0);
       expect(page.lastVerified).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      if (page.publicationEvidence.state === "live") {
+        expect(page.publicationEvidence.deployedRevision).toMatch(/^[0-9a-f]{40}$/);
+        expect(page.publicationEvidence.evidenceDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+      } else {
+        expect(page.publicationEvidence).toEqual({
+          state: "not_live",
+          deployedRevision: null,
+          evidenceDigest: null,
+        });
+      }
       expect(page.startHere.steps.length).toBeGreaterThan(0);
       expect(page.howItWorks.length).toBeGreaterThan(1);
       expect(page.interfaces.length).toBeGreaterThan(0);
@@ -71,6 +100,13 @@ describe("public product documentation catalog", () => {
       expect(page.limitations.length).toBeGreaterThan(0);
       expect(page.related.length).toBeGreaterThan(0);
     }
+  });
+
+  it("uses the complete versioned runtime route contract for every documented API interface", () => {
+    const documented = PRODUCT_DOCS.flatMap((page) => page.interfaces)
+      .filter((item) => item.kind === "API")
+      .map((item) => item.name);
+    expect([...new Set(documented)].sort()).toEqual([...PUBLIC_DOCS_API_ROUTES].sort());
   });
 
   it("does not exceed the registered public availability posture", () => {
@@ -90,10 +126,8 @@ describe("public product documentation catalog", () => {
       summary: fettlerClaim.wording,
     });
     expect(fettler?.availability).toContain(fettlerClaim.scope);
-    expect(regauge).toMatchObject({
-      status: regaugeClaim.state,
-      summary: regaugeClaim.wording,
-    });
+    expect(regauge).toMatchObject({ status: regaugeClaim.state });
+    expect(regauge?.summary).toBe(regaugeClaim.wording.replace(/^Regauge\b/, "ReGauge"));
     expect(regauge?.availability).toContain(regaugeClaim.scope);
     expect(regauge?.limitations).toEqual(expect.arrayContaining(regaugeClaim.limitations));
     expect(repositoryConnections?.availability).toContain(gitLabClaim.wording);
@@ -129,6 +163,54 @@ describe("public product documentation catalog", () => {
     }
   });
 
+  it("binds every page to registered requirements, claims, and existing contract sources", () => {
+    const requirements = new Map(requirementRegistry.requirements.map((entry) => [entry.id, entry]));
+    const claims = new Map(claimRegistry.claims.map((entry) => [entry.id, entry]));
+    for (const page of PRODUCT_DOCS) {
+      expect(page.requirementIds.length, `${page.slug}: requirements`).toBeGreaterThan(0);
+      expect(new Set(page.requirementIds).size, `${page.slug}: duplicate requirements`).toBe(page.requirementIds.length);
+      expect(new Set(page.claimIds).size, `${page.slug}: duplicate claims`).toBe(page.claimIds.length);
+      expect(page.sourceContracts.length, `${page.slug}: sources`).toBeGreaterThan(0);
+      for (const id of page.requirementIds) expect(requirements.has(id), `${page.slug}: ${id}`).toBe(true);
+      for (const id of page.claimIds) {
+        const publicClaim = claims.get(id);
+        expect(publicClaim, `${page.slug}: ${id}`).toBeDefined();
+        for (const requirementId of publicClaim?.requirementIds ?? []) {
+          expect(page.requirementIds, `${page.slug}: ${id} requires ${requirementId}`).toContain(requirementId);
+        }
+      }
+      for (const locator of page.sourceContracts) {
+        expect(existsSync(resolve(repoRoot, locator)), `${page.slug}: ${locator}`).toBe(true);
+      }
+      if (page.status === "production") {
+        for (const id of page.requirementIds) {
+          expect(requirements.get(id), `${page.slug}: ${id}`).toMatchObject({
+            implementationStatus: "verified",
+            availability: "ga",
+          });
+        }
+      }
+    }
+  });
+
+  it("binds the documented ReGauge campaign read route to the implemented control plane route", () => {
+    const regauge = PRODUCT_DOCS.find((page) => page.slug === "regauge");
+    expect(regauge?.interfaces).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "GET /transformer/control-plane/campaigns/:campaignId", kind: "API" }),
+    ]));
+    expect(
+      readFileSync(resolve(repoRoot, "apps/api/src/transformer-control-plane.ts"), "utf8"),
+    ).toContain('app.get(`${base}/control-plane/campaigns/:campaignId`');
+  });
+
+  it("keeps related links closed over the catalog and examples free of credential values", () => {
+    const slugs = new Set(PRODUCT_DOCS.map((page) => page.slug));
+    for (const page of PRODUCT_DOCS) {
+      for (const related of page.related) expect(slugs.has(related), `${page.slug}: ${related}`).toBe(true);
+      expect(page.startHere.command ?? "").not.toMatch(/Bearer\s+(?!\$|<)[A-Za-z0-9._~-]{16,}|me_[A-Za-z0-9_-]{16,}|BEGIN (?:RSA |EC )?PRIVATE KEY/);
+    }
+  });
+
   it("renders the complete machine-readable contract as Markdown", () => {
     for (const page of PRODUCT_DOCS) {
       const markdown = renderProductDocMarkdown(page);
@@ -136,10 +218,13 @@ describe("public product documentation catalog", () => {
       expect(markdown).toContain(`Status: ${page.statusLabel}`);
       expect(markdown).toContain(`Availability: ${page.availability}`);
       expect(markdown).toContain(`Last verified: ${page.lastVerified}`);
+      expect(markdown).toContain("Publication evidence: ");
+      expect(markdown).toContain(`Requirements: ${page.requirementIds.join(", ")}`);
       expect(markdown).toContain("## Start here");
       expect(markdown).toContain("## How it works");
       expect(markdown).toContain("## Interfaces");
       expect(markdown).toContain("## Evidence and verification");
+      expect(markdown).toContain("## Contract sources");
       expect(markdown).toContain("## Safety model");
       expect(markdown).toContain("## Limitations");
       expect(markdown).toContain("## See also");
@@ -149,7 +234,8 @@ describe("public product documentation catalog", () => {
   it("builds a deterministic manifest without legacy docs slugs or secret material", () => {
     const first = buildDocsManifest();
     expect(first).toEqual(buildDocsManifest());
-    expect(first.schemaVersion).toBe("2026-08-14.v1");
+    expect(first.schemaVersion).toBe("2026-08-30.v3");
+    expect(first.pages.every((page) => page.publicationEvidence.state === "not_live")).toBe(true);
     expect(first.pages).toHaveLength(requiredSlugs.length);
     expect(first.pages.map((page) => page.webPath)).not.toEqual(
       expect.arrayContaining(["/docs/warden", "/docs/transformer"]),

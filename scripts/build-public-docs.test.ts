@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -21,7 +21,7 @@ describe("website upload documentation bundle", () => {
       "<h1>Fettler — the first AI API Engineer</h1>",
     );
     expect(bundle.get("regauge.md")).toContain(
-      "# Regauge — the first AI Legacy Engineer",
+      "# ReGauge — the first AI Legacy Engineer",
     );
     expect([...bundle.keys()]).not.toEqual(
       expect.arrayContaining(["warden.html", "warden.md", "transformer.html", "transformer.md"]),
@@ -36,6 +36,60 @@ describe("website upload documentation bundle", () => {
     expect(index).not.toContain('href="transformer.html"');
     expect(index).not.toContain("https://www.mendpoint.ai/docs/");
     expect(index).not.toMatch(/<script|javascript:/i);
+  });
+
+  it("keeps generated scrollable quickstarts keyboard focusable and named", () => {
+    const bundle = buildPublicDocsBundle();
+    const index = bundle.get("index.html") ?? "";
+    expect(index).toContain(
+      '<pre aria-label="Quickstart command" tabindex="0"><code>npm install',
+    );
+
+    for (const page of PRODUCT_DOCS) {
+      const generated = bundle.get(`${page.slug}.html`) ?? "";
+      if (page.startHere.command) {
+        expect(generated).toContain(
+          `<pre aria-label="${page.title} quickstart command" tabindex="0"><code>`,
+        );
+      } else {
+        expect(generated).not.toContain("<pre");
+      }
+    }
+  });
+
+  it("keeps every generated relative documentation link inside the bundle", () => {
+    const bundle = buildPublicDocsBundle();
+    for (const [name, content] of bundle) {
+      if (!name.endsWith(".html") && !name.endsWith(".md")) continue;
+      const links = [...content.matchAll(/(?:href=\"|\]\(\.\/)([^\"\)]+)(?:\"|\))/g)].map((match) => match[1]!);
+      for (const link of links) {
+        if (link.startsWith("#")) continue;
+        expect(bundle.has(link), `${name}: ${link}`).toBe(true);
+      }
+    }
+  });
+
+  it("exports requirement, claim, and source lineage in the machine manifest", () => {
+    const manifest = JSON.parse(buildPublicDocsBundle().get("manifest.json") ?? "null") as {
+      schemaVersion: string;
+      pages: Array<{
+        requirementIds: string[];
+        claimIds: string[];
+        sourceContracts: string[];
+        publicationEvidence: { state: string; deployedRevision: string | null; evidenceDigest: string | null };
+      }>;
+    };
+    expect(manifest.schemaVersion).toBe("2026-08-30.v3");
+    for (const page of manifest.pages) {
+      expect(page.requirementIds.length).toBeGreaterThan(0);
+      expect(page.sourceContracts.length).toBeGreaterThan(0);
+      expect(page.claimIds).toBeInstanceOf(Array);
+      expect(page.publicationEvidence).toEqual({
+        state: "not_live",
+        deployedRevision: null,
+        evidenceDigest: null,
+      });
+    }
   });
 
   it("fails check mode on stale output and safely removes it in write mode", async () => {
@@ -95,5 +149,56 @@ describe("website upload documentation bundle", () => {
       "public_docs_bundle_owner_missing",
     );
     await expect(readFile(unrelated, "utf8")).resolves.toBe("keep me");
+  });
+
+  it("rejects an output-root junction before touching its target", async ({ skip }) => {
+    const sandbox = await mkdtemp(join(tmpdir(), "mendpoint-public-docs-junction-"));
+    const boundary = join(sandbox, "repo-docs");
+    const victim = join(sandbox, "victim");
+    const output = join(boundary, "website-upload");
+    await mkdir(boundary);
+    await mkdir(victim);
+    const victimFile = join(victim, "keep.txt");
+    await writeFile(victimFile, "do not touch", "utf8");
+    try {
+      await symlink(victim, output, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (["EPERM", "EACCES", "ENOSYS"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        skip();
+        return;
+      }
+      throw error;
+    }
+
+    await expect(writePublicDocsBundle(false, output, boundary)).rejects.toThrow(
+      "public_docs_bundle_reparse_point",
+    );
+    await expect(readFile(victimFile, "utf8")).resolves.toBe("do not touch");
+  });
+
+  it("rejects a junction in the output path before touching its target", async ({ skip }) => {
+    const sandbox = await mkdtemp(join(tmpdir(), "mendpoint-public-docs-ancestor-"));
+    const boundary = join(sandbox, "repo-docs");
+    const victim = join(sandbox, "victim");
+    const linkedAncestor = join(boundary, "linked");
+    const output = join(linkedAncestor, "website-upload");
+    await mkdir(boundary);
+    await mkdir(join(victim, "website-upload"), { recursive: true });
+    const victimFile = join(victim, "website-upload", "keep.txt");
+    await writeFile(victimFile, "do not touch", "utf8");
+    try {
+      await symlink(victim, linkedAncestor, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (["EPERM", "EACCES", "ENOSYS"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        skip();
+        return;
+      }
+      throw error;
+    }
+
+    await expect(writePublicDocsBundle(false, output, boundary)).rejects.toThrow(
+      "public_docs_bundle_reparse_point",
+    );
+    await expect(readFile(victimFile, "utf8")).resolves.toBe("do not touch");
   });
 });

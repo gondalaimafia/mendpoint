@@ -112,10 +112,7 @@ function storedDiff(diff: GraphQLSchemaDiff): GraphQLSchemaVersionRecord["diff"]
 
 export function createGraphQLSchemaIngestionRoutes(options: GraphQLSchemaIngestionRoutesOptions): Hono<ApiEnv> {
   const routes = new Hono<ApiEnv>({ strict: false });
-  if (!options.enabled) {
-    routes.all("*", (c) => c.json({ error: "not_found" }, 404));
-    return routes;
-  }
+  if (!options.enabled) routes.use("*", async (c) => c.json({ error: "not_found" }, 404));
   const now = options.now ?? (() => new Date().toISOString());
 
   routes.post("/:sourceKey/versions", async (c) => {

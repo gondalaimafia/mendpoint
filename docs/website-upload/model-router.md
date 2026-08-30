@@ -5,6 +5,9 @@ Select a policy-eligible deterministic recipe, adapter, local model, open model,
 Status: Runtime component
 Availability: Used by specialist runtimes; configured providers and executors vary by deployment
 Last verified: 2026-08-14
+Publication evidence: not live; no deployed revision or live evidence digest recorded
+Requirements: ME-RTR-001, ME-RTR-002, ME-RTR-003, ME-RTR-004, ME-RTR-005, ME-RTR-006, ME-RTR-009
+Public claims: None
 
 ## Start here
 
@@ -50,6 +53,12 @@ Register only approved executors, then route a structured task under tenant risk
 
 - Router policy and ranking: `packages/platform/src/router.test.ts`
 - Model provider adapters: `packages/agent/src/model-providers.test.ts`
+
+## Contract sources
+
+- `packages/platform/src/router.ts`
+- `packages/platform/src/router-runtime.ts`
+- `apps/worker/src/cli.ts`
 
 ## Safety model
 

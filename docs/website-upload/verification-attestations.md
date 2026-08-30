@@ -5,6 +5,9 @@ Run approved repository and contract checks, retain exact evidence, and optional
 Status: Verification production; attestations gated
 Availability: Repository verification in active flows; formal attestation API requires explicit enablement and signing authority
 Last verified: 2026-08-14
+Publication evidence: not live; no deployed revision or live evidence digest recorded
+Requirements: ME-WAR-002, ME-WAR-003, ME-WAR-005, ME-RTR-005
+Public claims: CLM-005
 
 ## Start here
 
@@ -43,13 +46,19 @@ Define a repository verification profile, run it against the immutable candidate
 | Repository verification profile | Configuration | Approved commands, bounds, environment, and waiver authority. |
 | Verification evidence | Artifact | Command, result, output digests, and source/candidate binding. |
 | POST /advanced-ai/attestations | API | Issue an attestation when advanced AI applications are enabled. |
-| GET /advanced-ai/attestations/:id | API | Retrieve and verify stored attestation evidence. |
+| GET /advanced-ai/attestations/:attestationId | API | Retrieve and verify stored attestation evidence. |
 
 ## Evidence and verification
 
 - Repository command verifier: `packages/repair/src/verify.test.ts`
 - Contract gates: `packages/contract/src/contract.test.ts`
 - DSSE and in-toto: `packages/contract/src/software-attestation.test.ts`
+
+## Contract sources
+
+- `packages/repair/src/verify.ts`
+- `packages/db/src/mission-verification.ts`
+- `apps/api/src/advanced-ai-applications.ts`
 
 ## Safety model
 

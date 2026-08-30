@@ -163,6 +163,7 @@ import {
   planToMarkdown,
 } from "@mendpoint/orchestrator";
 import {
+  assertPublicDocsApiRoutesMounted,
   evaluatePrGates,
   reviewOpenApiDesign,
   securityAttestationPolicyFromEnv,
@@ -3964,6 +3965,8 @@ app.post("/brands/:id/preview", async (c) => {
   });
   return c.json({ pack: pack.id, ...out });
 });
+
+assertPublicDocsApiRoutesMounted(app.routes);
 
 const port = Number(process.env.API_PORT ?? 3001);
 const hostname = process.env.API_HOST?.trim() || "0.0.0.0";

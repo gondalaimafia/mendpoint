@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Audit and compliance evidence | Mendpoint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="top"><a href="index.html">Mendpoint</a><span>Product documentation</span></header>
+  <main id="content">
+    <nav class="crumb"><a href="index.html">Documentation</a> / Trust and verification</nav>
+    <header class="hero">
+      <p class="kicker">Trust and verification</p>
+      <h1>Audit and compliance evidence</h1>
+      <p>Retain tenant scoped, attributable, append only operational evidence and export only the governed fields a reviewer is authorized to inspect.</p>
+      <dl><dt>Status</dt><dd>Engineering evidence active</dd><dt>Availability</dt><dd>Audit capture and governed export are implemented; independent compliance assessment remains external</dd><dt>Last verified</dt><dd>2026-08-30</dd><dt>Publication evidence</dt><dd>Not live; no deployed revision or live evidence digest recorded</dd><dt>Requirements</dt><dd>ME-WAR-008, ME-ENT-004, ME-ENT-012</dd><dt>Public claims</dt><dd>None</dd></dl>
+    </header>
+    <section><h2>Start here</h2><p>Run one authenticated mutation and use its request identity to inspect the resulting audit record.</p><ol><li>Perform an authorized mutation with X Request Id.</li><li>Read the tenant audit trail.</li><li>Export the governed evidence set for the declared review purpose.</li><li>Verify redaction, chain integrity, retention, and any legal hold before distribution.</li></ol></section>
+    <section><h2>What it does</h2><ul><li>Unified audit records across API and worker effects</li><li>Principal, credential, tenant, request, and subject attribution</li><li>Append only and tamper evident evidence contracts</li><li>Governed redacted export</li><li>Retention and legal hold policy contracts</li></ul></section>
+    <section><h2>When to use it</h2><ul><li>A reviewer must reconstruct who authorized a sensitive transition.</li><li>An operator must export evidence without exposing secrets or unrelated tenant data.</li></ul></section>
+    <section><h2>How it works</h2><ol><li>Sensitive actions append an audit record after authority is resolved.</li><li>Records bind actor, tenant, request, subject, action, outcome, and evidence references.</li><li>Export applies tenant scope, field policy, retention, and redaction.</li><li>Independent legal and assessor artifacts remain separate external evidence.</li></ol></section>
+    <section><h2>Interfaces</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody><tr><td><code>GET /audit</code></td><td>API</td><td>Read tenant scoped audit records.</td></tr><tr><td><code>GET /audit/export</code></td><td>API</td><td>Export the governed tenant evidence set.</td></tr><tr><td><code>Audit chain</code></td><td>Artifact</td><td>Append only attributable transition records.</td></tr><tr><td><code>Compliance evidence package</code></td><td>Artifact</td><td>Engineering controls plus separately supplied legal and assessor evidence.</td></tr></tbody></table></div></section>
+    <section><h2>Evidence and verification</h2><ul><li><strong>Audit governance contract</strong><br><code>packages/contract/src/audit-governance.test.ts</code></li><li><strong>Unified route audit</strong><br><code>apps/api/src/audit-unification.test.ts</code></li><li><strong>Governed export</strong><br><code>apps/api/src/audit-export.test.ts</code></li><li><strong>Database export</strong><br><code>packages/db/src/audit-export.test.ts</code></li></ul></section>
+    <section><h2>Contract sources</h2><ul><li><code>packages/contract/src/audit-governance.ts</code></li><li><code>apps/api/src/audit-export.ts</code></li><li><code>packages/db/src/change-impact-audit.ts</code></li></ul></section>
+    <section><h2>Safety model</h2><ul class="guardrails"><li>Audit reads and exports are tenant scoped.</li><li>Secrets, raw credentials, hidden reasoning, and unauthorized content are excluded.</li><li>Missing or unverifiable audit evidence is not converted to a successful claim.</li><li>Code evidence cannot replace legal approval or independent assessment.</li></ul></section>
+    <section><h2>Limitations</h2><ul><li>DPA, subprocessor, penetration test, and independent assessment evidence are externally owned.</li><li>Retention and legal hold qualification depend on the deployed storage and approved policy.</li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="security-governance.html">Security and governance</a></li><li><a href="authentication-tenancy.html">Authentication and tenancy</a></li><li><a href="recovery-reliability.html">Recovery and reliability</a></li></ul></section>
+    <p class="download"><a href="audit-compliance.md">Read this page as Markdown</a></p></main>
+  <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
+</body>
+</html>
