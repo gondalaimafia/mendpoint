@@ -363,3 +363,33 @@
 **Mistake:** I kept the skipped ReGauge activation lane in the active execution path instead of immediately advancing the next dependency-ready wave.
 **Correction:** Talal told me to skip that lane and start from the next wave.
 **Rule:** When a lane is explicitly parked, preserve it unchanged, remove it from the active critical path, and immediately move build and review capacity to the next dependency-ready engineering plan.
+
+### 2026-08-30 — Optional boolean fields still require strict present-value validation
+
+**Mistake:** SCIM POST and PUT treated every `active` value except boolean `false` as active, collapsing malformed strings, nulls, and numbers into the omitted-field default.
+**Correction:** Preserve the existing default only when the attribute is absent. Reject every present non-boolean value before membership, audit, or version mutation.
+**Rule:** For optional typed fields, distinguish absence from invalid presence with one shared parser, and regression-test both acceptance and byte-for-byte non-mutation on every write path.
+
+### 2026-08-30 — Revalidate authority at the mutation boundary
+
+**Mistake:** SCIM and service-principal handlers trusted authority captured before an awaited body read, so revocation during upload could survive into a later write transaction.
+**Correction:** Revalidate the live credential, trust principal, and human manager membership after parsing and inside the exact transaction that performs the mutation.
+**Rule:** Authentication before an await is only an initial observation. Every security-sensitive write must prove the complete current authority again under the same transaction as its state change.
+
+### 2026-08-30 — Close every mutation sink in an authority repair
+
+**Mistake:** The first live-authority repair covered body-bearing SCIM and service-principal writes but left synchronous DELETE, revoke, and tenant-membership sinks trusting request-time identity.
+**Correction:** Enumerate every mutation sink, share one complete human-manager revalidator, and prove stale authority cannot mutate target state at each boundary.
+**Rule:** An authority fix is complete only when every sink revalidates the full credential, principal, membership, session, and scope chain inside the same transaction as its write.
+
+### 2026-08-30 — Presence is not configuration validity
+
+**Mistake:** The customer profile required the SCIM binding variable by name but accepted empty or malformed JSON and did not bind its tenants to the production allowlist.
+**Correction:** Parse required structured configuration with the runtime parser and validate its semantic identity set at startup.
+**Rule:** Required JSON configuration must be parsed by the same contract as its consumer and must prove nonempty, semantically valid, exact-scope bindings before boot.
+
+### 2026-08-30 — Request ceilings must apply during reads
+
+**Mistake:** SCIM and service-principal handlers read the entire body before checking actual bytes and treated invalid negative content lengths as if no useful declaration existed.
+**Correction:** Validate content length syntax first, count bytes incrementally, cancel the stream when it crosses the ceiling, and reject invalid UTF-8 before JSON parsing.
+**Rule:** A payload limit that runs after full buffering is not a memory boundary; enforce it while streaming and test producer cancellation.

@@ -1,4 +1,5 @@
 export type { MemoryLayer, MemoryEntry, AgentMemory } from "./memory.js";
+export { scimBindingsFromEnv, type ScimBinding } from "./scim-bindings.js";
 export {
   createMemory,
   remember,

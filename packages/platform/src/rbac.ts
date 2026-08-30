@@ -15,6 +15,7 @@ export type Permission =
   | "tenant:admin"
   | "dogfood:read"
   | "sandbox:run"
+  | "identity:provision"
   | "transformer:worker";
 
 const ROLE_PERMS: Record<Role, Permission[]> = {
@@ -71,6 +72,7 @@ const ROLE_PERMS: Record<Role, Permission[]> = {
     "plan:execute",
     "sandbox:run",
     "outcome:label",
+    "identity:provision",
     "transformer:worker",
   ],
 };
@@ -195,6 +197,12 @@ export function permissionForRoute(
 ): Permission | null {
   const m = method.toUpperCase();
   if (isPublicRoute(m, path)) return null;
+  if (
+    path.startsWith("/scim/v2/")
+  ) return "identity:provision";
+  // Every authenticated human can inspect and revoke only their own durable
+  // OIDC session. The route itself rejects API-key and cross-session callers.
+  if (path.startsWith("/auth/sessions/")) return "graph:read";
   if (
     path.startsWith("/v1/regauge/attempt-coordinator/") ||
     path.startsWith("/v1/transformer/attempt-coordinator/")

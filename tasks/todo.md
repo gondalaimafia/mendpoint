@@ -3777,3 +3777,133 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Protected deployment E2E then caught a serious keyboard-access violation on horizontally scrollable quickstart code. Both documentation quickstart regions are now explicitly named and keyboard focusable, preserving scrolling for keyboard-only and Safari users. The exact browser E2E and fresh immutable-head review remain required after current-base rebase.
 - Fresh exact-head review found the same keyboard-access defect remained in the generated website-upload HTML. Both generator templates now emit named, focusable quickstart regions, the committed bundle is regenerated from those templates, and a catalog-wide regression fails if either `aria-label` or `tabindex="0"` drifts. The repaired focused matrix passes 47 of 47 generator, catalog, API-route, GraphQL, and advanced-AI tests; the documentation drift check and diff integrity also pass.
 - The protected authority gate then detected live issue snapshot drift after unfinished identity issue #437 was reopened. This branch now carries the exact live issue timestamp, observation time, and recomputed canonical issue digest; it does not promote the identity requirement or change the documentation publication boundary.
+
+## 2026-08-30 GSD Plan 10-01: production human identity
+
+- [x] Prove the literal ME-ENT-001 engineering gap against the existing OIDC, SAML, membership, trust-principal, reviewer, and offboarding paths.
+- [x] RED: specify tenant-scoped service-principal provisioning, scope attenuation, expiry, rotation, revocation, replay, and cross-tenant denial.
+- [x] GREEN: extend the existing principal and API-key contracts with the smallest durable service-principal administration surface; do not create a parallel identity store.
+- [x] RED: specify revocable server-side session authority that binds tenant, issuer, subject, membership version, authentication strength, expiry, and logout/offboarding invalidation.
+- [x] GREEN: require the production API identity path to consult that authority without weakening existing short-lived OIDC verification.
+- [x] RED: specify SCIM 2.0 user provision, update, deactivate, reactivate, filtering, idempotent replay, stale-update rejection, tenant isolation, and last-owner protection.
+- [x] GREEN: map SCIM lifecycle operations onto the canonical tenant membership and trust-principal contracts behind an explicit protected binding.
+- [x] Prove mutation and failure behavior for revoked memberships, principals, sessions, credentials, and cross-tenant identifiers; keep the approved enterprise IdP drill as an external-proof leaf.
+- [x] Run focused tests, affected typechecks, fresh and upgrade database convergence, full tests, optimized build, GA gates, dependency audit, and diff integrity.
+- [ ] Obtain independent exact-head review, current-base protected CI, all six required checks, intact `enforce_admins: true`, normal merge, exact-revision deployment, and live health proof.
+
+### Scope boundary
+
+- Plan 10-01 completes identity engineering only. It does not fabricate the approved enterprise SAML and SCIM tenant drill required for final GA evidence.
+- Plan 10-02 owns the repository-wide tenant-isolation qualification matrix; this increment adds hostile identity-boundary tests but does not promote ME-ENT-002.
+- Existing OIDC and SAML wire contracts remain compatible. Service credential secrets are returned only once at creation, while bearer tokens and token hashes are never persisted in plaintext, returned by lifecycle reads, or written to audit metadata.
+
+### Review
+
+- The vertical tracer extends the existing `principals`, `api_keys`, and `tenant_memberships` authority rather than introducing a second identity store. Service principals receive one explicit audience, an enumerated attenuated scope set, a maximum 90-day lifetime, one-time credentials, deterministic replay denial, complete credential revocation, and tenant-bound persistence triggers.
+- Production OIDC authentication now claims a durable server-side session bound to the exact tenant, issuer, subject, trust principal, membership version, MFA evidence, token digest, issuance, and expiry. Logout, membership offboarding, and SCIM deactivation revoke that session; completed revocation evidence is immutable and conflicting replay fails closed.
+- SCIM 2.0 provisioning requires one exact protected tenant-to-principal-to-issuer binding plus a dedicated `mendpoint-scim` service principal carrying only `identity:provision`. Provision, replay, filter, replace, patch, deactivate, reactivate, and delete paths serialize their version check and write under one database transaction. Owner lifecycle remains outside SCIM.
+- Root self-review closed additional authority gaps before independent review: every human can revoke only their own OIDC session; service rotation replay reports a stable issued-credential conflict; credential-to-principal tenant binding and session revocation lineage are protected from raw drift; session revocation replay is exact; and SCIM read-check-write sequences cannot race an old ETag.
+- Verification passed: 119 focused identity and authorization checks, all 101-requirement database convergence checks exercised by the full suite, complete repository tests, full workspace typecheck, optimized 50-route production build, every GA gate, zero production dependency vulnerabilities, and diff integrity. Independent exact-head review, protected CI, merge, deployment, and the separate enterprise IdP drill remain outstanding.
+- Exact-head review found five production boundaries: three advertised service scopes could never pass the agent role gate; SCIM matching and PATCH parsing did not cover case-insensitive enterprise-provider forms or pathless Replace; userName uniqueness was not database enforced; durable sessions accepted a human principal ID without proving its issuer, subject, and audience; and the protected SCIM binding was outside the customer startup contract.
+- The repair derives accepted service scopes from the production agent role and tests every accepted scope through both role and key-scope gates. SCIM now validates User and PatchOp schemas, treats filter attributes, operators, PATCH fields, paths, and role values case-insensitively, supports bounded pathless Replace, and rejects ambiguous duplicate attributes.
+- A transactional expression index enforces case-insensitive userName uniqueness per tenant and issuer. Upgrade convergence detects pre-existing duplicates before creating the index, fails with a named conflict, closes the failed database handle, and preserves both legacy rows for operator resolution. SCIM translates write conflicts into the standard 409 uniqueness response.
+- Session claims now prove the exact human principal audience and canonical issuer-subject binding in storage, enforce the same rule on raw inserts, and reject mismatched historical rows during database convergence. `MENDPOINT_SCIM_BINDINGS_JSON` is required by the customer profile, passed only to the API process, and checked at API startup against an active service principal plus one or more exact `identity:provision` credentials.
+- The repaired affected matrix passes 92 of 92 identity, authorization, production-startup, platform, and cross-tenant tests. The corrected worker launcher preflight passes 3 of 3 tests. The complete repository suite, full workspace typecheck, optimized 50-route production build, every GA gate, dependency audit with zero vulnerabilities, and diff integrity all pass. A fresh immutable-head review, protected CI, merge, deployment, and the separate enterprise IdP drill remain required.
+
+## 2026-08-30 Plan 10-01 exact-head review repair
+
+- [x] RED: prove startup rejects a SCIM provisioning issuer that cannot be canonicalized to the exact configured OIDC issuer while accepting standards-compliant equivalent URL spelling.
+- [x] RED: prove an empty SCIM PATCH operation list is invalid and cannot advance the resource ETag.
+- [x] RED: prove pathless Replace rejects case-insensitive duplicate attributes before mutation.
+- [x] RED: prove role subattributes `value` and `primary` are case-insensitive and duplicate-safe.
+- [x] GREEN: make the smallest startup and PATCH-boundary repairs that satisfy the hostile regressions.
+- [x] Run focused identity suites, affected and full typechecks, full tests, build, GA, dependency audit, and diff integrity.
+- [x] Inspect the complete repair diff and commit atomically without pushing.
+
+### Review
+
+- `scimBindingsFromEnv` now accepts only a trailing-slash spelling difference, stores the exact configured OIDC issuer used by JWT verification, and rejects missing or arbitrary issuer mismatches before provisioning authority can be constructed.
+- PATCH requires at least one operation. Pathless Replace rejects case-insensitive duplicate attributes. Role `value` and `primary` subattributes are read case-insensitively and duplicates fail closed across every supplied role object.
+- Red-first evidence: the original focused suite failed six hostile assertions at the expected seams. The repaired focused SCIM suite passes 12 of 12 tests; the wider API and database identity matrix passes 52 of 52 tests.
+- Verification passes: complete repository tests, affected and full workspace typechecks, optimized 50-route production build, every GA gate, zero production dependency vulnerabilities, and diff integrity.
+- No push, merge, deployment, enterprise IdP drill, or production claim was performed. Fresh immutable-head independent review and protected CI remain required.
+
+## 2026-08-30 Plan 10-01 strict SCIM active repair
+
+- [x] RED: prove string, null, and numeric `active` values on POST cannot create a membership, audit record, or resource version.
+- [x] RED: prove string, null, and numeric `active` values on PUT cannot change membership bytes, audit history, or ETag.
+- [x] GREEN: route POST, PUT, and PATCH through one strict optional boolean parser while preserving the existing omitted-value default on full-resource writes.
+- [x] Run focused and wider identity tests, affected typechecks, and diff integrity.
+- [x] Inspect and commit the isolated repair without pushing.
+
+### Review
+
+- One shared `active` parser now distinguishes absence from invalid presence. POST and PUT retain their existing omitted-value default, while every present value must be a JSON boolean; PATCH uses the same strict parser.
+- Red-first evidence reproduced six state-changing failures: malformed POST created an active membership, and malformed PUT advanced the ETag. The repaired regressions prove membership rows, audit history, and versions remain unchanged.
+- Verification passes: 19 focused SCIM tests, the 59-test API and database identity matrix, both affected workspace typechecks, and diff integrity.
+- No push, merge, deployment, or production claim was performed. Fresh immutable-head independent review remains required.
+
+## 2026-08-30 Plan 10-01 complete authority and payload-boundary repair
+
+- [x] Revalidate complete live human-manager authority inside every tenant-membership mutation, SCIM DELETE, and service-principal revoke transaction.
+- [x] Keep first-owner bootstrap API-key-only and revalidate the exact live key, scope, actor, and trust principal inside its transaction.
+- [x] Reject multi-valued SCIM role arrays unless exactly one role is primary.
+- [x] Parse required customer-profile SCIM bindings, require at least one binding, and bind the exact SCIM tenant set to the Fettler model-source tenant allowlist.
+- [x] Enforce SCIM and service-principal request limits while streaming, cancel on overflow, and reject malformed or negative content lengths.
+- [x] Prove delayed-body and pre-transaction revocation cannot change target membership, credential, audit, or version state.
+- [x] Run focused hostile tests, the wider identity/startup matrix, affected typechecks, and diff integrity.
+- [x] Inspect and commit the isolated repair without pushing.
+
+### Review
+
+- One shared live-manager authority primitive now verifies the exact trust principal, active owner/admin membership, OIDC session or delegated API key, membership evidence, scope, expiry, and revocation state at the mutation boundary. Bootstrap retains its distinct first-owner contract but no longer trusts stale request context.
+- SCIM DELETE and service-principal revoke now perform the same transaction-local authority proof as their asynchronous peers. Hostile regressions revoke authority after request context capture and prove the target row, resource version, credentials, and audit history remain unchanged.
+- The production profile consumes the same SCIM binding parser as the API and rejects empty, malformed, issuer-mismatched, duplicate, or tenant-set-mismatched bindings before startup.
+- The focused and wider identity/startup matrix passes 97 tests. API and platform typechecks plus diff integrity pass. A fresh immutable-head independent review remains required; no push, merge, deployment, enterprise IdP drill, or production claim was performed.
+
+## 2026-08-30 Plan 10-01 live authority repair
+
+- [x] RED: prove delayed-body API-key and trust-principal revocation blocks SCIM POST, PUT, and PATCH without membership, audit, or version mutation.
+- [x] RED: prove delayed-body trust-principal or manager-membership revocation blocks service-principal creation and credential rotation without principal, credential, audit, or prior-key mutation.
+- [x] RED: prove SCIM POST, PUT, and PATCH reject multiple primary roles without mutation.
+- [x] GREEN: revalidate complete live authority inside the same database transaction as every affected mutation and reject ambiguous primary role selection.
+- [x] Run focused and wider identity tests, affected typechecks, and diff integrity.
+- [x] Inspect and commit the isolated repair without pushing.
+
+### Review
+
+- SCIM now revalidates the exact live API key, dedicated provisioning scope, protected binding, and active service trust principal inside each POST, PUT, and PATCH transaction after body parsing. Revocation during a delayed body read returns 403 without changing membership bytes, audit history, or resource version.
+- Service-principal creation and rotation now revalidate the canonical human trust principal, active owner or admin membership, membership evidence, and either the durable OIDC session or delegated API key inside the mutation transaction. Delayed manager offboarding, trust-principal revocation, and API-key revocation leave principals, credentials, prior-key status, and audit history unchanged.
+- Multiple role entries marked primary are invalid regardless of attribute casing. POST, PUT, and PATCH all return SCIM 400 without mutation.
+- Red-first evidence reproduced nine unauthorized or ambiguous writes on the rejected head. The repaired focused suites pass 34 of 34 tests; the wider API and database identity matrix passes 60 of 60 tests. API and database typechecks plus diff integrity pass.
+- No push, merge, deployment, or production claim was performed. Fresh immutable-head independent review remains required.
+
+## 2026-08-30 Plan 10-01 final P1 repair
+
+- [x] Add an atomic protected pre-start SCIM authority bootstrap for fresh and populated current-schema volumes.
+- [x] Keep the bootstrap credential out of every long-lived child process and require it at the customer production boundary.
+- [x] Read service-principal mutation time only after the write transaction has acquired its lock.
+- [x] Prove second-connection write waits cannot outlive session, principal, or delegated API-key authority.
+- [x] Replace tenant-membership body buffering with a strict incremental reader that cancels overflow and rejects malformed content lengths.
+- [x] Prove overflow and malformed lengths cannot mutate membership or audit state.
+- [x] Run the focused identity and launcher matrix, API and Worker typechecks, scripts typecheck, and diff integrity.
+- [x] Inspect and commit the repair without pushing.
+
+### Review
+
+- The production launcher now materializes the exact tenant, service principal, dedicated key, issuer, expiry, and `identity:provision` scope under one `BEGIN IMMEDIATE` transaction before the API starts. Replays require exact persisted identity and credential bytes; any mismatch rolls the complete bootstrap back. The bootstrap token is supplied only to the setup process and is removed from the API, Worker, Web, and backup child environments.
+- Service-principal create, rotate, and revoke obtain the authoritative clock only after `BEGIN IMMEDIATE` succeeds. Real two-connection SQLite regressions hold the write lock past session and principal expiry, and revoke delegated API-key authority before releasing it. All three requests fail without principal, credential, target, or audit mutation.
+- Tenant-membership JSON is decoded from bounded byte chunks with fatal UTF-8 validation. Invalid content lengths cancel immediately; a streamed body crossing 32 KiB cancels its reader and returns 413. Hostile regressions prove no membership or audit entry is created.
+- Verification passes: 37 of 37 focused API, launcher, and customer-profile tests; API and Worker typechecks; scripts typecheck; and `git diff --check`. The protected bootstrap also enforces the same maximum 90-day lifetime as the service-principal API. No push, merge, deployment, enterprise IdP drill, or production claim was performed. Fresh immutable-head independent review remains required.
+
+## 2026-08-30 Plan 10-01 protected authority refresh
+
+- [x] Reopen unfinished authority issue #437 after its live state diverged from the canonical closure matrix.
+- [x] Bind the matrix to the exact live `updated_at` value returned after the state transition.
+- [x] Run the local closure structure and digest checks.
+- [ ] Commit the metadata-only repair, obtain fresh exact-head review, and rerun all six protected checks. The protected proposal check remains fail-closed outside its GitHub authority context.
+
+### Review
+
+- Issue #437 is open again under the existing owner and title. The matrix now records the live `2026-08-30T20:07:33.000Z` authority timestamp. This repairs the observed `ISSUE_METADATA_MISMATCH` without promoting the unfinished identity requirements or changing their supported boundary.
+- Exact-head review found that protected SCIM binding validation still accepted null or malformed service-principal expiry and did not enforce the 90-day authority ceiling after bootstrap. Startup and every request-time authority check now require canonical finite creation and expiry timestamps, active expiry, and a creation-to-expiry lifetime no greater than 90 days. Direct null, malformed, expired, and overlong regressions cover both consumption points. The repaired identity matrix passes 78 of 78 tests, API typecheck passes, and diff integrity is clean.

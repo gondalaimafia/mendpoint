@@ -40,6 +40,26 @@ const CUSTOMER_WARDEN_ENV = {
   OIDC_REDIRECT_URI: "https://console.example/api/oidc/callback",
   OIDC_TENANT_CLAIM: "tenant_id",
   OIDC_REQUIRED_AMR: "mfa",
+  MENDPOINT_SCIM_BINDINGS_JSON: JSON.stringify({
+    schemaVersion: 1,
+    bindings: [{
+      tenantId: "tenant_default",
+      principalId: "principal-scim-preflight",
+      issuer: "https://identity.example",
+    }],
+  }),
+  MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON: JSON.stringify({
+    schemaVersion: 1,
+    authorities: [{
+      tenantId: "tenant_default",
+      principalId: "principal-scim-preflight",
+      keyId: "key-scim-preflight",
+      subject: "enterprise-scim",
+      displayName: "Enterprise SCIM",
+      expiresAt: "2026-11-28T12:00:00.000Z",
+      token: `me_${"s".repeat(48)}`,
+    }],
+  }),
   LLM_AGENT_MODEL: "test-model",
   LLM_AGENT_URL: "https://models.example/v1",
   OPENAI_API_KEY: "preflight-test-model-key",
