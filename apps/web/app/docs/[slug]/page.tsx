@@ -37,6 +37,8 @@ export default async function ProductDocumentationPage({ params }: PageInput) {
             <div><dt>Status</dt><dd><span className={`docs-status docs-status-${page.status}`}>{page.statusLabel}</span></dd></div>
             <div><dt>Availability</dt><dd>{page.availability}</dd></div>
             <div><dt>Last verified</dt><dd>{page.lastVerified}</dd></div>
+            <div><dt>Requirements</dt><dd>{page.requirementIds.join(", ")}</dd></div>
+            <div><dt>Public claims</dt><dd>{page.claimIds.length > 0 ? page.claimIds.join(", ") : "None"}</dd></div>
           </dl>
         </header>
 
@@ -60,6 +62,9 @@ export default async function ProductDocumentationPage({ params }: PageInput) {
         <DocSection id="evidence" title="Evidence and verification">
           <ul>{page.evidence.map((item) => <li key={item.locator}><strong>{item.label}</strong><br /><code>{item.locator}</code></li>)}</ul>
         </DocSection>
+        <DocSection id="contract-sources" title="Contract sources">
+          <ul>{page.sourceContracts.map((locator) => <li key={locator}><code>{locator}</code></li>)}</ul>
+        </DocSection>
         <ListSection id="safety" title="Safety model" items={page.guardrails} emphasis />
         <ListSection id="limitations" title="Limitations" items={page.limitations} />
         <DocSection id="see-also" title="See also">
@@ -78,7 +83,7 @@ function DocsSidebar({ current }: { current: string }) {
 }
 
 function OnThisPage({ page }: { page: ProductDoc }) {
-  const links = [["start-here", "Start here"], ["what-it-does", "What it does"], ["when-to-use", "When to use"], ["how-it-works", "How it works"], ["interfaces", "Interfaces"], ["evidence", "Evidence"], ["safety", "Safety model"], ["limitations", "Limitations"]] as const;
+  const links = [["start-here", "Start here"], ["what-it-does", "What it does"], ["when-to-use", "When to use"], ["how-it-works", "How it works"], ["interfaces", "Interfaces"], ["evidence", "Evidence"], ["contract-sources", "Contract sources"], ["safety", "Safety model"], ["limitations", "Limitations"]] as const;
   return <aside className="docs-toc" aria-label={`On this page: ${page.title}`}><strong>On this page</strong><ul>{links.map(([id, label]) => <li key={id}><a href={`#${id}`}>{label}</a></li>)}</ul></aside>;
 }
 

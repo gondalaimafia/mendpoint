@@ -140,7 +140,7 @@ function renderPage(page: ProductDoc): string {
       <p class="kicker">${html(page.category)}</p>
       <h1>${html(page.title)}</h1>
       <p>${html(page.summary)}</p>
-      <dl><dt>Status</dt><dd>${html(page.statusLabel)}</dd><dt>Availability</dt><dd>${html(page.availability)}</dd><dt>Last verified</dt><dd>${html(page.lastVerified)}</dd></dl>
+      <dl><dt>Status</dt><dd>${html(page.statusLabel)}</dd><dt>Availability</dt><dd>${html(page.availability)}</dd><dt>Last verified</dt><dd>${html(page.lastVerified)}</dd><dt>Requirements</dt><dd>${html(page.requirementIds.join(", "))}</dd><dt>Public claims</dt><dd>${html(page.claimIds.length > 0 ? page.claimIds.join(", ") : "None")}</dd></dl>
     </header>
     ${section("Start here", `<p>${html(page.startHere.intro)}</p>${ordered(page.startHere.steps)}${page.startHere.command ? `<pre><code>${html(page.startHere.command)}</code></pre>` : ""}`)}
     ${section("What it does", unordered(page.capabilities))}
@@ -148,6 +148,7 @@ function renderPage(page: ProductDoc): string {
     ${section("How it works", ordered(page.howItWorks))}
     ${section("Interfaces", `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody>${page.interfaces.map((item) => `<tr><td><code>${html(item.name)}</code></td><td>${html(item.kind)}</td><td>${html(item.detail)}</td></tr>`).join("")}</tbody></table></div>`)}
     ${section("Evidence and verification", `<ul>${page.evidence.map((item) => `<li><strong>${html(item.label)}</strong><br><code>${html(item.locator)}</code></li>`).join("")}</ul>`)}
+    ${section("Contract sources", `<ul>${page.sourceContracts.map((locator) => `<li><code>${html(locator)}</code></li>`).join("")}</ul>`)}
     ${section("Safety model", unordered(page.guardrails, "guardrails"))}
     ${section("Limitations", unordered(page.limitations))}
     ${section("See also", `<ul>${related}</ul>`)}

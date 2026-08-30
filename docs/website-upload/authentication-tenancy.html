@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Authentication and tenancy | Mendpoint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="top"><a href="index.html">Mendpoint</a><span>Product documentation</span></header>
+  <main id="content">
+    <nav class="crumb"><a href="index.html">Documentation</a> / Trust and verification</nav>
+    <header class="hero">
+      <p class="kicker">Trust and verification</p>
+      <h1>Authentication and tenancy</h1>
+      <p>Authenticate one durable principal, derive its tenant from protected authority, and authorize the exact requested capability.</p>
+      <dl><dt>Status</dt><dd>Profile specific controls</dd><dt>Availability</dt><dd>Scoped API key authentication is active; enterprise identity integrations require separately configured authority</dd><dt>Last verified</dt><dd>2026-08-30</dd><dt>Requirements</dt><dd>ME-ENT-001, ME-ENT-002, ME-ENT-003</dd><dt>Public claims</dt><dd>None</dd></dl>
+    </header>
+    <section><h2>Start here</h2><p>Create a tenant scoped credential through an authenticated administrator and keep its secret outside source control.</p><ol><li>Select the tenant and least privileged role.</li><li>Create the credential and capture its value once through the protected operator path.</li><li>Send it as a Bearer token over HTTPS.</li><li>Rotate or revoke it and verify that later requests fail closed.</li></ol><pre><code>curl -H &quot;Authorization: Bearer $MENDPOINT_API_KEY&quot; https://your-mendpoint.example/ready</code></pre></section>
+    <section><h2>What it does</h2><ul><li>Tenant scoped API key authentication</li><li>Durable principals, memberships, roles, expiry, and revocation</li><li>Request identity and audit attribution</li><li>Service principal and enterprise identity contracts</li></ul></section>
+    <section><h2>When to use it</h2><ul><li>A human or service needs access to a protected Mendpoint API.</li><li>An operator must rotate or revoke access without changing tenant data.</li></ul></section>
+    <section><h2>How it works</h2><ol><li>The authentication middleware resolves the credential to one durable principal and tenant.</li><li>Membership and role checks authorize the exact route capability.</li><li>Mutation code revalidates authority at the effect boundary.</li><li>Audit records retain principal, credential, tenant, and request identity without storing the secret.</li></ol></section>
+    <section><h2>Interfaces</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody><tr><td><code>GET /keys</code></td><td>API</td><td>List credential metadata without secret material.</td></tr><tr><td><code>POST /keys</code></td><td>API</td><td>Create a scoped credential through tenant administration authority.</td></tr><tr><td><code>POST /keys/:id/revoke</code></td><td>API</td><td>Revoke one credential.</td></tr><tr><td><code>GET /tenants</code></td><td>API</td><td>List tenants visible to the authenticated principal.</td></tr><tr><td><code>POST /tenants/memberships</code></td><td>API</td><td>Create a tenant membership when authorized.</td></tr></tbody></table></div></section>
+    <section><h2>Evidence and verification</h2><ul><li><strong>Authentication middleware</strong><br><code>apps/api/src/auth.test.ts</code></li><li><strong>Membership lifecycle</strong><br><code>apps/api/src/tenant-memberships.test.ts</code></li><li><strong>Cross tenant denial</strong><br><code>apps/api/src/cross-tenant-denial.test.ts</code></li></ul></section>
+    <section><h2>Contract sources</h2><ul><li><code>apps/api/src/auth.ts</code></li><li><code>apps/api/src/tenant-memberships.ts</code></li><li><code>packages/contract/src/tenant-boundary.ts</code></li></ul></section>
+    <section><h2>Safety model</h2><ul class="guardrails"><li>Tenant identity never comes from a request body claim.</li><li>Credential values are returned only at creation and are never listed.</li><li>Expiry and revocation are rechecked before protected effects.</li><li>Production credentials require HTTPS and must not follow redirects.</li></ul></section>
+    <section><h2>Limitations</h2><ul><li>SAML and SCIM need an approved enterprise identity tenant for live qualification.</li><li>Authentication availability depends on the selected deployment profile.</li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="api-conventions.html">API conventions</a></li><li><a href="security-governance.html">Security and governance</a></li><li><a href="audit-compliance.html">Audit and compliance evidence</a></li></ul></section>
+    <p class="download"><a href="authentication-tenancy.md">Read this page as Markdown</a></p></main>
+  <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
+</body>
+</html>

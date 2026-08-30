@@ -38,6 +38,31 @@ describe("website upload documentation bundle", () => {
     expect(index).not.toMatch(/<script|javascript:/i);
   });
 
+  it("keeps every generated relative documentation link inside the bundle", () => {
+    const bundle = buildPublicDocsBundle();
+    for (const [name, content] of bundle) {
+      if (!name.endsWith(".html") && !name.endsWith(".md")) continue;
+      const links = [...content.matchAll(/(?:href=\"|\]\(\.\/)([^\"\)]+)(?:\"|\))/g)].map((match) => match[1]!);
+      for (const link of links) {
+        if (link.startsWith("#")) continue;
+        expect(bundle.has(link), `${name}: ${link}`).toBe(true);
+      }
+    }
+  });
+
+  it("exports requirement, claim, and source lineage in the machine manifest", () => {
+    const manifest = JSON.parse(buildPublicDocsBundle().get("manifest.json") ?? "null") as {
+      schemaVersion: string;
+      pages: Array<{ requirementIds: string[]; claimIds: string[]; sourceContracts: string[] }>;
+    };
+    expect(manifest.schemaVersion).toBe("2026-08-30.v2");
+    for (const page of manifest.pages) {
+      expect(page.requirementIds.length).toBeGreaterThan(0);
+      expect(page.sourceContracts.length).toBeGreaterThan(0);
+      expect(page.claimIds).toBeInstanceOf(Array);
+    }
+  });
+
   it("fails check mode on stale output and safely removes it in write mode", async () => {
     const output = await mkdtemp(join(tmpdir(), "mendpoint-public-docs-"));
     await writePublicDocsBundle(false, output);

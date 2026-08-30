@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Limits, errors, and retries | Mendpoint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="top"><a href="index.html">Mendpoint</a><span>Product documentation</span></header>
+  <main id="content">
+    <nav class="crumb"><a href="index.html">Documentation</a> / Operations</nav>
+    <header class="hero">
+      <p class="kicker">Operations</p>
+      <h1>Limits, errors, and retries</h1>
+      <p>Treat every bounded input, overload response, partial result, and unavailable dependency as explicit operational state.</p>
+      <dl><dt>Status</dt><dd>Profile specific limits</dd><dt>Availability</dt><dd>Runtime bounds and error contracts vary by route, workload tier, and deployment profile</dd><dt>Last verified</dt><dd>2026-08-30</dd><dt>Requirements</dt><dd>ME-FND-006, ME-FND-007, ME-ENT-005, ME-ENT-009</dd><dt>Public claims</dt><dd>None</dd></dl>
+    </header>
+    <section><h2>Start here</h2><p>Read the exact route contract and declare a workload budget before sending production work.</p><ol><li>Confirm input byte, file, path, token, time, cost, and concurrency bounds for the route.</li><li>Supply request and idempotency identity where supported.</li><li>Handle validation, authorization, conflict, overload, dependency, and internal failures separately.</li><li>Abort at the declared threshold and preserve evidence for a bounded retry or rollback.</li></ol></section>
+    <section><h2>What it does</h2><ul><li>Bounded request and response bodies</li><li>Concurrency admission and Retry After guidance</li><li>Structured error codes and request identity</li><li>Budget, timeout, and saturation controls</li><li>Explicit partial, indeterminate, and unavailable states</li></ul></section>
+    <section><h2>When to use it</h2><ul><li>A caller needs a safe retry policy.</li><li>An operator needs to size or abort a production workload.</li></ul></section>
+    <section><h2>How it works</h2><ol><li>Each route validates its own inputs and authority before work.</li><li>Admission control can reject excess concurrency with an explicit retry delay.</li><li>Domain errors preserve a stable code; unexpected errors are redacted and retain request identity.</li><li>Partial or indeterminate evidence remains distinct from success and from proven absence.</li><li>Workload tests report declared percentiles and abort conditions for the tested profile only.</li></ol></section>
+    <section><h2>Interfaces</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody><tr><td><code>Error response</code></td><td>Artifact</td><td>HTTP status, stable code, and request identity where available.</td></tr><tr><td><code>Retry-After</code></td><td>Configuration</td><td>Explicit overload delay in seconds.</td></tr><tr><td><code>Performance contract</code></td><td>Artifact</td><td>Workload tier, concurrency, latency, cost, saturation, abort, and recovery boundaries.</td></tr><tr><td><code>Idempotency-Key</code></td><td>Configuration</td><td>Exact replay authority only on routes that declare it.</td></tr></tbody></table></div></section>
+    <section><h2>Evidence and verification</h2><ul><li><strong>Production boundary</strong><br><code>apps/api/src/production.test.ts</code></li><li><strong>Error redaction</strong><br><code>apps/api/src/error-boundary.test.ts</code></li><li><strong>Performance contract</strong><br><code>docs/PERFORMANCE_CONTRACT.md</code></li></ul></section>
+    <section><h2>Contract sources</h2><ul><li><code>apps/api/src/production.ts</code></li><li><code>apps/api/src/error-boundary.ts</code></li><li><code>docs/PERFORMANCE_CONTRACT.md</code></li></ul></section>
+    <section><h2>Safety model</h2><ul class="guardrails"><li>Never retry indefinitely.</li><li>Never convert unavailable evidence into an empty successful result.</li><li>Do not retry the same idempotency key with different request bytes.</li><li>A synthetic or pilot workload is not production performance proof.</li></ul></section>
+    <section><h2>Limitations</h2><ul><li>A universal API wide pagination and rate limit contract is not yet implemented.</li><li>Production safe load and soak results require an approved target and workload envelope.</li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="api-conventions.html">API conventions</a></li><li><a href="deployment-operations.html">Deployment and operations</a></li><li><a href="recovery-reliability.html">Recovery and reliability</a></li></ul></section>
+    <p class="download"><a href="limits-errors.md">Read this page as Markdown</a></p></main>
+  <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
+</body>
+</html>

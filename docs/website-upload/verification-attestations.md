@@ -5,6 +5,8 @@ Run approved repository and contract checks, retain exact evidence, and optional
 Status: Verification production; attestations gated
 Availability: Repository verification in active flows; formal attestation API requires explicit enablement and signing authority
 Last verified: 2026-08-14
+Requirements: ME-WAR-002, ME-WAR-003, ME-RTR-005
+Public claims: CLM-005
 
 ## Start here
 
@@ -50,6 +52,12 @@ Define a repository verification profile, run it against the immutable candidate
 - Repository command verifier: `packages/repair/src/verify.test.ts`
 - Contract gates: `packages/contract/src/contract.test.ts`
 - DSSE and in-toto: `packages/contract/src/software-attestation.test.ts`
+
+## Contract sources
+
+- `packages/repair/src/verify.ts`
+- `packages/db/src/mission-verification.ts`
+- `apps/api/src/advanced-ai-applications.ts`
 
 ## Safety model
 

@@ -5,6 +5,8 @@ Bind every sensitive operation to tenant identity, least-privilege authority, im
 Status: Profile-specific pilot controls
 Availability: Private preview deployments with profile-specific authentication, encryption, and governance controls
 Last verified: 2026-08-14
+Requirements: ME-ENT-001, ME-ENT-002, ME-ENT-003, ME-ENT-004, ME-WAR-008
+Public claims: CLM-014
 
 ## Start here
 
@@ -55,6 +57,12 @@ Run the deployment preflight, bootstrap one owner authority, and configure the n
 - Tenant isolation: `packages/db/src/provider-tenant-isolation.test.ts`
 - Customer profile: `scripts/customer-warden-profile.test.ts`
 - Design partner encryption: `apps/api/src/design-partner-applications-store.test.ts`
+
+## Contract sources
+
+- `apps/api/src/auth.ts`
+- `packages/contract/src/tenant-boundary.ts`
+- `packages/contract/src/audit-governance.ts`
 
 ## Safety model
 

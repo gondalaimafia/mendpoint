@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Webhooks and domain events | Mendpoint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="top"><a href="index.html">Mendpoint</a><span>Product documentation</span></header>
+  <main id="content">
+    <nav class="crumb"><a href="index.html">Documentation</a> / Connect and deliver</nav>
+    <header class="hero">
+      <p class="kicker">Connect and deliver</p>
+      <h1>Webhooks and domain events</h1>
+      <p>Accept authenticated SCM events, deduplicate deliveries, derive tenant scope from durable bindings, and record replay safe domain outcomes.</p>
+      <dl><dt>Status</dt><dd>GitHub production path</dd><dt>Availability</dt><dd>GitHub webhook ingestion is implemented; a customer ready GitLab webhook path is not active</dd><dt>Last verified</dt><dd>2026-08-30</dd><dt>Requirements</dt><dd>ME-SCM-003, ME-SCM-004, ME-WAR-004, ME-WAR-008</dd><dt>Public claims</dt><dd>None</dd></dl>
+    </header>
+    <section><h2>Start here</h2><p>Configure the GitHub App webhook to the public callback and subscribe only to events required by enabled capabilities.</p><ol><li>Set the webhook URL to https://your-mendpoint.example/webhooks/github.</li><li>Store the webhook secret in the protected deployment environment.</li><li>Select pull request, pull request review, check, installation, and repository events required by the installation.</li><li>Send a test event and verify one durable delivery record and one resulting domain transition.</li></ol></section>
+    <section><h2>What it does</h2><ul><li>GitHub signature verification</li><li>Delivery identity deduplication</li><li>Installation and repository authority resolution</li><li>Pull request, review, check, installation, and repository reconciliation</li><li>Outcome learning dispatch after durable delivery state</li></ul></section>
+    <section><h2>When to use it</h2><ul><li>GitHub must update repository authority or pull request state.</li><li>A response can be lost and the provider may redeliver the same event.</li></ul></section>
+    <section><h2>How it works</h2><ol><li>The public endpoint verifies the signature before reading event authority.</li><li>The delivery ID is claimed once and duplicate deliveries adopt the retained result.</li><li>Installation and repository identifiers resolve one authorized tenant binding.</li><li>The handler commits domain state before dispatching follow up work.</li><li>Provider comments and review text remain untrusted evidence and never authorize mutation by themselves.</li></ol></section>
+    <section><h2>Interfaces</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody><tr><td><code>POST /webhooks/github</code></td><td>API</td><td>Receive a signed GitHub App delivery.</td></tr><tr><td><code>Webhook delivery</code></td><td>Event</td><td>Signature, provider delivery ID, event kind, state, and retained outcome.</td></tr><tr><td><code>Domain event</code></td><td>Event</td><td>Tenant scoped idempotent product transition derived from verified provider evidence.</td></tr></tbody></table></div></section>
+    <section><h2>Evidence and verification</h2><ul><li><strong>Webhook route</strong><br><code>apps/api/src/server.ts</code></li><li><strong>Fettler review dispatch</strong><br><code>apps/api/src/fettler-pr-review-webhook.test.ts</code></li><li><strong>Connection round trip</strong><br><code>apps/api/src/repository-connect.test.ts</code></li><li><strong>Outcome deduplication</strong><br><code>apps/api/src/delivery-outcome-learning-dispatch.test.ts</code></li></ul></section>
+    <section><h2>Contract sources</h2><ul><li><code>apps/api/src/server.ts</code></li><li><code>apps/api/src/fettler-pr-review-webhook.ts</code></li><li><code>apps/api/src/delivery-outcome-learning-dispatch.ts</code></li></ul></section>
+    <section><h2>Safety model</h2><ul class="guardrails"><li>Unsigned, stale, malformed, or unauthorized deliveries fail closed.</li><li>The request body tenant is never trusted.</li><li>Duplicate delivery is not duplicate work.</li><li>Webhook evidence cannot merge, deploy, or widen candidate authority.</li></ul></section>
+    <section><h2>Limitations</h2><ul><li>GitLab delivery is on the roadmap.</li><li>Enabled event types depend on the installed GitHub App permissions and product profile.</li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="repository-connections.html">Repository connections</a></li><li><a href="draft-delivery.html">Draft delivery</a></li><li><a href="api-conventions.html">API conventions</a></li><li><a href="audit-compliance.html">Audit and compliance evidence</a></li></ul></section>
+    <p class="download"><a href="webhooks-events.md">Read this page as Markdown</a></p></main>
+  <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
+</body>
+</html>

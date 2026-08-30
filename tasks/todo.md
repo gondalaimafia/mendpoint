@@ -3746,10 +3746,10 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 ## 2026-08-30 Plan 11-01 generated production documentation contract (#572)
 
 - [x] Create and claim issue #572 on an isolated `codex/572-public-docs-contract` branch from current `origin/main`.
-- [ ] Inventory the public route, schema, requirement, claim, and existing documentation catalogs; identify unsupported claims and missing production components.
-- [ ] Extend the canonical documentation catalog with authentication and tenancy, Mission and Policy Envelope, API semantics, webhooks, idempotency, pagination, errors, retries, runbooks, and executable examples without duplicating product contracts.
-- [ ] Generate deterministic HTML, Markdown, and machine-readable website-upload artifacts from that catalog, with exact source and claim lineage.
-- [ ] Add hostile drift checks for broken links, stale schemas, unsafe examples, naming regressions, inaccessible markup, and claims that exceed verified requirement status.
+- [x] Inventory the public route, schema, requirement, claim, and existing documentation catalogs; identify unsupported claims and missing production components.
+- [x] Extend the canonical documentation catalog with authentication and tenancy, Mission and Policy Envelope, API semantics, webhooks, idempotency, pagination, errors, retries, runbooks, and executable examples without duplicating product contracts.
+- [x] Generate deterministic HTML, Markdown, and machine-readable website-upload artifacts from that catalog, with exact source and claim lineage.
+- [x] Add hostile drift checks for broken links, stale schemas, unsafe examples, naming regressions, inaccessible markup, and claims that exceed verified requirement status.
 - [ ] Regenerate the website-upload bundle and run focused tests, documentation checks, naming and claims gates, full typecheck, production build, dependency audit, and diff integrity.
 - [ ] Inspect the exact diff, obtain independent exact-head Codex review, fix every P0 to P2 finding, and rerun the affected gates.
 - [ ] Rebase onto current `origin/main`, push one protected PR, require current-base CI and all protected checks, then merge and verify the exact deployed revision before treating any page as published evidence.
@@ -3766,3 +3766,7 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 ### Review
 
 - In progress. Plan committed before implementation; recovery Plan 10-04 and ReGauge activation remain parked untouched per the user instruction to start the next wave.
+- The canonical catalog now contains 20 component guides. Seven new guides cover authentication and tenancy, Mission and Policy Envelope, API conventions, GitHub webhooks and domain events, audit and compliance evidence, recovery and reliability, and limits, errors, and retries.
+- Every page now exports registered requirement IDs, applicable public claim IDs, and existing route, schema, or runtime source locators into the web page, Markdown, HTML upload bundle, and machine manifest. The generator remains deterministic and ownership fenced.
+- Hostile checks prove all authority identifiers resolve, source and evidence files exist, related links close over the catalog, generated relative links remain in the bundle, examples contain no credential values, production status cannot exceed verified GA requirements, and historical customer facing names do not reappear.
+- Current verification: 18 focused catalog, route, bundle, link, lineage, and output safety tests; public documentation drift check; product naming gate; public claims gate; affected Web and scripts typechecks; full workspace typecheck; optimized Web build artifact; zero production dependency vulnerabilities; and clean diff integrity. The final exact command rerun, review, current base CI, merge, deployment, and browser proof remain pending.

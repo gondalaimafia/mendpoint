@@ -5,6 +5,8 @@ Normalize versioned API and release evidence into deterministic changes with exp
 Status: Mixed availability
 Availability: OpenAPI active; GraphQL and several release sources are gated previews
 Last verified: 2026-08-14
+Requirements: ME-ING-001, ME-ING-002, ME-ING-003, ME-ING-004, ME-ING-005, ME-ING-006, ME-ING-007, ME-ING-008, ME-ING-009
+Public claims: None
 
 ## Start here
 
@@ -52,6 +54,12 @@ Submit a versioned provider schema or poll an approved feed, then inspect the no
 - OpenAPI normalization and diff: `packages/change-intel/src/index.test.ts`
 - GraphQL normalization and diff: `packages/change-intel/src/graphql-schema.test.ts`
 - Catalog polling: `packages/catalog/src/poll.test.ts`
+
+## Contract sources
+
+- `packages/change-intel/src/index.ts`
+- `packages/catalog/src/index.ts`
+- `apps/api/src/server.ts`
 
 ## Safety model
 

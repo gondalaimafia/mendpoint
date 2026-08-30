@@ -5,6 +5,8 @@ Resolve an API change through repository evidence to affected operations, fields
 Status: Production pilot
 Availability: Real connected snapshots with bounded language and evidence coverage
 Last verified: 2026-08-14
+Requirements: ME-GRF-001, ME-GRF-002, ME-GRF-003, ME-GRF-004, ME-GRF-005, ME-GRF-006, ME-GRF-007, ME-GRF-008, ME-WAR-001
+Public claims: CLM-003
 
 ## Start here
 
@@ -51,6 +53,12 @@ Materialize a repository snapshot, index it, and query an approved change or con
 - Change graph: `packages/graph/src/graph.test.ts`
 - Knowledge graph: `packages/graph-learn/src/graph-learn.test.ts`
 - Code impact: `packages/code-impact/src/index.test.ts`
+
+## Contract sources
+
+- `packages/graph/src/index.ts`
+- `packages/graph-learn/src/store.ts`
+- `apps/api/src/server.ts`
 
 ## Safety model
 

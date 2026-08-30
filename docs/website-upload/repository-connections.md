@@ -5,6 +5,8 @@ Authorize least-privilege source access and materialize immutable repository sna
 Status: GitHub production path
 Availability: GitHub App pilot path. GitLab delivery is on the roadmap.
 Last verified: 2026-08-14
+Requirements: ME-SCM-001, ME-SCM-002, ME-SCM-003, ME-SCM-004, ME-SCM-005, ME-SCM-006
+Public claims: CLM-008
 
 ## Start here
 
@@ -51,6 +53,12 @@ Install the Mendpoint GitHub App for an approved account and select the exact re
 - GitHub App lifecycle: `packages/github/src/app-lifecycle.test.ts`
 - Repository source: `packages/platform/src/repository-source.test.ts`
 - Connection API: `apps/api/src/repository-connections.test.ts`
+
+## Contract sources
+
+- `apps/api/src/repository-connections.ts`
+- `packages/github/src/index.ts`
+- `packages/platform/src/repository-source.ts`
 
 ## Safety model
 

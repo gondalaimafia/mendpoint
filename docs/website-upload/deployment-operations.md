@@ -5,6 +5,8 @@ Run Mendpoint with role-specific readiness, durable state, recovery controls, au
 Status: Pilot evaluation
 Availability: Docker Compose and Fly pilot deployment; the dedicated Regauge profile is implemented but no live Regauge deployment is claimed
 Last verified: 2026-08-14
+Requirements: ME-FND-005, ME-ENT-005, ME-ENT-006, ME-ENT-007, ME-ENT-008, ME-ENT-009, ME-ENT-010, ME-ENT-011, ME-ENT-012
+Public claims: CLM-009, CLM-013
 
 ## Start here
 
@@ -55,6 +57,12 @@ Choose the Fettler, Regauge pilot, demo, or self-hosted profile and satisfy its 
 - Readiness: `packages/ops/src/readiness.test.ts`
 - Backup and restore: `packages/ops/src/disaster-recovery.test.ts`
 - Regauge profile contract: `apps/worker/src/transformer-production-profile.test.ts`
+
+## Contract sources
+
+- `scripts/start-fly.mjs`
+- `packages/ops/src/readiness.ts`
+- `packages/ops/src/disaster-recovery.ts`
 
 ## Safety model
 

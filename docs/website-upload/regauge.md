@@ -5,6 +5,8 @@ Regauge is an experimental planning preview.
 Status: Experimental planning preview
 Availability: Durable campaign planning and review controls; repository execution and staged pull request campaigns are not customer ready
 Last verified: 2026-08-14
+Requirements: ME-TRN-001, ME-TRN-002, ME-TRN-003, ME-TRN-004, ME-TRN-005, ME-TRN-006, ME-TRN-007, ME-TRN-008, ME-TRN-009, ME-TRN-010, ME-TRN-011, ME-TRN-012, ME-TRN-013
+Public claims: CLM-007
 
 ## Start here
 
@@ -52,6 +54,12 @@ Evaluate the planning preview against an approved snapshot without authorizing c
 - Mission planning and compilation: `packages/transformer/src/mission-planner.test.ts`
 - Pilot execution and checkpoints: `packages/transformer/src/pilot-execution.test.ts`
 - Multi-node worker: `apps/worker/src/transformer-multinode-service.test.ts`
+
+## Contract sources
+
+- `apps/api/src/regauge-production-bootstrap.ts`
+- `apps/api/src/regauge-plan-consult.ts`
+- `apps/worker/src/regauge-mission-task-claim.ts`
 
 ## Safety model
 

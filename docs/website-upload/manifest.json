@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "2026-08-14.v1",
+  "schemaVersion": "2026-08-30.v2",
   "generatedFrom": "apps/web/app/docs/catalog.ts",
   "pages": [
     {
@@ -11,7 +11,30 @@
       "availability": "Submitted OpenAPI JSON and configured GitHub pilot repositories",
       "lastVerified": "2026-08-14",
       "webPath": "/docs/fettler",
-      "markdownPath": "./fettler.md"
+      "markdownPath": "./fettler.md",
+      "requirementIds": [
+        "ME-WAR-001",
+        "ME-WAR-002",
+        "ME-WAR-003",
+        "ME-WAR-004",
+        "ME-WAR-006",
+        "ME-WAR-007",
+        "ME-WAR-008",
+        "ME-WAR-009",
+        "ME-GTM-001",
+        "ME-GTM-002"
+      ],
+      "claimIds": [
+        "CLM-002",
+        "CLM-004",
+        "CLM-005",
+        "CLM-006"
+      ],
+      "sourceContracts": [
+        "apps/api/src/server.ts",
+        "packages/agent/src/agent.ts",
+        "apps/worker/src/cli.ts"
+      ]
     },
     {
       "slug": "regauge",
@@ -22,7 +45,30 @@
       "availability": "Durable campaign planning and review controls; repository execution and staged pull request campaigns are not customer ready",
       "lastVerified": "2026-08-14",
       "webPath": "/docs/regauge",
-      "markdownPath": "./regauge.md"
+      "markdownPath": "./regauge.md",
+      "requirementIds": [
+        "ME-TRN-001",
+        "ME-TRN-002",
+        "ME-TRN-003",
+        "ME-TRN-004",
+        "ME-TRN-005",
+        "ME-TRN-006",
+        "ME-TRN-007",
+        "ME-TRN-008",
+        "ME-TRN-009",
+        "ME-TRN-010",
+        "ME-TRN-011",
+        "ME-TRN-012",
+        "ME-TRN-013"
+      ],
+      "claimIds": [
+        "CLM-007"
+      ],
+      "sourceContracts": [
+        "apps/api/src/regauge-production-bootstrap.ts",
+        "apps/api/src/regauge-plan-consult.ts",
+        "apps/worker/src/regauge-mission-task-claim.ts"
+      ]
     },
     {
       "slug": "change-ingestion",
@@ -33,7 +79,24 @@
       "availability": "OpenAPI active; GraphQL and several release sources are gated previews",
       "lastVerified": "2026-08-14",
       "webPath": "/docs/change-ingestion",
-      "markdownPath": "./change-ingestion.md"
+      "markdownPath": "./change-ingestion.md",
+      "requirementIds": [
+        "ME-ING-001",
+        "ME-ING-002",
+        "ME-ING-003",
+        "ME-ING-004",
+        "ME-ING-005",
+        "ME-ING-006",
+        "ME-ING-007",
+        "ME-ING-008",
+        "ME-ING-009"
+      ],
+      "claimIds": [],
+      "sourceContracts": [
+        "packages/change-intel/src/index.ts",
+        "packages/catalog/src/index.ts",
+        "apps/api/src/server.ts"
+      ]
     },
     {
       "slug": "change-graph",
@@ -44,7 +107,26 @@
       "availability": "Real connected snapshots with bounded language and evidence coverage",
       "lastVerified": "2026-08-14",
       "webPath": "/docs/change-graph",
-      "markdownPath": "./change-graph.md"
+      "markdownPath": "./change-graph.md",
+      "requirementIds": [
+        "ME-GRF-001",
+        "ME-GRF-002",
+        "ME-GRF-003",
+        "ME-GRF-004",
+        "ME-GRF-005",
+        "ME-GRF-006",
+        "ME-GRF-007",
+        "ME-GRF-008",
+        "ME-WAR-001"
+      ],
+      "claimIds": [
+        "CLM-003"
+      ],
+      "sourceContracts": [
+        "packages/graph/src/index.ts",
+        "packages/graph-learn/src/store.ts",
+        "apps/api/src/server.ts"
+      ]
     },
     {
       "slug": "repository-connections",
@@ -55,7 +137,23 @@
       "availability": "GitHub App pilot path. GitLab delivery is on the roadmap.",
       "lastVerified": "2026-08-14",
       "webPath": "/docs/repository-connections",
-      "markdownPath": "./repository-connections.md"
+      "markdownPath": "./repository-connections.md",
+      "requirementIds": [
+        "ME-SCM-001",
+        "ME-SCM-002",
+        "ME-SCM-003",
+        "ME-SCM-004",
+        "ME-SCM-005",
+        "ME-SCM-006"
+      ],
+      "claimIds": [
+        "CLM-008"
+      ],
+      "sourceContracts": [
+        "apps/api/src/repository-connections.ts",
+        "packages/github/src/index.ts",
+        "packages/platform/src/repository-source.ts"
+      ]
     },
     {
       "slug": "draft-delivery",
@@ -66,7 +164,22 @@
       "availability": "GitHub draft delivery for approved pilot repositories. GitLab delivery is on the roadmap.",
       "lastVerified": "2026-08-14",
       "webPath": "/docs/draft-delivery",
-      "markdownPath": "./draft-delivery.md"
+      "markdownPath": "./draft-delivery.md",
+      "requirementIds": [
+        "ME-SCM-003",
+        "ME-SCM-004",
+        "ME-WAR-003",
+        "ME-WAR-004"
+      ],
+      "claimIds": [
+        "CLM-006",
+        "CLM-008"
+      ],
+      "sourceContracts": [
+        "packages/github/src/index.ts",
+        "apps/worker/src/fettler-pr-review-dispatch.ts",
+        "apps/api/src/server.ts"
+      ]
     },
     {
       "slug": "verification-attestations",
@@ -77,7 +190,20 @@
       "availability": "Repository verification in active flows; formal attestation API requires explicit enablement and signing authority",
       "lastVerified": "2026-08-14",
       "webPath": "/docs/verification-attestations",
-      "markdownPath": "./verification-attestations.md"
+      "markdownPath": "./verification-attestations.md",
+      "requirementIds": [
+        "ME-WAR-002",
+        "ME-WAR-003",
+        "ME-RTR-005"
+      ],
+      "claimIds": [
+        "CLM-005"
+      ],
+      "sourceContracts": [
+        "packages/repair/src/verify.ts",
+        "packages/db/src/mission-verification.ts",
+        "apps/api/src/advanced-ai-applications.ts"
+      ]
     },
     {
       "slug": "model-router",
@@ -88,7 +214,22 @@
       "availability": "Used by specialist runtimes; configured providers and executors vary by deployment",
       "lastVerified": "2026-08-14",
       "webPath": "/docs/model-router",
-      "markdownPath": "./model-router.md"
+      "markdownPath": "./model-router.md",
+      "requirementIds": [
+        "ME-RTR-001",
+        "ME-RTR-002",
+        "ME-RTR-003",
+        "ME-RTR-004",
+        "ME-RTR-005",
+        "ME-RTR-006",
+        "ME-RTR-009"
+      ],
+      "claimIds": [],
+      "sourceContracts": [
+        "packages/platform/src/router.ts",
+        "packages/platform/src/router-runtime.ts",
+        "apps/worker/src/cli.ts"
+      ]
     },
     {
       "slug": "post-trained-models",
@@ -99,7 +240,18 @@
       "availability": "Implemented control plane; no first-party trainer or shipped Mendpoint-trained model",
       "lastVerified": "2026-08-14",
       "webPath": "/docs/post-trained-models",
-      "markdownPath": "./post-trained-models.md"
+      "markdownPath": "./post-trained-models.md",
+      "requirementIds": [
+        "ME-FND-004",
+        "ME-RTR-007",
+        "ME-RTR-008",
+        "ME-RTR-009"
+      ],
+      "claimIds": [],
+      "sourceContracts": [
+        "packages/platform/src/adapter-lifecycle.ts",
+        "apps/api/src/advanced-ai-applications.ts"
+      ]
     },
     {
       "slug": "learning-system",
@@ -110,7 +262,18 @@
       "availability": "Capture and corpus export implemented; downstream training requires separate authorization",
       "lastVerified": "2026-08-14",
       "webPath": "/docs/learning-system",
-      "markdownPath": "./learning-system.md"
+      "markdownPath": "./learning-system.md",
+      "requirementIds": [
+        "ME-FND-009",
+        "ME-RTR-006",
+        "ME-RTR-007"
+      ],
+      "claimIds": [],
+      "sourceContracts": [
+        "packages/db/src/learning.ts",
+        "packages/db/src/organization-memory.ts",
+        "apps/api/src/learning-consent-routes.ts"
+      ]
     },
     {
       "slug": "billing-usage",
@@ -121,7 +284,20 @@
       "availability": "Usage accounting active in runtimes; public payment collection and standard invoicing are not active",
       "lastVerified": "2026-08-14",
       "webPath": "/docs/billing-usage",
-      "markdownPath": "./billing-usage.md"
+      "markdownPath": "./billing-usage.md",
+      "requirementIds": [
+        "ME-FND-008",
+        "ME-COM-001",
+        "ME-COM-002",
+        "ME-COM-003",
+        "ME-COM-004"
+      ],
+      "claimIds": [],
+      "sourceContracts": [
+        "packages/db/src/usage.ts",
+        "apps/api/src/billing-economics.ts",
+        "apps/api/src/server.ts"
+      ]
     },
     {
       "slug": "security-governance",
@@ -132,7 +308,183 @@
       "availability": "Private preview deployments with profile-specific authentication, encryption, and governance controls",
       "lastVerified": "2026-08-14",
       "webPath": "/docs/security-governance",
-      "markdownPath": "./security-governance.md"
+      "markdownPath": "./security-governance.md",
+      "requirementIds": [
+        "ME-ENT-001",
+        "ME-ENT-002",
+        "ME-ENT-003",
+        "ME-ENT-004",
+        "ME-WAR-008"
+      ],
+      "claimIds": [
+        "CLM-014"
+      ],
+      "sourceContracts": [
+        "apps/api/src/auth.ts",
+        "packages/contract/src/tenant-boundary.ts",
+        "packages/contract/src/audit-governance.ts"
+      ]
+    },
+    {
+      "slug": "authentication-tenancy",
+      "title": "Authentication and tenancy",
+      "category": "Trust and verification",
+      "status": "limited_availability",
+      "statusLabel": "Profile specific controls",
+      "availability": "Scoped API key authentication is active; enterprise identity integrations require separately configured authority",
+      "lastVerified": "2026-08-30",
+      "webPath": "/docs/authentication-tenancy",
+      "markdownPath": "./authentication-tenancy.md",
+      "requirementIds": [
+        "ME-ENT-001",
+        "ME-ENT-002",
+        "ME-ENT-003"
+      ],
+      "claimIds": [],
+      "sourceContracts": [
+        "apps/api/src/auth.ts",
+        "apps/api/src/tenant-memberships.ts",
+        "packages/contract/src/tenant-boundary.ts"
+      ]
+    },
+    {
+      "slug": "mission-policy",
+      "title": "Mission and Policy Envelope",
+      "category": "AI platform",
+      "status": "internal",
+      "statusLabel": "Internal shared foundation",
+      "availability": "Durable Mission and Policy Envelope primitives are active behind product specific interfaces",
+      "lastVerified": "2026-08-30",
+      "webPath": "/docs/mission-policy",
+      "markdownPath": "./mission-policy.md",
+      "requirementIds": [
+        "ME-WAR-005",
+        "ME-TRN-003",
+        "ME-TRN-007",
+        "ME-TRN-009"
+      ],
+      "claimIds": [],
+      "sourceContracts": [
+        "packages/db/src/mission.ts",
+        "packages/db/src/mission-task.ts",
+        "packages/db/src/policy-envelope.ts"
+      ]
+    },
+    {
+      "slug": "api-conventions",
+      "title": "API conventions",
+      "category": "Connect and deliver",
+      "status": "limited_availability",
+      "statusLabel": "Route specific production contract",
+      "availability": "Documented behavior applies only where the referenced route implements the named convention",
+      "lastVerified": "2026-08-30",
+      "webPath": "/docs/api-conventions",
+      "markdownPath": "./api-conventions.md",
+      "requirementIds": [
+        "ME-FND-007",
+        "ME-ENT-001",
+        "ME-ENT-002",
+        "ME-WAR-008"
+      ],
+      "claimIds": [],
+      "sourceContracts": [
+        "apps/api/src/auth.ts",
+        "apps/api/src/production.ts",
+        "apps/api/src/error-boundary.ts"
+      ]
+    },
+    {
+      "slug": "webhooks-events",
+      "title": "Webhooks and domain events",
+      "category": "Connect and deliver",
+      "status": "limited_availability",
+      "statusLabel": "GitHub production path",
+      "availability": "GitHub webhook ingestion is implemented; a customer ready GitLab webhook path is not active",
+      "lastVerified": "2026-08-30",
+      "webPath": "/docs/webhooks-events",
+      "markdownPath": "./webhooks-events.md",
+      "requirementIds": [
+        "ME-SCM-003",
+        "ME-SCM-004",
+        "ME-WAR-004",
+        "ME-WAR-008"
+      ],
+      "claimIds": [],
+      "sourceContracts": [
+        "apps/api/src/server.ts",
+        "apps/api/src/fettler-pr-review-webhook.ts",
+        "apps/api/src/delivery-outcome-learning-dispatch.ts"
+      ]
+    },
+    {
+      "slug": "audit-compliance",
+      "title": "Audit and compliance evidence",
+      "category": "Trust and verification",
+      "status": "internal",
+      "statusLabel": "Engineering evidence active",
+      "availability": "Audit capture and governed export are implemented; independent compliance assessment remains external",
+      "lastVerified": "2026-08-30",
+      "webPath": "/docs/audit-compliance",
+      "markdownPath": "./audit-compliance.md",
+      "requirementIds": [
+        "ME-WAR-008",
+        "ME-ENT-004",
+        "ME-ENT-012"
+      ],
+      "claimIds": [],
+      "sourceContracts": [
+        "packages/contract/src/audit-governance.ts",
+        "apps/api/src/audit-export.ts",
+        "packages/db/src/change-impact-audit.ts"
+      ]
+    },
+    {
+      "slug": "recovery-reliability",
+      "title": "Recovery and reliability",
+      "category": "Operations",
+      "status": "limited_availability",
+      "statusLabel": "Engineering controls active",
+      "availability": "Encrypted backup and restore controls exist; cross region production recovery proof remains external",
+      "lastVerified": "2026-08-30",
+      "webPath": "/docs/recovery-reliability",
+      "markdownPath": "./recovery-reliability.md",
+      "requirementIds": [
+        "ME-ENT-005",
+        "ME-ENT-006",
+        "ME-ENT-007",
+        "ME-ENT-008",
+        "ME-ENT-009",
+        "ME-ENT-010"
+      ],
+      "claimIds": [],
+      "sourceContracts": [
+        "packages/ops/src/readiness.ts",
+        "packages/ops/src/disaster-recovery.ts",
+        "scripts/customer-restore.ts"
+      ]
+    },
+    {
+      "slug": "limits-errors",
+      "title": "Limits, errors, and retries",
+      "category": "Operations",
+      "status": "limited_availability",
+      "statusLabel": "Profile specific limits",
+      "availability": "Runtime bounds and error contracts vary by route, workload tier, and deployment profile",
+      "lastVerified": "2026-08-30",
+      "webPath": "/docs/limits-errors",
+      "markdownPath": "./limits-errors.md",
+      "requirementIds": [
+        "ME-FND-006",
+        "ME-FND-007",
+        "ME-ENT-005",
+        "ME-ENT-009"
+      ],
+      "claimIds": [],
+      "sourceContracts": [
+        "apps/api/src/production.ts",
+        "apps/api/src/error-boundary.ts",
+        "docs/PERFORMANCE_CONTRACT.md"
+      ]
     },
     {
       "slug": "deployment-operations",
@@ -143,7 +495,27 @@
       "availability": "Docker Compose and Fly pilot deployment; the dedicated Regauge profile is implemented but no live Regauge deployment is claimed",
       "lastVerified": "2026-08-14",
       "webPath": "/docs/deployment-operations",
-      "markdownPath": "./deployment-operations.md"
+      "markdownPath": "./deployment-operations.md",
+      "requirementIds": [
+        "ME-FND-005",
+        "ME-ENT-005",
+        "ME-ENT-006",
+        "ME-ENT-007",
+        "ME-ENT-008",
+        "ME-ENT-009",
+        "ME-ENT-010",
+        "ME-ENT-011",
+        "ME-ENT-012"
+      ],
+      "claimIds": [
+        "CLM-009",
+        "CLM-013"
+      ],
+      "sourceContracts": [
+        "scripts/start-fly.mjs",
+        "packages/ops/src/readiness.ts",
+        "packages/ops/src/disaster-recovery.ts"
+      ]
     }
   ]
 }

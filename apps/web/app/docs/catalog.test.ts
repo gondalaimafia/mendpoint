@@ -20,6 +20,15 @@ const claimRegistry = JSON.parse(
     limitations: string[];
   }>;
 };
+const requirementRegistry = JSON.parse(
+  readFileSync(resolve(repoRoot, "docs/PRODUCT_REQUIREMENTS.json"), "utf8"),
+) as {
+  requirements: Array<{
+    id: string;
+    implementationStatus: string;
+    availability: string;
+  }>;
+};
 
 function claim(id: string) {
   const value = claimRegistry.claims.find((entry) => entry.id === id);
@@ -41,6 +50,13 @@ const requiredSlugs = [
   "billing-usage",
   "security-governance",
   "deployment-operations",
+  "authentication-tenancy",
+  "mission-policy",
+  "api-conventions",
+  "webhooks-events",
+  "audit-compliance",
+  "recovery-reliability",
+  "limits-errors",
 ] as const;
 
 describe("public product documentation catalog", () => {
@@ -129,6 +145,38 @@ describe("public product documentation catalog", () => {
     }
   });
 
+  it("binds every page to registered requirements, claims, and existing contract sources", () => {
+    const requirements = new Map(requirementRegistry.requirements.map((entry) => [entry.id, entry]));
+    const claims = new Set(claimRegistry.claims.map((entry) => entry.id));
+    for (const page of PRODUCT_DOCS) {
+      expect(page.requirementIds.length, `${page.slug}: requirements`).toBeGreaterThan(0);
+      expect(new Set(page.requirementIds).size, `${page.slug}: duplicate requirements`).toBe(page.requirementIds.length);
+      expect(new Set(page.claimIds).size, `${page.slug}: duplicate claims`).toBe(page.claimIds.length);
+      expect(page.sourceContracts.length, `${page.slug}: sources`).toBeGreaterThan(0);
+      for (const id of page.requirementIds) expect(requirements.has(id), `${page.slug}: ${id}`).toBe(true);
+      for (const id of page.claimIds) expect(claims.has(id), `${page.slug}: ${id}`).toBe(true);
+      for (const locator of page.sourceContracts) {
+        expect(existsSync(resolve(repoRoot, locator)), `${page.slug}: ${locator}`).toBe(true);
+      }
+      if (page.status === "production") {
+        for (const id of page.requirementIds) {
+          expect(requirements.get(id), `${page.slug}: ${id}`).toMatchObject({
+            implementationStatus: "verified",
+            availability: "ga",
+          });
+        }
+      }
+    }
+  });
+
+  it("keeps related links closed over the catalog and examples free of credential values", () => {
+    const slugs = new Set(PRODUCT_DOCS.map((page) => page.slug));
+    for (const page of PRODUCT_DOCS) {
+      for (const related of page.related) expect(slugs.has(related), `${page.slug}: ${related}`).toBe(true);
+      expect(page.startHere.command ?? "").not.toMatch(/Bearer\s+(?!\$|<)[A-Za-z0-9._~-]{16,}|me_[A-Za-z0-9_-]{16,}|BEGIN (?:RSA |EC )?PRIVATE KEY/);
+    }
+  });
+
   it("renders the complete machine-readable contract as Markdown", () => {
     for (const page of PRODUCT_DOCS) {
       const markdown = renderProductDocMarkdown(page);
@@ -136,10 +184,12 @@ describe("public product documentation catalog", () => {
       expect(markdown).toContain(`Status: ${page.statusLabel}`);
       expect(markdown).toContain(`Availability: ${page.availability}`);
       expect(markdown).toContain(`Last verified: ${page.lastVerified}`);
+      expect(markdown).toContain(`Requirements: ${page.requirementIds.join(", ")}`);
       expect(markdown).toContain("## Start here");
       expect(markdown).toContain("## How it works");
       expect(markdown).toContain("## Interfaces");
       expect(markdown).toContain("## Evidence and verification");
+      expect(markdown).toContain("## Contract sources");
       expect(markdown).toContain("## Safety model");
       expect(markdown).toContain("## Limitations");
       expect(markdown).toContain("## See also");
@@ -149,7 +199,7 @@ describe("public product documentation catalog", () => {
   it("builds a deterministic manifest without legacy docs slugs or secret material", () => {
     const first = buildDocsManifest();
     expect(first).toEqual(buildDocsManifest());
-    expect(first.schemaVersion).toBe("2026-08-14.v1");
+    expect(first.schemaVersion).toBe("2026-08-30.v2");
     expect(first.pages).toHaveLength(requiredSlugs.length);
     expect(first.pages.map((page) => page.webPath)).not.toEqual(
       expect.arrayContaining(["/docs/warden", "/docs/transformer"]),
