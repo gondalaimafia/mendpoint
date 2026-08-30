@@ -435,11 +435,34 @@ jobs:
   # source, which is why the customer backup cron fails every run. This job
   # gives that app the same gated push-to-main deploy path mendpoint-talal has.
   #
-  # It is deliberately NOT gated on /readyz. Customer readiness depends on
-  # backup evidence this deploy cannot itself produce, so asserting it here
-  # would make the job permanently red for a reason outside a deploy's control.
-  # The job proves the right code is running and the process is alive; readiness
-  # remains the backup workflow's business.
+  # It is deliberately NOT gated on readiness -- not on /readyz, and not on
+  # /healthz either. Customer readiness depends on backup evidence this deploy
+  # cannot itself produce, so asserting it here would make the job permanently
+  # red for a reason outside a deploy's control.
+  #
+  # /healthz is excluded for exactly the same reason /readyz is, and the two are
+  # not merely alike: apps/web/app/readyz/route.ts is one line that re-exports
+  # GET from ../healthz/route, so they are the SAME handler. That handler calls
+  # the API's /ready, and /ready carries the last_verified_backup check for any
+  # customer-profile deployment (packages/ops/src/readiness.ts) -- which this app
+  # is (MENDPOINT_DEPLOYMENT_PROFILE=customer in fly.customer-warden.toml). So
+  # naming /readyz while still gating on /healthz excluded nothing at all: the
+  # backup dependency came in through the other name.
+  #
+  # That cost a deploy on 07012e61. The image swapped cleanly, the machine was
+  # already running (zero mutating calls), the app never went down, and /version
+  # returned exactly 07012e61 -- and the job still failed, because /healthz was
+  # 503 with backup evidence 132 minutes stale. Nothing about the deploy was
+  # wrong; the gate was reading a signal the deploy does not control.
+  #
+  # Do NOT "restore" a readiness assertion here. This gate asserts only what a
+  # deploy controls: that the right code is running (/version matches the
+  # deployed sha exactly, and an absent revision is a FAILURE, never a match)
+  # and that the process is alive (/livez). /livez is also what Fly's own
+  # machine health check probes, so the gate and the platform agree on what
+  # "up" means. /healthz is still probed and still printed in the failure
+  # message, but purely as diagnosis -- it never decides this job. Backup
+  # freshness is the backup workflow's business, not this job's.
   deploy-customer-production:
     # Runs on merges to main and on deliberate dispatch, never on pull_request:
     # a PR that deployed would ship unreviewed code to a customer app. The
@@ -664,6 +687,12 @@ jobs:
       # unresponsive app fails fast rather than burning the job timeout. An
       # absent revision is treated as a FAILURE, never a match.
       #
+      # Two signals decide this step and only two: /version must equal the
+      # deployed sha, and /livez must be 200. /healthz is probed on every pass
+      # so the failure message can report it, but it is NOT part of the
+      # decision -- see the job comment above for why readiness cannot gate a
+      # deploy. If you are adding a condition here, do not add a readiness one.
+      #
       # This step remains the sole decider of the job. The start step above is
       # additive: it can leave the machine running, but it cannot make this
       # step pass. What the machine step contributes here is diagnosis, not
@@ -701,7 +730,7 @@ jobs:
             if [ "$ver_code" = "200" ]; then
               revision="$(jq -r '.revision // empty' version.json 2>/dev/null || true)"
             fi
-            if [ "$revision" = "$expected" ] && [ "$live_code" = "200" ] && [ "$health_code" = "200" ]; then
+            if [ "$revision" = "$expected" ] && [ "$live_code" = "200" ]; then
               echo "Customer production is live and serving the expected revision ${expected}."
               exit 0
             fi
@@ -712,7 +741,7 @@ jobs:
           echo "  Machine run state after deploy: ${MACHINE_OUTCOME:-unrecorded} (${MACHINE_DETAIL:-no observation recorded})"
           echo "  /version -> http ${ver_code}, ${ver_bytes} bytes, revision=$([ -n "${revision}" ] && echo "${revision}" || echo "<absent>")"
           echo "  /livez   -> http ${live_code}, ${live_bytes} bytes"
-          echo "  /healthz -> http ${health_code}, ${health_bytes} bytes"
+          echo "  /healthz -> http ${health_code}, ${health_bytes} bytes (diagnostic only -- readiness does NOT gate this job; see the note above)"
           if [ -z "${revision}" ]; then
             echo "  Deployed revision could not be determined (absent). This is a FAILURE, not a match."
             case "${MACHINE_OUTCOME:-}" in
@@ -726,6 +755,6 @@ jobs:
           elif [ "${revision}" != "${expected}" ]; then
             echo "  Deployed revision ${revision} does not match expected ${expected}. The app is serving OLD code: the swap landed but this machine is running a previous image."
           else
-            echo "  Revision matched but the app never reported healthy (/livez and /healthz must both be 200). The right code is running and failing its own health checks."
+            echo "  Revision matched but the app never reported alive (/livez must be 200). The right code is running and failing its own liveness check."
           fi
           exit 1
