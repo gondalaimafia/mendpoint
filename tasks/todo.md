@@ -3921,3 +3921,29 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The customer profile no longer treats enterprise SCIM as an unconditional production secret. Both trimmed values absent means inactive; either value present activates the pair requirement and the existing binding parser, nonempty, issuer, and exact model-tenant checks.
 - The SCIM-free launcher regression reaches the exclusive-backup startup gate instead of failing profile validation. Partial activation, empty bindings, malformed JSON, issuer mismatch, and tenant mismatch remain fail closed; a complete active pair still passes.
 - Focused verification passes 11 of 11 customer profile and launcher tests, 16 of 16 configuration completeness tests, API and Worker typechecks, scripts typecheck, and diff integrity.
+
+## 2026-08-30 GSD Plan 11-02: protected qualification authority loader (#430)
+
+- [x] Create an isolated `codex/430-qualification-authority-loader` worktree from current `origin/main`.
+- [x] Define one exact-schema protected qualification bundle without creating evidence or changing requirement, availability, or claim status.
+- [x] Load the requirements register, public claims registry, and evidence manifest as raw bytes under an explicit local authority root; reject path escape and symbolic-link or reparse traversal before reading.
+- [x] Bind all three byte-level SHA-256 digests and the qualified revision to the existing customer-readiness attestation contract.
+- [x] Return an explicit fail-closed indeterminate result for absent, malformed, unsafe, stale, or mismatched authority.
+- [x] Add hostile deletion, drift, traversal, symlink, junction, schema, digest, revision, and revocation-state tests.
+- [x] Run focused and complete Ops tests, the Ops typecheck, and diff integrity.
+- [x] Obtain independent review of the original exact head before push; require a fresh exact-head review after the production-repair rebase.
+
+### Scope and safety
+
+- Requirements: final qualification authority engineering for issue #430 and primary plan `11-02`; no requirement is promoted by this slice.
+- Owned files: `packages/ops/src/customer-qualification-authority.ts`, its focused test, minimal customer-readiness exports, the Ops public export, and this Plan 11-02 record.
+- Excluded concurrent surfaces: API startup, environment declarations, Fly launch configuration, and customer-profile bindings remain untouched while Plan 10-01 owns them.
+- Threats: substituted bundle roots, path traversal, Windows junction or symbolic-link escape, digest normalization instead of raw-byte binding, stale-revision replay, partial revocation state appearing authoritative, permissive unknown keys, and errors collapsing to ready defaults.
+- Rollback: revert this isolated loader commit. No evidence, requirement status, public claim, protected environment, or production process is mutated.
+
+### Review
+
+- The original exact head received an independent APPROVE with no P0, P1, or P2 findings. The protected production-repair rebase changes the immutable head, so a fresh exact-head review remains mandatory before merge. Runtime consumption and protected environment binding remain separate follow-up increments.
+- The first vertical slice defines a pure protected-bundle loader. It accepts only an exact schema, validates the existing 101-of-101 attestation, confines the bundle and three artifacts to a canonical non-reparse root, hashes the raw file bytes, binds every digest and the exact release revision, and returns only an indeterminate authority on any ambiguity.
+- Exact-head re-review found that mixed Windows path separators could collapse two artifact roles onto the same canonical file. The loader now resolves and validates all artifact paths before reading, rejects duplicate canonical paths, and covers the slash-to-backslash alias directly.
+- After rebasing onto production repair `842dafc2`, all 171 Ops tests pass, including eleven hostile loader tests and the existing readiness matrix. Coverage includes deletion, byte drift, duplicate canonical files, extra and missing keys, malformed JSON, stale revision, attestation substitution, traversal, absolute paths, incomplete revocation state, symbolic links, substituted roots, and a real Windows junction. The Ops typecheck and diff integrity pass. Any runtime wiring remains pending.
