@@ -98,6 +98,7 @@ function version(generation: number, ciphertext = `ciphertext-${generation}`) {
       customerManaged: true,
     },
     materialLineageId: "b".repeat(64),
+    materialLineageKeyId: "lineage-key-v1",
     envelope: {
       schemaVersion: 1 as const,
       algorithm: "AES-256-GCM" as const,
@@ -128,6 +129,7 @@ describe.each([
       key_version: "1",
       customer_managed: 1,
       key_attestation_sha256: "f".repeat(64),
+      material_lineage_key_id: "lineage-key-v1",
     });
     expect(getActiveSecretLifecycleByReference(
       db,
@@ -145,6 +147,7 @@ describe.each([
     }>;
     expect(columns.map((column) => column.name)).not.toContain("plaintext");
     expect(columns.map((column) => column.name)).toContain("key_attestation_sha256");
+    expect(columns.map((column) => column.name)).toContain("material_lineage_key_id");
     expect(JSON.stringify(created)).not.toContain("customer-secret");
   });
 });
@@ -154,6 +157,7 @@ describe("secret lifecycle transitions", () => {
     const db = legacySecretDb();
     const row = getSecretLifecycleVersion(db, "tenant-a", "legacy-credential", 1);
     expect(row?.key_attestation_sha256).toBeNull();
+    expect(row?.material_lineage_key_id).toBeNull();
     expect(() => db.raw.prepare(`
       UPDATE secret_lifecycle_versions SET key_attestation_sha256 = ?
       WHERE tenant_id = 'tenant-a' AND credential_id = 'legacy-credential' AND generation = 1

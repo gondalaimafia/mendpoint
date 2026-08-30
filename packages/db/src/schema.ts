@@ -19,6 +19,7 @@ export type SecretLifecycleVersionRow = {
   customer_managed: number;
   key_attestation_sha256: string | null;
   material_lineage_id: string | null;
+  material_lineage_key_id: string | null;
   envelope_schema_version: number;
   algorithm: "AES-256-GCM";
   wrapped_data_key: string;

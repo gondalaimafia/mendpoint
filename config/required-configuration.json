@@ -18,20 +18,20 @@
       "note": "Explicit true or false break-glass policy binding"
     },
     {
-      "name": "MENDPOINT_SECRET_IDEMPOTENCY_KEY_ID",
-      "type": "variable",
-      "scope": "protected_application_environment",
-      "status": "required_when_active",
-      "activatedBy": "MENDPOINT_SECRET_LIFECYCLE_ENABLED=1",
-      "note": "Versioned identifier for the request-commitment key"
-    },
-    {
-      "name": "MENDPOINT_SECRET_IDEMPOTENCY_KEY_BASE64",
+      "name": "MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON",
       "type": "secret",
       "scope": "protected_application_environment",
       "status": "required_when_active",
       "activatedBy": "MENDPOINT_SECRET_LIFECYCLE_ENABLED=1",
-      "note": "Distinct 32 byte commitment key; must not reuse envelope-key material"
+      "note": "Versioned retained request-replay keyring with one active signing key"
+    },
+    {
+      "name": "MENDPOINT_SECRET_LINEAGE_KEYRING_JSON",
+      "type": "secret",
+      "scope": "protected_application_environment",
+      "status": "required_when_active",
+      "activatedBy": "MENDPOINT_SECRET_LIFECYCLE_ENABLED=1",
+      "note": "Distinct retained material-lineage keyring; must not reuse replay or envelope-key material"
     }
   ],
   "entries": [

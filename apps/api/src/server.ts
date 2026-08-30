@@ -309,7 +309,7 @@ import {
   createSecretBreakGlassDenialAuditMiddleware,
   createSecretLifecycleRoutes,
 } from "./secret-lifecycle-routes.js";
-import { secretLifecycleRequestCommitmentFromEnvironment } from "./secret-lifecycle-service.js";
+import { secretLifecycleCommitmentAuthorityFromEnvironment } from "./secret-lifecycle-service.js";
 import { createTenantCreationRoutes } from "./tenant-creation-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { regaugeProductionBootstrapInputFromEnvironment } from "./regauge-production-bootstrap-runtime.js";
@@ -816,7 +816,7 @@ app.route("/platform/secrets", createSecretLifecycleRoutes({
   providers: envelopeKeyProviders,
   enabled: process.env.MENDPOINT_SECRET_LIFECYCLE_ENABLED === "1",
   breakGlassEnabled: process.env.MENDPOINT_SECRET_BREAK_GLASS === "true",
-  requestCommitment: secretLifecycleRequestCommitmentFromEnvironment(process.env),
+  ...secretLifecycleCommitmentAuthorityFromEnvironment(process.env),
 }));
 app.route("/advanced-ai", createAdvancedAiApplicationRoutes({
   db,

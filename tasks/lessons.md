@@ -506,3 +506,8 @@
 **Mistake:** Locally supplied JSON could label an application-held KEK customer-managed without an external provider proving customer custody.
 **Correction:** Describe locally imported key material as Mendpoint-custodied and reserve customer-managed claims for provider-authenticated evidence.
 **Rule:** Custody is an attested property, not a caller label. Never infer customer control from configuration text or a boolean supplied alongside key bytes.
+### 2026-08-30 — Retain cryptographic history by purpose
+
+**Mistake:** One active HMAC key controlled both operation replay and material lineage, so rotating it broke exact replay and changed the identity of already revoked material.
+**Correction:** Keep independent versioned keyrings, verify durable evidence with its stored key ID, and give pre-split rows an explicit fail-closed compatibility path.
+**Rule:** Cryptographic key rotation never changes historical identity. Persist the purpose-specific key ID, retain verification keys for every live record, and reject the operation when required historical authority is unavailable.

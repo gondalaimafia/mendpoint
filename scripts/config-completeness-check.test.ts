@@ -183,8 +183,8 @@ describe("configuration completeness gate", () => {
     expect(secretLifecycle.map((entry) => entry.name).sort()).toEqual([
       "MENDPOINT_ENVELOPE_KEY_CATALOG_JSON",
       "MENDPOINT_SECRET_BREAK_GLASS",
-      "MENDPOINT_SECRET_IDEMPOTENCY_KEY_BASE64",
-      "MENDPOINT_SECRET_IDEMPOTENCY_KEY_ID",
+      "MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON",
+      "MENDPOINT_SECRET_LINEAGE_KEYRING_JSON",
     ]);
     expect(secretLifecycle.every(
       (entry) => entry.scope === "protected_application_environment" &&

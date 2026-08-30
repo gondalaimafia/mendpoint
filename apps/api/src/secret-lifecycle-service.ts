@@ -5,8 +5,10 @@ import {
   getActiveSecretLifecycle,
   getSecretBreakGlassOperation,
   getSecretLifecycleOperation,
+  getSecretRevokeOperation,
   getSecretRewrapOperation,
   getSecretLifecycleVersion,
+  listSecretLifecycleVersions,
   revokeSecretLifecycle,
   rewrapSecretLifecycle,
   rotateSecretLifecycle,
@@ -106,6 +108,11 @@ export type SecretLifecycleRequestCommitment = Readonly<{
   key: Uint8Array;
 }>;
 
+export type SecretLifecycleCommitmentKeyring = Readonly<{
+  activeKeyId: string;
+  keys: readonly SecretLifecycleRequestCommitment[];
+}>;
+
 export type DurableSecretLifecycleServiceOptions = Readonly<{
   db: AppDb;
   tenantId: string;
@@ -117,7 +124,8 @@ export type DurableSecretLifecycleServiceOptions = Readonly<{
   breakGlassEnabled: boolean;
   requestId: string | null;
   apiKeyId: string | null;
-  requestCommitment?: SecretLifecycleRequestCommitment;
+  requestCommitment?: SecretLifecycleRequestCommitment | SecretLifecycleCommitmentKeyring;
+  materialLineageCommitment?: SecretLifecycleRequestCommitment | SecretLifecycleCommitmentKeyring;
   audit: (event: SecretLifecycleAudit) => void;
   revalidateAuthority?: (requiredRole: "admin" | "owner") => Readonly<{ version: string }>;
   now?: () => string;
@@ -185,15 +193,116 @@ export function secretLifecycleRequestCommitmentFromEnvironment(
   return Object.freeze({ keyId, key });
 }
 
+function normalizeCommitmentKeyring(
+  input: SecretLifecycleRequestCommitment | SecretLifecycleCommitmentKeyring,
+): Readonly<{ activeKeyId: string; keys: ReadonlyMap<string, Buffer> }> {
+  const source = "activeKeyId" in input
+    ? input
+    : Object.freeze({ activeKeyId: input.keyId, keys: Object.freeze([input]) });
+  if (!ID.test(source.activeKeyId) || source.keys.length === 0) {
+    throw new Error("secret_lifecycle_commitment_configuration_invalid");
+  }
+  const keys = new Map<string, Buffer>();
+  for (const item of source.keys) {
+    if (!ID.test(item.keyId) || item.key.byteLength !== 32 || keys.has(item.keyId)) {
+      throw new Error("secret_lifecycle_commitment_configuration_invalid");
+    }
+    keys.set(item.keyId, Buffer.from(item.key));
+  }
+  if (!keys.has(source.activeKeyId)) {
+    throw new Error("secret_lifecycle_commitment_configuration_invalid");
+  }
+  return Object.freeze({ activeKeyId: source.activeKeyId, keys });
+}
+
+function commitmentKeyringFromJson(
+  raw: string | undefined,
+): SecretLifecycleCommitmentKeyring | undefined {
+  if (!raw?.trim()) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("secret_lifecycle_commitment_configuration_invalid");
+  }
+  if (!exactKeys(parsed, ["schemaVersion", "activeKeyId", "keys"]) ||
+      parsed.schemaVersion !== 1 || typeof parsed.activeKeyId !== "string" ||
+      !Array.isArray(parsed.keys)) {
+    throw new Error("secret_lifecycle_commitment_configuration_invalid");
+  }
+  const keys = parsed.keys.map((value) => {
+    if (!exactKeys(value, ["keyId", "keyBase64"]) || typeof value.keyId !== "string" ||
+        typeof value.keyBase64 !== "string") {
+      throw new Error("secret_lifecycle_commitment_configuration_invalid");
+    }
+    const key = Buffer.from(value.keyBase64, "base64");
+    if (key.length !== 32 || key.toString("base64").replace(/=+$/u, "") !==
+        value.keyBase64.replace(/=+$/u, "")) {
+      throw new Error("secret_lifecycle_commitment_configuration_invalid");
+    }
+    return Object.freeze({ keyId: value.keyId, key });
+  });
+  const keyring = Object.freeze({ activeKeyId: parsed.activeKeyId, keys: Object.freeze(keys) });
+  normalizeCommitmentKeyring(keyring);
+  return keyring;
+}
+
+export function secretLifecycleCommitmentAuthorityFromEnvironment(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): Readonly<{
+  requestCommitment?: SecretLifecycleRequestCommitment | SecretLifecycleCommitmentKeyring;
+  materialLineageCommitment?: SecretLifecycleRequestCommitment | SecretLifecycleCommitmentKeyring;
+}> {
+  const requestKeyring = commitmentKeyringFromJson(env.MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON);
+  const lineageKeyring = commitmentKeyringFromJson(env.MENDPOINT_SECRET_LINEAGE_KEYRING_JSON);
+  if (requestKeyring || lineageKeyring) {
+    if (!requestKeyring || !lineageKeyring) {
+      throw new Error("secret_lifecycle_commitment_configuration_invalid");
+    }
+    return Object.freeze({ requestCommitment: requestKeyring, materialLineageCommitment: lineageKeyring });
+  }
+  const requestCommitment = secretLifecycleRequestCommitmentFromEnvironment(env);
+  const lineageKeyId = env.MENDPOINT_SECRET_LINEAGE_KEY_ID?.trim();
+  const lineageEncoded = env.MENDPOINT_SECRET_LINEAGE_KEY_BASE64?.trim();
+  if (!lineageKeyId && !lineageEncoded) {
+    return requestCommitment ? Object.freeze({ requestCommitment }) : Object.freeze({});
+  }
+  if (!lineageKeyId || !lineageEncoded || !ID.test(lineageKeyId)) {
+    throw new Error("secret_lifecycle_commitment_configuration_invalid");
+  }
+  const lineageKey = Buffer.from(lineageEncoded, "base64");
+  if (lineageKey.length !== 32 || lineageKey.toString("base64").replace(/=+$/u, "") !==
+      lineageEncoded.replace(/=+$/u, "") || !requestCommitment) {
+    throw new Error("secret_lifecycle_commitment_configuration_invalid");
+  }
+  return Object.freeze({
+    requestCommitment,
+    materialLineageCommitment: Object.freeze({ keyId: lineageKeyId, key: lineageKey }),
+  });
+}
+
 export function assertSecretLifecycleKeySeparation(
   providers: readonly KeyEncryptionKeyProvider[],
-  requestCommitment?: SecretLifecycleRequestCommitment,
+  requestCommitment?: SecretLifecycleRequestCommitment | SecretLifecycleCommitmentKeyring,
+  materialLineageCommitment?: SecretLifecycleRequestCommitment | SecretLifecycleCommitmentKeyring,
 ): void {
-  if (!requestCommitment) return;
-  const commitmentFingerprint = cryptographicKeyMaterialFingerprint(requestCommitment.key);
-  for (const provider of providers) {
-    if (provider.keyMaterialFingerprints().includes(commitmentFingerprint)) {
-      throw new Error("secret_lifecycle_key_material_reuse");
+  const authorities = [requestCommitment, materialLineageCommitment].filter(
+    (value): value is SecretLifecycleRequestCommitment | SecretLifecycleCommitmentKeyring => Boolean(value),
+  ).map(normalizeCommitmentKeyring);
+  const fingerprints = new Set<string>();
+  const keyIds = new Set<string>();
+  for (const authority of authorities) {
+    for (const [keyId, key] of authority.keys) {
+      if (keyIds.has(keyId)) throw new Error("secret_lifecycle_key_material_reuse");
+      keyIds.add(keyId);
+      const fingerprint = cryptographicKeyMaterialFingerprint(key);
+      if (fingerprints.has(fingerprint)) throw new Error("secret_lifecycle_key_material_reuse");
+      fingerprints.add(fingerprint);
+      for (const provider of providers) {
+        if (provider.keyMaterialFingerprints().includes(fingerprint)) {
+          throw new Error("secret_lifecycle_key_material_reuse");
+        }
+      }
     }
   }
 }
@@ -249,18 +358,27 @@ function publicResult(row: SecretLifecycleVersionRow) {
 }
 
 export class DurableSecretLifecycleService {
-  private readonly requestCommitment?: Readonly<{ keyId: string; key: Buffer }>;
+  private readonly requestCommitments?: Readonly<{
+    activeKeyId: string;
+    keys: ReadonlyMap<string, Buffer>;
+  }>;
+  private readonly materialLineageCommitments?: Readonly<{
+    activeKeyId: string;
+    keys: ReadonlyMap<string, Buffer>;
+  }>;
 
   constructor(private readonly options: DurableSecretLifecycleServiceOptions) {
-    assertSecretLifecycleKeySeparation(options.providers, options.requestCommitment);
-    if (options.requestCommitment) {
-      if (!ID.test(options.requestCommitment.keyId) || options.requestCommitment.key.byteLength !== 32) {
-        throw new Error("secret_lifecycle_commitment_configuration_invalid");
-      }
-      this.requestCommitment = Object.freeze({
-        keyId: options.requestCommitment.keyId,
-        key: Buffer.from(options.requestCommitment.key),
-      });
+    assertSecretLifecycleKeySeparation(
+      options.providers,
+      options.requestCommitment,
+      options.materialLineageCommitment,
+    );
+    if (Boolean(options.requestCommitment) !== Boolean(options.materialLineageCommitment)) {
+      throw new Error("secret_lifecycle_commitment_configuration_invalid");
+    }
+    if (options.requestCommitment && options.materialLineageCommitment) {
+      this.requestCommitments = normalizeCommitmentKeyring(options.requestCommitment);
+      this.materialLineageCommitments = normalizeCommitmentKeyring(options.materialLineageCommitment);
     }
   }
 
@@ -390,35 +508,75 @@ export class DurableSecretLifecycleService {
     }
   }
 
-  #commitRequest(value: unknown): Readonly<{ digest: string; keyId: string }> {
-    if (!this.requestCommitment) throw new Error("secret_lifecycle_commitment_unconfigured");
+  #commitRequest(value: unknown, retainedKeyId?: string | null): Readonly<{ digest: string; keyId: string }> {
+    if (!this.requestCommitments) throw new Error("secret_lifecycle_commitment_unconfigured");
+    if (retainedKeyId === null) throw new Error("secret_lifecycle_commitment_key_unavailable");
+    const keyId = retainedKeyId === undefined ? this.requestCommitments.activeKeyId : retainedKeyId;
+    const key = this.requestCommitments.keys.get(keyId);
+    if (!key) throw new Error("secret_lifecycle_commitment_key_unavailable");
     const canonical = canonicalJson({
       schemaVersion: 1,
-      keyId: this.requestCommitment.keyId,
+      keyId,
       request: value,
     });
     return Object.freeze({
-      digest: createHmac("sha256", this.requestCommitment.key)
+      digest: createHmac("sha256", key)
         .update(REQUEST_COMMITMENT_DOMAIN, "utf8")
         .update(canonical, "utf8")
         .digest("hex"),
-      keyId: this.requestCommitment.keyId,
+      keyId,
     });
   }
 
-  #materialLineageId(credentialId: string, plaintext: string): string {
-    if (!this.requestCommitment) throw new Error("secret_lifecycle_commitment_unconfigured");
-    const canonical = canonicalJson({
-      schemaVersion: 1,
-      keyId: this.requestCommitment.keyId,
-      tenantId: this.options.tenantId,
+  #materialLineageCandidates(
+    credentialId: string,
+    plaintext: string,
+  ): readonly Readonly<{ keyId: string; lineageId: string }>[] {
+    if (!this.materialLineageCommitments) {
+      throw new Error("secret_lifecycle_commitment_unconfigured");
+    }
+    const versions = listSecretLifecycleVersions(
+      this.options.db,
+      this.options.tenantId,
       credentialId,
-      plaintext,
-    });
-    return createHmac("sha256", this.requestCommitment.key)
-      .update(MATERIAL_LINEAGE_DOMAIN, "utf8")
-      .update(canonical, "utf8")
-      .digest("hex");
+    );
+    if (versions.some((row) => row.material_lineage_key_id === null)) {
+      throw new Error("secret_material_lineage_key_unavailable");
+    }
+    const historicalIds = new Set(versions.map((row) => row.material_lineage_key_id!));
+    if ([...historicalIds].some((keyId) =>
+      !this.materialLineageCommitments!.keys.has(keyId) && !this.requestCommitments?.keys.has(keyId)
+    )) {
+      throw new Error("secret_material_lineage_key_unavailable");
+    }
+    const lineageIds = [
+      this.materialLineageCommitments.activeKeyId,
+      ...[...this.materialLineageCommitments.keys.keys()].filter(
+        (keyId) => keyId !== this.materialLineageCommitments!.activeKeyId,
+      ).sort(),
+    ];
+    const legacyReplayIds = [...(this.requestCommitments?.keys.keys() ?? [])]
+      .filter((keyId) => historicalIds.has(keyId))
+      .sort();
+    return Object.freeze([...lineageIds, ...legacyReplayIds].map((keyId) => {
+      const key = this.materialLineageCommitments!.keys.get(keyId) ??
+        this.requestCommitments?.keys.get(keyId);
+      if (!key) throw new Error("secret_material_lineage_key_unavailable");
+      const canonical = canonicalJson({
+        schemaVersion: 1,
+        keyId,
+        tenantId: this.options.tenantId,
+        credentialId,
+        plaintext,
+      });
+      return Object.freeze({
+        keyId,
+        lineageId: createHmac("sha256", key)
+          .update(MATERIAL_LINEAGE_DOMAIN, "utf8")
+          .update(canonical, "utf8")
+          .digest("hex"),
+      });
+    }));
   }
 
   async #openMutationSource(
@@ -554,7 +712,7 @@ export class DurableSecretLifecycleService {
     validateTimestamp(input.expiresAt, "secret_expires_at_invalid");
     validateTimestamp(input.rotateAfter, "secret_rotate_after_invalid");
     validateLocator(input.key);
-    const commitment = this.#commitRequest({
+    const request = {
       operation: "create",
       idempotencyKey: input.idempotencyKey,
       tenantId: this.options.tenantId,
@@ -566,7 +724,13 @@ export class DurableSecretLifecycleService {
       expiresAt: input.expiresAt ?? null,
       rotateAfter: input.rotateAfter ?? null,
       key: input.key,
-    });
+    };
+    const existingOperation = getSecretLifecycleOperation(
+      this.options.db,
+      this.options.tenantId,
+      input.idempotencyKey,
+    );
+    const commitment = this.#commitRequest(request, existingOperation?.request_commitment_key_id);
     const replay = this.#replay(
       "create",
       input.idempotencyKey,
@@ -602,6 +766,8 @@ export class DurableSecretLifecycleService {
       purpose: "create durable secret",
       at,
     }, this.options.providers);
+    const lineageCandidates = this.#materialLineageCandidates(input.credentialId, input.plaintext);
+    const activeLineage = lineageCandidates[0]!;
     const lifecycle: SecretLifecycleInput = {
       tenantId: this.options.tenantId,
       credentialId: input.credentialId,
@@ -612,7 +778,8 @@ export class DurableSecretLifecycleService {
       issuedAt: at,
       rotateAfter: input.rotateAfter,
       key: attested,
-      materialLineageId: this.#materialLineageId(input.credentialId, input.plaintext),
+      materialLineageId: activeLineage.lineageId,
+      materialLineageKeyId: activeLineage.keyId,
       envelope,
     };
     const row = createSecretLifecycle(this.options.db, lifecycle, {
@@ -650,7 +817,7 @@ export class DurableSecretLifecycleService {
     }
     validateLocator(input.key);
     const nextGeneration = input.expectedGeneration + 1;
-    const commitment = this.#commitRequest({
+    const request = {
       operation: "rotate",
       idempotencyKey: input.idempotencyKey,
       tenantId: this.options.tenantId,
@@ -659,7 +826,13 @@ export class DurableSecretLifecycleService {
       expectedGeneration: input.expectedGeneration,
       plaintext: input.plaintext,
       key: input.key,
-    });
+    };
+    const existingOperation = getSecretLifecycleOperation(
+      this.options.db,
+      this.options.tenantId,
+      input.idempotencyKey,
+    );
+    const commitment = this.#commitRequest(request, existingOperation?.request_commitment_key_id);
     const replay = this.#replay(
       "rotate", input.idempotencyKey, commitment.digest, commitment.keyId,
       input.credentialId, nextGeneration,
@@ -694,6 +867,8 @@ export class DurableSecretLifecycleService {
       purpose: "rotate durable credential material",
       at,
     }, this.options.providers);
+    const lineageCandidates = this.#materialLineageCandidates(input.credentialId, input.plaintext);
+    const activeLineage = lineageCandidates[0]!;
     const next: SecretLifecycleInput = {
       tenantId: current.tenant_id,
       credentialId: current.credential_id,
@@ -704,7 +879,8 @@ export class DurableSecretLifecycleService {
       issuedAt: at,
       rotateAfter: current.rotate_after ?? undefined,
       key: attested,
-      materialLineageId: this.#materialLineageId(input.credentialId, input.plaintext),
+      materialLineageId: activeLineage.lineageId,
+      materialLineageKeyId: activeLineage.keyId,
       envelope,
     };
     const row = rotateSecretLifecycle(this.options.db, {
@@ -718,6 +894,7 @@ export class DurableSecretLifecycleService {
         requestCommitmentKeyId: commitment.keyId,
         actorId: this.options.actorId,
       },
+      materialLineageCandidates: lineageCandidates,
       audit: () => this.#audit("secret.lifecycle.rotated", input.idempotencyKey, input.credentialId, {
         previousGeneration: input.expectedGeneration,
         generation: nextGeneration,
@@ -744,7 +921,7 @@ export class DurableSecretLifecycleService {
     }
     validateLocator(input.key);
     const nextGeneration = input.expectedGeneration + 1;
-    const commitment = this.#commitRequest({
+    const request = {
       operation: "rewrap",
       idempotencyKey: input.idempotencyKey,
       tenantId: this.options.tenantId,
@@ -752,7 +929,13 @@ export class DurableSecretLifecycleService {
       credentialId: input.credentialId,
       expectedGeneration: input.expectedGeneration,
       key: input.key,
-    });
+    };
+    const existingOperation = getSecretRewrapOperation(
+      this.options.db,
+      this.options.tenantId,
+      input.idempotencyKey,
+    );
+    const commitment = this.#commitRequest(request, existingOperation?.request_commitment_key_id);
     const replay = this.#rewrapReplay(
       input.idempotencyKey,
       commitment.digest,
@@ -813,6 +996,12 @@ export class DurableSecretLifecycleService {
       purpose: "rotate durable secret",
       at,
     }, this.options.providers);
+    const lineageCandidates = this.#materialLineageCandidates(input.credentialId, plaintext);
+    const retainedLineage = lineageCandidates.find((candidate) =>
+      candidate.lineageId === current.material_lineage_id &&
+      (current.material_lineage_key_id === null || candidate.keyId === current.material_lineage_key_id)
+    );
+    if (!retainedLineage) throw new Error("secret_material_lineage_invalid");
     const next: SecretLifecycleInput = {
       tenantId: current.tenant_id,
       credentialId: current.credential_id,
@@ -823,7 +1012,8 @@ export class DurableSecretLifecycleService {
       issuedAt: at,
       rotateAfter: current.rotate_after ?? undefined,
       key: attested,
-      materialLineageId: current.material_lineage_id,
+      materialLineageId: retainedLineage.lineageId,
+      materialLineageKeyId: retainedLineage.keyId,
       envelope,
     };
     const row = rewrapSecretLifecycle(this.options.db, {
@@ -837,6 +1027,7 @@ export class DurableSecretLifecycleService {
         requestCommitmentKeyId: commitment.keyId,
         actorId: this.options.actorId,
       },
+      materialLineageCandidates: lineageCandidates,
       audit: () => {
         this.#audit("secret.lifecycle.rewrapped", input.idempotencyKey, input.credentialId, {
           previousGeneration: input.expectedGeneration,
@@ -871,7 +1062,7 @@ export class DurableSecretLifecycleService {
       throw new Error("secret_revocation_reason_invalid");
     }
     const reason = typeof input.reason === "string" ? input.reason.trim() : "";
-    const commitment = this.#commitRequest({
+    const request = {
       operation: "revoke",
       idempotencyKey: input.idempotencyKey,
       tenantId: this.options.tenantId,
@@ -879,7 +1070,13 @@ export class DurableSecretLifecycleService {
       credentialId: input.credentialId,
       generation: input.generation,
       reason,
-    });
+    };
+    const existingOperation = getSecretRevokeOperation(
+      this.options.db,
+      this.options.tenantId,
+      input.idempotencyKey,
+    );
+    const commitment = this.#commitRequest(request, existingOperation?.request_commitment_key_id);
     const at = this.#now();
     const row = revokeSecretLifecycle(this.options.db, {
       tenantId: this.options.tenantId,
@@ -931,6 +1128,11 @@ export class DurableSecretLifecycleService {
         throw new Error("secret_break_glass_reason_invalid");
       }
       if (!ID.test(input.idempotencyKey)) throw new Error("secret_lifecycle_idempotency_key_invalid");
+      const existing = getSecretBreakGlassOperation(
+        this.options.db,
+        this.options.tenantId,
+        input.idempotencyKey,
+      );
       const commitment = this.#commitRequest({
         operation: "break_glass",
         idempotencyKey: input.idempotencyKey,
@@ -938,12 +1140,7 @@ export class DurableSecretLifecycleService {
         actorId: this.options.actorId,
         credentialId: input.credentialId,
         reason,
-      });
-      const existing = getSecretBreakGlassOperation(
-        this.options.db,
-        this.options.tenantId,
-        input.idempotencyKey,
-      );
+      }, existing?.request_commitment_key_id);
       if (existing && (
         existing.request_digest !== commitment.digest ||
         existing.request_commitment_key_id !== commitment.keyId ||

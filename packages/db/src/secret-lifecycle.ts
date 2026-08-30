@@ -23,6 +23,7 @@ export type SecretLifecycleInput = Readonly<{
     customerManaged: boolean;
   }>;
   materialLineageId: string;
+  materialLineageKeyId: string;
   envelope: Readonly<{
     schemaVersion: 1;
     algorithm: "AES-256-GCM";
@@ -113,6 +114,9 @@ function validateInput(input: SecretLifecycleInput): void {
   }
   if (!/^[a-f0-9]{64}$/.test(input.materialLineageId)) {
     throw new Error("secret_material_lineage_invalid");
+  }
+  if (!ID.test(input.materialLineageKeyId)) {
+    throw new Error("secret_material_lineage_key_id_invalid");
   }
   if (
     input.envelope.schemaVersion !== 1 ||
@@ -210,9 +214,10 @@ function insertVersion(db: AppDb, input: SecretLifecycleInput): SecretLifecycleV
       tenant_id, credential_id, source_ref, generation, state, audiences_json,
       expires_at, issued_at, rotate_after, retired_at, revoked_at, revocation_reason,
       key_provider, key_id, key_version, customer_managed, envelope_schema_version,
-      key_attestation_sha256, material_lineage_id, algorithm, wrapped_data_key, iv, auth_tag,
+      key_attestation_sha256, material_lineage_id, material_lineage_key_id,
+      algorithm, wrapped_data_key, iv, auth_tag,
       ciphertext, created_at
-    ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.tenantId,
     input.credentialId,
@@ -229,6 +234,7 @@ function insertVersion(db: AppDb, input: SecretLifecycleInput): SecretLifecycleV
     input.envelope.schemaVersion,
     input.envelope.keyAttestationSha256,
     input.materialLineageId,
+    input.materialLineageKeyId,
     input.envelope.algorithm,
     input.envelope.wrappedDataKey,
     input.envelope.iv,
@@ -274,7 +280,9 @@ export function rotateSecretLifecycle(
     rotatedAt: string;
     next: SecretLifecycleInput;
   }>,
-  options: SecretLifecycleMutationOptions = {},
+  options: SecretLifecycleMutationOptions & Readonly<{
+    materialLineageCandidates?: readonly Readonly<{ keyId: string; lineageId: string }>[];
+  }> = {},
 ): SecretLifecycleVersionRow {
   validateInput(input.next);
   validTimestamp("secret_rotated_at", input.rotatedAt);
@@ -301,20 +309,45 @@ export function rotateSecretLifecycle(
     ) {
       throw new Error("secret_rotation_target_invalid");
     }
-    const revokedLineage = one<{ generation: number }>(
-      db,
-      `SELECT generation FROM secret_lifecycle_versions
-       WHERE tenant_id = ? AND credential_id = ? AND material_lineage_id = ? AND state = 'revoked'
-       LIMIT 1`,
-      [input.next.tenantId, input.next.credentialId, input.next.materialLineageId],
-    );
-    if (revokedLineage) throw new Error("secret_material_lineage_revoked");
+    const candidates = options.materialLineageCandidates ?? Object.freeze([Object.freeze({
+      keyId: input.next.materialLineageKeyId,
+      lineageId: input.next.materialLineageId,
+    })]);
+    if (candidates.length === 0 || candidates.some((candidate) =>
+      !ID.test(candidate.keyId) || !/^[a-f0-9]{64}$/.test(candidate.lineageId)
+    )) throw new Error("secret_material_lineage_invalid");
+    let retainedLineage: Readonly<{ keyId: string; lineageId: string }> | undefined;
+    for (const candidate of candidates) {
+      const matching = one<Pick<SecretLifecycleVersionRow,
+        "generation" | "state" | "material_lineage_id" | "material_lineage_key_id">>(
+        db,
+        `SELECT generation, state, material_lineage_id, material_lineage_key_id
+         FROM secret_lifecycle_versions
+         WHERE tenant_id = ? AND credential_id = ? AND material_lineage_id = ?
+           AND (material_lineage_key_id = ? OR material_lineage_key_id IS NULL)
+         ORDER BY CASE WHEN state = 'revoked' THEN 0 ELSE 1 END, generation LIMIT 1`,
+        [input.next.tenantId, input.next.credentialId, candidate.lineageId, candidate.keyId],
+      );
+      if (!matching) continue;
+      if (matching.state === "revoked") throw new Error("secret_material_lineage_revoked");
+      retainedLineage ??= Object.freeze({
+        keyId: matching.material_lineage_key_id ?? candidate.keyId,
+        lineageId: matching.material_lineage_id ?? candidate.lineageId,
+      });
+    }
+    const next = retainedLineage
+      ? Object.freeze({
+        ...input.next,
+        materialLineageId: retainedLineage.lineageId,
+        materialLineageKeyId: retainedLineage.keyId,
+      })
+      : input.next;
     db.raw.prepare(`
       UPDATE secret_lifecycle_versions
       SET state = 'retired', retired_at = ?
       WHERE tenant_id = ? AND credential_id = ? AND generation = ? AND state = 'active'
     `).run(input.rotatedAt, current.tenant_id, current.credential_id, current.generation);
-    const row = insertVersion(db, input.next);
+    const row = insertVersion(db, next);
     options.audit?.(row);
     if (options.operation) completeOperation(db, input.next, "rotate", options.operation);
     options.authorizeCommit?.();
@@ -330,6 +363,17 @@ export type SecretRewrapOperationRow = Readonly<{
   actor_id: string;
   credential_id: string;
   result_generation: number;
+  completed_at: string;
+}>;
+
+export type SecretRevokeOperationRow = Readonly<{
+  tenant_id: string;
+  idempotency_key: string;
+  request_digest: string;
+  request_commitment_key_id: string;
+  actor_id: string;
+  credential_id: string;
+  generation: number;
   completed_at: string;
 }>;
 
@@ -354,6 +398,7 @@ export function rewrapSecretLifecycle(
   }>,
   options: Readonly<{
     operation: SecretLifecycleOperationIdentity;
+    materialLineageCandidates?: readonly Readonly<{ keyId: string; lineageId: string }>[];
     audit?: (row: SecretLifecycleVersionRow) => void;
     authorizeCommit?: () => void;
   }>,
@@ -376,7 +421,10 @@ export function rewrapSecretLifecycle(
       options.authorizeCommit?.();
       return replay;
     }
-    const row = rotateSecretLifecycle(db, input, { audit: options.audit });
+    const row = rotateSecretLifecycle(db, input, {
+      audit: options.audit,
+      materialLineageCandidates: options.materialLineageCandidates,
+    });
     db.raw.prepare(`INSERT INTO secret_rewrap_operations (
       tenant_id, idempotency_key, request_digest, request_commitment_key_id, actor_id,
       credential_id, result_generation, completed_at
@@ -422,6 +470,18 @@ export function getSecretBreakGlassOperation(
   return one(
     db,
     `SELECT * FROM secret_break_glass_operations WHERE tenant_id = ? AND idempotency_key = ?`,
+    [tenantId, idempotencyKey],
+  );
+}
+
+export function getSecretRevokeOperation(
+  db: AppDb,
+  tenantId: string,
+  idempotencyKey: string,
+): SecretRevokeOperationRow | undefined {
+  return one(
+    db,
+    `SELECT * FROM secret_revoke_operations WHERE tenant_id = ? AND idempotency_key = ?`,
     [tenantId, idempotencyKey],
   );
 }
@@ -557,11 +617,15 @@ export function revokeSecretLifecycle(
     if (!existing) throw new Error("secret_lifecycle_version_not_found");
     if (existing.state === "revoked") throw new Error("secret_lifecycle_already_revoked");
     const lineage = existing.material_lineage_id;
+    const lineageKeyId = existing.material_lineage_key_id;
     db.raw.prepare(`
       UPDATE secret_lifecycle_versions
       SET state = 'revoked', revoked_at = ?, revocation_reason = ?
       WHERE tenant_id = ? AND credential_id = ? AND state IN ('active', 'retired')
-        AND (? IS NULL OR material_lineage_id = ?)
+        AND (? IS NULL OR (
+          material_lineage_id = ? AND
+          (? IS NULL OR material_lineage_key_id = ? OR material_lineage_key_id IS NULL)
+        ))
     `).run(
       input.revokedAt,
       input.reason.trim(),
@@ -569,6 +633,8 @@ export function revokeSecretLifecycle(
       input.credentialId,
       lineage,
       lineage,
+      lineageKeyId,
+      lineageKeyId,
     );
     const row = getSecretLifecycleVersion(
       db,

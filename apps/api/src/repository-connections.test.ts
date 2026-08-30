@@ -161,6 +161,7 @@ async function durableCredential(
     issuedAt: `2026-08-0${input.generation}T00:00:00.000Z`,
     key,
     materialLineageId: "c".repeat(64),
+    materialLineageKeyId: "lineage-key-v1",
     envelope: {
       schemaVersion: envelope.schemaVersion,
       algorithm: envelope.algorithm,

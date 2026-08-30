@@ -22,12 +22,25 @@ import {
 } from "@mendpoint/platform";
 import {
   DurableSecretLifecycleService,
+  type SecretLifecycleCommitmentKeyring,
+  secretLifecycleCommitmentAuthorityFromEnvironment,
   secretLifecycleRequestCommitmentFromEnvironment,
 } from "./secret-lifecycle-service.js";
 
 const open: AppDb[] = [];
 const COMMITMENT_KEY_ID = "secret-request-v1";
 const COMMITMENT_KEY = Buffer.alloc(32, 9);
+const LINEAGE_KEY_ID = "secret-lineage-v1";
+const LINEAGE_KEY = Buffer.alloc(32, 7);
+const COMMITMENT_KEY_V2 = Buffer.alloc(32, 8);
+const LINEAGE_KEY_V2 = Buffer.alloc(32, 6);
+
+function keyring(
+  activeKeyId: string,
+  entries: readonly Readonly<{ keyId: string; key: Buffer }>[],
+): SecretLifecycleCommitmentKeyring {
+  return Object.freeze({ activeKeyId, keys: Object.freeze([...entries]) });
+}
 afterEach(() => {
   while (open.length) open.pop()?.raw.close();
 });
@@ -43,6 +56,18 @@ function fixture() {
     version: "1",
     customerManaged: false,
   }, Buffer.alloc(32, 1));
+  provider.putKey("tenant-b", {
+    provider: "local-envelope",
+    keyId: "tenant-key",
+    version: "1",
+    customerManaged: false,
+  }, Buffer.alloc(32, 4));
+  provider.putKey("tenant-b", {
+    provider: "local-envelope",
+    keyId: "tenant-key",
+    version: "2",
+    customerManaged: false,
+  }, Buffer.alloc(32, 5));
   provider.putKey("tenant-a", {
     provider: "local-envelope",
     keyId: "tenant-key",
@@ -69,6 +94,8 @@ function service(db: AppDb, provider: KeyEncryptionKeyProvider, options?: {
   commitmentKey?: Buffer;
   commitmentKeyId?: string;
   commitmentConfigured?: boolean;
+  requestCommitment?: SecretLifecycleCommitmentKeyring;
+  materialLineageCommitment?: SecretLifecycleCommitmentKeyring;
   revalidateAuthority?: (requiredRole: "admin" | "owner") => Readonly<{ version: string }>;
   afterAudit?: (action: string) => void;
 }) {
@@ -83,10 +110,13 @@ function service(db: AppDb, provider: KeyEncryptionKeyProvider, options?: {
     breakGlassEnabled: options?.breakGlassEnabled ?? true,
     requestId: options?.requestId ?? "secret-service-request",
     apiKeyId: null,
-    requestCommitment: options?.commitmentConfigured === false ? undefined : {
+    requestCommitment: options?.commitmentConfigured === false ? undefined : options?.requestCommitment ?? {
       keyId: options?.commitmentKeyId ?? COMMITMENT_KEY_ID,
       key: options?.commitmentKey ?? COMMITMENT_KEY,
     },
+    materialLineageCommitment: options?.commitmentConfigured === false
+      ? undefined
+      : options?.materialLineageCommitment ?? { keyId: LINEAGE_KEY_ID, key: LINEAGE_KEY },
     now: () => "2026-08-02T00:00:00.000Z",
     audit: (event) => {
       if (options?.auditFailure) throw new Error("audit unavailable");
@@ -128,6 +158,26 @@ describe("durable secret lifecycle service", () => {
     })).resolves.toMatchObject({ generation: 1 });
     await expect(service(db, provider).create({ ...createInput, plaintext: "different" }))
       .rejects.toThrow("secret_lifecycle_idempotency_conflict");
+  });
+
+  it("replays exact operations through replay-key rotation and fails closed without the retained key", async () => {
+    const { db, provider } = fixture();
+    await service(db, provider).create(createInput);
+    const rotatedReplayAuthority = keyring("secret-request-v2", [
+      { keyId: COMMITMENT_KEY_ID, key: COMMITMENT_KEY },
+      { keyId: "secret-request-v2", key: COMMITMENT_KEY_V2 },
+    ]);
+    await expect(service(db, provider, {
+      requestCommitment: rotatedReplayAuthority,
+    }).create(createInput)).resolves.toMatchObject({ generation: 1 });
+    expect(getSecretLifecycleOperation(db, "tenant-a", createInput.idempotencyKey))
+      .toMatchObject({ request_commitment_key_id: COMMITMENT_KEY_ID });
+
+    await expect(service(db, provider, {
+      requestCommitment: keyring("secret-request-v2", [
+        { keyId: "secret-request-v2", key: COMMITMENT_KEY_V2 },
+      ]),
+    }).create(createInput)).rejects.toThrow("secret_lifecycle_commitment_key_unavailable");
   });
 
   it("replays a committed rotation after process restart without reopening key access", async () => {
@@ -283,6 +333,92 @@ describe("durable secret lifecycle service", () => {
     })).rejects.toThrow("secret_material_lineage_revoked");
     expect(getSecretLifecycleVersion(db, "tenant-a", "credential-resurrection", 2))
       .toMatchObject({ state: "active" });
+  });
+
+  it("retains revoked material identity through independent replay and lineage-key rotation", async () => {
+    const { db, provider } = fixture();
+    const initial = service(db, provider);
+    await initial.create(createInput);
+    await initial.rotate({
+      idempotencyKey: "rotate-before-authority-change",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      plaintext: "customer-secret-b",
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    });
+    initial.revoke({
+      idempotencyKey: "revoke-a-before-authority-change",
+      credentialId: "credential-a",
+      generation: 1,
+      reason: "material A compromised",
+    });
+
+    const rotated = service(db, provider, {
+      requestCommitment: keyring("secret-request-v2", [
+        { keyId: COMMITMENT_KEY_ID, key: COMMITMENT_KEY },
+        { keyId: "secret-request-v2", key: COMMITMENT_KEY_V2 },
+      ]),
+      materialLineageCommitment: keyring("secret-lineage-v2", [
+        { keyId: LINEAGE_KEY_ID, key: LINEAGE_KEY },
+        { keyId: "secret-lineage-v2", key: LINEAGE_KEY_V2 },
+      ]),
+    });
+    await expect(rotated.rotate({
+      idempotencyKey: "reject-a-after-authority-change",
+      credentialId: "credential-a",
+      expectedGeneration: 2,
+      plaintext: createInput.plaintext,
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "1" },
+    })).rejects.toThrow("secret_material_lineage_revoked");
+    expect(getSecretLifecycleVersion(db, "tenant-a", "credential-a", 2))
+      .toMatchObject({ state: "active" });
+  });
+
+  it("fails closed when a historical material-lineage key is not retained", async () => {
+    const { db, provider } = fixture();
+    await service(db, provider).create(createInput);
+    await expect(service(db, provider, {
+      materialLineageCommitment: keyring("secret-lineage-v2", [
+        { keyId: "secret-lineage-v2", key: LINEAGE_KEY_V2 },
+      ]),
+    }).rotate({
+      idempotencyKey: "rotation-with-missing-lineage-key",
+      credentialId: "credential-a",
+      expectedGeneration: 1,
+      plaintext: "customer-secret-b",
+      key: { provider: "local-envelope", keyId: "tenant-key", version: "2" },
+    })).rejects.toThrow("secret_material_lineage_key_unavailable");
+  });
+
+  it("domain-separates material fingerprints by tenant and credential without storing plaintext", async () => {
+    const { db, provider } = fixture();
+    await service(db, provider).create(createInput);
+    await service(db, provider).create({
+      ...createInput,
+      idempotencyKey: "create-second-credential",
+      credentialId: "credential-b",
+      sourceRef: "vault://github/installations/67890",
+    });
+    await service(db, provider, { tenantId: "tenant-b" }).create({
+      ...createInput,
+      idempotencyKey: "create-other-tenant",
+      sourceRef: "vault://github/installations/12345",
+    });
+    const rows = [
+      getSecretLifecycleVersion(db, "tenant-a", "credential-a", 1)!,
+      getSecretLifecycleVersion(db, "tenant-a", "credential-b", 1)!,
+      getSecretLifecycleVersion(db, "tenant-b", "credential-a", 1)!,
+    ];
+    expect(new Set(rows.map((row) => row.material_lineage_id)).size).toBe(3);
+    expect(rows.every((row) => row.material_lineage_key_id === LINEAGE_KEY_ID)).toBe(true);
+    const durable = JSON.stringify({
+      versions: db.raw.prepare("SELECT * FROM secret_lifecycle_versions").all(),
+      operations: db.raw.prepare("SELECT * FROM secret_lifecycle_operations").all(),
+      audit: db.raw.prepare("SELECT * FROM audit_events").all(),
+    });
+    expect(durable).not.toContain(createInput.plaintext);
+    expect(durable).not.toContain(LINEAGE_KEY.toString("base64"));
+    expect(durable).not.toContain(COMMITMENT_KEY.toString("base64"));
   });
 
   it("denies break glass when the exact generation is revoked during provider decrypt", async () => {
@@ -825,7 +961,7 @@ describe("durable secret lifecycle service", () => {
     await expect(service(db, provider, { commitmentKey: Buffer.alloc(32, 8) }).create(createInput))
       .rejects.toThrow("secret_lifecycle_idempotency_conflict");
     await expect(service(db, provider, { commitmentKeyId: "secret-request-v2" }).create(createInput))
-      .rejects.toThrow("secret_lifecycle_idempotency_conflict");
+      .rejects.toThrow("secret_lifecycle_commitment_key_unavailable");
 
     const variants = [
       { ...createInput, plaintext: "different" },
@@ -854,6 +990,36 @@ describe("durable secret lifecycle service", () => {
       MENDPOINT_SECRET_IDEMPOTENCY_KEY_ID: COMMITMENT_KEY_ID,
       MENDPOINT_SECRET_IDEMPOTENCY_KEY_BASE64: COMMITMENT_KEY.toString("base64"),
     })).toMatchObject({ keyId: COMMITMENT_KEY_ID, key: COMMITMENT_KEY });
+  });
+
+  it("loads distinct retained replay and lineage keyrings from protected bindings", () => {
+    const authority = secretLifecycleCommitmentAuthorityFromEnvironment({
+      MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON: JSON.stringify({
+        schemaVersion: 1,
+        activeKeyId: "secret-request-v2",
+        keys: [
+          { keyId: COMMITMENT_KEY_ID, keyBase64: COMMITMENT_KEY.toString("base64") },
+          { keyId: "secret-request-v2", keyBase64: COMMITMENT_KEY_V2.toString("base64") },
+        ],
+      }),
+      MENDPOINT_SECRET_LINEAGE_KEYRING_JSON: JSON.stringify({
+        schemaVersion: 1,
+        activeKeyId: "secret-lineage-v2",
+        keys: [
+          { keyId: LINEAGE_KEY_ID, keyBase64: LINEAGE_KEY.toString("base64") },
+          { keyId: "secret-lineage-v2", keyBase64: LINEAGE_KEY_V2.toString("base64") },
+        ],
+      }),
+    });
+    expect(authority.requestCommitment).toMatchObject({ activeKeyId: "secret-request-v2" });
+    expect(authority.materialLineageCommitment).toMatchObject({ activeKeyId: "secret-lineage-v2" });
+    expect(() => secretLifecycleCommitmentAuthorityFromEnvironment({
+      MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON: JSON.stringify({
+        schemaVersion: 1,
+        activeKeyId: COMMITMENT_KEY_ID,
+        keys: [{ keyId: COMMITMENT_KEY_ID, keyBase64: COMMITMENT_KEY.toString("base64") }],
+      }),
+    })).toThrow("secret_lifecycle_commitment_configuration_invalid");
   });
 
   it("rejects commitment key material reused by an envelope KEK at service construction", () => {
@@ -908,6 +1074,7 @@ describe("durable secret lifecycle service", () => {
       requestId: "break-glass-disabled-request",
       apiKeyId: null,
       requestCommitment: { keyId: COMMITMENT_KEY_ID, key: COMMITMENT_KEY },
+      materialLineageCommitment: { keyId: LINEAGE_KEY_ID, key: LINEAGE_KEY },
       audit: () => undefined,
     }).breakGlass({
       credentialId: "credential-a", reason: "incident", idempotencyKey: "break-glass-disabled",

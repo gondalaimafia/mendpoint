@@ -8,6 +8,7 @@ import {
   DurableSecretLifecycleService,
   assertSecretLifecycleKeySeparation,
   isAuditedBreakGlassError,
+  type SecretLifecycleCommitmentKeyring,
   type SecretLifecycleRequestCommitment,
 } from "./secret-lifecycle-service.js";
 
@@ -77,12 +78,17 @@ const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "secret_lifecycle_idempotency_key_invalid", status: 400 },
   { internalCode: "secret_lifecycle_request_digest_invalid", status: 400 },
   { internalCode: "secret_lifecycle_commitment_unconfigured", status: 503 },
+  { internalCode: "secret_lifecycle_commitment_configuration_invalid", status: 503 },
+  { internalCode: "secret_lifecycle_commitment_key_unavailable", status: 503 },
+  { internalCode: "secret_lifecycle_key_material_reuse", status: 503 },
   { internalCode: "secret_rotation_material_required", status: 400 },
   { internalCode: "secret_rotation_material_unchanged", status: 409 },
   { internalCode: "secret_material_lineage_revoked", status: 409 },
   { internalCode: "secret_rewrap_key_unchanged", status: 409 },
   { internalCode: "secret_rewrap_key_material_unchanged", status: 409 },
   { internalCode: "secret_material_lineage_missing", status: 409 },
+  { internalCode: "secret_material_lineage_key_unavailable", status: 503 },
+  { internalCode: "secret_material_lineage_key_id_invalid", status: 503 },
   { internalCode: "secret_break_glass_generation_inactive", status: 409 },
   { internalCode: "vault_access_audit_failed", status: 503 },
   { internalCode: "secret_credential_id_invalid", status: 400 },
@@ -273,9 +279,14 @@ export function createSecretLifecycleRoutes(options: Readonly<{
   providers: readonly KeyEncryptionKeyProvider[];
   enabled?: boolean;
   breakGlassEnabled: boolean;
-  requestCommitment?: SecretLifecycleRequestCommitment;
+  requestCommitment?: SecretLifecycleRequestCommitment | SecretLifecycleCommitmentKeyring;
+  materialLineageCommitment?: SecretLifecycleRequestCommitment | SecretLifecycleCommitmentKeyring;
 }>) {
-  assertSecretLifecycleKeySeparation(options.providers, options.requestCommitment);
+  assertSecretLifecycleKeySeparation(
+    options.providers,
+    options.requestCommitment,
+    options.materialLineageCommitment,
+  );
   const routes = new Hono<ApiEnv>();
   routes.use("*", async (c, next) => {
     if (options.enabled === false) return c.notFound();
@@ -297,6 +308,7 @@ export function createSecretLifecycleRoutes(options: Readonly<{
       requestId: c.get("requestId") ?? null,
       apiKeyId: c.get("apiKeyId") ?? null,
       requestCommitment: options.requestCommitment,
+      materialLineageCommitment: options.materialLineageCommitment,
       audit: (event) => recordAudit(options.db, {
         id: event.id,
         tenantId: event.tenantId,

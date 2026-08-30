@@ -58,6 +58,7 @@ function fixture() {
     providers: [provider],
     breakGlassEnabled: true,
     requestCommitment: { keyId: "secret-request-v1", key: Buffer.alloc(32, 9) },
+    materialLineageCommitment: { keyId: "secret-lineage-v1", key: Buffer.alloc(32, 7) },
   }));
   return { app, db, provider };
 }
@@ -167,6 +168,7 @@ function realAuthFixture(options: Readonly<{
     providers: [provider],
     breakGlassEnabled: true,
     requestCommitment: { keyId: "secret-request-v1", key: Buffer.alloc(32, 9) },
+    materialLineageCommitment: { keyId: "secret-lineage-v1", key: Buffer.alloc(32, 7) },
   }));
   return { app, db, provider, first, second, unrelated, viewer };
 }
@@ -209,6 +211,7 @@ describe("secret lifecycle routes", () => {
       providers: [provider],
       breakGlassEnabled: true,
       requestCommitment: { keyId: "secret-request-v1", key: Buffer.alloc(32, 9) },
+      materialLineageCommitment: { keyId: "secret-lineage-v1", key: Buffer.alloc(32, 7) },
     })).toThrow("secret_lifecycle_key_material_reuse");
   });
 
@@ -440,6 +443,7 @@ describe("secret lifecycle routes", () => {
       app.route("/platform/secrets", createSecretLifecycleRoutes({
         db, providers: [racingProvider], breakGlassEnabled: true,
         requestCommitment: { keyId: "secret-request-v1", key: Buffer.alloc(32, 9) },
+        materialLineageCommitment: { keyId: "secret-lineage-v1", key: Buffer.alloc(32, 7) },
       }));
       expect((await app.request("/platform/secrets", {
         method: "POST", headers: authenticatedHeaders(key.token, `create-${change}`, `create-${change}`),
@@ -841,6 +845,7 @@ describe("secret lifecycle routes", () => {
       providers: [],
       breakGlassEnabled: true,
       requestCommitment: { keyId: "secret-request-v1", key: Buffer.alloc(32, 9) },
+      materialLineageCommitment: { keyId: "secret-lineage-v1", key: Buffer.alloc(32, 7) },
     }));
     const response = await app.request("/platform/secrets/credential-a/break-glass", {
       method: "POST",

@@ -1771,6 +1771,7 @@ CREATE TABLE IF NOT EXISTS secret_lifecycle_versions (
   customer_managed INTEGER NOT NULL CHECK (customer_managed IN (0, 1)),
   key_attestation_sha256 TEXT NOT NULL CHECK (length(key_attestation_sha256) = 64),
   material_lineage_id TEXT NOT NULL CHECK (length(material_lineage_id) = 64),
+  material_lineage_key_id TEXT NOT NULL,
   envelope_schema_version INTEGER NOT NULL CHECK (envelope_schema_version = 1),
   algorithm TEXT NOT NULL CHECK (algorithm = 'AES-256-GCM'),
   wrapped_data_key TEXT NOT NULL,
@@ -1911,6 +1912,7 @@ WHEN
   NEW.customer_managed IS NOT OLD.customer_managed OR
   NEW.key_attestation_sha256 IS NOT OLD.key_attestation_sha256 OR
   NEW.material_lineage_id IS NOT OLD.material_lineage_id OR
+  NEW.material_lineage_key_id IS NOT OLD.material_lineage_key_id OR
   NEW.envelope_schema_version IS NOT OLD.envelope_schema_version OR
   NEW.algorithm IS NOT OLD.algorithm OR
   NEW.wrapped_data_key IS NOT OLD.wrapped_data_key OR
@@ -2443,8 +2445,8 @@ export function createDb(urlOrPath?: string): AppDb {
     migrateProvidersFeedColumns({ raw });
     migrateAuditIntegrity({ raw });
     migrateArtifactContent({ raw });
-    migrateSecretLifecycleAttestation({ raw });
     migrateSecretLifecycleOperationCommitments({ raw });
+    migrateSecretLifecycleAttestation({ raw });
     migrateWardenTransformerTableNames({ raw });
     migrateWardenCiAwaitingReview({ raw });
     installTrustImmutability({ raw });
@@ -2514,6 +2516,7 @@ function migrateSecretLifecycleOperationCommitments(db: AppDb): void {
 }
 
 function migrateSecretLifecycleAttestation(db: AppDb): void {
+  db.raw.exec("DROP TRIGGER IF EXISTS secret_lifecycle_versions_guard_update");
   const columns = all<{ name: string }>(
     db,
     "PRAGMA table_info(secret_lifecycle_versions)",
@@ -2524,8 +2527,22 @@ function migrateSecretLifecycleAttestation(db: AppDb): void {
   if (!columns.includes("material_lineage_id")) {
     run(db, "ALTER TABLE secret_lifecycle_versions ADD COLUMN material_lineage_id TEXT");
   }
+  if (!columns.includes("material_lineage_key_id")) {
+    run(db, "ALTER TABLE secret_lifecycle_versions ADD COLUMN material_lineage_key_id TEXT");
+    run(db, `UPDATE secret_lifecycle_versions AS version
+      SET material_lineage_key_id = (
+        SELECT operation.request_commitment_key_id
+        FROM secret_lifecycle_operations AS operation
+        WHERE operation.tenant_id = version.tenant_id
+          AND operation.credential_id = version.credential_id
+          AND operation.result_generation <= version.generation
+          AND operation.request_commitment_key_id IS NOT NULL
+        ORDER BY operation.result_generation DESC
+        LIMIT 1
+      )
+      WHERE material_lineage_key_id IS NULL`);
+  }
   db.raw.exec(`
-    DROP TRIGGER IF EXISTS secret_lifecycle_versions_guard_update;
     CREATE TRIGGER secret_lifecycle_versions_guard_update
     BEFORE UPDATE ON secret_lifecycle_versions
     WHEN
@@ -2543,6 +2560,7 @@ function migrateSecretLifecycleAttestation(db: AppDb): void {
       NEW.customer_managed IS NOT OLD.customer_managed OR
       NEW.key_attestation_sha256 IS NOT OLD.key_attestation_sha256 OR
       NEW.material_lineage_id IS NOT OLD.material_lineage_id OR
+      NEW.material_lineage_key_id IS NOT OLD.material_lineage_key_id OR
       NEW.envelope_schema_version IS NOT OLD.envelope_schema_version OR
       NEW.algorithm IS NOT OLD.algorithm OR
       NEW.wrapped_data_key IS NOT OLD.wrapped_data_key OR

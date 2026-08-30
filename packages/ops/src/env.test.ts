@@ -132,8 +132,8 @@ describe("validateApiEnv secret-lifecycle activation", () => {
     } as NodeJS.ProcessEnv);
     for (const name of [
       "MENDPOINT_ENVELOPE_KEY_CATALOG_JSON",
-      "MENDPOINT_SECRET_IDEMPOTENCY_KEY_ID",
-      "MENDPOINT_SECRET_IDEMPOTENCY_KEY_BASE64",
+      "MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON",
+      "MENDPOINT_SECRET_LINEAGE_KEYRING_JSON",
     ]) {
       expect(missing.errors.some((error) => error.includes(name))).toBe(true);
     }
@@ -143,8 +143,12 @@ describe("validateApiEnv secret-lifecycle activation", () => {
       NODE_ENV: "production",
       MENDPOINT_SECRET_LIFECYCLE_ENABLED: "1",
       MENDPOINT_ENVELOPE_KEY_CATALOG_JSON: '{"schemaVersion":1,"keys":[]}',
-      MENDPOINT_SECRET_IDEMPOTENCY_KEY_ID: "secret-lifecycle-v1",
-      MENDPOINT_SECRET_IDEMPOTENCY_KEY_BASE64: Buffer.alloc(32, 7).toString("base64"),
+      MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON: JSON.stringify({
+        schemaVersion: 1, activeKeyId: "secret-request-v1", keys: [],
+      }),
+      MENDPOINT_SECRET_LINEAGE_KEYRING_JSON: JSON.stringify({
+        schemaVersion: 1, activeKeyId: "secret-lineage-v1", keys: [],
+      }),
       MENDPOINT_SECRET_BREAK_GLASS: "false",
     } as NodeJS.ProcessEnv);
     expect(complete.errors.some((error) => error.includes("when MENDPOINT_SECRET_LIFECYCLE_ENABLED=1")))
