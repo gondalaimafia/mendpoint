@@ -134,6 +134,8 @@ export type SkippedDirectory = {
 export type CodebaseIndex = {
   repoRoot: string;
   builtAt: string;
+  /** Digest and usage for the exact immutable bytes consumed by this index. */
+  repositoryIdentity?: CodebaseIndexRepositoryIdentity;
   files: FileRecord[];
   /**
    * Bounded structured payloads are indexed separately from executable source.
@@ -162,6 +164,15 @@ export type CodebaseIndexLimits = Readonly<{
   maxTotalBytes: number;
   maxFileBytes: number;
   maxTraversalDepth: number;
+}>;
+
+export type CodebaseIndexRepositoryIdentity = Readonly<{
+  schemaVersion: "mendpoint.codebase-index-repository-identity.v1";
+  repositorySnapshotId: string;
+  repositoryRevision: string;
+  repositoryContentDigest: string;
+  filesInspected: number;
+  bytesInspected: number;
 }>;
 
 export type CodebaseIndexOptions = Readonly<{
@@ -204,6 +215,7 @@ export class CodebaseIndexSafetyError extends Error {
   constructor(
     code: CodebaseIndexSafetyCode,
     diagnostic: { path: string; limit?: number; actual?: number },
+    readonly repositoryIdentity?: CodebaseIndexRepositoryIdentity,
   ) {
     super(code);
     this.name = "CodebaseIndexSafetyError";
@@ -225,6 +237,7 @@ type DiscoveredFile = {
   size: number;
   text?: string;
   contentHash?: string;
+  contentDigest?: string;
 };
 
 type DiscoveryUsage = { files: number; totalBytes: number };
@@ -331,7 +344,43 @@ function readDiscoveredFile(
   limits: CodebaseIndexLimits,
 ): string {
   assertRegularFile(repoRoot, file.abs, file.size, limits);
-  return readFileSync(file.abs, "utf8");
+  const text = readFileSync(file.abs, "utf8");
+  assertRegularFile(repoRoot, file.abs, Buffer.byteLength(text), limits);
+  return text;
+}
+
+function repositoryIdentity(
+  files: readonly DiscoveredFile[],
+  boundary?: Readonly<{ code: string; path: string; limit?: number; actual?: number }>,
+): CodebaseIndexRepositoryIdentity {
+  const rows = files
+    .map((file) => ({
+      path: file.rel,
+      size: file.size,
+      contentDigest: file.contentDigest ?? createHash("sha256").update(file.text ?? "").digest("hex"),
+    }))
+    .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  const repositoryContentDigest = createHash("sha256")
+    .update(JSON.stringify({ rows, boundary: boundary ?? null }), "utf8")
+    .digest("hex");
+  return Object.freeze({
+    schemaVersion: "mendpoint.codebase-index-repository-identity.v1",
+    repositorySnapshotId: `repository-snapshot:${repositoryContentDigest}`,
+    repositoryRevision: repositoryContentDigest,
+    repositoryContentDigest: `sha256:${repositoryContentDigest}`,
+    filesInspected: rows.length,
+    bytesInspected: rows.reduce((total, row) => total + row.size, 0),
+  });
+}
+
+function captureDiscoveredFile(
+  repoRoot: string,
+  file: DiscoveredFile,
+  limits: CodebaseIndexLimits,
+): DiscoveredFile {
+  const text = readDiscoveredFile(repoRoot, file, limits);
+  const contentDigest = createHash("sha256").update(text).digest("hex");
+  return { ...file, text, contentDigest, contentHash: contentDigest.slice(0, 16) };
 }
 
 function walk(
@@ -372,7 +421,11 @@ function walk(
       const ext = name.includes(".") ? `.${name.split(".").pop()}` : "";
       if (INDEX_EXTS.has(ext)) {
         accountFile(repoRoot, p, st.size, limits, usage);
-        out.push({ abs: p, rel: relativePath(repoRoot, p), size: st.size });
+        out.push(captureDiscoveredFile(repoRoot, {
+          abs: p,
+          rel: relativePath(repoRoot, p),
+          size: st.size,
+        }, limits));
       }
     }
   }
@@ -382,7 +435,13 @@ function walk(
 function discoverFiles(
   repoRoot: string,
   limits: CodebaseIndexLimits,
-): { files: DiscoveredFile[]; usage: DiscoveryUsage; skipped: SkippedDirectory[] } {
+): {
+  files: DiscoveredFile[];
+  manifests: DiscoveredFile[];
+  usage: DiscoveryUsage;
+  skipped: SkippedDirectory[];
+  identity: CodebaseIndexRepositoryIdentity;
+} {
   const rootStat = lstatSync(repoRoot);
   if (rootStat.isSymbolicLink()) {
     fail("codebase_index_symlink_not_allowed", repoRoot, repoRoot);
@@ -392,16 +451,37 @@ function discoverFiles(
   }
   const usage: DiscoveryUsage = { files: 0, totalBytes: 0 };
   const skipped: SkippedDirectory[] = [];
-  const files = walk(repoRoot, repoRoot, limits, usage, skipped);
-  const discoveredPaths = new Set(files.map((file) => file.abs));
-  for (const manifest of ["package.json", "requirements.txt", "go.mod", "Gemfile"]) {
-    const path = join(repoRoot, manifest);
-    if (!existsSync(path)) continue;
-    if (discoveredPaths.has(path)) continue;
-    const size = assertRegularFile(repoRoot, path, undefined, limits);
-    accountFile(repoRoot, path, size, limits, usage);
+  const files: DiscoveredFile[] = [];
+  const manifests: DiscoveredFile[] = [];
+  try {
+    walk(repoRoot, repoRoot, limits, usage, skipped, 0, files);
+    const discoveredPaths = new Set(files.map((file) => file.abs));
+    for (const manifest of ["package.json", "requirements.txt", "go.mod", "Gemfile"]) {
+      const path = join(repoRoot, manifest);
+      if (!existsSync(path)) continue;
+      if (discoveredPaths.has(path)) continue;
+      const size = assertRegularFile(repoRoot, path, undefined, limits);
+      accountFile(repoRoot, path, size, limits, usage);
+      manifests.push(captureDiscoveredFile(repoRoot, {
+        abs: path,
+        rel: relativePath(repoRoot, path),
+        size,
+      }, limits));
+    }
+  } catch (error) {
+    if (!(error instanceof CodebaseIndexSafetyError)) throw error;
+    throw new CodebaseIndexSafetyError(error.code, error.diagnostic, repositoryIdentity(
+      [...files, ...manifests],
+      { code: error.code, ...error.diagnostic },
+    ));
   }
-  return { files, usage, skipped };
+  return {
+    files,
+    manifests,
+    usage,
+    skipped,
+    identity: repositoryIdentity([...files, ...manifests]),
+  };
 }
 
 function langOf(file: string): FileRecord["language"] {
@@ -756,7 +836,15 @@ export function buildIndex(
 ): CodebaseIndex {
   const limits = normalizedLimits(opts.limits);
   const discovery = discoverFiles(repoRoot, limits);
-  return buildIndexFromDiscovered(repoRoot, opts, limits, discovery.files, discovery.skipped);
+  return buildIndexFromDiscovered(
+    repoRoot,
+    opts,
+    limits,
+    discovery.files,
+    discovery.skipped,
+    discovery.identity,
+    discovery.manifests,
+  );
 }
 
 function buildIndexFromDiscovered(
@@ -765,6 +853,8 @@ function buildIndexFromDiscovered(
   limits: CodebaseIndexLimits,
   discoveredFiles: DiscoveredFile[],
   skippedDirectories: SkippedDirectory[] = [],
+  identity: CodebaseIndexRepositoryIdentity = repositoryIdentity(discoveredFiles),
+  repositoryManifests: DiscoveredFile[] = [],
 ): CodebaseIndex {
   const files: FileRecord[] = [];
   const structuredFiles: StructuredFileRecord[] = [];
@@ -891,11 +981,12 @@ function buildIndexFromDiscovered(
 
 
   // Lockfile package names (lightweight)
+  const capturedByPath = new Map(
+    [...discoveredFiles, ...repositoryManifests].map((file) => [file.rel, file.text ?? ""]),
+  );
   for (const lock of ["package.json", "requirements.txt", "go.mod", "Gemfile"]) {
-    const p = join(repoRoot, lock);
-    if (!existsSync(p)) continue;
-    assertRegularFile(repoRoot, p, undefined, limits);
-    const raw = readFileSync(p, "utf8");
+    const raw = capturedByPath.get(lock);
+    if (raw === undefined) continue;
     if (lock === "package.json") {
       try {
         const pkg = JSON.parse(raw) as {
@@ -928,6 +1019,7 @@ function buildIndexFromDiscovered(
   return {
     repoRoot,
     builtAt: new Date().toISOString(),
+    repositoryIdentity: identity,
     files,
     structuredFiles,
     functions,
@@ -1224,6 +1316,15 @@ function validateIndexShape(
   const record = value as Record<string, unknown>;
   if (typeof record.repoRoot !== "string" || !samePath(record.repoRoot, canonicalRoot) ||
       typeof record.builtAt !== "string" || !Number.isFinite(Date.parse(record.builtAt))) invalid();
+  const identity = record.repositoryIdentity;
+  if (identity !== undefined &&
+      (!isRecord(identity) ||
+       identity.schemaVersion !== "mendpoint.codebase-index-repository-identity.v1" ||
+       typeof identity.repositorySnapshotId !== "string" ||
+       typeof identity.repositoryRevision !== "string" ||
+       typeof identity.repositoryContentDigest !== "string" ||
+       !Number.isSafeInteger(identity.filesInspected) || Number(identity.filesInspected) < 0 ||
+       !Number.isSafeInteger(identity.bytesInspected) || Number(identity.bytesInspected) < 0)) invalid();
   const files = record.files;
   const structured = record.structuredFiles ?? [];
   const functions = record.functions;
@@ -1589,11 +1690,7 @@ export function buildIndexIncremental(
   const discovery = discoverFiles(repoRoot, limits);
   const currentHashes = new Map<string, string>();
   for (const file of discovery.files) {
-    const text = readDiscoveredFile(repoRoot, file, limits);
-    const contentHash = createHash("sha256").update(text).digest("hex").slice(0, 16);
-    file.text = text;
-    file.contentHash = contentHash;
-    currentHashes.set(file.rel, contentHash);
+    currentHashes.set(file.rel, file.contentHash!);
   }
   const prevMap = new Map(
     [...previous.files, ...(previous.structuredFiles ?? [])].map((f) => [f.path, f.contentHash]),
@@ -1606,7 +1703,9 @@ export function buildIndexIncremental(
     .map((f) => f.path);
   const allChanged = [...new Set([...changedFiles, ...deleted])];
 
-  if (!allChanged.length) return previous;
+  if (!allChanged.length &&
+      previous.repositoryIdentity?.repositoryContentDigest ===
+        discovery.identity.repositoryContentDigest) return previous;
 
   const changedCodeFiles = allChanged.filter(
     (path) => !STRUCTURED_EXTS.has(extname(path).toLowerCase()),
@@ -1625,6 +1724,8 @@ export function buildIndexIncremental(
     limits,
     discovery.files,
     discovery.skipped,
+    discovery.identity,
+    discovery.manifests,
   );
 }
 

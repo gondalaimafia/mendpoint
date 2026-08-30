@@ -33,14 +33,15 @@ import {
 } from "@mendpoint/db";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
-import { join, relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
   analyzeCapabilityAdoption,
   analyzeImpact,
   analyzeImpactWithSoftwareGraph,
+  rawRetrievalRepositoryIdentityFromError,
   reportToFindings,
   resolveBoundedRawRetrievalFallback,
 } from "@mendpoint/code-impact";
@@ -215,9 +216,12 @@ function classifyRawRetrievalBudgetFailure(
 }
 
 type RawRetrievalRepositoryIdentity = Readonly<{
+  schemaVersion: "mendpoint.codebase-index-repository-identity.v1";
   repositorySnapshotId: string;
   repositoryRevision: string;
   repositoryContentDigest: string;
+  filesInspected: number;
+  bytesInspected: number;
 }>;
 
 export type RawRetrievalBudgetDecisionV1 = Readonly<{
@@ -237,68 +241,12 @@ export type RawRetrievalBudgetDecisionV1 = Readonly<{
     limit: number;
     actual: number;
   }>;
+  identityUsage: Readonly<{ filesInspected: number; bytesInspected: number }>;
   failureCode: RawRetrievalBudgetFailure["failureCode"];
   sourceCode: string;
   graphBinding: Readonly<{ versionId: string; contentDigest: string }> | null;
   decisionDigest: string;
 }>;
-
-const RAW_RETRIEVAL_IDENTITY_MAX_FILES = 50_000;
-const RAW_RETRIEVAL_IDENTITY_MAX_BYTES = 2_147_483_648;
-const RAW_RETRIEVAL_IDENTITY_IGNORED_DIRECTORIES = new Set([
-  ".git",
-  ".mendpoint",
-  "node_modules",
-]);
-
-function captureRawRetrievalRepositoryIdentity(repoRoot: string): RawRetrievalRepositoryIdentity {
-  const rows: Array<{ path: string; size: number; sha256: string }> = [];
-  let bytes = 0;
-  const visit = (directory: string): void => {
-    const entries = readdirSync(directory, { withFileTypes: true })
-      .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
-    for (const entry of entries) {
-      if (entry.isDirectory() && RAW_RETRIEVAL_IDENTITY_IGNORED_DIRECTORIES.has(entry.name)) {
-        continue;
-      }
-      const absolute = join(directory, entry.name);
-      const relativePath = relative(repoRoot, absolute).replace(/\\/g, "/");
-      const stat = lstatSync(absolute);
-      if (stat.isSymbolicLink()) throw new Error("raw_retrieval_snapshot_symlink_not_allowed");
-      if (stat.isDirectory()) {
-        visit(absolute);
-        continue;
-      }
-      if (!stat.isFile()) continue;
-      if (rows.length >= RAW_RETRIEVAL_IDENTITY_MAX_FILES) {
-        throw new Error("raw_retrieval_snapshot_file_limit_exceeded");
-      }
-      bytes += stat.size;
-      if (!Number.isSafeInteger(bytes) || bytes > RAW_RETRIEVAL_IDENTITY_MAX_BYTES) {
-        throw new Error("raw_retrieval_snapshot_byte_limit_exceeded");
-      }
-      const content = readFileSync(absolute);
-      const after = lstatSync(absolute);
-      if (content.byteLength !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) {
-        throw new Error("raw_retrieval_snapshot_changed_during_capture");
-      }
-      rows.push({
-        path: relativePath,
-        size: stat.size,
-        sha256: createHash("sha256").update(content).digest("hex"),
-      });
-    }
-  };
-  visit(repoRoot);
-  rows.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
-  const repositoryContentDigest = `sha256:${textDigest(JSON.stringify(rows))}`;
-  const repositoryRevision = repositoryContentDigest.slice("sha256:".length);
-  return Object.freeze({
-    repositorySnapshotId: `repository-snapshot:${repositoryRevision}`,
-    repositoryRevision,
-    repositoryContentDigest,
-  });
-}
 
 function trustId(prefix: string, ...parts: string[]): string {
   return `${prefix}_${createHash("sha256").update(parts.join("\0")).digest("hex")}`;
@@ -1128,38 +1076,15 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     let impactReport: ImpactReport;
     let indexMaterialization: IndexMaterializationEvidence | undefined;
     let rawRetrievalFallback = false;
-    let repositoryIdentity: RawRetrievalRepositoryIdentity;
-    try {
-      repositoryIdentity = captureRawRetrievalRepositoryIdentity(repo.local_path);
-    } catch (error) {
-      const code = error instanceof Error && /^[a-z0-9._:-]{1,160}$/i.test(error.message)
-        ? error.message
-        : "raw_retrieval_snapshot_capture_failed";
-      recordAudit(db, {
-        tenantId: input.tenantId,
-        actor: "pipeline",
-        action: "graph.analysis_failed",
-        resourceType: "consumer",
-        resourceId: consumer.id,
-        metadata: { code },
-      });
-      report.consumers.push({
-        consumerId: consumer.id,
-        name: consumer.name,
-        findings: 0,
-        candidates: 0,
-        confirmed: 0,
-        prStatus: "package_failed",
-        deliveryError: code,
-      });
-      continue;
-    }
     const persistRawRetrievalBudgetFailure = (
       error: unknown,
       inputArtifactId: string,
     ): RawRetrievalBudgetFailure | undefined => {
       const failure = classifyRawRetrievalBudgetFailure(error, rawRetrievalBounds);
       if (!failure) return undefined;
+      const repositoryIdentity = rawRetrievalRepositoryIdentityFromError(error) as
+        RawRetrievalRepositoryIdentity | undefined;
+      if (!repositoryIdentity) throw new Error("raw_retrieval_repository_identity_missing");
       const graphHead = gldb
         ? getSoftwareGraphHead(
             gldb,
@@ -1184,6 +1109,10 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           metric: failure.metric,
           limit: failure.limit,
           actual: failure.actual,
+        },
+        identityUsage: {
+          filesInspected: repositoryIdentity.filesInspected,
+          bytesInspected: repositoryIdentity.bytesInspected,
         },
         failureCode: failure.failureCode,
         sourceCode: failure.sourceCode,
@@ -1275,15 +1204,15 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     const endpointKeys = new Set(endpointSurfaces.map(
       (surface) => `${(surface.method ?? "ANY").toUpperCase()} ${surface.path}`,
     ));
-    const endpointSurface = endpointKeys.size === 1 ? endpointSurfaces[0] : undefined;
+    const endpointSurface = endpointKeys.size === 1 && endpointSurfaces.length === surfaces.length
+      ? endpointSurfaces[0]
+      : undefined;
     if (endpointSurface && gldb) {
       try {
         const graphAnalysis = await (input.softwareGraphAnalyzer ?? analyzeImpactWithSoftwareGraph)(repo.local_path, surfaces, {
           graphDb: gldb,
           tenantId: input.tenantId,
           repositoryId: repo.connected_repository_id ?? repo.id,
-          repositorySnapshotId: repositoryIdentity.repositorySnapshotId,
-          repositoryRevision: repositoryIdentity.repositoryRevision,
           providerId: provider.id,
           providerSnapshotId: to.id,
           providerRevision: to.version_label,

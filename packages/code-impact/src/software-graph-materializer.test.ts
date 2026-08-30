@@ -256,7 +256,6 @@ describe("Fettler software graph materializer", () => {
       graphDb: db,
       tenantId: "tenant-a",
       repositoryId: "repo-a",
-      repositorySnapshotId: "snapshot-a",
       providerId: "twilio",
       providerSnapshotId: "twilio-openapi-2026-08-17",
       providerRevision: "2026-08-17",
@@ -377,7 +376,42 @@ describe("Fettler software graph materializer", () => {
       graphDb: db,
       tenantId: "tenant-a",
       repositoryId: "repo-a",
-      repositorySnapshotId: "snapshot-a",
+      providerId: "twilio",
+      providerSnapshotId: "twilio-openapi-2026-08-17",
+      providerRevision: "2026-08-17",
+      providerSdkPackage: "twilio",
+      providerSdkVersion: "4.0.0",
+      observedAt: "2026-08-17T12:00:00.000Z",
+      maxCallerHops: 4,
+      maxContextBytes: 8_192,
+    })).rejects.toThrow("software_graph_single_endpoint_required");
+    expect(getSoftwareGraphHead(db, "tenant-a", "repo-a", "twilio")).toBeUndefined();
+    db.raw.close();
+  });
+
+  it("refuses to certify a pathless change through an endpoint projection", async () => {
+    const repoRoot = makeRepository();
+    const db = openGraphLearnMemory();
+    const pathlessAuthSurface: ImpactableSurface = {
+      ...surface,
+      id: "surface-auth",
+      canonicalId: "twilio.auth_changed.api_key",
+      kind: "auth",
+      op: "security_changed",
+      path: undefined,
+      method: undefined,
+      field: undefined,
+      fromField: undefined,
+      toField: undefined,
+      migrationStrategy: "Rotate the API credential",
+      explanation: "Twilio changed the required authentication contract",
+      searchTokens: ["twilio", "api", "key", "auth"],
+    };
+
+    await expect(analyzeImpactWithSoftwareGraph(repoRoot, [surface, pathlessAuthSurface], {
+      graphDb: db,
+      tenantId: "tenant-a",
+      repositoryId: "repo-a",
       providerId: "twilio",
       providerSnapshotId: "twilio-openapi-2026-08-17",
       providerRevision: "2026-08-17",
@@ -400,7 +434,6 @@ describe("Fettler software graph materializer", () => {
       graphDb: db,
       tenantId: "tenant-a",
       repositoryId: "repo-a",
-      repositorySnapshotId: "snapshot-a",
       providerId: "twilio",
       providerSnapshotId: "twilio-openapi-2026-08-17",
       providerRevision: "2026-08-17",
@@ -591,7 +624,6 @@ describe("Fettler software graph materializer", () => {
       graphDb: db,
       tenantId: "tenant-a",
       repositoryId: "repo-a",
-      repositorySnapshotId: "snapshot-a",
       providerId: "twilio",
       providerSnapshotId: "twilio-openapi-2026-08-17",
       providerRevision: "2026-08-17",

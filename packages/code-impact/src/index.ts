@@ -10,12 +10,11 @@ import {
   type CodebaseIndex,
   type CodebaseIndexAuthority,
   type CodebaseIndexLimits,
+  type CodebaseIndexRepositoryIdentity,
   type CodebaseIndexReuseEvidence,
   type SdkDetectionContext,
 } from "@mendpoint/codebase-index";
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
 import {
   compileFettlerImpactContext,
   getSoftwareGraphHead,
@@ -144,7 +143,11 @@ function analysisIndex(
   return materialized;
 }
 
-function assertCandidateBudget(candidateCount: number, maxCandidates?: number): void {
+function assertCandidateBudget(
+  candidateCount: number,
+  maxCandidates?: number,
+  repositoryIdentity?: CodebaseIndexRepositoryIdentity,
+): void {
   if (maxCandidates === undefined) return;
   if (!Number.isSafeInteger(maxCandidates) || maxCandidates < 1 || maxCandidates > 50_000) {
     throw new Error("raw_retrieval_candidate_budget_invalid");
@@ -154,6 +157,7 @@ function assertCandidateBudget(candidateCount: number, maxCandidates?: number): 
       "raw_retrieval_candidate_budget_exceeded",
       maxCandidates,
       candidateCount,
+      repositoryIdentity,
     );
   }
 }
@@ -163,6 +167,7 @@ export class RawRetrievalBudgetError extends Error {
     readonly code: "raw_retrieval_candidate_budget_exceeded",
     readonly limit: number,
     readonly actual: number,
+    readonly repositoryIdentity?: CodebaseIndexRepositoryIdentity,
   ) {
     super(code);
     this.name = "RawRetrievalBudgetError";
@@ -173,33 +178,30 @@ function rawRetrievalUsage(index: CodebaseIndex): {
   filesInspected: number;
   bytesInspected: number;
 } {
-  const paths = [...new Set([
-    ...index.files.map((file) => file.path),
-    ...(index.structuredFiles ?? []).map((file) => file.path),
-  ])];
-  let bytesInspected = 0;
-  for (const path of paths) {
-    const size = statSync(join(index.repoRoot, path)).size;
-    if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(bytesInspected + size)) {
-      throw new Error("raw_retrieval_usage_invalid");
-    }
-    bytesInspected += size;
-  }
-  return { filesInspected: paths.length, bytesInspected };
+  if (!index.repositoryIdentity) throw new Error("codebase_index_repository_identity_required");
+  return {
+    filesInspected: index.repositoryIdentity.filesInspected,
+    bytesInspected: index.repositoryIdentity.bytesInspected,
+  };
 }
 
-function repositoryManifestRevision(repoRoot: string, index: CodebaseIndex): string {
-  const paths = [...new Set([
-    ...index.files.map((file) => file.path),
-    ...(index.structuredFiles ?? []).map((file) => file.path),
-  ])].sort(compareCodeUnits);
-  const manifest = paths.map((path) => {
-    const contentDigest = createHash("sha256")
-      .update(readFileSync(join(repoRoot, path)))
-      .digest("hex");
-    return `${path}\0${contentDigest}`;
-  }).join("\n");
-  return createHash("sha256").update(manifest, "utf8").digest("hex");
+export function rawRetrievalRepositoryIdentityFromError(
+  error: unknown,
+): CodebaseIndexRepositoryIdentity | undefined {
+  const value = error && typeof error === "object"
+    ? (error as { repositoryIdentity?: unknown }).repositoryIdentity
+    : undefined;
+  if (!value || typeof value !== "object") return undefined;
+  const identity = value as Partial<CodebaseIndexRepositoryIdentity>;
+  if (
+    identity.schemaVersion !== "mendpoint.codebase-index-repository-identity.v1" ||
+    typeof identity.repositorySnapshotId !== "string" ||
+    typeof identity.repositoryRevision !== "string" ||
+    typeof identity.repositoryContentDigest !== "string" ||
+    !Number.isSafeInteger(identity.filesInspected) || Number(identity.filesInspected) < 0 ||
+    !Number.isSafeInteger(identity.bytesInspected) || Number(identity.bytesInspected) < 0
+  ) return undefined;
+  return identity as CodebaseIndexRepositoryIdentity;
 }
 
 /**
@@ -624,7 +626,7 @@ export async function analyzeImpact(
 
   const provider: ProviderReachability = computeProviderReachability(index, surfaces);
   const candidates = discoverCandidates(index, surfaces, provider);
-  assertCandidateBudget(candidates.length, options.maxCandidates);
+  assertCandidateBudget(candidates.length, options.maxCandidates, index.repositoryIdentity);
   const expanded = expandContexts(index, candidates);
   const confirmed = await confirmImpacts(expanded, surfaces, {
     useLlm: options.useLlm,
@@ -660,7 +662,7 @@ export function analyzeRepo(
     });
   const provider: ProviderReachability = computeProviderReachability(index, surfaces);
   const candidates = discoverCandidates(index, surfaces, provider);
-  assertCandidateBudget(candidates.length, options.maxCandidates);
+  assertCandidateBudget(candidates.length, options.maxCandidates, index.repositoryIdentity);
   const expanded = expandContexts(index, candidates);
   const confirmed = staticConfirmAll(expanded, surfaces);
   const report = buildReport(
@@ -716,7 +718,7 @@ export async function analyzeImpactWithSoftwareGraph(
   const endpointKeys = new Set(endpointSurfaces.map(
     (surface) => `${(surface.method ?? "ANY").toUpperCase()} ${surface.path}`,
   ));
-  if (endpointKeys.size !== 1) {
+  if (endpointKeys.size !== 1 || endpointSurfaces.length !== surfaces.length) {
     throw new Error("software_graph_single_endpoint_required");
   }
   const endpointSurface = endpointSurfaces[0];
@@ -727,9 +729,17 @@ export async function analyzeImpactWithSoftwareGraph(
     repositoryId: options.repositoryId,
   });
   const { index } = materialized;
-  const repositoryRevision = options.repositoryRevision ??
-    repositoryManifestRevision(repoRoot, index);
-  const repositorySnapshotId = options.repositorySnapshotId ?? `repository-snapshot:${repositoryRevision}`;
+  const derivedIdentity = index.repositoryIdentity;
+  if (!derivedIdentity) throw new Error("codebase_index_repository_identity_required");
+  if (
+    (options.repositoryRevision && options.repositoryRevision !== derivedIdentity.repositoryRevision) ||
+    (options.repositorySnapshotId &&
+      options.repositorySnapshotId !== derivedIdentity.repositorySnapshotId)
+  ) {
+    throw new Error("software_graph_repository_identity_mismatch");
+  }
+  const repositoryRevision = derivedIdentity.repositoryRevision;
+  const repositorySnapshotId = derivedIdentity.repositorySnapshotId;
   const head = getSoftwareGraphHead(
     options.graphDb,
     options.tenantId,
@@ -783,6 +793,7 @@ export async function analyzeImpactWithSoftwareGraph(
     graphVersion,
     repositorySnapshotId,
     repositoryRevision,
+    repositoryContentDigest: derivedIdentity.repositoryContentDigest,
     graphImpact,
     context,
     rawRetrievalUsage: graphComplete
@@ -820,8 +831,8 @@ function impactReportFromCompleteGraph(
             : "high",
         evidence,
         impactType: "direct_call",
-        surfaceIds: surfaces.map((surface) => surface.id),
-        relatedOps: surfaces.map((surface) => surface.op),
+        surfaceIds: [surfaces[0]!.id],
+        relatedOps: [surfaces[0]!.op],
         confirmationPath: "static",
       });
     }

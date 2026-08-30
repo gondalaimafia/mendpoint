@@ -557,6 +557,7 @@ describe("pipeline", () => {
             failureCode: string;
             decisionDigest: string;
             usage: { metric: string; limit: number; actual: number };
+            identityUsage: { filesInspected: number; bytesInspected: number };
           };
           relationshipCandidates: unknown[];
         };
@@ -566,6 +567,12 @@ describe("pipeline", () => {
           usage: { metric: budgetCase.metric },
         });
         expect(stored.decision.usage.actual).toBeGreaterThan(stored.decision.usage.limit);
+        if (budgetCase.name === "file") {
+          expect(stored.decision.identityUsage.filesInspected).toBeLessThanOrEqual(1);
+        }
+        if (budgetCase.name === "byte") {
+          expect(stored.decision.identityUsage.bytesInspected).toBeLessThanOrEqual(1);
+        }
         expect(stored.relationshipCandidates).toEqual([]);
         expect(listEvidenceRecords(db, "tenant_default", "api_change", first.changeId).filter(
           (evidence) => evidence.tool === "mendpoint-raw-retrieval-fallback" &&
@@ -624,7 +631,7 @@ describe("pipeline", () => {
         };
       }).decision);
       const firstDecision = readDecisions()[0]!;
-      const readmePath = join(repoDir, "README.md");
+      const readmePath = join(repoDir, "check.mjs");
       const before = readFileSync(readmePath, "utf8");
       const replacement = before.startsWith("A") ? "B" : "A";
       writeFileSync(readmePath, `${replacement}${before.slice(1)}`, "utf8");
