@@ -256,17 +256,17 @@ describe("Fettler-only customer Fly profile", () => {
     delete unset.MENDPOINT_CUSTOMER_READY;
     const unsetErrors = validateCustomerWardenRuntime(unset);
     expect(unsetErrors).not.toEqual([]);
-    expect(unsetErrors.some((e) => e.includes("MENDPOINT_CUSTOMER_READY could not be determined")))
-      .toBe(true);
-    expect(unsetErrors.some((e) => e.includes("got unset"))).toBe(true);
+    expect(unsetErrors).toContain(
+      "Customer readiness indeterminate: customer_declaration_indeterminate",
+    );
 
     // Indeterminate (unrecognized value) fails closed at boot, named.
     const garbageErrors = validateCustomerWardenRuntime(
       customerRuntime({ MENDPOINT_CUSTOMER_READY: "maybe" }),
     );
-    expect(garbageErrors.some((e) => e.includes("MENDPOINT_CUSTOMER_READY could not be determined")))
-      .toBe(true);
-    expect(garbageErrors.some((e) => e.includes('got "maybe"'))).toBe(true);
+    expect(garbageErrors).toContain(
+      "Customer readiness indeterminate: customer_declaration_indeterminate",
+    );
   });
 
   it("asserts a local model endpoint at boot under local_only egress", () => {
