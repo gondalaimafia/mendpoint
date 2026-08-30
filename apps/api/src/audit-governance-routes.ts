@@ -26,6 +26,7 @@ export type AuditGovernanceRoutesOptions = Readonly<{
 }>;
 
 const INPUT_ERRORS = [
+  { internalCode: "audit_hold_id_invalid", status: 400 as const },
   { internalCode: "audit_hold_scope_invalid", status: 400 as const },
   { internalCode: "audit_hold_scope_required", status: 400 as const },
   { internalCode: "audit_hold_reason_invalid", status: 400 as const },
@@ -35,12 +36,14 @@ const INPUT_ERRORS = [
   { internalCode: "audit_hold_exists", status: 409 as const },
   { internalCode: "audit_hold_not_active", status: 409 as const },
   { internalCode: "audit_hold_idempotency_conflict", status: 409 as const },
+  { internalCode: "audit_destination_id_invalid", status: 400 as const },
   { internalCode: "audit_destination_exists", status: 409 as const },
   { internalCode: "audit_destination_not_found", status: 404 as const },
   { internalCode: "audit_destination_not_active", status: 409 as const },
   { internalCode: "audit_destination_idempotency_conflict", status: 409 as const },
   { internalCode: "audit_export_destination_invalid", status: 400 as const },
   { internalCode: "audit_export_destination_tenant_mismatch", status: 403 as const },
+  { internalCode: "audit_export_id_invalid", status: 400 as const },
   { internalCode: "audit_export_limit_invalid", status: 400 as const },
   { internalCode: "audit_export_idempotency_conflict", status: 409 as const },
   { internalCode: "audit_retention_at_invalid", status: 400 as const },
@@ -48,6 +51,8 @@ const INPUT_ERRORS = [
   { internalCode: "audit_source_integrity_invalid", status: 409 as const },
   { internalCode: "audit_governance_integrity_invalid", status: 409 as const },
 ];
+
+const RESOURCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 
 function bodyObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -72,7 +77,12 @@ function eventIds(value: unknown): readonly string[] | null {
 }
 
 function idempotencyKey(header: string | undefined): string | null {
-  return requiredText(header);
+  return typeof header === "string" && RESOURCE_ID.test(header) ? header : null;
+}
+
+function optionalId(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === "string" && RESOURCE_ID.test(value) ? value : null;
 }
 
 type MutationAuthority =
@@ -112,13 +122,15 @@ export function createAuditGovernanceRoutes(options: AuditGovernanceRoutesOption
     const resourceType = optionalText(body?.resourceType);
     const resourceId = optionalText(body?.resourceId);
     const ids = eventIds(body?.eventIds);
-    if (!body || !reason || resourceType === undefined || resourceId === undefined || ids === null) {
+    const holdId = optionalId(body?.holdId);
+    if (!body || !reason || resourceType === undefined || resourceId === undefined ||
+      ids === null || holdId === null) {
       return c.json({ error: "audit_hold_input_invalid" }, 400);
     }
     try {
       const event = createAuditLegalHold(options.db, {
         id: createId(),
-        holdId: requiredText(body.holdId) ?? createId(),
+        holdId: holdId ?? createId(),
         tenantId: auth.principal.tenantId,
         reason,
         resourceType,
@@ -174,11 +186,12 @@ export function createAuditGovernanceRoutes(options: AuditGovernanceRoutesOption
     if (!key) return c.json({ error: "idempotency_key_required" }, 400);
     const body = bodyObject(await c.req.json<unknown>().catch(() => null));
     const uri = requiredText(body?.uri);
-    if (!uri) return c.json({ error: "uri_required" }, 400);
+    const destinationId = optionalId(body?.destinationId);
+    if (!uri || destinationId === null) return c.json({ error: "audit_destination_input_invalid" }, 400);
     try {
       const event = registerAuditExportDestination(options.db, {
         id: createId(),
-        destinationId: requiredText(body?.destinationId) ?? createId(),
+        destinationId: destinationId ?? createId(),
         tenantId: auth.principal.tenantId,
         uri,
         actorId: auth.principal.id,
@@ -237,13 +250,14 @@ export function createAuditGovernanceRoutes(options: AuditGovernanceRoutesOption
     if (!key) return c.json({ error: "idempotency_key_required" }, 400);
     const body = bodyObject(await c.req.json<unknown>().catch(() => null));
     const destinationId = requiredText(body?.destinationId);
+    const exportId = optionalId(body?.exportId);
     const profile = body?.redactionProfile;
     const limit = body?.limit === undefined ? 2000 : body.limit;
-    if (!destinationId || !["support", "security", "minimal"].includes(String(profile)) ||
+    if (!destinationId || exportId === null || !["support", "security", "minimal"].includes(String(profile)) ||
       !Number.isSafeInteger(limit)) return c.json({ error: "audit_export_input_invalid" }, 400);
     try {
       const output = createAuditExportManifest(options.db, {
-        id: requiredText(body?.exportId) ?? createId(),
+        id: exportId ?? createId(),
         tenantId: auth.principal.tenantId,
         destinationId,
         requestedByActorId: auth.principal.id,

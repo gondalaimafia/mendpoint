@@ -126,4 +126,25 @@ describe("authenticated audit governance routes", () => {
     expect((await (await app.request("/audit-governance/legal-holds", { headers: crossTenant })).json() as { data: unknown[] }).data)
       .toEqual([]);
   });
+
+  it("rejects malformed optional identifiers instead of silently replacing or failing internally", async () => {
+    const { app } = fixture();
+    const invalidDestination = await app.request("/audit-governance/destinations", json("POST", {
+      destinationId: "invalid destination",
+      uri: "customer://tenant-a/audit",
+    }, { "Idempotency-Key": "destination-invalid" }));
+    expect(invalidDestination.status).toBe(400);
+
+    const invalidHold = await app.request("/audit-governance/legal-holds", json("POST", {
+      holdId: "invalid hold",
+      reason: "customer dispute",
+      eventIds: ["audit-tenant-a"],
+    }, { "Idempotency-Key": "hold-invalid" }));
+    expect(invalidHold.status).toBe(400);
+
+    const invalidKey = await app.request("/audit-governance/destinations", json("POST", {
+      uri: "customer://tenant-a/audit",
+    }, { "Idempotency-Key": "invalid key" }));
+    expect(invalidKey.status).toBe(400);
+  });
 });
