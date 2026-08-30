@@ -3663,3 +3663,18 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The focused matrix passes 30 of 30 tests. Root review added a fail-closed `critical_health_indeterminate` result so omitted health evidence cannot qualify a deployment.
 - Runtime packaging and injection of the qualification attestation and expected digests remain a separate activation increment; this slice does not enable required mode in production.
 - Exact-head review found that missing revocation state was normalized to an empty list. Required mode now distinguishes missing or malformed state from the authoritative empty array, includes that distinction in the readiness digest, and fails closed as indeterminate.
+
+## 2026-08-30 Legacy deploy authority binding repair
+
+- [x] RED: require the `mendpoint-talal` deploy job to consume only `FLY_API_TOKEN_MENDPOINT_TALAL`.
+- [x] RED: require a fail-fast authority preflight that proves the token is nonempty and can read `mendpoint-talal` before any deploy mutation.
+- [x] GREEN: add the dedicated secret binding and preflight without changing the customer or ReGauge deployment lanes.
+- [x] Run the focused workflow test, parse the workflow YAML, run `git diff --check`, and inspect the exact scoped diff.
+- [x] Leave the branch uncommitted and record the external secret-binding and post-merge deployment receipt gates.
+
+### Review
+
+- RED evidence: the focused workflow suite failed only because the required preflight step was absent; the two existing workflow tests remained green.
+- The legacy deploy now binds both its read-only preflight and deploy mutation to `FLY_API_TOKEN_MENDPOINT_TALAL`. The preflight rejects an empty binding and requires `flyctl status --app mendpoint-talal` to succeed before the deploy command can run. Customer and ReGauge behavior is unchanged.
+- Verification evidence: the focused suite passes 3 of 3, the workflow parses independently with the repository YAML library, and `git diff --check` is clean. The complete diff contains only this workflow, its focused test, and this task ledger.
+- External gates: an operator must bind an app-scoped deploy token to the new repository secret without exposing its value; the expired sandbox egress attestation must be renewed under the exact app image and policy contract; and a post-merge current-main run must produce successful preflight, exact-revision deploy, `/version`, `/livez`, and `/healthz` receipts. No GitHub secret, Fly state, production app, branch protection, push, or pull request was changed here.

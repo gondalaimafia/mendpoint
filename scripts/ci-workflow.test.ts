@@ -3,6 +3,40 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 describe("CI workflow", () => {
+  it("proves dedicated mendpoint-talal authority before deploying", () => {
+    const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8")) as Record<
+      string,
+      any
+    >;
+    const deploySteps = workflow.jobs.deploy.steps as Record<string, any>[];
+    const preflightIndex = deploySteps.findIndex(
+      (step) => step.name === "Preflight mendpoint-talal deploy authority",
+    );
+    const deployIndex = deploySteps.findIndex(
+      (step) => step.name === "Deploy verified revision",
+    );
+
+    expect(preflightIndex).toBeGreaterThan(-1);
+    expect(deployIndex).toBeGreaterThan(preflightIndex);
+
+    const preflight = deploySteps[preflightIndex]!;
+    const deploy = deploySteps[deployIndex]!;
+    const dedicatedSecret = "${{ secrets.FLY_API_TOKEN_MENDPOINT_TALAL }}";
+
+    expect(preflight).toMatchObject({
+      if: "steps.head.outputs.superseded != 'true'",
+      shell: "bash",
+      env: { FLY_API_TOKEN: dedicatedSecret },
+    });
+    expect(preflight.run).toContain('test -n "${FLY_API_TOKEN:-}"');
+    expect(preflight.run).toContain("flyctl status --app mendpoint-talal");
+    expect(preflight.run).not.toContain("flyctl deploy");
+    expect(deploy.env).toEqual({ FLY_API_TOKEN: dedicatedSecret });
+    expect(JSON.stringify(workflow.jobs.deploy)).not.toContain(
+      "secrets.FLY_API_TOKEN }}",
+    );
+  });
+
   it("installs the deployment browser without refreshing hosted-runner packages", () => {
     const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8")) as Record<
       string,

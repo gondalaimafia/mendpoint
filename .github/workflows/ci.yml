@@ -364,6 +364,22 @@ jobs:
         if: steps.head.outputs.superseded != 'true'
         with:
           version: "0.4.79"
+      # Prove this app-scoped credential exists and can read the exact legacy
+      # app before flyctl receives any mutation command. Status is read-only,
+      # and neither the token nor provider output is written to the log.
+      - name: Preflight mendpoint-talal deploy authority
+        if: steps.head.outputs.superseded != 'true'
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_MENDPOINT_TALAL }}
+        run: |
+          set -euo pipefail
+          test -n "${FLY_API_TOKEN:-}" || { echo "::error::FLY_API_TOKEN_MENDPOINT_TALAL is empty; cannot deploy mendpoint-talal."; exit 1; }
+          if ! flyctl status --app mendpoint-talal >/dev/null 2>&1; then
+            echo "::error::FLY_API_TOKEN_MENDPOINT_TALAL cannot read mendpoint-talal. Bind an app-scoped deploy token to that repository secret."
+            exit 1
+          fi
+          echo "Deploy credential has authority over mendpoint-talal."
       # MENDPOINT_RELEASE_REVISION stamps the immutable git sha onto the running
       # app so /version can report exactly what is deployed. Without it,
       # /version.revision is null and a revision check would compare null to null
@@ -373,7 +389,7 @@ jobs:
         if: steps.head.outputs.superseded != 'true'
         run: flyctl deploy --remote-only --app mendpoint-talal --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_MENDPOINT_TALAL }}
       # Bounded health verification. Every curl carries --max-time, so a hung or
       # unresponsive endpoint fails fast and loud instead of blocking until the
       # job's 25-minute timeout (which GitHub records, misleadingly, as
@@ -516,11 +532,10 @@ jobs:
           version: "0.4.79"
       # Prove this credential actually has authority over the customer app
       # BEFORE mutating anything. FLY_API_TOKEN_CUSTOMER is a deploy token scoped
-      # to mendpoint-fettler-production alone -- deliberately NOT the repo-wide
-      # FLY_API_TOKEN that deploys mendpoint-talal above, which this preflight
-      # proved has no authority over this app. Its scope is asserted here rather
-      # than assumed. Read-only: `status` mutates nothing. The token is never
-      # echoed -- only its presence is tested.
+      # to mendpoint-fettler-production alone, separate from the app-scoped
+      # FLY_API_TOKEN_MENDPOINT_TALAL used above. Its scope is asserted here
+      # rather than assumed. Read-only: `status` mutates nothing. The token is
+      # never echoed -- only its presence is tested.
       - name: Prove deploy authority over the customer app
         if: steps.head.outputs.superseded != 'true'
         shell: bash
