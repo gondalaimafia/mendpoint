@@ -16,6 +16,7 @@ import {
   EXPECTED_WORKSTREAM_COUNTS,
   finalQualificationReady,
   runnableClosurePlans,
+  transitionState,
   validateCanonicalClosureRows,
 } from "./production-closure-catalog.js";
 
@@ -322,6 +323,13 @@ describe("production closure execution ledger", () => {
           primaryPlan: "*",
           acceptanceIds: [],
           availability: "ga" as const,
+          target: {
+            implementationStatus: "documented" as const,
+            availability: "internal" as const,
+            claimState: row.target.claimState === "public_current"
+              ? "public_limited" as const
+              : "public_current" as const,
+          },
           plannedEvidenceIds: ["planned-evidence"],
           productionRevision: ledger.observedMainRevision,
           productionEvidenceDigest: null,
@@ -334,6 +342,41 @@ describe("production closure execution ledger", () => {
     expect(codes).toContain("PRODUCTION_BINDING_INCOMPLETE");
     expect(codes).toContain("GA_EVIDENCE_MISSING");
     expect(codes).toContain("PLANNED_EVIDENCE_UNRESOLVED");
+    expect(codes).toContain("TARGET_STATUS_INVALID");
+    expect(codes).toContain("TARGET_AVAILABILITY_INVALID");
+    expect(codes).toContain("TARGET_CLAIM_INVALID");
+  });
+
+  it("never qualifies production evidence without verified GA public state", () => {
+    const documented = ledger.rows.find((row) => row.requirementId === "ME-FND-001")!;
+    const evidenceOnly = ledger.rows.map((row) => row === documented
+      ? {
+          ...row,
+          productionRevision: ledger.observedMainRevision,
+          productionEvidenceDigest: `sha256:${"d".repeat(64)}`,
+          transitionState: "qualified" as const,
+        }
+      : row);
+    expect(validateCanonicalClosureRows(evidenceOnly).map((issue) => issue.code))
+      .toContain("QUALIFICATION_STATE_INVALID");
+
+    expect(transitionState({
+      queueState: "ship",
+      implementationStatus: "documented",
+      availability: "internal",
+      claimState: "internal_only",
+      productionRevision: ledger.observedMainRevision,
+      productionEvidenceDigest: `sha256:${"d".repeat(64)}`,
+    })).toBe("deployment_pending");
+  });
+
+  it("rejects non-exact production revision and digest bindings", () => {
+    const target = ledger.rows[0]!;
+    const malformed = ledger.rows.map((row) => row === target
+      ? { ...row, productionRevision: "main", productionEvidenceDigest: "sha256:not-a-digest" }
+      : row);
+    expect(validateCanonicalClosureRows(malformed).map((issue) => issue.code))
+      .toContain("PRODUCTION_BINDING_INVALID");
   });
 
   it("reports count, workstream, register, claim, evidence, and deployed revision drift", () => {

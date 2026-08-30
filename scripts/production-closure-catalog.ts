@@ -75,6 +75,9 @@ export type ClosureTransitionState =
   | "external_proof_pending"
   | "qualified";
 
+const EXACT_GIT_REVISION = /^[a-f0-9]{40}$/u;
+const SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/u;
+
 export interface CanonicalClosureRow {
   requirementId: string;
   registerSet: string;
@@ -179,10 +182,21 @@ export function initialQueueState(input: {
 
 export function transitionState(input: {
   queueState: ClosureQueueState;
+  implementationStatus: ProductImplementationStatus;
+  availability: ProductAvailability;
+  claimState: ProductClaimState;
   productionRevision: string | null;
   productionEvidenceDigest: string | null;
 }): ClosureTransitionState {
-  if (input.productionRevision && input.productionEvidenceDigest) return "qualified";
+  if (
+    input.implementationStatus === "verified" &&
+    input.availability === "ga" &&
+    (input.claimState === "public_current" || input.claimState === "public_limited") &&
+    input.productionRevision !== null &&
+    EXACT_GIT_REVISION.test(input.productionRevision) &&
+    input.productionEvidenceDigest !== null &&
+    SHA256_DIGEST.test(input.productionEvidenceDigest)
+  ) return "qualified";
   switch (input.queueState) {
     case "build": return "implementation_pending";
     case "repair": return "repair_pending";
@@ -233,6 +247,15 @@ export function validateCanonicalClosureRows(
     } else if (row.primaryPlan !== approved) {
       issue(issues, "PRIMARY_PLAN_MISMATCH", row.requirementId, `expected ${approved}, got ${row.primaryPlan}`);
     }
+    if (row.target.implementationStatus !== "verified") {
+      issue(issues, "TARGET_STATUS_INVALID", row.requirementId, "closure target must be verified");
+    }
+    if (row.target.availability !== "ga") {
+      issue(issues, "TARGET_AVAILABILITY_INVALID", row.requirementId, "closure target must be GA");
+    }
+    if (approved && row.target.claimState !== targetClaimState(row.requirementId)) {
+      issue(issues, "TARGET_CLAIM_INVALID", row.requirementId, "closure target claim state does not match the approved support boundary");
+    }
     if (row.acceptanceIds.length === 0) {
       issue(issues, "ACCEPTANCE_UNCOVERED", row.requirementId, "at least one acceptance ID is required");
     }
@@ -249,6 +272,12 @@ export function validateCanonicalClosureRows(
     if (Boolean(row.productionRevision) !== Boolean(row.productionEvidenceDigest)) {
       issue(issues, "PRODUCTION_BINDING_INCOMPLETE", row.requirementId, "production revision and evidence digest must be present together");
     }
+    if (
+      (row.productionRevision !== null && !EXACT_GIT_REVISION.test(row.productionRevision)) ||
+      (row.productionEvidenceDigest !== null && !SHA256_DIGEST.test(row.productionEvidenceDigest))
+    ) {
+      issue(issues, "PRODUCTION_BINDING_INVALID", row.requirementId, "production binding must use an exact Git revision and sha256 digest");
+    }
     if (row.availability === "ga" && (!row.productionRevision || !row.productionEvidenceDigest)) {
       issue(issues, "GA_EVIDENCE_MISSING", row.requirementId, "GA requires exact-revision production evidence");
     }
@@ -257,6 +286,18 @@ export function validateCanonicalClosureRows(
       row.plannedEvidenceIds.length > 0
     ) {
       issue(issues, "PLANNED_EVIDENCE_UNRESOLVED", row.requirementId, "qualified rows cannot retain planned evidence locators");
+    }
+    if (
+      row.transitionState === "qualified" &&
+      (
+        row.implementationStatus !== "verified" ||
+        row.availability !== "ga" ||
+        (row.claimState !== "public_current" && row.claimState !== "public_limited") ||
+        !row.productionRevision ||
+        !row.productionEvidenceDigest
+      )
+    ) {
+      issue(issues, "QUALIFICATION_STATE_INVALID", row.requirementId, "qualification requires verified GA public state and exact-revision production evidence");
     }
   }
 

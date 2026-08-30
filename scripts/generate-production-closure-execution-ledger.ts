@@ -479,6 +479,9 @@ export function buildExecutionLedger(): {
       productionEvidenceDigest: production.productionEvidenceDigest,
       transitionState: transitionState({
         queueState,
+        implementationStatus: matrixRow.status.implementationStatus,
+        availability: matrixRow.status.availability,
+        claimState: matrixRow.status.claimState,
         productionRevision: production.productionRevision,
         productionEvidenceDigest: production.productionEvidenceDigest,
       }),
