@@ -33,6 +33,7 @@ import {
 } from "@mendpoint/db";
 import {
   compileAndRenderMissionContext,
+  organizationMemoryScopeApplies,
   policyEnvelopeDirectives,
   type CompiledMissionContext,
   type InheritedContextEnvelope,
@@ -164,7 +165,18 @@ export function buildMissionContext(
   // Organization memory is tenant-scoped and applies with or without a mission.
   // Subject key is the memory scope, which decisions share, so a decision and a
   // memory on the same scope contend under the single precedence resolver.
-  const memoryHeads = listOrganizationMemory(db, { tenantId });
+  //
+  // `listOrganizationMemory` is tenant-wide, so repository-scoped memory for OTHER
+  // repositories must be dropped here: it is not evidence about this task, and the
+  // compiler caps each section, so unrelated repositories would crowd out relevant
+  // memory. A task bound to no repository (`repositoryId === null`) is bound to no
+  // repository-scoped convention either, so the set is empty rather than unknown.
+  const contextRepositoryIds = (() => {
+    const repositoryId = mission?.repositoryId ?? params.fallback.repositoryId;
+    return repositoryId ? [repositoryId] : [];
+  })();
+  const memoryHeads = listOrganizationMemory(db, { tenantId })
+    .filter((record) => organizationMemoryScopeApplies(record.scope, contextRepositoryIds));
   const organizationMemory: MissionContextInput["organizationMemory"] = {
     consulted: true,
     records: memoryHeads.map((record) => ({ subjectKey: record.scope, record })),

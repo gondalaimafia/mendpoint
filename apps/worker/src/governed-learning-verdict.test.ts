@@ -204,6 +204,78 @@ describe("governed producer derives the verification verdict from the recorded a
     expect(regaugeHead?.statement).toContain("[REDACTED_GITHUB_TOKEN]");
   });
 
+  // Production-shaped collision. Both Warden and Transformer fall back to a CONSTANT
+  // reviewer rationale ("Approved in Warden review." /  "Approved in adaptive
+  // review."), so two outcomes on the same repository, task type, and migration
+  // family produce the same statement digest and therefore the same subjectKey and
+  // memoryId. Nothing else in this file reaches that state: every `it()` gets a fresh
+  // database from `setup()`, and the cross-product test above deliberately varies
+  // repositoryId, taskType, migrationFamily AND the rationale, so its two outcomes
+  // land on different memories and can never collide.
+  //
+  // Delete-the-check: restoring any per-event field (eventId, learningRecordId,
+  // revision, snapshotDigest) to `structuredValue` in governed-learning-memory.ts
+  // makes `sameObservedMeaning` false for the second outcome, so it fails with
+  // `organization_memory_observation_conflict` and both assertions below fail.
+  it("projects a SECOND governed outcome that shares a reviewer rationale instead of conflicting", () => {
+    const db = setup();
+    const first = admitGovernedLearningOutcome(facts(db, "run-shared-rationale-1"));
+    const second = admitGovernedLearningOutcome(facts(db, "run-shared-rationale-2"));
+
+    // Two distinct governed outcomes: distinct sourceObjectId, so distinct eventId.
+    expect(first.eventId).not.toBe(second.eventId);
+    expect(first.reason).toBe("admitted");
+    expect(second.reason).toBe("admitted");
+
+    expect(first.memoryProjection?.status).toBe("observed");
+    expect(second.memoryProjection?.status).toBe("observed");
+    if (first.memoryProjection?.status !== "observed") throw new Error("first projection missing");
+    if (second.memoryProjection?.status !== "observed") throw new Error("second projection missing");
+    // Same reviewer restating the same convention is idempotent by design, so both
+    // outcomes name ONE memory and the head cannot inflate past MEMORY_CANDIDATE.
+    expect(second.memoryProjection.memoryId).toBe(first.memoryProjection.memoryId);
+    const head = getOrganizationMemoryHead(db, TENANT, first.memoryProjection.memoryId);
+    expect(head?.status).toBe("MEMORY_CANDIDATE");
+    const rows = db.raw
+      .prepare("SELECT COUNT(*) AS count FROM organization_memory WHERE tenant_id = ?")
+      .get(TENANT) as { count: number };
+    expect(rows.count).toBe(1);
+  });
+
+  // The docstring on projectGovernedOutcomeToOrganizationMemory promises that
+  // "independent corroboration is still required" for promotion. That promise is
+  // only meaningful if corroboration is REACHABLE on this path: a second reviewer's
+  // outcome carries a different eventId, so with per-event fields in
+  // `structuredValue` it conflicted instead of corroborating and the memory could
+  // never advance. Restoring any of those fields makes this fail with
+  // `organization_memory_observation_conflict` at the VALIDATION assertion.
+  it("lets a SECOND reviewer's governed outcome corroborate the same guidance to VALIDATION", () => {
+    const db = setup();
+    const secondReviewer = "human-verdict-second";
+    insertPrincipal(db, {
+      id: secondReviewer,
+      tenantId: TENANT,
+      kind: "human",
+      subject: "second-reviewer",
+      displayName: "Second Reviewer",
+      createdAt: AT,
+    });
+
+    const first = admitGovernedLearningOutcome(facts(db, "run-corroborate-1"));
+    const second = admitGovernedLearningOutcome({
+      ...facts(db, "run-corroborate-2"),
+      reviewerPrincipalId: secondReviewer,
+    });
+
+    expect(first.memoryProjection?.status).toBe("observed");
+    expect(second.memoryProjection?.status).toBe("observed");
+    if (second.memoryProjection?.status !== "observed") throw new Error("second projection missing");
+    const head = getOrganizationMemoryHead(db, TENANT, second.memoryProjection.memoryId);
+    expect(head?.status).toBe("VALIDATION");
+    // Corroboration must not activate memory or make it trainable on its own.
+    expect(head?.trainingEligible).toBe(false);
+  });
+
   it("replays the memory projection idempotently", () => {
     const db = setup();
     const input = facts(db, "run-memory-replay");
@@ -243,6 +315,41 @@ describe("governed producer derives the verification verdict from the recorded a
       .prepare("SELECT COUNT(*) AS count FROM learning_records WHERE tenant_id = ?")
       .get(TENANT) as { count: number };
     expect(persisted.count).toBe(1);
+  });
+
+  // `subjectKey` joins product, taskType, and migrationFamily with ":". Without
+  // escaping, taskType "api:remediation" and the pair (taskType "api",
+  // migrationFamily "remediation") produce the same subjectKey and therefore the
+  // same memoryId, silently merging two different conventions into one chain.
+  // Deleting `subjectSegment` in governed-learning-memory.ts makes these two
+  // memoryIds equal and fails the assertion.
+  it("keeps a colon inside one subjectKey component from colliding with a different component split", () => {
+    const db = setup();
+    const shared = {
+      db,
+      tenantId: TENANT,
+      product: "fettler" as const,
+      repositoryId: "warden-repo-verdict",
+      outcomeStatus: "corrected" as const,
+      reviewerDecision: "accepted" as const,
+      reviewerPrincipalId: HUMAN,
+      reviewRationale: "Prefer the compatibility adapter.",
+      eventId: "event-subject-key",
+      learningRecordId: "record-subject-key",
+      revision: "b".repeat(40),
+      snapshotDigest: `sha256:${"c".repeat(64)}`,
+      observedAt: NOW,
+    };
+    const merged = projectGovernedOutcomeToOrganizationMemory({
+      ...shared, taskType: "api:remediation", migrationFamily: "family",
+    });
+    const split = projectGovernedOutcomeToOrganizationMemory({
+      ...shared, taskType: "api", migrationFamily: "remediation:family",
+    });
+
+    if (merged.status !== "observed") throw new Error("merged projection missing");
+    if (split.status !== "observed") throw new Error("split projection missing");
+    expect(merged.memoryId).not.toBe(split.memoryId);
   });
 
   it("rejects a reviewer principal from another tenant", () => {
