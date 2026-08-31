@@ -122,15 +122,17 @@ export interface ReleaseTrainPullRequest {
   reviewRemediationPullRequest?: number | null;
   // supersededBy records, on a CLOSED record, that this pull request's work was
   // fully subsumed by another pull request that actually merged. It lets a
-  // dependent's dependency on this closed PR be discharged truthfully, instead
+  // dependent's dependency on this closed PR be discharged explicitly, instead
   // of falsely restating this PR as merged or silently deleting the dependency
   // edge. It is not an open-ended bypass: it discharges a dependency only when
   // it names a genuinely MERGED pull request that reciprocally lists this PR in
   // its `supersedes` array (see supersededByMerged), and it is a first-class
   // validation error otherwise (PR_SUPERSEDED_BY_INVALID). The required
-  // reciprocal backreference is what makes the relationship machine-checkable
-  // and self-describing: an unrelated merged pull request cannot discharge a
-  // dependency just by existing. Null or absent means "not superseded".
+  // reciprocal backreference is a CONSISTENCY check, not a truthfulness check:
+  // both halves are self-declared in this same snapshot by the same actor, so
+  // it rejects a half-declared relationship and an unrelated untouched merged
+  // pull request, but it cannot detect a deliberate two-sided self-declaration.
+  // Null or absent means "not superseded".
   supersededBy?: number | null;
   // supersedes is the reciprocal side, declared on the MERGED superseder: the
   // exact set of closed pull requests it fully subsumed. Each entry must be a
@@ -1392,15 +1394,29 @@ export function validateProductionClosureMatrix(
   //       record, so no chain or cycle can form. The property is delivered by
   //       this closed/merged disjointness, not by walking the graph, so the
   //       single non-recursive lookup below cannot loop or stack-overflow;
-  //   (E) the target reciprocally lists this PR in `supersedes` - the linkage
-  //       that makes the discharge machine-checkable, so an unrelated merged PR
-  //       cannot discharge a dependency merely by having merged.
-  // The self-reference guard (B) and the target-not-itself-superseded guard (D)
-  // are redundant defense-in-depth: (A)+(C) already exclude both cases. They are
-  // kept as belt-and-suspenders, not relied on for the guarantees above.
+  //   (E) the target reciprocally lists this PR in `supersedes`.
+  // (A), (C), and (E) are each independently load-bearing and each has a test
+  // that fails when only that clause is removed; see the clause-scoped cases in
+  // production-closure-matrix.test.ts. The self-reference guard (B), the
+  // target-not-itself-superseded guard (D), and the shape guard on the target
+  // number are redundant defense-in-depth: (A)+(C)+(E) already exclude those
+  // cases. They are kept as belt-and-suspenders, not relied on for the
+  // guarantees above.
+  //
+  // What (E) buys is CONSISTENCY, not provider-verified truth. Both halves of
+  // the relationship live in this same static snapshot and are authored by the
+  // same actor in the same change, and nothing reconciles either field against
+  // the provider, so a merged record can be given `supersedes` in the very
+  // commit that gives the closed record `supersededBy`. (E) rules out a
+  // half-declared relationship and an unrelated merged pull request that was
+  // never edited; it does not rule out a deliberate self-declaration. The
+  // provider-verified facts this discharge still rests on are the target's
+  // `state` and `mergeRevision`, which production-closure-github-authority.ts
+  // mirrors against the live pull request.
   const supersededByMerged = (record: ReleaseTrainPullRequest): boolean => {
     const target = record.supersededBy ?? null;
     if (target === null) return false;
+    if (!Number.isInteger(target) || target < 1) return false; // shape, defense-in-depth
     if (record.state !== "closed") return false; // (A)
     const superseder = releasePrs.get(target);
     return Boolean(

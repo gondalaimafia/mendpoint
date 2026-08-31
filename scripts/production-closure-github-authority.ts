@@ -816,19 +816,26 @@ export async function verifyGitHubClosureAuthority(
       matrix.releaseTrain.pullRequests.map((record) => [record.number, record]),
     );
     // A closed record superseded by a merged pull request that reciprocally
-    // lists it discharges a dependency exactly as a merged revision does. This
-    // mirrors supersededByMerged in production-closure-matrix.ts so the two
-    // gates agree on what the same release-train data means.
+    // lists it discharges a dependency exactly as a merged revision does. The
+    // predicate is byte-for-byte the same shape as supersededByMerged in
+    // production-closure-matrix.ts, so both gates read the same release-train
+    // data the same way. The two gates do NOT report the same thing about it:
+    // the matrix gate additionally reports PR_SUPERSEDED_BY_INVALID and
+    // PR_SUPERSEDES_INVALID for an incoherent declaration, while this gate only
+    // declines to discharge and emits nothing of its own. That direction is
+    // safe - this gate can never accept something the matrix gate rejects - but
+    // an incoherent declaration is named only by the matrix gate.
     const supersededByMerged = (record: StaticPullRequestRecord): boolean => {
       const target = record.supersededBy ?? null;
-      if (target === null || record.state !== "closed") return false;
+      if (target === null || !Number.isInteger(target) || target < 1) return false;
+      if (record.state !== "closed") return false; // (A)
       const superseder = trackedPullRequests.get(target);
       return Boolean(
         superseder &&
           superseder.number !== record.number &&
-          superseder.state === "merged" &&
+          superseder.state === "merged" && // (C)
           (superseder.supersededBy ?? null) === null &&
-          (superseder.supersedes ?? []).includes(record.number),
+          (superseder.supersedes ?? []).includes(record.number), // (E)
       );
     };
     for (const dependencyNumber of bootstrap.dependencies.pullRequests) {

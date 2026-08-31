@@ -721,6 +721,50 @@ describe("production closure matrix", () => {
     expect(codes(manifest, matrix)).toContain("PR_SUPERSEDED_BY_INVALID");
   });
 
+  // The two cases below are the clause-scoped tests for (A) and (C) in
+  // supersededByMerged. Every other case in this block leaves the named target
+  // without a `supersedes` array, so clause (E) reciprocity rejects them first
+  // and they would still pass with (A) and (C) deleted. These fixtures DO
+  // reciprocate, so (E) is satisfied and the clause under test is the only
+  // thing left that can reject.
+  it("rejects supersededBy on a merged record even when the target reciprocates", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const carrier = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 358)!;
+    const superseder = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 383)!;
+    expect(carrier.state).toBe("merged");
+    expect(superseder.state).toBe("merged");
+    // (B) distinct, (C) target merged, (D) target not itself superseded, and
+    // (E) reciprocity all hold, so only (A) - the carrying record must be
+    // CLOSED - can reject this. Delete (A) and this expectation fails.
+    carrier.supersededBy = superseder.number;
+    superseder.supersedes = [carrier.number];
+
+    expect(codes(manifest, matrix)).toContain("PR_SUPERSEDED_BY_INVALID");
+  });
+
+  it("rejects a reciprocated supersededBy whose target never merged", () => {
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+    const dependent = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 333)!;
+    const superseded = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 404)!;
+    const target = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 408)!;
+    expect(dependent.state).toBe("merged");
+    expect(superseded.state).toBe("closed");
+    expect(target.state).toBe("closed");
+    dependent.dependencies.pullRequests = [superseded.number];
+    // Both records are closed and they reciprocate, so (A), (B), (D), and (E)
+    // all hold and only (C) - the named target must be MERGED - can reject
+    // this. Delete (C) and a dependency is discharged by a pair of pull
+    // requests neither of which ever merged, and both expectations fail.
+    superseded.supersededBy = target.number;
+    target.supersedes = [superseded.number];
+
+    const result = codes(manifest, matrix);
+    expect(result).toContain("PR_SUPERSEDED_BY_INVALID");
+    expect(result).toContain("PR_DEPENDENCY_UNSATISFIED");
+  });
+
   it("rejects a supersededBy cycle without discharging anything or overflowing the stack", () => {
     const manifest = loadManifest();
     const matrix = loadMatrix();
@@ -746,10 +790,14 @@ describe("production closure matrix", () => {
     const merged = matrix.releaseTrain.pullRequests.find((pr) => pr.number === 383)!;
     dependent.dependencies.pullRequests = [superseded.number];
     // 404 -> 408 (closed, VALIDLY superseded by merged 383) -> 383 (merged).
-    // 408 is a coherent superseded record here, yet it still cannot serve as
-    // 404's superseder because it is closed, not merged. Transitivity is
-    // forbidden by the merged-target requirement, not by walking the graph:
-    // 408 stays valid, only 404 is rejected.
+    // 408 is a coherent superseded record here, yet 404's claim on it is still
+    // rejected. Note which clause does the rejecting: 408 does not list 404 in
+    // `supersedes`, so this fixture is rejected by (E) reciprocity, not by the
+    // merged-target requirement (C). It shows that a chain cannot form through
+    // an otherwise-valid intermediate; (C) is exercised on its own by "rejects
+    // a reciprocated supersededBy whose target never merged" above. Either way
+    // 408 stays valid and only 404 is rejected, and resolution is a single
+    // non-recursive lookup, so nothing walks the graph.
     intermediate.supersededBy = merged.number;
     merged.supersedes = [intermediate.number];
     superseded.supersededBy = intermediate.number;
