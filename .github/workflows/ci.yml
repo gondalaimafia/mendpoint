@@ -437,7 +437,9 @@ jobs:
       - name: Deploy customer production
         if: steps.head.outputs.superseded != 'true'
         run: >-
-          flyctl deploy --remote-only --ha=false --app mendpoint-fettler-production
+          # Depot failed twice before reading the Dockerfile, so use Fly's
+          # deterministic legacy remote builder while preserving remote builds.
+          flyctl deploy --remote-only --depot=false --ha=false --app mendpoint-fettler-production
           --config fly.customer-warden.toml
           --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
         env:
