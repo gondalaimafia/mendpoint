@@ -4109,7 +4109,6 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The first vertical slice defines a pure protected-bundle loader. It accepts only an exact schema, validates the existing 101-of-101 attestation, confines the bundle and three artifacts to a canonical non-reparse root, hashes the raw file bytes, binds every digest and the exact release revision, and returns only an indeterminate authority on any ambiguity.
 - Exact-head re-review found that mixed Windows path separators could collapse two artifact roles onto the same canonical file. The loader now resolves and validates all artifact paths before reading, rejects duplicate canonical paths, and covers the slash-to-backslash alias directly.
 - After rebasing onto production repair `842dafc2`, all 171 Ops tests pass, including eleven hostile loader tests and the existing readiness matrix. Coverage includes deletion, byte drift, duplicate canonical files, extra and missing keys, malformed JSON, stale revision, attestation substitution, traversal, absolute paths, incomplete revocation state, symbolic links, substituted roots, and a real Windows junction. The Ops typecheck and diff integrity pass. Any runtime wiring remains pending.
-
 ## 2026-08-30 Issue authority refresh for #430 and #433
 
 - [x] Bind issue-authority records #430 and #433 to their exact live GitHub state and `updatedAt` values without changing requirement status, availability, or claims.
@@ -4129,3 +4128,23 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The complete matrix recomputation produced issue-authority digest `sha256:87e9f68ce12947e833983dd4bf68bc97e070b0c08a3b249105f3c0d967c21083`. The release-train digest remains `sha256:f4666ff849eca0a74d939d6a1f918042bc8e1091a7f6ae476bcdc1d5a7abf2c1` because no release-train record changed.
 - `npm run spec:check`, `npm run closure:check`, `npm run ledger:check`, and `npm run ga:check` pass. The focused GitHub authority, closure-matrix, and proposal-authority suite passes all 127 tests. `git diff --check` passes.
 - Review found no requirement, availability, public-claim, issue ownership, issue title, issue URL, requirement mapping, release-train, workflow, policy, credential, or runtime change. Protected GitHub authority and production acceptance remain pending until this exact change is reviewed, merged normally, and observed on the deployed main revision.
+
+## 2026-08-30 Plan 05-03A final authority repair
+
+- [x] Restrict complete-graph short-circuiting to change classes the endpoint projection can represent, and materialize direct, wrapper, and test sites from graph evidence.
+- [x] Make call-graph extraction consume only the exact source bytes captured by the bounded repository index, with no mutable repository re-walk or fallback reads.
+- [x] Thread all five public raw-retrieval bounds through graph and non-graph paths and persist traversal-depth exhaustion as snapshot-bound abstention evidence.
+- [x] Add hostile regressions for field/configuration and indirect sites, mutable source-set drift, symlink drift, and traversal-depth exhaustion.
+- [x] Run affected suites and typechecks, inspect the complete diff, commit, and push without opening or merging a pull request.
+
+### Scope and rollback
+
+- Owned surfaces are the Plan 05-03A code-impact, codebase-index, call-graph, pipeline tests and implementation, plus this task record. Concurrent product, authority, and deployment work remains untouched.
+- Rollback is one commit revert. Existing graph versions and retained abstention evidence remain immutable; no requirement, availability, claim, credential, or production runtime is promoted by this repair.
+
+### Review
+
+- Complete graph evidence now short-circuits raw retrieval only for endpoint path, method, and SDK method changes that the projection can represent faithfully. Direct SDK callers, indirect wrappers, and tests retain distinct graph-derived sites; field and configuration changes require bounded raw confirmation.
+- The repository index captures one exact source set, validates file identity and the complete directory-entry set against same-size metadata mutation, late files, and late links, then passes only those captured bytes into full or incremental call-graph extraction. The call graph never falls back to a mutable disk read when snapshot sources are supplied.
+- The public retrieval contract now accepts and enforces `maxFiles`, `maxBytes`, `maxFileBytes`, `maxTraversalDepth`, and `maxCandidates` on graph and non-graph paths. Traversal-depth exhaustion produces an idempotent abstention artifact, evidence record, audit event, and domain event bound to the exact repository snapshot, revision, content digest, limits, and usage.
+- Full affected verification passes: call graph 25 tests, codebase index 34 tests, code impact 123 tests, and pipeline 256 tests, for 438 tests total. All four affected workspace typechecks and diff integrity pass. No requirement, availability, or public claim is promoted.

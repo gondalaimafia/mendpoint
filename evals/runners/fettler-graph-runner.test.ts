@@ -20,7 +20,10 @@ function entity(scope: "repository" | "provider", canonicalKey: string) {
 function impact(overrides: Partial<FettlerEndpointImpactResult>): FettlerEndpointImpactResult {
   return {
     schemaVersion: "mendpoint.fettler-impact-context.v1",
-    tenantId: "t", repositoryId: "r", graphVersionId: "sgv1:x", graphContentDigest: "d",
+    tenantId: "t", repositoryId: "r",
+    repositorySnapshotId: "repository-snapshot-1", repositoryRevision: "revision-1",
+    providerId: "provider", providerSnapshotId: "provider-snapshot-1", providerRevision: "provider-revision-1",
+    graphVersionId: "sgv1:x", graphContentDigest: "d",
     target: { status: "exact", entity: entity("provider", "POST /v1/charges::endpoint::e") } as FettlerEndpointImpactResult["target"],
     impact: "impact",
     entities: [], relationships: [], paths: [],
