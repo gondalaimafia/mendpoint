@@ -10,6 +10,12 @@ export const REQUIRED_TENANT_BOUNDARIES = [
   "workspace",
   "artifact",
   "cache",
+  "queue",
+  "mission",
+  "learning",
+  "backup",
+  "export",
+  "observability",
 ] as const;
 
 export type TenantBoundary = (typeof REQUIRED_TENANT_BOUNDARIES)[number];
@@ -29,6 +35,7 @@ export type TenantBoundaryRegistration = Readonly<{
   boundary: TenantBoundary;
   requiresTenant: true;
   rejectsCrossTenant: true;
+  adversarialTestId: string;
 }>;
 
 export type TenantIsolationProbe = Readonly<{
@@ -40,6 +47,29 @@ export type TenantIsolationProbe = Readonly<{
 }>;
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
+
+export const PRODUCTION_TENANT_BOUNDARY_REGISTRATIONS: readonly TenantBoundaryRegistration[] =
+  Object.freeze([
+    ["api", "api-cross-tenant-denial"],
+    ["database", "db-cross-tenant-denial"],
+    ["graph", "graph-tenant-handle-denial"],
+    ["workspace", "workspace-root-containment"],
+    ["artifact", "artifact-tenant-denial"],
+    ["cache", "cache-tenant-key-denial"],
+    ["queue", "job-tenant-claim-denial"],
+    ["mission", "mission-tenant-denial"],
+    ["learning", "learning-tenant-denial"],
+    ["backup", "backup-tenant-scope-denial"],
+    ["export", "audit-export-tenant-denial"],
+    ["observability", "telemetry-tenant-boundary-denial"],
+  ].map(([boundary, adversarialTestId]) =>
+    Object.freeze({
+      boundary: boundary as TenantBoundary,
+      requiresTenant: true as const,
+      rejectsCrossTenant: true as const,
+      adversarialTestId,
+    }),
+  ));
 
 function requiredId(value: string, error: string): string {
   if (!ID.test(value)) throw new Error(error);
@@ -82,6 +112,7 @@ export class TenantBoundaryRegistry {
     if (input.requiresTenant !== true || input.rejectsCrossTenant !== true) {
       throw new Error(`tenant_boundary_unscoped:${input.boundary}`);
     }
+    requiredId(input.adversarialTestId, `tenant_boundary_test_invalid:${input.boundary}`);
     this.#registrations.set(input.boundary, Object.freeze({ ...input }));
   }
 
@@ -96,6 +127,16 @@ export class TenantBoundaryRegistry {
       REQUIRED_TENANT_BOUNDARIES.map((boundary) => this.#registrations.get(boundary)!),
     );
   }
+}
+
+/** Production startup caller. Tests may inject a mutated set to prove fail-closed behavior. */
+export function assertProductionTenantBoundaryCoverage(
+  registrations: readonly TenantBoundaryRegistration[] =
+    PRODUCTION_TENANT_BOUNDARY_REGISTRATIONS,
+): readonly TenantBoundaryRegistration[] {
+  const registry = new TenantBoundaryRegistry();
+  for (const registration of registrations) registry.register(registration);
+  return registry.assertProductionCoverage();
 }
 
 export type TenantBoundaryAdapter = Readonly<{

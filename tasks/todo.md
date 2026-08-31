@@ -4203,11 +4203,11 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 ## 2026-08-30 GSD Plan 10-02: tenant isolation and governed audit runtime
 
-- [ ] RED: prove the production launch gate rejects a missing or unscoped tenant boundary across API, database, graph, workspace, artifact, cache, queue, mission, learning, backup, export, and observability.
-- [ ] GREEN: mount the complete boundary registry in API startup and bind every registration to an attributable adversarial test contract.
-- [ ] RED: specify durable tenant-owned legal-hold transitions, export destinations, redaction, source-chain anchoring, replay verification, and cross-tenant denial.
-- [ ] GREEN: add append-only legal-hold and export-manifest persistence and authenticated owner/admin API routes over the existing audit hash chain.
-- [ ] Verify fresh and upgrade database convergence, mutation and replay failures, focused DB/API/contract tests, affected typechecks, optimized build, GA checks, dependency audit, and diff integrity.
+- [x] RED: prove the production launch gate rejects a missing or unscoped tenant boundary across API, database, graph, workspace, artifact, cache, queue, mission, learning, backup, export, and observability.
+- [x] GREEN: mount the complete boundary registry in API startup and bind every registration to an attributable adversarial test contract.
+- [x] RED: specify durable tenant-owned legal-hold transitions, export destinations, redaction, source-chain anchoring, replay verification, and cross-tenant denial.
+- [x] GREEN: add append-only legal-hold and export-manifest persistence and authenticated owner/admin API routes over the existing audit hash chain.
+- [x] Verify fresh and upgrade database convergence, mutation and replay failures, focused DB/API/contract tests, affected typechecks, optimized build, GA checks, dependency audit, and diff integrity.
 - [ ] Obtain independent exact-head review, current-base protected CI, protected merge, exact-revision deployment, and live health proof.
 
 ### Threats and rollback
@@ -4219,4 +4219,8 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 ### Review
 
-- Pending implementation and verification.
+- API startup now verifies all twelve required tenant boundary registrations and rejects missing, duplicate, unscoped, or unattributed registrations before serving traffic.
+- Legal holds, export destinations, and export manifests are tenant scoped, append only, hash bound, idempotent, source-chain verified, redacted, and replay verifiable. The legacy raw audit export endpoint now returns 410 and points callers to the governed flow.
+- The worker verifies both the source audit chain and governance chains for every tenant and emits a critical alert for tampering. Hostile tests cover cross-tenant access, revoked destinations, append-only trigger defeat, source and manifest tampering, governance tampering, exact replay, and fresh/reopen database convergence.
+- Verification passed: 12 focused DB/API/worker tests, 176 contract tests, 103 shared tests, the full workspace test matrix including 475 root-script assertions, full workspace typecheck, optimized 50-route production build, GA checks, production dependency audit with zero vulnerabilities, and diff integrity.
+- Independent exact-head review, protected CI, protected merge, exact-revision deployment, and live health proof remain pending. No requirement or public claim was promoted by this slice.

@@ -11,7 +11,12 @@
  * swallow — but a maintenance sweep must not crash the worker, so detection is
  * surfaced through the alert channel rather than by throwing.
  */
-import { listTenants, verifyAuditIntegrity, type AppDb } from "@mendpoint/db";
+import {
+  listTenants,
+  verifyAuditGovernanceIntegrity,
+  verifyAuditIntegrity,
+  type AppDb,
+} from "@mendpoint/db";
 import { emitAlert } from "@mendpoint/platform";
 
 export type AuditIntegrityBreak = {
@@ -36,11 +41,14 @@ export function checkAuditIntegrityForAllTenants(db: AppDb): AuditIntegritySumma
   const broken: AuditIntegrityBreak[] = [];
   for (const tenant of tenants) {
     const result = verifyAuditIntegrity(db, tenant.id);
-    if (!result.ok) {
+    const governance = result.ok
+      ? verifyAuditGovernanceIntegrity(db, tenant.id)
+      : { ok: true, checked: 0 };
+    if (!result.ok || !governance.ok) {
       broken.push({
         tenantId: tenant.id,
-        error: result.error ?? "audit_chain_unknown",
-        checked: result.checked,
+        error: result.error ?? governance.error ?? "audit_chain_unknown",
+        checked: result.checked + governance.checked,
       });
     }
   }

@@ -132,7 +132,9 @@ export {
 export {
   TENANT_BOUNDARY_SCHEMA_VERSION,
   REQUIRED_TENANT_BOUNDARIES,
+  PRODUCTION_TENANT_BOUNDARY_REGISTRATIONS,
   TenantBoundaryRegistry,
+  assertProductionTenantBoundaryCoverage,
   assertTenantScope,
   assertTenantResourceAccess,
   runTenantIsolationProbes,

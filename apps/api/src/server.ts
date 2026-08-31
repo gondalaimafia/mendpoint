@@ -31,8 +31,6 @@ import {
   recordAudit,
   computeProductMetrics,
   computeDesignPartnerMetrics,
-  exportAuditJson,
-  exportAuditCsv,
   updateChangeSeverity,
   enqueueJob,
   listJobs,
@@ -106,7 +104,6 @@ import {
   listConsumersImpactedByChange,
   registrySummaryMarkdown,
 } from "@mendpoint/db";
-import { parseAuditExportLimit } from "./audit-export.js";
 import { changeDetailBody } from "./change-detail.js";
 import {
   detectVendors,
@@ -167,6 +164,7 @@ import {
   evaluatePrGates,
   reviewOpenApiDesign,
   securityAttestationPolicyFromEnv,
+  assertProductionTenantBoundaryCoverage,
   type ContractCase,
   type SecurityScanAttestation,
 } from "@mendpoint/contract";
@@ -303,6 +301,7 @@ import { createDiagnosticsRoutes } from "./diagnostics-routes.js";
 import { createDashboardRoutes } from "./dashboard-routes.js";
 import { createLearningConsentRoutes } from "./learning-consent-routes.js";
 import { createOrganizationMemoryRoutes } from "./organization-memory-routes.js";
+import { createAuditGovernanceRoutes } from "./audit-governance-routes.js";
 import { createPlatformSandboxRoutes } from "./platform-sandbox.js";
 import { createPlatformStateRoutes } from "./platform-state-routes.js";
 import {
@@ -342,6 +341,7 @@ import { listPullRequestReadModel } from "./pull-request-read-model.js";
 
 // Fail fast in production if env invalid
 assertApiEnvOrExit();
+assertProductionTenantBoundaryCoverage();
 
 const durableState = initializeApiRuntime();
 const {
@@ -933,6 +933,7 @@ app.route("/metrics/dashboard", createDashboardRoutes({ db }));
 app.route("/platform/sandbox", createPlatformSandboxRoutes());
 app.route("/learning", createLearningConsentRoutes({ db }));
 app.route("/organization-memory", createOrganizationMemoryRoutes({ db }));
+app.route("/audit-governance", createAuditGovernanceRoutes({ db }));
 
 // Persist alerts under data/
 try {
@@ -2888,21 +2889,11 @@ app.get("/consumers/:id/exposure.md", (c) => {
 
 /** Audit export for enterprise / compliance */
 app.get("/audit/export", (c) => {
-  const format = c.req.query("format") ?? "json";
-  let limit: number;
-  try {
-    limit = parseAuditExportLimit(c.req.query("limit"));
-  } catch {
-    return c.json({ error: "audit_export_limit_invalid" }, 400);
-  }
-  if (format === "csv") {
-    const csv = exportAuditCsv(db, limit, requestTenantId(c));
-    return c.body(csv, 200, {
-      "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": 'attachment; filename="mendpoint-audit.csv"',
-    });
-  }
-  return c.json(exportAuditJson(db, limit, requestTenantId(c)));
+  requestTenantId(c);
+  return c.json({
+    error: "governed_audit_export_required",
+    create: "POST /audit-governance/exports",
+  }, 410);
 });
 
 /** Provider severity on a change */

@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDb, insertTenant, recordAudit, type AppDb } from "@mendpoint/db";
+import {
+  createAuditLegalHold,
+  createDb,
+  insertTenant,
+  recordAudit,
+  type AppDb,
+} from "@mendpoint/db";
 import {
   clearAlerts,
   recentAlerts,
@@ -123,5 +129,42 @@ describe("checkAuditIntegrityForAllTenants", () => {
       tenantId: "tenant-a",
     });
     expect(alerts[0].message).toContain("tenant-a");
+  });
+
+  it("detects a tampered governance chain and emits a critical alert", () => {
+    const { db } = setup();
+    createAuditLegalHold(db, {
+      id: "hold-event-a1",
+      holdId: "hold-a",
+      tenantId: "tenant-a",
+      reason: "customer legal request",
+      resourceType: "candidate",
+      resourceId: "candidate-a",
+      actorId: "owner-a",
+      idempotencyKey: "hold-key-a1",
+      createdAt: at,
+    });
+
+    db.raw.exec("DROP TRIGGER audit_legal_hold_events_append_only_update");
+    db.raw
+      .prepare("UPDATE audit_legal_hold_events SET reason = 'forged' WHERE id = 'hold-event-a1'")
+      .run();
+
+    const summary = checkAuditIntegrityForAllTenants(db);
+
+    expect(summary.ok).toBe(false);
+    expect(summary.broken).toEqual([
+      expect.objectContaining({
+        tenantId: "tenant-a",
+        error: "audit_hold_chain_invalid:hold-event-a1",
+      }),
+    ]);
+    expect(recentAlerts()).toEqual([
+      expect.objectContaining({
+        severity: "critical",
+        source: "audit-integrity",
+        tenantId: "tenant-a",
+      }),
+    ]);
   });
 });
