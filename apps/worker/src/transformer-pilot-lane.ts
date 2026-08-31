@@ -22,6 +22,10 @@ import {
   type TransformerVerifiedCandidateCompletion,
   type TransformerPilotExecutionStore,
 } from "@mendpoint/transformer";
+import {
+  persistAndRegisterRegaugeCompleteAttemptArtifacts,
+  type MissionArtifactRegisterResult,
+} from "@mendpoint/pipeline";
 import { authorizeTransformerWorkerAction } from "@mendpoint/ops";
 import { resolveRenamedEnv } from "@mendpoint/shared";
 import { assertRegaugePilotMissionPolicy } from "./regauge-pilot-policy.js";
@@ -354,7 +358,33 @@ function requireAdaptiveRetention(value: number | undefined): number {
   return retention;
 }
 
-function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): TransformerAttemptCoordinatorPort {
+/**
+ * Mission-artifact capture outcomes that mean "there was somewhere to put the
+ * artifact and it did not land there". `skipped_unbound` and
+ * `skipped_no_artifacts` stay silent on purpose: an unbound campaign has no
+ * Mission to capture onto, which is not a degradation. Everything else is a
+ * lost artifact, and a lost artifact must not read as a campaign that simply
+ * produced nothing.
+ */
+function missionArtifactDegradation(
+  campaignId: string,
+  result: MissionArtifactRegisterResult,
+): string | null {
+  switch (result.status) {
+    case "registered":
+    case "skipped_unbound":
+    case "skipped_no_artifacts":
+      return null;
+    default:
+      return `transformer_mission_artifact_not_captured:${campaignId}:${result.status}`;
+  }
+}
+
+function asCoordinator(
+  store: TransformerPilotLaneStore,
+  db: AppDb,
+  onDegraded: (code: string) => void,
+): TransformerAttemptCoordinatorPort {
   return {
     claimNextAttempt: (input) => {
       const lease = store.claimNextAttempt(input);
@@ -389,6 +419,32 @@ function asCoordinator(store: TransformerPilotLaneStore, db: AppDb): Transformer
     recordAdaptiveCandidateHandoff: (input) => store.recordAdaptiveCandidateHandoff(input),
     completeAttempt: (input) => {
       const completed = store.completeAttempt(input);
+      try {
+        const unit = completed.units.find((item) => item.id === input.unitId);
+        // Cross-database dual write: store.completeAttempt COMMITs to the pilot
+        // SQLite file above, and the manifest lands in the app DB below, so a
+        // crash between them loses the artifact with no reconciliation pass to
+        // recover it. That window stays open; what closes here is the silence.
+        const registered = persistAndRegisterRegaugeCompleteAttemptArtifacts(db, {
+          tenantId: input.tenantId,
+          campaignId: input.campaignId,
+          unitId: input.unitId,
+          candidateDigest: input.candidateDigest,
+          candidateRevision: input.candidateRevision,
+          sourceSnapshot: unit?.snapshot.snapshotId ?? null,
+          evidenceRefs: input.evidenceRefs,
+          createdAt: input.observedAt,
+        });
+        const degraded = missionArtifactDegradation(input.campaignId, registered);
+        if (degraded) onDegraded(degraded);
+      } catch (error) {
+        onDegraded(`transformer_mission_artifact_not_captured:${input.campaignId}:threw`);
+        console.error(
+          `  regauge mission artifact register failed campaign=${input.campaignId} unit=${input.unitId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
       try {
         // Verification passing is still review-first, not delivery. Hand the
         // launch MissionTask to humans on the same complete that closed the
@@ -702,7 +758,7 @@ export async function runTransformerPilotLaneOnce(
     }
   }
 
-  const coordinator = asCoordinator(input.store, input.db);
+  const coordinator = asCoordinator(input.store, input.db, (code) => errors.push(code));
   // The shared policy router is the dispatcher for every runnable campaign: it
   // decides (execute vs mandatory human handoff), selects the Transformer
   // executor over Warden under the existing filters and breakers, and persists

@@ -11,6 +11,7 @@ import {
   readVerifierAdvisoryJobInput,
   readVerifierAdvisoryJobSubstantiveEvidence,
   reconcileVerifierAdvisoryPolicyAuthority,
+  REGAUGE_BOOTSTRAP_PRINCIPAL_SUBJECT,
   VERIFIER_ADVISORY_JOB_TYPE,
 } from "@mendpoint/pipeline";
 import {
@@ -25,7 +26,6 @@ import {
 } from "./verifier-product-shadow.js";
 import { handoffCompletedJobToMissionReview } from "./mission-task-job-bridge.js";
 
-const BOOTSTRAP_PRINCIPAL_SUBJECT = "service:regauge-production-bootstrap";
 
 export { VerifierProviderNoResponseError };
 
@@ -65,7 +65,7 @@ export async function runVerifierAdvisoryJob(input: Readonly<{
     input.db,
     completion.tenantId,
     "service",
-    BOOTSTRAP_PRINCIPAL_SUBJECT,
+    REGAUGE_BOOTSTRAP_PRINCIPAL_SUBJECT,
   );
   if (!principal || principal.created_at > authorityAt ||
       principal.revoked_at && principal.revoked_at <= authorityAt ||
