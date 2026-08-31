@@ -17,6 +17,7 @@ import {
   enqueueVerifierAdvisoryJob,
   REGAUGE_DEEPSEEK_APPROVED_SCOPE,
   reconcileVerifierAdvisoryPolicyAuthority,
+  REGAUGE_BOOTSTRAP_PRINCIPAL_SUBJECT,
   type EnqueueVerifierAdvisoryResult,
   type ProductCompletionAdvisoryInput,
   type VerifierAdvisorySubstantiveEvidence,
@@ -24,7 +25,6 @@ import {
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
-const BOOTSTRAP_PRINCIPAL_SUBJECT = "service:regauge-production-bootstrap";
 
 export function buildDedicatedRegaugeCompletionInput(
   result: TransformerAttemptCheckpointCompletionResult,
@@ -193,7 +193,7 @@ export function enqueueDedicatedRegaugeCompletionForAdvisory(input: Readonly<{
     input.db,
     completion.tenantId,
     "service",
-    BOOTSTRAP_PRINCIPAL_SUBJECT,
+    REGAUGE_BOOTSTRAP_PRINCIPAL_SUBJECT,
   );
   if (!principal || principal.revoked_at && principal.revoked_at <= completion.observedAt ||
       principal.expires_at && principal.expires_at <= completion.observedAt ||
