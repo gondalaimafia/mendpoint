@@ -65,7 +65,16 @@ describe("/prs/[id] page — an unloadable PR has unknown status, not a false 'f
         return [{ id: "con1", name: "acme", githubOwner: "acme", githubRepo: "payments-sdk" }];
       }
       if (path === "/changes/chg1") {
-        return { id: "chg1", risk: "safe", summary: "", diff: { entries: [], risk: "safe", summary: "" } };
+        // Production shape: `changeDetailBody` always sends `findings`. An empty
+        // list is what "nothing found" looks like; omitting the key is not.
+        return {
+          id: "chg1",
+          risk: "safe",
+          summary: "",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          diff: { entries: [], risk: "safe", summary: "" },
+          findings: [],
+        };
       }
       throw new Error(`unexpected ${path}`);
     });
@@ -92,7 +101,16 @@ describe("/prs/[id] page — coverage keeps a clean result distinct from an unan
         return [{ id: "con1", name: "acme", githubOwner: "acme", githubRepo: "payments-sdk" }];
       }
       if (path === "/changes/chg1") {
-        return { id: "chg1", risk: "safe", summary: "", diff: { entries: [], risk: "safe", summary: "" } };
+        // Production shape: `changeDetailBody` always sends `findings`. An empty
+        // list is what "nothing found" looks like; omitting the key is not.
+        return {
+          id: "chg1",
+          risk: "safe",
+          summary: "",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          diff: { entries: [], risk: "safe", summary: "" },
+          findings: [],
+        };
       }
       throw new Error(`unexpected ${path}`);
     });
@@ -247,6 +265,140 @@ describe("/prs/[id] page — coverage keeps a clean result distinct from an unan
     expect(html).toContain("Impact lineage unavailable");
     expect(html).toContain("That is not a no-impact result");
     expect(html).not.toContain("This consumer was analyzed and no affected symbols were recorded");
+  });
+
+  // THE BLOCKER: `status === "low_confidence"` does not mean "no findings". The
+  // pipeline sets it whenever `findings.length > 0 && overallConfidence !== "low"`
+  // is false, so a PR with real persisted findings but low overall confidence
+  // reaches this page with `coverage_json` still recording `analyzed`. The
+  // coverage card used to read that as "empty" and print complete evidence of no
+  // impact directly beside a lineage card listing the findings it denied.
+  it("never claims no impact beside real findings for this consumer", async () => {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path === "/prs/pr-1") {
+        return {
+          ...PR,
+          status: "low_confidence",
+          risk: "safe",
+          coverage: { basis: "analyzed", gaps: [], filesInspected: 42, filesInScope: 42 },
+        };
+      }
+      if (path === "/consumers") {
+        return [{ id: "con1", name: "acme", githubOwner: "acme", githubRepo: "payments-sdk" }];
+      }
+      if (path === "/changes/chg1") {
+        return {
+          id: "chg1",
+          risk: "breaking",
+          summary: "charge renamed",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          diff: { entries: [], risk: "breaking", summary: "" },
+          findings: [
+            {
+              id: "f-self",
+              consumerId: "con1",
+              filePath: "src/pay.ts",
+              lineStart: 12,
+              symbol: "charge",
+              graphPath: {
+                nodes: ["stripe.charges", "src/pay.ts"],
+                hops: 1,
+                terminal: "anchor",
+                truncated: false,
+                coverage: "complete",
+              },
+            },
+          ],
+          impactCoverage: {
+            impact: "impact",
+            coverageBasis: "analyzed",
+            reason: null,
+            findingCount: 1,
+            prCount: 1,
+          },
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    const html = renderToStaticMarkup(
+      await PullRequestDetailPage({ params: Promise.resolve({ id: "pr-1" }) }),
+    );
+    // The lineage card is the truthful side: a real finding exists here.
+    expect(html).toContain("Provider → code path");
+    expect(html).toContain("src/pay.ts:12");
+    // So the coverage card in the same panel must not deny it.
+    expect(html).not.toContain("complete evidence of no impact");
+    expect(html).not.toContain("No impact — verified");
+    expect(html).not.toContain("no affected symbols were recorded");
+    // Reconciled, not suppressed: full coverage is still reported, as coverage.
+    expect(html).toContain("Analyzed with full coverage");
+  });
+
+  // An absent `findings` key is missing data, not an empty result. Production
+  // always sends the key, so this asserts the fabricated branch stays closed.
+  it("does not render a change body with no findings list as verified no impact", async () => {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path === "/prs/pr-1") {
+        return {
+          ...PR,
+          status: "low_confidence",
+          risk: "safe",
+          coverage: { basis: "analyzed", gaps: [], filesInspected: 42, filesInScope: 42 },
+        };
+      }
+      if (path === "/consumers") {
+        return [{ id: "con1", name: "acme", githubOwner: "acme", githubRepo: "payments-sdk" }];
+      }
+      if (path === "/changes/chg1") {
+        // Deliberately no `findings` key.
+        return { id: "chg1", risk: "safe", summary: "", diff: { entries: [], risk: "safe", summary: "" } };
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    const html = renderToStaticMarkup(
+      await PullRequestDetailPage({ params: Promise.resolve({ id: "pr-1" }) }),
+    );
+    expect(html).toContain("An absent list is not an empty one");
+    expect(html).not.toContain("no affected symbols were recorded");
+    // And the coverage card must not fill the gap with a positive verdict.
+    expect(html).not.toContain("complete evidence of no impact");
+    expect(html).toContain("impact record for this consumer could not be read");
+  });
+
+  // The findings list has no per-run timestamp and is never retired, so the
+  // card must not claim it is the current state of this consumer's revision.
+  it("qualifies the findings list with an as-of marker", async () => {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path === "/prs/pr-1") return { ...PR, coverage: { basis: "analyzed", gaps: [] } };
+      if (path === "/consumers") {
+        return [{ id: "con1", name: "acme", githubOwner: "acme", githubRepo: "payments-sdk" }];
+      }
+      if (path === "/changes/chg1") {
+        return {
+          id: "chg1",
+          risk: "breaking",
+          summary: "",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          diff: { entries: [], risk: "breaking", summary: "" },
+          findings: [
+            {
+              id: "f-self",
+              consumerId: "con1",
+              filePath: "src/pay.ts",
+              lineStart: 12,
+              symbol: "charge",
+              graphPath: null,
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    const html = renderToStaticMarkup(
+      await PullRequestDetailPage({ params: Promise.resolve({ id: "pr-1" }) }),
+    );
+    expect(html).toContain("are not retired when they stop applying");
+    expect(html).toContain("Change recorded 2026-01-01T00:00:00.000Z");
   });
 
   it("renders a PR with no coverage field as unknown, and does not crash", async () => {

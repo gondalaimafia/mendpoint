@@ -112,6 +112,91 @@ describe("/consumer/prs/[id] FET-016 impact lineage", () => {
     expect(html).not.toContain("This consumer was analyzed and no affected symbols were recorded");
   });
 
+  // `/consumer/prs/[id]` has no CoverageCard, so the lineage card is the ONLY
+  // place the customer can tell "analysis never ran" from "partial coverage".
+  // Collapsing both into one sentence erases the §11.7 discriminator here.
+  async function renderWithCoverage(basis: string): Promise<string> {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path === "/prs/pr-1") return { ...PR, status: "low_confidence", coverage: { basis, gaps: [] } };
+      if (path === "/prs/pr-1/reviews") return { reviews: [] };
+      if (path === "/changes/chg1") return { findings: [], createdAt: "2026-01-01T00:00:00.000Z" };
+      throw new Error(`unexpected ${path}`);
+    });
+    return renderToStaticMarkup(await PrDetailPage({ params: Promise.resolve({ id: "pr-1" }) }));
+  }
+
+  it("says analysis did not run, distinctly from partial coverage", async () => {
+    const html = await renderWithCoverage("not_analyzed");
+    expect(html).toContain("analysis did not run");
+    expect(html).toContain("No analysis ran against");
+    expect(html).not.toContain("Only part of this consumer");
+  });
+
+  it("says partial coverage, distinctly from analysis not running", async () => {
+    const html = await renderWithCoverage("partial");
+    expect(html).toContain("partial coverage");
+    expect(html).toContain("Only part of this consumer");
+    expect(html).not.toContain("No analysis ran against");
+  });
+
+  it("says coverage was not recorded when there is no coverage channel at all", async () => {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path === "/prs/pr-1") return PR;
+      if (path === "/prs/pr-1/reviews") return { reviews: [] };
+      if (path === "/changes/chg1") return { findings: [] };
+      throw new Error(`unexpected ${path}`);
+    });
+    const html = renderToStaticMarkup(
+      await PrDetailPage({ params: Promise.resolve({ id: "pr-1" }) }),
+    );
+    expect(html).toContain("coverage not recorded");
+    expect(html).not.toContain("No analysis ran against");
+    expect(html).not.toContain("Only part of this consumer");
+  });
+
+  it("does not render an absent findings list as a verified no-impact result", async () => {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path === "/prs/pr-1") return { ...PR, coverage: { basis: "analyzed", gaps: [] } };
+      if (path === "/prs/pr-1/reviews") return { reviews: [] };
+      // Deliberately no `findings` key.
+      if (path === "/changes/chg1") return { impactCoverage: null };
+      throw new Error(`unexpected ${path}`);
+    });
+    const html = renderToStaticMarkup(
+      await PrDetailPage({ params: Promise.resolve({ id: "pr-1" }) }),
+    );
+    expect(html).toContain("An absent list is not an empty one");
+    expect(html).not.toContain("no affected symbols were recorded");
+  });
+
+  it("qualifies the findings list with an as-of marker", async () => {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path === "/prs/pr-1") return PR;
+      if (path === "/prs/pr-1/reviews") return { reviews: [] };
+      if (path === "/changes/chg1") {
+        return {
+          createdAt: "2026-01-01T00:00:00.000Z",
+          findings: [
+            {
+              id: "f-self",
+              consumerId: "con1",
+              filePath: "src/pay.ts",
+              lineStart: 12,
+              symbol: "charge",
+              graphPath: null,
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    const html = renderToStaticMarkup(
+      await PrDetailPage({ params: Promise.resolve({ id: "pr-1" }) }),
+    );
+    expect(html).toContain("are not retired when they stop applying");
+    expect(html).toContain("Change recorded 2026-01-01T00:00:00.000Z");
+  });
+
   it("still pauses review when the review history fetch fails", async () => {
     apiGet.mockImplementation(async (path: string) => {
       if (path === "/prs/pr-1") return PR;

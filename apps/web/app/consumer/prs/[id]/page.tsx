@@ -14,7 +14,10 @@ import { parsePrEvidence } from "./evidence";
 export const dynamic = "force-dynamic";
 
 type ChangeDetail = {
-  findings?: ChangeImpactFinding[];
+  createdAt?: string;
+  // Required: `changeDetailBody` always sends it. Declaring it optional let a
+  // body with no findings key render as a verified no-impact result.
+  findings: ChangeImpactFinding[];
   impactCoverage?: ChangeImpactCoverage;
 };
 

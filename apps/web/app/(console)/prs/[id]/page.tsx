@@ -23,8 +23,11 @@ type ChangeDetail = {
   id: string;
   risk: string;
   summary: string;
+  createdAt?: string;
   diff: { entries: DiffEntry[]; risk: string; summary: string };
-  findings?: ChangeImpactFinding[];
+  // Required: `changeDetailBody` always sends it. Declaring it optional let a
+  // body with no findings key render as a verified no-impact result.
+  findings: ChangeImpactFinding[];
   impactCoverage?: ChangeImpactCoverage;
 };
 
@@ -78,8 +81,10 @@ export default async function PullRequestDetailPage({
       lineage: {
         standing: "unknown",
         reason: "pull_request_unavailable",
+        observed: "unknown",
         findings: [],
         verification: { recorded: false, excerpt: null },
+        asOf: { changeRecordedAt: null },
       },
     };
     return <PrDetailView pr={empty} />;
@@ -101,6 +106,13 @@ export default async function PullRequestDetailPage({
     deletions: file.deletions,
   }));
 
+  const lineage = buildImpactLineage({
+    change,
+    consumerId: pr.consumerId,
+    prBody: pr.body,
+    prCoverageBasis: pr.coverage?.basis ?? null,
+  });
+
   const data: PrDetailData = {
     id: pr.id,
     repo: consumer ? `${consumer.githubOwner}/${consumer.githubRepo}` : pr.branchName || "unknown",
@@ -113,13 +125,11 @@ export default async function PullRequestDetailPage({
     // (clean) must read differently from one under partial/absent coverage. It
     // is derived from the raw status + coverage channel, defaulting to unknown
     // when the channel is absent — never to "analyzed".
-    coverage: coverageSummary(pr.status, pr.coverage),
-    lineage: buildImpactLineage({
-      change,
-      consumerId: pr.consumerId,
-      prBody: pr.body,
-      prCoverageBasis: pr.coverage?.basis ?? null,
-    }),
+    // `lineage.observed` is the raw per-consumer finding observation, passed so
+    // the coverage card cannot claim "no impact" while the lineage card lists
+    // findings. Both cards now read one filter over one change body.
+    coverage: coverageSummary(pr.status, pr.coverage, lineage.observed),
+    lineage,
     diffs,
     // No CI-check GET endpoint exists; surface the real review gates (status +
     // risk) as the nearest available signal.

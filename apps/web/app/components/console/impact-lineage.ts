@@ -19,11 +19,38 @@ export type ImpactLineageFindingView = Readonly<{
   pathText: string;
 }>;
 
+/**
+ * What the change record says about THIS consumer, before any coverage channel
+ * is folded in. Kept separate from `standing` because the coverage card needs
+ * the raw observation: `standing` already mixes in coverage basis, and reusing
+ * it there would re-import the very conflation this file exists to avoid.
+ *
+ * `"unknown"` is a real third state — the change body was unreadable, or it
+ * carried no findings list at all — and must never collapse into `"none"`.
+ */
+export type ObservedConsumerImpact = "impact" | "none" | "unknown";
+
 export type ImpactLineageView = Readonly<{
   standing: "impact" | "no_impact" | "unknown";
   reason: string;
+  /** Raw per-consumer observation; the reconciliation input for `coverageSummary`. */
+  observed: ObservedConsumerImpact;
   findings: readonly ImpactLineageFindingView[];
   verification: Readonly<{ recorded: boolean; excerpt: string | null }>;
+  /**
+   * As-of qualifier for the findings list. `impact_findings` carries no
+   * timestamp column, and the pipeline seeds its `findingKeys` set from every
+   * row already recorded for the change, so re-analysis only ever ADDS — a
+   * finding that no longer applies is never retired. The list is therefore the
+   * union across analysis runs for this change, not the output of one run
+   * against the revision in the patch rendered beside it (`patch_unified` is
+   * not refreshed by `updateMigrationPrDelivery` either). `changeRecordedAt` is
+   * the change's own `createdAt`, the only timestamp the record actually
+   * carries. Retiring stale findings needs a schema change and is deliberately
+   * not attempted here; this field exists so the card's claim is qualified
+   * rather than absolute.
+   */
+  asOf: Readonly<{ changeRecordedAt: string | null }>;
 }>;
 
 export type ChangeImpactFinding = Readonly<{
@@ -36,8 +63,10 @@ export type ChangeImpactFinding = Readonly<{
 }>;
 
 export type ChangeImpactBody = Readonly<{
+  /** Optional at runtime only: the API always sends it, so absence means "not read". */
   findings?: readonly ChangeImpactFinding[];
   impactCoverage?: ChangeImpactCoverage;
+  createdAt?: string;
 }>;
 
 function pathView(finding: ChangeImpactFinding): ImpactLineageFindingView {
@@ -93,39 +122,62 @@ export function buildImpactLineage(input: {
   prCoverageBasis?: "analyzed" | "partial" | "not_analyzed" | null;
 }): ImpactLineageView {
   const verification = verificationFromBody(input.prBody);
+  const asOf = { changeRecordedAt: input.change?.createdAt ?? null } as const;
   if (!input.change) {
     return {
       standing: "unknown",
       reason: "change_detail_unavailable",
+      observed: "unknown",
       findings: [],
       verification,
+      asOf,
     };
   }
-  const findings = (input.change.findings ?? [])
+  // An ABSENT `findings` key is not an empty findings list. `changeDetailBody`
+  // always sends the key, so its absence means we are not looking at the body
+  // we think we are; reporting "analyzed and nothing found" there would turn a
+  // missing field into a verified negative.
+  const recorded = input.change.findings;
+  if (recorded === undefined) {
+    return {
+      standing: "unknown",
+      reason: "findings_not_recorded",
+      observed: "unknown",
+      findings: [],
+      verification,
+      asOf,
+    };
+  }
+  const findings = recorded
     .filter((finding) => finding.consumerId === input.consumerId)
     .map(pathView);
+  const observed: ObservedConsumerImpact = findings.length > 0 ? "impact" : "none";
   if (findings.length > 0) {
-    return { standing: "impact", reason: "findings_present", findings, verification };
+    return { standing: "impact", reason: "findings_present", observed, findings, verification, asOf };
   }
   if (input.prCoverageBasis === "analyzed") {
-    return { standing: "no_impact", reason: "analyzed_empty", findings, verification };
+    return { standing: "no_impact", reason: "analyzed_empty", observed, findings, verification, asOf };
   }
   if (input.prCoverageBasis === "partial" || input.prCoverageBasis === "not_analyzed") {
     return {
       standing: "unknown",
       reason: input.prCoverageBasis === "partial" ? "partial_or_unknown_coverage" : "analysis_did_not_run",
+      observed,
       findings,
       verification,
+      asOf,
     };
   }
   const coverage = input.change.impactCoverage;
   if (coverage?.impact === "no_impact" && coverage.coverageBasis === "analyzed") {
-    return { standing: "no_impact", reason: "analyzed_empty", findings, verification };
+    return { standing: "no_impact", reason: "analyzed_empty", observed, findings, verification, asOf };
   }
   return {
     standing: "unknown",
     reason: coverage?.reason ?? "coverage_not_recorded",
+    observed,
     findings,
     verification,
+    asOf,
   };
 }
