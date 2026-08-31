@@ -23,7 +23,7 @@ import {
   type AppDb,
 } from "@mendpoint/db";
 import type { PipelineReport } from "@mendpoint/pipeline";
-import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
+import { enqueuePipelineFettlerRuns } from "./warden-pilot-join.js";
 
 const opened: Array<{ db: AppDb; root: string }> = [];
 const observedAt = "2026-08-10T18:00:00.000Z";
@@ -217,10 +217,10 @@ afterEach(() => {
   }
 });
 
-describe("joined Warden pilot intake", () => {
+describe("joined Fettler provider-change intake", () => {
   it("queues one snapshot-bound Warden run and replays equivalent parent requests exactly once", () => {
     const { db } = fixture();
-    const first = enqueuePipelineWardenRuns(db, {
+    const first = enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-a",
       pipelineJobId: "pipeline-job-a",
       providerSlug: "stripe",
@@ -228,7 +228,7 @@ describe("joined Warden pilot intake", () => {
       observedAt,
       useLlm: true,
     });
-    const second = enqueuePipelineWardenRuns(db, {
+    const second = enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-a",
       pipelineJobId: "pipeline-job-b",
       providerSlug: "stripe",
@@ -254,6 +254,23 @@ describe("joined Warden pilot intake", () => {
       allowedChangedPaths: ["src/charges.ts", "src/client.ts"],
       allowNetwork: false,
       useLlm: true,
+      fettlerProviderChange: expect.objectContaining({
+        schemaVersion: 1,
+        providerSlug: "stripe",
+        changeId: "change-a",
+        pipelineJobId: "pipeline-job-a",
+        repositoryId: "repository-a",
+        snapshotId: "snapshot-a",
+        revision: "a".repeat(40),
+        graphVersionId: null,
+        graphContextArtifactId: null,
+        impactEvidenceDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        overallConfidence: "high",
+        whatChanged: "The charges endpoint changed",
+        knownFacts: expect.any(Array),
+        unknowns: expect.any(Array),
+        whyAffected: expect.stringContaining("impact finding"),
+      }),
       source: {
         pipelineJobId: "pipeline-job-a",
         changeId: "change-a",
@@ -274,7 +291,7 @@ describe("joined Warden pilot intake", () => {
 
   it("abstains when impact evidence is low confidence, exceeds the bounded path limit, or is protected", () => {
     const { db } = fixture();
-    const low = enqueuePipelineWardenRuns(db, {
+    const low = enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-a",
       pipelineJobId: "pipeline-low",
       providerSlug: "stripe",
@@ -282,7 +299,7 @@ describe("joined Warden pilot intake", () => {
       observedAt,
       useLlm: true,
     });
-    const oversized = enqueuePipelineWardenRuns(db, {
+    const oversized = enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-a",
       pipelineJobId: "pipeline-large",
       providerSlug: "stripe",
@@ -290,7 +307,7 @@ describe("joined Warden pilot intake", () => {
       observedAt,
       useLlm: true,
     });
-    const protectedPath = enqueuePipelineWardenRuns(db, {
+    const protectedPath = enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-a",
       pipelineJobId: "pipeline-protected",
       providerSlug: "stripe",
@@ -307,7 +324,7 @@ describe("joined Warden pilot intake", () => {
 
   it("does not cross tenant boundaries when a report names another tenant's consumer", () => {
     const { db } = fixture();
-    const result = enqueuePipelineWardenRuns(db, {
+    const result = enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-b",
       pipelineJobId: "pipeline-cross-tenant",
       providerSlug: "stripe",
@@ -322,7 +339,7 @@ describe("joined Warden pilot intake", () => {
   it("attaches the unambiguous enrolled Fettler campaign to the queued agent.run", () => {
     const { db } = fixture();
     enrollSingleRepoCampaign(db);
-    const joined = enqueuePipelineWardenRuns(db, {
+    const joined = enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-a",
       pipelineJobId: "pipeline-job-bound",
       providerSlug: "stripe",
@@ -338,7 +355,7 @@ describe("joined Warden pilot intake", () => {
 
   it("replays an already-queued unbound job after a campaign is enrolled", () => {
     const { db } = fixture();
-    const first = enqueuePipelineWardenRuns(db, {
+    const first = enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-a",
       pipelineJobId: "pipeline-job-a",
       providerSlug: "stripe",
@@ -347,7 +364,7 @@ describe("joined Warden pilot intake", () => {
       useLlm: false,
     });
     enrollSingleRepoCampaign(db);
-    const second = enqueuePipelineWardenRuns(db, {
+    const second = enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-a",
       pipelineJobId: "pipeline-job-b",
       providerSlug: "stripe",
@@ -365,7 +382,7 @@ describe("joined Warden pilot intake", () => {
     const { db } = fixture();
     enrollSingleRepoCampaign(db, { campaignId: "campaign-a", missionId: "mission-a" });
     enrollSingleRepoCampaign(db, { campaignId: "campaign-b", missionId: "mission-b" });
-    const joined = enqueuePipelineWardenRuns(db, {
+    const joined = enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-a",
       pipelineJobId: "pipeline-ambiguous",
       providerSlug: "stripe",
@@ -383,7 +400,7 @@ describe("joined Warden pilot intake", () => {
     // hint must be absent. If the enqueue path attached a hint unconditionally,
     // this control would fail.
     const { db } = fixture();
-    const joined = enqueuePipelineWardenRuns(db, {
+    const joined = enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-a",
       pipelineJobId: "pipeline-control",
       providerSlug: "stripe",
@@ -402,7 +419,7 @@ describe("joined Warden pilot intake", () => {
     // a silent replay of the bound job.
     const { db } = fixture();
     enrollSingleRepoCampaign(db);
-    const first = enqueuePipelineWardenRuns(db, {
+    const first = enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-a",
       pipelineJobId: "pipeline-job-a",
       providerSlug: "stripe",
@@ -416,13 +433,13 @@ describe("joined Warden pilot intake", () => {
     // Unenroll the campaign so the next attempt resolves no hint.
     db.raw.prepare(`DELETE FROM fettler_campaign_targets WHERE tenant_id = 'tenant-a'`).run();
 
-    expect(() => enqueuePipelineWardenRuns(db, {
+    expect(() => enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-a",
       pipelineJobId: "pipeline-job-b",
       providerSlug: "stripe",
       report: report(["src/client.ts"]),
       observedAt,
       useLlm: false,
-    })).toThrow("warden_pilot_join_idempotency_conflict");
+    })).toThrow("fettler_provider_change_join_idempotency_conflict");
   });
 });

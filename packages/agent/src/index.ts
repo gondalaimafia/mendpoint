@@ -62,7 +62,11 @@ export {
   INHERITED_CONTEXT_ENV_VAR,
   MAX_INHERITED_CONTEXT_BYTES,
 } from "./inherited-context.js";
-export { readWardenApprovalArtifact } from "./warden-approval-artifact.js";
+export {
+  parseFettlerProviderChangeEvidence,
+  readWardenApprovalArtifact,
+  type FettlerProviderChangeEvidence,
+} from "./warden-approval-artifact.js";
 export { discoverVerifyCommand } from "./discover-verify.js";
 export {
   resolveAgentModelEndpoint,

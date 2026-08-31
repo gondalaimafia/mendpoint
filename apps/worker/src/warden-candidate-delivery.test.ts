@@ -18,9 +18,10 @@ import type { ExactDraftDeliveryInput, GitHubDelivery } from "@mendpoint/github"
 import { runWardenCandidateDelivery } from "./warden-candidate-delivery.js";
 
 const NOW = "2026-08-06T12:00:00.000Z";
+const SNAPSHOT_EXPIRES_AT = "2035-08-06T12:00:00.000Z";
 const opened: Array<{ db: AppDb; directory: string }> = [];
 
-function fixture(preciseEvidence = false, deleted = false) {
+function fixture(preciseEvidence = false, deleted = false, providerChange = false) {
   const directory = mkdtempSync(join(tmpdir(), "mendpoint-warden-delivery-worker-"));
   const dataRoot = join(directory, "data");
   const approvalRoot = join(dataRoot, "warden-evidence", "tenant-a", "approvals");
@@ -36,7 +37,7 @@ function fixture(preciseEvidence = false, deleted = false) {
     const after = Buffer.from("export const fixed = 1;\n");
     const afterSha = `sha256:${createHash("sha256").update(after).digest("hex")}`;
     const artifact = {
-    schemaVersion: preciseEvidence ? 4 : 3,
+    schemaVersion: providerChange ? (preciseEvidence ? 6 : 5) : preciseEvidence ? 4 : 3,
     tenantId: "tenant-a",
     repositoryId: "repo-1",
     snapshotId: "snapshot-1",
@@ -80,6 +81,25 @@ function fixture(preciseEvidence = false, deleted = false) {
         },
       }],
     },
+    ...(providerChange ? {
+      fettlerProviderChange: {
+        schemaVersion: 1,
+        providerSlug: "stripe",
+        changeId: "change-stripe-2026-08-31",
+        pipelineJobId: "pipeline-job-1",
+        repositoryId: "repo-1",
+        snapshotId: "snapshot-1",
+        revision: "a".repeat(40),
+        graphVersionId: "graph-version-1",
+        graphContextArtifactId: "graph-context-1",
+        impactEvidenceDigest: `sha256:${"f".repeat(64)}`,
+        overallConfidence: "high",
+        whatChanged: "The provider removed the legacy request field.",
+        knownFacts: ["The removed field is used in src/client.ts."],
+        unknowns: ["Runtime-only callers were not observed."],
+        whyAffected: "src/client.ts sends the removed field at the confirmed call site.",
+      },
+    } : {}),
     changedPaths: ["src/client.ts"],
     sourceDigest: `sha256:${"c".repeat(64)}`,
     candidate: {
@@ -139,7 +159,8 @@ describe("Warden exact candidate draft delivery", () => {
     const result = await runWardenCandidateDelivery({
       db, job, github, artifactEnv: { MENDPOINT_DATA_DIR: dataRoot },
       now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", remoteRepositoryId: 101, installationId: 202 }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main",
+        snapshotExpiresAt: SNAPSHOT_EXPIRES_AT, remoteRepositoryId: 101, installationId: 202 }),
       ciReentry: {
         requiredChecks: ["check:77:unit"],
         maxCycles: 3,
@@ -183,7 +204,7 @@ describe("Warden exact candidate draft delivery", () => {
     await runWardenCandidateDelivery({
       db, job, github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
       artifactEnv: { MENDPOINT_DATA_DIR: dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
     });
     const body = (deliver.mock.calls[0]![0] as ExactDraftDeliveryInput).body;
     expect(body).toContain("Target symbol: createCharge");
@@ -191,6 +212,82 @@ describe("Warden exact candidate draft delivery", () => {
     expect(body).toContain("Precondition: The exact legacy SDK call is still present.");
     expect(body).toContain("Postcondition: The approved SDK request and regression checks pass.");
     expect(body).toContain("Rollback: Restore the exact observed source bytes.");
+  });
+
+  it("renders sealed provider, graph, impact, verification, and uncertainty evidence", async () => {
+    const { db, dataRoot, job } = fixture(true, false, true);
+    const deliver = vi.fn(async (input: ExactDraftDeliveryInput) => ({
+      branch: input.branch, title: input.title, baseBranch: input.baseBranch,
+      baseSha: input.expectedBaseSha, commitSha: "b".repeat(40),
+      draft: true as const, number: 17, url: "https://github.com/acme/sdk/pull/17",
+    }));
+    await runWardenCandidateDelivery({
+      db, job, github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
+    });
+    const body = (deliver.mock.calls[0]![0] as ExactDraftDeliveryInput).body;
+    expect(body).toContain("Provider change");
+    expect(body).toContain("Provider: stripe");
+    expect(body).toContain("Graph version: graph-version-1");
+    expect(body).toContain(`Impact evidence: sha256:${"f".repeat(64)}`);
+    expect(body).toContain("What changed");
+    expect(body).toContain("The provider removed the legacy request field.");
+    expect(body).toContain("Why this code is affected");
+    expect(body).toContain("Known: The removed field is used in src/client.ts.");
+    expect(body).toContain("Unknown: Runtime-only callers were not observed.");
+    expect(body).toContain("Objective verification");
+    expect(body).toContain("Proposed migration");
+    expect((deliver.mock.calls[0]![0] as ExactDraftDeliveryInput).branch).toMatch(/^mendpoint\/fettler-/);
+  });
+
+  it("does not call GitHub for a second approved run scoped to the same sealed provider change", async () => {
+    const { db, dataRoot, delivery, job } = fixture(true, false, true);
+    const firstDeliver = vi.fn(async (input: ExactDraftDeliveryInput) => ({
+      branch: input.branch, title: input.title, baseBranch: input.baseBranch,
+      baseSha: input.expectedBaseSha, commitSha: "b".repeat(40),
+      draft: true as const, number: 17, url: "https://github.com/acme/sdk/pull/17",
+    }));
+    const first = await runWardenCandidateDelivery({
+      db, job, github: { deliverExactDraft: firstDeliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
+    });
+    expect(first.status).toBe("delivered");
+    expect(firstDeliver).toHaveBeenCalledTimes(1);
+
+    const firstRun = db.raw.prepare(
+      "SELECT result_json FROM agent_runs WHERE id = ? AND tenant_id = ?",
+    ).get("warden-run-1", "tenant-a") as { result_json: string };
+    insertAgentRun(db, {
+      id: "warden-run-2", tenantId: "tenant-a", jobId: "source-job-2", goal: "Repair the same SDK change",
+      repoPath: join(dataRoot, "snapshot"), status: "candidate_approved", ok: true, steps: 3,
+      filesChanged: ["src/client.ts"], reportMd: "Target and regression checks passed.",
+      resultJson: firstRun.result_json, createdAt: NOW, finishedAt: NOW,
+    });
+    enqueueWardenCandidateDelivery(db, {
+      tenantId: "tenant-a", runId: "warden-run-2", repositoryId: "repo-1", snapshotId: "snapshot-1",
+      baseBranch: "main", expectedBaseRevision: "a".repeat(40), sealedPath: delivery.sealedPath,
+      sealedSha256: delivery.sealedSha256, requesterPrincipalId: "human:reviewer@example.com",
+      rationale: "The target and regression checks pass.", now: "2026-08-06T12:00:02.000Z",
+    });
+    const secondJob = claimNextJob(db, ["warden.candidate.deliver"], {
+      tenantId: "tenant-a", workerId: "worker-2", leaseMs: 60_000,
+      now: "2026-08-06T12:00:03.000Z",
+    })!;
+    const secondDeliver = vi.fn();
+    const second = await runWardenCandidateDelivery({
+      db, job: secondJob, github: { deliverExactDraft: secondDeliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: dataRoot }, now: () => "2026-08-06T12:00:04.000Z",
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
+    });
+
+    expect(second.status).toBe("delivery_failed");
+    expect(secondDeliver).not.toHaveBeenCalled();
+    expect(getWardenCandidateDeliveryByRun(db, "tenant-a", "warden-run-2")).toMatchObject({
+      status: "delivery_failed",
+      errorMessage: "warden_candidate_delivery_scope_conflict",
+    });
   });
 
   it("delivers an approved deletion as an exact delete operation", async () => {
@@ -204,7 +301,7 @@ describe("Warden exact candidate draft delivery", () => {
     await runWardenCandidateDelivery({
       db, job, github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
       artifactEnv: { MENDPOINT_DATA_DIR: dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
     });
 
     expect(deliver).toHaveBeenCalledWith(expect.objectContaining({
@@ -219,9 +316,32 @@ describe("Warden exact candidate draft delivery", () => {
     const github = { deliverExactDraft: deliver } as unknown as GitHubDelivery;
     const result = await runWardenCandidateDelivery({ db, job, github, artifactEnv: { MENDPOINT_DATA_DIR: dataRoot },
       now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }) });
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }) });
     expect(result.status).toBe("delivery_failed");
     expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before GitHub when the bound snapshot expires before delivery", async () => {
+    const { db, dataRoot, job } = fixture(true, false, true);
+    const deliver = vi.fn();
+    const result = await runWardenCandidateDelivery({
+      db,
+      job,
+      github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
+      artifactEnv: { MENDPOINT_DATA_DIR: dataRoot },
+      now: () => "2026-08-06T12:00:01.000Z",
+      resolveRepository: () => ({
+        owner: "acme",
+        repo: "sdk",
+        baseBranch: "main",
+        snapshotExpiresAt: "2026-08-06T12:00:00.500Z",
+      }),
+    });
+    expect(result.status).toBe("delivery_failed");
+    expect(deliver).not.toHaveBeenCalled();
+    expect(getJob(db, job.id, "tenant-a")?.error).toContain(
+      "warden_candidate_delivery_snapshot_expired",
+    );
   });
 
   it("keeps a lost GitHub response pending past the ordinary attempt cap", async () => {
@@ -236,7 +356,7 @@ describe("Warden exact candidate draft delivery", () => {
     const result = await runWardenCandidateDelivery({
       db, job, github, artifactEnv: { MENDPOINT_DATA_DIR: dataRoot },
       now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
     });
 
     expect(result.status).toBe("retry_scheduled");
@@ -269,7 +389,7 @@ describe("Warden exact candidate draft delivery", () => {
     const result = await runWardenCandidateDelivery({
       db, job, github, artifactEnv: { MENDPOINT_DATA_DIR: dataRoot },
       now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
     });
 
     expect(result.status).toBe("retry_scheduled");
@@ -315,7 +435,7 @@ describe("Warden exact candidate draft delivery", () => {
     const result = await runWardenCandidateDelivery({
       db, job, github, artifactEnv: { MENDPOINT_DATA_DIR: dataRoot },
       now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
     });
 
     expect(injected).toBe(true);
@@ -354,7 +474,7 @@ describe("Warden exact candidate draft delivery", () => {
     await expect(runWardenCandidateDelivery({
       db, job, github: firstGitHub, artifactEnv: { MENDPOINT_DATA_DIR: dataRoot },
       now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
     })).rejects.toThrow("warden_candidate_delivery_lease_lost");
     expect(getWardenCandidateDeliveryByRun(db, "tenant-a", delivery.runId)).toMatchObject({
       status: "delivery_pending",
@@ -373,7 +493,7 @@ describe("Warden exact candidate draft delivery", () => {
     const result = await runWardenCandidateDelivery({
       db, job: replay, github: replayGitHub, artifactEnv: { MENDPOINT_DATA_DIR: dataRoot },
       now: () => "2026-08-06T12:10:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
     });
     expect(result.status).toBe("delivered");
     expect(getJob(db, job.id, "tenant-a")?.status).toBe("done");

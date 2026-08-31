@@ -4677,6 +4677,7 @@ export {
   enqueueWardenCandidateDelivery,
   getWardenCandidateDelivery,
   getWardenCandidateDeliveryByRun,
+  bindWardenCandidateDeliveryScope,
   bindWardenCandidateDeliveryIntent,
   recordWardenCandidateDeliverySuccess,
   recordWardenCandidateDeliveryFailure,
@@ -4686,6 +4687,7 @@ export {
   type WardenCandidateDeliveryOutcome,
   type WardenCandidateDeliveryRecord,
   type EnqueueWardenCandidateDeliveryInput,
+  type BindWardenCandidateDeliveryScopeResult,
 } from "./warden-candidate-delivery.js";
 
 export {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDb, getJob, insertAgentRun, type AppDb } from "./index.js";
 import {
+  bindWardenCandidateDeliveryScope,
   bindWardenCandidateDeliveryIntent,
   enqueueWardenCandidateDelivery,
   getWardenCandidateDelivery,
@@ -114,6 +115,141 @@ describe("Warden candidate delivery outbox", () => {
     enqueueWardenCandidateDelivery(db, base);
     expect(() => enqueueWardenCandidateDelivery(db, { ...base, baseBranch: "release" }))
       .toThrow("warden_candidate_delivery_conflict");
+  });
+
+  it("rejects a second approved run for the same sealed provider change and repository", () => {
+    const db = fixture();
+    insertAgentRun(db, {
+      id: "warden-run-2",
+      tenantId: "tenant-a",
+      jobId: "source-job-2",
+      goal: "Repair the same SDK change",
+      repoPath: "C:\\snapshot",
+      status: "candidate_approved",
+      ok: true,
+      steps: 3,
+      filesChanged: ["src/client.ts"],
+      resultJson: JSON.stringify({
+        source: { repositoryId: "repo-1", snapshotId: "snapshot-1", revision: "a".repeat(40) },
+        artifacts: { approval: {
+          path: "C:\\data\\warden-evidence\\tenant-a\\approvals\\seal-2.json",
+          sha256: `sha256:${"d".repeat(64)}`,
+        } },
+        review: {
+          decision: "approve",
+          reviewerPrincipalId: "human:reviewer@example.com",
+          rationale: "The target and regression checks pass.",
+        },
+      }),
+      createdAt: NOW,
+      finishedAt: NOW,
+    });
+    const first = enqueueWardenCandidateDelivery(db, deliveryInput);
+    const second = enqueueWardenCandidateDelivery(db, {
+      ...deliveryInput,
+      runId: "warden-run-2",
+      sealedPath: "C:\\data\\warden-evidence\\tenant-a\\approvals\\seal-2.json",
+      sealedSha256: `sha256:${"d".repeat(64)}`,
+    });
+    const sealedProviderChange = {
+      schemaVersion: 5,
+      tenantId: "tenant-a",
+      repositoryId: "repo-1",
+      snapshotId: "snapshot-1",
+      baseBranch: "main",
+      expectedBaseRevision: "a".repeat(40),
+      fettlerProviderChange: {
+        schemaVersion: 1,
+        providerSlug: "stripe",
+        changeId: "change-stripe-2026-08-31",
+        pipelineJobId: "pipeline-job-1",
+        repositoryId: "repo-1",
+        snapshotId: "snapshot-1",
+        revision: "a".repeat(40),
+      },
+    } as const;
+
+    expect(bindWardenCandidateDeliveryScope(db, {
+      tenantId: "tenant-a",
+      deliveryId: first.id,
+      sealedArtifact: sealedProviderChange,
+    })).toMatchObject({ status: "bound", providerSlug: "stripe", changeId: "change-stripe-2026-08-31" });
+    expect(() => bindWardenCandidateDeliveryScope(db, {
+      tenantId: "tenant-a",
+      deliveryId: second.id,
+      sealedArtifact: sealedProviderChange,
+    })).toThrow("warden_candidate_delivery_scope_conflict");
+  });
+
+  it("leaves legacy approval schemas unscoped and rejects mutated sealed bindings", () => {
+    const db = fixture();
+    const delivery = enqueueWardenCandidateDelivery(db, deliveryInput);
+    expect(bindWardenCandidateDeliveryScope(db, {
+      tenantId: "tenant-a",
+      deliveryId: delivery.id,
+      sealedArtifact: {
+        schemaVersion: 4,
+        fettlerProviderChange: {
+          schemaVersion: 1,
+          providerSlug: "stripe",
+          changeId: "unsealed-prose-must-not-authorize",
+        },
+      },
+    })).toEqual({ status: "legacy_unscoped" });
+    expect(() => bindWardenCandidateDeliveryScope(db, {
+      tenantId: "tenant-a",
+      deliveryId: delivery.id,
+      sealedArtifact: {
+        schemaVersion: 5,
+        tenantId: "tenant-a",
+        repositoryId: "repo-mutated",
+        snapshotId: "snapshot-1",
+        baseBranch: "main",
+        expectedBaseRevision: "a".repeat(40),
+        fettlerProviderChange: {
+          schemaVersion: 1,
+          providerSlug: "stripe",
+          changeId: "change-stripe-2026-08-31",
+          pipelineJobId: "pipeline-job-1",
+          repositoryId: "repo-mutated",
+          snapshotId: "snapshot-1",
+          revision: "a".repeat(40),
+        },
+      },
+    })).toThrow("warden_candidate_delivery_scope_binding_mismatch");
+  });
+
+  it("fails closed when an existing delivery scope is malformed", () => {
+    const db = fixture();
+    const delivery = enqueueWardenCandidateDelivery(db, deliveryInput);
+    const job = getJob(db, delivery.jobId, "tenant-a")!;
+    const payload = JSON.parse(job.payload_json) as Record<string, unknown>;
+    db.raw.prepare("UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?").run(
+      JSON.stringify({ ...payload, fettlerProviderChangeScope: { schemaVersion: 1 } }),
+      delivery.jobId,
+      "tenant-a",
+    );
+
+    expect(() => bindWardenCandidateDeliveryScope(db, {
+      tenantId: "tenant-a",
+      deliveryId: delivery.id,
+      sealedArtifact: {
+        schemaVersion: 5,
+        tenantId: "tenant-a",
+        repositoryId: "repo-1",
+        snapshotId: "snapshot-1",
+        baseBranch: "main",
+        expectedBaseRevision: "a".repeat(40),
+        fettlerProviderChange: {
+          schemaVersion: 1,
+          providerSlug: "stripe",
+          changeId: "change-stripe-2026-08-31",
+          repositoryId: "repo-1",
+          snapshotId: "snapshot-1",
+          revision: "a".repeat(40),
+        },
+      },
+    })).toThrow("warden_candidate_delivery_scope_corrupt");
   });
 
   const deliveryInput = {

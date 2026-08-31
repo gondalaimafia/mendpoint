@@ -10,6 +10,14 @@ import {
   relativeTime,
 } from "../../components/console/pr-map";
 
+function mapCandidateStatus(candidate: NonNullable<MigrationPr["candidateDelivery"]>): Status {
+  if (candidate.deliveryStatus === "delivery_pending") return "pending";
+  if (candidate.deliveryStatus === "delivery_failed") return "failing";
+  if (candidate.outcome === "merged") return "merged";
+  if (candidate.outcome === "closed_unmerged" || candidate.outcome === "reverted") return "failing";
+  return "draft";
+}
+
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Pull requests" };
 
@@ -30,20 +38,23 @@ export default async function PullRequestsPage() {
 
   const rows: PullRequest[] = prs.map((pr) => {
     const { additions, deletions, files } = patchStats(pr.patchUnified);
+    const candidate = pr.candidateDelivery;
     return {
       id: pr.id,
-      repo: repoByConsumer.get(pr.consumerId) ?? pr.branchName ?? "unknown",
+      repo: candidate?.repositoryId ?? repoByConsumer.get(pr.consumerId) ?? pr.branchName ?? "unknown",
       number: pr.githubPrNumber,
       title: pr.title,
-      status: mapPrStatus(pr.status, pr.coverage) as Status,
+      status: candidate ? mapCandidateStatus(candidate) : mapPrStatus(pr.status, pr.coverage) as Status,
       additions,
       deletions,
-      files,
+      files: candidate?.changedPaths.length ?? files,
       time: relativeTime(pr.createdAt),
       // Carry the coverage state so the row can distinguish a verified-clean
       // result from an unanalyzed one — a distinction the status pill alone
       // cannot make. Defaults to unknown when the channel is absent.
-      coverage: coverageSummary(pr.status, pr.coverage),
+      coverage: candidate ? undefined : coverageSummary(pr.status, pr.coverage),
+      candidateEvidence: candidate,
+      githubUrl: pr.githubPrUrl,
     };
   });
 

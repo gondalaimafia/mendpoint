@@ -64,6 +64,7 @@ import {
   listFeedSchedules,
   listFeedPolls,
   listJobs,
+  listMonitoredForProvider,
   listRepositorySnapshots,
   listProviders,
   listVersionsForProvider,
@@ -198,10 +199,12 @@ import {
   assertWardenModelAccountingSettled,
   createWardenModelAccountingRuntime,
 } from "./warden-model-accounting.js";
-import { enqueuePipelineWardenRuns } from "./warden-pilot-join.js";
+import {
+  enqueuePipelineFettlerRuns,
+  type FettlerProviderChangeLineage,
+} from "./warden-pilot-join.js";
 import { persistWardenTrajectory } from "./warden-trajectory.js";
 import { assertBoundAgentRunMissionPolicy } from "./agent-run-policy.js";
-import { resolveBoundMission } from "./job-bound-mission.js";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 import { resolveResumeContext } from "./mission-resume.js";
 import { runTransformerServiceCli } from "./transformer-service-cli.js";
@@ -212,6 +215,7 @@ import {
 import {
   bridgeClaimedJobToMissionTask,
   recordBoundMissionExecutionCost,
+  resolveBoundMissionForJob,
 } from "./mission-task-job-bridge.js";
 import {
   observeProductCompletionInAdvisory,
@@ -899,6 +903,40 @@ export function feedPipelineJobId(input: {
   return `feed_pipeline_${digest}`;
 }
 
+const FETTLER_PROVIDER_CHANGE_SOURCE_KIND = "fettler.production.provider_change" as const;
+
+type FettlerProviderChangeSource = Readonly<{
+  schemaVersion: 1;
+  kind: typeof FETTLER_PROVIDER_CHANGE_SOURCE_KIND;
+  trigger: "feed";
+  contentHash: string;
+  versionId?: string;
+}>;
+
+function isFettlerProviderChangeSource(value: unknown): value is FettlerProviderChangeSource {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const source = value as Record<string, unknown>;
+  return source.schemaVersion === 1 &&
+    source.kind === FETTLER_PROVIDER_CHANGE_SOURCE_KIND &&
+    source.trigger === "feed" &&
+    typeof source.contentHash === "string" && Boolean(source.contentHash.trim()) &&
+    (source.versionId === undefined ||
+      typeof source.versionId === "string" && Boolean(source.versionId.trim()));
+}
+
+function monitoredConsumerIds(
+  db: AppDb,
+  tenantId: string,
+  providerSlug: string,
+): string[] {
+  const provider = listProviders(db, undefined, 0, tenantId)
+    .find((candidate) => candidate.slug === providerSlug);
+  if (!provider) return [];
+  return [...new Set(
+    listMonitoredForProvider(db, provider.id, tenantId).map((row) => row.consumer_id),
+  )].sort();
+}
+
 export function enqueueFeedPipelineJob(
   db: AppDb,
   input: {
@@ -906,15 +944,29 @@ export function enqueueFeedPipelineJob(
     providerSlug: string;
     contentHash: string;
     versionId?: string;
+    productionIntent?: boolean;
   },
 ): string {
   const id = feedPipelineJobId(input);
-  const payload = {
-    providerSlug: input.providerSlug,
-    source: "feed",
-    contentHash: input.contentHash,
-    versionId: input.versionId,
-  };
+  const productionIntent = input.productionIntent ?? deploymentProfile(process.env) === "customer";
+  const payload = productionIntent
+    ? {
+        providerSlug: input.providerSlug,
+        consumerIds: monitoredConsumerIds(db, input.tenantId, input.providerSlug),
+        source: {
+          schemaVersion: 1 as const,
+          kind: FETTLER_PROVIDER_CHANGE_SOURCE_KIND,
+          trigger: "feed" as const,
+          contentHash: input.contentHash,
+          ...(input.versionId ? { versionId: input.versionId } : {}),
+        },
+      }
+    : {
+        providerSlug: input.providerSlug,
+        source: "feed" as const,
+        contentHash: input.contentHash,
+        versionId: input.versionId,
+      };
   const existing = getJob(db, id, input.tenantId);
   if (existing) {
     if (
@@ -1120,6 +1172,7 @@ type WardenJobPayload = Readonly<{
     snapshotId: string;
     revision: string;
   }>;
+  fettlerProviderChange?: FettlerProviderChangeLineage;
   snapshotBinding?: Readonly<{
     repositoryId: string;
     snapshotId: string;
@@ -1291,7 +1344,12 @@ function wardenVerificationPolicy(
   });
 }
 
-function validatedWardenPilotSource(
+function validLineageTextArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.length <= 20 &&
+    value.every((entry) => typeof entry === "string" && Boolean(entry.trim()) && entry.length <= 500);
+}
+
+function validatedFettlerProviderChange(
   db: AppDb,
   tenantId: string,
   consumerId: string,
@@ -1302,7 +1360,11 @@ function validatedWardenPilotSource(
     revision: string;
   }>,
   source: WardenJobPayload["source"],
-): WardenJobPayload["source"] {
+  lineage: WardenJobPayload["fettlerProviderChange"],
+): Readonly<{
+  fettlerProviderChange?: FettlerProviderChangeLineage;
+  legacySource?: NonNullable<WardenJobPayload["source"]>;
+}> | undefined {
   if (!source) return undefined;
   if (
     !source.pipelineJobId ||
@@ -1312,38 +1374,77 @@ function validatedWardenPilotSource(
     source.snapshotId !== binding.snapshotId ||
     source.revision !== binding.revision
   ) {
-    throw new Error("warden_pilot_source_binding_mismatch");
+    throw new Error("fettler_provider_change_source_binding_mismatch");
   }
   const pipelineJob = getJob(db, source.pipelineJobId, tenantId);
   if (!pipelineJob || pipelineJob.type !== "pipeline.fanout" || pipelineJob.status !== "done") {
-    throw new Error("warden_pilot_source_job_not_complete");
+    throw new Error("fettler_provider_change_source_job_not_complete");
   }
   const pipelinePayload = JSON.parse(pipelineJob.payload_json) as Record<string, unknown>;
+  const canonicalSource = isFettlerProviderChangeSource(pipelinePayload.source);
+  const legacySource = pipelinePayload.wardenPilot === true;
   if (
-    pipelinePayload.wardenPilot !== true ||
+    !canonicalSource && !legacySource ||
     pipelinePayload.providerSlug !== source.providerSlug ||
     !Array.isArray(pipelinePayload.consumerIds) ||
     !pipelinePayload.consumerIds.includes(consumerId)
   ) {
-    throw new Error("warden_pilot_source_job_mismatch");
+    throw new Error("fettler_provider_change_source_job_mismatch");
+  }
+  if (canonicalSource) {
+    if (
+      !lineage ||
+      lineage.schemaVersion !== 1 ||
+      lineage.providerSlug !== source.providerSlug ||
+      lineage.changeId !== source.changeId ||
+      lineage.pipelineJobId !== source.pipelineJobId ||
+      lineage.repositoryId !== binding.repositoryId ||
+      lineage.snapshotId !== binding.snapshotId ||
+      lineage.revision !== binding.revision ||
+      !(lineage.graphVersionId === null || typeof lineage.graphVersionId === "string") ||
+      !(lineage.graphContextArtifactId === null || typeof lineage.graphContextArtifactId === "string") ||
+      !/^sha256:[a-f0-9]{64}$/.test(lineage.impactEvidenceDigest) ||
+      (lineage.overallConfidence !== "medium" && lineage.overallConfidence !== "high") ||
+      !lineage.whatChanged.trim() ||
+      lineage.whatChanged.length > 500 ||
+      /[\r\n\t]/.test(lineage.whatChanged) ||
+      !validLineageTextArray(lineage.knownFacts) ||
+      !validLineageTextArray(lineage.unknowns) ||
+      !lineage.whyAffected.trim() ||
+      lineage.whyAffected.length > 2_000
+    ) {
+      throw new Error("fettler_provider_change_lineage_invalid");
+    }
+  } else if (lineage) {
+    throw new Error("fettler_provider_change_legacy_lineage_mismatch");
   }
   const pipelineResult = pipelineJob.result_json
     ? JSON.parse(pipelineJob.result_json) as Record<string, unknown>
     : null;
-  const wardenRuns = Array.isArray(pipelineResult?.wardenRuns)
-    ? pipelineResult.wardenRuns as Array<Record<string, unknown>>
-    : [];
+  const fettlerRuns = Array.isArray(pipelineResult?.fettlerRuns)
+    ? pipelineResult.fettlerRuns as Array<Record<string, unknown>>
+    : legacySource && Array.isArray(pipelineResult?.wardenRuns)
+      ? pipelineResult.wardenRuns as Array<Record<string, unknown>>
+      : [];
   if (
     pipelineResult?.changeId !== source.changeId ||
-    !wardenRuns.some((run) =>
+    !fettlerRuns.some((run) =>
       run.consumerId === consumerId &&
       run.runId === sessionId &&
       (run.status === "queued" || run.status === "replayed")
     )
   ) {
-    throw new Error("warden_pilot_source_result_mismatch");
+    throw new Error("fettler_provider_change_source_result_mismatch");
   }
-  return Object.freeze({ ...source });
+  return lineage
+    ? Object.freeze({
+        fettlerProviderChange: Object.freeze({
+          ...lineage,
+          knownFacts: Object.freeze([...lineage.knownFacts]),
+          unknowns: Object.freeze([...lineage.unknowns]),
+        }),
+      })
+    : Object.freeze({ legacySource: Object.freeze({ ...source }) });
 }
 
 function privateWardenDirectory(path: string): string {
@@ -2753,17 +2854,24 @@ function wardenCandidateRepositoryResolver(
   return async (input) => {
     const resolved = await base(input);
     const repository = getConnectedRepository(db, input.repositoryId, input.tenantId);
+    const snapshot = listRepositorySnapshots(db, input.tenantId, input.repositoryId)
+      .find((candidate) => candidate.id === input.snapshotId);
     const connection = repository
       ? getScmConnection(db, repository.connection_id, input.tenantId)
       : undefined;
     const remoteRepositoryId = Number(repository?.remote_id);
     const installationId = Number(connection?.external_account_id);
-    if (!repository || !connection || connection.provider !== "github" || connection.revoked_at ||
+    if (!repository || !snapshot || !connection || connection.provider !== "github" || connection.revoked_at ||
         !Number.isSafeInteger(remoteRepositoryId) || remoteRepositoryId < 1 ||
         !Number.isSafeInteger(installationId) || installationId < 1) {
       throw new Error("warden_ci_repository_identity_required");
     }
-    return Object.freeze({ ...resolved, remoteRepositoryId, installationId });
+    return Object.freeze({
+      ...resolved,
+      remoteRepositoryId,
+      installationId,
+      snapshotExpiresAt: snapshot.expires_at,
+    });
   };
 }
 
@@ -3513,14 +3621,15 @@ if (job.type === "warden.candidate.cleanup") {
                 env: workerEnv,
               },
             );
-        const wardenPilotSource = binding.sourceKind === "immutable_snapshot"
-          ? validatedWardenPilotSource(
+        const fettlerProviderChange = binding.sourceKind === "immutable_snapshot"
+          ? validatedFettlerProviderChange(
               db,
               job.tenant_id,
               consumer.id,
               sessionId,
               binding,
               payload.source,
+              payload.fettlerProviderChange,
             )
           : undefined;
         console.log(`Job ${job.id} agent.run ${binding.root}`);
@@ -3662,6 +3771,12 @@ if (job.type === "warden.candidate.cleanup") {
           observedAgainst: { snapshotId: binding.snapshotId, resolvedSha: binding.revision },
           observedAt: started,
         });
+        // Resolve the canonical binding once for the remaining execution path.
+        // Campaign-enrolled jobs often carry only fettlerCampaignId, so reading
+        // payload.missionId directly would enforce policy and create a
+        // MissionTask correctly while silently dropping Mission context and
+        // trajectory lineage later in the same run.
+        const boundJobMission = resolveBoundMissionForJob(db, job);
         const repositoryClassification = modelSourcePolicy
           ? resolveWardenRepositoryClassification(job.tenant_id, repository.remote_id, workerEnv)
           : "restricted";
@@ -3826,7 +3941,7 @@ if (job.type === "warden.candidate.cleanup") {
               // Mission compiles even with that switch unset so regenerate can
               // inherit decisions and persist context_refs_json.
               let inheritedContext: InheritedContextInjection | undefined;
-              const missionBound = Boolean(payload.missionId);
+              const missionBound = Boolean(boundJobMission);
               if (inheritedContextShouldCompile(process.env, { missionBound })) {
                 try {
                   const endpointKey = payload.endpointKey?.trim() ?? "";
@@ -3843,7 +3958,7 @@ if (job.type === "warden.candidate.cleanup") {
                     const standing = resolveResumeContext(db, {
                       tenantId: job.tenant_id,
                       currentRunStatus: sessionRun?.status ?? "running",
-                      missionId: payload.missionId,
+                      missionId: boundJobMission?.id,
                       task: {
                         taskId: job.id,
                         capability: (payload.mode ?? "repair") === "feature" ? "feature" : "repair",
@@ -3977,7 +4092,11 @@ if (job.type === "warden.candidate.cleanup") {
                 jobId: job.id,
                 product: "warden",
                 sourceKind: "immutable_snapshot",
-                ...(wardenPilotSource ? { intake: wardenPilotSource } : {}),
+                ...(fettlerProviderChange?.fettlerProviderChange
+                  ? { intake: { fettlerProviderChange: fettlerProviderChange.fettlerProviderChange } }
+                  : fettlerProviderChange?.legacySource
+                    ? { intake: fettlerProviderChange.legacySource }
+                    : {}),
                 routing: {
                   action: routed.routing.action,
                   envelopeId: routed.routing.envelopeId,
@@ -4004,20 +4123,12 @@ if (job.type === "warden.candidate.cleanup") {
         // Tenant is the authenticated job principal, never a request body.
         if (attempt.capture) {
           try {
-            // "No mission claimed" is a legitimate NULL binding; a claim that does
-            // not resolve for this tenant is a fault recorded in provenance, never
-            // bound (the DB guard rejects a foreign FK, the inherited-context path
-            // fails closed on its own).
-            const boundMission = resolveBoundMission(db, job.tenant_id, payload.missionId);
             persistWardenTrajectory(db, {
               tenantId: job.tenant_id,
               capture: attempt.capture,
               jobId: job.id,
               runId: sessionId,
-              ...(boundMission.kind === "bound" ? { missionId: boundMission.missionId } : {}),
-              ...(boundMission.kind === "rejected"
-                ? { rejectedMissionClaim: boundMission.claimedMissionId }
-                : {}),
+              ...(boundJobMission ? { missionId: boundJobMission.id } : {}),
               ...(inheritedContextRefs ? { contextRefs: inheritedContextRefs } : {}),
               createdAt: nowIso(),
             });
@@ -4047,7 +4158,11 @@ if (job.type === "warden.candidate.cleanup") {
             product: "warden",
             taskMode: payload.mode ?? "repair",
             sourceKind: "immutable_snapshot",
-            ...(wardenPilotSource ? { intake: wardenPilotSource } : {}),
+            ...(fettlerProviderChange?.fettlerProviderChange
+              ? { intake: { fettlerProviderChange: fettlerProviderChange.fettlerProviderChange } }
+              : fettlerProviderChange?.legacySource
+                ? { intake: fettlerProviderChange.legacySource }
+                : {}),
             ...(payload.ciFailure ? { ciFailure: payload.ciFailure } : {}),
             attemptStatus: attempt.status,
             ...(attempt.status === "rejected" ? { code: attempt.code } : {}),
@@ -4280,6 +4395,7 @@ if (job.type === "warden.candidate.cleanup") {
       const payload = JSON.parse(job.payload_json) as {
         providerSlug: string;
         consumerIds?: string[];
+        source?: string | FettlerProviderChangeSource;
         severity?: "required" | "recommended" | "optional";
         notificationsOnly?: boolean;
         wardenPilot?: boolean;
@@ -4292,13 +4408,17 @@ if (job.type === "warden.candidate.cleanup") {
       };
       console.log(`Job ${job.id} pipeline.fanout ${payload.providerSlug}`);
       const pipelineRunner = opts.pipelineRunner ?? runChangePipeline;
+      const fettlerProductionIntent = isFettlerProviderChangeSource(payload.source);
+      const legacyWardenPilot = payload.wardenPilot === true;
       const report = await pipelineRunner({
         tenantId: job.tenant_id,
         providerSlug: payload.providerSlug,
         db,
         consumerIds: payload.consumerIds,
         severity: payload.severity,
-        notificationsOnly: payload.wardenPilot ? true : payload.notificationsOnly,
+        notificationsOnly: fettlerProductionIntent || legacyWardenPilot
+          ? true
+          : payload.notificationsOnly,
         contractCases: payload.contractCases,
         // Accept the legacy key so jobs enqueued before the rename still carry
         // their attestation across the deploy boundary; both map fail-closed.
@@ -4308,6 +4428,12 @@ if (job.type === "warden.candidate.cleanup") {
         shouldContinue: () =>
           !leaseLost && opts.shouldContinue?.() !== false,
       });
+      if (
+        fettlerProductionIntent &&
+        report.consumers.some((consumer) => !payload.consumerIds?.includes(consumer.consumerId))
+      ) {
+        throw new Error("fettler_provider_change_consumer_scope_mismatch");
+      }
       const deliveryFailures = report.consumers.filter(
         (consumer) => consumer.prStatus === "delivery_failed",
       );
@@ -4322,10 +4448,10 @@ if (job.type === "warden.candidate.cleanup") {
         );
       }
       if (leaseLost) throw new Error("lease_lost_before_pipeline_completion");
-      if (payload.wardenPilot) {
+      if (fettlerProductionIntent || legacyWardenPilot) {
         db.raw.exec("BEGIN IMMEDIATE");
         try {
-          const joinedWardenRuns = enqueuePipelineWardenRuns(db, {
+          const joinedFettlerRuns = enqueuePipelineFettlerRuns(db, {
             tenantId: job.tenant_id,
             pipelineJobId: job.id,
             providerSlug: payload.providerSlug,
@@ -4340,7 +4466,7 @@ if (job.type === "warden.candidate.cleanup") {
               {
                 changeId: report.changeId,
                 consumers: report.consumers,
-                wardenRuns: joinedWardenRuns,
+                fettlerRuns: joinedFettlerRuns,
               },
               nowIso(),
               fence,
@@ -4366,7 +4492,7 @@ if (job.type === "warden.candidate.cleanup") {
           {
             changeId: report.changeId,
             consumers: report.consumers,
-            wardenRuns: [],
+            fettlerRuns: [],
           },
           nowIso(),
           fence,

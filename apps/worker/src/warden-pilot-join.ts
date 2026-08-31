@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { pathBlocked, verificationControlPath } from "@mendpoint/agent";
+import {
+  pathBlocked,
+  verificationControlPath,
+  type FettlerProviderChangeEvidence,
+} from "@mendpoint/agent";
 import {
   enqueueJob,
   getAgentRun,
@@ -21,7 +25,7 @@ import {
 const EXACT_REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const MAX_CHANGED_PATHS = 40;
 
-export type JoinedWardenRun = Readonly<{
+export type JoinedFettlerRun = Readonly<{
   consumerId: string;
   status: "queued" | "replayed" | "abstained";
   jobId?: string;
@@ -29,7 +33,7 @@ export type JoinedWardenRun = Readonly<{
   reason?: string;
 }>;
 
-export type PipelineWardenJoinInput = Readonly<{
+export type PipelineFettlerJoinInput = Readonly<{
   tenantId: string;
   pipelineJobId: string;
   providerSlug: string;
@@ -37,6 +41,8 @@ export type PipelineWardenJoinInput = Readonly<{
   observedAt: string;
   useLlm: boolean;
 }>;
+
+export type FettlerProviderChangeLineage = FettlerProviderChangeEvidence;
 
 function digest(parts: readonly string[]): string {
   return createHash("sha256").update(parts.join("\0"), "utf8").digest("hex");
@@ -92,12 +98,24 @@ function equivalentReplayPayload(existingPayloadJson: string, expectedPayload: R
     // replay: existing-has-hint with expected-none, or two differing hints, is
     // a real payload divergence, not "didn't determine, so it matches".
     if (existingHint && existingHint !== expectedHint) return false;
+    const existingLineage = existing.fettlerProviderChange;
+    const expectedLineage = expectedPayload.fettlerProviderChange;
+    if (
+      !existingLineage || typeof existingLineage !== "object" || Array.isArray(existingLineage) ||
+      !expectedLineage || typeof expectedLineage !== "object" || Array.isArray(expectedLineage)
+    ) {
+      return false;
+    }
     return isDeepStrictEqual(
       {
         ...withoutCampaignHint(existing),
         source: {
           ...existingSource,
           pipelineJobId: (expectedSource as Record<string, unknown>).pipelineJobId,
+        },
+        fettlerProviderChange: {
+          ...existingLineage,
+          pipelineJobId: (expectedLineage as Record<string, unknown>).pipelineJobId,
         },
       },
       withoutCampaignHint(expectedPayload),
@@ -107,17 +125,83 @@ function equivalentReplayPayload(existingPayloadJson: string, expectedPayload: R
   }
 }
 
+function providerChangeLineage(input: PipelineFettlerJoinInput, result: PipelineReport["consumers"][number], binding: {
+  repositoryId: string;
+  snapshotId: string;
+  revision: string;
+}): FettlerProviderChangeLineage {
+  const impact = result.impactReport!;
+  const sites = impact.sites
+    .map((site) => ({
+      filePath: site.filePath,
+      lineStart: site.lineStart,
+      lineEnd: site.lineEnd,
+      symbol: site.symbol,
+      confidence: site.confidence,
+      impactType: site.impactType,
+      surfaceIds: [...site.surfaceIds].sort(),
+      evidenceDigest: digest([site.evidence]),
+    }))
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  const overallConfidence = result.overallConfidence ?? impact.overallConfidence;
+  if (overallConfidence !== "medium" && overallConfidence !== "high") {
+    throw new Error("fettler_provider_change_confidence_invalid");
+  }
+  const whatChanged = (input.report.summary || input.report.diff.summary)
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .slice(0, 500);
+  const unknowns: string[] = [];
+  if (!result.graphVersionId) unknowns.push("Change Graph version was not available for this impact run.");
+  if (!result.graphContextArtifactId) unknowns.push("Change Graph context artifact was not available for this impact run.");
+  if (result.candidates > result.confirmed) {
+    unknowns.push(`${result.candidates - result.confirmed} candidate impact site(s) remain unconfirmed.`);
+  }
+  if (impact.lowConfidenceNotifications.length) {
+    unknowns.push(`${impact.lowConfidenceNotifications.length} low confidence observation(s) require review.`);
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    providerSlug: input.providerSlug,
+    changeId: input.report.changeId,
+    pipelineJobId: input.pipelineJobId,
+    repositoryId: binding.repositoryId,
+    snapshotId: binding.snapshotId,
+    revision: binding.revision,
+    graphVersionId: result.graphVersionId ?? null,
+    graphContextArtifactId: result.graphContextArtifactId ?? null,
+    impactEvidenceDigest: `sha256:${digest([JSON.stringify({
+      consumerId: result.consumerId,
+      findings: result.findings,
+      candidates: result.candidates,
+      confirmed: result.confirmed,
+      overallConfidence,
+      sites,
+    })])}`,
+    overallConfidence,
+    whatChanged,
+    knownFacts: Object.freeze([
+      `The provider change is recorded as ${input.report.risk}.`,
+      `${result.confirmed} of ${result.candidates} candidate impact site(s) are confirmed.`,
+      "The repository snapshot and exact revision are bound to this run.",
+    ]),
+    unknowns: Object.freeze(unknowns),
+    whyAffected: `${result.findings} impact finding(s) connect the provider change to this monitored consumer; ${result.confirmed} are confirmed at ${overallConfidence} confidence.`,
+  });
+}
+
 function abstain(
   db: AppDb,
-  input: PipelineWardenJoinInput,
+  input: PipelineFettlerJoinInput,
   consumerId: string,
   reason: string,
-): JoinedWardenRun {
+): JoinedFettlerRun {
   recordAudit(db, {
     id: `audit_${digest([input.tenantId, input.pipelineJobId, consumerId, reason])}`,
     tenantId: input.tenantId,
-    actor: "warden-pilot",
-    action: "warden.pilot.abstained",
+    actor: "fettler",
+    action: "fettler.provider_change.abstained",
     resourceType: "consumer",
     resourceId: consumerId,
     metadata: {
@@ -130,18 +214,18 @@ function abstain(
   return Object.freeze({ consumerId, status: "abstained", reason });
 }
 
-export function enqueuePipelineWardenRuns(
+export function enqueuePipelineFettlerRuns(
   db: AppDb,
-  input: PipelineWardenJoinInput,
-): readonly JoinedWardenRun[] {
+  input: PipelineFettlerJoinInput,
+): readonly JoinedFettlerRun[] {
   if (!input.tenantId.trim() || !input.pipelineJobId.trim() || !input.providerSlug.trim()) {
-    throw new Error("warden_pilot_join_identity_required");
+    throw new Error("fettler_provider_change_join_identity_required");
   }
   if (!Number.isFinite(Date.parse(input.observedAt))) {
-    throw new Error("warden_pilot_join_observed_at_invalid");
+    throw new Error("fettler_provider_change_join_observed_at_invalid");
   }
 
-  return Object.freeze(input.report.consumers.map((result): JoinedWardenRun => {
+  return Object.freeze(input.report.consumers.map((result): JoinedFettlerRun => {
     const consumer = getConsumer(db, result.consumerId, input.tenantId);
     const repo = consumer ? getConsumerRepo(db, consumer.id, input.tenantId) : undefined;
     if (!consumer || !repo) {
@@ -198,6 +282,8 @@ export function enqueuePipelineWardenRuns(
       snapshot.manifest_sha256,
       ...allowedChangedPaths,
     ]);
+    // These identifiers are already persisted in production. Keep their legacy
+    // prefixes so a replay after this rename resolves the same durable records.
     const jobId = `warden-pilot-job-${identity.slice(0, 32)}`;
     const runId = `warden-pilot-run-${identity.slice(32)}`;
     const goal = `Apply the recorded ${input.providerSlug} API migration for change ${input.report.changeId}. ` +
@@ -207,6 +293,11 @@ export function enqueuePipelineWardenRuns(
       input.tenantId,
       repo.connected_repository_id,
     );
+    const fettlerProviderChange = providerChangeLineage(input, result, {
+      repositoryId: repo.connected_repository_id,
+      snapshotId: snapshot.id,
+      revision: snapshot.resolved_sha,
+    });
     const payload = {
       goal,
       consumerId: consumer.id,
@@ -215,6 +306,7 @@ export function enqueuePipelineWardenRuns(
       useLlm: input.useLlm,
       allowNetwork: false,
       sessionId: runId,
+      fettlerProviderChange,
       ...(campaign ? { fettlerCampaignId: campaign.campaignId } : {}),
       source: {
         pipelineJobId: input.pipelineJobId,
@@ -236,11 +328,11 @@ export function enqueuePipelineWardenRuns(
           existing.type !== "agent.run" ||
           !equivalentReplayPayload(existing.payload_json, payload)
         ) {
-          throw new Error("warden_pilot_join_idempotency_conflict");
+          throw new Error("fettler_provider_change_join_idempotency_conflict");
         }
         const run = getAgentRun(db, runId, input.tenantId);
         if (!run || run.job_id !== jobId) {
-          throw new Error("warden_pilot_join_run_identity_conflict");
+          throw new Error("fettler_provider_change_join_run_identity_conflict");
         }
         const canonicalPayload = JSON.parse(existing.payload_json) as {
           source: { pipelineJobId: string };
@@ -248,8 +340,8 @@ export function enqueuePipelineWardenRuns(
         recordAudit(db, {
           id: `audit_${digest([input.tenantId, jobId, input.pipelineJobId, "replayed"])}`,
           tenantId: input.tenantId,
-          actor: "warden-pilot",
-          action: "warden.pilot.replayed",
+          actor: "fettler",
+          action: "fettler.provider_change.replayed",
           resourceType: "agent_run",
           resourceId: runId,
           metadata: {
@@ -284,7 +376,7 @@ export function enqueuePipelineWardenRuns(
         filesChanged: [],
         resultJson: JSON.stringify({
           jobId,
-          product: "warden",
+          product: "fettler",
           source: payload.source,
         }),
         createdAt: input.observedAt,
@@ -293,8 +385,8 @@ export function enqueuePipelineWardenRuns(
       recordAudit(db, {
         id: `audit_${digest([input.tenantId, jobId, "queued"])}`,
         tenantId: input.tenantId,
-        actor: "warden-pilot",
-        action: "warden.pilot.queued",
+        actor: "fettler",
+        action: "fettler.provider_change.queued",
         resourceType: "agent_run",
         resourceId: runId,
         metadata: {
@@ -320,3 +412,10 @@ export function enqueuePipelineWardenRuns(
     }
   }));
 }
+
+/** @deprecated Read compatibility for callers compiled against the pilot name. */
+export type JoinedWardenRun = JoinedFettlerRun;
+/** @deprecated Read compatibility for callers compiled against the pilot name. */
+export type PipelineWardenJoinInput = PipelineFettlerJoinInput;
+/** @deprecated Use enqueuePipelineFettlerRuns for new production work. */
+export const enqueuePipelineWardenRuns = enqueuePipelineFettlerRuns;

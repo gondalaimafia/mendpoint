@@ -158,6 +158,176 @@ export function getWardenCandidateDeliveryByRun(db: AppDb, tenantId: string, run
   return row ? map(row) : undefined;
 }
 
+type FettlerProviderChangeScope = Readonly<{
+  schemaVersion: 1;
+  providerSlug: string;
+  changeId: string;
+  repositoryId: string;
+  scopeDigest: string;
+}>;
+
+function providerChangeScopeDigest(input: Readonly<{
+  providerSlug: string;
+  changeId: string;
+  repositoryId: string;
+}>): string {
+  return `sha256:${createHash("sha256").update(JSON.stringify({
+    schemaVersion: 1,
+    providerSlug: input.providerSlug,
+    changeId: input.changeId,
+    repositoryId: input.repositoryId,
+  }), "utf8").digest("hex")}`;
+}
+
+export type BindWardenCandidateDeliveryScopeResult =
+  | Readonly<{ status: "legacy_unscoped" }>
+  | Readonly<({ status: "bound" } & FettlerProviderChangeScope)>;
+
+function sealedProviderChangeScope(
+  delivery: WardenCandidateDeliveryRecord,
+  sealedArtifact: unknown,
+): FettlerProviderChangeScope | null {
+  if (!sealedArtifact || typeof sealedArtifact !== "object" || Array.isArray(sealedArtifact)) {
+    throw new Error("warden_candidate_delivery_scope_artifact_invalid");
+  }
+  const artifact = sealedArtifact as Record<string, unknown>;
+  if (artifact.schemaVersion !== 5 && artifact.schemaVersion !== 6) return null;
+  if (
+    artifact.tenantId !== delivery.tenantId ||
+    artifact.repositoryId !== delivery.repositoryId ||
+    artifact.snapshotId !== delivery.snapshotId ||
+    artifact.baseBranch !== delivery.baseBranch ||
+    artifact.expectedBaseRevision !== delivery.expectedBaseRevision
+  ) {
+    throw new Error("warden_candidate_delivery_scope_binding_mismatch");
+  }
+  const value = artifact.fettlerProviderChange;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("warden_candidate_delivery_scope_artifact_invalid");
+  }
+  const evidence = value as Record<string, unknown>;
+  const providerSlug = typeof evidence.providerSlug === "string" ? evidence.providerSlug : "";
+  const changeId = typeof evidence.changeId === "string" ? evidence.changeId : "";
+  if (
+    evidence.schemaVersion !== 1 ||
+    !providerSlug || providerSlug !== providerSlug.trim() || providerSlug.length > 200 ||
+    !changeId || changeId !== changeId.trim() || changeId.length > 500 ||
+    evidence.repositoryId !== delivery.repositoryId ||
+    evidence.snapshotId !== delivery.snapshotId ||
+    evidence.revision !== delivery.expectedBaseRevision
+  ) {
+    throw new Error("warden_candidate_delivery_scope_binding_mismatch");
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    providerSlug,
+    changeId,
+    repositoryId: delivery.repositoryId,
+    scopeDigest: providerChangeScopeDigest({
+      providerSlug,
+      changeId,
+      repositoryId: delivery.repositoryId,
+    }),
+  });
+}
+
+function readBoundScope(payloadJson: string): FettlerProviderChangeScope | null {
+  let value: unknown;
+  try { value = JSON.parse(payloadJson); }
+  catch { throw new Error("warden_candidate_delivery_payload_invalid"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("warden_candidate_delivery_payload_invalid");
+  }
+  const scope = (value as Record<string, unknown>).fettlerProviderChangeScope;
+  if (scope === undefined) return null;
+  if (!scope || typeof scope !== "object" || Array.isArray(scope)) {
+    throw new Error("warden_candidate_delivery_scope_corrupt");
+  }
+  const record = scope as Record<string, unknown>;
+  if (
+    record.schemaVersion !== 1 ||
+    typeof record.providerSlug !== "string" || !record.providerSlug ||
+    record.providerSlug !== record.providerSlug.trim() || record.providerSlug.length > 200 ||
+    typeof record.changeId !== "string" || !record.changeId ||
+    record.changeId !== record.changeId.trim() || record.changeId.length > 500 ||
+    typeof record.repositoryId !== "string" || !record.repositoryId ||
+    record.repositoryId !== record.repositoryId.trim() || record.repositoryId.length > 200 ||
+    typeof record.scopeDigest !== "string" || !DIGEST.test(record.scopeDigest) ||
+    record.scopeDigest !== providerChangeScopeDigest({
+      providerSlug: record.providerSlug as string,
+      changeId: record.changeId as string,
+      repositoryId: record.repositoryId as string,
+    })
+  ) throw new Error("warden_candidate_delivery_scope_corrupt");
+  return Object.freeze({
+    schemaVersion: 1,
+    providerSlug: record.providerSlug,
+    changeId: record.changeId,
+    repositoryId: record.repositoryId,
+    scopeDigest: record.scopeDigest,
+  });
+}
+
+/**
+ * Bind a version 5/6 approval's sealed provider-change identity before any
+ * remote side effect. The scope is stored in the durable job payload so older
+ * databases converge without a schema migration. BEGIN IMMEDIATE serializes
+ * competing claims: at most one pending or still-open draft may own the same
+ * tenant, provider change, and repository tuple. Legacy v3/v4 approvals remain
+ * deliberately unscoped for compatibility.
+ */
+export function bindWardenCandidateDeliveryScope(db: AppDb, input: Readonly<{
+  tenantId: string;
+  deliveryId: string;
+  sealedArtifact: unknown;
+}>): BindWardenCandidateDeliveryScopeResult {
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const delivery = getWardenCandidateDelivery(db, input.tenantId, input.deliveryId);
+    if (!delivery) throw new Error("warden_candidate_delivery_not_found");
+    const scope = sealedProviderChangeScope(delivery, input.sealedArtifact);
+    if (!scope) {
+      if (owns) db.raw.exec("COMMIT");
+      return Object.freeze({ status: "legacy_unscoped" as const });
+    }
+    const currentJob = db.raw.prepare(
+      "SELECT payload_json FROM jobs WHERE id = ? AND tenant_id = ?",
+    ).get(delivery.jobId, delivery.tenantId) as { payload_json: string } | undefined;
+    if (!currentJob) throw new Error("warden_candidate_delivery_job_not_found");
+    const alreadyBound = readBoundScope(currentJob.payload_json);
+    if (alreadyBound && alreadyBound.scopeDigest !== scope.scopeDigest) {
+      throw new Error("warden_candidate_delivery_scope_binding_mismatch");
+    }
+    const peers = db.raw.prepare(
+      `SELECT jobs.payload_json
+       FROM fettler_candidate_deliveries AS delivery
+       JOIN jobs ON jobs.id = delivery.job_id AND jobs.tenant_id = delivery.tenant_id
+       WHERE delivery.tenant_id = ? AND delivery.repository_id = ? AND delivery.id <> ?
+         AND (delivery.status = 'delivery_pending' OR
+           (delivery.status = 'delivered' AND delivery.outcome IS NULL))`,
+    ).all(delivery.tenantId, delivery.repositoryId, delivery.id) as Array<{ payload_json: string }>;
+    if (peers.some((peer) => readBoundScope(peer.payload_json)?.scopeDigest === scope.scopeDigest)) {
+      throw new Error("warden_candidate_delivery_scope_conflict");
+    }
+    if (!alreadyBound) {
+      const parsed: unknown = JSON.parse(currentJob.payload_json);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("warden_candidate_delivery_payload_invalid");
+      }
+      const payload = parsed as Record<string, unknown>;
+      db.raw.prepare(
+        "UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?",
+      ).run(JSON.stringify({ ...payload, fettlerProviderChangeScope: scope }), delivery.jobId, delivery.tenantId);
+    }
+    if (owns) db.raw.exec("COMMIT");
+    return Object.freeze({ status: "bound" as const, ...scope });
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function enqueueWardenCandidateDelivery(
   db: AppDb,
   input: EnqueueWardenCandidateDeliveryInput,
