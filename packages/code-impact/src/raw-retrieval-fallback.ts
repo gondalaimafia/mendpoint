@@ -122,6 +122,18 @@ function unknownEmptyReport(
   };
 }
 
+function validateRetrievalBounds(retrieval: RawRetrievalBoundsAndUsage): void {
+  const invalid =
+    !Number.isSafeInteger(retrieval.maxFiles) || retrieval.maxFiles < 1 || retrieval.maxFiles > 10_000 ||
+    !Number.isSafeInteger(retrieval.maxBytes) || retrieval.maxBytes < 1 || retrieval.maxBytes > 1_000_000_000 ||
+    !Number.isSafeInteger(retrieval.maxFileBytes) || retrieval.maxFileBytes < 1 || retrieval.maxFileBytes > 5_242_880 ||
+    !Number.isSafeInteger(retrieval.maxTraversalDepth) || retrieval.maxTraversalDepth < 1 || retrieval.maxTraversalDepth > 64 ||
+    !Number.isSafeInteger(retrieval.maxCandidates) || retrieval.maxCandidates < 1 || retrieval.maxCandidates > 50_000 ||
+    !Number.isSafeInteger(retrieval.filesInspected) || retrieval.filesInspected < 0 ||
+    !Number.isSafeInteger(retrieval.bytesInspected) || retrieval.bytesInspected < 0;
+  if (invalid) throw new Error("raw_retrieval_bounds_invalid");
+}
+
 /**
  * Decide whether the raw analysis produced alongside one graph observation may
  * be used as a bounded fallback. Candidate output is non-authoritative and can
@@ -133,6 +145,7 @@ export function resolveBoundedRawRetrievalFallback(
   if (!graphAuthorityMatches(input)) {
     throw new Error("raw_retrieval_fallback_graph_scope_mismatch");
   }
+  validateRetrievalBounds(input.retrieval);
   const graphComplete = input.graphImpact.coverage.basis === "complete" &&
     !input.graphImpact.coverage.truncated &&
     (input.requiredReasonCodes?.length ?? 0) === 0;
@@ -158,15 +171,6 @@ export function resolveBoundedRawRetrievalFallback(
 
   const reasons = retrievalReasons(input);
   const candidatesInspected = input.rawReport.candidateCount;
-  const invalid =
-    !Number.isSafeInteger(input.retrieval.maxFiles) || input.retrieval.maxFiles < 1 ||
-    !Number.isSafeInteger(input.retrieval.maxBytes) || input.retrieval.maxBytes < 1 ||
-    !Number.isSafeInteger(input.retrieval.maxFileBytes) || input.retrieval.maxFileBytes < 1 ||
-    !Number.isSafeInteger(input.retrieval.maxTraversalDepth) || input.retrieval.maxTraversalDepth < 1 ||
-    !Number.isSafeInteger(input.retrieval.maxCandidates) || input.retrieval.maxCandidates < 1 ||
-    !Number.isSafeInteger(input.retrieval.filesInspected) || input.retrieval.filesInspected < 0 ||
-    !Number.isSafeInteger(input.retrieval.bytesInspected) || input.retrieval.bytesInspected < 0;
-  if (invalid) throw new Error("raw_retrieval_bounds_invalid");
   const failureCode = input.retrieval.filesInspected > input.retrieval.maxFiles
     ? "raw_retrieval_file_budget_exceeded" as const
     : input.retrieval.bytesInspected > input.retrieval.maxBytes

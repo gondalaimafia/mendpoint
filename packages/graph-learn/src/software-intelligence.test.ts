@@ -674,6 +674,8 @@ describe("foundational software intelligence graph", () => {
         reasonCodes: ["language_parsing:partial"],
         maxFiles: 100,
         maxBytes: 1_000_000,
+        maxFileBytes: 100_000,
+        maxTraversalDepth: 16,
         maxCandidates: 50,
         filesInspected: 4,
         bytesInspected: 4_096,
@@ -732,6 +734,8 @@ describe("foundational software intelligence graph", () => {
         reasonCodes: ["query_truncated"],
         maxFiles: 10,
         maxBytes: 10_000,
+        maxFileBytes: 1_000,
+        maxTraversalDepth: 8,
         maxCandidates: 5,
         filesInspected: 1,
         bytesInspected: 100,
@@ -780,6 +784,30 @@ describe("foundational software intelligence graph", () => {
       ...valid,
       retrieval: { ...valid.retrieval, filesInspected: valid.retrieval.maxFiles + 1 },
     })).toThrow("raw_retrieval_candidate_budget_exceeded");
+    for (const field of ["maxFileBytes", "maxTraversalDepth"] as const) {
+      const retrieval = { ...valid.retrieval } as Record<string, unknown>;
+      delete retrieval[field];
+      expect(() => createRawRetrievalRelationshipCandidate({
+        ...valid,
+        retrieval: retrieval as typeof valid.retrieval,
+      })).toThrow("raw_retrieval_candidate_budget_invalid");
+    }
+    expect(() => createRawRetrievalRelationshipCandidate({
+      ...valid,
+      retrieval: { ...valid.retrieval, maxFileBytes: 5_242_881 },
+    })).toThrow("raw_retrieval_candidate_budget_invalid");
+    expect(() => createRawRetrievalRelationshipCandidate({
+      ...valid,
+      retrieval: { ...valid.retrieval, maxTraversalDepth: 65 },
+    })).toThrow("raw_retrieval_candidate_budget_invalid");
+    expect(() => createRawRetrievalRelationshipCandidate({
+      ...valid,
+      retrieval: { ...valid.retrieval, unexpectedBound: 1 } as typeof valid.retrieval,
+    })).toThrow("raw_retrieval_candidate_budget_invalid");
+    expect(() => assertRawRetrievalRelationshipCandidateAuthority({
+      ...valid,
+      retrieval: { ...valid.retrieval, maxTraversalDepth: 7 },
+    }, authority)).toThrow("raw_retrieval_candidate_digest_mismatch");
     expect(() => createRawRetrievalRelationshipCandidate({
       ...valid,
       discovery: { ...valid.discovery, evidenceRefs: [] },

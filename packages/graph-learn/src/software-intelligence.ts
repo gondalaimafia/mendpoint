@@ -99,6 +99,8 @@ export type RawRetrievalRelationshipCandidateV1 = Readonly<{
     reasonCodes: string[];
     maxFiles: number;
     maxBytes: number;
+    maxFileBytes: number;
+    maxTraversalDepth: number;
     maxCandidates: number;
     filesInspected: number;
     bytesInspected: number;
@@ -257,8 +259,14 @@ export function createRawRetrievalRelationshipCandidate(
   exactUtc(input.observedAt, "raw_retrieval_candidate_observed_at_invalid");
 
   const retrieval = input.retrieval;
+  onlyKeys(retrieval, [
+    "reasonCodes", "maxFiles", "maxBytes", "maxFileBytes", "maxTraversalDepth",
+    "maxCandidates", "filesInspected", "bytesInspected", "candidatesInspected",
+  ], "raw_retrieval_candidate_budget_invalid");
   boundedInteger(retrieval.maxFiles, 1, 10_000, "raw_retrieval_candidate_budget_invalid");
   boundedInteger(retrieval.maxBytes, 1, 1_000_000_000, "raw_retrieval_candidate_budget_invalid");
+  boundedInteger(retrieval.maxFileBytes, 1, 5_242_880, "raw_retrieval_candidate_budget_invalid");
+  boundedInteger(retrieval.maxTraversalDepth, 1, 64, "raw_retrieval_candidate_budget_invalid");
   boundedInteger(retrieval.maxCandidates, 1, 50_000, "raw_retrieval_candidate_budget_invalid");
   boundedInteger(retrieval.filesInspected, 0, retrieval.maxFiles, "raw_retrieval_candidate_budget_exceeded");
   boundedInteger(retrieval.bytesInspected, 0, retrieval.maxBytes, "raw_retrieval_candidate_budget_exceeded");

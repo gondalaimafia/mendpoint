@@ -105,6 +105,19 @@ describe("bounded raw-retrieval fallback", () => {
     expect(result.relationshipCandidates).toEqual([]);
   });
 
+  it.each([
+    ["file bytes", { ...retrieval, maxFileBytes: 5_242_881 }],
+    ["traversal depth", { ...retrieval, maxTraversalDepth: 65 }],
+  ] as const)("rejects invalid %s bounds before a complete-graph shortcut", (_name, invalidRetrieval) => {
+    expect(() => resolveBoundedRawRetrievalFallback({
+      graphImpact: graphImpact({ basis: "complete", reasons: [], truncated: false }, "no_impact"),
+      rawReport: rawReport(),
+      authority,
+      observedAt: "2026-08-30T12:00:00.000Z",
+      retrieval: invalidRetrieval,
+    })).toThrow("raw_retrieval_bounds_invalid");
+  });
+
   it("adopts bounded findings under incomplete graph coverage as pending candidates", () => {
     const first = resolveBoundedRawRetrievalFallback({
       graphImpact: graphImpact({
@@ -139,6 +152,10 @@ describe("bounded raw-retrieval fallback", () => {
       tenantId: "tenant-a",
       repositoryId: "repo-a",
       parentGraphVersionId: graphVersionId,
+      retrieval: {
+        maxFileBytes: retrieval.maxFileBytes,
+        maxTraversalDepth: retrieval.maxTraversalDepth,
+      },
     });
   });
 
