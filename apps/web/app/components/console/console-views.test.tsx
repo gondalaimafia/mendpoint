@@ -129,7 +129,7 @@ describe("DS3 console views — content fidelity", () => {
     for (const label of ["All", "Needs review", "Failing", "Merged"]) {
       expect(html).toContain(label);
     }
-    expect(html).toContain("REGAUGE");
+    expect(html).toContain("FETTLER");
   });
 
   it("renders the PR review with an amber alert, Open on GitHub, and secondary review controls; the Approve CTA is the shell topbar", () => {

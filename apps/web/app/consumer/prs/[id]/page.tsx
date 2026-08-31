@@ -1,14 +1,25 @@
 import Link from "next/link";
 import {
   apiGet,
+  type ChangeImpactCoverage,
   type MigrationPr,
   type MigrationPrReview,
 } from "../../../../lib/api";
+import { ImpactLineageCard } from "../../../components/console/impact-lineage-card";
+import { buildImpactLineage, type ChangeImpactFinding } from "../../../components/console/impact-lineage";
 import { FeedbackButtons } from "./feedback";
 import { ReviewPanel } from "./reviews";
 import { parsePrEvidence } from "./evidence";
 
 export const dynamic = "force-dynamic";
+
+type ChangeDetail = {
+  createdAt?: string;
+  // Required: `changeDetailBody` always sends it. Declaring it optional let a
+  // body with no findings key render as a verified no-impact result.
+  findings: ChangeImpactFinding[];
+  impactCoverage?: ChangeImpactCoverage;
+};
 
 export default async function PrDetailPage({
   params,
@@ -25,12 +36,18 @@ export default async function PrDetailPage({
   } catch (e) {
     prError = e instanceof Error ? e.message : String(e);
   }
+  let change: ChangeDetail | null = null;
   if (pr) {
-    try {
-      reviews = (await apiGet<{ reviews: MigrationPrReview[] }>(`/prs/${id}/reviews`)).reviews;
-    } catch {
+    const [reviewsResult, changeResult] = await Promise.allSettled([
+      apiGet<{ reviews: MigrationPrReview[] }>(`/prs/${id}/reviews`),
+      apiGet<ChangeDetail>(`/changes/${pr.changeId}`),
+    ]);
+    if (reviewsResult.status === "fulfilled") {
+      reviews = reviewsResult.value.reviews;
+    } else {
       reviewError = "Review history is temporarily unavailable. Decisions are paused until it can be loaded.";
     }
+    change = changeResult.status === "fulfilled" ? changeResult.value : null;
   }
 
   if (prError || !pr) {
@@ -45,6 +62,12 @@ export default async function PrDetailPage({
   }
 
   const evidence = parsePrEvidence(pr.body);
+  const lineage = buildImpactLineage({
+    change,
+    consumerId: pr.consumerId,
+    prBody: pr.body,
+    prCoverageBasis: pr.coverage?.basis ?? null,
+  });
 
   return (
     <div>
@@ -61,6 +84,8 @@ export default async function PrDetailPage({
           </a>
         )}
       </div>
+
+      <ImpactLineageCard lineage={lineage} />
 
       <h2>Review evidence</h2>
       {evidence.complete ? (

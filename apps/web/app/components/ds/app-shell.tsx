@@ -35,13 +35,13 @@ const NAV: NavGroup[] = [
     items: [
       { id: "changes", label: "Breaking changes", icon: ShieldAlertIcon, meta: 6 },
       { id: "specs", label: "API specs", icon: FileJsonIcon, meta: 3 },
+      { id: "prs", label: "Pull requests", icon: GitPullRequestIcon, meta: 42 },
     ],
   },
   {
-    title: "Regauge",
+    title: "ReGauge",
     tone: "muted",
     items: [
-      { id: "prs", label: "Pull requests", icon: GitPullRequestIcon, meta: 42 },
       { id: "runs", label: "Runs", icon: PlayIcon, meta: "live" },
     ],
   },

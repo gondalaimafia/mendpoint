@@ -15,6 +15,7 @@ import {
   type LearningVerificationProducer,
 } from "@mendpoint/pipeline";
 import { redactSourceForModel } from "@mendpoint/shared";
+import { projectGovernedOutcomeToOrganizationMemory } from "./governed-learning-memory.js";
 
 /**
  * The single consent purpose the governed learning flywheel writes under. It is
@@ -40,6 +41,7 @@ export type GovernedLearningAdmissionResult = Readonly<{
   reason: string;
   recordId?: string;
   eventId?: string;
+  memoryProjection?: ReturnType<typeof projectGovernedOutcomeToOrganizationMemory>;
 }>;
 
 /**
@@ -224,7 +226,24 @@ export function admitGovernedLearningOutcome(
 
     // Idempotent: if this outcome was already admitted, do nothing further.
     if (getLearningRecord(facts.db, facts.tenantId, ids.learningRecordId)) {
-      return Object.freeze({ admitted: true, reason: "already_admitted", recordId: ids.learningRecordId, eventId });
+      const memoryProjection = projectGovernedOutcomeToOrganizationMemory({
+        db: facts.db,
+        tenantId: facts.tenantId,
+        product: facts.product,
+        repositoryId: facts.repositoryId,
+        taskType: facts.taskType,
+        migrationFamily: facts.specialization.migrationFamily,
+        outcomeStatus: facts.outcome.status,
+        reviewerDecision: facts.reviewerDecision,
+        reviewerPrincipalId: facts.reviewerPrincipalId,
+        reviewRationale: facts.reviewRationale,
+        eventId,
+        learningRecordId: ids.learningRecordId,
+        revision: facts.revision,
+        snapshotDigest: facts.snapshotDigest,
+        observedAt: facts.now,
+      });
+      return Object.freeze({ admitted: true, reason: "already_admitted", recordId: ids.learningRecordId, eventId, memoryProjection });
     }
 
     const splitGroupId = facts.sourceClass === "synthetic_ground_truth"
@@ -328,7 +347,24 @@ export function admitGovernedLearningOutcome(
       idempotencyKey: eventId,
       createdAt: facts.now,
     }, authority);
-    return Object.freeze({ admitted: true, reason: "admitted", recordId: admitted.learningRecordId, eventId });
+    const memoryProjection = projectGovernedOutcomeToOrganizationMemory({
+      db: facts.db,
+      tenantId: facts.tenantId,
+      product: facts.product,
+      repositoryId: facts.repositoryId,
+      taskType: facts.taskType,
+      migrationFamily: facts.specialization.migrationFamily,
+      outcomeStatus: facts.outcome.status,
+      reviewerDecision: facts.reviewerDecision,
+      reviewerPrincipalId: facts.reviewerPrincipalId,
+      reviewRationale: facts.reviewRationale,
+      eventId,
+      learningRecordId: admitted.learningRecordId,
+      revision: facts.revision,
+      snapshotDigest: facts.snapshotDigest,
+      observedAt: facts.now,
+    });
+    return Object.freeze({ admitted: true, reason: "admitted", recordId: admitted.learningRecordId, eventId, memoryProjection });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Object.freeze({ admitted: false, reason: `error:${message}` });

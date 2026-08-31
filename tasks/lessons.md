@@ -522,3 +522,7 @@
 **Mistake:** The lineage-key backfill ran only inside the column-add branch, so a crash after ALTER but before UPDATE made the partial migration permanent.
 **Correction:** Run authoritative NULL-row backfill independently and idempotently on every startup, preserving NULL when historical identity cannot be proven.
 **Rule:** Every multi-step migration must resume from each durable intermediate state. A newly present column is not evidence that its data migration completed.
+### 2026-08-31 — Prove the customer-visible path before calling a pipeline capable
+**Mistake:** I described Fettler's implemented components without first proving that a real production input had crossed every durable stage and produced the promised reviewable draft.
+**Correction:** Talal said to make the complete provider-change-to-reviewable-PR path real.
+**Rule:** A production capability exists only after one exact live input traverses every producer, claim, persistence, verification, authorization, and delivery boundary. Code presence, enabled flags, synthetic tests, and healthy processes are prerequisites, not capability proof.

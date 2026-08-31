@@ -33,6 +33,18 @@ name: Customer production backup watchdog
 #
 # workflow_dispatch is the manual path. No new secret or variable is introduced:
 # this reuses the backup workflow's existing app-scoped token and app binding.
+#
+# It also REMEDIATES, before it alerts
+# ------------------------------------
+# The dropped-cron problem above is a delivery problem, not a backup problem:
+# every scheduled backup run that fires succeeds. This workflow has strictly
+# better delivery than the `*/30` cron it watches, so on a proven-stale verdict
+# it dispatches ONE `Customer production backup` run, waits for it, re-measures,
+# and alerts only if the backup is STILL stale. Nothing about customer-backup.yml
+# changes: not its schedule, not its RPO, not its failure alert. Nothing here
+# relaxes either: the RPO and the freshness threshold are untouched, an
+# indeterminate verdict is never remediated, and a run that needed remediation
+# says so out loud on every such run so the dropped cron cannot become invisible.
 
 permissions:
   contents: read
@@ -94,11 +106,20 @@ jobs:
     # must not read production with an unreviewed script.
     if: ${{ needs.profile-gate.outputs.active == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Headroom for the bounded remediation waits below (<=3min to observe the
+    # dispatched run, <=6min for it to finish, <=5min for the re-read). Those
+    # waits are bounded INSIDE the step on purpose: a wait that ran into this
+    # job timeout would cancel the job, and `if: failure()` alert steps do not
+    # run on a cancelled job — the remediation would have muted the alarm.
+    timeout-minutes: 25
     environment: customer-production-backup
     permissions:
       contents: read
       issues: write
+      # Dispatching customer-backup.yml with the job's own GITHUB_TOKEN.
+      # workflow_dispatch is one of the two events exempt from the rule that
+      # GITHUB_TOKEN-triggered events create no new run, so this really starts one.
+      actions: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -182,6 +203,7 @@ jobs:
       # the failure re-surfaced two steps later as a missing artifact, which is
       # the same "could not look" defect this watchdog exists to prevent.
       - name: Judge backup freshness against the policy RPO
+        id: judge
         if: ${{ !cancelled() }}
         shell: bash
         env:
@@ -190,7 +212,154 @@ jobs:
           MENDPOINT_BACKUP_FRESHNESS_REPORT_PATH: test-results/customer-backup-watchdog/verdict.json
         run: |
           set -euo pipefail
-          node --import tsx scripts/check-customer-backup-freshness.ts
+          # This exit is DEFERRED, not discarded, and this is the only step whose
+          # failure is deferred. `Fail unless the final verdict is provably fresh`
+          # below is the single place the job's pass/fail is decided, and it
+          # decides it from the verdict ON DISK, not from this status. Delete the
+          # remediation step entirely and a stale backup still fails the job
+          # there — which is the property that makes deferring safe rather than a
+          # weakening of the alarm.
+          #
+          # `|| status=$?` for the same reason the read step uses it: the exit of
+          # this one command is the data we need, and this form reads identically
+          # under the runner's own `--noprofile --norc -e -o pipefail`.
+          status=0
+          node --import tsx scripts/check-customer-backup-freshness.ts || status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "freshness judge exit status: $status"
+
+      # Remediation, never relaxation. The RPO is unchanged, the freshness
+      # threshold is unchanged, and the `*/30` backup cron is untouched and still
+      # does the work whenever it fires. What changes is that a watchdog which
+      # can SEE a stale backup now also makes one happen before it decides.
+      #
+      # Why the fix lives here: the defect is DELIVERY, not backup. Every
+      # scheduled backup run that fires succeeds; GitHub simply drops the `*/30`
+      # cron for hours at a time (observed gaps of 6h and 8.4h against a 3600s
+      # RPO). This workflow already has strictly better delivery than that cron —
+      # hourly at :29 PLUS an event-delivered workflow_run path — so the reliable
+      # thing dispatches the unreliable one.
+      #
+      # Only `stale` is remediated. `indeterminate` means we could not measure;
+      # a backup dispatch does not answer that question, so it alerts as it does
+      # today, unchanged.
+      #
+      # One dispatch per watchdog run, structurally: a single `gh workflow run`
+      # on a straight-line path with no loop around it. Two overlapping watchdog
+      # runs stay safe on the machine because customer-backup.yml pins itself to
+      # `concurrency: customer-production-backup` with cancel-in-progress false,
+      # so a second dispatch queues behind the first instead of running beside it.
+      #
+      # This step never decides the job. It exits non-zero only for its OWN
+      # failures (dispatch refused, run never observed, run unsuccessful), which
+      # must be reported rather than swallowed; a backup that is STILL stale
+      # afterwards is reported by the assertion step, from the verdict on disk.
+      - name: Remediate a stale backup with one dispatch, then re-measure
+        id: remediate
+        if: ${{ !cancelled() && steps.judge.outputs.status != '0' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BACKUP_WORKFLOW: customer-backup.yml
+          BACKUP_REF: ${{ github.event.repository.default_branch }}
+          FLY_API_TOKEN: ${{ secrets.MENDPOINT_CUSTOMER_BACKUP_FLY_TOKEN }}
+          CUSTOMER_APP: ${{ vars.MENDPOINT_CUSTOMER_FLY_APP }}
+          MENDPOINT_BACKUP_EVIDENCE_CAPTURE_PATH: test-results/customer-backup-watchdog/evidence-capture.json
+          MENDPOINT_BACKUP_FRESHNESS_REPORT_PATH: test-results/customer-backup-watchdog/verdict.json
+        run: |
+          set -euo pipefail
+          report="$MENDPOINT_BACKUP_FRESHNESS_REPORT_PATH"
+          capture="$MENDPOINT_BACKUP_EVIDENCE_CAPTURE_PATH"
+
+          # Written INTO the retained verdict so "backups were inside the RPO
+          # only because the watchdog forced one" survives in the 90-day
+          # artifact. Without this the cron unreliability becomes invisible the
+          # moment remediation starts working, which is the exact kind of
+          # silence this watchdog exists to end.
+          record() {
+            tmp="$(mktemp)"
+            jq --argjson remediation "$1" '. + {remediation: $remediation}' "$report" >"$tmp"
+            mv "$tmp" "$report"
+          }
+
+          state="$(jq -r '.state // "unknown"' "$report" 2>/dev/null || echo unknown)"
+          if [ "$state" != "stale" ]; then
+            echo "no dispatch: verdict state is $state, which a backup run cannot answer"
+            exit 0
+          fi
+
+          echo "::warning title=Customer backup was stale::The newest verified backup was PAST the RPO, so the watchdog is dispatching one Customer production backup run. GitHub is dropping the */30 backup cron; this keeps the RPO but does not fix that."
+
+          # Taken BEFORE the dispatch, so the run waited on below cannot be an
+          # older one that merely happened to still be listed.
+          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          dispatch=0
+          gh workflow run "$BACKUP_WORKFLOW" --repo "$GH_REPO" --ref "$BACKUP_REF" || dispatch=$?
+          if [ "$dispatch" -ne 0 ]; then
+            echo "customer_backup_remediation_dispatch_failed status=$dispatch" >&2
+            record "$(jq -nc --argjson status "$dispatch" \
+              '{attempted:true,dispatched:false,outcome:"dispatch_failed",dispatchStatus:$status}')"
+            exit 1
+          fi
+
+          # Bounded INSIDE the step (<=3min), never by the job timeout: a wait
+          # that hit `timeout-minutes` would CANCEL the job, and `if: failure()`
+          # steps do not run on a cancelled job, so the remediation would have
+          # muted the very alarm it is supposed to protect.
+          run_id=""
+          for _ in $(seq 1 18); do
+            run_id="$(gh run list --repo "$GH_REPO" --workflow "$BACKUP_WORKFLOW" \
+              --event workflow_dispatch --limit 20 --json databaseId,createdAt \
+              --jq "[.[] | select(.createdAt >= \"$started\")] | first | .databaseId // empty" || true)"
+            if [ -n "$run_id" ]; then break; fi
+            sleep 10
+          done
+          if [ -z "$run_id" ]; then
+            echo "customer_backup_remediation_run_not_observed" >&2
+            record '{"attempted":true,"dispatched":true,"outcome":"run_not_observed"}'
+            exit 1
+          fi
+
+          # <=6min. Observed backup runs complete in about 40 seconds.
+          conclusion=""
+          for _ in $(seq 1 36); do
+            observed="$(gh run view "$run_id" --repo "$GH_REPO" --json status,conclusion \
+              --jq '.status + " " + (.conclusion // "")' || true)"
+            if [ "${observed%% *}" = "completed" ]; then
+              conclusion="${observed#* }"
+              break
+            fi
+            sleep 10
+          done
+          if [ "$conclusion" != "success" ]; then
+            echo "customer_backup_remediation_run_unsuccessful conclusion=${conclusion:-not_completed}" >&2
+            record "$(jq -nc --arg id "$run_id" --arg conclusion "${conclusion:-not_completed}" \
+              '{attempted:true,dispatched:true,runId:$id,outcome:"backup_run_unsuccessful",conclusion:$conclusion}')"
+            exit 1
+          fi
+
+          # A successful backup RUN is strictly weaker than the fleet being back
+          # inside its RPO, so the answer still comes from re-reading the machine
+          # and re-running the same judge. This read is deliberately identical to
+          # the one in `Read backup evidence from the customer machine`: the
+          # remote `sh -c` expansion, the `</dev/null`, the `timeout` and the
+          # `|| status=$?` were each a fixed defect, and a second copy that
+          # drifted would re-open all four here. A test asserts they are the same.
+          : > "$capture"
+          status=0
+          timeout 300 flyctl ssh console --app "$CUSTOMER_APP" --pty=false \
+            --command "sh -c 'cat \"\$MENDPOINT_BACKUP_EVIDENCE_PATH\"'" \
+            </dev/null >"$capture" 2>"$(dirname "$capture")/recheck-stderr.log" \
+            || status=$?
+          echo "re-read exit status: $status, captured bytes: $(wc -c <"$capture")"
+
+          judge=0
+          MENDPOINT_BACKUP_EVIDENCE_CAPTURE_STATUS="$status" \
+            node --import tsx scripts/check-customer-backup-freshness.ts || judge=$?
+          record "$(jq -nc --arg id "$run_id" \
+            '{attempted:true,dispatched:true,runId:$id,outcome:"backup_run_completed"}')"
+          echo "post-remediation judge exit status: $judge"
 
       # The meta case: the judge itself did not run to completion, so nothing
       # named a reason. `watchdog_produced_no_verdict` is deliberately NOT a
@@ -225,6 +394,42 @@ jobs:
           }
           JSON
           echo "wrote meta verdict: watchdog_produced_no_verdict"
+
+      # The ONE place this job's pass/fail is decided, and it decides from the
+      # verdict document rather than from any step's exit code. Remove the
+      # remediation step entirely and a stale backup still fails here, still
+      # reaches `if: failure()`, and still opens the issue — so deferring the
+      # judge's exit above cannot become a swallowed alarm.
+      #
+      # `!cancelled()` for the same reason the judge uses it: a read that died
+      # outright must still be judged, not skipped.
+      - name: Fail unless the final verdict is provably fresh
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          MENDPOINT_BACKUP_FRESHNESS_REPORT_PATH: test-results/customer-backup-watchdog/verdict.json
+        run: |
+          set -euo pipefail
+          report="$MENDPOINT_BACKUP_FRESHNESS_REPORT_PATH"
+          if [ ! -s "$report" ]; then
+            echo "customer_backup_watchdog_no_verdict" >&2
+            exit 1
+          fi
+          state="$(jq -r '.state // "unknown"' "$report")"
+          dispatched="$(jq -r '.remediation.dispatched // false' "$report")"
+          # `fresh` is the only passing state. `stale` and every `indeterminate`
+          # reason fail here exactly as they failed before remediation existed.
+          if [ "$state" != "fresh" ]; then
+            echo "customer_backup_not_fresh state=$state" >&2
+            exit 1
+          fi
+          # Green, but never silent. A run that reached its RPO only because the
+          # watchdog forced a backup IS the symptom of the dropped cron, and it
+          # is annotated on every such run so that unreliability stays visible.
+          if [ "$dispatched" = "true" ]; then
+            echo "::warning title=Backup freshness required remediation::Backups are inside the RPO only because this watchdog dispatched one. GitHub dropped the scheduled */30 backup cron."
+          fi
+          echo "customer_backup_final state=$state remediated=$dispatched"
 
       - name: Retain the redacted freshness verdict
         if: ${{ always() }}

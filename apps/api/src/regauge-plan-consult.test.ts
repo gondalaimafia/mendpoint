@@ -99,6 +99,7 @@ describe("consultRegaugeOrganizationMemory", () => {
   it("declares not_consulted when no memory provider is supplied", () => {
     const result = consultRegaugeOrganizationMemory({
       tenantId: "tenant-a",
+      repositoryIds: ["repo-a"],
       hardPolicy: { tenantId: "tenant-a", id: "policy-1", directive: "no force push" },
       records: null,
     });
@@ -112,12 +113,14 @@ describe("consultRegaugeOrganizationMemory", () => {
   it("keeps confirmed memory subordinate to hard policy", () => {
     const result = consultRegaugeOrganizationMemory({
       tenantId: "tenant-a",
+      repositoryIds: ["repo-a"],
       hardPolicy: { tenantId: "tenant-a", id: "policy-1", directive: "no force push" },
       records: [{
         tenantId: "tenant-a",
         memoryId: "om-1",
         recordId: "omr-1",
         status: "ACTIVE",
+        scope: "repository:repo-a",
         statement: "prefer squash merges",
       }],
     });
@@ -134,10 +137,12 @@ describe("consultRegaugeOrganizationMemory", () => {
       memoryId: `om-${n}`,
       recordId: `omr-${n}`,
       status: "ACTIVE" as const,
+      scope: "repository:repo-a",
       statement: `convention ${n}`,
     });
     const result = consultRegaugeOrganizationMemory({
       tenantId: "tenant-a",
+      repositoryIds: ["repo-a"],
       hardPolicy: { tenantId: "tenant-a", id: "policy-1", directive: "no force push" },
       records: [active(3), active(1), active(2)],
     });
@@ -146,5 +151,35 @@ describe("consultRegaugeOrganizationMemory", () => {
     // All three ACTIVE conventions are outranked by hard policy and must all be
     // surfaced; the pre-fix `.find` dropped records 2..N.
     expect(result.overriddenMemoryIds).toEqual(["om-1", "om-2", "om-3"]);
+  });
+
+  // The governed-outcome projection mints a `repository:<id>`-scoped
+  // REVIEW_PREFERENCE candidate per reviewed outcome, and the memory provider is
+  // tenant-wide, so without a scope filter another repository's preference reaches
+  // this plan. `inferred[0]` is chosen by sorting on recordId (a sha256), so the
+  // winner would be arbitrary rather than merely wrong. Deleting the
+  // `organizationMemoryScopeApplies` filter in regauge-plan-consult.ts makes
+  // `om-other` the applied memory here (its recordId sorts first), failing both
+  // assertions.
+  it("ignores memory scoped to a repository this plan is not about", () => {
+    const candidate = (id: string, scope: string) => ({
+      tenantId: "tenant-a",
+      memoryId: `om-${id}`,
+      recordId: `omr-${id}`,
+      status: "MEMORY_CANDIDATE" as const,
+      scope,
+      statement: `convention ${id}`,
+    });
+    const result = consultRegaugeOrganizationMemory({
+      tenantId: "tenant-a",
+      repositoryIds: ["repo-b"],
+      hardPolicy: { tenantId: "tenant-a", id: "policy-1", directive: "no force push" },
+      records: [candidate("aaa-other", "repository:repo-a"), candidate("zzz-mine", "repository:repo-b")],
+    });
+    expect(result.consulted).toBe(true);
+    if (!result.consulted) throw new Error("expected a consulted result");
+    // Hard policy still wins, but only repo-b's candidate participated at all: the
+    // other repository's candidate is absent from the record of what was considered.
+    expect(result.overriddenMemoryIds).toEqual(["om-zzz-mine"]);
   });
 });

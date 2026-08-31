@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  bindWardenCandidateDeliveryScope,
   bindWardenCandidateDeliveryIntent,
   completeJob,
   failJob,
@@ -18,7 +19,10 @@ import {
   type ExactDraftDeliveryResult,
   type GitHubDelivery,
 } from "@mendpoint/github";
-import { readWardenApprovalArtifact } from "@mendpoint/agent";
+import {
+  parseFettlerProviderChangeEvidence,
+  readWardenApprovalArtifact,
+} from "@mendpoint/agent";
 import {
   CandidateReviewEvidenceSchema,
   type CandidateReviewEvidence,
@@ -39,8 +43,10 @@ class WardenCandidateDeliveryFinalizationError extends Error {
 
 export type ResolveWardenCandidateRepository = (input: Readonly<{
   tenantId: string; repositoryId: string; snapshotId: string; baseBranch: string; expectedBaseRevision: string;
-}>) => Readonly<{ owner: string; repo: string; baseBranch: string; remoteRepositoryId?: number; installationId?: number }> |
-  Promise<Readonly<{ owner: string; repo: string; baseBranch: string; remoteRepositoryId?: number; installationId?: number }>>;
+}>) => Readonly<{ owner: string; repo: string; baseBranch: string; snapshotExpiresAt: string;
+  remoteRepositoryId?: number; installationId?: number }> |
+  Promise<Readonly<{ owner: string; repo: string; baseBranch: string; snapshotExpiresAt: string;
+    remoteRepositoryId?: number; installationId?: number }>>;
 
 export type WardenCandidateDeliveryWorkerInput = Readonly<{
   db: AppDb;
@@ -162,7 +168,7 @@ function reviewEvidenceBody(review: CandidateReviewEvidence): string[] {
         `Verification output digests: ${edit.verification.commandOutputSha256.join(", ")}`,
       ]);
   return [
-    "Reviewed change evidence",
+    "Proposed migration",
     `Summary: ${singleLine(review.summary)}`,
     ...edits,
     "Objective verification",
@@ -175,6 +181,36 @@ function reviewEvidenceBody(review: CandidateReviewEvidence): string[] {
   ];
 }
 
+function providerChangeBody(artifact: Record<string, unknown>): string[] {
+  if (artifact.fettlerProviderChange === undefined) return [];
+  const evidence = parseFettlerProviderChangeEvidence(artifact.fettlerProviderChange);
+  return [
+    "Provider change",
+    `Provider: ${singleLine(evidence.providerSlug)}`,
+    `Change: ${singleLine(evidence.changeId)}`,
+    `Provider versions: ${singleLine(evidence.fromVersionLabel)} (${singleLine(evidence.fromVersionId)}) to ${singleLine(evidence.toVersionLabel)} (${singleLine(evidence.toVersionId)})`,
+    `Provider content hash: ${evidence.contentHash}`,
+    `Impact evidence: ${evidence.impactEvidenceDigest}`,
+    `Graph version: ${evidence.graphVersionId ?? "raw retrieval fallback"}`,
+    `Graph context: ${evidence.graphContextArtifactId ?? "not available"}`,
+    "",
+    "What changed",
+    singleLine(evidence.whatChanged),
+    "",
+    "Why this code is affected",
+    singleLine(evidence.whyAffected),
+    "",
+    "What we know",
+    ...evidence.knownFacts.map((fact) => `Known: ${singleLine(fact)}`),
+    "",
+    "What we do not know",
+    ...(evidence.unknowns.length
+      ? evidence.unknowns.map((unknown) => `Unknown: ${singleLine(unknown)}`)
+      : ["Unknown: no unresolved unknown was recorded in the bounded impact evidence."]),
+    "",
+  ];
+}
+
 function deliveryIntent(
   delivery: WardenCandidateDeliveryRecord,
   artifact: Record<string, unknown>,
@@ -184,6 +220,9 @@ function deliveryIntent(
 ): ExactDraftDeliveryInput {
   if (repository.baseBranch !== delivery.baseBranch) throw new Error("warden_candidate_delivery_base_branch_mismatch");
   const suffix = createHash("sha256").update(delivery.runId).digest("hex").slice(0, 24);
+  const branchProduct = artifact.schemaVersion === 5 || artifact.schemaVersion === 6
+    ? "fettler"
+    : "warden";
   const title = `Apply approved Fettler repair ${delivery.runId}`;
   const body = [
     "This draft contains only the exact files approved in Fettler review.",
@@ -194,13 +233,14 @@ function deliveryIntent(
     `Expected base revision: ${delivery.expectedBaseRevision}`,
     `Approval seal: ${delivery.sealedSha256}`,
     "",
+    ...providerChangeBody(artifact),
     ...reviewEvidenceBody(review),
     ...(report ? ["", "Verification summary:", report.slice(0, 4_000)] : []),
     "",
     "This pull request is a draft. Mendpoint does not merge or deploy it.",
   ].join("\n");
   return Object.freeze({ owner: repository.owner, repo: repository.repo, baseBranch: delivery.baseBranch,
-    expectedBaseSha: delivery.expectedBaseRevision, branch: `mendpoint/warden-${suffix}`,
+    expectedBaseSha: delivery.expectedBaseRevision, branch: `mendpoint/${branchProduct}-${suffix}`,
     commitMessage: title, commitDate: delivery.requestedAt, title, body, files: exactFiles(artifact) });
 }
 
@@ -259,13 +299,27 @@ export async function runWardenCandidateDelivery(input: WardenCandidateDeliveryW
     const artifact = readWardenApprovalArtifact({ tenantId: input.job.tenant_id, path: delivery.sealedPath,
       sha256: delivery.sealedSha256, env: input.artifactEnv });
     assertArtifact(delivery, artifact);
+    bindWardenCandidateDeliveryScope(input.db, {
+      tenantId: delivery.tenantId,
+      deliveryId: delivery.id,
+      sealedArtifact: artifact,
+    });
     const reviewedChanges = reviewEvidence(artifact);
     const repository = await input.resolveRepository({ tenantId: delivery.tenantId, repositoryId: delivery.repositoryId,
       snapshotId: delivery.snapshotId, baseBranch: delivery.baseBranch,
       expectedBaseRevision: delivery.expectedBaseRevision });
+    const deliveryAttemptAt = now();
+    const snapshotExpiresAt = Date.parse(repository.snapshotExpiresAt);
+    if (!Number.isFinite(snapshotExpiresAt) || snapshotExpiresAt <= Date.parse(deliveryAttemptAt)) {
+      throw new Error("warden_candidate_delivery_snapshot_expired");
+    }
     const intent = deliveryIntent(delivery, artifact, repository, run.report_md, reviewedChanges);
     bindWardenCandidateDeliveryIntent(input.db, { tenantId: delivery.tenantId, deliveryId: delivery.id,
-      intentDigest: intentDigest(intent), branchName: intent.branch, observedAt: now() });
+      intentDigest: intentDigest(intent), branchName: intent.branch, observedAt: deliveryAttemptAt });
+    const remoteAttemptAt = now();
+    if (Date.parse(repository.snapshotExpiresAt) <= Date.parse(remoteAttemptAt)) {
+      throw new Error("warden_candidate_delivery_snapshot_expired");
+    }
     const remote = await input.github.deliverExactDraft(intent);
     try {
       // Once the remote call returns, GitHub may already contain the draft.
