@@ -4011,11 +4011,21 @@ if (job.type === "warden.candidate.cleanup") {
                   const endpointKey = payload.endpointKey?.trim() ?? "";
                   let graphDb: import("@mendpoint/graph-learn").GraphLearnDb | undefined;
                   let closeGraph: (() => void) | undefined;
+                  // `resolveTenantGraphHandle` names five distinct causes
+                  // (path_missing, path_ephemeral, file_missing, empty_tenant_view,
+                  // open_failed). Dropping them collapsed every one into a bare
+                  // `store_not_available`, leaving an operator no way to tell an
+                  // unset GRAPH_LEARN_DB from a graph that failed to open. Carry the
+                  // cause as `detail`; the section's `reason` is unchanged so the
+                  // fail-closed scan still matches on `reason` alone.
+                  let graphUnavailableReason: string | undefined;
                   if (endpointKey) {
                     const handle = resolveTenantGraphHandle({ tenantId: job.tenant_id });
                     if (handle.status === "ready") {
                       graphDb = handle.graphDb;
                       closeGraph = handle.close;
+                    } else {
+                      graphUnavailableReason = handle.reason;
                     }
                   }
                   try {
@@ -4036,6 +4046,7 @@ if (job.type === "warden.candidate.cleanup") {
                         snapshotId: binding.snapshotId,
                       },
                       ...(graphDb ? { graphDb } : {}),
+                      ...(graphUnavailableReason ? { graphUnavailableReason } : {}),
                     });
                     if (standing.status === "loaded") {
                       inheritedContext = standing.injection;

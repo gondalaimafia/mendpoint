@@ -89,12 +89,38 @@ export type NotConsulted<R extends string> = Readonly<{ status: "not_consulted";
  */
 export type Unreadable<T> = Readonly<{ status: "unreadable"; reason: string } & T>;
 
+/**
+ * Why the graph section was not consulted. The members split into two groups and
+ * the split is load-bearing: an ABSENCE means there was genuinely nothing to look
+ * for, a FAILURE means we meant to look and could not. `classifyResumeStanding`
+ * (apps/worker/src/mission-resume.ts) fails closed on the failures and only on the
+ * failures.
+ *
+ * Adding a member here without also adding it to that scan makes it default to the
+ * reassuring side — that is the third-state defect (docs/agents/FAILURE_MODES.md
+ * §1) and it is exactly how a dangling graph-version pin once read as "loaded".
+ * Classify every new member in one of the two groups below.
+ */
 export type SectionNotConsultedReason =
-  | "store_not_available"
-  | "not_applicable_to_task"
+  // Legitimate absences: nothing was pinned, nothing was asked.
   | "graph_version_absent"
   | "endpoint_key_absent"
+  // Failures to look: these MUST fail closed.
+  | "store_not_available"
+  | "graph_repository_unresolved"
+  | "graph_version_unresolvable"
   | "graph_projection_failed";
+
+/**
+ * The graph section's not-consulted arm. `detail` NARROWS `reason` for diagnosis
+ * (e.g. which tenant-graph-handle failure produced `store_not_available`); it never
+ * replaces or widens it, so fail-closed consumers keep matching on `reason` alone.
+ */
+export type GraphNotConsulted = Readonly<{
+  status: "not_consulted";
+  reason: SectionNotConsultedReason;
+  detail?: string;
+}>;
 
 /**
  * Why a section was not consulted. `no_mission_bound` is DISTINCT from
@@ -242,7 +268,7 @@ export type InheritedContextEnvelope = Readonly<{
   tenantId: string;
   missionIdentity: MissionIdentity;
   task: TaskDescriptor;
-  graphProjection: Consulted<{ projection: GraphProjection }> | NotConsulted<SectionNotConsultedReason>;
+  graphProjection: Consulted<{ projection: GraphProjection }> | GraphNotConsulted;
   relevantHistory: Consulted<{ entries: readonly HistoryEntry[] }> | NotConsulted<MissionSectionNotConsultedReason>;
   activeDecisions: Consulted<{ entries: readonly DecisionEntry[] }> | NotConsulted<MissionSectionNotConsultedReason>;
   relevantOrgMemory: OrgMemorySection;
@@ -431,7 +457,7 @@ export type HardPolicySource =
 
 export type GraphSource =
   | Readonly<{ consulted: true; impact: FettlerEndpointImpactResult; maxBytes?: number }>
-  | Readonly<{ consulted: false; reason: SectionNotConsultedReason }>;
+  | Readonly<{ consulted: false; reason: SectionNotConsultedReason; detail?: string }>;
 
 export type MissionContextInput = Readonly<{
   tenantId: string;
@@ -651,7 +677,11 @@ function buildGraphSection(
   source: GraphSource,
 ): InheritedContextEnvelope["graphProjection"] {
   if (!source.consulted) {
-    return Object.freeze({ status: "not_consulted", reason: source.reason });
+    return Object.freeze({
+      status: "not_consulted",
+      reason: source.reason,
+      ...(source.detail ? { detail: source.detail } : {}),
+    });
   }
   const impact = source.impact;
   assertTenant(tenantId, impact.tenantId);
@@ -1107,7 +1137,8 @@ export function renderMissionContext(envelope: InheritedContextEnvelope): Compil
       }),
     );
   } else {
-    graphLines.push(`(reason: ${envelope.graphProjection.reason})`);
+    const detail = envelope.graphProjection.detail;
+    graphLines.push(`(reason: ${envelope.graphProjection.reason}${detail ? ` detail=${detail}` : ""})`);
   }
   sections.push(graphLines);
 
