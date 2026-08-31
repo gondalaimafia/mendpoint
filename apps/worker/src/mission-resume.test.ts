@@ -26,6 +26,7 @@ import { classifyResumeStanding, resolveResumeContext } from "./mission-resume.j
 const T0 = "2026-01-01T00:00:00.000Z";
 const SHA = "1".repeat(40);
 const MANIFEST = "a".repeat(64);
+const PIN = `sgv1:${"a".repeat(64)}`;
 const opened: Array<{ db: AppDb; dir: string }> = [];
 
 afterEach(() => {
@@ -160,19 +161,72 @@ describe("classifyResumeStanding (pure, fail-closed three-state)", () => {
     expect(standing.reason).toBe("graph_projection_failed:graph");
   });
 
-  it("graph_version_absent and endpoint_key_absent stay legitimate absences", () => {
-    expect(
-      classifyResumeStanding(
-        envelope({ graphProjection: { status: "not_consulted", reason: "graph_version_absent" } }),
+  // CONTROL: a graph-version PIN is not inherited content. With a pin present,
+  // `graph_version_absent` and `endpoint_key_absent` must STILL classify as the
+  // honest absences they name. Restoring the `missionIdentity.graphVersionId`
+  // shortcut in hasInheritedContent makes both of these die as "loaded" — which
+  // is exactly how a not-consulted graph section used to read as reassuring.
+  it("CONTROL: graph_version_absent and endpoint_key_absent stay absences even with a pin", () => {
+    const pinned = {
+      missionId: "m1",
+      product: "fettler",
+      objective: "o",
+      repositoryId: "r1",
+      snapshotId: "snapA",
+      graphVersionId: PIN,
+    };
+    for (const reason of ["graph_version_absent", "endpoint_key_absent"] as const) {
+      // Unpinned: the trivially-true shape the original fixture covered.
+      expect(
+        classifyResumeStanding(envelope({ graphProjection: { status: "not_consulted", reason } }), true).kind,
+      ).toBe("no_prior_context");
+      // Pinned: the shape that actually distinguishes content from intent.
+      expect(
+        classifyResumeStanding(
+          envelope({
+            missionIdentity: pinned,
+            graphProjection: { status: "not_consulted", reason },
+          } as never),
+          true,
+        ).kind,
+      ).toBe("no_prior_context");
+    }
+  });
+
+  // CONTROL: the two reasons that mean "we meant to consult the graph and could
+  // not". Reclassifying either as an absence in GRAPH_REASON_DISPOSITION makes
+  // this die.
+  it("CONTROL: graph_version_unresolvable and graph_repository_unresolved fail closed", () => {
+    for (const reason of ["graph_version_unresolvable", "graph_repository_unresolved"] as const) {
+      const standing = classifyResumeStanding(
+        envelope({
+          missionIdentity: {
+            missionId: "m1", product: "fettler", objective: "o",
+            repositoryId: "r1", snapshotId: "snapA", graphVersionId: PIN,
+          },
+          graphProjection: { status: "not_consulted", reason },
+        } as never),
         true,
-      ).kind,
-    ).toBe("no_prior_context");
-    expect(
-      classifyResumeStanding(
-        envelope({ graphProjection: { status: "not_consulted", reason: "endpoint_key_absent" } }),
-        true,
-      ).kind,
-    ).toBe("no_prior_context");
+      );
+      expect(standing.kind).toBe("context_not_loaded");
+      if (standing.kind !== "context_not_loaded") throw new Error("unreachable");
+      expect(standing.reason).toBe(`${reason}:graph`);
+    }
+  });
+
+  // CONTROL: a reason nobody classified must fail closed rather than fall through
+  // to the reassuring side. Changing reasonDisposition's fallback to "absence"
+  // makes this die.
+  it("CONTROL: an unclassified not_consulted reason fails closed", () => {
+    const standing = classifyResumeStanding(
+      envelope({
+        graphProjection: { status: "not_consulted", reason: "some_reason_added_later" },
+      } as never),
+      true,
+    );
+    expect(standing.kind).toBe("context_not_loaded");
+    if (standing.kind !== "context_not_loaded") throw new Error("unreachable");
+    expect(standing.reason).toBe("some_reason_added_later:graph");
   });
 
   it("CONTROL: a pre-section envelope does not throw; missing artifacts is context_not_loaded", () => {
@@ -202,8 +256,24 @@ describe("classifyResumeStanding (pure, fail-closed three-state)", () => {
 });
 
 describe("resolveResumeContext (real stores)", () => {
-  it("loads and binds a graph-pin-only mission after reopening durable state", () => {
+  // The pin is carried onto the envelope, the injection and the refs, and it
+  // survives a reopen of the durable state. What makes this standing `loaded` is
+  // the organization memory below, NOT the pin: a pin records which graph version
+  // the mission is bound to, never that the graph was read. The fixture used to
+  // omit the memory, so this test asserted that a pin alone was inherited content
+  // - the shortcut that let every unconsulted graph section read as `loaded`.
+  it("binds and renders a mission graph pin after reopening durable state", () => {
     const initial = fixture();
+    createExplicitMemory(initial, {
+      tenantId: "t1",
+      category: "CODING_CONVENTION",
+      scope: "imports",
+      subjectKey: "imports",
+      statement: "use the internal auth client, never direct OAuth",
+      actorPrincipalId: "human-1",
+      reason: "org convention",
+      at: T0,
+    });
     bindMissionGraphVersion(initial, {
       tenantId: "t1",
       missionId: "m1",
@@ -242,6 +312,39 @@ describe("resolveResumeContext (real stores)", () => {
       repositoryId: null,
       snapshotId: null,
       graphVersionId: "sgv1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+  });
+
+  // CONTROL: the same mission with the pin and NOTHING else. A graph-version pin
+  // is intent to consult, not content that was read, so this is an honest
+  // `no_prior_context` - the envelope still carries the pin. Restoring the
+  // `missionIdentity.graphVersionId` shortcut in hasInheritedContent makes this
+  // die as `loaded`.
+  it("CONTROL: a graph pin with nothing read is no_prior_context, not loaded", () => {
+    const db = fixture();
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      graphVersionId: PIN,
+      actorPrincipalId: "human-1",
+      eventId: "graph-bind-only",
+      idempotencyKey: "graph-bind-only",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const standing = resolveResumeContext(db, {
+      tenantId: "t1",
+      currentRunStatus: "running",
+      missionId: "m1",
+      task: TASK,
+      fallback: FALLBACK,
+    });
+    expect(standing.status).toBe("no_prior_context");
+    if (standing.status !== "no_prior_context") throw new Error("unreachable");
+    expect(standing.envelope.missionIdentity.graphVersionId).toBe(PIN);
+    expect(standing.envelope.graphProjection).toEqual({
+      status: "not_consulted",
+      reason: "endpoint_key_absent",
     });
   });
 
@@ -441,6 +544,35 @@ describe("resolveResumeContext (real stores)", () => {
     expect(standing.status).toBe("context_not_loaded");
     if (standing.status !== "context_not_loaded") throw new Error("unreachable");
     expect(standing.reason).toBe("store_not_available:graph");
+  });
+
+  // CONTROL: resolveResumeContext threads the handle failure cause into the
+  // compiled section. Dropping `graphUnavailableReason` from the buildMissionContext
+  // call makes the `detail` assertion die; the standing stays fail-closed either
+  // way, which is the point - `detail` narrows the reason, it never replaces it.
+  it("CONTROL: an unavailable graph handle names its cause on the resumed envelope", () => {
+    const db = fixture();
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      graphVersionId: PIN,
+      actorPrincipalId: "human-1",
+      eventId: "graph-bind-detail",
+      idempotencyKey: "graph-bind-detail",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const standing = resolveResumeContext(db, {
+      tenantId: "t1",
+      currentRunStatus: "running",
+      missionId: "m1",
+      task: { ...TASK, endpointKey: "POST /v1/charges" },
+      fallback: { objective: "do it", repositoryId: "r1", snapshotId: null },
+      graphUnavailableReason: "path_missing",
+    });
+    expect(standing.status).toBe("context_not_loaded");
+    if (standing.status !== "context_not_loaded") throw new Error("unreachable");
+    expect(standing.reason).toBe("store_not_available:graph:path_missing");
   });
 
   it("disagreeing mission and fallback repository ids fail closed on resume", () => {

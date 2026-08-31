@@ -31,7 +31,12 @@ import {
   type Mission,
 } from "@mendpoint/db";
 import type { InheritedContextInjection } from "@mendpoint/agent";
-import type { ContextRef, InheritedContextEnvelope } from "@mendpoint/pipeline";
+import type {
+  ContextRef,
+  InheritedContextEnvelope,
+  MissionSectionNotConsultedReason,
+  SectionNotConsultedReason,
+} from "@mendpoint/pipeline";
 import type { GraphLearnDb } from "@mendpoint/graph-learn";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
 
@@ -55,6 +60,8 @@ export type ResumeContextParams = Readonly<{
   fallback: Readonly<{ objective: string; repositoryId: string | null; snapshotId: string | null }>;
   evidenceRefs?: readonly string[];
   graphDb?: GraphLearnDb | null;
+  /** Why `graphDb` is absent, when the caller resolved a handle that came back unavailable. */
+  graphUnavailableReason?: string | null;
 }>;
 
 export type ResumeContextStanding =
@@ -88,15 +95,47 @@ type IntendedSection =
   | InheritedContextEnvelope["graphProjection"];
 
 /**
- * Classify an already-compiled envelope (pure). `store_not_available` on a
- * section we intended to read means the store did not load: that is
- * `context_not_loaded`, NOT `no_prior_context`. `graph_projection_failed` is the
- * same failure for a live endpoint-key consult — never "no impact" and never
- * `loaded` because a graph version pin is present. `graph_version_absent` and
- * `endpoint_key_absent` stay legitimate absences. `no_mission_bound` on a
- * mission-scoped section is a legitimate absence, not a load failure. Only
- * `hardPolicies`/`userPreferences` are excluded here — they are known-absent
- * stores on main (no per-tenant policy row exists), not failed loads.
+ * Every `not_consulted` reason, classified once. `failure` means we meant to look
+ * and could not, which is `context_not_loaded` and never `no_prior_context`;
+ * `absence` means there was genuinely nothing to look for.
+ *
+ * These are exhaustive `Record`s over the reason unions DELIBERATELY: adding a
+ * member to `SectionNotConsultedReason` or `MissionSectionNotConsultedReason`
+ * without classifying it here is a COMPILE error. A scan that instead listed the
+ * failing reasons by hand is what let `graph_version_absent` carry a dangling
+ * graph-version pin straight through to `loaded` (docs/agents/FAILURE_MODES.md §1).
+ */
+const GRAPH_REASON_DISPOSITION: Record<SectionNotConsultedReason, "absence" | "failure"> = {
+  // Nothing was pinned, nothing was asked: honest absences.
+  graph_version_absent: "absence",
+  endpoint_key_absent: "absence",
+  // We meant to consult the graph and could not.
+  store_not_available: "failure",
+  graph_repository_unresolved: "failure",
+  graph_version_unresolvable: "failure",
+  graph_projection_failed: "failure",
+};
+
+const MISSION_REASON_DISPOSITION: Record<MissionSectionNotConsultedReason, "absence" | "failure"> = {
+  store_not_available: "failure",
+  // This task is not part of a formal Mission, so mission-scoped context does not
+  // apply. Reachable, not failed.
+  no_mission_bound: "absence",
+};
+
+/** An unclassified reason is one nobody thought about, so it fails closed. */
+function reasonDisposition(reason: string): "absence" | "failure" {
+  const lookup = (map: Record<string, "absence" | "failure">): "absence" | "failure" | undefined =>
+    Object.hasOwn(map, reason) ? map[reason] : undefined;
+  return lookup(GRAPH_REASON_DISPOSITION) ?? lookup(MISSION_REASON_DISPOSITION) ?? "failure";
+}
+
+/**
+ * Classify an already-compiled envelope (pure). A `not_consulted` section whose
+ * reason is a `failure` above means the store did not load: that is
+ * `context_not_loaded`, NOT `no_prior_context`. Only `hardPolicies`/
+ * `userPreferences` are excluded here — they are known-absent stores on main (no
+ * per-tenant policy row exists), not failed loads.
  */
 export function classifyResumeStanding(
   envelope: InheritedContextEnvelope,
@@ -113,11 +152,12 @@ export function classifyResumeStanding(
   ];
   for (const { name, section } of intended) {
     if (!section) return { kind: "context_not_loaded", reason: `section_missing:${name}` };
-    if (section.status === "not_consulted" && section.reason === "store_not_available") {
-      return { kind: "context_not_loaded", reason: `store_not_available:${name}` };
-    }
-    if (section.status === "not_consulted" && section.reason === "graph_projection_failed") {
-      return { kind: "context_not_loaded", reason: `graph_projection_failed:${name}` };
+    if (section.status === "not_consulted" && reasonDisposition(section.reason) === "failure") {
+      // `detail`, when the producer had one, names WHICH cause produced the reason
+      // (e.g. which tenant-graph-handle failure). It is appended, never substituted:
+      // the reason itself is what decides fail-closed.
+      const detail = "detail" in section && section.detail ? `:${section.detail}` : "";
+      return { kind: "context_not_loaded", reason: `${section.reason}:${name}${detail}` };
     }
   }
   if (hasInheritedContent(envelope)) return { kind: "loaded" };
@@ -158,6 +198,7 @@ export function resolveResumeContext(db: AppDb, params: ResumeContextParams): Re
       fallback: params.fallback,
       ...(params.evidenceRefs ? { evidenceRefs: params.evidenceRefs } : {}),
       ...(params.graphDb ? { graphDb: params.graphDb } : {}),
+      ...(params.graphUnavailableReason ? { graphUnavailableReason: params.graphUnavailableReason } : {}),
     });
   } catch (error) {
     return {

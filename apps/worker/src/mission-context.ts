@@ -56,22 +56,6 @@ function boundRepositoryId(params: BuildMissionContextParams): string | null {
   return missionRepo ?? fallbackRepo;
 }
 
-/** Published software-graph versions live in `gl_software_versions_v1`, never `gl_nodes`. */
-function publishedSoftwareGraphVersionExists(
-  graphDb: GraphLearnDb,
-  tenantId: string,
-  repositoryId: string,
-  graphVersionId: string,
-): boolean {
-  const row = graphDb.raw
-    .prepare(
-      `SELECT version_id FROM gl_software_versions_v1
-       WHERE version_id = ? AND tenant_id = ? AND repository_id = ?`,
-    )
-    .get(graphVersionId, tenantId, repositoryId) as { version_id: string } | undefined;
-  return Boolean(row);
-}
-
 export type BuildMissionContextParams = Readonly<{
   tenantId: string;
   /** The resolved Mission, or null when the task is not mission-bound. */
@@ -92,6 +76,13 @@ export type BuildMissionContextParams = Readonly<{
    * (`getGraphLearnDb` is not a production graph). Tests inject `openGraphLearnMemory()`.
    */
   graphDb?: GraphLearnDb | null;
+  /**
+   * Why `graphDb` is absent, when the caller resolved a handle and it came back
+   * unavailable. `resolveTenantGraphHandle` distinguishes five causes and the
+   * caller must not collapse them: the section still reports `store_not_available`
+   * (so the fail-closed scan is unaffected) and carries this as `detail`.
+   */
+  graphUnavailableReason?: string | null;
 }>;
 
 /**
@@ -159,19 +150,20 @@ function buildGraphSource(params: BuildMissionContextParams): MissionContextInpu
   if (!graphVersionId) return { consulted: false, reason: "graph_version_absent" };
   const endpointKey = params.task.endpointKey?.trim() ?? "";
   if (!endpointKey) return { consulted: false, reason: "endpoint_key_absent" };
-  // Graph versions are pinned on the Mission. Do not silently query fallback.repositoryId
-  // when the mission has no repository — that would invent a surface.
-  const repositoryId = params.mission?.repositoryId ?? null;
-  if (!repositoryId) return { consulted: false, reason: "not_applicable_to_task" };
-  boundRepositoryId(params);
+  // The SAME bound identity the envelope pins on `missionIdentity.repositoryId`.
+  // Deriving a second one here is what let the envelope claim a repository while
+  // the graph section denied one applied. `boundRepositoryId` throws when mission
+  // and fallback disagree, and `readSoftwareGraphVersion` (below, inside
+  // `queryFettlerEndpointImpact`) re-checks `repository_id` against the published
+  // row, so a wrong repository fails closed rather than reading another surface.
+  const repositoryId = boundRepositoryId(params);
+  // A pinned graph version and a live endpoint key with NO repository identity at
+  // all is an incomplete binding, not "this task has no graph". It fails closed.
+  if (!repositoryId) return { consulted: false, reason: "graph_repository_unresolved" };
   const graphDb = params.graphDb ?? null;
-  if (!graphDb) return { consulted: false, reason: "store_not_available" };
-  try {
-    if (!publishedSoftwareGraphVersionExists(graphDb, params.tenantId, repositoryId, graphVersionId)) {
-      return { consulted: false, reason: "graph_version_absent" };
-    }
-  } catch {
-    return { consulted: false, reason: "graph_projection_failed" };
+  if (!graphDb) {
+    const detail = params.graphUnavailableReason?.trim() ?? "";
+    return { consulted: false, reason: "store_not_available", ...(detail ? { detail } : {}) };
   }
   try {
     const impact = queryFettlerEndpointImpact(graphDb, {
@@ -184,7 +176,16 @@ function buildGraphSource(params: BuildMissionContextParams): MissionContextInpu
       maxRelationships: 100,
     });
     return { consulted: true, impact };
-  } catch {
+  } catch (error) {
+    // The pin resolved to no published version for this tenant/repository —
+    // unpublished, deleted, or scoped elsewhere. That is a DANGLING PIN, not the
+    // `graph_version_absent` of "nothing was pinned", and it must fail closed
+    // under its own reason. Every other throw (integrity, scope, identity,
+    // canonical, query bounds) stays `graph_projection_failed`, so an unrecognised
+    // failure degrades to the closed side, never the reassuring one.
+    if (error instanceof Error && error.message === "software_graph_version_not_found") {
+      return { consulted: false, reason: "graph_version_unresolvable" };
+    }
     return { consulted: false, reason: "graph_projection_failed" };
   }
 }
@@ -377,7 +378,11 @@ export function buildMissionContext(
  * prompt is not grown for nothing.
  */
 export function hasInheritedContent(envelope: InheritedContextEnvelope): boolean {
-  if (envelope.missionIdentity.graphVersionId !== null) return true;
+  // NOTE: a graph-version PIN is deliberately not content. It records what we
+  // meant to consult, not what we read, so answering "yes, there is content"
+  // from it makes every not-consulted graph reason — including ones added later —
+  // read as `loaded` (docs/agents/FAILURE_MODES.md §1). Content is claimed below
+  // only by sections that actually carry entries or bytes.
   if (envelope.relevantOrgMemory.status === "consulted" && envelope.relevantOrgMemory.applied.length > 0) {
     return true;
   }
@@ -392,6 +397,10 @@ export function hasInheritedContent(envelope: InheritedContextEnvelope): boolean
   if (envelope.policyConstraints.status === "consulted" && envelope.policyConstraints.entries.length > 0) return true;
   // An unreadable envelope always carries the restrictive fallback and must reach the model.
   if (envelope.policyConstraints.status === "unreadable") return true;
+  // A CONSULTED projection is content: the compiler always emits bounded bytes,
+  // including the "we looked and the endpoint is not in this graph" case, which is
+  // itself a real finding. Consulted is the only graph status that may claim
+  // content - every not-consulted reason is adjudicated by the resume classifier.
   if (envelope.graphProjection.status === "consulted") return true;
   return false;
 }
