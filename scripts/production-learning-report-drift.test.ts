@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Drift detection for the six derived artifacts under
 // evals/reports/production-learning. Together they are roughly 25,000 committed
@@ -67,8 +67,17 @@ function regenerate(): string {
   return directory;
 }
 
+// Regeneration spawns tsx and rebuilds six artifacts, which is comfortably
+// slower than Vitest's 5s default on a loaded machine, so every step that
+// regenerates carries an explicit timeout.
+const REGENERATION_TIMEOUT_MS = 120_000;
+
 describe("production learning derived report drift", () => {
-  const regeneratedDirectory = regenerate();
+  let regeneratedDirectory: string;
+
+  beforeAll(() => {
+    regeneratedDirectory = regenerate();
+  }, REGENERATION_TIMEOUT_MS);
 
   it("regenerates byte-identically, so a regeneration is a usable drift signal", () => {
     // Guards the injectable timestamp itself. If generate-reports.ts went back
@@ -80,7 +89,7 @@ describe("production learning derived report drift", () => {
         readFileSync(join(regeneratedDirectory, artifact), "utf8"),
       );
     }
-  });
+  }, REGENERATION_TIMEOUT_MS);
 
   it("emits exactly the artifacts that are committed, with nothing extra or missing", () => {
     expect(readdirSync(regeneratedDirectory).sort()).toEqual([...ARTIFACTS].sort());
