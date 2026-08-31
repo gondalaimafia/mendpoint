@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-31T01:02:58.000Z",
-    "observedMainRevision": "94185f823042208e90bbd05bc6013475acc20820",
-    "observationDigest": "sha256:927f5be06fdeca086a8165fe3f17184f481c6700b8a46d547028140eafc0b61b",
+    "observedAt": "2026-08-31T02:04:00.000Z",
+    "observedMainRevision": "a1cfb89af99bc33e3e5c64bc7f1aeca791f93545",
+    "observationDigest": "sha256:55d1f00bbe1af30a9787d5a5468779b94d1cd7aecb2bc9952c9e833914645a96",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 585,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/585",
-      "title": "Bypass unavailable Fly Depot builder",
+      "number": 590,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/590",
+      "title": "Build Fettler production image on the CI runner",
       "baseBranch": "main",
-      "headBranch": "codex/fly-depot-bypass",
+      "headBranch": "codex/fly-local-build-repair",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2087,12 +2087,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260831-012",
+        "rotationId": "rotation-20260831-013",
         "kind": "runtime",
-        "issuedAt": "2026-08-31T01:02:58.000Z",
-        "expiresAt": "2026-09-01T01:02:58.000Z",
-        "basePolicySha256": "sha256:ce460df1f6b6f803952d7a98b4193c45db62e82889f00adf678ffd5b535b90ba",
-        "proposedPolicySha256": "sha256:ad29ced4c2d768a12a37ec35f9fb3a0035548ab7832ddd54d922878966d7aa70"
+        "issuedAt": "2026-08-31T02:04:00.000Z",
+        "expiresAt": "2026-09-01T02:04:00.000Z",
+        "basePolicySha256": "sha256:ad29ced4c2d768a12a37ec35f9fb3a0035548ab7832ddd54d922878966d7aa70",
+        "proposedPolicySha256": "sha256:62785e425b9a4e50d4fb67bcaa4c73147d3ca75985588d5dc5fe19ff162ee3d6"
       }
     },
     "pullRequests": [

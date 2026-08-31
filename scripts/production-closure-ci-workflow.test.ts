@@ -50,11 +50,12 @@ describe("production closure CI deployment authority", () => {
       FLY_API_TOKEN: "${{ secrets.FLY_API_TOKEN_CUSTOMER }}",
     });
     expect(deploy.run).toContain(
-      "flyctl deploy --remote-only --depot=false --ha=false --app mendpoint-fettler-production",
+      "flyctl deploy --local-only --ha=false --app mendpoint-fettler-production",
     );
     expect(deploy.run.trimStart().startsWith("flyctl deploy ")).toBe(true);
-    expect(deploy.run).toContain("--depot=false");
-    expect(deploy.run).not.toContain("--local-only");
+    expect(deploy.run).toContain("--local-only");
+    expect(deploy.run).not.toContain("--remote-only");
+    expect(deploy.run).not.toContain("--depot");
     expect(deploy.run).toContain("--config fly.customer-warden.toml");
     expect(deploy.run).toContain("--env MENDPOINT_RELEASE_REVISION=${{ github.sha }}");
 
