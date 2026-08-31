@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   executePostTrainedLifecycleProof,
+  postTrainedLifecycleProofInputDigest,
   persistPostTrainedLifecycleProof,
   POST_TRAINED_PROOF_VERSION,
   runPostTrainedLifecycleProofCli,
@@ -101,6 +102,9 @@ function proofInput(): PostTrainedLifecycleProofInput {
 }
 
 function successfulBodies(): Record<string, unknown>[] {
+  const input = proofInput();
+  const rollbackRequest = { expectedArtifactDigest: DIGEST, reason: input.rollback.reason, idempotencyKey: input.rollback.idempotencyKey };
+  const sha = (value: unknown) => `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
   return [
     { tenantId: "tenant-1", jobId: "job-1", adapterId: "adapter-1", status: "completed", adapterDigest: DIGEST },
     { tenantId: "tenant-1", evaluationId: "evaluation-1", trainingJobId: "job-1", adapterId: "adapter-1", status: "passed",
@@ -112,11 +116,13 @@ function successfulBodies(): Record<string, unknown>[] {
       heldOutEvaluation: { reportRef: "evaluation-artifact", passed: true, successRate: 0.96, regressionRate: 0.01 },
       canaryEvidence: { passed: true, observedAt: "2026-08-01T00:00:00.000Z", evidenceRefs: ["canary://passed"] },
     } },
-    { adapterId: "adapter-1", eligible: true },
+    { adapterId: "adapter-1", eligible: true, inputDigest: inputDigest(input), eligibilityRequestDigest: sha(input.eligibility.body), rollbackRequestDigest: sha(rollbackRequest), eligibilityObservationDigest: `sha256:${"e".repeat(64)}`, eventId: "event-proof", eventHash: "f".repeat(64), eventSequence: 5, observedAt: "2026-08-01T00:00:00.000Z" },
     { tenantId: "tenant-1", adapterId: "adapter-1", lifecycle: { state: "rolled_back", revision: 8, artifactDigest: DIGEST } },
     { adapterId: "adapter-1", eligible: false, reason: "lifecycle_not_servable" },
   ];
 }
+
+function inputDigest(input = proofInput()): string { return postTrainedLifecycleProofInputDigest(input); }
 
 function transport(bodies = successfulBodies()) {
   let index = 0;
@@ -148,7 +154,7 @@ describe("post-trained adapter lifecycle production proof", () => {
     expect(fetch.mock.calls.every((call) => (call[1] as RequestInit).headers &&
       ((call[1] as RequestInit).headers as Record<string, string>).authorization === "Bearer top-secret")).toBe(true);
     expect(fetch.mock.calls.map((call) => new Headers(call[1]?.headers).get("idempotency-key")))
-      .toEqual(["train-1", "evaluate-1", "canary-1", "register-1", null, "rollback-1", null]);
+      .toEqual(["train-1", "evaluate-1", "canary-1", "register-1", "rollback-1", "rollback-1", null]);
     expect(report).toMatchObject({ adapterId: "adapter-1", eligibleBeforeRollback: true,
       rolledBack: true, eligibleAfterRollback: false, rollbackReason: "lifecycle_not_servable" });
     const output = readFileSync(item.outputPath, "utf8");
@@ -228,11 +234,11 @@ describe("post-trained adapter lifecycle production proof", () => {
     const resumedBodies = [bodies[0], bodies[1], bodies[2], {
       ...registered,
       lifecycle: { ...registered.lifecycle, state: "rolled_back", revision: 8 },
-    }, bodies[5], bodies[6]] as Record<string, unknown>[];
+    }, bodies[4], bodies[5], bodies[6]] as Record<string, unknown>[];
     const resumed = transport(resumedBodies);
     const report = await persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, proofDependencies(resumed));
     expect(report).toMatchObject({ lifecycleRevision: 7, rollbackLifecycleRevision: 8, rolledBack: true });
-    expect(resumed).toHaveBeenCalledTimes(6);
+    expect(resumed).toHaveBeenCalledTimes(7);
     expect(new Headers(resumed.mock.calls[4]![1]?.headers).get("idempotency-key")).toBe("rollback-1");
   });
 
@@ -264,7 +270,7 @@ describe("post-trained adapter lifecycle production proof", () => {
     const bodies = successfulBodies();
     bodies[stage] = { ...bodies[stage], ...patch };
     const fetch = transport(bodies);
-    await expect(executePostTrainedLifecycleProof(proofInput(), "sha256:input", proofDependencies(fetch)))
+    await expect(executePostTrainedLifecycleProof(proofInput(), inputDigest(), proofDependencies(fetch)))
       .rejects.toThrow(code as string);
     expect(fetch).toHaveBeenCalledTimes(calls);
   });
@@ -290,13 +296,56 @@ describe("post-trained adapter lifecycle production proof", () => {
     },
   );
 
+  it.each(["token", "secret"])("rejects bare normalized credential field %s before network access", async (field) => {
+    const input = proofInput();
+    const task = input.eligibility.body.task as Record<string, unknown>;
+    const item = fixture({ ...input, eligibility: { body: { task: { ...task, inputArtifactIds: [{ [field]: "forbidden" }] } } } });
+    const fetch = transport();
+    await expect(persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, proofDependencies(fetch)))
+      .rejects.toThrow("post_trained_input_contains_credentials");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["wrong version", { version: "wrong" }, "post_trained_version_invalid"],
+    ["out of range timeout", { timeoutMs: 0 }, "post_trained_timeout_invalid"],
+    ["invalid idempotency", { training: { ...proofInput().training, idempotencyKey: "bad\nkey" } }, "post_trained_idempotency_invalid"],
+    ["invalid rollback reason", { rollback: { ...proofInput().rollback, reason: "bad\nreason" } }, "post_trained_rollback_reason_invalid"],
+  ])("validates %s on the exported path before network access", async (_name, patch, code) => {
+    const invalid = { ...proofInput(), ...patch } as PostTrainedLifecycleProofInput;
+    const fetch = transport();
+    await expect(executePostTrainedLifecycleProof(invalid, inputDigest(), proofDependencies(fetch))).rejects.toThrow(code as string);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects every invalid nested array element and a substituted input digest before network access", async () => {
+    const input = proofInput();
+    const invalid = { ...input, training: { ...input.training, body: { ...input.training.body, trainingCorpusArtifactIds: ["corpus-1", 7] } } } as unknown as PostTrainedLifecycleProofInput;
+    const fetch = transport();
+    await expect(executePostTrainedLifecycleProof(invalid, inputDigest(), proofDependencies(fetch))).rejects.toThrow("post_trained_stage_schema_invalid");
+    await expect(executePostTrainedLifecycleProof(input, `sha256:${"0".repeat(64)}`, proofDependencies(fetch))).rejects.toThrow("post_trained_input_digest_mismatch");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when an already rolled-back registration has no authenticated eligibility checkpoint", async () => {
+    const bodies = successfulBodies();
+    const registered = bodies[3] as { lifecycle: Record<string, unknown> };
+    bodies[3] = { ...registered, lifecycle: { ...registered.lifecycle, state: "rolled_back", revision: 8 } };
+    bodies[4] = { error: "post_trained_adapter_not_eligible" };
+    let index = 0;
+    const fetch = vi.fn(async () => new Response(JSON.stringify(bodies[index]!), { status: index++ === 4 ? 409 : 200, headers: { "content-type": "application/json" } }));
+    await expect(executePostTrainedLifecycleProof(proofInput(), inputDigest(), proofDependencies(fetch)))
+      .rejects.toThrow("post_trained_http_409:post_trained_adapter_not_eligible");
+    expect(fetch).toHaveBeenCalledTimes(5);
+  });
+
   it("applies the same closed credential schema to direct programmatic execution", async () => {
     const input = proofInput();
     const fetch = transport();
     await expect(executePostTrainedLifecycleProof({
       ...input,
       registration: { ...input.registration, body: { ...input.registration.body, clientSecret: "forbidden" } },
-    }, "sha256:input", proofDependencies(fetch))).rejects.toThrow("post_trained_input_contains_credentials");
+    }, inputDigest(input), proofDependencies(fetch))).rejects.toThrow("post_trained_input_contains_credentials");
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -330,7 +379,7 @@ describe("post-trained adapter lifecycle production proof", () => {
     const bodies = successfulBodies();
     bodies[stage] = { ...bodies[stage], tenantId: "tenant-other" };
     const fetch = transport(bodies);
-    await expect(executePostTrainedLifecycleProof(proofInput(), "sha256:input", proofDependencies(fetch)))
+    await expect(executePostTrainedLifecycleProof(proofInput(), inputDigest(), proofDependencies(fetch)))
       .rejects.toThrow("post_trained_stage_binding_mismatch");
     expect(fetch).toHaveBeenCalledTimes(stage + 1);
   });
@@ -340,35 +389,36 @@ describe("post-trained adapter lifecycle production proof", () => {
     const fetch = transport();
     await expect(executePostTrainedLifecycleProof({ ...input,
       eligibility: { body: { task: { ...(input.eligibility.body.task as Record<string, unknown>), tenantId: "tenant-other" } } },
-    }, "sha256:input", proofDependencies(fetch))).rejects.toThrow("post_trained_stage_binding_mismatch");
+    }, inputDigest({ ...input, eligibility: { body: { task: { ...(input.eligibility.body.task as Record<string, unknown>), tenantId: "tenant-other" } } } }), proofDependencies(fetch))).rejects.toThrow("post_trained_stage_binding_mismatch");
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it("refuses external plaintext HTTP and redirects", async () => {
     await expect(executePostTrainedLifecycleProof({ ...proofInput(), apiBaseUrl: "http://mendpoint.example" },
-      "sha256:input", proofDependencies(transport()))).rejects.toThrow("post_trained_api_url_invalid");
+      inputDigest({ ...proofInput(), apiBaseUrl: "http://mendpoint.example" }), proofDependencies(transport()))).rejects.toThrow("post_trained_api_url_invalid");
     const redirected = vi.fn(async () => new Response("{}", { status: 302, headers: { location: "https://other.example" } }));
-    await expect(executePostTrainedLifecycleProof(proofInput(), "sha256:input", proofDependencies(redirected)))
+    await expect(executePostTrainedLifecycleProof(proofInput(), inputDigest(), proofDependencies(redirected)))
       .rejects.toThrow("post_trained_redirect_refused");
   });
 
   it("bounds streamed response bytes and body time", async () => {
     const oversized = vi.fn(async () => new Response("x", { headers: { "content-length": "1048577" } }));
-    await expect(executePostTrainedLifecycleProof(proofInput(), "sha256:input", proofDependencies(oversized)))
+    await expect(executePostTrainedLifecycleProof(proofInput(), inputDigest(), proofDependencies(oversized)))
       .rejects.toThrow("post_trained_response_too_large");
 
     vi.useFakeTimers();
     const hanging = vi.fn(async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
     }));
-    const pending = executePostTrainedLifecycleProof({ ...proofInput(), timeoutMs: 10 }, "sha256:input",
+    const timeoutInput = { ...proofInput(), timeoutMs: 10 } as PostTrainedLifecycleProofInput;
+    const pending = executePostTrainedLifecycleProof(timeoutInput, inputDigest(timeoutInput),
       proofDependencies(hanging));
     const rejected = expect(pending).rejects.toThrow("post_trained_request_failed");
     await vi.advanceTimersByTimeAsync(11);
     await rejected;
 
     const stalledBody = vi.fn(async () => new Response(new ReadableStream({ start() {} })));
-    const bodyPending = executePostTrainedLifecycleProof({ ...proofInput(), timeoutMs: 10 }, "sha256:input",
+    const bodyPending = executePostTrainedLifecycleProof(timeoutInput, inputDigest(timeoutInput),
       proofDependencies(stalledBody));
     const bodyRejected = expect(bodyPending).rejects.toThrow("post_trained_request_failed");
     await vi.advanceTimersByTimeAsync(11);

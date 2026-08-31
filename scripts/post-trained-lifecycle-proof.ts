@@ -36,6 +36,13 @@ export type PostTrainedLifecycleProofReport = Readonly<{
   evaluation: Readonly<{ successRate: number; regressionRate: number }>;
   canary: Readonly<{ servingRevision: string; observedAt: string; evidenceRefs: readonly string[] }>;
   lifecycleRevision: number;
+  proofCheckpoint: Readonly<{
+    eventId: string;
+    eventHash: string;
+    eventSequence: number;
+    eligibilityObservationDigest: string;
+    observedAt: string;
+  }>;
   rollbackLifecycleRevision: number;
   eligibleBeforeRollback: true;
   rolledBack: true;
@@ -132,15 +139,22 @@ function assertNoCredentials(value: unknown, depth = 0): void {
   if (!value || typeof value !== "object") return;
   for (const [name, child] of Object.entries(value as JsonRecord)) {
     const normalized = normalizedSecretName(name);
-    if (/(?:authorization|apikey|accesstoken|refreshtoken|bearertoken|clientsecret|privatekey|webhooksecret|password|credential|githubtoken)/u.test(normalized)) {
+    if (["token", "secret"].includes(normalized) || /(?:authorization|apikey|accesstoken|refreshtoken|bearertoken|clientsecret|privatekey|webhooksecret|password|credential|githubtoken)/u.test(normalized)) {
       throw new Error("post_trained_input_contains_credentials");
     }
     assertNoCredentials(child, depth + 1);
   }
 }
 
+function assertStringArray(value: unknown): void {
+  if (!Array.isArray(value) || value.length > 256 || value.some((item) => typeof item !== "string" || !item.trim() || item.length > 2_000)) {
+    throw new Error("post_trained_stage_schema_invalid");
+  }
+}
+
 function assertExactNestedSchemas(input: JsonRecord): void {
   const training = exactRecord(record(input.training).body, ["jobId", "adapterId", "baseModelId", "datasetId", "purpose", "residencyRegion", "trainingCorpusArtifactIds", "validationArtifactId", "holdoutArtifactId", "splitManifestDigest", "recipe"], "post_trained_stage_schema_invalid");
+  assertStringArray(training.trainingCorpusArtifactIds);
   exactRecord(training.recipe, ["epochs", "maximumExamples", "seed"], "post_trained_stage_schema_invalid");
 
   const evaluation = exactRecord(record(input.evaluation).body, ["evaluationId", "trainingJobId", "adapterId", "baseline", "evaluator", "policy"], "post_trained_stage_schema_invalid");
@@ -153,20 +167,27 @@ function assertExactNestedSchemas(input: JsonRecord): void {
   const lifecycle = exactRecord(registration.lifecycle, ["tenantId", "adapterId", "state", "revision", "baseModel", "artifactDigest", "trainingDataset", "heldOutEvaluation", "promotionThresholds", "approvedInfrastructure", "servingRevision", "monitoringWindow", "rollbackTarget", "approver", "canaryEvidence", "evidenceRefs", "history"], "post_trained_stage_schema_invalid");
   exactRecord(lifecycle.baseModel, ["modelId", "license", "evidenceRef"], "post_trained_stage_schema_invalid");
   const dataset = exactRecord(lifecycle.trainingDataset, ["datasetId", "lineageRefs", "consent", "sufficiency"], "post_trained_stage_schema_invalid");
-  exactRecord(dataset.consent, ["status", "evidenceRefs"], "post_trained_stage_schema_invalid");
-  exactRecord(dataset.sufficiency, ["representative", "sampleCount", "minimumSampleCount", "evidenceRefs"], "post_trained_stage_schema_invalid");
+  assertStringArray(dataset.lineageRefs);
+  const datasetConsent = exactRecord(dataset.consent, ["status", "evidenceRefs"], "post_trained_stage_schema_invalid");
+  assertStringArray(datasetConsent.evidenceRefs);
+  const datasetSufficiency = exactRecord(dataset.sufficiency, ["representative", "sampleCount", "minimumSampleCount", "evidenceRefs"], "post_trained_stage_schema_invalid");
+  assertStringArray(datasetSufficiency.evidenceRefs);
   if (lifecycle.heldOutEvaluation !== undefined) exactRecord(lifecycle.heldOutEvaluation, ["reportRef", "passed", "successRate", "regressionRate"], "post_trained_stage_schema_invalid");
   if (lifecycle.promotionThresholds !== undefined) exactRecord(lifecycle.promotionThresholds, ["minimumSuccessRate", "maximumRegressionRate"], "post_trained_stage_schema_invalid");
   if (lifecycle.approvedInfrastructure !== undefined) exactRecord(lifecycle.approvedInfrastructure, ["approved", "marker", "evidenceRef"], "post_trained_stage_schema_invalid");
   if (lifecycle.monitoringWindow !== undefined) exactRecord(lifecycle.monitoringWindow, ["startsAt", "endsAt"], "post_trained_stage_schema_invalid");
   if (lifecycle.rollbackTarget !== undefined) exactRecord(lifecycle.rollbackTarget, ["servingRevision", "artifactDigest"], "post_trained_stage_schema_invalid");
   if (lifecycle.approver !== undefined) exactRecord(lifecycle.approver, ["principalId", "approvedAt", "evidenceRef"], "post_trained_stage_schema_invalid");
-  if (lifecycle.canaryEvidence !== undefined) exactRecord(lifecycle.canaryEvidence, ["passed", "observedAt", "evidenceRefs"], "post_trained_stage_schema_invalid");
+  if (lifecycle.canaryEvidence !== undefined) assertStringArray(exactRecord(lifecycle.canaryEvidence, ["passed", "observedAt", "evidenceRefs"], "post_trained_stage_schema_invalid").evidenceRefs);
+  assertStringArray(lifecycle.evidenceRefs);
   if (!Array.isArray(lifecycle.history)) throw new Error("post_trained_stage_schema_invalid");
-  for (const event of lifecycle.history) exactRecord(event, ["revision", "from", "to", "actorId", "occurredAt", "evidenceRefs"], "post_trained_stage_schema_invalid");
+  for (const event of lifecycle.history) assertStringArray(exactRecord(event, ["revision", "from", "to", "actorId", "occurredAt", "evidenceRefs"], "post_trained_stage_schema_invalid").evidenceRefs);
 
-  exactRecord(registration.consent, ["tenantId", "datasetId", "revision", "status", "evidenceRefs", "checkedAt", "expiresAt"], "post_trained_stage_schema_invalid");
+  assertStringArray(exactRecord(registration.consent, ["tenantId", "datasetId", "revision", "status", "evidenceRefs", "checkedAt", "expiresAt"], "post_trained_stage_schema_invalid").evidenceRefs);
   const descriptor = exactRecord(registration.descriptor, ["executorId", "providerId", "kind", "version", "deployment", "capabilities", "tools", "regions", "price", "limits", "health", "license", "maximumDataClassification", "maximumRisk", "qualityScore", "estimatedLatencyMs", "estimatedCostUsd"], "post_trained_stage_schema_invalid");
+  assertStringArray(descriptor.capabilities);
+  assertStringArray(descriptor.tools);
+  assertStringArray(descriptor.regions);
   exactRecord(descriptor.price, ["version", "currency", "effectiveAt"], "post_trained_stage_schema_invalid");
   exactRecord(descriptor.limits, ["maximumInputTokens", "maximumOutputTokens", "maximumConcurrentTasks"], "post_trained_stage_schema_invalid");
   exactRecord(descriptor.health, ["status", "checkedAt", "evidenceRef"], "post_trained_stage_schema_invalid");
@@ -175,9 +196,14 @@ function assertExactNestedSchemas(input: JsonRecord): void {
   const eligibility = exactRecord(input.eligibility, ["body"], "post_trained_stage_schema_invalid");
   const eligibilityBody = exactRecord(eligibility.body, ["task"], "post_trained_stage_schema_invalid");
   const task = exactRecord(eligibilityBody.task, ["taskId", "tenantId", "kind", "goal", "idempotencyKey", "inputArtifactIds", "requiredCapabilities", "allowedTools", "context", "verification", "fallbackPolicy", "privacy", "risk", "quality", "latency", "budget"], "post_trained_stage_schema_invalid");
+  assertStringArray(task.inputArtifactIds);
+  assertStringArray(task.requiredCapabilities);
+  assertStringArray(task.allowedTools);
   exactRecord(task.context, ["estimatedInputTokens", "maximumOutputTokens"], "post_trained_stage_schema_invalid");
-  exactRecord(task.verification, ["requiredChecks", "requireAll", "onFailure"], "post_trained_stage_schema_invalid");
-  exactRecord(task.fallbackPolicy, ["enabled", "maxAttempts", "sameExecutorRetries", "retryableFailures", "fallbackFailures"], "post_trained_stage_schema_invalid");
+  assertStringArray(exactRecord(task.verification, ["requiredChecks", "requireAll", "onFailure"], "post_trained_stage_schema_invalid").requiredChecks);
+  const fallbackPolicy = exactRecord(task.fallbackPolicy, ["enabled", "maxAttempts", "sameExecutorRetries", "retryableFailures", "fallbackFailures"], "post_trained_stage_schema_invalid");
+  assertStringArray(fallbackPolicy.retryableFailures);
+  assertStringArray(fallbackPolicy.fallbackFailures);
   exactRecord(task.privacy, ["classification", "requiredRegion"], "post_trained_stage_schema_invalid");
   exactRecord(task.quality, ["minimumScore"], "post_trained_stage_schema_invalid");
   exactRecord(task.latency, ["maximumMs"], "post_trained_stage_schema_invalid");
@@ -200,10 +226,7 @@ function parseStage(value: unknown): Stage {
   });
 }
 
-function parseInput(raw: Buffer): PostTrainedLifecycleProofInput {
-  let parsed: unknown;
-  try { parsed = JSON.parse(raw.toString("utf8")); }
-  catch { throw new Error("post_trained_input_invalid"); }
+function validateInput(parsed: unknown): PostTrainedLifecycleProofInput {
   assertNoCredentials(parsed);
   const value = exactRecord(parsed, ["version", "apiBaseUrl", "timeoutMs", "training", "evaluation", "canary", "registration", "eligibility", "rollback"], "post_trained_input_schema_invalid");
   if (value.version !== POST_TRAINED_PROOF_VERSION) throw new Error("post_trained_version_invalid");
@@ -214,7 +237,7 @@ function parseInput(raw: Buffer): PostTrainedLifecycleProofInput {
   }
   const rollback = record(value.rollback, "post_trained_stage_invalid");
   const reason = requiredText(rollback.reason, "post_trained_rollback_reason_invalid");
-  if (reason.length > 2_000) throw new Error("post_trained_rollback_reason_invalid");
+  if (reason.length > 2_000 || /[\r\n]/u.test(reason)) throw new Error("post_trained_rollback_reason_invalid");
   return Object.freeze({
     version: POST_TRAINED_PROOF_VERSION,
     apiBaseUrl: requiredText(value.apiBaseUrl, "post_trained_api_url_invalid"),
@@ -228,6 +251,17 @@ function parseInput(raw: Buffer): PostTrainedLifecycleProofInput {
     }),
     rollback: Object.freeze({ idempotencyKey: key(rollback.idempotencyKey), reason }),
   });
+}
+
+function parseInput(raw: Buffer): PostTrainedLifecycleProofInput {
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw.toString("utf8")); }
+  catch { throw new Error("post_trained_input_invalid"); }
+  return validateInput(parsed);
+}
+
+export function postTrainedLifecycleProofInputDigest(input: PostTrainedLifecycleProofInput): string {
+  return digest(canonicalJson(validateInput(input)));
 }
 
 function readInput(pathValue: string): Readonly<{ input: PostTrainedLifecycleProofInput; raw: Buffer }> {
@@ -355,9 +389,8 @@ export async function executePostTrainedLifecycleProof(
   inputDigest: string,
   dependencies: ProofDependencies,
 ): Promise<PostTrainedLifecycleProofReport> {
-  assertNoCredentials(input);
-  const inputRecord = exactRecord(input, ["version", "apiBaseUrl", "timeoutMs", "training", "evaluation", "canary", "registration", "eligibility", "rollback"], "post_trained_input_schema_invalid");
-  assertExactInputSchema(inputRecord);
+  input = validateInput(input);
+  if (inputDigest !== postTrainedLifecycleProofInputDigest(input)) throw new Error("post_trained_input_digest_mismatch");
   const requestedBase = parseBase(input.apiBaseUrl);
   const base = parseBase(requiredText(dependencies.apiBaseUrl, "post_trained_api_url_invalid"));
   if (requestedBase.href !== base.href) throw new Error("post_trained_api_url_untrusted");
@@ -463,14 +496,22 @@ export async function executePostTrainedLifecycleProof(
     throw new Error("post_trained_registration_revision_invalid");
   }
 
-  const eligiblePath = `advanced-ai/post-trained/adapters/${encodeURIComponent(adapterId)}/eligibility`;
-  if (!resumedAfterRollback) {
-    const eligible = await requestJson(transport, base, apiKey, input.timeoutMs, eligiblePath, input.eligibility.body);
-    expectBinding(eligible.adapterId, adapterId);
-    if (eligible.eligible !== true) throw new Error("post_trained_adapter_not_eligible");
-  }
-
   const rollbackPath = `advanced-ai/post-trained/adapters/${encodeURIComponent(adapterId)}/rollback`;
+  const rollbackRequest = { expectedArtifactDigest: adapterDigest, reason: input.rollback.reason, idempotencyKey: input.rollback.idempotencyKey };
+  const checkpoint = await requestJson(transport, base, apiKey, input.timeoutMs,
+    `advanced-ai/post-trained/adapters/${encodeURIComponent(adapterId)}/proof-checkpoints`,
+    { inputDigest, task: input.eligibility.body.task, rollback: rollbackRequest }, input.rollback.idempotencyKey);
+  expectBinding(checkpoint.adapterId, adapterId);
+  expectBinding(checkpoint.inputDigest, inputDigest);
+  expectBinding(checkpoint.eligibilityRequestDigest, digest(canonicalJson(input.eligibility.body)));
+  expectBinding(checkpoint.rollbackRequestDigest, digest(canonicalJson(rollbackRequest)));
+  if (checkpoint.eligible !== true) throw new Error("post_trained_adapter_not_eligible");
+  if (!/^sha256:[a-f0-9]{64}$/u.test(requiredText(checkpoint.eligibilityObservationDigest)) ||
+      !/^[a-f0-9]{64}$/u.test(requiredText(checkpoint.eventHash)) || !Number.isSafeInteger(checkpoint.eventSequence) ||
+      (checkpoint.eventSequence as number) < 1 || !canonicalTimestamp(checkpoint.observedAt)) {
+    throw new Error("post_trained_proof_checkpoint_invalid");
+  }
+  const eligiblePath = `advanced-ai/post-trained/adapters/${encodeURIComponent(adapterId)}/eligibility`;
   const rolledBack = await requestJson(transport, base, apiKey, input.timeoutMs, rollbackPath,
     { expectedArtifactDigest: adapterDigest, reason: input.rollback.reason }, input.rollback.idempotencyKey);
   expectBinding(rolledBack.tenantId, tenantId);
@@ -502,6 +543,7 @@ export async function executePostTrainedLifecycleProof(
     evaluation: Object.freeze({ successRate, regressionRate }),
     canary: Object.freeze({ servingRevision, observedAt, evidenceRefs }),
     lifecycleRevision: sourceRevision as number,
+    proofCheckpoint: Object.freeze({ eventId: identifier(checkpoint.eventId), eventHash: checkpoint.eventHash as string, eventSequence: checkpoint.eventSequence as number, eligibilityObservationDigest: checkpoint.eligibilityObservationDigest as string, observedAt: checkpoint.observedAt as string }),
     rollbackLifecycleRevision: rollbackLifecycle.revision as number,
     eligibleBeforeRollback: true,
     rolledBack: true,
@@ -521,7 +563,7 @@ function validateExistingReport(value: unknown, authority: ProofAuthority): Post
   const expectedKeys = [
     "adapterDigest", "adapterId", "apiOrigin", "canary", "canaryId", "eligibleAfterRollback",
     "eligibleBeforeRollback", "evaluation", "evaluationArtifactId", "evaluationId", "inputDigest",
-    "lifecycleRevision", "proofDigest", "proofKeyId", "proofMac", "rollbackLifecycleRevision", "rollbackReason", "rolledBack",
+    "lifecycleRevision", "proofCheckpoint", "proofDigest", "proofKeyId", "proofMac", "rollbackLifecycleRevision", "rollbackReason", "rolledBack",
     "tenantId", "trainingJobId", "version",
   ];
   if (Object.keys(report).sort().join("\0") !== expectedKeys.sort().join("\0")) {
@@ -547,6 +589,7 @@ function validateExistingReport(value: unknown, authority: ProofAuthority): Post
   const parsed = report as unknown as PostTrainedLifecycleProofReport;
   const evaluation = record(parsed.evaluation, "post_trained_output_conflict");
   const canary = record(parsed.canary, "post_trained_output_conflict");
+  const checkpoint = record(parsed.proofCheckpoint, "post_trained_output_conflict");
   if (parsed.version !== POST_TRAINED_PROOF_VERSION ||
       typeof parsed.inputDigest !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(parsed.inputDigest) ||
       typeof parsed.apiOrigin !== "string" ||
@@ -559,6 +602,9 @@ function validateExistingReport(value: unknown, authority: ProofAuthority): Post
       !Array.isArray(canary.evidenceRefs) || canary.evidenceRefs.length < 1 || canary.evidenceRefs.length > 64 ||
       canary.evidenceRefs.some((item) => typeof item !== "string" || !item.trim() || item.length > 2_000) ||
       !Number.isSafeInteger(parsed.lifecycleRevision) || parsed.lifecycleRevision < 1 ||
+      !identifier(checkpoint.eventId) || typeof checkpoint.eventHash !== "string" || !/^[a-f0-9]{64}$/u.test(checkpoint.eventHash) ||
+      !Number.isSafeInteger(checkpoint.eventSequence) || (checkpoint.eventSequence as number) < 1 ||
+      typeof checkpoint.eligibilityObservationDigest !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(checkpoint.eligibilityObservationDigest) || !canonicalTimestamp(checkpoint.observedAt) ||
       !Number.isSafeInteger(parsed.rollbackLifecycleRevision) || parsed.rollbackLifecycleRevision <= parsed.lifecycleRevision ||
       parsed.eligibleBeforeRollback !== true || parsed.rolledBack !== true ||
       parsed.eligibleAfterRollback !== false || parsed.rollbackReason !== "lifecycle_not_servable") {
@@ -592,8 +638,8 @@ export async function persistPostTrainedLifecycleProof(
   const inputFile = resolve(inputPath);
   const outputFile = resolve(outputPath);
   if (inputFile === outputFile) throw new Error("post_trained_output_must_differ");
-  const { input, raw } = readInput(inputFile);
-  const inputDigest = digest(raw);
+  const { input } = readInput(inputFile);
+  const inputDigest = postTrainedLifecycleProofInputDigest(input);
   const requestedBase = parseBase(input.apiBaseUrl);
   const protectedBase = parseBase(requiredText(dependencies.apiBaseUrl, "post_trained_api_url_invalid"));
   if (requestedBase.href !== protectedBase.href) throw new Error("post_trained_api_url_untrusted");

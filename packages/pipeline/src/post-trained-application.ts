@@ -135,6 +135,65 @@ export function getPostTrainedAdapterEligibility(db: AppDb, input: Readonly<{ te
   }
 }
 
+export type PostTrainedLifecycleProofCheckpoint = Readonly<{
+  eligible: true;
+  adapterId: string;
+  inputDigest: string;
+  eligibilityRequestDigest: string;
+  eligibilityObservationDigest: string;
+  rollbackRequestDigest: string;
+  eventId: string;
+  eventHash: string;
+  eventSequence: number;
+  observedAt: string;
+}>;
+
+export function recordPostTrainedLifecycleProofCheckpoint(
+  db: AppDb,
+  input: Readonly<{
+    tenantId: string;
+    adapterId: string;
+    actorPrincipalId: string;
+    idempotencyKey: string;
+    inputDigest: string;
+    task: RouterTaskSpec;
+    rollback: Readonly<{ expectedArtifactDigest: string; reason: string; idempotencyKey: string }>;
+    observedAt: string;
+  }>,
+  config: PostTrainedApplicationConfig,
+): PostTrainedLifecycleProofCheckpoint {
+  requireEnabled(config);
+  const task = input.task as RouterTaskSpec | undefined;
+  const rollback = input.rollback as { expectedArtifactDigest?: unknown; reason?: unknown; idempotencyKey?: unknown } | undefined;
+  const observedAt = Date.parse(input.observedAt);
+  if (!/^sha256:[a-f0-9]{64}$/u.test(input.inputDigest) || !input.idempotencyKey.trim() || input.idempotencyKey.length > 200 || /[\r\n]/u.test(input.idempotencyKey) ||
+      !rollback || typeof rollback.expectedArtifactDigest !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(rollback.expectedArtifactDigest) ||
+      typeof rollback.idempotencyKey !== "string" || !rollback.idempotencyKey.trim() || rollback.idempotencyKey.length > 200 || /[\r\n]/u.test(rollback.idempotencyKey) ||
+      typeof rollback.reason !== "string" || !rollback.reason.trim() || rollback.reason.length > 2_000 || /[\r\n]/u.test(rollback.reason) ||
+      !task || task.tenantId !== input.tenantId || !Number.isFinite(observedAt) || new Date(observedAt).toISOString() !== input.observedAt) {
+    throw new Error("post_trained_proof_checkpoint_invalid");
+  }
+  if (!db.raw.prepare("SELECT 1 FROM principals WHERE tenant_id = ? AND id = ? AND revoked_at IS NULL").get(input.tenantId, input.actorPrincipalId)) throw new Error("post_trained_actor_invalid");
+  if (!verifyDomainEventIntegrity(db, input.tenantId).ok) throw new Error("post_trained_proof_checkpoint_integrity_invalid");
+  const key = `post-trained-proof-checkpoint:${input.idempotencyKey}`;
+  const eligibilityRequestDigest = `sha256:${sha256(canonicalJson({ task }))}`;
+  const rollbackRequestDigest = `sha256:${sha256(canonicalJson(rollback))}`;
+  const existing = db.raw.prepare("SELECT id, event_sequence, event_hash, actor_principal_id, payload_json FROM domain_events WHERE tenant_id = ? AND idempotency_key = ? AND aggregate_type = 'post_trained_lifecycle_proof' AND aggregate_id = ? AND event_type = 'post_trained_lifecycle_proof.eligibility_observed'").get(input.tenantId, key, input.adapterId) as { id: string; event_sequence: number; event_hash: string; actor_principal_id: string; payload_json: string } | undefined;
+  if (existing) {
+    if (!verifyDomainEventIntegrity(db, input.tenantId).ok) throw new Error("post_trained_proof_checkpoint_integrity_invalid");
+    const payload = JSON.parse(existing.payload_json) as Record<string, unknown>;
+    if (existing.actor_principal_id !== input.actorPrincipalId || payload.inputDigest !== input.inputDigest || payload.eligibilityRequestDigest !== eligibilityRequestDigest || payload.rollbackRequestDigest !== rollbackRequestDigest || payload.adapterId !== input.adapterId || payload.eligible !== true || typeof payload.eligibilityObservationDigest !== "string" || typeof payload.observedAt !== "string") throw new Error("post_trained_proof_checkpoint_replay_mismatch");
+    return Object.freeze({ eligible: true, adapterId: input.adapterId, inputDigest: input.inputDigest, eligibilityRequestDigest, eligibilityObservationDigest: payload.eligibilityObservationDigest, rollbackRequestDigest, eventId: existing.id, eventHash: existing.event_hash, eventSequence: existing.event_sequence, observedAt: payload.observedAt });
+  }
+  const eligibility = getPostTrainedAdapterEligibility(db, { tenantId: input.tenantId, adapterId: input.adapterId, task, now: new Date(input.observedAt) }, config);
+  if (eligibility.eligible !== true) throw new Error("post_trained_adapter_not_eligible");
+  const eligibilityObservationDigest = `sha256:${sha256(canonicalJson(eligibility))}`;
+  const payload = { adapterId: input.adapterId, eligible: true, inputDigest: input.inputDigest, eligibilityRequestDigest, eligibilityObservationDigest, rollbackRequestDigest, observedAt: input.observedAt };
+  const event = appendDomainEvent(db, { id: `event_${sha256(`${input.tenantId}\0${input.adapterId}\0${key}`)}`, tenantId: input.tenantId, schemaVersion: 1, eventType: "post_trained_lifecycle_proof.eligibility_observed", aggregateType: "post_trained_lifecycle_proof", aggregateId: input.adapterId, actorPrincipalId: input.actorPrincipalId, correlationId: input.idempotencyKey, idempotencyKey: key, payload, createdAt: input.observedAt }).row;
+  if (!verifyDomainEventIntegrity(db, input.tenantId).ok) throw new Error("post_trained_proof_checkpoint_integrity_invalid");
+  return Object.freeze({ eligible: true, adapterId: input.adapterId, inputDigest: input.inputDigest, eligibilityRequestDigest, eligibilityObservationDigest, rollbackRequestDigest, eventId: event.id, eventHash: event.event_hash, eventSequence: event.event_sequence, observedAt: input.observedAt });
+}
+
 export function routePostTrainedAdapterDryRun(db: AppDb, input: Readonly<{ tenantId: string; adapterId: string; task: RouterTaskSpec; policy: RouterPolicySnapshot; remainingBudgetUsd: number; now: Date }>, config: PostTrainedApplicationConfig) {
   requireEnabled(config);
   const { admission } = admissionFor(db, input, config);
