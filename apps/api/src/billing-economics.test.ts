@@ -534,6 +534,103 @@ describe("billing economics API routes", () => {
     expect(listActualExecutionCosts(db, "billing-tenant-a")).toHaveLength(1);
   });
 
+  it("fails closed with a deterministic error for corrupt stored measurement provenance", async () => {
+    const { db, tenantA } = fixture();
+    const app = appFor(db);
+    expect((await postCost(app, tenantA, "cost-corrupt-provenance", executionCostBody())).status)
+      .toBe(201);
+    db.raw.exec("DROP TRIGGER actual_execution_cost_entries_append_only_update");
+
+    for (const corrupt of ["{", "[]", JSON.stringify({ model: 7 })]) {
+      db.raw.prepare(
+        "UPDATE actual_execution_cost_entries SET measurement_provenance_json = ? WHERE execution_id = ?",
+      ).run(corrupt, "execution-a");
+      const response = await app.request("/billing/execution-costs", {
+        headers: headers(tenantA, `corrupt-provenance-${corrupt.length}`),
+      });
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "execution_cost_ledger_integrity_invalid" },
+      });
+    }
+
+    const margin = await app.request("/billing/gross-margin", {
+      headers: headers(tenantA, "corrupt-provenance-margin"),
+    });
+    expect(margin.status).toBe(200);
+    await expect(margin.json()).resolves.toMatchObject({
+      data: {
+        complete: false,
+        ledgers: { executionCosts: { ok: false, checked: 0 } },
+        exactGrossMarginMoneyMicros: null,
+      },
+    });
+  });
+
+  it("withdraws a public accepted outcome when newer durable authority supersedes it", async () => {
+    const { db, tenantA } = fixture();
+    const app = appFor(db);
+    expect((await postCost(app, tenantA, "cost-stale-outcome", executionCostBody())).status)
+      .toBe(201);
+    const actor = getPrincipalBySubject(db, "billing-tenant-a", "api_key", "billing-key-a")!;
+    const cost = listActualExecutionCosts(db, "billing-tenant-a")[0]!;
+    const approvedContent = JSON.stringify({
+      costEntryId: cost.id,
+      costEntryHash: cost.entryHash,
+      decision: "approve",
+    });
+    insertArtifactManifest(db, {
+      id: "accepted-stale-outcome", tenantId: "billing-tenant-a", kind: "review-evidence",
+      schemaVersion: 1, sha256: createHash("sha256").update(approvedContent).digest("hex"),
+      mediaType: "application/json", sizeBytes: Buffer.byteLength(approvedContent),
+      storageRef: "evidence://accepted-stale-outcome", content: approvedContent,
+      producerPrincipalId: actor.id, createdAt: "2026-09-02T00:00:00.000Z",
+    });
+    insertReviewDecision(db, {
+      id: "review-accepted-stale-outcome", tenantId: "billing-tenant-a",
+      subjectType: "execution_cost", subjectId: cost.executionId,
+      candidateArtifactId: "accepted-stale-outcome", reviewerPrincipalId: actor.id,
+      decision: "approve", rationale: "Initial accepted authority",
+      createdAt: "2026-09-02T00:00:00.000Z",
+    });
+    const accepted = await app.request(`/billing/execution-costs/${cost.executionId}/outcomes`, {
+      method: "POST",
+      headers: headers(tenantA, "accepted-stale-outcome"),
+      body: JSON.stringify({ authorityEvidenceId: "review-accepted-stale-outcome" }),
+    });
+    expect(accepted.status).toBe(201);
+    expect((await app.request("/billing/execution-costs", {
+      headers: headers(tenantA, "list-accepted-current"),
+    })).status).toBe(200);
+
+    const rejectedContent = JSON.stringify({
+      costEntryId: cost.id,
+      costEntryHash: cost.entryHash,
+      decision: "reject",
+    });
+    insertArtifactManifest(db, {
+      id: "rejected-current-outcome", tenantId: "billing-tenant-a", kind: "review-evidence",
+      schemaVersion: 1, sha256: createHash("sha256").update(rejectedContent).digest("hex"),
+      mediaType: "application/json", sizeBytes: Buffer.byteLength(rejectedContent),
+      storageRef: "evidence://rejected-current-outcome", content: rejectedContent,
+      producerPrincipalId: actor.id, createdAt: "2026-09-02T00:01:00.000Z",
+    });
+    insertReviewDecision(db, {
+      id: "review-rejected-current-outcome", tenantId: "billing-tenant-a",
+      subjectType: "execution_cost", subjectId: cost.executionId,
+      candidateArtifactId: "rejected-current-outcome", reviewerPrincipalId: actor.id,
+      decision: "reject", rationale: "Supersede the accepted authority",
+      createdAt: "2026-09-02T00:01:00.000Z",
+    });
+    const stale = await app.request("/billing/execution-costs", {
+      headers: headers(tenantA, "list-accepted-stale"),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({
+      error: { code: "execution_cost_ledger_integrity_invalid" },
+    });
+  });
+
   it("requires purpose-bound service authority and explicit measurement evidence", async () => {
     const { db, tenantA, tenantB } = fixture();
     const app = appFor(db);
@@ -867,6 +964,7 @@ describe("billing economics API routes", () => {
     await expect(costs.json()).resolves.toMatchObject({
       data: [{
         executionId: "job-production-a",
+        missionId: "mission-production-a",
         outcomeStatus: "accepted",
         acceptedOutcomeId: "pull-request-a",
         modelCostMeasured: true,

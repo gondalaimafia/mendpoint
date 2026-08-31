@@ -349,9 +349,31 @@ function canonicalMeasurementProvenance(
   const canonical: Partial<Record<(typeof MEASUREMENT_COMPONENTS)[number], string>> = {};
   for (const component of MEASUREMENT_COMPONENTS) {
     const raw = source[component];
-    if (raw !== undefined) canonical[component] = text(`execution_cost_${component}_provenance`, raw);
+    if (raw !== undefined) {
+      if (typeof raw !== "string") {
+        throw new Error("execution_cost_measurement_provenance_value_invalid");
+      }
+      canonical[component] = text(`execution_cost_${component}_provenance`, raw);
+    }
   }
   return Object.freeze(canonical);
+}
+
+function storedMeasurementProvenance(
+  value: string,
+): ActualExecutionCostEntry["measurementProvenance"] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("execution_cost_measurement_provenance_invalid");
+    }
+    return canonicalMeasurementProvenance(parsed as ActualExecutionCostInput["measurementProvenance"]);
+  } catch (error) {
+    if (error instanceof Error && error.message === "execution_cost_measurement_provenance_invalid") {
+      throw error;
+    }
+    throw new Error("execution_cost_measurement_provenance_invalid", { cause: error });
+  }
 }
 
 function entryFromRow(row: CostRow): ActualExecutionCostEntry {
@@ -396,8 +418,7 @@ function entryFromRow(row: CostRow): ActualExecutionCostEntry {
     graphCostMeasured: row.graph_cost_measured === 1,
     sandboxCostMeasured: row.sandbox_cost_measured === 1,
     verificationCostMeasured: row.verification_cost_measured === 1,
-    measurementProvenance: Object.freeze(JSON.parse(row.measurement_provenance_json) as
-      ActualExecutionCostEntry["measurementProvenance"]),
+    measurementProvenance: storedMeasurementProvenance(row.measurement_provenance_json),
     costSchemaVersion: row.cost_schema_version,
   });
 }
@@ -682,9 +703,9 @@ export function recordExecutionCostOutcome(
     const allowed: Record<ExecutionOutcomeResolutionStatus | "none", ExecutionOutcomeResolutionStatus[]> = {
       none: ["accepted", "rejected"],
       accepted: ["rolled_back", "corrected"],
-      rejected: ["corrected"],
-      corrected: ["rolled_back"],
-      rolled_back: ["corrected"],
+      rejected: ["rejected", "corrected"],
+      corrected: ["corrected", "rolled_back"],
+      rolled_back: ["rolled_back", "corrected"],
     };
     if (!allowed[previous?.outcome_status ?? "none"].includes(input.outcomeStatus)) {
       throw new Error("execution_cost_outcome_transition_invalid");
@@ -1295,6 +1316,7 @@ export function getLatestActualExecutionCostForTaskBeforeAttempt(
   const row = one<CostRow>(db,
     `SELECT * FROM actual_execution_cost_entries
      WHERE tenant_id = ? AND task_id = ? AND attempt_number < ?
+       AND total_cost_money_micros > 0
      ORDER BY attempt_number DESC, entry_sequence DESC LIMIT 1`,
     [input.tenantId, input.taskId, input.attemptNumber]);
   return row ? entryFromRow(row) : undefined;
@@ -1304,15 +1326,26 @@ export function verifyExecutionCostIntegrity(
   db: AppDb,
   tenantId: string,
 ): ExecutionCostIntegrity {
-  const entries = many<CostRow>(
+  const rows = many<CostRow>(
     db,
     `SELECT * FROM actual_execution_cost_entries
      WHERE tenant_id = ? ORDER BY entry_sequence`,
     [tenantId],
-  ).map(entryFromRow);
+  );
   let previousHash: string | null = null;
   let totalCostMoneyMicros = 0;
-  for (const [index, entry] of entries.entries()) {
+  for (const [index, row] of rows.entries()) {
+    let entry: ActualExecutionCostEntry;
+    try {
+      entry = entryFromRow(row);
+    } catch {
+      return {
+        ok: false,
+        checked: index,
+        totalCostMoneyMicros,
+        error: `execution_cost_measurement_provenance_invalid:${row.id}`,
+      };
+    }
     if (entry.entrySequence !== index + 1 || entry.previousHash !== previousHash) {
       return {
         ok: false,
@@ -1401,7 +1434,7 @@ export function verifyExecutionCostIntegrity(
     ]);
     previousHash = entry.entryHash;
   }
-  return { ok: true, checked: entries.length, totalCostMoneyMicros };
+  return { ok: true, checked: rows.length, totalCostMoneyMicros };
 }
 
 export function verifyExecutionOutcomeIntegrity(
@@ -1609,12 +1642,14 @@ export function reconcileGrossMargin(
      ORDER BY u.entry_sequence`,
     [tenantId],
   );
-  const costEntries = many<CostRow>(
-    db,
-    `SELECT * FROM actual_execution_cost_entries
-     WHERE tenant_id = ? ORDER BY entry_sequence`,
-    [tenantId],
-  ).map(entryFromRow);
+  const costEntries = costIntegrity.ok
+    ? many<CostRow>(
+      db,
+      `SELECT * FROM actual_execution_cost_entries
+       WHERE tenant_id = ? ORDER BY entry_sequence`,
+      [tenantId],
+    ).map(entryFromRow)
+    : [];
   const latestOutcomeByCostEntry = new Map<string, ExecutionCostOutcome>();
   for (const outcome of listExecutionCostOutcomes(db, tenantId)) {
     latestOutcomeByCostEntry.set(outcome.costEntryId, outcome);

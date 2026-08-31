@@ -17,6 +17,8 @@ import {
   recordExecutionCostOutcome,
   transitionInvoiceExportState,
   verifyDomainEventIntegrity,
+  verifyExecutionCostIntegrity,
+  verifyExecutionOutcomeIntegrity,
   type ActualExecutionCostEntry,
   type ActualExecutionCostInput,
   type AppDb,
@@ -297,6 +299,7 @@ function publicExecutionCost(
     attemptNumber: entry.attemptNumber,
     retryNumber: entry.retryNumber,
     fallbackFromExecutionId: entry.fallbackFromExecutionId,
+    missionId: entry.missionId,
     outcomeStatus: latestOutcome?.outcomeStatus ?? entry.outcomeStatus,
     acceptedOutcomeId: latestOutcome
       ? latestOutcome.acceptedOutcomeId
@@ -609,6 +612,12 @@ export function createBillingEconomicsRoutes({
     const limit = requestedLimit === undefined ? 500 : Number(requestedLimit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 5_000) {
       return errorResponse(c, "execution_cost_limit_invalid", "Limit must be an integer from 1 to 5000", 400);
+    }
+    const costIntegrity = verifyExecutionCostIntegrity(db, identity.tenantId);
+    const outcomeIntegrity = verifyExecutionOutcomeIntegrity(db, identity.tenantId);
+    if (!costIntegrity.ok || !outcomeIntegrity.ok) {
+      return errorResponse(c, "execution_cost_ledger_integrity_invalid",
+        "Execution cost authority is unresolved", 409);
     }
     const latestOutcomes = new Map<string, ExecutionCostOutcome>();
     for (const outcome of listExecutionCostOutcomes(db, identity.tenantId)) {

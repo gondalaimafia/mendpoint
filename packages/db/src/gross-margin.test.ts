@@ -483,6 +483,12 @@ describe("actual execution cost and gross margin", () => {
       authorityKind: "reviewer",
       authorityDigest: "a".repeat(64),
     });
+    outcome("rejected-again", {
+      outcomeStatus: "rejected",
+      authorityKind: "reviewer",
+      authorityDigest: "a".repeat(64),
+    });
+    expect(verifyExecutionOutcomeIntegrity(db, "tenant_default")).toEqual({ ok: true, checked: 2 });
     expect(reconcileGrossMargin(db, "tenant_default").complete).toBe(false);
     outcome("corrected", {
       outcomeStatus: "corrected",
@@ -490,12 +496,23 @@ describe("actual execution cost and gross margin", () => {
       authorityKind: "reviewer",
       authorityDigest: "b".repeat(64),
     });
+    outcome("corrected-again", {
+      outcomeStatus: "corrected",
+      acceptedOutcomeId: "pull-request-corrected-again",
+      authorityKind: "reviewer",
+      authorityDigest: "b".repeat(64),
+    });
     expect(reconcileGrossMargin(db, "tenant_default")).toMatchObject({
       complete: true,
       exactGrossMarginMoneyMicros: 77_500,
-      attributions: [{ outcomeStatus: "corrected", acceptedOutcomeId: "pull-request-corrected" }],
+      attributions: [{ outcomeStatus: "corrected", acceptedOutcomeId: "pull-request-corrected-again" }],
     });
     outcome("rolled-back", {
+      outcomeStatus: "rolled_back",
+      authorityKind: "rollback",
+      authorityDigest: "c".repeat(64),
+    });
+    outcome("rolled-back-again", {
       outcomeStatus: "rolled_back",
       authorityKind: "rollback",
       authorityDigest: "c".repeat(64),
@@ -506,8 +523,8 @@ describe("actual execution cost and gross margin", () => {
       attributions: [{ outcomeStatus: "rolled_back", acceptedOutcomeId: null }],
     });
     expect(listExecutionCostOutcomes(db, "tenant_default", "execution-a").map((row) => row.outcomeStatus))
-      .toEqual(["rejected", "corrected", "rolled_back"]);
-    expect(verifyExecutionOutcomeIntegrity(db, "tenant_default")).toEqual({ ok: true, checked: 3 });
+      .toEqual(["rejected", "rejected", "corrected", "corrected", "rolled_back", "rolled_back"]);
+    expect(verifyExecutionOutcomeIntegrity(db, "tenant_default")).toEqual({ ok: true, checked: 6 });
     expect(() => db.raw.prepare(
       "UPDATE actual_execution_cost_outcomes SET outcome_status = 'accepted' WHERE id = 'outcome-rejected'",
     ).run()).toThrow("actual_execution_cost_outcomes_append_only");

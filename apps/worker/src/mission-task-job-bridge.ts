@@ -220,11 +220,8 @@ export function recordBoundMissionExecutionCost(
   const prior = getLatestActualExecutionCostForTaskBeforeAttempt(db, {
     tenantId: input.job.tenant_id,
     taskId,
-    attemptNumber: leaseGeneration,
+    attemptNumber,
   });
-  if (attemptNumber > 1 && !prior) {
-    throw new Error("mission_execution_cost_prior_attempt_missing");
-  }
   return recordExecutionCostFromRoutingLedger(db, {
     tenantId: input.job.tenant_id,
     routingEvidence: {
