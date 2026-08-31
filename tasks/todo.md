@@ -4128,7 +4128,6 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The complete matrix recomputation produced issue-authority digest `sha256:87e9f68ce12947e833983dd4bf68bc97e070b0c08a3b249105f3c0d967c21083`. The release-train digest remains `sha256:f4666ff849eca0a74d939d6a1f918042bc8e1091a7f6ae476bcdc1d5a7abf2c1` because no release-train record changed.
 - `npm run spec:check`, `npm run closure:check`, `npm run ledger:check`, and `npm run ga:check` pass. The focused GitHub authority, closure-matrix, and proposal-authority suite passes all 127 tests. `git diff --check` passes.
 - Review found no requirement, availability, public-claim, issue ownership, issue title, issue URL, requirement mapping, release-train, workflow, policy, credential, or runtime change. Protected GitHub authority and production acceptance remain pending until this exact change is reviewed, merged normally, and observed on the deployed main revision.
-
 ## 2026-08-30 Plan 05-03A final authority repair
 
 - [x] Restrict complete-graph short-circuiting to change classes the endpoint projection can represent, and materialize direct, wrapper, and test sites from graph evidence.
@@ -4201,3 +4200,23 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The projection mints a `repository:`-scoped `REVIEW_PREFERENCE` candidate per reviewed outcome, and both live consumers of Organization Memory read it tenant-wide with no scope filter. The ReGauge plan consult picked one inferred candidate per layer by sorting on a sha256, so which repository's reviewer preference governed a plan was arbitrary; the Mission Context Compiler caps each section, so unrelated repositories could crowd out relevant memory. A single shared predicate now bounds repository-scoped memory to the repositories a consult is actually about, applied at both sites.
 - `subjectKey` components are escaped so a colon inside one component cannot collide with a different component split. Both values are enum-ish today, so this is a structural guard, not a live defect.
 - Not changed here, and routed to the schema owner instead: revoking governed-learning consent is forward-looking and does not retract already-projected candidates. That matches the append-only learning-corpus model and is a consent-policy decision, not a defect in this plan.
+
+## 2026-08-30 GSD Plan 10-02: tenant isolation and governed audit runtime
+
+- [ ] RED: prove the production launch gate rejects a missing or unscoped tenant boundary across API, database, graph, workspace, artifact, cache, queue, mission, learning, backup, export, and observability.
+- [ ] GREEN: mount the complete boundary registry in API startup and bind every registration to an attributable adversarial test contract.
+- [ ] RED: specify durable tenant-owned legal-hold transitions, export destinations, redaction, source-chain anchoring, replay verification, and cross-tenant denial.
+- [ ] GREEN: add append-only legal-hold and export-manifest persistence and authenticated owner/admin API routes over the existing audit hash chain.
+- [ ] Verify fresh and upgrade database convergence, mutation and replay failures, focused DB/API/contract tests, affected typechecks, optimized build, GA checks, dependency audit, and diff integrity.
+- [ ] Obtain independent exact-head review, current-base protected CI, protected merge, exact-revision deployment, and live health proof.
+
+### Threats and rollback
+
+- A governed export must first verify the exact tenant audit source chain, must never accept another tenant's destination or records, and must persist only immutable destination and manifest evidence rather than transport credentials.
+- Legal holds are append-only transitions. Releasing a hold does not rewrite its creation evidence, and retention evaluation never deletes audit history in this slice.
+- Production launch fails closed if a required boundary is missing, optional but enabled without tenant scope, or lacks its named adversarial proof contract.
+- Rollback removes the new routes and startup caller while leaving existing append-only audit events untouched. New governance rows are additive and inert on an older binary.
+
+### Review
+
+- Pending implementation and verification.
