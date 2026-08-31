@@ -20,7 +20,12 @@ import {
   type MissionArtifactRole,
 } from "@mendpoint/db";
 
-const REGAUGE_PRODUCER_SUBJECT = "service:regauge-production-bootstrap";
+/**
+ * The ReGauge bootstrap service principal. Producing jobs attribute machine
+ * writes to this subject, never to the human Mission owner. Shared so the
+ * artifact writer, the advisory job, and the verifier shadow cannot drift.
+ */
+export const REGAUGE_BOOTSTRAP_PRINCIPAL_SUBJECT = "service:regauge-production-bootstrap";
 
 export type MissionArtifactRegistration = Readonly<{
   role: MissionArtifactRole;
@@ -125,34 +130,6 @@ export function tryRegisterFettlerCampaignMissionArtifacts(
 }
 
 /**
- * Resolve a ReGauge campaign's linked Mission and register already-persisted
- * manifests. Empty artifact lists skip — never invent a manifest here.
- */
-export function tryRegisterRegaugeCampaignMissionArtifacts(
-  db: AppDb,
-  input: {
-    tenantId: string;
-    campaignId: string;
-    producerPrincipalId: string;
-    createdAt: string;
-    sourceSnapshot?: string | null;
-    artifacts: readonly MissionArtifactRegistration[];
-  },
-): MissionArtifactRegisterResult {
-  if (input.artifacts.length === 0) return { status: "skipped_no_artifacts" };
-  const mission = resolveMissionForRegaugeCampaign(db, input.tenantId, input.campaignId);
-  return tryRegisterBoundMissionArtifacts(db, {
-    tenantId: input.tenantId,
-    missionId: mission?.id ?? null,
-    producerPrincipalId: input.producerPrincipalId,
-    correlationId: input.campaignId,
-    createdAt: input.createdAt,
-    sourceSnapshot: input.sourceSnapshot,
-    artifacts: input.artifacts,
-  });
-}
-
-/**
  * Persist the completed ReGauge attempt as a tenant-scoped artifact_manifest
  * and register it on the bound Mission. The live completeAttempt evidence
  * refs are filesystem / store IDs, not manifests — this is the writer that
@@ -179,7 +156,7 @@ export function persistAndRegisterRegaugeCompleteAttemptArtifacts(
     db,
     input.tenantId,
     "service",
-    REGAUGE_PRODUCER_SUBJECT,
+    REGAUGE_BOOTSTRAP_PRINCIPAL_SUBJECT,
   );
   if (!producer) {
     logSkip(`skip: producer_absent tenant=${input.tenantId} campaign=${input.campaignId}`);

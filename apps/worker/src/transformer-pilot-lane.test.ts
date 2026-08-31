@@ -17,7 +17,6 @@ import {
   createMissionTask,
   getMissionTask,
   getRoutingLedgerForJob,
-  insertPrincipal,
   listAdaptiveCandidates,
   listArtifactManifests,
   listMissionArtifacts,
@@ -348,6 +347,17 @@ function seedRegaugeMissionForCampaignA(db: AppDb): string {
     correlationId: "campaign-a",
     createdAt: CREATED_AT,
   });
+  // Production provisions this service principal for every ReGauge tenant. A
+  // bound-Mission fixture without it cannot capture artifacts, so leaving it
+  // out would make the fixture disagree with production.
+  dbModule.insertPrincipal(db, {
+    id: "svc-regauge",
+    tenantId: "tenant-a",
+    kind: "service",
+    subject: "service:regauge-production-bootstrap",
+    displayName: "ReGauge bootstrap",
+    createdAt: CREATED_AT,
+  });
   dbModule.linkRegaugeCampaignToMission(db, {
     tenantId: "tenant-a",
     missionId: mission.id,
@@ -443,11 +453,6 @@ describe("Transformer production pilot lane", () => {
   it("persists and registers a complete-attempt artifact on a bound ReGauge Mission", async () => {
     const { root, db, store } = setup();
     const missionId = seedRegaugeMissionForCampaignA(db);
-    insertPrincipal(db, {
-      id: "svc-regauge", tenantId: "tenant-a", kind: "service",
-      subject: "service:regauge-production-bootstrap",
-      displayName: "ReGauge bootstrap", createdAt: CREATED_AT,
-    });
 
     const result = await runTransformerPilotLaneOnce({
       db,
@@ -475,6 +480,37 @@ describe("Transformer production pilot lane", () => {
         sourceSnapshot: "snapshot-a",
       }),
     ]);
+  });
+
+  it("reports a degradation when the complete-attempt artifact cannot be captured", async () => {
+    const { root, db, store } = setup();
+    const missionId = seedRegaugeMissionForCampaignA(db);
+    // Fault-inject the persist seam. The attempt still completes — the write
+    // that is lost is the artifact, and a lost artifact must not report as a
+    // clean run, because an empty Mission artifact set is indistinguishable
+    // from "this campaign produced nothing" to every downstream consumer.
+    db.raw.exec("DROP TABLE artifact_manifests");
+
+    const result = await runTransformerPilotLaneOnce({
+      db,
+      store,
+      gateConfig: gateConfig(),
+      tenantId: "tenant-a",
+      workerId: "worker-artifact-fault",
+      evidenceRoot: join(root, "evidence"),
+      candidateRoot: join(root, "candidates"),
+      tempRoot: join(root, "workspaces"),
+      runId: "run-artifact-fault",
+      now: () => RUN_AT,
+      leaseToken: () => "transformer-lane-lease-token-artifact02",
+      commandRunner: async () => ({ exitCode: 0, stdout: "verified", stderr: "" }),
+    });
+
+    expect(result).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
+    expect(result.errors).toContain(
+      "transformer_mission_artifact_not_captured:campaign-a:failed",
+    );
+    expect(listMissionArtifacts(db, "tenant-a", missionId)).toHaveLength(0);
   });
 
   it("injects a tenant scoped checkpoint provider into the routed attempt", async () => {

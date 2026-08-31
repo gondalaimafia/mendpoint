@@ -25,7 +25,6 @@ import {
   persistAndRegisterRegaugeCompleteAttemptArtifacts,
   tryRegisterBoundMissionArtifacts,
   tryRegisterFettlerCampaignMissionArtifacts,
-  tryRegisterRegaugeCampaignMissionArtifacts,
 } from "./mission-artifact-register.js";
 
 const T0 = "2026-01-01T00:00:00.000Z";
@@ -298,16 +297,25 @@ describe("persistAndRegisterRegaugeCompleteAttemptArtifacts", () => {
     expect(listMissionArtifacts(db, "t1", "m-regauge")).toHaveLength(1);
   });
 
-  it("does not register already-persisted refs that are not manifests", () => {
+  it("does not throw when the manifest write fails (manifest store unavailable)", () => {
     const db = fixture();
     seedRegauge(db);
-    const result = tryRegisterRegaugeCampaignMissionArtifacts(db, {
+    // Fault-inject the persist seam itself. "failed" and "skipped_no_artifacts"
+    // mean opposite things: one is a lost artifact, the other is a campaign
+    // that produced nothing. Collapsing them hides the loss from every caller.
+    db.raw.exec("DROP TABLE artifact_manifests");
+    const result = persistAndRegisterRegaugeCompleteAttemptArtifacts(db, {
       tenantId: "t1",
       campaignId: "campaign-r",
-      producerPrincipalId: "svc-regauge",
+      unitId: "unit-a",
+      candidateDigest: "d".repeat(64),
+      candidateRevision: "c".repeat(40),
       createdAt: T0,
-      artifacts: [],
     });
-    expect(result).toEqual({ status: "skipped_no_artifacts" });
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.missionId).toBe("m-regauge");
+    expect(result.reason).toMatch(/artifact_manifests/);
+    expect(listMissionArtifacts(db, "t1", "m-regauge")).toHaveLength(0);
   });
 });
