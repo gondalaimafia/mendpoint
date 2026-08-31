@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-31T02:04:00.000Z",
-    "observedMainRevision": "a1cfb89af99bc33e3e5c64bc7f1aeca791f93545",
-    "observationDigest": "sha256:55d1f00bbe1af30a9787d5a5468779b94d1cd7aecb2bc9952c9e833914645a96",
+    "observedAt": "2026-08-31T22:32:37.232Z",
+    "observedMainRevision": "2fd92c07737318d1f3bd46718e78f6f02b1c411c",
+    "observationDigest": "sha256:ad29d7aa68c27e7cb8f8e6b0c2840405179a8e32be0ef9d1ca4d8347ea30ba1e",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 590,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/590",
-      "title": "Build Fettler production image on the CI runner",
+      "number": 534,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/534",
+      "title": "Add supersededBy to release-train PR records for consistency-checked superseding",
       "baseBranch": "main",
-      "headBranch": "codex/fly-local-build-repair",
+      "headBranch": "codex/release-train-supersededby",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2087,12 +2087,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260831-013",
+        "rotationId": "rotation-20260831-014",
         "kind": "runtime",
-        "issuedAt": "2026-08-31T02:04:00.000Z",
-        "expiresAt": "2026-09-01T02:04:00.000Z",
-        "basePolicySha256": "sha256:ad29ced4c2d768a12a37ec35f9fb3a0035548ab7832ddd54d922878966d7aa70",
-        "proposedPolicySha256": "sha256:62785e425b9a4e50d4fb67bcaa4c73147d3ca75985588d5dc5fe19ff162ee3d6"
+        "issuedAt": "2026-08-31T22:32:37.232Z",
+        "expiresAt": "2026-09-01T22:32:37.232Z",
+        "basePolicySha256": "sha256:62785e425b9a4e50d4fb67bcaa4c73147d3ca75985588d5dc5fe19ff162ee3d6",
+        "proposedPolicySha256": "sha256:152c1b9eb0f12e4a98bf766c18f6a00505bb9c07cfc3108df6a2b207e0d9e407"
       }
     },
     "pullRequests": [
