@@ -80,3 +80,14 @@ apps/worker/src/delegated-pr-verification-job.ts text eol=lf
 apps/worker/src/delegated-pr-verification-job.test.ts text eol=lf
 packages/pipeline/src/delegated-pr-verification-operation.ts text eol=lf
 packages/pipeline/src/delegated-pr-verification-operation.test.ts text eol=lf
+
+# tasks/todo.md is an append-only planning log that many parallel agent sessions
+# write at once, so nearly every long-lived branch collides there and nowhere
+# else. Concurrent appends are not semantically conflicting: the resolution is
+# always "keep both". A union merge does that automatically instead of raising a
+# conflict a human resolves the same way every time.
+#
+# This is deliberately scoped to the one file with that append-only shape. Do not
+# widen it: for ordinary source files a union merge silently produces a tree
+# neither side wrote, which is far worse than a conflict.
+tasks/todo.md merge=union
