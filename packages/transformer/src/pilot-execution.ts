@@ -1670,70 +1670,68 @@ export class TransformerPilotExecutionStore {
   }
 
   private normalizeLegacyAdaptiveCandidateHandoffs(): void {
-    const rows = this.db.prepare(
-      "SELECT tenant_id, campaign_id, body_json FROM tf_pilot_campaigns ORDER BY tenant_id, campaign_id",
-    ).all() as Array<{ tenant_id: string; campaign_id: string; body_json: string }>;
-    const updates: Array<{ tenantId: string; campaignId: string; body: string }> = [];
-    for (const row of rows) {
-      const campaign = JSON.parse(row.body_json) as StoredCampaign;
-      let changed = false;
-      const units = campaign.units.map((unit) => {
-        const handoff = unit.adaptiveCandidateHandoff;
-        if (!handoff || handoff.importedAt !== undefined) return unit;
-        const legacy = handoff as unknown as {
-          routingJobId?: string;
-          routingRunId?: string;
-          routingEnvelopeId?: string;
-          reviewTier?: string;
-        };
-        if (
-          legacy.routingJobId !== undefined &&
-          legacy.routingRunId !== undefined &&
-          legacy.routingEnvelopeId !== undefined &&
-          legacy.reviewTier !== undefined
-        ) {
-          return unit;
-        }
-        const routing = unit.routingSettlement;
-        if (
-          !routing || !routing.runId || !routing.envelopeId ||
-          routing.attemptNumber !== handoff.attemptNumber ||
-          routing.leaseGeneration !== handoff.leaseGeneration
-        ) {
-          throw new Error("transformer_pilot_legacy_handoff_routing_authority_missing");
-        }
-        if (
-          (legacy.routingJobId !== undefined && legacy.routingJobId !== campaign.campaignId) ||
-          (legacy.routingRunId !== undefined && legacy.routingRunId !== routing.runId) ||
-          (legacy.routingEnvelopeId !== undefined && legacy.routingEnvelopeId !== routing.envelopeId) ||
-          (legacy.reviewTier !== undefined &&
-            !["standard", "escalated", "blocked"].includes(legacy.reviewTier))
-        ) {
-          throw new Error("transformer_pilot_legacy_handoff_routing_authority_conflict");
-        }
-        changed = true;
-        return {
-          ...unit,
-          adaptiveCandidateHandoff: Object.freeze({
-            ...handoff,
-            routingJobId: campaign.campaignId,
-            routingRunId: routing.runId,
-            routingEnvelopeId: routing.envelopeId,
-            reviewTier: legacy.reviewTier ?? "blocked",
-          }),
-        };
-      });
-      if (changed) {
-        updates.push({
-          tenantId: row.tenant_id,
-          campaignId: row.campaign_id,
-          body: JSON.stringify({ ...campaign, units }),
-        });
-      }
-    }
-    if (updates.length === 0) return;
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const rows = this.db.prepare(
+        "SELECT tenant_id, campaign_id, body_json FROM tf_pilot_campaigns ORDER BY tenant_id, campaign_id",
+      ).all() as Array<{ tenant_id: string; campaign_id: string; body_json: string }>;
+      const updates: Array<{ tenantId: string; campaignId: string; body: string }> = [];
+      for (const row of rows) {
+        const campaign = JSON.parse(row.body_json) as StoredCampaign;
+        let changed = false;
+        const units = campaign.units.map((unit) => {
+          const handoff = unit.adaptiveCandidateHandoff;
+          if (!handoff || handoff.importedAt !== undefined) return unit;
+          const legacy = handoff as unknown as {
+            routingJobId?: string;
+            routingRunId?: string;
+            routingEnvelopeId?: string;
+            reviewTier?: string;
+          };
+          const routing = unit.routingSettlement;
+          if (
+            !routing || !routing.runId || !routing.envelopeId ||
+            routing.attemptNumber !== handoff.attemptNumber ||
+            routing.leaseGeneration !== handoff.leaseGeneration ||
+            routing.leaseTokenDigest !== handoff.leaseTokenDigest
+          ) {
+            throw new Error("transformer_pilot_legacy_handoff_routing_authority_missing");
+          }
+          if (
+            (legacy.routingJobId !== undefined && legacy.routingJobId !== campaign.campaignId) ||
+            (legacy.routingRunId !== undefined && legacy.routingRunId !== routing.runId) ||
+            (legacy.routingEnvelopeId !== undefined && legacy.routingEnvelopeId !== routing.envelopeId) ||
+            (legacy.reviewTier !== undefined &&
+              !["standard", "escalated", "blocked"].includes(legacy.reviewTier))
+          ) {
+            throw new Error("transformer_pilot_legacy_handoff_routing_authority_conflict");
+          }
+          if (
+            legacy.routingJobId !== undefined &&
+            legacy.routingRunId !== undefined &&
+            legacy.routingEnvelopeId !== undefined &&
+            legacy.reviewTier !== undefined
+          ) return unit;
+          changed = true;
+          return {
+            ...unit,
+            adaptiveCandidateHandoff: Object.freeze({
+              ...handoff,
+              routingJobId: campaign.campaignId,
+              routingRunId: routing.runId,
+              routingEnvelopeId: routing.envelopeId,
+              reviewTier: legacy.reviewTier ?? "blocked",
+            }),
+          };
+        });
+        if (changed) {
+          updates.push({
+            tenantId: row.tenant_id,
+            campaignId: row.campaign_id,
+            body: JSON.stringify({ ...campaign, units }),
+          });
+        }
+      }
       const update = this.db.prepare(
         "UPDATE tf_pilot_campaigns SET body_json = ? WHERE tenant_id = ? AND campaign_id = ?",
       );
@@ -2203,15 +2201,31 @@ export class TransformerPilotExecutionStore {
       .flatMap((campaign) => campaign.units
         .filter((unit) =>
           unit.adaptiveCandidateHandoff !== undefined &&
-          unit.adaptiveCandidateHandoff.importedAt === undefined
+          unit.adaptiveCandidateHandoff.importedAt === undefined &&
+          unit.routingSettlement?.outcome !== undefined &&
+          unit.routingSettlement.settledAt !== undefined
         )
-        .map((unit) => ({
-          tenantId: campaign.tenantId,
-          campaignId: campaign.campaignId,
-          unitId: unit.id,
-          environment: campaign.environment,
-          handoff: unit.adaptiveCandidateHandoff!,
-        })))
+        .map((unit) => {
+          const handoff = unit.adaptiveCandidateHandoff!;
+          const routing = unit.routingSettlement!;
+          if (
+            handoff.routingJobId !== campaign.campaignId ||
+            handoff.routingRunId !== routing.runId ||
+            handoff.routingEnvelopeId !== routing.envelopeId ||
+            handoff.attemptNumber !== routing.attemptNumber ||
+            handoff.leaseGeneration !== routing.leaseGeneration ||
+            handoff.leaseTokenDigest !== routing.leaseTokenDigest
+          ) {
+            throw new Error("transformer_pilot_adaptive_candidate_routing_mismatch");
+          }
+          return {
+            tenantId: campaign.tenantId,
+            campaignId: campaign.campaignId,
+            unitId: unit.id,
+            environment: campaign.environment,
+            handoff,
+          };
+        }))
       .sort((left, right) =>
         compareCodeUnits(left.handoff.observedAt, right.handoff.observedAt) ||
         compareCodeUnits(left.tenantId, right.tenantId) ||
@@ -3201,6 +3215,18 @@ export class TransformerPilotExecutionStore {
         if (current.candidateDigest !== input.divergedFromDigest) {
           throw new Error("transformer_pilot_adaptive_candidate_digest_mismatch");
         }
+        const routing = current.routingSettlement;
+        if (
+          input.routingJobId !== state.campaignId ||
+          !routing ||
+          input.routingRunId !== routing.runId ||
+          input.routingEnvelopeId !== routing.envelopeId ||
+          input.attemptNumber !== routing.attemptNumber ||
+          input.leaseGeneration !== routing.leaseGeneration ||
+          leaseTokenDigest(input.leaseToken) !== routing.leaseTokenDigest
+        ) {
+          throw new Error("transformer_pilot_adaptive_candidate_routing_mismatch");
+        }
         if (current.adaptiveCandidateHandoff) {
           throw new Error("transformer_pilot_adaptive_candidate_handoff_conflict");
         }
@@ -3252,6 +3278,18 @@ export class TransformerPilotExecutionStore {
           handoff.sealedSha256 !== input.sealedSha256
         ) {
           throw new Error("transformer_pilot_adaptive_candidate_handoff_mismatch");
+        }
+        const routing = unit.routingSettlement;
+        if (
+          !routing?.outcome || !routing.settledAt ||
+          handoff.routingJobId !== state.campaignId ||
+          handoff.routingRunId !== routing.runId ||
+          handoff.routingEnvelopeId !== routing.envelopeId ||
+          handoff.attemptNumber !== routing.attemptNumber ||
+          handoff.leaseGeneration !== routing.leaseGeneration ||
+          handoff.leaseTokenDigest !== routing.leaseTokenDigest
+        ) {
+          throw new Error("transformer_pilot_adaptive_candidate_routing_unsettled");
         }
         if (
           handoff.importedAt &&

@@ -11,6 +11,7 @@ import {
   reserveWardenModelCall,
   settleActiveWardenModelReservationsForFence,
   settleWardenModelCall,
+  verifyWardenModelReservationIntegrity,
   type AppDb,
   type JobRow,
   type WardenModelReservationInput,
@@ -151,6 +152,19 @@ describe("Warden durable model accounting", () => {
       charged_total_tokens: 600,
       charged_cost_usd: 0.5,
     });
+    expect(verifyWardenModelReservationIntegrity(first)).toEqual({
+      ok: true,
+      reservationDigestVersion: 1,
+      settlementDigestVersion: 2,
+    });
+    expect(verifyWardenModelReservationIntegrity({
+      ...first,
+      maximum_cost_usd: 1.2,
+    })).toMatchObject({ ok: false, error: "warden_model_reservation_digest_mismatch" });
+    expect(verifyWardenModelReservationIntegrity({
+      ...first,
+      charged_cost_usd: 0.6,
+    })).toMatchObject({ ok: false, error: "warden_model_settlement_digest_mismatch" });
     expect(() => settleWardenModelCall(db, {
       ...settlement,
       costUsd: 0.6,

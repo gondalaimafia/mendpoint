@@ -23,11 +23,13 @@ import {
   resolveMissionForFettlerCampaign,
   resolveMissionForRegaugeCampaign,
   transitionMissionTask,
+  verifyWardenModelReservationIntegrity,
   type ActualExecutionCostEntry,
   type AppDb,
   type Mission,
   type MissionTask,
   type MissionTaskRisk,
+  type WardenModelReservationRow,
 } from "@mendpoint/db";
 
 export type BridgedJob = Readonly<{
@@ -254,24 +256,6 @@ type PendingPaidRoutingRow = Readonly<{
   provider_id: string | null;
 }>;
 
-type SettledModelReservationRow = Readonly<{
-  id: string;
-  run_id: string;
-  lease_generation: number;
-  reservation_digest: string;
-  settlement_digest: string | null;
-  provider: string;
-  status: string;
-  charged_input_tokens: number | null;
-  charged_output_tokens: number | null;
-  charged_total_tokens: number | null;
-  charged_cost_usd: number | null;
-  reserved_at: string;
-  settled_at: string | null;
-}>;
-
-const SHA256 = /^sha256:[a-f0-9]{64}$/;
-
 /**
  * Recover a paid prior Fettler attempt whose deferred routing outcome was lost
  * when the terminal job transaction rolled back. Settled model reservations are
@@ -312,17 +296,14 @@ export function reconcilePriorPaidWardenAttempts(
   let reconciled = 0;
   for (const candidate of candidates) {
     const reservations = db.raw.prepare(
-      `SELECT id, run_id, lease_generation, reservation_digest, settlement_digest,
-              provider, status, charged_input_tokens, charged_output_tokens,
-              charged_total_tokens, charged_cost_usd, reserved_at, settled_at
-       FROM fettler_model_reservations
+      `SELECT * FROM fettler_model_reservations
        WHERE tenant_id = ? AND job_id = ? AND lease_generation = ?
        ORDER BY call_index, id`,
     ).all(
       input.job.tenant_id,
       input.job.id,
       candidate.leaseGeneration,
-    ) as SettledModelReservationRow[];
+    ) as WardenModelReservationRow[];
     if (reservations.length === 0) continue;
     if (
       candidate.route.action !== "route" ||
@@ -332,9 +313,7 @@ export function reconcilePriorPaidWardenAttempts(
         reservation.run_id !== candidate.baseRunId ||
         reservation.provider !== candidate.route.provider_id ||
         reservation.status === "active" ||
-        !SHA256.test(reservation.reservation_digest) ||
-        !reservation.settlement_digest ||
-        !SHA256.test(reservation.settlement_digest) ||
+        !verifyWardenModelReservationIntegrity(reservation).ok ||
         !Number.isSafeInteger(reservation.charged_input_tokens) ||
         reservation.charged_input_tokens! < 0 ||
         !Number.isSafeInteger(reservation.charged_output_tokens) ||

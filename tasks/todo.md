@@ -4190,3 +4190,15 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - Restored ReGauge campaigns now normalize only pending pre-change handoffs that have an exact same-attempt durable routing settlement. Missing review authority defaults to `blocked`; missing or conflicting routing authority aborts store startup without mutating the campaign.
 - Gross-margin reconciliation now exposes outcome-ledger integrity to its caller, and the authenticated API reports execution-cost diagnostics unhealthy when either cost rows or their authority outcomes fail integrity.
 - Verification passes 191 focused tests across database, Worker, Transformer, and API packages, including the 90-test live Worker job-loop suite and both restored-volume migration outcomes. All four affected workspace typechecks pass, and diff integrity is clean. No provider call, settlement rewrite, push, deployment, or protected-authority action occurred.
+
+## 2026-08-30 Plan 09-01 authenticated recovery follow-up
+
+- [ ] RED and GREEN: recompute the complete versioned reservation and settlement fingerprints before importing a paid attempt; reject stored-field or digest tampering without creating routing or cost evidence.
+- [ ] RED and GREEN: validate every pending adaptive handoff against the exact same-attempt routing binding, expose it only after terminal settlement, preserve blocked review authority, and reject populated conflicts.
+- [ ] RED and GREEN: serialize legacy handoff normalization under a write lock so constructor migration cannot overwrite a concurrent campaign update.
+- [ ] Rebase onto current `origin/main`, resolve only owned overlaps, and rerun focused/full affected suites, four workspace typechecks, and diff integrity.
+- [ ] Commit the reviewed repair locally without pushing, then report the exact head for fresh review.
+
+### Safety boundary
+
+- Recovery must derive evidence only from authenticated durable rows and never rerun or resettle provider work. Migration may repair missing compatibility fields but may not invent routing authority, expose unsettled work, or overwrite a concurrent state transition.

@@ -426,6 +426,7 @@ describe("Transformer pilot execution coordinator", () => {
   it("rejects an adaptive candidate handoff after the exact lease transfers", () => {
     const store = new TransformerPilotExecutionStore();
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    store.bindRoutingAttempt(routingBinding("bind-adaptive-original"));
     const originalToken = "lease-token-adaptive-original-0001";
     const original = store.claimNextAttempt({
       ...mutation(1, "claim-adaptive-original"),
@@ -475,6 +476,7 @@ describe("Transformer pilot execution coordinator", () => {
   it("replays an exact adaptive candidate handoff without another state transition", () => {
     const store = new TransformerPilotExecutionStore();
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    store.bindRoutingAttempt(routingBinding("bind-adaptive-replay"));
     const token = "lease-token-adaptive-replay-000001";
     const lease = store.claimNextAttempt({
       ...mutation(1, "claim-adaptive-replay"),
@@ -508,6 +510,7 @@ describe("Transformer pilot execution coordinator", () => {
   it("rejects a conflicting adaptive candidate handoff replay", () => {
     const store = new TransformerPilotExecutionStore();
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    store.bindRoutingAttempt(routingBinding("bind-adaptive-conflict"));
     const token = "lease-token-adaptive-conflict-0001";
     const lease = store.claimNextAttempt({
       ...mutation(1, "claim-adaptive-conflict"),
@@ -528,12 +531,59 @@ describe("Transformer pilot execution coordinator", () => {
     store.close();
   });
 
+  it("binds a handoff to the exact route and exposes it only after terminal settlement", () => {
+    const store = new TransformerPilotExecutionStore();
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    store.bindRoutingAttempt(routingBinding("bind-adaptive-exposure"));
+    const token = "lease-token-adaptive-exposure-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(2, "claim-adaptive-exposure"),
+      leaseToken: token,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    expect(() => store.recordAdaptiveCandidateHandoff(adaptiveHandoff(
+      lease,
+      token,
+      "handoff-adaptive-wrong-route",
+      { routingRunId: "run-routing-sibling" },
+    ))).toThrow("transformer_pilot_adaptive_candidate_routing_mismatch");
+    store.recordAdaptiveCandidateHandoff(adaptiveHandoff(
+      lease,
+      token,
+      "handoff-adaptive-exposure",
+    ));
+    expect(store.listAdaptiveCandidateHandoffs("tenant-a", 10, gateConfig())).toEqual([]);
+
+    complete(store, lease.unitId, 3, token, lease.leaseGeneration);
+    expect(store.listAdaptiveCandidateHandoffs("tenant-a", 10, gateConfig())).toEqual([]);
+    const pending = store.listPendingRoutingSettlements("tenant-a")[0]!;
+    store.markRoutingOutcomeSettled({
+      ...mutation(4, "settle-adaptive-exposure"),
+      unitId: pending.unitId,
+      envelopeId: pending.envelopeId,
+      outcomeIdempotencyKey: pending.outcome.idempotencyKey,
+      gateConfig: gateConfig(),
+    });
+    expect(store.listAdaptiveCandidateHandoffs("tenant-a", 10, gateConfig())).toEqual([
+      expect.objectContaining({
+        handoff: expect.objectContaining({
+          routingJobId: "campaign-a",
+          routingRunId: "run-routing-a",
+          routingEnvelopeId: "route-routing-a",
+        }),
+      }),
+    ]);
+    store.close();
+  });
+
   it("keeps the fenced handoff durable across a crash before App DB import", () => {
     const root = mkdtempSync(join(tmpdir(), "transformer-pilot-adaptive-handoff-"));
     roots.push(root);
     const path = join(root, "pilot.sqlite");
     let store = new TransformerPilotExecutionStore(path);
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    store.bindRoutingAttempt(routingBinding("bind-adaptive-crash"));
     const token = "lease-token-adaptive-crash-0000001";
     const lease = store.claimNextAttempt({
       ...mutation(1, "claim-adaptive-crash"),
@@ -559,9 +609,19 @@ describe("Transformer pilot execution coordinator", () => {
         candidateDigest: digest("e"),
       },
     });
+    expect(store.listAdaptiveCandidateHandoffs("tenant-a", 10, gateConfig())).toEqual([]);
+    complete(store, lease.unitId, 3, token, lease.leaseGeneration);
+    const routing = store.listPendingRoutingSettlements("tenant-a")[0]!;
+    store.markRoutingOutcomeSettled({
+      ...mutation(4, "settle-adaptive-crash"),
+      unitId: routing.unitId,
+      envelopeId: routing.envelopeId,
+      outcomeIdempotencyKey: routing.outcome.idempotencyKey,
+      gateConfig: gateConfig(),
+    });
     expect(store.listAdaptiveCandidateHandoffs("tenant-a", 10, gateConfig())).toHaveLength(1);
     const imported = {
-      ...mutation(3, "adaptive-imported-after-crash"),
+      ...mutation(5, "adaptive-imported-after-crash"),
       unitId: lease.unitId,
       attemptId: transformerAttemptId(lease),
       candidateId: "candidate-after-crash",
@@ -581,7 +641,7 @@ describe("Transformer pilot execution coordinator", () => {
     })).toThrow("transformer_pilot_adaptive_candidate_import_conflict");
     expect(marked.units[0]!.adaptiveCandidateHandoff).toMatchObject({
       candidateId: "candidate-after-crash",
-      importedAt: time(3),
+      importedAt: time(5),
     });
     expect(store.listAdaptiveCandidateHandoffs("tenant-a", 10, gateConfig())).toEqual([]);
     store.close();
@@ -628,6 +688,16 @@ describe("Transformer pilot execution coordinator", () => {
     legacy.close();
 
     store = new TransformerPilotExecutionStore(path);
+    expect(store.listAdaptiveCandidateHandoffs("tenant-a", 10, gateConfig())).toEqual([]);
+    complete(store, lease.unitId, 3, token, lease.leaseGeneration);
+    const pending = store.listPendingRoutingSettlements("tenant-a")[0]!;
+    store.markRoutingOutcomeSettled({
+      ...mutation(4, "settle-legacy-handoff"),
+      unitId: pending.unitId,
+      envelopeId: pending.envelopeId,
+      outcomeIdempotencyKey: pending.outcome.idempotencyKey,
+      gateConfig: gateConfig(),
+    });
     expect(store.listAdaptiveCandidateHandoffs("tenant-a", 10, gateConfig())).toEqual([
       expect.objectContaining({
         handoff: expect.objectContaining({
@@ -661,6 +731,7 @@ describe("Transformer pilot execution coordinator", () => {
     const path = join(root, "pilot.sqlite");
     let store = new TransformerPilotExecutionStore(path);
     store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    store.bindRoutingAttempt(routingBinding("bind-legacy-unbound"));
     const token = "lease-token-legacy-unbound-00001";
     const lease = store.claimNextAttempt({
       ...mutation(1, "claim-legacy-unbound"),
@@ -680,13 +751,17 @@ describe("Transformer pilot execution coordinator", () => {
       "SELECT body_json FROM tf_pilot_campaigns WHERE tenant_id = ? AND campaign_id = ?",
     ).get("tenant-a", "campaign-a") as { body_json: string };
     const body = JSON.parse(row.body_json) as {
-      units: Array<{ adaptiveCandidateHandoff?: Record<string, unknown> }>;
+      units: Array<{
+        adaptiveCandidateHandoff?: Record<string, unknown>;
+        routingSettlement?: Record<string, unknown>;
+      }>;
     };
     const handoff = body.units[0]!.adaptiveCandidateHandoff!;
     delete handoff.routingJobId;
     delete handoff.routingRunId;
     delete handoff.routingEnvelopeId;
     delete handoff.reviewTier;
+    delete body.units[0]!.routingSettlement;
     legacy.prepare(
       "UPDATE tf_pilot_campaigns SET body_json = ? WHERE tenant_id = ? AND campaign_id = ?",
     ).run(JSON.stringify(body), "tenant-a", "campaign-a");
@@ -703,6 +778,45 @@ describe("Transformer pilot execution coordinator", () => {
     };
     expect(unchanged.units[0]!.adaptiveCandidateHandoff).not.toHaveProperty("routingRunId");
     persisted.close();
+  });
+
+  it("rejects a populated pending handoff that conflicts with its durable route", () => {
+    const root = mkdtempSync(join(tmpdir(), "transformer-pilot-handoff-conflict-"));
+    roots.push(root);
+    const path = join(root, "pilot.sqlite");
+    let store = new TransformerPilotExecutionStore(path);
+    store.createCampaign(createInput([unit("unit-a", "repo-a", "a", "c")]));
+    store.bindRoutingAttempt(routingBinding("bind-handoff-conflict"));
+    const token = "lease-token-handoff-conflict-0001";
+    const lease = store.claimNextAttempt({
+      ...mutation(2, "claim-handoff-conflict"),
+      leaseToken: token,
+      leaseDurationMs: 3_600_000,
+      gateConfig: gateConfig(),
+    })!;
+    store.recordAdaptiveCandidateHandoff(adaptiveHandoff(
+      lease,
+      token,
+      "record-handoff-conflict",
+    ));
+    store.close();
+
+    const persisted = new DatabaseSync(path);
+    const row = persisted.prepare(
+      "SELECT body_json FROM tf_pilot_campaigns WHERE tenant_id = ? AND campaign_id = ?",
+    ).get("tenant-a", "campaign-a") as { body_json: string };
+    const body = JSON.parse(row.body_json) as {
+      units: Array<{ adaptiveCandidateHandoff: Record<string, unknown> }>;
+    };
+    body.units[0]!.adaptiveCandidateHandoff.routingRunId = "run-routing-sibling";
+    persisted.prepare(
+      "UPDATE tf_pilot_campaigns SET body_json = ? WHERE tenant_id = ? AND campaign_id = ?",
+    ).run(JSON.stringify(body), "tenant-a", "campaign-a");
+    persisted.close();
+
+    expect(() => new TransformerPilotExecutionStore(path)).toThrow(
+      "transformer_pilot_legacy_handoff_routing_authority_conflict",
+    );
   });
 
   it("persists exact snapshots, versioned constraints, evidence, and idempotency across restart", () => {

@@ -222,6 +222,97 @@ describe("mission-task job bridge", () => {
     expect(getWardenModelReservation(db, "t1", reservationId)).toEqual(settledBeforeRetry);
   });
 
+  it("rejects tampered paid-attempt evidence without creating immutable recovery rows", () => {
+    const db = fixture();
+    enqueueJob(db, {
+      id: "job-paid-tampered",
+      tenantId: "t1",
+      type: "agent.run",
+      payload: { missionId: "m1", goal: "repair", consumerId: "c1" },
+      createdAt: at,
+    });
+    const first = claimNextJob(db, ["agent.run"], {
+      tenantId: "t1",
+      workerId: "worker-first",
+      leaseMs: 60_000,
+      now: at,
+    })!;
+    bridgeClaimedJobToMissionTask(db, first, at);
+    recordRoutingDecision(db, {
+      tenantId: "t1",
+      jobId: first.id,
+      runId: "session-tampered:lease-1",
+      taskKind: "agent.run",
+      envelopeId: "envelope-paid-tampered",
+      policySnapshotId: "policy-paid-tampered",
+      taskSnapshotId: "snapshot-paid-tampered",
+      action: "route",
+      selectedExecutorId: "executor-frontier",
+      providerId: "provider-frontier",
+      eliminated: [], fallback: [], breaker: [], handoffRequired: false,
+      decision: { decisionId: "envelope-paid-tampered" },
+      createdAt: at,
+    });
+    reserveWardenModelCall(db, {
+      id: "wdmodel-paid-tampered",
+      tenantId: "t1",
+      jobId: first.id,
+      runId: "session-tampered",
+      workerId: first.lease_owner!,
+      leaseGeneration: first.lease_generation,
+      callIndex: 1,
+      requestDigest: digest("b"),
+      provider: "provider-frontier",
+      configuredModel: "model-a",
+      endpointHost: "models.example",
+      maximumInputTokens: 1_000,
+      maximumOutputTokens: 200,
+      maximumTotalTokens: 1_200,
+      maximumCostUsd: 1,
+      jobBudgetUsd: 2,
+      observedAt: "2026-01-01T00:00:01.000Z",
+    });
+    settleWardenModelCall(db, {
+      tenantId: "t1",
+      jobId: first.id,
+      reservationId: "wdmodel-paid-tampered",
+      workerId: first.lease_owner!,
+      leaseGeneration: first.lease_generation,
+      status: "succeeded",
+      inputTokens: 500,
+      outputTokens: 100,
+      totalTokens: 600,
+      costUsd: 0.5,
+      observedAt: "2026-01-01T00:00:02.000Z",
+    });
+    db.raw.prepare(
+      "UPDATE fettler_model_reservations SET charged_cost_usd = ? WHERE id = ?",
+    ).run(0.6, "wdmodel-paid-tampered");
+    failJob(db, first.id, "terminal transaction rolled back", "2026-01-01T00:00:03.000Z", {
+      workerId: first.lease_owner!,
+      leaseGeneration: first.lease_generation,
+      errorCode: "mcu_accounting_persistence_failed",
+      retryable: true,
+      baseDelayMs: 1_000,
+      maxDelayMs: 1_000,
+    });
+    const retry = claimNextJob(db, ["agent.run"], {
+      tenantId: "t1",
+      workerId: "worker-retry",
+      leaseMs: 60_000,
+      now: "2026-01-01T00:00:05.000Z",
+    })!;
+
+    expect(() => reconcilePriorPaidWardenAttempts(db, {
+      job: retry,
+      observedAt: "2026-01-01T00:00:06.000Z",
+    })).toThrow("warden_paid_attempt_evidence_invalid");
+    expect(getRoutingLedgerForJob(db, retry.id, "t1")).toEqual([
+      expect.objectContaining({ outcome: null }),
+    ]);
+    expect(listActualExecutionCosts(db, "t1")).toEqual([]);
+  });
+
   it("is a no-op when the job has no bound mission", () => {
     const db = fixture();
     const unbound = job({ goal: "repair", consumerId: "c1" });
