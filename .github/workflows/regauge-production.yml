@@ -3,6 +3,10 @@ name: Regauge production proof
 permissions:
   contents: read
 
+concurrency:
+  group: regauge-production
+  cancel-in-progress: false
+
 on:
   workflow_dispatch:
     inputs:
@@ -44,25 +48,39 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p test-results/regauge-production/preflight
-          test -n "$FLY_API_TOKEN"
-          flyctl auth whoami >/dev/null
+          test -n "$FLY_API_TOKEN" \
+            || { echo "regauge_preflight_fly_token_missing"; exit 1; }
+          flyctl auth whoami >/dev/null \
+            || { echo "regauge_preflight_fly_auth_failed"; exit 1; }
           flyctl orgs list --json \
             | tee test-results/regauge-production/preflight/fly-orgs.json
+          status_raw="test-results/regauge-production/preflight/fly-status-raw.json"
+          status_err="test-results/regauge-production/preflight/fly-status-error.txt"
           if flyctl status --app mendpoint-regauge-production --json \
-            >test-results/regauge-production/preflight/fly-status-raw.json 2>/dev/null; then
-            jq '{exists: true, status: .}' \
-              test-results/regauge-production/preflight/fly-status-raw.json \
-              >test-results/regauge-production/preflight/dedicated-app.json
-          else
+            >"$status_raw" 2>"$status_err"; then
+            jq '{exists: true, status: .}' "$status_raw" \
+              >test-results/regauge-production/preflight/dedicated-app.json \
+              || { echo "regauge_preflight_status_unparseable"; exit 1; }
+            flyctl machines list --app mendpoint-regauge-production --json \
+              > test-results/regauge-production/preflight/pre-mutation-machines.json \
+              || { echo "regauge_preflight_machines_list_failed"; exit 1; }
+          elif grep -qiE 'could not find app|could not find the app|app not found|does not exist' \
+            "$status_err"; then
             jq -n '{exists: false}' \
               >test-results/regauge-production/preflight/dedicated-app.json
+            printf '[]\n' \
+              > test-results/regauge-production/preflight/pre-mutation-machines.json
+          else
+            echo "regauge_preflight_app_status_indeterminate"
+            cat "$status_err" >&2
+            exit 1
           fi
-          rm -f test-results/regauge-production/preflight/fly-status-raw.json
+          rm -f "$status_raw"
       - name: Upload read only Fly preflight evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: regauge-fly-preflight-${{ github.sha }}
+          name: regauge-fly-preflight-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: test-results/regauge-production/preflight/
           if-no-files-found: error
           retention-days: 90
@@ -71,11 +89,8 @@ jobs:
     needs: preflight
     if: ${{ inputs.phase == 'activate' && github.repository == 'gondalaimafia/mendpoint' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 85
     environment: regauge-production
-    concurrency:
-      group: regauge-production
-      cancel-in-progress: false
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       FLY_ORG: ${{ vars.FLY_ORG }}
@@ -115,8 +130,26 @@ jobs:
       MENDPOINT_AGENT_VERIFIER_PRICING_JSON: ${{ vars.REGAUGE_DEEPSEEK_PRICING_JSON }}
       MENDPOINT_REGAUGE_COORDINATOR_URL: https://mendpoint-regauge-production.fly.dev/
       MENDPOINT_RELEASE_REVISION: ${{ github.sha }}
+      MENDPOINT_REGAUGE_ACTIVATION_RUN_ID: ${{ github.run_id }}
+      MENDPOINT_REGAUGE_ACTIVATION_RUN_ATTEMPT: ${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Prepare immutable workflow context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/regauge-production
+          jq -n \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg revision "$GITHUB_SHA" \
+            '{runId: $runId, runAttempt: $runAttempt, revision: $revision}' \
+            > test-results/regauge-production/workflow-context.json
+      - name: Download pre-mutation topology
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: regauge-fly-preflight-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/regauge-production/preflight/
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
@@ -139,7 +172,8 @@ jobs:
           [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           approval_ref="approval:regauge:${MENDPOINT_REGAUGE_TENANT_ID}:${MENDPOINT_REGAUGE_CAMPAIGN_ID}:repository:${MENDPOINT_REGAUGE_CANARY_REPOSITORY_ID}:revision:${MENDPOINT_REGAUGE_CANARY_REVISION}:draft:1:run:${GITHUB_RUN_ID}:attempt:${GITHUB_RUN_ATTEMPT}"
           evidence_ref="evidence:github:run:${GITHUB_RUN_ID}:attempt:${GITHUB_RUN_ATTEMPT}:revision:${GITHUB_SHA}"
-          activation_expires_at="$(date -u -d '+70 minutes' '+%Y-%m-%dT%H:%M:%S.000Z')"
+          activation_expires_at="$(date -u -d '+75 minutes' '+%Y-%m-%dT%H:%M:%S.000Z')"
+          activation_deadline_epoch="$(( $(date -u +%s) + 75 * 60 ))"
           gate="$(
             REGAUGE_RUN_APPROVAL="$approval_ref" \
             REGAUGE_RUN_EVIDENCE="$evidence_ref" \
@@ -177,6 +211,7 @@ jobs:
             echo "MENDPOINT_REGAUGE_EVIDENCE_REFS=$approval_ref,$evidence_ref"
             echo "MENDPOINT_REGAUGE_GATE=$gate"
             echo "MENDPOINT_REGAUGE_ACTIVATION_EXPIRES_AT=$activation_expires_at"
+            echo "MENDPOINT_REGAUGE_ACTIVATION_DEADLINE_EPOCH=$activation_deadline_epoch"
             echo "MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON=$policy_envelope"
             echo "MENDPOINT_REGAUGE_VERIFIER_CONSENT_EFFECTIVE_AT=2026-08-24T00:00:00.000Z"
             echo "MENDPOINT_REGAUGE_VERIFIER_CONSENT_EXPIRES_AT=2026-11-20T23:59:59.000Z"
@@ -192,10 +227,9 @@ jobs:
           test "$GITHUB_REPOSITORY" = "gondalaimafia/mendpoint"
           test "$GITHUB_REF" = "refs/heads/main"
           test "$CONFIRMATION" = "REGAUGE_DRAFT_ONLY"
-          test "$LIVE_EVAL_REPETITIONS" -ge 3
-          test "$LIVE_EVAL_REPETITIONS" -le 10
+          test "$LIVE_EVAL_REPETITIONS" = 3
           test "$READINESS_SOAK_SECONDS" -ge 60
-          test "$READINESS_SOAK_SECONDS" -le 1800
+          test "$READINESS_SOAK_SECONDS" -le 600
           required=(
             FLY_API_TOKEN FLY_ORG MENDPOINT_REGAUGE_TENANT_ID MENDPOINT_REGAUGE_CAMPAIGN_ID
             MENDPOINT_REGAUGE_CANARY_OWNER MENDPOINT_REGAUGE_CANARY_REPOSITORY
@@ -250,7 +284,6 @@ jobs:
             and .trainingDataAllowed == false
           ' <<<"$MENDPOINT_REGAUGE_VERIFIER_POLICY_ENVELOPE_JSON" >/dev/null \
             || { echo "regauge_deepseek_policy_not_authorized"; exit 1; }
-          mkdir -p test-results/regauge-production
       - name: Verify dedicated app and coordinator volume
         shell: bash
         run: |
@@ -372,6 +405,91 @@ jobs:
           test "$((now_epoch - verified_epoch))" -le 300
           printf '%s\n' "$attestation_json" \
             > test-results/regauge-production/restored-state-receipt.json
+      - name: Quiesce and snapshot the existing worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot="test-results/regauge-production/preflight/pre-mutation-machines.json"
+          test -s "$snapshot" \
+            || { echo "regauge_pre_mutation_snapshot_missing"; exit 1; }
+          current="test-results/regauge-production/pre-mutation-current.json"
+          timeout --kill-after=2s 15s flyctl machines list \
+            --app mendpoint-regauge-production --json > "$current" \
+            || { echo "regauge_pre_mutation_current_list_failed"; exit 1; }
+          volume_id="$(jq -er '.id' test-results/regauge-production/coordinator-volume.json)" \
+            || { echo "regauge_pre_mutation_coordinator_volume_unreadable"; exit 1; }
+          jq -e --arg volume "$volume_id" '
+            length == 2
+            and ([.[] | select(
+              .state == "started"
+              and .config.metadata.fly_process_group == "coordinator"
+              and ([.config.mounts[] | select(.volume == $volume and .path == "/data")] | length) == 1
+            )] | length) == 1
+            and ([.[] | select(
+              (.state == "started" or .state == "stopped")
+              and .config.metadata.fly_process_group == "worker"
+              and ((.config.mounts // []) | length) == 0
+            )] | length) == 1
+          ' "$snapshot" >/dev/null \
+            || { echo "regauge_pre_mutation_snapshot_topology_invalid"; exit 1; }
+          jq -e --slurpfile expected "$snapshot" '
+            ([.[] | {id, instance_id, state, config, image_ref}] | sort_by(.id))
+            == ([$expected[0][] | {id, instance_id, state, config, image_ref}] | sort_by(.id))
+          ' "$current" >/dev/null \
+            || { echo "regauge_pre_mutation_topology_drift"; exit 1; }
+          worker_id="$(jq -er '.[] | select(.config.metadata.fly_process_group == "worker") | .id' "$snapshot")" \
+            || { echo "regauge_pre_mutation_worker_id_missing"; exit 1; }
+          worker_state="$(jq -er '.[] | select(.config.metadata.fly_process_group == "worker") | .state' "$snapshot")" \
+            || { echo "regauge_pre_mutation_worker_state_missing"; exit 1; }
+          jq -ce --arg id "$worker_id" '
+            .[] | select(.id == $id)
+            | .config
+            | if (.image | type) == "string" and (.image | length) > 0
+              then . else error("regauge_pre_mutation_worker_image_missing") end
+          ' "$snapshot" > test-results/regauge-production/pre-mutation-worker-config.json \
+            || { echo "regauge_pre_mutation_worker_config_invalid"; exit 1; }
+          jq -c --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" '
+            .env = ((.env // {}) + {
+              MENDPOINT_REGAUGE_QUIESCE_RUN_ID: $run,
+              MENDPOINT_REGAUGE_QUIESCE_RUN_ATTEMPT: $attempt
+            })
+          ' test-results/regauge-production/pre-mutation-worker-config.json \
+            > test-results/regauge-production/quiesce-worker-config.json
+          timeout --kill-after=10s 180s flyctl machine update "$worker_id" \
+            --app mendpoint-regauge-production \
+            --machine-config test-results/regauge-production/quiesce-worker-config.json \
+            --skip-health-checks --skip-start --yes
+          marked="$(flyctl machines list --app mendpoint-regauge-production --json)"
+          jq -e --arg id "$worker_id" --arg run "$GITHUB_RUN_ID" \
+            --arg attempt "$GITHUB_RUN_ATTEMPT" '
+            [.[] | select(
+              .id == $id
+              and .config.metadata.fly_process_group == "worker"
+              and .config.env.MENDPOINT_REGAUGE_QUIESCE_RUN_ID == $run
+              and .config.env.MENDPOINT_REGAUGE_QUIESCE_RUN_ATTEMPT == $attempt
+            )] | length == 1
+          ' <<<"$marked" >/dev/null \
+            || { echo "regauge_quiesce_marker_not_observed"; exit 1; }
+          marked_state="$(jq -er --arg id "$worker_id" '.[] | select(.id == $id) | .state' <<<"$marked")" \
+            || { echo "regauge_quiesce_worker_state_unreadable"; exit 1; }
+          if [[ "$marked_state" != "stopped" ]]; then
+            timeout --kill-after=5s 60s flyctl machine stop "$worker_id" \
+              --app mendpoint-regauge-production
+          fi
+          for attempt in {1..30}; do
+            observed_state="$(flyctl machines list --app mendpoint-regauge-production --json \
+              | jq -er --arg id "$worker_id" '.[] | select(.id == $id) | .state')" \
+              || { echo "regauge_quiesce_observed_state_unreadable"; exit 1; }
+            [[ "$observed_state" == "stopped" ]] && break
+            test "$attempt" -lt 30 \
+              || { echo "regauge_quiesce_worker_stop_timeout"; exit 1; }
+            sleep 2
+          done
+          jq -n --arg workerId "$worker_id" --arg workerState "$worker_state" \
+            --arg runId "$GITHUB_RUN_ID" --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            '{workerId: $workerId, priorState: $workerState, quiesced: true,
+              runId: $runId, runAttempt: $runAttempt}' \
+            > test-results/regauge-production/pre-mutation-control.json
       - name: Stage production secrets
         shell: bash
         run: |
@@ -419,7 +537,7 @@ jobs:
             MENDPOINT_AGENT_VERIFIER_PIVOTS=1 \
             MENDPOINT_AGENT_VERIFIER_MAXIMUM_CANDIDATES=1 \
             MENDPOINT_AGENT_VERIFIER_MAXIMUM_COST_USD=0.05 \
-            MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS=660000 \
+            MENDPOINT_AGENT_VERIFIER_TIMEOUT_MS=300000 \
             MENDPOINT_AGENT_VERIFIER_MAXIMUM_RETRIES=0 \
             MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON="$MENDPOINT_AGENT_VERIFIER_GOVERNANCE_JSON" \
             MENDPOINT_AGENT_VERIFIER_PRICING_JSON="$MENDPOINT_AGENT_VERIFIER_PRICING_JSON" \
@@ -437,6 +555,8 @@ jobs:
           for attempt in 1 2 3; do
             if output="$(flyctl deploy --remote-only --ha=false --app mendpoint-regauge-production \
               --config fly.regauge.toml --env MENDPOINT_RELEASE_REVISION=${{ github.sha }} \
+              --env MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ID="$GITHUB_RUN_ID" \
+              --env MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
               --process-groups coordinator 2>&1)"; then
               printf '%s\n' "$output"
               exit 0
@@ -452,27 +572,90 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in {1..60}; do
-            revision="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/version | jq -r '.revision')" || true
-            ready="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/ready | jq -r '.status')" || true
-            if test "$revision" = "$GITHUB_SHA" && test "$ready" = "ok"; then exit 0; fi
+            version_json="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/version)" || true
+            ready_json="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/ready)" || true
+            if jq -e --arg revision "$GITHUB_SHA" '
+                .revision == $revision
+                and .product == "Regauge"
+                and .channel == "internal"
+                and ([.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "experimental" and .enabled == true)] | length) == 1
+              ' <<<"$version_json" >/dev/null \
+              && jq -e '
+                .status == "ok"
+                and .release.product == "Regauge"
+                and .release.channel == "internal"
+                and ([.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "experimental" and .enabled == true)] | length) == 1
+              ' <<<"$ready_json" >/dev/null; then exit 0; fi
             test "$attempt" -lt 60
             sleep 2
           done
       - name: Deploy worker
-        run: >-
-          flyctl deploy --remote-only --ha=false --app mendpoint-regauge-production
-          --config fly.regauge.toml --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
-          --process-groups worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          flyctl deploy --remote-only --ha=false --app mendpoint-regauge-production \
+            --config fly.regauge.toml --env MENDPOINT_RELEASE_REVISION=${{ github.sha }} \
+            --env MENDPOINT_REGAUGE_ACTIVATION_RUN_ID="$GITHUB_RUN_ID" \
+            --env MENDPOINT_REGAUGE_ACTIVATION_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            --process-groups worker
+          machines_json="$(flyctl machines list --app mendpoint-regauge-production --json)"
+          volume_id="$(jq -er '.id' test-results/regauge-production/coordinator-volume.json)"
+          printf '%s\n' "$machines_json" > test-results/regauge-production/prestart-machines.json
+          npm run regauge:production:proof -- \
+            --mode=worker-start-plan \
+            --input=test-results/regauge-production/prestart-machines.json \
+            --volume-id="$volume_id" \
+            --output=test-results/regauge-production/worker-start-plan.json
+          worker_id="$(jq -er '.workerId' test-results/regauge-production/worker-start-plan.json)"
+          worker_action="$(jq -er '.action' test-results/regauge-production/worker-start-plan.json)"
+          case "$worker_action" in
+            observe|wait)
+              ;;
+            start)
+              timeout --kill-after=5s 60s flyctl machine start "$worker_id" \
+                --app mendpoint-regauge-production
+              ;;
+            *)
+              printf 'unsupported exact worker action: %s\n' "$worker_action" >&2
+              exit 1
+              ;;
+          esac
+          printf '%s\n' "$worker_id" > test-results/regauge-production/worker-id.txt
       - name: Verify exact deployed revision and process health
         shell: bash
         run: |
           set -euo pipefail
           flyctl status --app mendpoint-regauge-production --json | tee test-results/regauge-production/fly-status.json
-          flyctl scale count coordinator=1 worker=1 --app mendpoint-regauge-production --yes
+          volume_id="$(jq -r '.id' test-results/regauge-production/coordinator-volume.json)"
+          worker_id="$(cat test-results/regauge-production/worker-id.txt)"
+          test -n "$volume_id"
+          test -n "$worker_id"
+          machines_json=""
           for attempt in {1..60}; do
-            revision="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/version | jq -r '.revision')" || true
-            ready="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/ready | jq -r '.status')" || true
-            if test "$revision" = "$GITHUB_SHA" && test "$ready" = "ok"; then break; fi
+            machines_json="$(flyctl machines list --app mendpoint-regauge-production --json)"
+            printf '%s\n' "$machines_json" > test-results/regauge-production/machine-topology.json
+            rm -f test-results/regauge-production/runtime-identity.json
+            if npm run regauge:production:proof -- \
+              --mode=machine-establish \
+              --input=test-results/regauge-production/machine-topology.json \
+              --volume-id="$volume_id" \
+              --output=test-results/regauge-production/runtime-identity.json; then
+              break
+            fi
+            test "$attempt" -lt 60
+            sleep 2
+          done
+          coordinator_id="$(jq -er '.coordinator.machineId' test-results/regauge-production/runtime-identity.json)"
+          established_worker_id="$(jq -er '.worker.machineId' test-results/regauge-production/runtime-identity.json)"
+          test "$established_worker_id" = "$worker_id"
+          printf '%s\n' "$coordinator_id" > test-results/regauge-production/coordinator-id.txt
+          for attempt in {1..60}; do
+            version_json="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/version)" || true
+            ready_json="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/ready)" || true
+            if jq -e --arg revision "$GITHUB_SHA" '.revision == $revision and .product == "Regauge"' \
+                <<<"$version_json" >/dev/null \
+              && jq -e '.status == "ok" and .release.product == "Regauge"' \
+                <<<"$ready_json" >/dev/null; then break; fi
             test "$attempt" -lt 60
             sleep 2
           done
@@ -484,73 +667,523 @@ jobs:
           MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_ENABLED: "1"
           MENDPOINT_REGAUGE_ADAPTIVE_MODEL_SOURCE_TENANTS: ${{ secrets.MENDPOINT_REGAUGE_TENANT_ID }}
           MENDPOINT_REGAUGE_ADAPTIVE_EXTERNAL_PROCESSING_APPROVED: "1"
-        run: >-
-          npm run eval:agents:live -- --product=transformer
-          --repetitions=${{ inputs.live_eval_repetitions }}
-          --output=test-results/regauge-production/live-model.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          now_epoch="$(date -u +%s)"
+          remaining_seconds="$((MENDPOINT_REGAUGE_ACTIVATION_DEADLINE_EPOCH - now_epoch))"
+          required_seconds="$((1230 + 610 + 610 + ${{ inputs.readiness_soak_seconds }} + 300))"
+          test "$remaining_seconds" -ge "$required_seconds" \
+            || { echo "regauge_activation_budget_insufficient"; exit 1; }
+          timeout --kill-after=30s 1200s npm run eval:agents:live -- --product=transformer \
+            --repetitions=${{ inputs.live_eval_repetitions }} \
+            --output=test-results/regauge-production/live-model.json
       - name: Wait for exact real draft canary
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in {1..60}; do
-            if npm run regauge:production:proof -- \
+          timeout --kill-after=10s 600s bash <<'DRAFT_CANARY_POLL'
+          set -euo pipefail
+          for attempt in {1..30}; do
+            if timeout --kill-after=5s 20s npm run regauge:production:proof -- \
               --mode=draft-canary \
               --output=test-results/regauge-production/draft-canary.json; then
               exit 0
             fi
             rm -f test-results/regauge-production/draft-canary.json
-            test "$attempt" -lt 60
-            sleep 10
+            test "$attempt" -lt 30
+            sleep 5
           done
+          DRAFT_CANARY_POLL
       - name: Wait for durable DeepSeek advisory evidence
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in {1..60}; do
-            if npm run regauge:production:proof -- \
+          timeout --kill-after=10s 600s bash <<'VERIFIER_EVIDENCE_POLL'
+          set -euo pipefail
+          for attempt in {1..30}; do
+            if timeout --kill-after=5s 20s npm run regauge:production:proof -- \
               --mode=verifier-evidence \
               --output=test-results/regauge-production/verifier-evidence.json; then
               exit 0
             fi
             rm -f test-results/regauge-production/verifier-evidence.json
-            test "$attempt" -lt 60
-            sleep 10
+            test "$attempt" -lt 30
+            sleep 5
           done
+          VERIFIER_EVIDENCE_POLL
       - name: Run read only production readiness soak
-        run: >-
-          npm run regauge:production:proof -- --mode=readiness-soak
-          --duration-seconds=${{ inputs.readiness_soak_seconds }} --interval-seconds=10
-          --output=test-results/regauge-production/readiness-soak.json
-      - name: Contain target after activation failure
-        if: ${{ failure() }}
         shell: bash
         run: |
           set -euo pipefail
-          flyctl scale count worker=0 --app mendpoint-regauge-production --yes
-      - name: Preserve continuous production after activation
+          duration_seconds="${{ inputs.readiness_soak_seconds }}"
+          test "$(date -u +%s)" -lt "$MENDPOINT_REGAUGE_ACTIVATION_DEADLINE_EPOCH"
+          test "$((MENDPOINT_REGAUGE_ACTIVATION_DEADLINE_EPOCH - $(date -u +%s)))" \
+            -ge "$((duration_seconds + 300))"
+          interval_seconds=10
+          volume_id="$(jq -r '.id' test-results/regauge-production/coordinator-volume.json)"
+          coordinator_id="$(cat test-results/regauge-production/coordinator-id.txt)"
+          worker_id="$(cat test-results/regauge-production/worker-id.txt)"
+          test -n "$volume_id"
+          test -n "$coordinator_id"
+          test -n "$worker_id"
+          mkdir -p test-results/regauge-production/runtime-soak-samples
+
+          runtime_soak() {
+            local started_epoch deadline_epoch sample failures now_epoch remaining_seconds sleep_seconds sample_path validated_path
+            started_epoch="$(date +%s)"
+            deadline_epoch="$((started_epoch + duration_seconds))"
+            sample=0
+            failures=0
+            while [[ "$(date +%s)" -lt "$deadline_epoch" ]]; do
+              sample="$((sample + 1))"
+              sample_path="test-results/regauge-production/runtime-soak-samples/${sample}.json"
+              validated_path="test-results/regauge-production/runtime-soak-samples/${sample}-validated.json"
+              if ! timeout --kill-after=2s 15s flyctl machines list \
+                --app mendpoint-regauge-production --json > "$sample_path"; then
+                failures="$((failures + 1))"
+                break
+              fi
+              if ! npm run regauge:production:proof -- \
+                --mode=machine-continuity \
+                --input="$sample_path" \
+                --expected=test-results/regauge-production/runtime-identity.json \
+                --output="$validated_path"; then
+                failures="$((failures + 1))"
+                break
+              fi
+              now_epoch="$(date +%s)"
+              remaining_seconds="$((deadline_epoch - now_epoch))"
+              if [[ "$remaining_seconds" -gt 0 ]]; then
+                sleep_seconds="$interval_seconds"
+                if [[ "$remaining_seconds" -lt "$sleep_seconds" ]]; then
+                  sleep_seconds="$remaining_seconds"
+                fi
+                sleep "$sleep_seconds"
+              fi
+            done
+            jq -n --argjson samples "$sample" --argjson failures "$failures" \
+              --arg coordinatorId "$coordinator_id" --arg workerId "$worker_id" \
+              --arg volumeId "$volume_id" --arg revision "$GITHUB_SHA" \
+              '{passed: ($failures == 0 and $samples > 0), samples: $samples, failures: $failures,
+                coordinatorId: $coordinatorId, workerId: $workerId, volumeId: $volumeId,
+                revision: $revision, workerCheck: "passing"}' \
+              > test-results/regauge-production/runtime-soak.json
+            test "$failures" -eq 0
+            test "$sample" -gt 0
+          }
+
+          runtime_soak &
+          runtime_soak_pid="$!"
+          set +e
+          npm run regauge:production:proof -- --mode=readiness-soak \
+            --duration-seconds="$duration_seconds" --interval-seconds="$interval_seconds" \
+            --output=test-results/regauge-production/readiness-soak.json
+          coordinator_soak_status="$?"
+          wait "$runtime_soak_pid"
+          runtime_soak_status="$?"
+          set -e
+          test "$coordinator_soak_status" -eq 0
+          test "$runtime_soak_status" -eq 0
+      - name: Preserve continuous internal production activation
         if: ${{ success() }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p test-results/regauge-production
-          flyctl scale count coordinator=1 worker=1 --app mendpoint-regauge-production --yes
-          machines="$(flyctl machines list --app mendpoint-regauge-production --json)"
-          continuous="$(jq -e '
-            ([.[] | select(.config.metadata.fly_process_group == "coordinator" and .state == "started")] | length) == 1
-            and ([.[] | select(.config.metadata.fly_process_group == "worker" and .state == "started")] | length) == 1
-          ' <<<"$machines")"
+          volume_id="$(jq -r '.id' test-results/regauge-production/coordinator-volume.json)"
+          coordinator_id="$(cat test-results/regauge-production/coordinator-id.txt)"
+          worker_id="$(cat test-results/regauge-production/worker-id.txt)"
+          timeout --kill-after=2s 15s flyctl machines list --app mendpoint-regauge-production --json \
+            > test-results/regauge-production/continuous-production-machines.json
+          npm run regauge:production:proof -- \
+            --mode=machine-continuity \
+            --input=test-results/regauge-production/continuous-production-machines.json \
+            --expected=test-results/regauge-production/runtime-identity.json \
+            --output=test-results/regauge-production/continuous-machine-proof.json
+          version_json="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/version)"
+          ready_json="$(curl --fail --silent --max-time 10 https://mendpoint-regauge-production.fly.dev/ready)"
+          jq -e --arg revision "$GITHUB_SHA" '
+            .revision == $revision
+            and .product == "Regauge"
+            and .channel == "internal"
+            and ([.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "experimental" and .enabled == true)] | length) == 1
+          ' <<<"$version_json" >/dev/null
+          jq -e '
+            .status == "ok"
+            and .release.product == "Regauge"
+            and .release.channel == "internal"
+            and ([.features[] | select(.id == "transformer_bsg_campaigns" and .tier == "experimental" and .enabled == true)] | length) == 1
+          ' <<<"$ready_json" >/dev/null
+          runtime_soak_samples="$(jq -r '.samples' test-results/regauge-production/runtime-soak.json)"
           jq -n \
-            --argjson continuousProduction "$continuous" \
+            --argjson runtimeSoakSamples "$runtime_soak_samples" \
             --arg runId "$GITHUB_RUN_ID" \
             --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
             --arg revision "$GITHUB_SHA" \
-            '{continuousProduction: $continuousProduction, runId: $runId, runAttempt: $runAttempt, revision: $revision}' \
-            > test-results/regauge-production/continuous-production.json
+            --arg coordinatorId "$coordinator_id" \
+            --arg workerId "$worker_id" \
+            --arg volumeId "$volume_id" \
+            '{continuousInternalActivation: true, availability: "internal", featureTier: "experimental",
+              runId: $runId, runAttempt: $runAttempt,
+              revision: $revision, coordinatorId: $coordinatorId, workerId: $workerId,
+              volumeId: $volumeId, workerCheck: "passing", runtimeSoakSamples: $runtimeSoakSamples}' \
+            > test-results/regauge-production/continuous-internal-activation.json
+      - name: Capture worker failure diagnostics
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/regauge-production
+          if ! timeout --kill-after=2s 15s flyctl machines list --app mendpoint-regauge-production --json \
+            > test-results/regauge-production/worker-failure-machines.json; then
+            printf '[]\n' > test-results/regauge-production/worker-failure-machines.json
+          fi
+          timeout --kill-after=2s 10s flyctl checks list --app mendpoint-regauge-production \
+            > test-results/regauge-production/worker-failure-checks.txt 2>&1 || true
+          mapfile -t worker_ids < <(jq -r '
+            [.[]
+              | select(
+                  .config.metadata.fly_process_group == "worker"
+                  and .config.env.MENDPOINT_RELEASE_REVISION == env.GITHUB_SHA
+                )
+              | .id]
+            | unique
+            | .[0:4][]
+          ' test-results/regauge-production/worker-failure-machines.json)
+          for machine_id in "${worker_ids[@]}"; do
+            (timeout --kill-after=2s 10s flyctl logs --app mendpoint-regauge-production \
+              --machine "$machine_id" --no-tail \
+              > "test-results/regauge-production/worker-${machine_id}.log" 2>&1 || true) &
+          done
+          wait || true
+      - name: Contain target after activation failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/regauge-production
+          machines="$(timeout --kill-after=2s 10s flyctl machines list \
+            --app mendpoint-regauge-production --json)"
+          mutation_markers="$(jq --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" '[.[] | select(
+            (.config.metadata.fly_process_group == "coordinator"
+              and .config.env.MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ID == $run
+              and .config.env.MENDPOINT_REGAUGE_COORDINATOR_ACTIVATION_RUN_ATTEMPT == $attempt)
+            or (.config.metadata.fly_process_group == "worker"
+              and ((.config.env.MENDPOINT_REGAUGE_QUIESCE_RUN_ID == $run
+                and .config.env.MENDPOINT_REGAUGE_QUIESCE_RUN_ATTEMPT == $attempt)
+                or (.config.env.MENDPOINT_REGAUGE_ACTIVATION_RUN_ID == $run
+                  and .config.env.MENDPOINT_REGAUGE_ACTIVATION_RUN_ATTEMPT == $attempt)))
+          )] | length' <<<"$machines")"
+          stop_failures=0
+          containment_verified=false
+          workers_found=0
+          if [[ "$mutation_markers" == "0" ]]; then
+            containment_verified=true
+          else
+            for attempt in {1..15}; do
+              machines="$(timeout --kill-after=2s 10s flyctl machines list \
+                --app mendpoint-regauge-production --json)"
+              mapfile -t unsafe_worker_ids < <(jq -r '.[] | select(
+                .config.metadata.fly_process_group == "worker"
+                and .state != "stopped" and .state != "destroyed"
+              ) | .id' <<<"$machines")
+              workers_found="$((workers_found + ${#unsafe_worker_ids[@]}))"
+              if [[ "${#unsafe_worker_ids[@]}" == "0" ]]; then
+                containment_verified=true
+                break
+              fi
+              stop_pids=()
+              for machine_id in "${unsafe_worker_ids[@]}"; do
+                (timeout --kill-after=5s 15s flyctl machine stop "$machine_id" \
+                  --app mendpoint-regauge-production) &
+                stop_pids+=("$!")
+              done
+              for stop_pid in "${stop_pids[@]}"; do
+                if ! wait "$stop_pid"; then
+                  stop_failures="$((stop_failures + 1))"
+                fi
+              done
+              if [[ "$attempt" == "15" ]]; then break; fi
+              sleep 2
+            done
+          fi
+          test "$containment_verified" = true
+          remaining_unsafe_workers="$(timeout --kill-after=2s 10s flyctl machines list \
+            --app mendpoint-regauge-production --json \
+            | jq '[.[] | select(.config.metadata.fly_process_group == "worker"
+              and .state != "stopped" and .state != "destroyed")] | length')"
+          if [[ "$mutation_markers" != "0" ]]; then test "$remaining_unsafe_workers" = "0"; fi
+          jq -n \
+            --argjson mutationMarkers "$mutation_markers" \
+            --argjson workersFound "$workers_found" \
+            --argjson stopFailures "$stop_failures" \
+            --argjson remainingUnsafeWorkers "$remaining_unsafe_workers" \
+            '{contained: ($mutationMarkers > 0), noOwnedMutation: ($mutationMarkers == 0),
+              mutationMarkers: $mutationMarkers, workersFound: $workersFound,
+              stopFailures: $stopFailures, remainingUnsafeWorkers: $remainingUnsafeWorkers}' \
+            > test-results/regauge-production/failure-containment.json
       - name: Upload Regauge production evidence
+        id: evidence_upload
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: regauge-production-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/regauge-production/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Contain target after evidence publication failure
+        if: ${{ steps.evidence_upload.outcome == 'failure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          containment_verified=false
+          stop_failures=0
+          for attempt in {1..15}; do
+            machines="$(timeout --kill-after=2s 10s flyctl machines list \
+              --app mendpoint-regauge-production --json)"
+            mapfile -t unsafe_worker_ids < <(jq -r '.[] | select(
+              .config.metadata.fly_process_group == "worker"
+              and .state != "stopped" and .state != "destroyed"
+            ) | .id' <<<"$machines")
+            if [[ "${#unsafe_worker_ids[@]}" == "0" ]]; then
+              containment_verified=true
+              break
+            fi
+            stop_pids=()
+            for machine_id in "${unsafe_worker_ids[@]}"; do
+              (timeout --kill-after=5s 15s flyctl machine stop "$machine_id" \
+                --app mendpoint-regauge-production) &
+              stop_pids+=("$!")
+            done
+            for stop_pid in "${stop_pids[@]}"; do
+              if ! wait "$stop_pid"; then
+                stop_failures="$((stop_failures + 1))"
+              fi
+            done
+            if [[ "$attempt" == "15" ]]; then break; fi
+            sleep 2
+          done
+          test "$containment_verified" = true
+          remaining_unsafe_workers="$(timeout --kill-after=2s 10s flyctl machines list \
+            --app mendpoint-regauge-production --json \
+            | jq '[.[] | select(.config.metadata.fly_process_group == "worker"
+              and .state != "stopped" and .state != "destroyed")] | length')"
+          test "$remaining_unsafe_workers" = "0"
+      - name: Enforce production evidence publication
+        if: ${{ steps.evidence_upload.outcome == 'failure' }}
+        run: exit 1
+
+  cleanup:
+    needs: [preflight, deploy]
+    if: ${{ always() && needs.deploy.result != 'success' && needs.deploy.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: regauge-production
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
+        with:
+          version: "0.4.79"
+      - name: Download pre-mutation topology
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: regauge-fly-preflight-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/regauge-production/preflight/
+      - name: Restore or contain the exact activation worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/regauge-cleanup
+          snapshot="test-results/regauge-production/preflight/pre-mutation-machines.json"
+          test -s "$snapshot" \
+            || { echo "regauge_cleanup_snapshot_missing"; exit 1; }
+          live="test-results/regauge-cleanup/live-machines.json"
+          timeout --kill-after=2s 10s flyctl machines list \
+            --app mendpoint-regauge-production --json > "$live" \
+            || { echo "regauge_cleanup_live_list_failed"; exit 1; }
+          prior_coordinator="$(jq -cS '
+            .[] | select(.config.metadata.fly_process_group == "coordinator")
+            | {id, config, image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")}
+          ' "$snapshot")"
+          live_coordinator="$(jq -cS '
+            .[] | select(.config.metadata.fly_process_group == "coordinator")
+            | {id, config, image: (.image_ref | "\(.registry)/\(.repository)@\(.digest)")}
+          ' "$live")"
+          worker_id="$(jq -er '.[] | select(.config.metadata.fly_process_group == "worker") | .id' "$snapshot")"
+          prior_state="$(jq -er '.[] | select(.config.metadata.fly_process_group == "worker") | .state' "$snapshot")"
+          quiesce_markers="$(jq --arg id "$worker_id" --arg run "$GITHUB_RUN_ID" \
+            --arg attempt "$GITHUB_RUN_ATTEMPT" '[.[] | select(
+              .id == $id
+              and .config.metadata.fly_process_group == "worker"
+              and .config.env.MENDPOINT_REGAUGE_QUIESCE_RUN_ID == $run
+              and .config.env.MENDPOINT_REGAUGE_QUIESCE_RUN_ATTEMPT == $attempt
+            )] | length' "$live")"
+          if [[ "$live_coordinator" == "$prior_coordinator" ]]; then
+            if [[ "$quiesce_markers" == "1" ]]; then
+              if jq -e --slurpfile expected "$snapshot" '
+                ([.[] | .id] | sort)
+                == ([$expected[0][] | .id] | sort)
+              ' "$live" >/dev/null; then
+                jq -ce --arg id "$worker_id" '
+                  .[] | select(.id == $id)
+                  | .config
+                  | if (.image | type) == "string" and (.image | length) > 0
+                    then . else error("regauge_cleanup_prior_worker_image_missing") end
+                ' "$snapshot" > test-results/regauge-cleanup/prior-worker-config.json
+                restore_transition_ok=true
+                if ! timeout --kill-after=10s 180s flyctl machine update "$worker_id" \
+                  --app mendpoint-regauge-production \
+                  --machine-config test-results/regauge-cleanup/prior-worker-config.json \
+                  --skip-health-checks --skip-start --yes; then
+                  restore_transition_ok=false
+                fi
+                restored_state=""
+                if [[ "$restore_transition_ok" == true ]] && ! restored_state="$(
+                  timeout --kill-after=2s 10s flyctl machines list \
+                    --app mendpoint-regauge-production --json \
+                    | jq -er --arg id "$worker_id" '.[] | select(.id == $id) | .state'
+                )"; then
+                  restore_transition_ok=false
+                fi
+                if [[ "$restore_transition_ok" == true \
+                  && "$prior_state" == "started" && "$restored_state" != "started" ]]; then
+                  if ! timeout --kill-after=5s 60s flyctl machine start "$worker_id" \
+                    --app mendpoint-regauge-production; then
+                    restore_transition_ok=false
+                  fi
+                elif [[ "$restore_transition_ok" == true \
+                  && "$prior_state" == "stopped" && "$restored_state" != "stopped" ]]; then
+                  if ! timeout --kill-after=5s 60s flyctl machine stop "$worker_id" \
+                    --app mendpoint-regauge-production; then
+                    restore_transition_ok=false
+                  fi
+                fi
+                if [[ "$restore_transition_ok" == true ]]; then
+                  action="restored_prior_worker"
+                else
+                  action="contained_all_workers_after_restore_failure"
+                fi
+              else
+                action="contained_all_workers_after_topology_drift"
+              fi
+            elif [[ "$quiesce_markers" == "0" ]]; then
+              action="no_owned_mutation"
+            else
+              echo "regauge_cleanup_quiesce_marker_ambiguous" >&2
+              exit 1
+            fi
+          else
+            action="contained_all_workers_after_coordinator_commit"
+          fi
+          cleanup_verified=false
+          stop_failures=0
+          restored_instance_id=""
+          restore_health_status="not_required"
+          for attempt in {1..15}; do
+            after="$(timeout --kill-after=2s 10s flyctl machines list \
+              --app mendpoint-regauge-production --json)"
+            printf '%s\n' "$after" > test-results/regauge-cleanup/after-machines.json
+            if [[ "$action" == "restored_prior_worker" ]]; then
+              if jq -e --slurpfile expected "$snapshot" '
+                ([.[] | {id, state, config, image_ref}] | sort_by(.id))
+                == ([$expected[0][] | {id, state, config, image_ref}] | sort_by(.id))
+              ' <<<"$after" >/dev/null; then
+                if ! restored_instance_id="$(jq -er --arg id "$worker_id" \
+                  '.[] | select(.id == $id) | .instance_id' <<<"$after")"; then
+                  restore_health_status="instance_missing"
+                  action="contained_all_workers_after_restore_instance_failure"
+                elif [[ "$prior_state" == "started" ]]; then
+                  checks_json="{}"
+                  if ! checks_json="$(timeout --kill-after=2s 10s flyctl checks list \
+                    --app mendpoint-regauge-production --json)"; then
+                    checks_json="{}"
+                  fi
+                  if jq -e --arg id "$worker_id" '
+                    (.[$id] // []) | any(.name == "regauge_worker" and .status == "passing")
+                  ' <<<"$checks_json" >/dev/null; then
+                    restore_health_status="passing"
+                    cleanup_verified=true
+                    break
+                  fi
+                  restore_health_status="not_passing"
+                  if [[ "$attempt" == "15" ]]; then
+                    action="contained_all_workers_after_restore_health_failure"
+                  fi
+                else
+                  cleanup_verified=true
+                  break
+                fi
+              fi
+              if ! jq -e --slurpfile expected "$snapshot" '
+                ([.[] | {id, config, image_ref}] | sort_by(.id))
+                == ([$expected[0][] | {id, config, image_ref}] | sort_by(.id))
+              ' <<<"$after" >/dev/null; then
+                action="contained_all_workers_after_restore_drift"
+              elif [[ "$attempt" == "15" && "$action" == "restored_prior_worker" ]]; then
+                action="contained_all_workers_after_restore_timeout"
+              fi
+            elif [[ "$action" == "no_owned_mutation" ]]; then
+              if jq -e --slurpfile expected "$snapshot" '
+                ([.[] | {id, instance_id, state, config, image_ref}] | sort_by(.id))
+                == ([$expected[0][] | {id, instance_id, state, config, image_ref}] | sort_by(.id))
+              ' <<<"$after" >/dev/null; then
+                cleanup_verified=true
+                break
+              fi
+            fi
+            if [[ "$action" == contained_all_workers_* ]]; then
+              mapfile -t unsafe_worker_ids < <(jq -r '.[] | select(
+                .config.metadata.fly_process_group == "worker"
+                and .state != "stopped" and .state != "destroyed"
+              ) | .id' <<<"$after")
+              if [[ "${#unsafe_worker_ids[@]}" == "0" ]]; then
+                cleanup_verified=true
+                break
+              fi
+              stop_pids=()
+              for unsafe_worker_id in "${unsafe_worker_ids[@]}"; do
+                (timeout --kill-after=5s 15s flyctl machine stop "$unsafe_worker_id" \
+                  --app mendpoint-regauge-production) &
+                stop_pids+=("$!")
+              done
+              for stop_pid in "${stop_pids[@]}"; do
+                if ! wait "$stop_pid"; then
+                  stop_failures="$((stop_failures + 1))"
+                fi
+              done
+            fi
+            if [[ "$attempt" == "15" ]]; then break; fi
+            sleep 2
+          done
+          if [[ "$cleanup_verified" != true && "$action" == contained_all_workers_* ]]; then
+            after="$(timeout --kill-after=2s 10s flyctl machines list \
+              --app mendpoint-regauge-production --json)"
+            printf '%s\n' "$after" > test-results/regauge-cleanup/after-machines.json
+            remaining_unsafe_workers="$(jq '[.[] | select(
+              .config.metadata.fly_process_group == "worker"
+              and .state != "stopped" and .state != "destroyed"
+            )] | length' <<<"$after")"
+            if [[ "$remaining_unsafe_workers" == "0" ]]; then
+              cleanup_verified=true
+            fi
+          fi
+          jq -n --arg action "$action" --arg runId "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" --argjson verified "$cleanup_verified" \
+            --argjson stopFailures "$stop_failures" --arg restoredInstanceId "$restored_instance_id" \
+            --arg restoreHealthStatus "$restore_health_status" \
+            '{action: $action, runId: $runId, runAttempt: $runAttempt,
+              verified: $verified, stopFailures: $stopFailures,
+              restoredInstanceId: $restoredInstanceId, restoreHealthStatus: $restoreHealthStatus}' \
+            > test-results/regauge-cleanup/result.json
+          test "$cleanup_verified" = true
+      - name: Upload cleanup evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: regauge-production-evidence-${{ github.sha }}
-          path: test-results/regauge-production/
+          name: regauge-cleanup-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/regauge-cleanup/
           if-no-files-found: error
           retention-days: 90

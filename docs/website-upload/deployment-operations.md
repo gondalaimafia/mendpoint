@@ -3,12 +3,15 @@
 Run Mendpoint with role-specific readiness, durable state, recovery controls, audit evidence, backups, and bounded rollout procedures.
 
 Status: Pilot evaluation
-Availability: Docker Compose and Fly pilot deployment; the dedicated Regauge profile is implemented but no live Regauge deployment is claimed
+Availability: Docker Compose and Fly pilot deployment; the dedicated ReGauge profile is implemented but no live ReGauge deployment is claimed
 Last verified: 2026-08-14
+Publication evidence: not live; no deployed revision or live evidence digest recorded
+Requirements: ME-FND-005, ME-ENT-005, ME-ENT-006, ME-ENT-007, ME-ENT-008, ME-ENT-009, ME-ENT-010, ME-ENT-011, ME-ENT-012
+Public claims: CLM-009, CLM-013
 
 ## Start here
 
-Choose the Fettler, Regauge pilot, demo, or self-hosted profile and satisfy its complete startup contract before deployment.
+Choose the Fettler, ReGauge pilot, demo, or self-hosted profile and satisfy its complete startup contract before deployment.
 
 1. Validate the exact configuration and secret names without exposing values.
 2. Build and boot the production image against an existing-state database.
@@ -17,11 +20,11 @@ Choose the Fettler, Regauge pilot, demo, or self-hosted profile and satisfy its 
 
 ## What it does
 
-- Docker multi-stage images for API, web, worker, all-in-one Fly, and dedicated Regauge roles
-- Fly Fettler production and dedicated Regauge coordinator/worker manifests
+- Docker multi-stage images for API, web, worker, all-in-one Fly, and dedicated ReGauge roles
+- Fly Fettler production and dedicated ReGauge coordinator/worker manifests
 - Liveness, readiness, worker heartbeat, alerts, metrics, trajectories, and recovery summary
 - Encrypted backup, restore, backup fencing, snapshots, disaster-recovery drill, and image rollback
-- Lease-fenced jobs and checkpointed Fettler and Regauge execution
+- Lease-fenced jobs and checkpointed Fettler and ReGauge execution
 
 ## When to use it
 
@@ -54,7 +57,13 @@ Choose the Fettler, Regauge pilot, demo, or self-hosted profile and satisfy its 
 - Deployment E2E: `tests/e2e/deployment.spec.ts`
 - Readiness: `packages/ops/src/readiness.test.ts`
 - Backup and restore: `packages/ops/src/disaster-recovery.test.ts`
-- Regauge profile contract: `apps/worker/src/transformer-production-profile.test.ts`
+- ReGauge profile contract: `apps/worker/src/transformer-production-profile.test.ts`
+
+## Contract sources
+
+- `scripts/start-fly.mjs`
+- `packages/ops/src/readiness.ts`
+- `packages/ops/src/disaster-recovery.ts`
 
 ## Safety model
 
@@ -68,11 +77,11 @@ Choose the Fettler, Regauge pilot, demo, or self-hosted profile and satisfy its 
 - Optional model and source control integrations can create network egress
 - High availability and enterprise support are not included
 - The hosted Fettler profile is a single Fly application, not a multi-region high-availability control plane.
-- No dedicated Regauge deployment is claimed live until its app, secrets, volume, health, and canary evidence are independently verified.
+- No dedicated ReGauge deployment is claimed live until its app, secrets, volume, health, and canary evidence are independently verified.
 
 ## See also
 
 - [Security and governance](./security-governance.md)
 - [Billing and usage](./billing-usage.md)
 - [Fettler — the first AI API Engineer](./fettler.md)
-- [Regauge — the first AI Legacy Engineer](./regauge.md)
+- [ReGauge — the first AI Legacy Engineer](./regauge.md)

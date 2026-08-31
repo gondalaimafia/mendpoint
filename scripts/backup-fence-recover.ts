@@ -3,6 +3,7 @@ import {
   prepareMutationFenceDirectories,
   resolveMutationFenceRoot,
 } from "@mendpoint/ops";
+import { dropRootIdentity } from "./drop-root-identity.js";
 
 const kind = process.env.MENDPOINT_BACKUP_RECOVERY_MARKER_KIND;
 if (kind !== "writer" && kind !== "exclusive") {
@@ -10,15 +11,7 @@ if (kind !== "writer" && kind !== "exclusive") {
 }
 const fenceRoot = resolveMutationFenceRoot();
 prepareMutationFenceDirectories(fenceRoot);
-if (
-  typeof process.getuid === "function" &&
-  typeof process.setgid === "function" &&
-  typeof process.setuid === "function" &&
-  process.getuid() === 0
-) {
-  process.setgid(1000);
-  process.setuid(1000);
-}
+dropRootIdentity();
 const result = recoverStaleMutationMarker({
   fenceRoot,
   kind,

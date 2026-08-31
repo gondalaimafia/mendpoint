@@ -2723,6 +2723,62 @@ input:focus-visible {
 .ds-pr-card__time {
   margin-left: auto;
 }
+.ds-pr-card__evidence {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--muted);
+  color: var(--secondary-foreground);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+.ds-pr-card__evidence p {
+  margin: 0 0 0.75rem;
+}
+.ds-pr-card__evidence p:last-child {
+  margin-bottom: 0;
+}
+.ds-pr-card__evidence dl {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+}
+.ds-pr-card__evidence dl > div {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.28fr) minmax(0, 1fr);
+  gap: 0.75rem;
+}
+.ds-pr-card__evidence dt {
+  color: var(--muted-foreground);
+}
+.ds-pr-card__evidence dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ds-pr-card__evidence code {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+.ds-pr-card__known-unknown {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 0.85rem;
+}
+.ds-pr-card__known-unknown ul {
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+}
+
+@media (max-width: 700px) {
+  .ds-pr-card__evidence dl > div,
+  .ds-pr-card__known-unknown {
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+  }
+}
 
 /* ------------------------------- AppShell -------------------------------- */
 .ds-shell {
@@ -3287,6 +3343,80 @@ input:focus-visible {
 .ds-pr-card__coverage {
   display: inline-flex;
   margin-top: 0.15rem;
+}
+
+/* FET-016 provider→code→verification lineage on /prs/[id]. */
+.ds-lineage__headline {
+  margin: 0.85rem 0 0;
+  font-family: var(--font);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.ds-lineage__detail {
+  margin: 0.6rem 0 0;
+  font-family: var(--font);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--secondary-foreground);
+}
+.ds-lineage__asof {
+  margin: 0.6rem 0 0;
+  font-family: var(--font);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.ds-lineage__findings {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.ds-lineage__finding {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.ds-lineage__file {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--foreground);
+}
+.ds-lineage__symbol {
+  font-family: var(--font);
+  font-size: 0.8125rem;
+  color: var(--secondary-foreground);
+}
+.ds-lineage__path {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.ds-lineage__path--not_computed {
+  font-style: italic;
+}
+.ds-lineage__verification {
+  margin-top: 1rem;
+}
+.ds-lineage__excerpt {
+  margin: 0.6rem 0 0;
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--secondary-foreground);
+}
+.ds-lineage--impact {
+  border-color: var(--tint-amber-28);
+}
+.ds-lineage--no_impact {
+  border-color: var(--tint-emerald-30);
+}
+.ds-lineage--unknown {
+  border-color: var(--border);
 }
 
 /* ------------------------------- Checks --------------------------------- */

@@ -29,7 +29,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "00-02",
+      "acceptanceIds": [
+        "ME-FND-001-AC01"
+      ],
+      "evidenceProfile": "documentation_policy",
+      "implementationEvidenceIds": [
+        "ME-FND-001-AC01-EV01"
+      ],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "product",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-FND-002",
@@ -52,7 +80,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "00-02",
+      "acceptanceIds": [
+        "ME-FND-002-AC01"
+      ],
+      "evidenceProfile": "documentation_policy",
+      "implementationEvidenceIds": [
+        "ME-FND-002-AC01-EV01"
+      ],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "product",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-FND-003",
@@ -77,7 +133,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "00-02",
+      "acceptanceIds": [
+        "ME-FND-003-AC01"
+      ],
+      "evidenceProfile": "documentation_policy",
+      "implementationEvidenceIds": [
+        "ME-FND-003-AC01-EV01"
+      ],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "product",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-FND-004",
@@ -100,7 +184,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "00-02",
+      "acceptanceIds": [
+        "ME-FND-004-AC01"
+      ],
+      "evidenceProfile": "documentation_policy",
+      "implementationEvidenceIds": [
+        "ME-FND-004-AC01-EV01"
+      ],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "product",
+        "targetRelease": "transformer-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-FND-005",
@@ -123,7 +235,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "00-02",
+      "acceptanceIds": [
+        "ME-FND-005-AC01"
+      ],
+      "evidenceProfile": "documentation_policy",
+      "implementationEvidenceIds": [
+        "ME-FND-005-AC01-EV01"
+      ],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "product",
+        "targetRelease": "enterprise",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-FND-006",
@@ -146,7 +286,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "00-02",
+      "acceptanceIds": [
+        "ME-FND-006-AC01"
+      ],
+      "evidenceProfile": "documentation_policy",
+      "implementationEvidenceIds": [
+        "ME-FND-006-AC01-EV01"
+      ],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "product",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-FND-007",
@@ -169,7 +337,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "00-02",
+      "acceptanceIds": [
+        "ME-FND-007-AC01"
+      ],
+      "evidenceProfile": "documentation_policy",
+      "implementationEvidenceIds": [
+        "ME-FND-007-AC01-EV01"
+      ],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "product",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-FND-008",
@@ -192,7 +388,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "00-02",
+      "acceptanceIds": [
+        "ME-FND-008-AC01"
+      ],
+      "evidenceProfile": "documentation_policy",
+      "implementationEvidenceIds": [
+        "ME-FND-008-AC01-EV01"
+      ],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "product",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-FND-009",
@@ -215,7 +439,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "00-02",
+      "acceptanceIds": [
+        "ME-FND-009-AC01"
+      ],
+      "evidenceProfile": "documentation_policy",
+      "implementationEvidenceIds": [
+        "ME-FND-009-AC01-EV01"
+      ],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "product",
+        "targetRelease": "transformer-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-FND-010",
@@ -240,7 +492,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "00-02",
+      "acceptanceIds": [
+        "ME-FND-010-AC01"
+      ],
+      "evidenceProfile": "documentation_policy",
+      "implementationEvidenceIds": [
+        "ME-FND-010-AC01-EV01"
+      ],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "product",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-ING-001",
@@ -263,7 +543,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-002 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "04-01",
+      "acceptanceIds": [
+        "ME-ING-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ING-001-AC01-EV01",
+        "ME-ING-001-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "change-intelligence",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ING-002",
@@ -286,7 +595,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-002 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "04-03",
+      "acceptanceIds": [
+        "ME-ING-002-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ING-002-AC01-EV01",
+        "ME-ING-002-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "change-intelligence",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-ING-003",
@@ -309,7 +647,37 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "04-01",
+      "acceptanceIds": [
+        "ME-ING-003-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ING-003-AC01-EV01",
+        "ME-ING-003-AC01-EV02",
+        "ME-ING-003-AC01-EV03"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "change-intelligence",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ING-004",
@@ -332,7 +700,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "04-01",
+      "acceptanceIds": [
+        "ME-ING-004-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ING-004-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "change-intelligence",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ING-005",
@@ -355,7 +751,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "04-02",
+      "acceptanceIds": [
+        "ME-ING-005-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ING-005-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "change-intelligence",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-ING-006",
@@ -378,7 +802,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "04-02",
+      "acceptanceIds": [
+        "ME-ING-006-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ING-006-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "change-intelligence",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ING-007",
@@ -401,7 +853,37 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "04-03",
+      "acceptanceIds": [
+        "ME-ING-007-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ING-007-AC01-EV01",
+        "ME-ING-007-AC01-EV02",
+        "ME-ING-007-AC01-EV03"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "change-intelligence",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-ING-008",
@@ -424,7 +906,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "04-03",
+      "acceptanceIds": [
+        "ME-ING-008-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ING-008-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "change-intelligence",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-ING-009",
@@ -447,7 +957,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-004 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "04-03",
+      "acceptanceIds": [
+        "ME-ING-009-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ING-009-AC01-EV01",
+        "ME-ING-009-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "change-intelligence",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-SCM-001",
@@ -470,7 +1009,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "03-01",
+      "acceptanceIds": [
+        "ME-SCM-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-SCM-001-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "repository-platform",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-SCM-002",
@@ -493,7 +1060,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "03-01",
+      "acceptanceIds": [
+        "ME-SCM-002-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-SCM-002-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "repository-platform",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-SCM-003",
@@ -516,7 +1111,43 @@
       "productionEvidenceTarget": "Existing productionEvidenceIds ME-SCM-003-AC01-EV05 must be re-read on the exact deployed revision after the next merge. Current observed main is 96801a319fc3d355cb2b28b4167b83023a192042.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-002 (limited_availability): do not change wording until this row is individually promoted; CLM-006 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": "GitHub App production credentials"
+      "externalDependency": "GitHub App production credentials",
+      "primaryPlan": "03-02",
+      "acceptanceIds": [
+        "ME-SCM-003-AC01"
+      ],
+      "evidenceProfile": "behavioral_external",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-SCM-003-AC01-EV01",
+        "ME-SCM-003-AC01-EV03",
+        "ME-SCM-003-AC01-EV04"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [
+        "ME-SCM-003-AC01-EV05"
+      ],
+      "externalEvidenceIds": [
+        "ME-SCM-003-AC01-EV02"
+      ],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "repository-platform",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": [
+          "GitHub App production credentials"
+        ]
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-SCM-004",
@@ -539,7 +1170,40 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-008 (roadmap): do not change wording until this row is individually promoted",
-      "externalDependency": "approved GitLab credential and disposable private project; live GitLab webhook and recovery drill"
+      "externalDependency": "approved GitLab credential and disposable private project; live GitLab webhook and recovery drill",
+      "primaryPlan": "03-03",
+      "acceptanceIds": [
+        "ME-SCM-004-AC01"
+      ],
+      "evidenceProfile": "behavioral_external",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-SCM-004-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [
+        "ME-SCM-004-AC01-EV02"
+      ],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "repository-platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": [
+          "approved GitLab credential and disposable private project",
+          "live GitLab webhook and recovery drill"
+        ]
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-SCM-005",
@@ -562,7 +1226,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "03-01",
+      "acceptanceIds": [
+        "ME-SCM-005-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-SCM-005-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "repository-platform",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-SCM-006",
@@ -585,7 +1277,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "03-03",
+      "acceptanceIds": [
+        "ME-SCM-006-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-SCM-006-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "repository-platform",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-GRF-001",
@@ -614,7 +1334,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-003 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-01",
+      "acceptanceIds": [
+        "ME-GRF-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-GRF-001-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "graph",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-GRF-002",
@@ -637,7 +1385,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-01",
+      "acceptanceIds": [
+        "ME-GRF-002-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-GRF-002-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "graph",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-GRF-003",
@@ -662,7 +1438,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-003 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-05",
+      "acceptanceIds": [
+        "ME-GRF-003-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-GRF-003-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "graph",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-GRF-004",
@@ -685,7 +1489,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-003 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-02",
+      "acceptanceIds": [
+        "ME-GRF-004-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-GRF-004-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "graph",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-GRF-005",
@@ -708,7 +1540,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-02",
+      "acceptanceIds": [
+        "ME-GRF-005-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-GRF-005-AC01-EV01",
+        "ME-GRF-005-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "graph",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-GRF-006",
@@ -734,7 +1595,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-003 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-02",
+      "acceptanceIds": [
+        "ME-GRF-006-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-GRF-006-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "graph",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-GRF-007",
@@ -757,7 +1646,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-05",
+      "acceptanceIds": [
+        "ME-GRF-007-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [
+        "ME-GRF-007-AC01-EV01"
+      ],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "graph",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-GRF-008",
@@ -782,7 +1699,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-05",
+      "acceptanceIds": [
+        "ME-GRF-008-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [
+        "ME-GRF-008-AC01-EV01",
+        "ME-GRF-008-AC01-EV02"
+      ],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "graph",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-WAR-001",
@@ -808,7 +1754,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-004 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "06-01",
+      "acceptanceIds": [
+        "ME-WAR-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-WAR-001-AC01-EV01",
+        "ME-WAR-001-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "warden",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-WAR-002",
@@ -831,7 +1806,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-005 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "06-01",
+      "acceptanceIds": [
+        "ME-WAR-002-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-WAR-002-AC01-EV01",
+        "ME-WAR-002-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "warden",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-WAR-003",
@@ -854,7 +1858,37 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-002 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "06-02",
+      "acceptanceIds": [
+        "ME-WAR-003-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-WAR-003-AC01-EV01",
+        "ME-WAR-003-AC01-EV02",
+        "ME-WAR-003-AC01-EV03"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "warden",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-WAR-004",
@@ -882,7 +1916,37 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-006 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": "live authenticated GitHub and GitLab review reconciliation drills"
+      "externalDependency": "live authenticated GitHub and GitLab review reconciliation drills",
+      "primaryPlan": "06-03",
+      "acceptanceIds": [
+        "ME-WAR-004-AC01"
+      ],
+      "evidenceProfile": "behavioral_external",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-WAR-004-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "warden",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": [
+          "live authenticated GitHub and GitLab review reconciliation drills"
+        ]
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-WAR-005",
@@ -907,7 +1971,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "CLM-005 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "06-02",
+      "acceptanceIds": [
+        "ME-WAR-005-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-WAR-005-AC01-EV01",
+        "ME-WAR-005-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "warden",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "implementation_pending",
+      "queueState": "build"
     },
     {
       "requirementId": "ME-WAR-006",
@@ -938,7 +2031,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "06-03",
+      "acceptanceIds": [
+        "ME-WAR-006-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-WAR-006-AC01-EV01",
+        "ME-WAR-006-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "warden",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-WAR-007",
@@ -961,7 +2083,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "06-03",
+      "acceptanceIds": [
+        "ME-WAR-007-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-WAR-007-AC01-EV01",
+        "ME-WAR-007-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "warden",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-WAR-008",
@@ -986,7 +2137,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "06-02",
+      "acceptanceIds": [
+        "ME-WAR-008-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-WAR-008-AC01-EV01",
+        "ME-WAR-008-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "warden",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-WAR-009",
@@ -1011,7 +2191,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "06-04",
+      "acceptanceIds": [
+        "ME-WAR-009-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-WAR-009-AC01-EV01",
+        "ME-WAR-009-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "warden",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-WAR-010",
@@ -1034,7 +2243,38 @@
       "productionEvidenceTarget": "No production evidence until the named external owner supplies the missing proof. Synthetic or demo evidence must not promote this row. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not satisfy this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": "consented private customer repository; design partner acceptance and observed outcome"
+      "externalDependency": "consented private customer repository; design partner acceptance and observed outcome",
+      "primaryPlan": "06-05",
+      "acceptanceIds": [
+        "ME-WAR-010-AC01"
+      ],
+      "evidenceProfile": "external_only",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [
+        "ME-WAR-010-AC01-EV01"
+      ],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "warden",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": [
+          "consented private customer repository",
+          "design partner acceptance and observed outcome"
+        ]
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "external_proof_pending",
+      "queueState": "external-proof"
     },
     {
       "requirementId": "ME-TRN-001",
@@ -1057,7 +2297,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-007 (preview): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "07-01",
+      "acceptanceIds": [
+        "ME-TRN-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-TRN-001-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-TRN-002",
@@ -1080,7 +2348,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "07-01",
+      "acceptanceIds": [
+        "ME-TRN-002-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-TRN-002-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-TRN-003",
@@ -1110,7 +2406,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-007 (preview): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "07-02",
+      "acceptanceIds": [
+        "ME-TRN-003-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-TRN-003-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-TRN-004",
@@ -1133,7 +2457,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "07-04",
+      "acceptanceIds": [
+        "ME-TRN-004-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-TRN-004-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-TRN-005",
@@ -1158,7 +2510,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "07-04",
+      "acceptanceIds": [
+        "ME-TRN-005-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-TRN-005-AC01-EV01",
+        "ME-TRN-005-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-TRN-006",
@@ -1181,7 +2562,37 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "07-04",
+      "acceptanceIds": [
+        "ME-TRN-006-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-TRN-006-AC01-EV01",
+        "ME-TRN-006-AC01-EV02",
+        "ME-TRN-006-AC01-EV03"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-TRN-007",
@@ -1207,7 +2618,37 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "07-05",
+      "acceptanceIds": [
+        "ME-TRN-007-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-TRN-007-AC01-EV01",
+        "ME-TRN-007-AC01-EV02",
+        "ME-TRN-007-AC01-EV03"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-TRN-008",
@@ -1230,7 +2671,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "07-05",
+      "acceptanceIds": [
+        "ME-TRN-008-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-TRN-008-AC01-EV01",
+        "ME-TRN-008-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-TRN-009",
@@ -1253,7 +2723,37 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "07-01",
+      "acceptanceIds": [
+        "ME-TRN-009-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-TRN-009-AC01-EV01",
+        "ME-TRN-009-AC01-EV02",
+        "ME-TRN-009-AC01-EV03"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-TRN-010",
@@ -1276,7 +2776,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-007 (preview): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "07-02",
+      "acceptanceIds": [
+        "ME-TRN-010-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-TRN-010-AC01-EV01",
+        "ME-TRN-010-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-TRN-011",
@@ -1299,7 +2828,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "07-03",
+      "acceptanceIds": [
+        "ME-TRN-011-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-TRN-011-AC01-EV01",
+        "ME-TRN-011-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-TRN-012",
@@ -1324,7 +2882,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "07-05",
+      "acceptanceIds": [
+        "ME-TRN-012-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-TRN-012-AC01-EV01",
+        "ME-TRN-012-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-TRN-013",
@@ -1349,7 +2936,38 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "07-03",
+      "acceptanceIds": [
+        "ME-TRN-013-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-TRN-013-AC01-EV01",
+        "ME-TRN-013-AC01-EV02",
+        "ME-TRN-013-AC01-EV03",
+        "ME-TRN-013-AC01-EV04"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-RTR-001",
@@ -1372,7 +2990,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "08-01",
+      "acceptanceIds": [
+        "ME-RTR-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-RTR-001-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "model-platform",
+        "targetRelease": "transformer-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-RTR-002",
@@ -1395,7 +3041,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "08-01",
+      "acceptanceIds": [
+        "ME-RTR-002-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-RTR-002-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "model-platform",
+        "targetRelease": "transformer-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-RTR-003",
@@ -1418,7 +3092,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "08-01",
+      "acceptanceIds": [
+        "ME-RTR-003-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-RTR-003-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "model-platform",
+        "targetRelease": "transformer-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-RTR-004",
@@ -1441,7 +3143,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "08-01",
+      "acceptanceIds": [
+        "ME-RTR-004-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-RTR-004-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "model-platform",
+        "targetRelease": "transformer-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-RTR-005",
@@ -1464,7 +3194,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "08-02",
+      "acceptanceIds": [
+        "ME-RTR-005-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-RTR-005-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "model-platform",
+        "targetRelease": "transformer-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-RTR-006",
@@ -1490,7 +3248,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "08-02",
+      "acceptanceIds": [
+        "ME-RTR-006-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-RTR-006-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "model-platform",
+        "targetRelease": "transformer-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-RTR-007",
@@ -1513,7 +3299,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "08-03",
+      "acceptanceIds": [
+        "ME-RTR-007-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-RTR-007-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "model-platform",
+        "targetRelease": "transformer-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-RTR-008",
@@ -1536,7 +3350,40 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": "consented representative dataset; approved training and serving infrastructure"
+      "externalDependency": "consented representative dataset; approved training and serving infrastructure",
+      "primaryPlan": "08-04",
+      "acceptanceIds": [
+        "ME-RTR-008-AC01"
+      ],
+      "evidenceProfile": "behavioral_external",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-RTR-008-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [
+        "ME-RTR-008-AC01-EV02"
+      ],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "model-platform",
+        "targetRelease": "transformer-ga",
+        "externalBlockers": [
+          "consented representative dataset",
+          "approved training and serving infrastructure"
+        ]
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-RTR-009",
@@ -1561,7 +3408,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "08-02",
+      "acceptanceIds": [
+        "ME-RTR-009-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-RTR-009-AC01-EV01",
+        "ME-RTR-009-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "model-platform",
+        "targetRelease": "transformer-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ENT-001",
@@ -1584,7 +3460,41 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": "approved identity provider tenant; SAML and SCIM enterprise lifecycle"
+      "externalDependency": "approved identity provider tenant; SAML and SCIM enterprise lifecycle",
+      "primaryPlan": "10-01",
+      "acceptanceIds": [
+        "ME-ENT-001-AC01"
+      ],
+      "evidenceProfile": "behavioral_external",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ENT-001-AC01-EV01",
+        "ME-ENT-001-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [
+        "ME-ENT-001-AC01-EV03"
+      ],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "security-platform",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": [
+          "approved identity provider tenant",
+          "SAML and SCIM enterprise lifecycle"
+        ]
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ENT-002",
@@ -1610,7 +3520,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "10-02",
+      "acceptanceIds": [
+        "ME-ENT-002-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ENT-002-AC01-EV01",
+        "ME-ENT-002-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "security-platform",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ENT-003",
@@ -1635,7 +3574,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-014 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "01-01",
+      "acceptanceIds": [
+        "ME-ENT-003-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ENT-003-AC01-EV01",
+        "ME-ENT-003-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "security-platform",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ENT-004",
@@ -1660,7 +3628,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-014 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "10-02",
+      "acceptanceIds": [
+        "ME-ENT-004-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ENT-004-AC01-EV01",
+        "ME-ENT-004-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "security-platform",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ENT-005",
@@ -1683,7 +3680,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-013 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "10-03",
+      "acceptanceIds": [
+        "ME-ENT-005-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ENT-005-AC01-EV01",
+        "ME-ENT-005-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "security-platform",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ENT-006",
@@ -1706,7 +3732,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-009 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "10-03",
+      "acceptanceIds": [
+        "ME-ENT-006-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ENT-006-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "security-platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ENT-007",
@@ -1731,7 +3785,41 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": "production backup provider; approved cross region recovery infrastructure; real production regional failover drill"
+      "externalDependency": "production backup provider; approved cross region recovery infrastructure; real production regional failover drill",
+      "primaryPlan": "10-04",
+      "acceptanceIds": [
+        "ME-ENT-007-AC01"
+      ],
+      "evidenceProfile": "behavioral_external",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ENT-007-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [
+        "ME-ENT-007-AC01-EV02"
+      ],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "security-platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": [
+          "production backup provider",
+          "approved cross region recovery infrastructure",
+          "real production regional failover drill"
+        ]
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ENT-008",
@@ -1754,7 +3842,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "10-04",
+      "acceptanceIds": [
+        "ME-ENT-008-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ENT-008-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "security-platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ENT-009",
@@ -1777,7 +3893,38 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "10-05",
+      "acceptanceIds": [
+        "ME-ENT-009-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [
+        "ME-ENT-009-AC01-EV03"
+      ],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [
+        "ME-ENT-009-AC01-EV01",
+        "ME-ENT-009-AC01-EV02"
+      ],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "security-platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ENT-010",
@@ -1800,7 +3947,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-009 (limited_availability): do not change wording until this row is individually promoted; CLM-013 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "10-06",
+      "acceptanceIds": [
+        "ME-ENT-010-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [
+        "ME-ENT-010-AC01-EV01"
+      ],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "security-platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-ENT-011",
@@ -1823,7 +3998,42 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
-      "externalDependency": "approved cloud account and region; approved enterprise network"
+      "externalDependency": "approved cloud account and region; approved enterprise network",
+      "primaryPlan": "10-07",
+      "acceptanceIds": [
+        "ME-ENT-011-AC01"
+      ],
+      "evidenceProfile": "behavioral_external",
+      "implementationEvidenceIds": [
+        "ME-ENT-011-AC01-EV02"
+      ],
+      "testEvidenceIds": [
+        "ME-ENT-011-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [
+        "ME-ENT-011-AC01-EV03"
+      ],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "security-platform",
+        "targetRelease": "enterprise",
+        "externalBlockers": [
+          "approved cloud account and region",
+          "approved enterprise network"
+        ]
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "implementation_pending",
+      "queueState": "build"
     },
     {
       "requirementId": "ME-ENT-012",
@@ -1846,7 +4056,42 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
-      "externalDependency": "legal approved DPA and subprocessors record; operational control evidence from deployed environment; independent penetration test; independent compliance assessor"
+      "externalDependency": "legal approved DPA and subprocessors record; operational control evidence from deployed environment; independent penetration test; independent compliance assessor",
+      "primaryPlan": "10-14",
+      "acceptanceIds": [
+        "ME-ENT-012-AC01"
+      ],
+      "evidenceProfile": "behavioral_external",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-ENT-012-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [
+        "ME-ENT-012-AC01-EV02"
+      ],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "security-platform",
+        "targetRelease": "enterprise",
+        "externalBlockers": [
+          "legal approved DPA and subprocessors record",
+          "operational control evidence from deployed environment",
+          "independent penetration test",
+          "independent compliance assessor"
+        ]
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "implementation_pending",
+      "queueState": "build"
     },
     {
       "requirementId": "ME-COM-001",
@@ -1871,7 +4116,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "09-01",
+      "acceptanceIds": [
+        "ME-COM-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-COM-001-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "commercial-platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-COM-002",
@@ -1896,7 +4169,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "09-01",
+      "acceptanceIds": [
+        "ME-COM-002-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-COM-002-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "commercial-platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-COM-003",
@@ -1919,7 +4220,40 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-010 (preview): do not change wording until this row is individually promoted",
-      "externalDependency": "approved billing processor or invoice export account; finance pricing and tax policy"
+      "externalDependency": "approved billing processor or invoice export account; finance pricing and tax policy",
+      "primaryPlan": "09-02",
+      "acceptanceIds": [
+        "ME-COM-003-AC01"
+      ],
+      "evidenceProfile": "behavioral_external",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-COM-003-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [
+        "ME-COM-003-AC01-EV03"
+      ],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "commercial-platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": [
+          "approved billing processor or invoice export account",
+          "finance pricing and tax policy"
+        ]
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-COM-004",
@@ -1944,7 +4278,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "09-01",
+      "acceptanceIds": [
+        "ME-COM-004-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-COM-004-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "commercial-platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_current"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-GTM-001",
@@ -1967,7 +4329,37 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-001 (preview): do not change wording until this row is individually promoted; CLM-012 (preview): do not change wording until this row is individually promoted; CLM-014 (limited_availability): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "06-04",
+      "acceptanceIds": [
+        "ME-GTM-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [
+        "ME-GTM-001-AC01-EV01"
+      ],
+      "testEvidenceIds": [
+        "ME-GTM-001-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "customer-operations",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-GTM-002",
@@ -1990,7 +4382,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-010 (preview): do not change wording until this row is individually promoted; CLM-012 (preview): do not change wording until this row is individually promoted",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "06-04",
+      "acceptanceIds": [
+        "ME-GTM-002-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-GTM-002-AC01-EV01",
+        "ME-GTM-002-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "customer-operations",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "deployment_pending",
+      "queueState": "ship"
     },
     {
       "requirementId": "ME-GTM-003",
@@ -2018,7 +4439,39 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "CLM-001 (preview): do not change wording until this row is individually promoted; CLM-011 (illustrative): do not change wording until this row is individually promoted",
-      "externalDependency": "observed external customer proof"
+      "externalDependency": "observed external customer proof",
+      "primaryPlan": "06-05",
+      "acceptanceIds": [
+        "ME-GTM-003-AC01"
+      ],
+      "evidenceProfile": "behavioral_external",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [
+        "ME-GTM-003-AC01-EV01"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [
+        "ME-GTM-003-AC01-EV02"
+      ],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "customer-operations",
+        "targetRelease": "warden-ga",
+        "externalBlockers": [
+          "observed external customer proof"
+        ]
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-FET-015",
@@ -2043,7 +4496,38 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-01",
+      "acceptanceIds": [
+        "ME-FET-015-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [
+        "ME-FET-015-AC01-EV01"
+      ],
+      "testEvidenceIds": [
+        "ME-FET-015-AC01-EV02",
+        "ME-FET-015-AC01-EV03"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "graph",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-FET-016",
@@ -2066,7 +4550,38 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-02",
+      "acceptanceIds": [
+        "ME-FET-016-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [
+        "ME-FET-016-AC01-EV01"
+      ],
+      "testEvidenceIds": [
+        "ME-FET-016-AC01-EV02",
+        "ME-FET-016-AC01-EV03"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "warden",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-FET-017",
@@ -2092,7 +4607,38 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-02",
+      "acceptanceIds": [
+        "ME-FET-017-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [
+        "ME-FET-017-AC01-EV01",
+        "ME-FET-017-AC01-EV03"
+      ],
+      "testEvidenceIds": [
+        "ME-FET-017-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "warden",
+        "targetRelease": "warden-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-FET-018",
@@ -2119,7 +4665,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-03",
+      "acceptanceIds": [
+        "ME-FET-018-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [
+        "ME-FET-018-AC01-EV01"
+      ],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "graph",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "implementation_pending",
+      "queueState": "build"
     },
     {
       "requirementId": "ME-REG-015",
@@ -2142,7 +4716,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-03",
+      "acceptanceIds": [
+        "ME-REG-015-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [
+        "ME-REG-015-AC01-EV01"
+      ],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "implementation_pending",
+      "queueState": "build"
     },
     {
       "requirementId": "ME-REG-016",
@@ -2165,7 +4767,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-04",
+      "acceptanceIds": [
+        "ME-REG-016-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [
+        "ME-REG-016-AC01-EV01"
+      ],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "implementation_pending",
+      "queueState": "build"
     },
     {
       "requirementId": "ME-REG-017",
@@ -2188,7 +4818,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-04",
+      "acceptanceIds": [
+        "ME-REG-017-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [
+        "ME-REG-017-AC01-EV01"
+      ],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "implementation_pending",
+      "queueState": "build"
     },
     {
       "requirementId": "ME-REG-018",
@@ -2211,7 +4869,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-04",
+      "acceptanceIds": [
+        "ME-REG-018-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [
+        "ME-REG-018-AC01-EV01"
+      ],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "transformer",
+        "targetRelease": "transformer-pilot",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "implementation_pending",
+      "queueState": "build"
     },
     {
       "requirementId": "ME-CGR-001",
@@ -2234,7 +4920,35 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Fail closed: do not emit success or proven-absence when the capability is missing. Revert the implementing PR; no production data migration is authorized until a later wave says so.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-05",
+      "acceptanceIds": [
+        "ME-CGR-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [
+        "ME-CGR-001-AC01-EV01"
+      ],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "graph",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "implementation_pending",
+      "queueState": "build"
     },
     {
       "requirementId": "ME-MSN-001",
@@ -2261,7 +4975,37 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "02-01",
+      "acceptanceIds": [
+        "ME-MSN-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [
+        "ME-MSN-001-AC01-EV01"
+      ],
+      "testEvidenceIds": [
+        "ME-MSN-001-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-MSN-002",
@@ -2288,7 +5032,42 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "02-01",
+      "acceptanceIds": [
+        "ME-MSN-002-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [
+        "ME-MSN-002-AC01-EV01",
+        "ME-MSN-002-AC01-EV02",
+        "ME-MSN-002-AC01-EV03",
+        "ME-MSN-002-AC01-EV04",
+        "ME-MSN-002-AC01-EV06"
+      ],
+      "testEvidenceIds": [
+        "ME-MSN-002-AC01-EV05",
+        "ME-MSN-002-AC01-EV07"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-MSN-003",
@@ -2321,7 +5100,39 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "02-01",
+      "acceptanceIds": [
+        "ME-MSN-003-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [
+        "ME-MSN-003-AC01-EV01",
+        "ME-MSN-003-AC01-EV03",
+        "ME-MSN-003-AC01-EV04"
+      ],
+      "testEvidenceIds": [
+        "ME-MSN-003-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-MTE-001",
@@ -2354,7 +5165,39 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "02-02",
+      "acceptanceIds": [
+        "ME-MTE-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [
+        "ME-MTE-001-AC01-EV01",
+        "ME-MTE-001-AC01-EV02",
+        "ME-MTE-001-AC01-EV03"
+      ],
+      "testEvidenceIds": [
+        "ME-MTE-001-AC01-EV04"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "platform",
+        "targetRelease": "transformer-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-OMM-001",
@@ -2379,7 +5222,38 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "08-03",
+      "acceptanceIds": [
+        "ME-OMM-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [
+        "ME-OMM-001-AC01-EV01",
+        "ME-OMM-001-AC01-EV03"
+      ],
+      "testEvidenceIds": [
+        "ME-OMM-001-AC01-EV02"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-PEV-001",
@@ -2406,7 +5280,38 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "02-03",
+      "acceptanceIds": [
+        "ME-PEV-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [
+        "ME-PEV-001-AC01-EV01",
+        "ME-PEV-001-AC01-EV02"
+      ],
+      "testEvidenceIds": [
+        "ME-PEV-001-AC01-EV03"
+      ],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-MCC-001",
@@ -2434,7 +5339,38 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "02-02",
+      "acceptanceIds": [
+        "ME-MCC-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [
+        "ME-MCC-001-AC01-EV01",
+        "ME-MCC-001-AC01-EV02",
+        "ME-MCC-001-AC01-EV03",
+        "ME-MCC-001-AC01-EV04"
+      ],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "platform",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     },
     {
       "requirementId": "ME-SXT-001",
@@ -2460,7 +5396,36 @@
       "productionEvidenceTarget": "After the owning-wave PR is merged and deployed: read back mendpoint-talal (and mendpoint-regauge-production when ReGauge) at the exact revision, /livez /healthz /readyz, and a capability-specific canary. Current observed main 96801a319fc3d355cb2b28b4167b83023a192042 does not prove this row.",
       "rollbackOrFailureProof": "Revert the implementing PR. Preserve volumes and durable Mission/graph/learning state. Do not rebuild completed authenticated model work. Fail closed if the replacement path is absent.",
       "publicClaimEffect": "none",
-      "externalDependency": null
+      "externalDependency": null,
+      "primaryPlan": "05-01",
+      "acceptanceIds": [
+        "ME-SXT-001-AC01"
+      ],
+      "evidenceProfile": "behavioral",
+      "implementationEvidenceIds": [
+        "ME-SXT-001-AC01-EV01",
+        "ME-SXT-001-AC01-EV02"
+      ],
+      "testEvidenceIds": [],
+      "syntheticEvidenceIds": [],
+      "liveEvidenceIds": [],
+      "externalEvidenceIds": [],
+      "plannedEvidenceIds": [],
+      "rollbackEvidenceIds": [],
+      "supportBoundary": {
+        "owner": "graph",
+        "targetRelease": "warden-ga",
+        "externalBlockers": []
+      },
+      "target": {
+        "implementationStatus": "verified",
+        "availability": "ga",
+        "claimState": "public_limited"
+      },
+      "productionRevision": null,
+      "productionEvidenceDigest": null,
+      "transitionState": "repair_pending",
+      "queueState": "repair"
     }
   ]
 }

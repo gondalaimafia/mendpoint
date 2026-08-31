@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  ConfiguredEnvelopeKeyProvider,
   DisabledExternalVaultProvider,
+  DurableEnvelopeSecretProvider,
   EnvelopeKeyLifecycleRegistry,
   EnvelopeSecretVault,
   LocalEnvelopeKeyProvider,
+  envelopeKeyProvidersFromEnvironment,
   type EnvelopeAccessAuditEvent,
   type EnvelopeKeyLifecycle,
   type EnvelopeKeyReference,
+  type DurableEnvelopeSecretVersion,
 } from "./vault-envelope.js";
 
 const at = "2026-08-02T00:00:00.000Z";
@@ -43,6 +47,99 @@ function setup() {
 }
 
 describe("envelope secret lifecycle", () => {
+  it("persists provider attestation in outer AAD and rejects authority drift after restart", async () => {
+    const configured = (attestation: string) => ConfiguredEnvelopeKeyProvider.fromJson(JSON.stringify({
+      schemaVersion: 1,
+      keys: [{
+        tenantId: "tenant-a",
+        provider: "external-vault",
+        keyId: "tenant-key",
+        version: "1",
+        customerManaged: false,
+        attestation,
+        materialBase64: Buffer.alloc(32, 7).toString("base64"),
+      }],
+    }));
+    const key = {
+      provider: "external-vault",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: false,
+    } as const;
+    const registry = new EnvelopeKeyLifecycleRegistry();
+    registry.register(lifecycle(key, 1));
+    const original = configured("kms:key/tenant-key:attestation-one");
+    const envelope = await new EnvelopeSecretVault(registry, [original], () => undefined)
+      .encrypt("github-token", "customer-secret", key, context);
+    expect(envelope.keyAttestationSha256).toMatch(/^[a-f0-9]{64}$/);
+
+    const restarted = new EnvelopeSecretVault(registry, [configured(
+      "kms:key/tenant-key:attestation-two",
+    )], () => undefined);
+    await expect(restarted.decrypt(envelope, context)).rejects.toThrow("vault_decrypt_denied");
+    await expect(new EnvelopeSecretVault(registry, [original], () => undefined).decrypt({
+      ...envelope,
+      keyAttestationSha256: "f".repeat(64),
+    }, context)).rejects.toThrow("vault_decrypt_denied");
+  });
+
+  it("labels locally imported configured material as Mendpoint-custodied", async () => {
+    const provider = ConfiguredEnvelopeKeyProvider.fromJson(JSON.stringify({
+      schemaVersion: 1,
+      keys: [{
+        tenantId: "tenant-a",
+        provider: "external-vault",
+        keyId: "tenant-key",
+        version: "1",
+        customerManaged: false,
+        attestation: "kms:key/tenant-key:1",
+        materialBase64: Buffer.alloc(32, 7).toString("base64"),
+      }],
+    }));
+
+    await expect(provider.attestKey({
+      provider: "external-vault",
+      keyId: "tenant-key",
+      version: "1",
+    }, "tenant-a")).resolves.toMatchObject({ customerManaged: false });
+    await expect(provider.wrapDataKey({
+      provider: "external-vault",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: false,
+    }, "tenant-a", Buffer.alloc(32, 1))).resolves.toEqual(expect.any(String));
+  });
+
+  it("withholds customer-managed claims for locally imported production key material", () => {
+    expect(() => ConfiguredEnvelopeKeyProvider.fromJson(JSON.stringify({
+      schemaVersion: 1,
+      keys: [{
+        tenantId: "tenant-a",
+        provider: "external-vault",
+        keyId: "tenant-key",
+        version: "1",
+        customerManaged: true,
+        attestation: "caller-asserted-cmk",
+        materialBase64: Buffer.alloc(32, 7).toString("base64"),
+      }],
+    }))).toThrow("external_vault_customer_managed_evidence_required");
+    const local = new LocalEnvelopeKeyProvider();
+    expect(() => local.putKey("tenant-a", {
+      provider: "local-envelope",
+      keyId: "tenant-key",
+      version: "1",
+      customerManaged: true,
+    }, Buffer.alloc(32, 7))).toThrow("local_envelope_customer_managed_evidence_required");
+  });
+
+  it("keeps production provider wiring disabled when configuration is absent or invalid", () => {
+    expect(envelopeKeyProvidersFromEnvironment(undefined)[0]).toBeInstanceOf(
+      DisabledExternalVaultProvider,
+    );
+    expect(() => envelopeKeyProvidersFromEnvironment("{not-json"))
+      .toThrow("external_vault_configuration_invalid");
+  });
+
   it("encrypts with a data key and audits metadata without exposing plaintext", async () => {
     const { vault, events } = setup();
     const envelope = await vault.encrypt("github-token", "customer-secret", key1, context);
@@ -67,6 +164,28 @@ describe("envelope secret lifecycle", () => {
     );
   });
 
+  it.each([
+    [false, true],
+  ] as const)(
+    "rejects customer-managed relabeling from %s to %s",
+    async (customerManaged, relabeled) => {
+      const key = { ...key1, customerManaged };
+      const material = Buffer.alloc(32, 1);
+      const registry = new EnvelopeKeyLifecycleRegistry();
+      registry.register(lifecycle(key, 1));
+      const provider = new LocalEnvelopeKeyProvider();
+      provider.putKey("tenant-a", key, material);
+      const vault = new EnvelopeSecretVault(registry, [provider], () => undefined);
+      const envelope = await vault.encrypt("github-token", "customer-secret", key, context);
+
+      const relabeledKey = { ...key, customerManaged: relabeled };
+      await expect(vault.decrypt({
+        ...envelope,
+        key: relabeledKey,
+      }, context)).rejects.toThrow("vault_decrypt_denied");
+    },
+  );
+
   it("rotates to a versioned key and retains old decryptability", async () => {
     const { vault, registry } = setup();
     const envelope = await vault.encrypt("github-token", "customer-secret", key1, context);
@@ -79,6 +198,26 @@ describe("envelope secret lifecycle", () => {
     expect(registry.get("tenant-a", key2)?.state).toBe("active");
     expect(await vault.decrypt(envelope, context)).toBe("customer-secret");
     expect(await vault.decrypt(rotated, context)).toBe("customer-secret");
+  });
+
+  it("does not publish lifecycle rotation until replacement audit succeeds", async () => {
+    const registry = new EnvelopeKeyLifecycleRegistry();
+    registry.register(lifecycle(key1, 1));
+    const provider = new LocalEnvelopeKeyProvider();
+    provider.putKey("tenant-a", key1, Buffer.alloc(32, 1));
+    provider.putKey("tenant-a", key2, Buffer.alloc(32, 2));
+    const vault = new EnvelopeSecretVault(registry, [provider], (event) => {
+      if (event.operation === "rotate") throw new Error("audit offline");
+    });
+    const envelope = await vault.encrypt("github-token", "customer-secret", key1, context);
+
+    await expect(vault.rotate(envelope, lifecycle(key2, 2), {
+      ...context,
+      at: "2026-08-03T00:00:00.000Z",
+    })).rejects.toThrow("vault_access_audit_failed");
+
+    expect(registry.get("tenant-a", key1)?.state).toBe("active");
+    expect(registry.get("tenant-a", key2)).toBeUndefined();
   });
 
   it("revokes compromised versions and denies incident access", async () => {
@@ -117,5 +256,183 @@ describe("envelope secret lifecycle", () => {
     await expect(vault.encrypt("github-token", "secret", key1, context)).rejects.toThrow(
       "vault_access_audit_failed",
     );
+  });
+});
+
+describe("durable envelope secret provider", () => {
+  it("rejects generation-one ciphertext transplanted into generation two", async () => {
+    const { vault, provider } = setup();
+    const generationOneEnvelope = await vault.encrypt(
+      "scm-credential-a",
+      "generation-one-secret",
+      key1,
+      context,
+    );
+    let stored: DurableEnvelopeSecretVersion = {
+      credentialId: "scm-credential-a",
+      generation: 2,
+      state: "active",
+      key: key1,
+      envelope: { ...generationOneEnvelope, generation: 2 },
+      issuedAt: at,
+    };
+    const durable = new DurableEnvelopeSecretProvider({
+      tenantId: "tenant-a",
+      actorId: "service:api",
+      correlationId: "request-1",
+      purpose: "materialize_read_only_repository_snapshot",
+      at: () => at,
+      keyProviders: [provider],
+      resolve: async () => stored,
+      audit: () => undefined,
+    });
+
+    await expect(durable.read({
+      provider: "durable-envelope",
+      id: "scm-credential-a",
+      version: "2",
+    })).rejects.toThrow("vault_decrypt_denied");
+
+    stored = { ...stored, envelope: generationOneEnvelope };
+    await expect(durable.read({
+      provider: "durable-envelope",
+      id: "scm-credential-a",
+      version: "2",
+    })).rejects.toThrow("vault_secret_binding_invalid");
+  });
+
+  it.each([
+    [false, true],
+  ] as const)(
+    "rejects durable metadata relabeled from customerManaged %s to %s",
+    async (customerManaged, relabeled) => {
+      const key = { ...key1, customerManaged };
+      const registry = new EnvelopeKeyLifecycleRegistry();
+      registry.register(lifecycle(key, 1));
+      const provider = new LocalEnvelopeKeyProvider();
+      provider.putKey("tenant-a", key, Buffer.alloc(32, 1));
+      const vault = new EnvelopeSecretVault(registry, [provider], () => undefined);
+      const envelope = await vault.encrypt(
+        "scm-credential-a",
+        "customer-secret",
+        key,
+        context,
+      );
+      const stored: DurableEnvelopeSecretVersion = {
+        credentialId: "scm-credential-a",
+        generation: 1,
+        state: "active",
+        key: { ...key, customerManaged: relabeled },
+        envelope,
+        issuedAt: at,
+      };
+      const durable = new DurableEnvelopeSecretProvider({
+        tenantId: "tenant-a",
+        actorId: "service:api",
+        correlationId: "request-1",
+        purpose: "materialize_read_only_repository_snapshot",
+        at: () => at,
+        keyProviders: [provider],
+        resolve: async () => stored,
+        audit: () => undefined,
+      });
+
+      await expect(durable.read({
+        provider: "durable-envelope",
+        id: "scm-credential-a",
+        version: "1",
+      })).rejects.toThrow("vault_secret_binding_invalid");
+    },
+  );
+
+  it("reloads lifecycle state for every read so rotation and revocation invalidate material", async () => {
+    const { vault, provider } = setup();
+    const envelope = await vault.encrypt("scm-credential-a", "customer-secret", key1, context);
+    let stored: DurableEnvelopeSecretVersion = {
+      credentialId: "scm-credential-a",
+      generation: 1,
+      state: "active",
+      key: key1,
+      envelope,
+      issuedAt: at,
+    };
+    const durable = new DurableEnvelopeSecretProvider({
+      tenantId: "tenant-a",
+      actorId: "service:api",
+      correlationId: "request-1",
+      purpose: "materialize_read_only_repository_snapshot",
+      at: () => at,
+      keyProviders: [provider],
+      resolve: async () => stored,
+      audit: () => undefined,
+    });
+
+    await expect(durable.read({
+      provider: "durable-envelope",
+      id: "scm-credential-a",
+      version: "1",
+    })).resolves.toBe("customer-secret");
+
+    stored = { ...stored, state: "revoked", revokedAt: at, revocationReason: "incident" };
+    await expect(durable.read({
+      provider: "durable-envelope",
+      id: "scm-credential-a",
+      version: "1",
+    })).rejects.toThrow("vault_secret_generation_inactive");
+  });
+
+  it("fails closed when the configured provider is absent, disabled, wrong-version, or unauditable", async () => {
+    const { vault } = setup();
+    const envelope = await vault.encrypt("scm-credential-a", "customer-secret", key1, context);
+    const stored: DurableEnvelopeSecretVersion = {
+      credentialId: "scm-credential-a",
+      generation: 1,
+      state: "active",
+      key: key1,
+      envelope,
+      issuedAt: at,
+    };
+    const options = {
+      tenantId: "tenant-a",
+      actorId: "service:api",
+      correlationId: "request-1",
+      purpose: "materialize_read_only_repository_snapshot",
+      at: () => at,
+      resolve: async () => stored,
+    };
+
+    await expect(new DurableEnvelopeSecretProvider({
+      ...options,
+      keyProviders: [],
+      audit: () => undefined,
+    }).read({ provider: "durable-envelope", id: "scm-credential-a", version: "1" }))
+      .rejects.toThrow("vault_decrypt_denied");
+
+    await expect(new DurableEnvelopeSecretProvider({
+      ...options,
+      keyProviders: [new DisabledExternalVaultProvider("local-envelope")],
+      audit: () => undefined,
+    }).read({ provider: "durable-envelope", id: "scm-credential-a", version: "1" }))
+      .rejects.toThrow("vault_decrypt_denied");
+
+    const wrongVersion = new LocalEnvelopeKeyProvider();
+    wrongVersion.putKey("tenant-a", { ...key1, version: "2" }, Buffer.alloc(32, 2));
+    await expect(new DurableEnvelopeSecretProvider({
+      ...options,
+      keyProviders: [wrongVersion],
+      audit: () => undefined,
+    }).read({ provider: "durable-envelope", id: "scm-credential-a", version: "1" }))
+      .rejects.toThrow("vault_decrypt_denied");
+
+    const configured = new LocalEnvelopeKeyProvider();
+    configured.putKey("tenant-a", key1, Buffer.alloc(32, 1));
+    await expect(new DurableEnvelopeSecretProvider({
+      ...options,
+      keyProviders: [configured],
+      audit: () => {
+        throw new Error("audit unavailable");
+      },
+    }).read({ provider: "durable-envelope", id: "scm-credential-a", version: "1" }))
+      .rejects.toThrow("vault_access_audit_failed");
   });
 });

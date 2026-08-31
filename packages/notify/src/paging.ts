@@ -17,6 +17,7 @@ export type PagingEventType =
   | "dead_letter_growth"
   | "expired_lease_uncertain_side_effect"
   | "worker_heartbeat_stale"
+  | "release_dispatch_degraded"
   | "egress_receipt_expiring"
   | "egress_receipt_renewal_failed";
 
@@ -43,8 +44,10 @@ export type NotifyPagingResult =
   | { ok: boolean; skipped?: false; deliveries: PagingDelivery[] };
 
 const DEFAULT_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
+const MAX_PAGING_COUNT = 1_000_000_000;
 
 const dedupeSeen = new Map<string, number>();
+const dedupeInFlight = new Map<string, Promise<void>>();
 
 function dedupeWindowMs(): number {
   const raw = process.env.PAGING_DEDUPE_WINDOW_MS?.trim();
@@ -56,10 +59,16 @@ function dedupeWindowMs(): number {
 /** Reset in-memory dedupe state (test helper; mirrors clearRateLimits/clearAlerts). */
 export function clearPagingDedupe(): void {
   dedupeSeen.clear();
+  dedupeInFlight.clear();
 }
 
 function resolveDedupeKey(event: PagingEvent): string {
   return event.dedupeKey?.trim() || `${event.type}:${event.summary}`;
+}
+
+function boundedPagingCount(value: number | null | undefined): number | null {
+  if (!Number.isSafeInteger(value) || value === undefined || value === null || value < 0) return null;
+  return Math.min(value, MAX_PAGING_COUNT);
 }
 
 /**
@@ -82,6 +91,21 @@ function markPaged(key: string, now: number, windowMs: number): void {
     for (const [existingKey, seenAt] of dedupeSeen) {
       if (now - seenAt >= windowMs) dedupeSeen.delete(existingKey);
     }
+  }
+}
+
+async function withDedupeReservation<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const previous = dedupeInFlight.get(key) ?? Promise.resolve();
+  let release = (): void => {};
+  const turn = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.catch(() => undefined).then(() => turn);
+  dedupeInFlight.set(key, tail);
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (dedupeInFlight.get(key) === tail) dedupeInFlight.delete(key);
   }
 }
 
@@ -126,23 +150,25 @@ export async function notifyPaging(event: PagingEvent): Promise<NotifyPagingResu
   }
 
   const dedupeKey = resolveDedupeKey(event);
-  const now = Date.now();
-  const windowMs = dedupeWindowMs();
-  if (wasRecentlyPaged(dedupeKey, now, windowMs)) {
-    return { ok: true, skipped: true, reason: "deduped" };
-  }
+  return withDedupeReservation(dedupeKey, async () => {
+    const now = Date.now();
+    const windowMs = dedupeWindowMs();
+    if (wasRecentlyPaged(dedupeKey, now, windowMs)) {
+      return { ok: true, skipped: true, reason: "deduped" };
+    }
 
-  const ts = new Date().toISOString();
-  const deliveries: PagingDelivery[] = [
-    await post("webhook", webhookUrl, webhookPayload(event, dedupeKey, ts)),
-  ];
-  // Stamp the dedupe key only after a page actually reached the sink. On a
-  // delivery failure we leave the key unset so the next call (e.g. the 30s
-  // retry) tries again instead of returning a phantom "deduped" success.
-  if (deliveries.some((delivery) => delivery.ok)) {
-    markPaged(dedupeKey, now, windowMs);
-  }
-  return { ok: deliveries.every((delivery) => delivery.ok), deliveries };
+    const ts = new Date().toISOString();
+    const deliveries: PagingDelivery[] = [
+      await post("webhook", webhookUrl, webhookPayload(event, dedupeKey, ts)),
+    ];
+    // Stamp the dedupe key only after a page actually reached the sink. On a
+    // delivery failure we leave the key unset so the next reserved call retries
+    // instead of returning a phantom "deduped" success.
+    if (deliveries.some((delivery) => delivery.ok)) {
+      markPaged(dedupeKey, now, windowMs);
+    }
+    return { ok: deliveries.every((delivery) => delivery.ok), deliveries };
+  });
 }
 
 /**
@@ -174,37 +200,90 @@ export function pagingEventForWorkerHeartbeat(input: {
   stale: boolean;
   deadLetter?: number;
   expiredLeases?: number;
+  releaseDispatchDegraded?: boolean;
+  releaseDispatchPending?: number | null;
+  releaseDispatchClaimed?: number | null;
+  releaseDispatchFailed?: number | null;
+  releaseDispatchDue?: number | null;
+  releaseDispatchExpiredClaims?: number | null;
+  releaseDispatchFailureStage?: string | null;
+  releaseDispatchFailureCode?: string | null;
 }): PagingEvent | null {
+  return pagingEventsForWorkerHeartbeat(input)[0] ?? null;
+}
+
+export function pagingEventsForWorkerHeartbeat(input: {
+  workerId: string;
+  ok: boolean;
+  stale: boolean;
+  deadLetter?: number;
+  expiredLeases?: number;
+  releaseDispatchDegraded?: boolean;
+  releaseDispatchPending?: number | null;
+  releaseDispatchClaimed?: number | null;
+  releaseDispatchFailed?: number | null;
+  releaseDispatchDue?: number | null;
+  releaseDispatchExpiredClaims?: number | null;
+  releaseDispatchFailureStage?: string | null;
+  releaseDispatchFailureCode?: string | null;
+}): readonly PagingEvent[] {
   const deadLetter = input.deadLetter ?? 0;
   const expiredLeases = input.expiredLeases ?? 0;
-  if (input.stale || !input.ok) {
-    return {
+  const events: PagingEvent[] = [];
+  if (input.stale) {
+    events.push({
       type: "worker_heartbeat_stale",
       severity: "critical",
       summary: `Worker ${input.workerId} heartbeat stale`,
       dedupeKey: `worker_heartbeat_stale:${input.workerId}`,
       details: { deadLetter, expiredLeases, ok: input.ok, stale: input.stale },
-    };
+    });
+  }
+  if (input.releaseDispatchDegraded) {
+    events.push({
+      type: "release_dispatch_degraded",
+      severity: "critical",
+      summary: `Worker ${input.workerId} release dispatch degraded`,
+      dedupeKey: `release_dispatch_degraded:${input.workerId}`,
+      details: {
+        pending: boundedPagingCount(input.releaseDispatchPending),
+        claimed: boundedPagingCount(input.releaseDispatchClaimed),
+        failed: boundedPagingCount(input.releaseDispatchFailed),
+        due: boundedPagingCount(input.releaseDispatchDue),
+        expiredClaims: boundedPagingCount(input.releaseDispatchExpiredClaims),
+        failureStage: input.releaseDispatchFailureStage ?? null,
+        failureCode: input.releaseDispatchFailureCode ?? null,
+      },
+    });
+  }
+  if (!input.ok && events.length === 0 && expiredLeases === 0 && deadLetter === 0) {
+    events.push({
+      type: "worker_heartbeat_stale",
+      severity: "critical",
+      summary: `Worker ${input.workerId} heartbeat stale`,
+      dedupeKey: `worker_heartbeat_stale:${input.workerId}`,
+      details: { deadLetter, expiredLeases, ok: input.ok, stale: input.stale },
+    });
   }
   if (expiredLeases > 0) {
-    return {
+    events.push({
       type: "expired_lease_uncertain_side_effect",
       severity: "critical",
       summary: `Worker ${input.workerId} has ${expiredLeases} expired lease(s) with uncertain side effects`,
       dedupeKey: `expired_lease_uncertain_side_effect:${input.workerId}`,
       details: { expiredLeases, deadLetter },
-    };
+    });
   }
   if (deadLetter > 0) {
-    return {
+    events.push({
       type: "dead_letter_growth",
       severity: "error",
       summary: `Worker ${input.workerId} dead-letter queue at ${deadLetter}`,
       dedupeKey: `dead_letter_growth:${input.workerId}`,
       details: { deadLetter },
-    };
+    });
   }
-  return null;
+  return Object.freeze(events);
 }
 
 /**
@@ -308,9 +387,10 @@ export async function pageReadiness(probe: {
 
 /**
  * Best-effort page for a worker heartbeat snapshot. Fires the matching page
- * (`worker_heartbeat_stale`, `expired_lease_uncertain_side_effect`, or
- * `dead_letter_growth`) when the snapshot is unhealthy and returns null
- * otherwise. Never throws, for the same reason as `pageReadiness`.
+ * (`worker_heartbeat_stale`, `release_dispatch_degraded`,
+ * `expired_lease_uncertain_side_effect`, or `dead_letter_growth`) when the
+ * snapshot is unhealthy and returns null otherwise. Never throws, for the same
+ * reason as `pageReadiness`.
  */
 export async function pageWorkerHeartbeat(input: {
   workerId: string;
@@ -318,7 +398,23 @@ export async function pageWorkerHeartbeat(input: {
   stale: boolean;
   deadLetter?: number;
   expiredLeases?: number;
+  releaseDispatchDegraded?: boolean;
+  releaseDispatchPending?: number | null;
+  releaseDispatchClaimed?: number | null;
+  releaseDispatchFailed?: number | null;
+  releaseDispatchDue?: number | null;
+  releaseDispatchExpiredClaims?: number | null;
+  releaseDispatchFailureStage?: string | null;
+  releaseDispatchFailureCode?: string | null;
 }): Promise<NotifyPagingResult | null> {
-  const event = pagingEventForWorkerHeartbeat(input);
-  return event ? notifyPaging(event) : null;
+  const events = pagingEventsForWorkerHeartbeat(input);
+  if (events.length === 0) return null;
+  const results = await Promise.all(events.map((event) => notifyPaging(event)));
+  const deliveries = results.flatMap((result) =>
+    "deliveries" in result ? result.deliveries : []);
+  if (deliveries.length === 0) return results[0] ?? null;
+  return {
+    ok: results.every((result) => result.ok),
+    deliveries,
+  };
 }

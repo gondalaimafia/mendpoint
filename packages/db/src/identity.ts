@@ -1,5 +1,6 @@
 import type { AppDb } from "./index.js";
-import type { TenantMembershipRow } from "./schema.js";
+import { createHash } from "node:crypto";
+import type { IdentitySessionRow, TenantMembershipRow } from "./schema.js";
 
 const MEMBERSHIP_ROLES = new Set<TenantMembershipRow["role"]>([
   "owner",
@@ -259,4 +260,206 @@ export function setTenantMembershipStatus(
     updatedAt,
   );
   return result.changes === 1;
+}
+
+function sessionById(db: AppDb, tenantId: string, sessionId: string): IdentitySessionRow | undefined {
+  return db.raw.prepare(
+    "SELECT * FROM identity_sessions WHERE tenant_id = ? AND id = ?",
+  ).get(tenantId, sessionId) as IdentitySessionRow | undefined;
+}
+
+export function getIdentitySession(
+  db: AppDb,
+  tenantId: string,
+  sessionId: string,
+): IdentitySessionRow | undefined {
+  return sessionById(
+    db,
+    required("tenant_id", tenantId),
+    required("session_id", sessionId),
+  );
+}
+
+export function claimIdentitySession(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    principalId: string;
+    issuer: string;
+    subject: string;
+    membershipUpdatedAt: string;
+    authStrength: string;
+    token: string;
+    issuedAt: string;
+    expiresAt: string;
+    observedAt: string;
+  },
+): IdentitySessionRow {
+  const tenantId = required("tenant_id", input.tenantId);
+  const principalId = required("principal_id", input.principalId);
+  const issuer = required("session_issuer", input.issuer);
+  const subject = required("session_subject", input.subject);
+  const membershipUpdatedAt = timestamp("session_membership_updated_at", input.membershipUpdatedAt);
+  const authStrength = required("session_auth_strength", input.authStrength);
+  const issuedAt = timestamp("session_issued_at", input.issuedAt);
+  const expiresAt = timestamp("session_expires_at", input.expiresAt);
+  const observedAt = timestamp("session_observed_at", input.observedAt);
+  if (expiresAt <= issuedAt || observedAt < issuedAt || observedAt >= expiresAt) {
+    throw new Error("identity_session_time_invalid");
+  }
+  const tokenSha256 = createHash("sha256").update(required("session_token", input.token), "utf8").digest("hex");
+  const id = `identity-session-${tokenSha256.slice(0, 32)}`;
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const membershipRow = membership(db, tenantId, issuer, subject);
+    if (!membershipRow || membershipRow.status !== "active" || membershipRow.updated_at !== membershipUpdatedAt) {
+      throw new Error("identity_session_membership_invalid");
+    }
+    const principal = db.raw.prepare(
+      `SELECT id, kind, subject, audience, expires_at, revoked_at FROM principals
+       WHERE tenant_id = ? AND id = ? AND kind = 'human'`,
+    ).get(tenantId, principalId) as {
+      id: string;
+      kind: string;
+      subject: string;
+      audience: string | null;
+      expires_at: string | null;
+      revoked_at: string | null;
+    } | undefined;
+    if (
+      !principal ||
+      principal.audience !== issuer ||
+      principal.subject !== `${issuer}|${subject}` ||
+      principal.revoked_at !== null ||
+      (principal.expires_at !== null && principal.expires_at <= observedAt)
+    ) throw new Error("identity_session_principal_invalid");
+    const existing = db.raw.prepare(
+      "SELECT * FROM identity_sessions WHERE token_sha256 = ?",
+    ).get(tokenSha256) as IdentitySessionRow | undefined;
+    if (existing) {
+      const sameAuthorityExceptMembership = existing.id === id && existing.tenant_id === tenantId &&
+        existing.principal_id === principalId && existing.issuer === issuer &&
+        existing.subject === subject && existing.auth_strength === authStrength &&
+        existing.issued_at === issuedAt && existing.expires_at === expiresAt;
+      if (sameAuthorityExceptMembership && existing.membership_updated_at !== membershipUpdatedAt) {
+        throw new Error("identity_session_membership_invalid");
+      }
+      const exact = existing.id === id && existing.tenant_id === tenantId &&
+        existing.principal_id === principalId && existing.issuer === issuer &&
+        existing.subject === subject && existing.membership_updated_at === membershipUpdatedAt &&
+        existing.auth_strength === authStrength && existing.issued_at === issuedAt &&
+        existing.expires_at === expiresAt;
+      if (!exact) throw new Error("identity_session_binding_conflict");
+      if (existing.revoked_at !== null) throw new Error("identity_session_revoked");
+      db.raw.prepare(
+        "UPDATE identity_sessions SET last_seen_at = ? WHERE tenant_id = ? AND id = ? AND last_seen_at < ?",
+      ).run(observedAt, tenantId, id, observedAt);
+    } else {
+      db.raw.prepare(
+        `INSERT INTO identity_sessions
+          (id, tenant_id, principal_id, issuer, subject, membership_updated_at,
+           auth_strength, token_sha256, issued_at, expires_at, revoked_at,
+           revoked_by_principal_id, revoke_reason, last_seen_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+      ).run(
+        id, tenantId, principalId, issuer, subject, membershipUpdatedAt,
+        authStrength, tokenSha256, issuedAt, expiresAt, observedAt, observedAt,
+      );
+    }
+    const row = sessionById(db, tenantId, id)!;
+    if (owns) db.raw.exec("COMMIT");
+    return row;
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function revokeIdentitySession(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    sessionId: string;
+    actorPrincipalId: string;
+    reason: string;
+    revokedAt: string;
+  },
+): IdentitySessionRow | undefined {
+  const tenantId = required("tenant_id", input.tenantId);
+  const sessionId = required("session_id", input.sessionId);
+  const actorPrincipalId = required("principal_id", input.actorPrincipalId);
+  const reason = required("session_revoke_reason", input.reason);
+  const revokedAt = timestamp("session_revoked_at", input.revokedAt);
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const current = sessionById(db, tenantId, sessionId);
+    if (!current) {
+      if (owns) db.raw.exec("COMMIT");
+      return undefined;
+    }
+    if (current.revoked_at !== null) {
+      if (
+        current.revoked_at !== revokedAt ||
+        current.revoked_by_principal_id !== actorPrincipalId ||
+        current.revoke_reason !== reason
+      ) throw new Error("identity_session_revoke_conflict");
+      if (owns) db.raw.exec("COMMIT");
+      return current;
+    }
+    const actor = db.raw.prepare(
+      `SELECT id FROM principals
+       WHERE tenant_id = ? AND id = ? AND created_at <= ? AND revoked_at IS NULL
+         AND (expires_at IS NULL OR expires_at > ?)`,
+    ).get(tenantId, actorPrincipalId, revokedAt, revokedAt);
+    if (!actor) throw new Error("identity_session_actor_invalid");
+    const result = db.raw.prepare(
+      `UPDATE identity_sessions
+       SET revoked_at = ?, revoked_by_principal_id = ?, revoke_reason = ?
+       WHERE tenant_id = ? AND id = ? AND revoked_at IS NULL`,
+    ).run(revokedAt, actorPrincipalId, reason, tenantId, sessionId);
+    const row = sessionById(db, tenantId, sessionId)!;
+    if (result.changes !== 1 && (
+      row.revoked_at !== revokedAt ||
+      row.revoked_by_principal_id !== actorPrincipalId ||
+      row.revoke_reason !== reason
+    )) throw new Error("identity_session_revoke_conflict");
+    if (owns) db.raw.exec("COMMIT");
+    return row;
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function revokeIdentitySessionsForMember(
+  db: AppDb,
+  input: {
+    tenantId: string;
+    issuer: string;
+    subject: string;
+    actorPrincipalId: string;
+    reason: string;
+    revokedAt: string;
+  },
+): number {
+  const tenantId = required("tenant_id", input.tenantId);
+  const issuer = required("session_issuer", input.issuer);
+  const subject = required("session_subject", input.subject);
+  const actorPrincipalId = required("principal_id", input.actorPrincipalId);
+  const reason = required("session_revoke_reason", input.reason);
+  const revokedAt = timestamp("session_revoked_at", input.revokedAt);
+  const actor = db.raw.prepare(
+    `SELECT id FROM principals
+     WHERE tenant_id = ? AND id = ? AND created_at <= ? AND revoked_at IS NULL
+       AND (expires_at IS NULL OR expires_at > ?)`,
+  ).get(tenantId, actorPrincipalId, revokedAt, revokedAt);
+  if (!actor) throw new Error("identity_session_actor_invalid");
+  const result = db.raw.prepare(
+    `UPDATE identity_sessions
+     SET revoked_at = ?, revoked_by_principal_id = ?, revoke_reason = ?
+     WHERE tenant_id = ? AND issuer = ? AND subject = ? AND revoked_at IS NULL`,
+  ).run(revokedAt, actorPrincipalId, reason, tenantId, issuer, subject);
+  return Number(result.changes);
 }

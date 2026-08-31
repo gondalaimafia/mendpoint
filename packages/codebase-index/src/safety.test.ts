@@ -15,6 +15,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const tracking = vi.hoisted(() => ({
   reads: new Map<string, number>(),
+  mutateAfterRead: undefined as string | undefined,
+  afterRead: undefined as (() => void) | undefined,
 }));
 
 vi.mock("@mendpoint/call-graph", () => {
@@ -45,11 +47,19 @@ vi.mock("node:fs", async () => {
   return {
     ...actual,
     readFileSync: ((path: Parameters<typeof actual.readFileSync>[0], ...args: unknown[]) => {
+      const result = (actual.readFileSync as (...values: unknown[]) => unknown)(path, ...args);
       if (typeof path === "string") {
         const normalized = resolve(path);
         tracking.reads.set(normalized, (tracking.reads.get(normalized) ?? 0) + 1);
+        if (tracking.mutateAfterRead === normalized) {
+          actual.writeFileSync(normalized, "export const value = 2;\n", "utf8");
+          tracking.mutateAfterRead = undefined;
+        }
+        const afterRead = tracking.afterRead;
+        tracking.afterRead = undefined;
+        afterRead?.();
       }
-      return (actual.readFileSync as (...values: unknown[]) => unknown)(path, ...args);
+      return result;
     }) as typeof actual.readFileSync,
   };
 });
@@ -101,6 +111,8 @@ function canonicalDigest(value: unknown): string {
 
 afterEach(() => {
   tracking.reads.clear();
+  tracking.mutateAfterRead = undefined;
+  tracking.afterRead = undefined;
   for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
@@ -124,18 +136,29 @@ describe("codebase index traversal safety", () => {
     const countRoot = root("file-count");
     writeFileSync(join(countRoot, "a.ts"), "a", "utf8");
     writeFileSync(join(countRoot, "b.ts"), "b", "utf8");
-    expectSafetyError(
+    const countError = expectSafetyError(
       () => buildIndex(countRoot, { limits: { maxFiles: 1 } }),
       "codebase_index_file_count_limit",
     );
+    expect(countError.repositoryIdentity).toMatchObject({
+      filesInspected: 1,
+      bytesInspected: 1,
+    });
+    expect(tracking.reads.get(resolve(join(countRoot, "a.ts")))).toBe(1);
+    expect(tracking.reads.get(resolve(join(countRoot, "b.ts"))) ?? 0).toBe(0);
 
     const totalRoot = root("total-bytes");
     writeFileSync(join(totalRoot, "a.ts"), "1234", "utf8");
     writeFileSync(join(totalRoot, "b.ts"), "5678", "utf8");
-    expectSafetyError(
-      () => buildIndex(totalRoot, { limits: { maxFileBytes: 10, maxTotalBytes: 7 } }),
+    const totalError = expectSafetyError(
+      () => buildIndex(totalRoot, { limits: { maxFileBytes: 10, maxTotalBytes: 1 } }),
       "codebase_index_total_bytes_limit",
     );
+    expect(totalError.repositoryIdentity).toMatchObject({
+      filesInspected: 0,
+      bytesInspected: 0,
+    });
+    expect(tracking.reads.get(resolve(join(totalRoot, "a.ts"))) ?? 0).toBe(0);
 
     const fileRoot = root("file-bytes");
     writeFileSync(join(fileRoot, "large.ts"), "12345", "utf8");
@@ -151,6 +174,42 @@ describe("codebase index traversal safety", () => {
       () => buildIndex(depthRoot, { limits: { maxTraversalDepth: 1 } }),
       "codebase_index_traversal_depth_limit",
     );
+  });
+
+  it("fails closed when a budget-authorized file changes during snapshot capture", () => {
+    const repository = root("capture-drift");
+    const source = resolve(join(repository, "source.ts"));
+    writeFileSync(source, "export const value = 1;\n", "utf8");
+    tracking.mutateAfterRead = source;
+
+    const error = expectSafetyError(
+      () => buildIndex(repository, { limits: { maxFiles: 1, maxTotalBytes: 1_000 } }),
+      "codebase_index_file_changed_during_index",
+    );
+    expect(error.repositoryIdentity).toMatchObject({ filesInspected: 0, bytesInspected: 0 });
+    expect(tracking.reads.get(source)).toBe(1);
+  });
+
+  it("fails closed when the captured repository set gains a file or symlink during capture", () => {
+    for (const drift of ["file", "symlink"] as const) {
+      const repository = root(`set-drift-${drift}`);
+      const outside = root(`set-drift-${drift}-outside`);
+      writeFileSync(join(repository, "source.ts"), "export const value = 1;\n", "utf8");
+      writeFileSync(join(outside, "outside.ts"), "export const escaped = true;\n", "utf8");
+      tracking.afterRead = () => {
+        if (drift === "file") {
+          writeFileSync(join(repository, "late.ts"), "export const late = true;\n", "utf8");
+        } else {
+          symlinkSync(outside, join(repository, "late-link"), "junction");
+        }
+      };
+
+      const error = expectSafetyError(
+        () => buildIndex(repository),
+        "codebase_index_file_changed_during_index",
+      );
+      expect(error.diagnostic.path).toBe(".");
+    }
   });
 
   it("reuses hash probe content instead of reading unchanged files twice", () => {
@@ -169,6 +228,7 @@ describe("codebase index traversal safety", () => {
     expect(next.files.find((file) => file.path === "changed.ts")?.contentHash)
       .not.toBe(previous.files.find((file) => file.path === "changed.ts")?.contentHash);
     expect(tracking.reads.get(resolve(unchanged))).toBe(1);
+    expect(tracking.reads.get(resolve(changed))).toBe(1);
   });
 
   it("persists one authority-bound envelope and classifies exact, incremental, and rebuilt reuse", () => {

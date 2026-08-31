@@ -8,6 +8,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual dispatch exists so the customer-production deploy below can be
+  # exercised deliberately on main after merge, rather than first proving itself
+  # on an unrelated push. Dispatching this workflow re-runs the gates and can
+  # ship only the customer production app.
+  workflow_dispatch: {}
 
 jobs:
   test:
@@ -318,25 +323,68 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  # mendpoint-fettler-production is the single customer-profile deployment
+  # target in this CI workflow. ReGauge uses its separately protected workflow.
+  # This job keeps customer production on the exact gated main revision.
+  #
+  # It is deliberately NOT gated on readiness -- not on /readyz, and not on
+  # /healthz either. Customer readiness depends on backup evidence this deploy
+  # cannot itself produce, so asserting it here would make the job permanently
+  # red for a reason outside a deploy's control.
+  #
+  # /healthz is excluded for exactly the same reason /readyz is, and the two are
+  # not merely alike: apps/web/app/readyz/route.ts is one line that re-exports
+  # GET from ../healthz/route, so they are the SAME handler. That handler calls
+  # the API's /ready, and /ready carries the last_verified_backup check for any
+  # customer-profile deployment (packages/ops/src/readiness.ts) -- which this app
+  # is (MENDPOINT_DEPLOYMENT_PROFILE=customer in fly.customer-warden.toml). So
+  # naming /readyz while still gating on /healthz excluded nothing at all: the
+  # backup dependency came in through the other name.
+  #
+  # That cost a deploy on 07012e61. The image swapped cleanly, the machine was
+  # already running (zero mutating calls), the app never went down, and /version
+  # returned exactly 07012e61 -- and the job still failed, because /healthz was
+  # 503 with backup evidence 132 minutes stale. Nothing about the deploy was
+  # wrong; the gate was reading a signal the deploy does not control.
+  #
+  # Do NOT "restore" a readiness assertion here. This gate asserts only what a
+  # deploy controls: that the right code is running (/version matches the
+  # deployed sha exactly, and an absent revision is a FAILURE, never a match)
+  # and that the process is alive (/livez). /livez is also what Fly's own
+  # machine health check probes, so the gate and the platform agree on what
+  # "up" means. /healthz is still probed and still printed in the failure
+  # message, but purely as diagnosis -- it never decides this job. Backup
+  # freshness is the backup workflow's business, not this job's.
+  deploy-customer-production:
+    # Runs on merges to main and on deliberate dispatch, never on pull_request:
+    # a PR that deployed would ship unreviewed code to a customer app. The
+    # workflow_dispatch arm exists so this path can be exercised once on purpose
+    # after merge instead of waiting for the next push to prove itself.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
     needs: [test, release-gates, container-builds, deployment-e2e]
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
+    # Its own group keeps customer deployments serialized without sharing
+    # authority or cancellation state with other product deployment workflows.
     concurrency:
-      group: mendpoint-production
+      group: customer-production-deploy
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      # Re-assert, at the front of the deploy, that this run still ships the
-      # current tip of main. A deploy job that waited in the mendpoint-production
-      # concurrency queue can start after newer commits have merged; shipping a
-      # superseded commit and reporting success would silently overwrite newer
-      # main with older code. When superseded, skip honestly -- the newer
-      # commit's own run deploys it -- so this shows as a visible SKIP, distinct
-      # from a successful deploy and from a failed one. Fail-safe: if the current
-      # head cannot be determined, proceed with the deploy rather than skip,
-      # because "main is not deployed" is the exact state we are eliminating.
+      # A run that waited in the concurrency queue can start after newer commits
+      # merged, and shipping a
+      # superseded commit would silently overwrite newer main with older code.
+      #
+      # Three outcomes, three behaviours -- "could not determine" is NOT folded
+      # into "current". When supersession cannot be established we skip, because
+      # the two failure modes are not symmetric: skipping means this run does not
+      # deploy, which the next merge to main fixes on its own and a dispatch run
+      # fixes immediately -- self-healing, bounded, and visible in the log.
+      # Deploying blind means an older commit can silently overwrite newer main
+      # in production, which is not self-healing and stays invisible until
+      # someone notices /version going backwards.
       - name: Re-assert this run deploys current main head
         id: head
         shell: bash
@@ -345,8 +393,8 @@ jobs:
           expected="${{ github.sha }}"
           head_sha="$(git ls-remote origin refs/heads/main 2>/dev/null | awk 'NR==1 {print $1}' || true)"
           if [ -z "$head_sha" ]; then
-            echo "::notice::Could not determine current main head; proceeding with deploy (fail-safe)."
-            echo "superseded=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Deploy skipped: could not determine the current main head, so it is unknown whether commit ${expected} is still current. Refusing to deploy on an unestablished check rather than risk overwriting newer main with older code. The next merge to main will deploy; to ship this commit now, re-run this workflow via workflow_dispatch on main once the repository is reachable."
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
           elif [ "$head_sha" != "$expected" ]; then
             echo "::notice::Deploy skipped: commit ${expected} was superseded by newer main head ${head_sha}. The newer commit's deploy run is responsible for shipping it."
             echo "superseded=true" >> "$GITHUB_OUTPUT"
@@ -358,31 +406,206 @@ jobs:
         if: steps.head.outputs.superseded != 'true'
         with:
           version: "0.4.79"
-      # MENDPOINT_RELEASE_REVISION stamps the immutable git sha onto the running
-      # app so /version can report exactly what is deployed. Without it,
-      # /version.revision is null and a revision check would compare null to null
-      # and pass -- the verify step below treats an absent revision as a FAILURE,
-      # never a match, which is the whole point of the third state.
-      - name: Deploy verified revision
-        if: steps.head.outputs.superseded != 'true'
-        run: flyctl deploy --remote-only --app mendpoint-talal --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-      # Bounded health verification. Every curl carries --max-time, so a hung or
-      # unresponsive endpoint fails fast and loud instead of blocking until the
-      # job's 25-minute timeout (which GitHub records, misleadingly, as
-      # "cancelled"). The whole retry loop is bounded by an explicit deadline so
-      # the step can never approach that timeout. It asserts BOTH that the
-      # revision the app is serving equals this commit AND that the app is
-      # actually up, and on failure prints the HTTP code, bytes received, and
-      # deployed-vs-expected revision so the state is diagnosable without opening
-      # Fly.
-      - name: Verify deployed revision and production health
+      # Prove this credential actually has authority over the customer app
+      # BEFORE mutating anything. FLY_API_TOKEN_CUSTOMER is a deploy token scoped
+      # to mendpoint-fettler-production alone. Its scope is asserted here rather
+      # than assumed. Read-only: `status` mutates nothing. The token is never
+      # echoed -- only its presence is tested.
+      - name: Prove deploy authority over the customer app
         if: steps.head.outputs.superseded != 'true'
         shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_CUSTOMER }}
+        run: |
+          set -euo pipefail
+          test -n "$FLY_API_TOKEN" || { echo "::error::FLY_API_TOKEN_CUSTOMER is empty; cannot deploy the customer app."; exit 1; }
+          if ! flyctl status --app mendpoint-fettler-production >/dev/null 2>&1; then
+            echo "::error::FLY_API_TOKEN_CUSTOMER cannot read mendpoint-fettler-production. Re-scope the FLY_API_TOKEN_CUSTOMER repository secret to that app; do not widen this job to the repository-wide FLY_API_TOKEN."
+            exit 1
+          fi
+          echo "Deploy credential has authority over mendpoint-fettler-production."
+      # --config is required because fly.customer-warden.toml is the ONLY fly
+      # config in this repo with no `app =` line (it is a reusable customer
+      # profile), so the app name must be passed explicitly with --app.
+      # --ha=false is load-bearing, not cosmetic: the profile is bounded to
+      # exactly one machine (MENDPOINT_CUSTOMER_MAX_MACHINES=1) and the app pins
+      # itself to an approved machine id, so letting Fly add a second machine
+      # would boot a node that fails closed.
+      # MENDPOINT_RELEASE_REVISION stamps the immutable git sha onto the running
+      # app so /version reports exactly what is deployed; without it the revision
+      # is null and the drift this job exists to fix stays invisible.
+      - name: Deploy customer production
+        if: steps.head.outputs.superseded != 'true'
+        # Both Depot and Fly's legacy remote builder require builder authority
+        # that the deliberately app-scoped deploy token does not carry. The
+        # GitHub runner already proves this exact Docker target in
+        # container-builds, so build with its local Docker daemon and leave the
+        # app-scoped token responsible only for registry upload and deployment.
+        run: >-
+          flyctl deploy --local-only --ha=false --app mendpoint-fettler-production
+          --config fly.customer-warden.toml
+          --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_CUSTOMER }}
+      # A successful image swap is not a running app. On 4ae3c8d0 this deploy
+      # step exited 0 -- the image was pulled and swapped in place on machine
+      # 84e696a22eee68, same machine id before and after -- and flyctl left that
+      # machine `stopped` with checks 0/1. Customer production was hard down for
+      # seven minutes until the machine was started by hand. The app is not at
+      # fault: started, it boots in ~300ms and its health check passes. Nothing
+      # in this job asserted the machine was actually running, so a deploy that
+      # succeeded and a deploy that left production dark looked identical.
+      # No flyctl flag avoids this; it is documented behaviour of every in-place
+      # strategy. flyctl sends skip_launch=true for any machine whose PRE-deploy
+      # state is not started/starting/failed, so a stopped machine is updated
+      # and deliberately left stopped -- and the health-check wait is skipped
+      # along with it, which is why --wait-timeout and the smoke/DNS checks
+      # cannot catch this. rolling (the default), immediate and canary all share
+      # that rule. Only bluegreen force-starts, and bluegreen is not an in-place
+      # update: it builds a replacement machine with a NEW id, which this
+      # profile fails closed on (it pins itself to MENDPOINT_ALLOWED_MACHINE_ID).
+      # Worse, flyctl also treats a machine that WAS started and came back
+      # stopped as a success. A green `flyctl deploy` is therefore never, on its
+      # own, evidence that the app is up, so the guarantee has to be asserted
+      # here rather than delegated to a flag.
+      #
+      # Idempotent by construction. It reads every machine's state first and
+      # issues `machine start` only for a machine that is not already running,
+      # so the normal case -- the machine came back up on its own -- makes zero
+      # mutating calls and this step is a no-op, not an error. Reading first is
+      # load-bearing rather than tidy: `machine start` has no already-started
+      # special case, it acquires a lease, and it surfaces any API error as a
+      # non-zero exit, so blind-firing it would make a healthy deploy flaky.
+      # flyctl guards on state the same way before starting a machine of its
+      # own accord.
+      #
+      # It cannot create machines: `machine start` acts only on a machine id
+      # that already exists. And it honours the same bound the deploy does --
+      # the profile is pinned to one machine (MENDPOINT_CUSTOMER_MAX_MACHINES=1)
+      # and a machine beyond that bound fails closed on boot -- so it will never
+      # leave more than one machine running, even if the app somehow acquires
+      # extras.
+      #
+      # Deliberately additive, never the decider. It always exits 0 and only
+      # records what it observed; the verification step below is what passes or
+      # fails this job. A blind start that also relaxed verification would turn
+      # a loud outage into a silent one, so the start is best-effort and the
+      # assertion stays strict: a genuine boot failure still fails the deploy.
+      - name: Ensure customer production machines are running
+        id: machines
+        if: steps.head.outputs.superseded != 'true'
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_CUSTOMER }}
+        run: |
+          set -euo pipefail
+          app=mendpoint-fettler-production
+          max=1
+          # Five distinct outcomes, never folded together: "could not look" must
+          # not read as "looks fine" in the failure message below.
+          record() {
+            {
+              echo "outcome=$1"
+              echo "detail=$2"
+            } >>"$GITHUB_OUTPUT"
+            echo "Machine run state after deploy: $1 ($2)"
+          }
+          if ! flyctl machines list --app "$app" --json >machines.json 2>/dev/null; then
+            record undetermined "Fly did not return a machine list"
+            echo "::warning::Could not read machine state for ${app}; leaving the run state as the deploy left it. The verification step below decides this job."
+            exit 0
+          fi
+          # `machines list --json` renders the raw Machines API array, so .id
+          # and .state are per-machine fields. A field can be absent rather than
+          # empty, and an absent state is UNKNOWN, never "stopped": an unknown
+          # machine is left alone and named in the summary, so "could not read
+          # this machine" can never be actioned as "this machine needs starting".
+          if ! states="$(jq -r '.[] | "\(.id // "") \(.state // "")"' machines.json 2>/dev/null)"; then
+            record undetermined "the machine list was not parseable JSON"
+            echo "::warning::Could not parse the machine list for ${app}; leaving the run state as the deploy left it. The verification step below decides this job."
+            exit 0
+          fi
+          total=0
+          running=0
+          startable=""
+          summary=""
+          while read -r id state; do
+            [ -n "$id" ] || continue
+            total=$((total + 1))
+            summary="${summary}${id}=${state:-unknown} "
+            case "$state" in
+              started|starting) running=$((running + 1)) ;;
+              created|stopped|suspended) startable="${startable}${id} " ;;
+              *) ;;
+            esac
+          done <<<"$states"
+          if [ "$total" -eq 0 ]; then
+            record none "the app reports no machines"
+            echo "::warning::${app} reports no machines. This step starts machines that already exist; it never creates one."
+            exit 0
+          fi
+          started=0
+          for id in $startable; do
+            if [ $((running + started)) -ge "$max" ]; then
+              echo "::warning::Not starting machine ${id}: ${app} is bounded to ${max} running machine(s) and that bound is already met. A machine beyond the bound fails closed on boot, so leaving it stopped is correct."
+              continue
+            fi
+            echo "Machine ${id} is not running; starting it."
+            if flyctl machine start "$id" --app "$app"; then
+              started=$((started + 1))
+            else
+              # A start that lost a race with the machine coming up on its
+              # own is not a failure, and `machine start` takes a lease, so it
+              # can also lose to a deploy that has not let go yet. Re-read the
+              # state rather than trust the exit code.
+              now="$(flyctl machines list --app "$app" --json 2>/dev/null | jq -r --arg id "$id" '.[] | select((.id // .ID) == $id) | (.state // .State)' 2>/dev/null || true)"
+              case "$now" in
+                started|starting)
+                  echo "Machine ${id} is ${now}; the start command raced with it coming up."
+                  started=$((started + 1))
+                  ;;
+                *)
+                  echo "::warning::Could not start machine ${id} (state now: ${now:-unknown}). The verification step below decides this job."
+                  ;;
+              esac
+            fi
+          done
+          if [ "$started" -gt 0 ]; then
+            record started "started ${started} machine(s); states before this step: ${summary% }"
+          elif [ "$running" -gt 0 ]; then
+            record already-running "${summary% }"
+          else
+            record not-running "${summary% }"
+          fi
+      # Bounded verification: every curl
+      # carries --max-time and the loop has an explicit deadline, so an
+      # unresponsive app fails fast rather than burning the job timeout. An
+      # absent revision is treated as a FAILURE, never a match.
+      #
+      # Two signals decide this step and only two: /version must equal the
+      # deployed sha, and /livez must be 200. /healthz is probed on every pass
+      # so the failure message can report it, but it is NOT part of the
+      # decision -- see the job comment above for why readiness cannot gate a
+      # deploy. If you are adding a condition here, do not add a readiness one.
+      #
+      # This step remains the sole decider of the job. The start step above is
+      # additive: it can leave the machine running, but it cannot make this
+      # step pass. What the machine step contributes here is diagnosis, not
+      # permission -- its observation is read in through the environment (never
+      # interpolated into the script) so the failure message can say WHICH
+      # failure this was. Before this, a deploy that never shipped and a deploy
+      # that shipped and left production dark printed the same words, and the
+      # dark-production outage on 4ae3c8d0 was reported as a failed deploy.
+      - name: Verify deployed revision and customer production health
+        if: steps.head.outputs.superseded != 'true'
+        shell: bash
+        env:
+          MACHINE_OUTCOME: ${{ steps.machines.outputs.outcome }}
+          MACHINE_DETAIL: ${{ steps.machines.outputs.detail }}
         run: |
           set -euo pipefail
           expected="${{ github.sha }}"
+          base="https://mendpoint-fettler-production.fly.dev"
           revision=""
           ver_code=000
           ver_bytes=0
@@ -392,31 +615,41 @@ jobs:
           health_bytes=0
           deadline=$(( $(date +%s) + 300 ))
           while [ "$(date +%s)" -lt "$deadline" ]; do
-            ver_code="$(curl -sS -o version.json -w '%{http_code}' --max-time 10 https://mendpoint-talal.fly.dev/version || echo 000)"
+            ver_code="$(curl -sS -o version.json -w '%{http_code}' --max-time 10 "$base/version" || echo 000)"
             ver_bytes="$(wc -c <version.json 2>/dev/null || echo 0)"
-            live_code="$(curl -sS -o livez.json -w '%{http_code}' --max-time 10 https://mendpoint-talal.fly.dev/livez || echo 000)"
+            live_code="$(curl -sS -o livez.json -w '%{http_code}' --max-time 10 "$base/livez" || echo 000)"
             live_bytes="$(wc -c <livez.json 2>/dev/null || echo 0)"
-            health_code="$(curl -sS -o healthz.json -w '%{http_code}' --max-time 10 https://mendpoint-talal.fly.dev/healthz || echo 000)"
+            health_code="$(curl -sS -o healthz.json -w '%{http_code}' --max-time 10 "$base/healthz" || echo 000)"
             health_bytes="$(wc -c <healthz.json 2>/dev/null || echo 0)"
             revision=""
             if [ "$ver_code" = "200" ]; then
               revision="$(jq -r '.revision // empty' version.json 2>/dev/null || true)"
             fi
-            if [ "$revision" = "$expected" ] && [ "$live_code" = "200" ] && [ "$health_code" = "200" ]; then
-              echo "Production is live and serving the expected revision ${expected}."
+            if [ "$revision" = "$expected" ] && [ "$live_code" = "200" ]; then
+              echo "Customer production is live and serving the expected revision ${expected}."
               exit 0
             fi
             sleep 5
           done
-          echo "::error::Production verification failed for revision ${expected} (deployed, but not confirmed live on current main)."
+          echo "::error::Customer production verification failed for revision ${expected}: the image swap succeeded but the app is not serving it."
+          echo "  Image swap: SUCCEEDED. This step runs only after 'Deploy customer production' exited 0, so ${expected} is on the machine. A deploy that failed outright fails THAT step and never reaches here -- if you are reading this message, the deploy itself did not fail."
+          echo "  Machine run state after deploy: ${MACHINE_OUTCOME:-unrecorded} (${MACHINE_DETAIL:-no observation recorded})"
           echo "  /version -> http ${ver_code}, ${ver_bytes} bytes, revision=$([ -n "${revision}" ] && echo "${revision}" || echo "<absent>")"
           echo "  /livez   -> http ${live_code}, ${live_bytes} bytes"
-          echo "  /healthz -> http ${health_code}, ${health_bytes} bytes"
+          echo "  /healthz -> http ${health_code}, ${health_bytes} bytes (diagnostic only -- readiness does NOT gate this job; see the note above)"
           if [ -z "${revision}" ]; then
             echo "  Deployed revision could not be determined (absent). This is a FAILURE, not a match."
+            case "${MACHINE_OUTCOME:-}" in
+              already-running|started)
+                echo "  The machine IS running, so the app came up and still did not serve: read the app logs (flyctl logs --app mendpoint-fettler-production)."
+                ;;
+              *)
+                echo "  The machine is NOT confirmed running, so there was nothing up to answer: read machine state (flyctl machines list --app mendpoint-fettler-production) and start it if it is stopped."
+                ;;
+            esac
           elif [ "${revision}" != "${expected}" ]; then
-            echo "  Deployed revision ${revision} does not match expected ${expected}."
+            echo "  Deployed revision ${revision} does not match expected ${expected}. The app is serving OLD code: the swap landed but this machine is running a previous image."
           else
-            echo "  Revision matched but the app never reported healthy (/livez and /healthz must both be 200)."
+            echo "  Revision matched but the app never reported alive (/livez must be 200). The right code is running and failing its own liveness check."
           fi
           exit 1

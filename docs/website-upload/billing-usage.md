@@ -5,6 +5,9 @@ Authorize plans and entitlements, reserve bounded spend before work, and settle 
 Status: Internal commercial control
 Availability: Usage accounting active in runtimes; public payment collection and standard invoicing are not active
 Last verified: 2026-08-14
+Publication evidence: not live; no deployed revision or live evidence digest recorded
+Requirements: ME-FND-008, ME-COM-001, ME-COM-002, ME-COM-003, ME-COM-004
+Public claims: None
 
 ## Start here
 
@@ -52,6 +55,12 @@ Assign the tenant an approved plan and entitlement before starting model or migr
 - API plan control: `apps/api/src/billing-plan-control.test.ts`
 - Model accounting: `apps/worker/src/warden-model-accounting.test.ts`
 
+## Contract sources
+
+- `packages/db/src/usage.ts`
+- `apps/api/src/billing-economics.ts`
+- `apps/api/src/server.ts`
+
 ## Safety model
 
 - No external model spend is authorized without a successful reservation where accounting is required.
@@ -68,5 +77,5 @@ Assign the tenant an approved plan and entitlement before starting model or migr
 
 - [Model router](./model-router.md)
 - [Fettler — the first AI API Engineer](./fettler.md)
-- [Regauge — the first AI Legacy Engineer](./regauge.md)
+- [ReGauge — the first AI Legacy Engineer](./regauge.md)
 - [Security and governance](./security-governance.md)

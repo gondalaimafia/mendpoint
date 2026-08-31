@@ -83,6 +83,8 @@ const CUSTOMER_SENSITIVE_CHILD_ENV = Object.freeze([
   "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID",
   "MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST",
   "MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON",
+  "MENDPOINT_SCIM_BINDINGS_JSON",
+  "MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON",
   "FLY_API_TOKEN",
 ] as const);
 
@@ -106,6 +108,7 @@ const CUSTOMER_ROLE_SECRETS = Object.freeze({
     "GITHUB_APP_PRIVATE_KEY",
     "GITHUB_WEBHOOK_SECRET",
     "MENDPOINT_BACKUP_KEY",
+    "MENDPOINT_SCIM_BINDINGS_JSON",
     "MENDPOINT_SANDBOX_KIND",
     "MENDPOINT_SANDBOX_FLY_APP",
     "MENDPOINT_SANDBOX_FLY_IMAGE",
@@ -171,6 +174,7 @@ const REQUIRED_SETTINGS = Object.freeze({
 
 export function validateCustomerWardenRuntime(
   env: Readonly<Record<string, string | undefined>>,
+  readinessAuthority: CustomerReadinessAuthority = {},
 ): string[] {
   const errors: string[] = [];
   for (const [name, expected] of Object.entries(REQUIRED_SETTINGS)) {
@@ -194,6 +198,41 @@ export function validateCustomerWardenRuntime(
   }
   for (const name of CUSTOMER_WARDEN_REQUIRED_SECRETS) {
     if (!resolveEitherRenamedEnv(env, name)?.trim()) errors.push(`Customer Fettler profile requires ${name}`);
+  }
+  const scimBindingsJson = env.MENDPOINT_SCIM_BINDINGS_JSON?.trim();
+  const scimBootstrapAuthoritiesJson = env.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON?.trim();
+  const scimActive = Boolean(scimBindingsJson || scimBootstrapAuthoritiesJson);
+  if (scimActive) {
+    if (!scimBindingsJson) {
+      errors.push("Customer Fettler profile requires MENDPOINT_SCIM_BINDINGS_JSON when SCIM is active");
+    }
+    if (!scimBootstrapAuthoritiesJson) {
+      errors.push(
+        "Customer Fettler profile requires MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON when SCIM is active",
+      );
+    }
+    if (scimBindingsJson) {
+      try {
+        const bindings = scimBindingsFromEnv(env);
+        if (bindings.size === 0) throw new Error("scim_bindings_empty");
+        const expectedTenants = new Set(
+          (resolveEitherRenamedEnv(env, "MENDPOINT_FETTLER_MODEL_SOURCE_TENANTS") ?? "")
+            .split(",")
+            .map((tenantId) => tenantId.trim())
+            .filter(Boolean),
+        );
+        const actualTenants = new Set(bindings.keys());
+        if (
+          expectedTenants.size === 0 ||
+          expectedTenants.size !== actualTenants.size ||
+          [...expectedTenants].some((tenantId) => !actualTenants.has(tenantId))
+        ) throw new Error("scim_binding_tenant_set_mismatch");
+      } catch (error) {
+        errors.push(
+          `Customer Fettler profile has invalid SCIM bindings: ${error instanceof Error ? error.message : "unknown"}`,
+        );
+      }
+    }
   }
   if (env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA !== SANDBOX_EGRESS_ATTESTATION_SCHEMA) {
     errors.push(
@@ -253,13 +292,22 @@ export function validateCustomerWardenRuntime(
   // here is an indeterminate declaration, which must fail closed rather than be
   // read as ready. A declared not-ready deployment (=0) still boots as an honest
   // hold; the readiness probe reports it as not ready.
-  const readiness = assessCustomerReadiness(env, errors);
+  const readiness = assessCustomerReadiness(env, errors, readinessAuthority);
   if (readiness.status === "indeterminate") {
-    errors.push(...readiness.reasons);
+    errors.push(`Customer readiness indeterminate: ${readiness.reasons.join(", ")}`);
+  } else if (readiness.status === "not_ready" && readiness.declared === "ready") {
+    for (const reason of readiness.reasons) {
+      if (reason !== "customer_profile_blocked") {
+        errors.push(`Customer readiness blocked: ${reason}`);
+      }
+    }
   }
   return errors;
 }
 import { loadCustomerObjectStoreConfig } from "./customer-object-store.js";
 import { assessModelEgress, resolveEitherRenamedEnv } from "@mendpoint/shared";
-import { SANDBOX_EGRESS_ATTESTATION_SCHEMA } from "@mendpoint/platform";
-import { assessCustomerReadiness } from "@mendpoint/ops";
+import { SANDBOX_EGRESS_ATTESTATION_SCHEMA, scimBindingsFromEnv } from "@mendpoint/platform";
+import {
+  assessCustomerReadiness,
+  type CustomerReadinessAuthority,
+} from "@mendpoint/ops";

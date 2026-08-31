@@ -12,7 +12,7 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { classifyDependencyDirectory } from "@mendpoint/shared";
 import type {
   CallEdge,
@@ -440,16 +440,44 @@ export type BuildCallGraphOptions = {
   /** Skip test files when building (still can be queried separately) */
   excludeTests?: boolean;
   /**
-   * Pre-read file contents keyed by absolute path. When a discovered file is
-   * present here, its text is reused instead of reading from disk. The codebase
-   * index has already read every code file by the time it builds the graph, so
-   * threading its buffers through collapses two full-repo read passes into one
-   * — the dominant cost on large trees under a cold filesystem cache. Discovery
-   * (the directory walk and its skip/unsupported diagnostics) is unchanged, and
-   * the extraction runs on identical text, so the resulting graph is identical.
+   * Exact pre-read source snapshot keyed by absolute path. When present, this
+   * map is the complete authority: graph construction does not walk or read the
+   * mutable repository. This prevents files added, removed, replaced, or linked
+   * after bounded capture from changing the graph under the captured snapshot.
    */
   sources?: ReadonlyMap<string, string>;
 };
+
+function walkCapturedSources(
+  repoRoot: string,
+  sources: ReadonlyMap<string, string>,
+): WalkResult {
+  const root = resolve(repoRoot);
+  const result: WalkResult = { files: [], skipped: [], unsupported: [] };
+  const seen = new Set<string>();
+  for (const sourcePath of sources.keys()) {
+    if (!isAbsolute(sourcePath)) throw new Error("call_graph_source_path_not_absolute");
+    const absolute = resolve(sourcePath);
+    const rel = relPosix(root, absolute);
+    if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) {
+      throw new Error("call_graph_source_outside_repository");
+    }
+    const identity = process.platform === "win32" ? absolute.toLowerCase() : absolute;
+    if (seen.has(identity)) throw new Error("call_graph_source_path_duplicate");
+    seen.add(identity);
+    const name = rel.slice(rel.lastIndexOf("/") + 1);
+    const ext = name.includes(".") ? `.${name.split(".").pop()}` : "";
+    if (CODE_EXTS.has(ext)) {
+      result.files.push(absolute);
+    } else {
+      const language = UNSUPPORTED_CODE_EXTS.get(ext);
+      if (language) result.unsupported.push({ path: rel, language });
+    }
+  }
+  result.files.sort((left, right) => relPosix(root, left).localeCompare(relPosix(root, right)));
+  result.unsupported.sort((left, right) => left.path.localeCompare(right.path));
+  return result;
+}
 
 /**
  * Build application-centered call graph for a repository root.
@@ -459,7 +487,9 @@ export function buildCallGraph(
   opts: BuildCallGraphOptions = {},
 ): CallGraph {
   const algorithm = opts.algorithm ?? "hybrid";
-  const walkResult = walk(repoRoot, repoRoot, { files: [], skipped: [], unsupported: [] });
+  const walkResult = opts.sources
+    ? walkCapturedSources(repoRoot, opts.sources)
+    : walk(repoRoot, repoRoot, { files: [], skipped: [], unsupported: [] });
   const files = walkResult.files;
   const rawFns: RawFn[] = [];
   const allInstantiated: string[] = [];
@@ -470,7 +500,10 @@ export function buildCallGraph(
     const language = langOf(rel);
     const isTest = isTestPath(rel);
     if (opts.excludeTests && isTest) continue;
-    const text = opts.sources?.get(abs) ?? readFileSync(abs, "utf8");
+    const text = opts.sources
+      ? opts.sources.get(abs)
+      : readFileSync(abs, "utf8");
+    if (text === undefined) throw new Error("call_graph_captured_source_missing");
     rawFns.push(...extractFunctions(rel, text, language, isTest));
     allInstantiated.push(...extractInstantiations(text));
     const hier = extractHierarchy(text, language);
@@ -659,8 +692,12 @@ export function reanalyzeFiles(
 
   for (const rel of relFiles) {
     const abs = join(repoRoot, rel);
-    if (!existsSync(abs)) continue;
-    const text = readFileSync(abs, "utf8");
+    const text = opts.sources
+      ? opts.sources.get(resolve(abs))
+      : existsSync(abs)
+        ? readFileSync(abs, "utf8")
+        : undefined;
+    if (text === undefined) continue;
     const language = langOf(rel);
     const isTest = isTestPath(rel);
     if (opts.excludeTests && isTest) continue;

@@ -296,6 +296,7 @@ export type TransformerDraftDeliveryRecord = Readonly<{
   status: "pending" | "leased" | "delivered";
   authorizedAt: string;
   authorizationEvidenceRefs: readonly string[];
+  productionDeliveryApprovalRefs?: readonly string[];
   leaseGeneration: number;
   leaseTokenDigest?: string;
   leaseExpiresAt?: string;
@@ -357,6 +358,7 @@ export type TransformerDeliveredDraftObservation = Readonly<{
   pullRequestNumber: number;
   pullRequestUrl: string;
   evidenceRefs: readonly string[];
+  productionDeliveryApprovalRefs: readonly string[];
 }>;
 
 export type TransformerPilotCampaign = Readonly<{
@@ -3615,6 +3617,16 @@ export class TransformerPilotExecutionStore {
     if (!gate.allowed) {
       throw new TransformerDomainError("transformer_pilot_delivery_denied", gate.reasons.join(","));
     }
+    const permittedApprovalRefs = new Set(gate.productionDeliveryApprovalRefs);
+    const productionDeliveryApprovalRefs = [...new Set(input.productionDeliveryApprovalRefs ?? [])]
+      .filter((reference) => permittedApprovalRefs.has(reference))
+      .sort(compareCodeUnits);
+    if (state.environment === "production" && productionDeliveryApprovalRefs.length === 0) {
+      throw new TransformerDomainError(
+        "transformer_pilot_delivery_denied",
+        "production_delivery_approval_missing",
+      );
+    }
     if (state.state !== "running") throw new Error("transformer_pilot_campaign_not_running");
     const wave = Math.min(...state.units.filter((unit) => unit.state !== "merged" && unit.state !== "cancelled" && unit.state !== "rolled_back").map((unit) => unit.wave));
     const current = state.units.filter((unit) => unit.wave === wave);
@@ -3629,19 +3641,64 @@ export class TransformerPilotExecutionStore {
       expectedBaseRevision: unit.snapshot.revision,
       expectedHeadRevision: unit.candidateRevision,
       evidenceRefs: replayable
-        ? [...(unit.draftDelivery?.authorizationEvidenceRefs ??
-            new Set([...unit.executionEvidenceRefs, ...gate.acceptanceEvidenceRefs]))].sort()
+        ? [...new Set([
+            ...(unit.draftDelivery?.authorizationEvidenceRefs ?? unit.executionEvidenceRefs),
+            ...gate.acceptanceEvidenceRefs,
+          ])].sort(compareCodeUnits)
         : [...new Set([...unit.executionEvidenceRefs, ...gate.acceptanceEvidenceRefs])].sort(),
       draft: true,
       autoMerge: false,
       autoDeploy: false,
     }));
-    if (replayable) return actions;
+    if (replayable) {
+      const requiresLineageUpdate = current.some((unit) => unit.draftDelivery && (
+        gate.acceptanceEvidenceRefs.some((reference) =>
+          !unit.draftDelivery!.authorizationEvidenceRefs.includes(reference)) ||
+        productionDeliveryApprovalRefs.some((reference) =>
+          !(unit.draftDelivery!.productionDeliveryApprovalRefs ?? []).includes(reference))
+      ));
+      if (requiresLineageUpdate) {
+        this.mutate(input, "delivery.drafts_reauthorized", {
+          wave,
+          actionUnitIds: actions.map((action) => action.unitId),
+          productionDeliveryApprovalRefs,
+          acceptanceEvidenceRefs: [...gate.acceptanceEvidenceRefs].sort(compareCodeUnits),
+        }, (draft) => {
+          if (draft.state !== "running") throw new Error("transformer_pilot_campaign_not_running");
+          const exactWave = draft.units.filter((unit) => unit.wave === wave);
+          if (!exactWave.length || exactWave.some((unit) => unit.state !== "draft")) {
+            throw new Error("transformer_pilot_wave_execution_incomplete");
+          }
+          draft.units = draft.units.map((unit) => {
+            if (unit.wave !== wave || !unit.draftDelivery) return unit;
+            return {
+              ...unit,
+              draftDelivery: Object.freeze({
+                ...unit.draftDelivery,
+                authorizationEvidenceRefs: Object.freeze([
+                  ...new Set([
+                    ...unit.draftDelivery.authorizationEvidenceRefs,
+                    ...gate.acceptanceEvidenceRefs,
+                  ]),
+                ].sort(compareCodeUnits)),
+                productionDeliveryApprovalRefs: Object.freeze([
+                  ...new Set([
+                    ...(unit.draftDelivery.productionDeliveryApprovalRefs ?? []),
+                    ...productionDeliveryApprovalRefs,
+                  ]),
+                ].sort(compareCodeUnits)),
+              }),
+            };
+          });
+        });
+      }
+      return deepFreeze(actions);
+    }
     this.mutate(input, "delivery.drafts_authorized", {
       wave,
       actionUnitIds: actions.map((action) => action.unitId),
-      productionDeliveryApprovalRefs: [...(input.productionDeliveryApprovalRefs ?? [])].sort(),
-      acceptanceEvidenceRefs: [...gate.acceptanceEvidenceRefs].sort(),
+      productionDeliveryApprovalRefs,
+      acceptanceEvidenceRefs: [...gate.acceptanceEvidenceRefs].sort(compareCodeUnits),
     }, (draft) => {
       if (draft.state !== "running") throw new Error("transformer_pilot_campaign_not_running");
       const exactWave = draft.units.filter((unit) => unit.wave === wave);
@@ -3664,6 +3721,7 @@ export class TransformerPilotExecutionStore {
               status: "pending" as const,
               authorizedAt: input.observedAt,
               authorizationEvidenceRefs: Object.freeze([...evidenceRefs]),
+              productionDeliveryApprovalRefs: Object.freeze([...productionDeliveryApprovalRefs]),
               leaseGeneration: 0,
             }) } : {}),
         };
@@ -3946,6 +4004,8 @@ export class TransformerPilotExecutionStore {
         pullRequestNumber: delivery.pullRequestNumber,
         pullRequestUrl: delivery.pullRequestUrl,
         evidenceRefs: [...new Set([...delivery.authorizationEvidenceRefs, ...unit.scmEvidenceRefs])]
+          .sort(compareCodeUnits),
+        productionDeliveryApprovalRefs: [...new Set(delivery.productionDeliveryApprovalRefs ?? [])]
           .sort(compareCodeUnits),
       };
     }));

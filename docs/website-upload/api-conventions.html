@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>API conventions | Mendpoint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="top"><a href="index.html">Mendpoint</a><span>Product documentation</span></header>
+  <main id="content">
+    <nav class="crumb"><a href="index.html">Documentation</a> / Connect and deliver</nav>
+    <header class="hero">
+      <p class="kicker">Connect and deliver</p>
+      <h1>API conventions</h1>
+      <p>Use consistent authentication, request identity, idempotency, error, and retry rules when integrating with Mendpoint APIs.</p>
+      <dl><dt>Status</dt><dd>Route specific production contract</dd><dt>Availability</dt><dd>Documented behavior applies only where the referenced route implements the named convention</dd><dt>Last verified</dt><dd>2026-08-30</dd><dt>Publication evidence</dt><dd>Not live; no deployed revision or live evidence digest recorded</dd><dt>Requirements</dt><dd>ME-FND-007, ME-ENT-001, ME-ENT-002, ME-WAR-008</dd><dt>Public claims</dt><dd>None</dd></dl>
+    </header>
+    <section><h2>Start here</h2><p>Begin with a read request, then add one replay safe mutation using an exact idempotency key.</p><ol><li>Use HTTPS and a tenant scoped Bearer credential.</li><li>Send Content Type application/json for JSON mutations.</li><li>Supply X Request Id for traceability and Idempotency Key where the route requires it.</li><li>Treat status, error code, and request ID as the failure contract.</li></ol><pre aria-label="API conventions quickstart command" tabindex="0"><code>curl -H &quot;Authorization: Bearer $MENDPOINT_API_KEY&quot; -H &quot;X-Request-Id: example-request-1&quot; https://your-mendpoint.example/ready</code></pre></section>
+    <section><h2>What it does</h2><ul><li>Bearer authentication</li><li>Caller supplied or generated request identity</li><li>Route specific idempotent mutations</li><li>Structured error codes</li><li>Explicit overload retry guidance</li></ul></section>
+    <section><h2>When to use it</h2><ul><li>A service calls Mendpoint directly.</li><li>A caller must recover safely after response loss or worker takeover.</li></ul></section>
+    <section><h2>How it works</h2><ol><li>Authentication and tenant resolution run before protected routes.</li><li>The request ID follows the operation into audit and failure responses.</li><li>Mutation routes that require Idempotency Key bind it to the exact request fingerprint.</li><li>Same key and same bytes can replay; same key and different bytes conflict.</li><li>Retry only read operations, explicit overload responses, or exact replay safe mutations.</li></ol></section>
+    <section><h2>Interfaces</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody><tr><td><code>Authorization: Bearer &lt;token&gt;</code></td><td>Configuration</td><td>Tenant scoped API credential.</td></tr><tr><td><code>X-Request-Id</code></td><td>Configuration</td><td>Optional caller request identity returned or retained for diagnosis.</td></tr><tr><td><code>Idempotency-Key</code></td><td>Configuration</td><td>Required only on routes that declare replay safety.</td></tr><tr><td><code>Error response</code></td><td>Artifact</td><td>HTTP status plus a stable error code and request identity where the route provides it.</td></tr><tr><td><code>Retry-After</code></td><td>Configuration</td><td>Delay supplied by an overload response when present.</td></tr></tbody></table></div></section>
+    <section><h2>Evidence and verification</h2><ul><li><strong>Authentication contract</strong><br><code>apps/api/src/auth.test.ts</code></li><li><strong>Request identity and overload</strong><br><code>apps/api/src/production.test.ts</code></li><li><strong>Error boundary</strong><br><code>apps/api/src/error-boundary.test.ts</code></li><li><strong>Idempotent application routes</strong><br><code>apps/api/src/advanced-ai-applications.test.ts</code></li></ul></section>
+    <section><h2>Contract sources</h2><ul><li><code>apps/api/src/auth.ts</code></li><li><code>apps/api/src/production.ts</code></li><li><code>apps/api/src/error-boundary.ts</code></li></ul></section>
+    <section><h2>Safety model</h2><ul class="guardrails"><li>Never send a production credential over plain HTTP or through a redirect.</li><li>Do not assume every mutation is idempotent; require an explicit route contract.</li><li>Do not retry authorization, validation, or idempotency conflict responses without changing authority or input.</li><li>List pagination is endpoint specific; absence of a cursor contract is not proof that an unbounded list is complete.</li></ul></section>
+    <section><h2>Limitations</h2><ul><li>The API does not yet publish one complete OpenAPI document for every route.</li><li>Pagination and rate limits are not uniform across all route groups.</li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="authentication-tenancy.html">Authentication and tenancy</a></li><li><a href="webhooks-events.html">Webhooks and domain events</a></li><li><a href="limits-errors.html">Limits, errors, and retries</a></li></ul></section>
+    <p class="download"><a href="api-conventions.md">Read this page as Markdown</a></p></main>
+  <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
+</body>
+</html>

@@ -179,8 +179,34 @@ export type ExecutorDescriptor = Readonly<{
   estimatedCostUsd: number;
 }>;
 
+export const ROUTER_REGISTRY_SCHEMA_VERSION = 1 as const;
+
+export type ExecutorRegistryContract = Readonly<{
+  schemaVersion: typeof ROUTER_REGISTRY_SCHEMA_VERSION;
+  registryId: string;
+  version: number;
+}>;
+
+export type ExecutorRegistryBinding = ExecutorRegistryContract &
+  Readonly<{ fingerprint: string }>;
+
+const DEFAULT_EXECUTOR_REGISTRY_CONTRACT: ExecutorRegistryContract =
+  Object.freeze({
+    schemaVersion: ROUTER_REGISTRY_SCHEMA_VERSION,
+    registryId: "default-executor-registry",
+    version: 1,
+  });
+
 export class ExecutorRegistry {
   readonly #executors = new Map<string, ExecutorDescriptor>();
+  readonly #contract: ExecutorRegistryContract;
+
+  constructor(
+    contract: ExecutorRegistryContract = DEFAULT_EXECUTOR_REGISTRY_CONTRACT,
+  ) {
+    validateRegistryContract(contract);
+    this.#contract = Object.freeze({ ...contract });
+  }
 
   register(descriptor: ExecutorDescriptor): void {
     validateExecutor(descriptor);
@@ -204,6 +230,16 @@ export class ExecutorRegistry {
         compareText(a.executorId, b.executorId),
       ),
     );
+  }
+
+  binding(): ExecutorRegistryBinding {
+    return Object.freeze({
+      ...this.#contract,
+      fingerprint: fingerprint({
+        ...this.#contract,
+        executors: this.list(),
+      }),
+    });
   }
 }
 
@@ -354,6 +390,8 @@ export type ExecutorEvaluation = Readonly<{
 const POLICY_BOUND_ROUTE: unique symbol = Symbol("policy-bound-route");
 
 export type PolicyBoundExecutorRoute = Readonly<{
+  tenantId: string;
+  taskFingerprint: string;
   executorId: string;
   providerId: string;
   executorKind: ExecutorKind;
@@ -362,6 +400,10 @@ export type PolicyBoundExecutorRoute = Readonly<{
   executionRegion: string;
   policySnapshotId: string;
   policyFingerprint: string;
+  registryFingerprint: string;
+  maximumCostUsd: number;
+  routePosition: number;
+  routeFingerprint: string;
   expectedQualityScore: number;
   expectedLatencyMs: number;
   expectedCostUsd: number;
@@ -370,11 +412,15 @@ export type PolicyBoundExecutorRoute = Readonly<{
 
 export type RoutingPlan = Readonly<{
   taskId: string;
+  tenantId: string;
+  taskFingerprint: string;
   policySnapshotId: string;
   policyFingerprint: string;
+  registry: ExecutorRegistryBinding;
   maximumCostUsd: number;
   primary: PolicyBoundExecutorRoute;
   fallbacks: readonly PolicyBoundExecutorRoute[];
+  planFingerprint: string;
 }>;
 
 export type HumanHandoffReason =
@@ -385,7 +431,9 @@ export type HumanHandoffReason =
   | "fallback_exhausted"
   | "verification_failed"
   | "retry_exhausted"
-  | "non_retryable_failure";
+  | "non_retryable_failure"
+  | "tenant_mismatch"
+  | "route_invalid";
 
 export type HumanHandoff = Readonly<{
   action: "human_handoff";
@@ -404,6 +452,7 @@ export type RoutingDecisionRecord = Readonly<{
   tenantId: string;
   policySnapshotId: string;
   policyFingerprint: string;
+  registry: ExecutorRegistryBinding;
   decidedAt: string;
   action: "execute" | "human_handoff";
   selectedExecutorId: string | null;
@@ -547,16 +596,34 @@ export function routeTask(input: RouteTaskInput): RoutingOutcome {
     );
   }
 
-  const routes = eligible.map((evaluation) =>
-    bindRoute(evaluation, input.policy.snapshotId, policyFingerprint),
+  const registry = input.registry.binding();
+  const taskFingerprint = fingerprint(routingTaskIdentity(input.task));
+  const routes = eligible.map((evaluation, routePosition) =>
+    bindRoute(
+      evaluation,
+      input.task.tenantId,
+      taskFingerprint,
+      input.policy.snapshotId,
+      policyFingerprint,
+      registry.fingerprint,
+      effectiveBudget,
+      routePosition,
+    ),
   );
-  const plan: RoutingPlan = Object.freeze({
+  const unsignedPlan: Omit<RoutingPlan, "planFingerprint"> = {
     taskId: input.task.taskId,
+    tenantId: input.task.tenantId,
+    taskFingerprint,
     policySnapshotId: input.policy.snapshotId,
     policyFingerprint,
+    registry,
     maximumCostUsd: effectiveBudget,
     primary: routes[0],
     fallbacks: Object.freeze(routes.slice(1)),
+  };
+  const plan: RoutingPlan = Object.freeze({
+    ...unsignedPlan,
+    planFingerprint: routingPlanFingerprint(unsignedPlan),
   });
   const decision = decisionRecord(
     input,
@@ -585,6 +652,20 @@ export function selectPolicyBoundFallback(
     throw new Error("Invalid remaining budget");
   }
   validTime(input.at);
+  if (!isValidRoutingPlan(input.plan)) {
+    return fallbackHandoff(
+      input,
+      "route_invalid",
+      "Fallback plan is malformed or no longer policy bound",
+    );
+  }
+  if (input.plan.tenantId !== input.tenantId) {
+    return fallbackHandoff(
+      input,
+      "tenant_mismatch",
+      "Fallback plan belongs to a different tenant",
+    );
+  }
   const failed = new Set(input.failedExecutorIds);
   const maximumCostUsd = Math.min(
     input.plan.maximumCostUsd,
@@ -594,6 +675,9 @@ export function selectPolicyBoundFallback(
     (candidate) =>
       candidate.policySnapshotId === input.plan.policySnapshotId &&
       candidate.policyFingerprint === input.plan.policyFingerprint &&
+      candidate.registryFingerprint === input.plan.registry.fingerprint &&
+      candidate.tenantId === input.plan.tenantId &&
+      candidate.routeFingerprint === routeFingerprint(candidate) &&
       candidate[POLICY_BOUND_ROUTE] === true &&
       !failed.has(candidate.executorId) &&
       candidate.expectedCostUsd <= maximumCostUsd &&
@@ -605,20 +689,117 @@ export function selectPolicyBoundFallback(
   );
   if (next) return next;
 
+  return fallbackHandoff(
+    input,
+    maximumCostUsd <= 0 ? "budget_exhausted" : "fallback_exhausted",
+    maximumCostUsd <= 0
+      ? "No policy budget remains for fallback execution"
+      : "No policy compliant fallback executor remains",
+  );
+}
+
+function fallbackHandoff(
+  input: SelectFallbackInput,
+  reason: HumanHandoffReason,
+  summary: string,
+): HumanHandoff {
+  const plan = input.plan as Partial<RoutingPlan> | null | undefined;
   return Object.freeze({
     action: "human_handoff",
-    taskId: input.plan.taskId,
+    taskId: typeof plan?.taskId === "string" ? plan.taskId : "unknown",
     tenantId: input.tenantId,
-    policySnapshotId: input.plan.policySnapshotId,
-    reason:
-      maximumCostUsd <= 0 ? "budget_exhausted" : "fallback_exhausted",
-    summary:
-      maximumCostUsd <= 0
-        ? "No policy budget remains for fallback execution"
-        : "No policy compliant fallback executor remains",
+    policySnapshotId:
+      typeof plan?.policySnapshotId === "string"
+        ? plan.policySnapshotId
+        : "unknown",
+    reason,
+    summary,
     requiredRole: "human_reviewer",
     excludedExecutors: Object.freeze([]),
   });
+}
+
+function isValidRoutingPlan(plan: unknown): plan is RoutingPlan {
+  if (!isObjectRecord(plan)) return false;
+  const registry = plan.registry;
+  if (
+    !isNonEmptyString(plan.taskId) ||
+    !isNonEmptyString(plan.tenantId) ||
+    !isSha256(plan.taskFingerprint) ||
+    !isNonEmptyString(plan.policySnapshotId) ||
+    !isSha256(plan.policyFingerprint) ||
+    !Number.isFinite(plan.maximumCostUsd) ||
+    (plan.maximumCostUsd as number) < 0 ||
+    !isObjectRecord(registry) ||
+    !isSha256(registry.fingerprint) ||
+    !isObjectRecord(plan.primary) ||
+    !Array.isArray(plan.fallbacks) ||
+    !isSha256(plan.planFingerprint)
+  ) {
+    return false;
+  }
+  try {
+    validateRegistryContract(registry as ExecutorRegistryContract);
+  } catch {
+    return false;
+  }
+  const typedPlan = plan as unknown as RoutingPlan;
+  const routes: readonly unknown[] = [plan.primary, ...plan.fallbacks];
+  if (
+    !routes.every((route, routePosition) =>
+      isValidPolicyBoundRoute(route, typedPlan, routePosition),
+    )
+  ) {
+    return false;
+  }
+  return typedPlan.planFingerprint === routingPlanFingerprint(typedPlan);
+}
+
+function isValidPolicyBoundRoute(
+  route: unknown,
+  plan: RoutingPlan,
+  routePosition: number,
+): route is PolicyBoundExecutorRoute {
+  if (!isObjectRecord(route)) return false;
+  const candidate = route as unknown as PolicyBoundExecutorRoute;
+  return (
+    candidate[POLICY_BOUND_ROUTE] === true &&
+    candidate.tenantId === plan.tenantId &&
+    candidate.taskFingerprint === plan.taskFingerprint &&
+    candidate.policySnapshotId === plan.policySnapshotId &&
+    candidate.policyFingerprint === plan.policyFingerprint &&
+    candidate.registryFingerprint === plan.registry.fingerprint &&
+    candidate.maximumCostUsd === plan.maximumCostUsd &&
+    candidate.routePosition === routePosition &&
+    isNonEmptyString(candidate.executorId) &&
+    isNonEmptyString(candidate.providerId) &&
+    (["deterministic_recipe", "adapter", "local_model", "open_model", "frontier_model"] as const)
+      .includes(candidate.executorKind) &&
+    isNonEmptyString(candidate.executorVersion) &&
+    isNonEmptyString(candidate.priceVersion) &&
+    isNonEmptyString(candidate.executionRegion) &&
+    isSha256(candidate.routeFingerprint) &&
+    candidate.routeFingerprint === routeFingerprint(candidate) &&
+    Number.isFinite(candidate.expectedQualityScore) &&
+    candidate.expectedQualityScore >= 0 &&
+    candidate.expectedQualityScore <= 1 &&
+    Number.isFinite(candidate.expectedLatencyMs) &&
+    candidate.expectedLatencyMs >= 0 &&
+    Number.isFinite(candidate.expectedCostUsd) &&
+    candidate.expectedCostUsd >= 0
+  );
+}
+
+function isObjectRecord(value: unknown): value is Record<PropertyKey, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 
 function evaluateExecutor(
@@ -777,13 +958,20 @@ function chooseRegion(
 
 function bindRoute(
   evaluation: ExecutorEvaluation,
+  tenantId: string,
+  taskFingerprint: string,
   policySnapshotId: string,
   policyFingerprint: string,
+  registryFingerprint: string,
+  maximumCostUsd: number,
+  routePosition: number,
 ): PolicyBoundExecutorRoute {
   if (!evaluation.eligible || !evaluation.executionRegion) {
     throw new Error("Cannot bind an ineligible executor");
   }
-  return Object.freeze({
+  const route = {
+    tenantId,
+    taskFingerprint,
     executorId: evaluation.executorId,
     providerId: evaluation.providerId,
     executorKind: evaluation.executorKind,
@@ -792,10 +980,55 @@ function bindRoute(
     executionRegion: evaluation.executionRegion,
     policySnapshotId,
     policyFingerprint,
+    registryFingerprint,
+    maximumCostUsd,
+    routePosition,
     expectedQualityScore: evaluation.expectedQualityScore,
     expectedLatencyMs: evaluation.expectedLatencyMs,
     expectedCostUsd: evaluation.expectedCostUsd,
+  };
+  return Object.freeze({
+    ...route,
+    routeFingerprint: fingerprint(route),
     [POLICY_BOUND_ROUTE]: true as const,
+  });
+}
+
+function routeFingerprint(route: PolicyBoundExecutorRoute): string {
+  return fingerprint({
+    tenantId: route.tenantId,
+    taskFingerprint: route.taskFingerprint,
+    executorId: route.executorId,
+    providerId: route.providerId,
+    executorKind: route.executorKind,
+    executorVersion: route.executorVersion,
+    priceVersion: route.priceVersion,
+    executionRegion: route.executionRegion,
+    policySnapshotId: route.policySnapshotId,
+    policyFingerprint: route.policyFingerprint,
+    registryFingerprint: route.registryFingerprint,
+    maximumCostUsd: route.maximumCostUsd,
+    routePosition: route.routePosition,
+    expectedQualityScore: route.expectedQualityScore,
+    expectedLatencyMs: route.expectedLatencyMs,
+    expectedCostUsd: route.expectedCostUsd,
+  });
+}
+
+function routingPlanFingerprint(
+  plan: Omit<RoutingPlan, "planFingerprint"> | RoutingPlan,
+): string {
+  return fingerprint({
+    taskId: plan.taskId,
+    tenantId: plan.tenantId,
+    taskFingerprint: plan.taskFingerprint,
+    policySnapshotId: plan.policySnapshotId,
+    policyFingerprint: plan.policyFingerprint,
+    registry: plan.registry,
+    maximumCostUsd: plan.maximumCostUsd,
+    routeFingerprints: [plan.primary, ...plan.fallbacks].map(
+      (route) => route.routeFingerprint,
+    ),
   });
 }
 
@@ -844,6 +1077,7 @@ function decisionRecord(
   const body = {
     task: routingTaskIdentity(input.task),
     policyFingerprint,
+    registry: input.registry.binding(),
     decidedAt,
     remainingBudgetUsd: input.remainingBudgetUsd,
     action,
@@ -858,6 +1092,7 @@ function decisionRecord(
     tenantId: input.task.tenantId,
     policySnapshotId: input.policy.snapshotId,
     policyFingerprint,
+    registry: input.registry.binding(),
     decidedAt,
     action,
     selectedExecutorId,
@@ -1045,6 +1280,17 @@ function validateExecutor(executor: ExecutorDescriptor): void {
   validateScore(executor.qualityScore, "executor quality");
   validateNonNegative(executor.estimatedLatencyMs, "executor latency");
   validateNonNegative(executor.estimatedCostUsd, "executor cost");
+}
+
+function validateRegistryContract(contract: ExecutorRegistryContract): void {
+  if (
+    contract.schemaVersion !== ROUTER_REGISTRY_SCHEMA_VERSION ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u.test(contract.registryId) ||
+    !Number.isSafeInteger(contract.version) ||
+    contract.version < 1
+  ) {
+    throw new Error("Executor registry contract is invalid");
+  }
 }
 
 function validateStringList(values: readonly string[], label: string): void {

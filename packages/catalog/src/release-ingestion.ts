@@ -100,6 +100,33 @@ export type ReleaseDispatch = Readonly<{
   createdAt: string;
 }>;
 
+export type ReleaseDispatchBacklogSummary = Readonly<{
+  tenantId: string;
+  asOf: string;
+  pending: number;
+  claimed: number;
+  completed: number;
+  failed: number;
+  due: number;
+  expiredClaimed: number;
+}>;
+
+export type ReleaseDispatchReconciliationAction = "acknowledge" | "requeue";
+
+export type ReleaseDispatchReconciliation = Readonly<{
+  id: string;
+  tenantId: string;
+  dispatchId: string;
+  action: ReleaseDispatchReconciliationAction;
+  actorPrincipalId: string;
+  evidenceSha256: string;
+  expectedLeaseGeneration: number;
+  expectedFailedAt: string;
+  expectedFailureCode: string;
+  idempotencyKey: string;
+  createdAt: string;
+}>;
+
 export type ReleaseReviewerOverrideResult =
   | Readonly<{ status: "applied"; artifact: ReleaseArtifact }>
   | Readonly<{ status: "revision_conflict"; expectedRevision: number; actualRevision: number }>;
@@ -108,12 +135,25 @@ export type ReleaseIngestionStore = Readonly<{
   raw: DatabaseSync;
   path: string;
   trustedNow: () => string;
+  advanceClock: () => string;
   close: () => void;
 }>;
 
 export type ReleaseIngestionStoreOptions = Readonly<{
   clock?: () => string;
 }>;
+
+export class ReleaseCatalogError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+
+  constructor(code: string, retryable: boolean) {
+    super(code);
+    this.name = "ReleaseCatalogError";
+    this.code = code;
+    this.retryable = retryable;
+  }
+}
 
 export type ReleaseDocumentInput = Readonly<{
   tenantId: string;
@@ -180,6 +220,29 @@ type DispatchRow = {
   failure_code: string | null;
   last_failure_at: string | null;
   last_failure_code: string | null;
+  created_at: string;
+};
+
+type DispatchBacklogSummaryRow = {
+  pending_count: number;
+  claimed_count: number;
+  completed_count: number;
+  failed_count: number;
+  due_count: number;
+  expired_claimed_count: number;
+};
+
+type DispatchReconciliationRow = {
+  id: string;
+  tenant_id: string;
+  dispatch_id: string;
+  action: ReleaseDispatchReconciliationAction;
+  actor_principal_id: string;
+  evidence_sha256: string;
+  expected_lease_generation: number;
+  expected_failed_at: string;
+  expected_failure_code: string;
+  idempotency_key: string;
   created_at: string;
 };
 
@@ -379,6 +442,166 @@ BEFORE DELETE ON release_ingestion_identity_aliases
 BEGIN SELECT RAISE(ABORT, 'release_ingestion_identity_aliases_append_only'); END;
 `;
 
+const MIGRATION_V5_DISPATCH_RECONCILIATION_TABLE = `
+CREATE TABLE release_ingestion_dispatch_reconciliations (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  dispatch_id TEXT NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('acknowledge', 'requeue')),
+  actor_principal_id TEXT NOT NULL,
+  evidence_sha256 TEXT NOT NULL CHECK (length(evidence_sha256) = 64),
+  expected_lease_generation INTEGER NOT NULL CHECK (expected_lease_generation > 0),
+  expected_failed_at TEXT NOT NULL,
+  expected_failure_code TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, idempotency_key),
+  FOREIGN KEY (dispatch_id, tenant_id) REFERENCES release_ingestion_dispatches(id, tenant_id)
+);
+`;
+
+const MIGRATION_V5_DISPATCH_RECONCILIATION_AUXILIARY = `
+CREATE INDEX release_ingestion_dispatch_reconciliations_lookup_idx
+  ON release_ingestion_dispatch_reconciliations(tenant_id, dispatch_id, created_at, id);
+CREATE TRIGGER release_ingestion_dispatch_reconciliations_no_update
+BEFORE UPDATE ON release_ingestion_dispatch_reconciliations
+BEGIN SELECT RAISE(ABORT, 'release_ingestion_dispatch_reconciliations_append_only'); END;
+CREATE TRIGGER release_ingestion_dispatch_reconciliations_no_delete
+BEFORE DELETE ON release_ingestion_dispatch_reconciliations
+BEGIN SELECT RAISE(ABORT, 'release_ingestion_dispatch_reconciliations_append_only'); END;
+`;
+
+const V5_RECONCILIATION_COLUMN_CONTRACT = Object.freeze([
+  { name: "id", type: "TEXT", notnull: 0, pk: 1 },
+  { name: "tenant_id", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "dispatch_id", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "action", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "actor_principal_id", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "evidence_sha256", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "expected_lease_generation", type: "INTEGER", notnull: 1, pk: 0 },
+  { name: "expected_failed_at", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "expected_failure_code", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "idempotency_key", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "created_at", type: "TEXT", notnull: 1, pk: 0 },
+]);
+
+const V5_RECONCILIATION_COLUMNS = Object.freeze(
+  V5_RECONCILIATION_COLUMN_CONTRACT.map((column) => column.name),
+);
+
+function normalizedSql(value: string | null | undefined): string {
+  return (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function releaseIngestionV5TableExists(raw: DatabaseSync): boolean {
+  return raw.prepare(`SELECT 1 AS present FROM sqlite_master
+    WHERE type = 'table' AND name = 'release_ingestion_dispatch_reconciliations'`).get() !== undefined;
+}
+
+function releaseIngestionV5SchemaValid(raw: DatabaseSync): boolean {
+  if (!releaseIngestionV5TableExists(raw)) return false;
+  const dispatchIdentityColumns = raw.prepare(
+    "PRAGMA index_info(release_ingestion_dispatches_identity_idx)",
+  ).all() as unknown as Array<{ name: string }>;
+  if (dispatchIdentityColumns.map((column) => column.name).join("\0") !==
+      ["id", "tenant_id"].join("\0")) return false;
+  const dispatchIdentityIndex = raw.prepare("PRAGMA index_list(release_ingestion_dispatches)")
+    .all() as unknown as Array<{ name: string; unique: number }>;
+  if (!dispatchIdentityIndex.some((index) =>
+    index.name === "release_ingestion_dispatches_identity_idx" && index.unique === 1)) return false;
+  const columns = raw.prepare("PRAGMA table_info(release_ingestion_dispatch_reconciliations)")
+    .all() as unknown as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+      pk: number;
+    }>;
+  if (
+    columns.length !== V5_RECONCILIATION_COLUMN_CONTRACT.length ||
+    columns.some((column, index) => {
+      const expected = V5_RECONCILIATION_COLUMN_CONTRACT[index]!;
+      return column.name !== expected.name || column.type.toUpperCase() !== expected.type ||
+        column.notnull !== expected.notnull || column.pk !== expected.pk || column.dflt_value !== null;
+    })
+  ) return false;
+  const tableSql = normalizedSql((raw.prepare(`SELECT sql FROM sqlite_master
+    WHERE type = 'table' AND name = 'release_ingestion_dispatch_reconciliations'`).get() as
+      { sql?: string } | undefined)?.sql);
+  if (
+    !tableSql.includes("check (action in ('acknowledge', 'requeue'))") ||
+    !tableSql.includes("check (length(evidence_sha256) = 64)") ||
+    !tableSql.includes("check (expected_lease_generation > 0)") ||
+    !tableSql.includes("unique (tenant_id, idempotency_key)") ||
+    !tableSql.includes("foreign key (dispatch_id, tenant_id) references release_ingestion_dispatches(id, tenant_id)")
+  ) return false;
+  const foreignKeys = raw.prepare("PRAGMA foreign_key_list(release_ingestion_dispatch_reconciliations)")
+    .all() as unknown as Array<{ table: string; from: string; to: string }>;
+  if (
+    foreignKeys.length !== 2 ||
+    !foreignKeys.every((row) => row.table === "release_ingestion_dispatches") ||
+    !foreignKeys.some((row) => row.from === "dispatch_id" && row.to === "id") ||
+    !foreignKeys.some((row) => row.from === "tenant_id" && row.to === "tenant_id")
+  ) return false;
+  const lookupColumns = raw.prepare(
+    "PRAGMA index_info(release_ingestion_dispatch_reconciliations_lookup_idx)",
+  ).all() as unknown as Array<{ name: string }>;
+  if (lookupColumns.map((column) => column.name).join("\0") !==
+      ["tenant_id", "dispatch_id", "created_at", "id"].join("\0")) return false;
+  for (const [name, marker] of [
+    ["release_ingestion_dispatch_reconciliations_no_update", "before update"],
+    ["release_ingestion_dispatch_reconciliations_no_delete", "before delete"],
+  ] as const) {
+    const triggerSql = normalizedSql((raw.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+    ).get(name) as { sql?: string } | undefined)?.sql);
+    if (
+      !triggerSql.includes(marker) || !triggerSql.includes("raise(abort") ||
+      !triggerSql.includes("release_ingestion_dispatch_reconciliations_append_only")
+    ) return false;
+  }
+  return true;
+}
+
+function ensureReleaseDispatchIdentityIndex(raw: DatabaseSync): void {
+  const columns = raw.prepare("PRAGMA index_info(release_ingestion_dispatches_identity_idx)")
+    .all() as unknown as Array<{ name: string }>;
+  const indexes = raw.prepare("PRAGMA index_list(release_ingestion_dispatches)")
+    .all() as unknown as Array<{ name: string; unique: number }>;
+  const valid = columns.map((column) => column.name).join("\0") === ["id", "tenant_id"].join("\0") &&
+    indexes.some((index) => index.name === "release_ingestion_dispatches_identity_idx" && index.unique === 1);
+  if (!valid) raw.exec("DROP INDEX IF EXISTS release_ingestion_dispatches_identity_idx");
+  raw.exec(`CREATE UNIQUE INDEX IF NOT EXISTS release_ingestion_dispatches_identity_idx
+    ON release_ingestion_dispatches(id, tenant_id);`);
+}
+
+function createReleaseIngestionV5Schema(raw: DatabaseSync): void {
+  ensureReleaseDispatchIdentityIndex(raw);
+  raw.exec(MIGRATION_V5_DISPATCH_RECONCILIATION_TABLE);
+  raw.exec(MIGRATION_V5_DISPATCH_RECONCILIATION_AUXILIARY);
+}
+
+function rebuildReleaseIngestionV5Schema(raw: DatabaseSync): void {
+  const mismatch = raw.prepare(`SELECT reconciliation.id FROM release_ingestion_dispatch_reconciliations AS reconciliation
+    LEFT JOIN release_ingestion_dispatches AS dispatch
+      ON dispatch.id = reconciliation.dispatch_id AND dispatch.tenant_id = reconciliation.tenant_id
+    WHERE dispatch.id IS NULL LIMIT 1`).get();
+  if (mismatch) throw new Error("release_ingestion_v5_tenant_dispatch_mismatch");
+  raw.exec(`
+    DROP TRIGGER IF EXISTS release_ingestion_dispatch_reconciliations_no_update;
+    DROP TRIGGER IF EXISTS release_ingestion_dispatch_reconciliations_no_delete;
+    DROP INDEX IF EXISTS release_ingestion_dispatch_reconciliations_lookup_idx;
+    ALTER TABLE release_ingestion_dispatch_reconciliations
+      RENAME TO release_ingestion_dispatch_reconciliations_legacy;
+  `);
+  createReleaseIngestionV5Schema(raw);
+  raw.exec(`INSERT INTO release_ingestion_dispatch_reconciliations
+    (${V5_RECONCILIATION_COLUMNS.join(", ")})
+    SELECT ${V5_RECONCILIATION_COLUMNS.join(", ")}
+    FROM release_ingestion_dispatch_reconciliations_legacy;
+    DROP TABLE release_ingestion_dispatch_reconciliations_legacy;`);
+}
+
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value && typeof value === "object") {
@@ -575,6 +798,15 @@ function migrateReleaseIngestionV4(raw: DatabaseSync, appliedAt: string): void {
     .run(appliedAt);
 }
 
+function migrateReleaseIngestionV5(raw: DatabaseSync, appliedAt: string): void {
+  ensureReleaseDispatchIdentityIndex(raw);
+  if (!releaseIngestionV5TableExists(raw)) createReleaseIngestionV5Schema(raw);
+  else if (!releaseIngestionV5SchemaValid(raw)) rebuildReleaseIngestionV5Schema(raw);
+  if (!releaseIngestionV5SchemaValid(raw)) throw new Error("release_ingestion_v5_schema_invalid");
+  raw.prepare("INSERT INTO release_ingestion_schema_migrations (version, applied_at) VALUES (5, ?)")
+    .run(appliedAt);
+}
+
 function convergeReleaseIngestionSchema(raw: DatabaseSync, appliedAt: string): void {
   raw.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;");
   try {
@@ -584,7 +816,7 @@ function convergeReleaseIngestionSchema(raw: DatabaseSync, appliedAt: string): v
     const current = raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations")
       .get() as { version: number | null };
     const currentVersion = Number(current.version ?? 0);
-    if (currentVersion > 4) throw new Error("release_ingestion_schema_newer_than_runtime");
+    if (currentVersion > 5) throw new Error("release_ingestion_schema_newer_than_runtime");
     if (currentVersion === 0) {
       raw.exec(MIGRATION_V1);
       raw.prepare("INSERT INTO release_ingestion_schema_migrations (version, applied_at) VALUES (1, ?)")
@@ -599,8 +831,15 @@ function convergeReleaseIngestionSchema(raw: DatabaseSync, appliedAt: string): v
     const afterV3 = raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations")
       .get() as { version: number | null };
     if (Number(afterV3.version ?? 0) === 3) migrateReleaseIngestionV4(raw, appliedAt);
+    const afterV4 = raw.prepare("SELECT MAX(version) AS version FROM release_ingestion_schema_migrations")
+      .get() as { version: number | null };
+    if (Number(afterV4.version ?? 0) === 4) migrateReleaseIngestionV5(raw, appliedAt);
+    ensureReleaseDispatchIdentityIndex(raw);
+    if (!releaseIngestionV5TableExists(raw)) createReleaseIngestionV5Schema(raw);
+    else if (!releaseIngestionV5SchemaValid(raw)) rebuildReleaseIngestionV5Schema(raw);
+    if (!releaseIngestionV5SchemaValid(raw)) throw new Error("release_ingestion_v5_schema_invalid");
     const foreignKeyViolation = raw.prepare("PRAGMA foreign_key_check").get();
-    if (foreignKeyViolation) throw new Error("release_ingestion_v4_foreign_key_check_failed");
+    if (foreignKeyViolation) throw new Error("release_ingestion_v5_foreign_key_check_failed");
     raw.exec("COMMIT");
   } catch (error) {
     if (raw.isTransaction) raw.exec("ROLLBACK");
@@ -930,7 +1169,14 @@ export function openReleaseIngestionStore(
   }
   const clock = options.clock ?? (() => new Date().toISOString());
   const trustedNow = () => timestamp("release_store_clock", clock());
-  return Object.freeze({ raw, path, trustedNow, close: () => raw.close() });
+  const store: ReleaseIngestionStore = {
+    raw,
+    path,
+    trustedNow,
+    advanceClock: () => advanceReleaseClock(store),
+    close: () => raw.close(),
+  };
+  return Object.freeze(store);
 }
 
 function latestOverride(store: ReleaseIngestionStore, tenantId: string, artifactId: string): ReleaseReviewerOverride | null {
@@ -1015,6 +1261,22 @@ function dispatchFromRow(row: DispatchRow): ReleaseDispatch {
   });
 }
 
+function dispatchReconciliationFromRow(row: DispatchReconciliationRow): ReleaseDispatchReconciliation {
+  return Object.freeze({
+    id: row.id,
+    tenantId: row.tenant_id,
+    dispatchId: row.dispatch_id,
+    action: row.action,
+    actorPrincipalId: row.actor_principal_id,
+    evidenceSha256: row.evidence_sha256,
+    expectedLeaseGeneration: row.expected_lease_generation,
+    expectedFailedAt: row.expected_failed_at,
+    expectedFailureCode: row.expected_failure_code,
+    idempotencyKey: row.idempotency_key,
+    createdAt: row.created_at,
+  });
+}
+
 export function listReleaseObservations(
   store: ReleaseIngestionStore,
   tenantId: string,
@@ -1031,6 +1293,68 @@ export function listReleaseDispatches(store: ReleaseIngestionStore, tenantId: st
   const tenant = required("release_tenant_id", tenantId, 256);
   return all<DispatchRow>(store, `SELECT * FROM release_ingestion_dispatches
     WHERE tenant_id = ? ORDER BY created_at, id`, [tenant]).map(dispatchFromRow);
+}
+
+export function listReleaseDispatchReconciliations(
+  store: ReleaseIngestionStore,
+  tenantId: string,
+  dispatchId?: string,
+): ReleaseDispatchReconciliation[] {
+  const tenant = required("release_tenant_id", tenantId, 256);
+  const dispatch = dispatchId === undefined ? null : required("release_dispatch_id", dispatchId, 128);
+  return all<DispatchReconciliationRow>(store, `SELECT *
+    FROM release_ingestion_dispatch_reconciliations
+    WHERE tenant_id = ? ${dispatch ? "AND dispatch_id = ?" : ""}
+    ORDER BY created_at, id`, dispatch ? [tenant, dispatch] : [tenant])
+    .map(dispatchReconciliationFromRow);
+}
+
+function dispatchBacklogCount(name: string, value: unknown): number {
+  const count = Number(value);
+  if (!Number.isSafeInteger(count) || count < 0) throw new Error(`${name}_invalid`);
+  return count;
+}
+
+export function summarizeReleaseDispatchBacklog(
+  store: ReleaseIngestionStore,
+  tenantId: string,
+): ReleaseDispatchBacklogSummary {
+  const tenant = required("release_tenant_id", tenantId, 256);
+  const now = store.trustedNow();
+  const authority = one<{ watermark_at: string }>(store,
+    "SELECT watermark_at FROM release_ingestion_clock_authority WHERE singleton_id = 1");
+  if (authority && now < authority.watermark_at) throw new Error("release_store_clock_rollback");
+  const row = one<DispatchBacklogSummaryRow>(store, `SELECT
+      COUNT(*) FILTER (WHERE status = 'pending') AS pending_count,
+      COUNT(*) FILTER (WHERE status = 'claimed') AS claimed_count,
+      COUNT(*) FILTER (WHERE status = 'completed') AS completed_count,
+      COUNT(*) FILTER (WHERE status = 'failed' AND NOT EXISTS (
+        SELECT 1 FROM release_ingestion_dispatch_reconciliations AS reconciliation
+        WHERE reconciliation.tenant_id = release_ingestion_dispatches.tenant_id
+          AND reconciliation.dispatch_id = release_ingestion_dispatches.id
+          AND reconciliation.action = 'acknowledge'
+          AND reconciliation.expected_lease_generation = release_ingestion_dispatches.lease_generation
+          AND reconciliation.expected_failed_at = release_ingestion_dispatches.failed_at
+          AND reconciliation.expected_failure_code = release_ingestion_dispatches.failure_code
+      )) AS failed_count,
+      COUNT(*) FILTER (WHERE attempt_count < max_attempts AND (
+        (status = 'pending' AND available_at <= ?) OR
+        (status = 'claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+      )) AS due_count,
+      COUNT(*) FILTER (WHERE status = 'claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+        AS expired_claimed_count
+    FROM release_ingestion_dispatches WHERE tenant_id = ?`, [now, now, now, tenant]);
+  if (!row) throw new Error("release_dispatch_backlog_summary_failed");
+  return Object.freeze({
+    tenantId: tenant,
+    asOf: now,
+    pending: dispatchBacklogCount("release_dispatch_pending_count", row.pending_count),
+    claimed: dispatchBacklogCount("release_dispatch_claimed_count", row.claimed_count),
+    completed: dispatchBacklogCount("release_dispatch_completed_count", row.completed_count),
+    failed: dispatchBacklogCount("release_dispatch_failed_count", row.failed_count),
+    due: dispatchBacklogCount("release_dispatch_due_count", row.due_count),
+    expiredClaimed: dispatchBacklogCount("release_dispatch_expired_claimed_count", row.expired_claimed_count),
+  });
 }
 
 export function ingestReleaseDocument(
@@ -1247,11 +1571,25 @@ export function rehydrateReleaseArtifact(
   const tenantId = required("release_tenant_id", input.tenantId, 256);
   const artifactId = required("release_artifact_id", input.artifactId, 128);
   const expectedContentSha256 = contentDigest(input.expectedContentSha256);
-  const artifact = one<ArtifactRow>(store,
-    "SELECT * FROM release_ingestion_artifacts WHERE tenant_id = ? AND id = ?", [tenantId, artifactId]);
-  if (!artifact) throw new Error("release_artifact_not_found");
-  if (artifact.content_sha256 !== expectedContentSha256) throw new Error("release_artifact_digest_mismatch");
-  return fromRow(store, artifact);
+  let artifact: ArtifactRow | undefined;
+  try {
+    artifact = one<ArtifactRow>(store,
+      "SELECT * FROM release_ingestion_artifacts WHERE tenant_id = ? AND id = ?", [tenantId, artifactId]);
+  } catch {
+    throw new ReleaseCatalogError("release_catalog_infrastructure_unavailable", true);
+  }
+  if (!artifact) throw new ReleaseCatalogError("release_artifact_not_found", false);
+  if (artifact.content_sha256 !== expectedContentSha256) {
+    throw new ReleaseCatalogError("release_artifact_digest_mismatch", false);
+  }
+  try {
+    return fromRow(store, artifact);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new ReleaseCatalogError("release_artifact_decode_invalid", false);
+    }
+    throw new ReleaseCatalogError("release_catalog_infrastructure_unavailable", true);
+  }
 }
 
 export function claimReleaseDispatch(
@@ -1268,13 +1606,6 @@ export function claimReleaseDispatch(
   try {
     const now = advanceReleaseClock(store);
     const leaseExpiresAt = new Date(Date.parse(now) + input.leaseDurationMs).toISOString();
-    store.raw.prepare(`UPDATE release_ingestion_dispatches
-      SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
-          failed_at = ?, failure_code = 'dispatch_attempts_exhausted',
-          last_failure_at = ?, last_failure_code = 'dispatch_attempts_exhausted'
-      WHERE tenant_id = ? AND status = 'claimed' AND lease_expires_at <= ?
-        AND attempt_count >= max_attempts`)
-      .run(now, now, tenantId, now);
     const candidate = one<{ id: string }>(store, `SELECT id FROM release_ingestion_dispatches
       WHERE tenant_id = ? AND available_at <= ?
         AND attempt_count < max_attempts
@@ -1294,6 +1625,51 @@ export function claimReleaseDispatch(
     const claimed = one<DispatchRow>(store,
       "SELECT * FROM release_ingestion_dispatches WHERE tenant_id = ? AND id = ?", [tenantId, candidate.id]);
     if (!claimed) throw new Error("release_dispatch_claim_failed");
+    store.raw.exec("COMMIT");
+    return dispatchFromRow(claimed);
+  } catch (error) {
+    if (store.raw.isTransaction) store.raw.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/**
+ * Claims only an expired final-attempt dispatch for read-only outcome recovery.
+ * The attempt count is deliberately unchanged: callers may reconcile an exact
+ * effect that was emitted before a crash, but must never dispatch new work.
+ */
+export function claimExpiredFinalReleaseDispatchForRecovery(
+  store: ReleaseIngestionStore,
+  input: Readonly<{ tenantId: string; workerId: string; leaseDurationMs: number }>,
+): ReleaseDispatch | null {
+  const tenantId = required("release_tenant_id", input.tenantId, 256);
+  const workerId = required("release_dispatch_worker_id", input.workerId, 256);
+  if (!Number.isSafeInteger(input.leaseDurationMs) || input.leaseDurationMs < 1 || input.leaseDurationMs > 86_400_000) {
+    throw new Error("release_dispatch_lease_duration_invalid");
+  }
+  if (store.raw.isTransaction) throw new Error("release_dispatch_transaction_active");
+  store.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const now = advanceReleaseClock(store);
+    const leaseExpiresAt = new Date(Date.parse(now) + input.leaseDurationMs).toISOString();
+    const candidate = one<{ id: string }>(store, `SELECT id FROM release_ingestion_dispatches
+      WHERE tenant_id = ? AND status = 'claimed' AND lease_expires_at <= ?
+        AND attempt_count >= max_attempts
+      ORDER BY available_at, id LIMIT 1`, [tenantId, now]);
+    if (!candidate) {
+      store.raw.exec("COMMIT");
+      return null;
+    }
+    const changed = store.raw.prepare(`UPDATE release_ingestion_dispatches
+      SET lease_owner = ?, lease_expires_at = ?, lease_generation = lease_generation + 1,
+          claimed_at = ?
+      WHERE tenant_id = ? AND id = ? AND status = 'claimed' AND lease_expires_at <= ?
+        AND attempt_count >= max_attempts`)
+      .run(workerId, leaseExpiresAt, now, tenantId, candidate.id, now);
+    if (Number(changed.changes) !== 1) throw new Error("release_dispatch_recovery_claim_conflict");
+    const claimed = one<DispatchRow>(store,
+      "SELECT * FROM release_ingestion_dispatches WHERE tenant_id = ? AND id = ?", [tenantId, candidate.id]);
+    if (!claimed) throw new Error("release_dispatch_recovery_claim_failed");
     store.raw.exec("COMMIT");
     return dispatchFromRow(claimed);
   } catch (error) {
@@ -1403,4 +1779,128 @@ export function failReleaseDispatch(
     failureCode: input.failureCode,
     retryable: input.retryable,
   });
+}
+
+function exactEvidenceDigest(value: unknown): string {
+  const digest = required("release_dispatch_reconciliation_evidence_sha256", value, 64);
+  if (!/^[a-f0-9]{64}$/.test(digest)) {
+    throw new Error("release_dispatch_reconciliation_evidence_sha256_invalid");
+  }
+  return digest;
+}
+
+function releaseDispatchReconciliationId(tenantId: string, idempotencyKey: string): string {
+  return `rdr_${sha256(canonicalJson({ tenantId, idempotencyKey })).slice(0, 32)}`;
+}
+
+export function reconcileReleaseDispatchFailure(
+  store: ReleaseIngestionStore,
+  input: Readonly<{
+    tenantId: string;
+    dispatchId: string;
+    action: ReleaseDispatchReconciliationAction;
+    actorPrincipalId: string;
+    evidenceSha256: string;
+    expectedLeaseGeneration: number;
+    expectedFailedAt: string;
+    expectedFailureCode: string;
+    idempotencyKey: string;
+  }>,
+): Readonly<{
+  reconciliation: ReleaseDispatchReconciliation;
+  dispatch: ReleaseDispatch;
+  inserted: boolean;
+}> {
+  const tenantId = required("release_tenant_id", input.tenantId, 256);
+  const dispatchId = required("release_dispatch_id", input.dispatchId, 128);
+  if (input.action !== "acknowledge" && input.action !== "requeue") {
+    throw new Error("release_dispatch_reconciliation_action_invalid");
+  }
+  const actorPrincipalId = required("release_dispatch_reconciliation_actor_principal_id", input.actorPrincipalId, 256);
+  const evidenceSha256 = exactEvidenceDigest(input.evidenceSha256);
+  const expectedLeaseGeneration = leaseGeneration(input.expectedLeaseGeneration);
+  const expectedFailedAt = timestamp("release_dispatch_reconciliation_expected_failed_at", input.expectedFailedAt);
+  const expectedFailureCode = required(
+    "release_dispatch_reconciliation_expected_failure_code",
+    input.expectedFailureCode,
+    256,
+  );
+  const idempotencyKey = required("release_dispatch_reconciliation_idempotency_key", input.idempotencyKey, 256);
+  const ownsTransaction = !store.raw.isTransaction;
+  if (ownsTransaction) store.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const createdAt = advanceReleaseClock(store);
+    const existing = one<DispatchReconciliationRow>(store, `SELECT *
+      FROM release_ingestion_dispatch_reconciliations
+      WHERE tenant_id = ? AND idempotency_key = ?`, [tenantId, idempotencyKey]);
+    if (existing) {
+      const exact =
+        existing.dispatch_id === dispatchId &&
+        existing.action === input.action &&
+        existing.actor_principal_id === actorPrincipalId &&
+        existing.evidence_sha256 === evidenceSha256 &&
+        existing.expected_lease_generation === expectedLeaseGeneration &&
+        existing.expected_failed_at === expectedFailedAt &&
+        existing.expected_failure_code === expectedFailureCode;
+      if (!exact) throw new Error("release_dispatch_reconciliation_idempotency_conflict");
+      const replayedDispatch = one<DispatchRow>(store,
+        "SELECT * FROM release_ingestion_dispatches WHERE tenant_id = ? AND id = ?",
+        [tenantId, dispatchId]);
+      if (!replayedDispatch) throw new Error("release_dispatch_not_found");
+      if (ownsTransaction) store.raw.exec("COMMIT");
+      return Object.freeze({
+        reconciliation: dispatchReconciliationFromRow(existing),
+        dispatch: dispatchFromRow(replayedDispatch),
+        inserted: false,
+      });
+    }
+    const current = one<DispatchRow>(store,
+      "SELECT * FROM release_ingestion_dispatches WHERE tenant_id = ? AND id = ?",
+      [tenantId, dispatchId]);
+    if (!current) throw new Error("release_dispatch_not_found");
+    if (
+      current.status !== "failed" ||
+      current.lease_generation !== expectedLeaseGeneration ||
+      current.failed_at !== expectedFailedAt ||
+      current.failure_code !== expectedFailureCode
+    ) {
+      throw new Error("release_dispatch_reconciliation_stale_failure");
+    }
+    const id = releaseDispatchReconciliationId(tenantId, idempotencyKey);
+    store.raw.prepare(`INSERT INTO release_ingestion_dispatch_reconciliations
+      (id, tenant_id, dispatch_id, action, actor_principal_id, evidence_sha256,
+       expected_lease_generation, expected_failed_at, expected_failure_code,
+       idempotency_key, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, tenantId, dispatchId, input.action, actorPrincipalId, evidenceSha256,
+        expectedLeaseGeneration, expectedFailedAt, expectedFailureCode, idempotencyKey, createdAt);
+    if (input.action === "requeue") {
+      const changed = store.raw.prepare(`UPDATE release_ingestion_dispatches
+        SET status = 'pending', available_at = ?, lease_owner = NULL,
+            lease_expires_at = NULL, claimed_at = NULL, attempt_count = 0,
+            completed_at = NULL, failed_at = NULL, failure_code = NULL
+        WHERE tenant_id = ? AND id = ? AND status = 'failed'
+          AND lease_generation = ? AND failed_at = ? AND failure_code = ?`)
+        .run(createdAt, tenantId, dispatchId, expectedLeaseGeneration,
+          expectedFailedAt, expectedFailureCode);
+      if (Number(changed.changes) !== 1) {
+        throw new Error("release_dispatch_reconciliation_stale_failure");
+      }
+    }
+    const reconciliation = one<DispatchReconciliationRow>(store,
+      "SELECT * FROM release_ingestion_dispatch_reconciliations WHERE id = ?", [id]);
+    const dispatch = one<DispatchRow>(store,
+      "SELECT * FROM release_ingestion_dispatches WHERE tenant_id = ? AND id = ?",
+      [tenantId, dispatchId]);
+    if (!reconciliation || !dispatch) throw new Error("release_dispatch_reconciliation_write_failed");
+    if (ownsTransaction) store.raw.exec("COMMIT");
+    return Object.freeze({
+      reconciliation: dispatchReconciliationFromRow(reconciliation),
+      dispatch: dispatchFromRow(dispatch),
+      inserted: true,
+    });
+  } catch (error) {
+    if (ownsTransaction && store.raw.isTransaction) store.raw.exec("ROLLBACK");
+    throw error;
+  }
 }

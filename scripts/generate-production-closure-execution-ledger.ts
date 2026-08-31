@@ -5,9 +5,23 @@
  *
  * Run: npx tsx scripts/generate-production-closure-execution-ledger.ts
  */
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isTestPath } from "./evidence-reachability-check.js";
+import {
+  approvedPrimaryPlan,
+  evidenceProfile,
+  initialQueueState,
+  targetClaimState,
+  transitionState,
+  type CanonicalClosureRow,
+} from "./production-closure-catalog.js";
+import type {
+  ProductAvailability,
+  ProductClaimState,
+  ProductImplementationStatus,
+} from "../packages/contract/src/product-requirements.js";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const OBSERVED_MAIN = "96801a319fc3d355cb2b28b4167b83023a192042";
@@ -17,9 +31,10 @@ type Requirement = {
   id: string;
   title: string;
   owner: string;
-  implementationStatus: string;
-  availability: string;
-  claimState: string;
+  targetRelease: string;
+  implementationStatus: ProductImplementationStatus;
+  availability: ProductAvailability;
+  claimState: ProductClaimState;
   closureWorkstream: string;
   acceptance: Array<{
     id: string;
@@ -33,14 +48,22 @@ type MatrixRow = {
   requirementId: string;
   registerSet: string;
   status: {
-    implementationStatus: string;
-    availability: string;
-    claimState: string;
+    implementationStatus: ProductImplementationStatus;
+    availability: ProductAvailability;
+    claimState: ProductClaimState;
   };
   issues: number[];
   pullRequests: number[];
   testEvidenceIds: string[];
   productionEvidenceIds: string[];
+  productionEvidenceBindings?: Array<{
+    evidenceId: string;
+    receiptDigest: string;
+    receipt: {
+      deployedRevision: string;
+      rollbackEvidence: { locator: string; digest: string };
+    };
+  }>;
 };
 
 type Claim = {
@@ -50,14 +73,8 @@ type Claim = {
   wording: string;
 };
 
-type LedgerRow = {
-  requirementId: string;
+type LedgerRow = CanonicalClosureRow & {
   title: string;
-  registerSet: string;
-  workstream: string;
-  implementationStatus: string;
-  availability: string;
-  claimState: string;
   acceptanceId: string;
   acceptanceAssertion: string;
   smallestUnmetGap: string;
@@ -266,6 +283,78 @@ function firstTestLocator(req: Requirement): string | null {
   return locators.find((locator) => locator.includes(".test.")) ?? locators[0] ?? null;
 }
 
+function partitionEvidence(req: Requirement): Pick<
+  CanonicalClosureRow,
+  | "implementationEvidenceIds"
+  | "testEvidenceIds"
+  | "syntheticEvidenceIds"
+  | "liveEvidenceIds"
+  | "externalEvidenceIds"
+  | "plannedEvidenceIds"
+> {
+  const result = {
+    implementationEvidenceIds: [] as string[],
+    testEvidenceIds: [] as string[],
+    syntheticEvidenceIds: [] as string[],
+    liveEvidenceIds: [] as string[],
+    externalEvidenceIds: [] as string[],
+    plannedEvidenceIds: [] as string[],
+  };
+  for (const evidence of req.acceptance.flatMap((criterion) => criterion.evidence)) {
+    if (["code", "document"].includes(evidence.type)) {
+      result.implementationEvidenceIds.push(evidence.id);
+    } else if (evidence.type === "planned") {
+      result.plannedEvidenceIds.push(evidence.id);
+    } else if (["unit", "integration", "security"].includes(evidence.type)) {
+      result.testEvidenceIds.push(evidence.id);
+    } else if (["e2e", "benchmark"].includes(evidence.type)) {
+      result.syntheticEvidenceIds.push(evidence.id);
+    } else if (evidence.type === "live") {
+      result.liveEvidenceIds.push(evidence.id);
+    } else if (evidence.type === "external") {
+      result.externalEvidenceIds.push(evidence.id);
+    } else {
+      throw new Error(`unsupported evidence type ${evidence.type} for ${req.id}`);
+    }
+  }
+  return result;
+}
+
+function productionBinding(matrix: MatrixRow): {
+  productionRevision: string | null;
+  productionEvidenceDigest: string | null;
+  rollbackEvidenceIds: string[];
+} {
+  const bindings = matrix.productionEvidenceBindings ?? [];
+  if (bindings.length === 0) {
+    return {
+      productionRevision: null,
+      productionEvidenceDigest: null,
+      rollbackEvidenceIds: [],
+    };
+  }
+  const revisions = [...new Set(bindings.map((binding) => binding.receipt.deployedRevision))];
+  if (revisions.length !== 1) {
+    throw new Error(`production evidence revisions disagree for ${matrix.requirementId}`);
+  }
+  const digestInput = bindings
+    .map((binding) => ({
+      evidenceId: binding.evidenceId,
+      receiptDigest: binding.receiptDigest,
+      deployedRevision: binding.receipt.deployedRevision,
+      rollbackEvidence: binding.receipt.rollbackEvidence,
+    }))
+    .sort((left, right) => left.evidenceId.localeCompare(right.evidenceId));
+  const digest = `sha256:${createHash("sha256")
+    .update(JSON.stringify(digestInput))
+    .digest("hex")}`;
+  return {
+    productionRevision: revisions[0] ?? null,
+    productionEvidenceDigest: digest,
+    rollbackEvidenceIds: bindings.map((binding) => binding.evidenceId),
+  };
+}
+
 function productionTarget(req: Requirement, matrix: MatrixRow): string {
   if (matrix.productionEvidenceIds.length > 0) {
     return `Existing productionEvidenceIds ${matrix.productionEvidenceIds.join(", ")} must be re-read on the exact deployed revision after the next merge. Current observed main is ${OBSERVED_MAIN}.`;
@@ -337,6 +426,18 @@ export function buildExecutionLedger(): {
           .map((claim) => `${claim.id} (${claim.state}): do not change wording until this row is individually promoted`)
           .join("; ");
     const issue = matrixRow.issues[0] ?? WORKSTREAM_ISSUE[req.closureWorkstream] ?? null;
+    const partitionedEvidence = partitionEvidence(req);
+    const profile = evidenceProfile({
+      evidenceTypes: req.acceptance.flatMap((criterion) =>
+        criterion.evidence.map((evidence) => evidence.type),
+      ),
+      externalBlockers: req.externalBlockers ?? [],
+    });
+    const production = productionBinding(matrixRow);
+    const queueState = initialQueueState({
+      implementationStatus: matrixRow.status.implementationStatus,
+      evidenceProfile: profile,
+    });
     return {
       requirementId: req.id,
       title: req.title,
@@ -359,6 +460,32 @@ export function buildExecutionLedger(): {
       rollbackOrFailureProof: rollbackProof(req),
       publicClaimEffect,
       externalDependency: req.externalBlockers?.join("; ") ?? null,
+      primaryPlan: approvedPrimaryPlan(req.id),
+      acceptanceIds: req.acceptance.map((criterion) => criterion.id),
+      evidenceProfile: profile,
+      ...partitionedEvidence,
+      rollbackEvidenceIds: production.rollbackEvidenceIds,
+      supportBoundary: {
+        owner: req.owner,
+        targetRelease: req.targetRelease,
+        externalBlockers: req.externalBlockers ?? [],
+      },
+      target: {
+        implementationStatus: "verified",
+        availability: "ga",
+        claimState: targetClaimState(req.id),
+      },
+      productionRevision: production.productionRevision,
+      productionEvidenceDigest: production.productionEvidenceDigest,
+      transitionState: transitionState({
+        queueState,
+        implementationStatus: matrixRow.status.implementationStatus,
+        availability: matrixRow.status.availability,
+        claimState: matrixRow.status.claimState,
+        productionRevision: production.productionRevision,
+        productionEvidenceDigest: production.productionEvidenceDigest,
+      }),
+      queueState,
     };
   });
 

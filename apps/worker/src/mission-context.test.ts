@@ -33,9 +33,11 @@ import { ensureDefaultPolicyEnvelopeBinding } from "@mendpoint/pipeline";
 import {
   openGraphLearnMemory,
   publishSoftwareGraphVersion,
+  upsertNode,
   type SoftwareGraphPublicationV1,
 } from "@mendpoint/graph-learn";
 import { buildMissionContext, hasInheritedContent } from "./mission-context.js";
+import { classifyResumeStanding } from "./mission-resume.js";
 
 const T0 = "2026-01-01T00:00:00.000Z";
 const SHA = "1".repeat(40);
@@ -100,6 +102,48 @@ function fixture(): AppDb {
     createdAt: T0,
   });
   return db;
+}
+
+function chargesPublication(): SoftwareGraphPublicationV1 {
+  const extractor = Object.freeze({
+    id: "mendpoint.code-index",
+    version: "1.0.0",
+    digest: `sha256:${"1".repeat(64)}`,
+  });
+  return {
+    schemaVersion: "mendpoint.software-graph.v1",
+    tenantId: "t1",
+    repositoryId: "r1",
+    repositorySnapshotId: "snapA",
+    repositoryRevision: SHA,
+    providerId: "provider-a",
+    providerSnapshotId: "provider-snapshot-1",
+    providerRevision: "2026-08-17",
+    observedAt: T0,
+    entities: [{
+      extractor,
+      derivation: "repository_usage",
+      confidenceBasis: "deterministic_exact",
+      validFrom: T0,
+      id: "endpoint:charges-create",
+      kind: "endpoint",
+      canonicalKey: "POST /v1/charges",
+      aliases: ["charges.create"],
+      label: "POST /v1/charges",
+      scope: "provider",
+      evidenceRefs: ["artifact:openapi:v1"],
+      status: "active",
+    }],
+    relationships: [],
+    coverage: [
+      { extractor, stage: "repository_discovery", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["manifest:r1:snapA"] },
+      { extractor, stage: "language_parsing", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["parser:typescript:v1"] },
+      { extractor, stage: "provider_specification", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["artifact:openapi:v1"] },
+      { extractor, stage: "sdk_resolution", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["artifact:sdk-map:1"] },
+      { extractor, stage: "call_resolution", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["call-graph:r1:snapA"] },
+      { extractor, stage: "test_resolution", basis: "complete", analyzed: 0, omitted: 0, evidenceRefs: ["source:test/none.ts:1"] },
+    ],
+  };
 }
 
 describe("worker mission-context producer (real stores)", () => {
@@ -612,46 +656,7 @@ describe("worker mission-context producer (real stores)", () => {
   it("consults MissionGraphProjection only when a live endpoint key and graph handle are supplied", () => {
     const db = fixture();
     const graph = openGraphLearnMemory();
-    const extractor = Object.freeze({
-      id: "mendpoint.code-index",
-      version: "1.0.0",
-      digest: `sha256:${"1".repeat(64)}`,
-    });
-    const publication: SoftwareGraphPublicationV1 = {
-      schemaVersion: "mendpoint.software-graph.v1",
-      tenantId: "t1",
-      repositoryId: "r1",
-      repositorySnapshotId: "snapA",
-      repositoryRevision: SHA,
-      providerId: "provider-a",
-      providerSnapshotId: "provider-snapshot-1",
-      providerRevision: "2026-08-17",
-      observedAt: T0,
-      entities: [{
-        extractor,
-        derivation: "repository_usage",
-        confidenceBasis: "deterministic_exact",
-        validFrom: T0,
-        id: "endpoint:charges-create",
-        kind: "endpoint",
-        canonicalKey: "POST /v1/charges",
-        aliases: ["charges.create"],
-        label: "POST /v1/charges",
-        scope: "provider",
-        evidenceRefs: ["artifact:openapi:v1"],
-        status: "active",
-      }],
-      relationships: [],
-      coverage: [
-        { extractor, stage: "repository_discovery", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["manifest:r1:snapA"] },
-        { extractor, stage: "language_parsing", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["parser:typescript:v1"] },
-        { extractor, stage: "provider_specification", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["artifact:openapi:v1"] },
-        { extractor, stage: "sdk_resolution", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["artifact:sdk-map:1"] },
-        { extractor, stage: "call_resolution", basis: "complete", analyzed: 1, omitted: 0, evidenceRefs: ["call-graph:r1:snapA"] },
-        { extractor, stage: "test_resolution", basis: "complete", analyzed: 0, omitted: 0, evidenceRefs: ["source:test/none.ts:1"] },
-      ],
-    };
-    const published = publishSoftwareGraphVersion(graph, publication);
+    const published = publishSoftwareGraphVersion(graph, chargesPublication());
     bindMissionGraphVersion(db, {
       tenantId: "t1",
       missionId: "m1",
@@ -693,5 +698,419 @@ describe("worker mission-context producer (real stores)", () => {
       compiled.envelope.graphProjection.projection.impact,
     );
     graph.raw.close();
+  });
+
+  // CONTROL: a two-valued identity must not carry a third "didn't determine"
+  // state that picks the fallback. Deleting the mismatch throw makes this die.
+  it("CONTROL: disagreeing mission and fallback repository ids fail closed", () => {
+    const db = fixture();
+    const mission = getMission(db, "t1", "m1")!;
+    expect(mission.repositoryId).toBe("r1");
+    expect(() =>
+      buildMissionContext(db, {
+        tenantId: "t1",
+        mission,
+        task: { taskId: "task-1", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+        fallback: { objective: mission.objective, repositoryId: "r-other", snapshotId: mission.snapshotId },
+      }),
+    ).toThrow("mission_context_repository_mismatch");
+  });
+
+  it("a mission without its own repository uses the bound identity, and a dangling pin fails closed", () => {
+    const db = fixture();
+    createMission(db, {
+      id: "m-norepo",
+      tenantId: "t1",
+      product: "fettler",
+      triggerKind: "migration_objective",
+      objective: "Migrate without a bound repository",
+      ownerPrincipalId: "p1",
+      eventId: "ev-m-norepo",
+      idempotencyKey: "cm-m-norepo",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m-norepo",
+      graphVersionId: "sgv1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      actorPrincipalId: "p1",
+      eventId: "e-graph-norepo",
+      idempotencyKey: "k-graph-norepo",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const graph = openGraphLearnMemory();
+    publishSoftwareGraphVersion(graph, chargesPublication());
+    const mission = getMission(db, "t1", "m-norepo")!;
+    expect(mission.repositoryId).toBeNull();
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: {
+        taskId: "task-1", capability: "code_migration", riskClass: "medium",
+        goal: "Do the migration", endpointKey: "POST /v1/charges",
+      },
+      fallback: { objective: mission.objective, repositoryId: "r1", snapshotId: "snapA" },
+      graphDb: graph,
+    });
+    // The envelope pins r1 and the graph section is resolved against that SAME
+    // identity - the two can no longer contradict each other. The pin does not
+    // resolve to a published version for r1, so this is a dangling pin: it fails
+    // closed under its own reason, never "not applicable to this task".
+    expect(compiled.envelope.missionIdentity.repositoryId).toBe("r1");
+    expect(compiled.envelope.graphProjection).toEqual({
+      status: "not_consulted",
+      reason: "graph_version_unresolvable",
+    });
+    expect(classifyResumeStanding(compiled.envelope, true)).toEqual({
+      kind: "context_not_loaded",
+      reason: "graph_version_unresolvable:graph",
+    });
+    graph.raw.close();
+  });
+
+  // CONTROL: a pinned graph version and a live endpoint key with NO repository
+  // identity anywhere is an incomplete binding, not "this task has no graph".
+  // Returning an absence reason here makes this die.
+  it("CONTROL: a pinned version with no repository identity at all is graph_repository_unresolved", () => {
+    const db = fixture();
+    createMission(db, {
+      id: "m-norepo2",
+      tenantId: "t1",
+      product: "fettler",
+      triggerKind: "migration_objective",
+      objective: "Migrate without a bound repository",
+      ownerPrincipalId: "p1",
+      eventId: "ev-m-norepo2",
+      idempotencyKey: "cm-m-norepo2",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m-norepo2",
+      graphVersionId: `sgv1:${"b".repeat(64)}`,
+      actorPrincipalId: "p1",
+      eventId: "e-graph-norepo2",
+      idempotencyKey: "k-graph-norepo2",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const graph = openGraphLearnMemory();
+    publishSoftwareGraphVersion(graph, chargesPublication());
+    const mission = getMission(db, "t1", "m-norepo2")!;
+    expect(mission.repositoryId).toBeNull();
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: {
+        taskId: "task-1", capability: "code_migration", riskClass: "medium",
+        goal: "Do the migration", endpointKey: "POST /v1/charges",
+      },
+      fallback: { objective: mission.objective, repositoryId: null, snapshotId: null },
+      graphDb: graph,
+    });
+    expect(compiled.envelope.missionIdentity.repositoryId).toBeNull();
+    expect(compiled.envelope.graphProjection).toEqual({
+      status: "not_consulted",
+      reason: "graph_repository_unresolved",
+    });
+    expect(classifyResumeStanding(compiled.envelope, true)).toEqual({
+      kind: "context_not_loaded",
+      reason: "graph_repository_unresolved:graph",
+    });
+    graph.raw.close();
+  });
+
+  // CONTROL: raw gl_nodes are not a published software-graph version. Gating on
+  // `gl_nodes` (or skipping the gl_software_versions_v1 check) makes this die.
+  it("CONTROL: gl_nodes without gl_software_versions_v1 are graph_version_unresolvable, not loaded", () => {
+    const db = fixture();
+    const graph = openGraphLearnMemory();
+    upsertNode(graph, {
+      id: "node:endpoint:charges",
+      kind: "Endpoint",
+      label: "POST /v1/charges",
+      repo_id: "r1",
+    });
+    const nodeCount = (graph.raw.prepare("SELECT COUNT(*) AS n FROM gl_nodes").get() as { n: number }).n;
+    expect(nodeCount).toBeGreaterThan(0);
+    const publishedRows = (
+      graph.raw.prepare("SELECT COUNT(*) AS n FROM gl_software_versions_v1").get() as { n: number }
+    ).n;
+    expect(publishedRows).toBe(0);
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      graphVersionId: "sgv1:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      actorPrincipalId: "p1",
+      eventId: "e-graph-nodes",
+      idempotencyKey: "k-graph-nodes",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: {
+        taskId: "task-1", capability: "code_migration", riskClass: "medium",
+        goal: "Do the migration", endpointKey: "POST /v1/charges",
+      },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+      graphDb: graph,
+    });
+    expect(compiled.envelope.graphProjection).toEqual({
+      status: "not_consulted",
+      reason: "graph_version_unresolvable",
+    });
+    // The hop that matters. Asserting only the intermediate value above stops one
+    // step short of the outcome an operator sees, and the reassuring intermediate
+    // (`graph_version_absent`) used to classify as `loaded` right here.
+    expect(hasInheritedContent(compiled.envelope)).toBe(false);
+    expect(classifyResumeStanding(compiled.envelope, true)).toEqual({
+      kind: "context_not_loaded",
+      reason: "graph_version_unresolvable:graph",
+    });
+    graph.raw.close();
+  });
+
+  // THE BLOCKER FIXTURE. A HEALTHY, populated graph plus a live endpoint key plus
+  // a mission pinned to a version that was never published for this repository -
+  // unpublished, deleted, or scoped to another tenant. Reporting this as
+  // `graph_version_absent` (the reason that means "nothing was pinned") makes the
+  // whole resume read `{kind: "loaded"}` on a graph that was never consulted.
+  it("CONTROL: a dangling pin against a healthy graph fails closed, never loaded", () => {
+    const db = fixture();
+    const graph = openGraphLearnMemory();
+    // A real published version EXISTS - this is not an empty store.
+    const published = publishSoftwareGraphVersion(graph, chargesPublication());
+    expect(
+      (graph.raw.prepare("SELECT COUNT(*) AS n FROM gl_software_versions_v1").get() as { n: number }).n,
+    ).toBe(1);
+    const danglingPin = `sgv1:${"d".repeat(64)}`;
+    expect(danglingPin).not.toBe(published.versionId);
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      graphVersionId: danglingPin,
+      actorPrincipalId: "p1",
+      eventId: "e-graph-dangling",
+      idempotencyKey: "k-graph-dangling",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: {
+        taskId: "task-1", capability: "code_migration", riskClass: "medium",
+        goal: "Do the migration", endpointKey: "POST /v1/charges",
+      },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+      graphDb: graph,
+    });
+    expect(compiled.envelope.graphProjection).toEqual({
+      status: "not_consulted",
+      reason: "graph_version_unresolvable",
+    });
+    expect(hasInheritedContent(compiled.envelope)).toBe(false);
+    expect(classifyResumeStanding(compiled.envelope, true)).toEqual({
+      kind: "context_not_loaded",
+      reason: "graph_version_unresolvable:graph",
+    });
+    graph.raw.close();
+  });
+
+  // CONTROL: the "scoped to another repository" dangling pin. The version is real
+  // and published, but not for THIS mission's repository. The hand-rolled
+  // existence check this replaced used the same WHERE clause and reported the
+  // miss as `graph_version_absent`, i.e. "there was nothing to look for".
+  it("CONTROL: a pin published for another repository is graph_version_unresolvable", () => {
+    const db = fixture();
+    const graph = openGraphLearnMemory();
+    const otherRepo = { ...chargesPublication(), repositoryId: "r-other" };
+    const published = publishSoftwareGraphVersion(graph, otherRepo);
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      graphVersionId: published.versionId,
+      actorPrincipalId: "p1",
+      eventId: "e-graph-otherrepo",
+      idempotencyKey: "k-graph-otherrepo",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    expect(mission.repositoryId).toBe("r1");
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: {
+        taskId: "task-1", capability: "code_migration", riskClass: "medium",
+        goal: "Do the migration", endpointKey: "POST /v1/charges",
+      },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+      graphDb: graph,
+    });
+    expect(compiled.envelope.graphProjection).toEqual({
+      status: "not_consulted",
+      reason: "graph_version_unresolvable",
+    });
+    expect(classifyResumeStanding(compiled.envelope, true)).toEqual({
+      kind: "context_not_loaded",
+      reason: "graph_version_unresolvable:graph",
+    });
+    graph.raw.close();
+  });
+
+  // CONTROL: a resolvable pin whose endpoint is NOT in the graph is still a real
+  // consult carrying real bytes. This is why `status === "consulted"` may claim
+  // content in hasInheritedContent without a second emptiness test.
+  it("CONTROL: a consulted graph with an absent target still carries compiled bytes", () => {
+    const db = fixture();
+    const graph = openGraphLearnMemory();
+    const published = publishSoftwareGraphVersion(graph, chargesPublication());
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      graphVersionId: published.versionId,
+      actorPrincipalId: "p1",
+      eventId: "e-graph-absent-target",
+      idempotencyKey: "k-graph-absent-target",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: {
+        taskId: "task-1", capability: "code_migration", riskClass: "medium",
+        goal: "Do the migration", endpointKey: "POST /v1/nowhere",
+      },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+      graphDb: graph,
+    });
+    expect(compiled.envelope.graphProjection.status).toBe("consulted");
+    if (compiled.envelope.graphProjection.status !== "consulted") throw new Error("unreachable");
+    expect(compiled.envelope.graphProjection.projection.coverageBasis).toBe("target_absent");
+    expect(compiled.envelope.graphProjection.projection.byteLength).toBeGreaterThan(0);
+    graph.raw.close();
+  });
+
+  // CONTROL: a version that IS published for this repository resolves and is
+  // consulted - so the fail-closed reasons above are not simply "everything fails".
+  it("CONTROL: a resolvable pin against the same graph is consulted and loaded", () => {
+    const db = fixture();
+    const graph = openGraphLearnMemory();
+    const published = publishSoftwareGraphVersion(graph, chargesPublication());
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      graphVersionId: published.versionId,
+      actorPrincipalId: "p1",
+      eventId: "e-graph-resolvable",
+      idempotencyKey: "k-graph-resolvable",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: {
+        taskId: "task-1", capability: "code_migration", riskClass: "medium",
+        goal: "Do the migration", endpointKey: "POST /v1/charges",
+      },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+      graphDb: graph,
+    });
+    expect(compiled.envelope.graphProjection.status).toBe("consulted");
+    if (compiled.envelope.graphProjection.status !== "consulted") throw new Error("unreachable");
+    expect(compiled.envelope.graphProjection.projection.byteLength).toBeGreaterThan(0);
+    expect(hasInheritedContent(compiled.envelope)).toBe(true);
+    expect(classifyResumeStanding(compiled.envelope, true)).toEqual({ kind: "loaded" });
+    graph.raw.close();
+  });
+
+  it("a live endpoint key against a closed graph handle is graph_projection_failed, not consulted-empty", () => {
+    const db = fixture();
+    const graph = openGraphLearnMemory();
+    const published = publishSoftwareGraphVersion(graph, chargesPublication());
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      graphVersionId: published.versionId,
+      actorPrincipalId: "p1",
+      eventId: "e-graph-closed",
+      idempotencyKey: "k-graph-closed",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    graph.raw.close();
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: {
+        taskId: "task-1", capability: "code_migration", riskClass: "medium",
+        goal: "Do the migration", endpointKey: "POST /v1/charges",
+      },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+      graphDb: graph,
+    });
+    expect(compiled.envelope.graphProjection).toEqual({
+      status: "not_consulted",
+      reason: "graph_projection_failed",
+    });
+    // Carried to the outcome an operator sees: dropping "graph" from the fail-closed
+    // scan in classifyResumeStanding makes this die.
+    expect(classifyResumeStanding(compiled.envelope, true)).toEqual({
+      kind: "context_not_loaded",
+      reason: "graph_projection_failed:graph",
+    });
+  });
+
+  // CONTROL: `store_not_available` keeps its reason (so the fail-closed scan still
+  // matches) and carries WHICH tenant-graph-handle failure produced it. Dropping
+  // the `detail` propagation makes the second assertion die.
+  it("CONTROL: an unavailable graph handle keeps store_not_available and names the cause", () => {
+    const db = fixture();
+    const graph = openGraphLearnMemory();
+    const published = publishSoftwareGraphVersion(graph, chargesPublication());
+    bindMissionGraphVersion(db, {
+      tenantId: "t1",
+      missionId: "m1",
+      graphVersionId: published.versionId,
+      actorPrincipalId: "p1",
+      eventId: "e-graph-nohandle",
+      idempotencyKey: "k-graph-nohandle",
+      correlationId: "corr",
+      createdAt: T0,
+    });
+    graph.raw.close();
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: {
+        taskId: "task-1", capability: "code_migration", riskClass: "medium",
+        goal: "Do the migration", endpointKey: "POST /v1/charges",
+      },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+      graphUnavailableReason: "empty_tenant_view",
+    });
+    expect(compiled.envelope.graphProjection).toEqual({
+      status: "not_consulted",
+      reason: "store_not_available",
+      detail: "empty_tenant_view",
+    });
+    expect(classifyResumeStanding(compiled.envelope, true)).toEqual({
+      kind: "context_not_loaded",
+      reason: "store_not_available:graph:empty_tenant_view",
+    });
   });
 });

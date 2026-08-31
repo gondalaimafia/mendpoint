@@ -371,6 +371,22 @@ describe("production closure matrix", () => {
     ).toContain("CURRENT_PR_BOOTSTRAP_INVALID");
   });
 
+  it("accepts an inherited-unchanged (stale but structurally valid) bootstrap under production options", () => {
+    // De-serialization does not come from omitting the bootstrap: production still
+    // passes requireCurrentPullRequestBootstrap: true, so every pull request ships a
+    // structurally valid block. The win is that the block may be inherited UNCHANGED
+    // from main (stale, describing whatever merged last) rather than re-authored per
+    // pull request, which is what removes the shared-file conflict. A structurally
+    // valid inherited block raises no bootstrap issue even under the required flag.
+    const manifest = loadManifest();
+    const matrix = loadMatrix();
+
+    const codes = validateProductionClosureMatrix(manifest, matrix, {
+      requireCurrentPullRequestBootstrap: true,
+    }).map((issue) => issue.code);
+    expect(codes).not.toContain("CURRENT_PR_BOOTSTRAP_INVALID");
+  });
+
   it("blocks a current pull request that retains any unresolved finding", () => {
     const manifest = loadManifest();
     const matrix = loadMatrix();

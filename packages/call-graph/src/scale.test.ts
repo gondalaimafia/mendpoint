@@ -1,4 +1,4 @@
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -48,6 +48,25 @@ describe("call-graph scale", () => {
       JSON.stringify({ ...g, builtAt: "" });
     expect(strip(fromSources)).toBe(strip(fromDisk));
     expect(fromDisk.stats.nodeCount).toBeGreaterThan(0);
+  });
+
+  it("builds only from the captured source set after the mutable repository drifts", () => {
+    const { root, sources } = makeTree(1);
+    const capturedPath = [...sources.keys()][0]!;
+    const outside = join(tmpdir(), `cg-captured-outside-${Date.now()}-${Math.random()}`);
+    dirs.push(outside);
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(capturedPath, "export function mutatedOnly() { return 0; }\n");
+    writeFileSync(join(root, "late.js"), "export function lateOnly() { return 0; }\n");
+    writeFileSync(join(outside, "escaped.js"), "export function escapedOnly() { return 0; }\n");
+    symlinkSync(outside, join(root, "linked"), "junction");
+
+    const graph = buildCallGraph(root, { algorithm: "hybrid", sources });
+    expect(graph.byName["helper0"]).toHaveLength(1);
+    expect(graph.byName["entry0"]).toHaveLength(1);
+    expect(graph.byName["mutatedOnly"]).toBeUndefined();
+    expect(graph.byName["lateOnly"]).toBeUndefined();
+    expect(graph.byName["escapedOnly"]).toBeUndefined();
   });
 
   it("builds a large synthetic tree within a stated budget", () => {

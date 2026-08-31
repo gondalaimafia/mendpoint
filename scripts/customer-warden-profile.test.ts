@@ -30,6 +30,34 @@ function customerRuntime(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     ...overrides,
   };
   for (const name of CUSTOMER_WARDEN_REQUIRED_SECRETS) env[name] ??= `${name}-configured`;
+  if (overrides.OIDC_ISSUER === undefined) env.OIDC_ISSUER = "https://identity.example";
+  if (overrides.MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS === undefined) {
+    env.MENDPOINT_WARDEN_MODEL_SOURCE_TENANTS = "tenant-default";
+  }
+  if (overrides.MENDPOINT_SCIM_BINDINGS_JSON === undefined) {
+    env.MENDPOINT_SCIM_BINDINGS_JSON = JSON.stringify({
+      schemaVersion: 1,
+      bindings: [{
+        tenantId: "tenant-default",
+        principalId: "principal-scim-default",
+        issuer: env.OIDC_ISSUER,
+      }],
+    });
+  }
+  if (overrides.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON === undefined) {
+    env.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON = JSON.stringify({
+      schemaVersion: 1,
+      authorities: [{
+        tenantId: "tenant-default",
+        principalId: "principal-scim-default",
+        keyId: "key-scim-default",
+        subject: "enterprise-scim",
+        displayName: "Enterprise SCIM",
+        expiresAt: "2026-11-28T12:00:00.000Z",
+        token: `me_${"s".repeat(48)}`,
+      }],
+    });
+  }
   env.MENDPOINT_SANDBOX_EGRESS_ATTESTATION_MIN_SCHEMA =
     SANDBOX_EGRESS_ATTESTATION_SCHEMA;
   env.MENDPOINT_ALLOWED_MACHINE_ID = overrides.MENDPOINT_ALLOWED_MACHINE_ID ?? env.FLY_MACHINE_ID;
@@ -43,6 +71,13 @@ function customerRuntime(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   env.AWS_ACCESS_KEY_ID ??= "configured-access-key";
   env.AWS_SECRET_ACCESS_KEY ??= "configured-secret-key";
   env.AWS_REGION ??= "auto";
+  return env;
+}
+
+function customerRuntimeWithoutScim(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = customerRuntime(overrides);
+  delete env.MENDPOINT_SCIM_BINDINGS_JSON;
+  delete env.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON;
   return env;
 }
 
@@ -109,6 +144,10 @@ describe("Fettler-only customer Fly profile", () => {
       "MENDPOINT_SANDBOX_EGRESS_ATTESTATION_KEY_ID",
       "MENDPOINT_SANDBOX_EGRESS_POLICY_DIGEST",
     ]));
+    expect(CUSTOMER_WARDEN_REQUIRED_SECRETS).not.toContain("MENDPOINT_SCIM_BINDINGS_JSON");
+    expect(CUSTOMER_WARDEN_REQUIRED_SECRETS).not.toContain(
+      "MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON",
+    );
 
     for (const name of CUSTOMER_WARDEN_REQUIRED_SECRETS) {
       const env = customerRuntime();
@@ -144,6 +183,69 @@ describe("Fettler-only customer Fly profile", () => {
     }))).toContain(
       "Customer Fettler profile has invalid object store settings: customer_backup_operation_timeout_invalid",
     );
+    expect(validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_SCIM_BINDINGS_JSON: JSON.stringify({ schemaVersion: 1, bindings: [] }),
+    }))).toContain(
+      "Customer Fettler profile has invalid SCIM bindings: scim_bindings_empty",
+    );
+    expect(validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_SCIM_BINDINGS_JSON: JSON.stringify({
+        schemaVersion: 1,
+        bindings: [{ tenantId: "other-tenant", principalId: "principal-scim", issuer: "https://identity.example" }],
+      }),
+    }))).toContain(
+      "Customer Fettler profile has invalid SCIM bindings: scim_binding_tenant_set_mismatch",
+    );
+    expect(validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_SCIM_BINDINGS_JSON: "{not-json",
+    }))).toContain(
+      "Customer Fettler profile has invalid SCIM bindings: scim_bindings_invalid",
+    );
+    expect(validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_SCIM_BINDINGS_JSON: JSON.stringify({
+        schemaVersion: 1,
+        bindings: [{
+          tenantId: "tenant-default",
+          principalId: "principal-scim",
+          issuer: "https://different-identity.example",
+        }],
+      }),
+    }))).toContain(
+      "Customer Fettler profile has invalid SCIM bindings: scim_oidc_issuer_mismatch",
+    );
+  });
+
+  it("keeps enterprise SCIM optional and validates the complete pair when activated", () => {
+    expect(validateCustomerWardenRuntime(customerRuntimeWithoutScim())).toEqual([]);
+    expect(validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_SCIM_BINDINGS_JSON: " ",
+      MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON: "",
+    }))).toEqual([]);
+
+    const bindingsOnly = customerRuntime();
+    delete bindingsOnly.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON;
+    expect(validateCustomerWardenRuntime(bindingsOnly)).toContain(
+      "Customer Fettler profile requires MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON when SCIM is active",
+    );
+
+    const authoritiesOnly = customerRuntime();
+    delete authoritiesOnly.MENDPOINT_SCIM_BINDINGS_JSON;
+    expect(validateCustomerWardenRuntime(authoritiesOnly)).toContain(
+      "Customer Fettler profile requires MENDPOINT_SCIM_BINDINGS_JSON when SCIM is active",
+    );
+
+    expect(validateCustomerWardenRuntime(customerRuntime())).toEqual([]);
+  });
+
+  it("preserves injected critical-health failures in required startup validation", () => {
+    const errors = validateCustomerWardenRuntime(customerRuntime({
+      MENDPOINT_CUSTOMER_READY: "1",
+      MENDPOINT_CUSTOMER_QUALIFICATION_MODE: "required",
+    }), {
+      criticalHealth: [{ name: "worker", ok: false }],
+      now: "2026-08-30T12:00:00.000Z",
+    });
+    expect(errors.some((error) => error.includes("critical_health_failed"))).toBe(true);
   });
 
   it("limits each runtime child to the secrets it needs", () => {
@@ -159,6 +261,8 @@ describe("Fettler-only customer Fly profile", () => {
 
     expect(api.GITHUB_APP_PRIVATE_KEY).toBe(env.GITHUB_APP_PRIVATE_KEY);
     expect(api.MENDPOINT_BACKUP_KEY).toBe(env.MENDPOINT_BACKUP_KEY);
+    expect(api.MENDPOINT_SCIM_BINDINGS_JSON).toBe(env.MENDPOINT_SCIM_BINDINGS_JSON);
+    expect(api.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON).toBeUndefined();
     expect(api.OPENAI_API_KEY).toBeUndefined();
     expect(api.MENDPOINT_RELEASE_POLL_CONFIGURATIONS_JSON).toBeUndefined();
     expect(api.AWS_SECRET_ACCESS_KEY).toBeUndefined();
@@ -177,6 +281,8 @@ describe("Fettler-only customer Fly profile", () => {
     );
     expect(worker.GITHUB_APP_PRIVATE_KEY).toBe(env.GITHUB_APP_PRIVATE_KEY);
     expect(worker.MENDPOINT_BACKUP_KEY).toBeUndefined();
+    expect(worker.MENDPOINT_SCIM_BINDINGS_JSON).toBeUndefined();
+    expect(worker.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON).toBeUndefined();
     expect(worker.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(worker.MENDPOINT_SANDBOX_FLY_TOKEN).toBe(env.MENDPOINT_SANDBOX_FLY_TOKEN);
     expect(worker.MENDPOINT_SANDBOX_KIND).toBe(env.MENDPOINT_SANDBOX_KIND);
@@ -256,17 +362,17 @@ describe("Fettler-only customer Fly profile", () => {
     delete unset.MENDPOINT_CUSTOMER_READY;
     const unsetErrors = validateCustomerWardenRuntime(unset);
     expect(unsetErrors).not.toEqual([]);
-    expect(unsetErrors.some((e) => e.includes("MENDPOINT_CUSTOMER_READY could not be determined")))
-      .toBe(true);
-    expect(unsetErrors.some((e) => e.includes("got unset"))).toBe(true);
+    expect(unsetErrors).toContain(
+      "Customer readiness indeterminate: customer_declaration_indeterminate",
+    );
 
     // Indeterminate (unrecognized value) fails closed at boot, named.
     const garbageErrors = validateCustomerWardenRuntime(
       customerRuntime({ MENDPOINT_CUSTOMER_READY: "maybe" }),
     );
-    expect(garbageErrors.some((e) => e.includes("MENDPOINT_CUSTOMER_READY could not be determined")))
-      .toBe(true);
-    expect(garbageErrors.some((e) => e.includes('got "maybe"'))).toBe(true);
+    expect(garbageErrors).toContain(
+      "Customer readiness indeterminate: customer_declaration_indeterminate",
+    );
   });
 
   it("asserts a local model endpoint at boot under local_only egress", () => {

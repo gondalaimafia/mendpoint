@@ -35,7 +35,22 @@ export const RELEASE = {
   ],
 } as const;
 
-export type ReleaseInfo = typeof RELEASE;
+export const REGAUGE_RELEASE = {
+  ...RELEASE,
+  product: "Regauge",
+  channel: "internal",
+  codename: "legacy-engineer",
+} as const;
+
+export type ReleaseInfo = typeof RELEASE | typeof REGAUGE_RELEASE;
+
+export function resolveRelease(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): ReleaseInfo {
+  return env.MENDPOINT_DEPLOYMENT_PROFILE?.trim() === "regauge_production"
+    ? REGAUGE_RELEASE
+    : RELEASE;
+}
 
 const IMMUTABLE_RELEASE_REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 
@@ -50,6 +65,9 @@ export function resolveReleaseRevision(
   return revision;
 }
 
-export function releaseBanner(): string {
-  return `${RELEASE.platform} / ${RELEASE.product} ${RELEASE.version} (${RELEASE.channel})`;
+export function releaseBanner(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  const release = resolveRelease(env);
+  return `${release.platform} / ${release.product} ${release.version} (${release.channel})`;
 }

@@ -239,6 +239,11 @@ function chownTree(path) {
 }
 
 runSetup(["--import", "tsx", "scripts/bootstrap-key.ts"]);
+runSetup(["--import", "tsx", "scripts/bootstrap-scim-authority.ts"], {
+  MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON:
+    process.env.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON,
+});
+delete childEnv.MENDPOINT_SCIM_BOOTSTRAP_AUTHORITIES_JSON;
 
 if (process.env.MENDPOINT_PILOT_SEED === "1") {
   const demoRepo = resolve(tenantRepos, "shop-app");

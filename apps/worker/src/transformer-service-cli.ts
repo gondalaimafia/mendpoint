@@ -19,6 +19,17 @@ import {
 
 export type RunningTransformerService = Readonly<{ close(): Promise<void>; readinessUrl: string }>;
 
+type ReadinessProbeStage = "coordinator" | "artifact" | "work_cycle";
+
+class ReadinessProbeError extends Error {
+  readonly stage: ReadinessProbeStage;
+
+  constructor(stage: ReadinessProbeStage, code: string) {
+    super(code);
+    this.stage = stage;
+  }
+}
+
 export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.env): Promise<RunningTransformerService> {
   if (resolveRenamedEnv(env, "MENDPOINT_REGAUGE_MULTINODE_ENABLED") !== "1") throw new Error("transformer_multinode_service_disabled");
   const workerId = resolveTransformerWorkerId(env);
@@ -75,6 +86,8 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
   let closing = false;
   let healthy = false;
   let lastError: string | null = null;
+  let lastFailure: string | null = null;
+  let readinessObserved = false;
   const stop = new AbortController();
   const readiness: Server = createServer((request, response) => {
     if (request.method !== "GET" || request.url !== "/readyz") { response.writeHead(404).end(); return; }
@@ -90,18 +103,51 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
     readiness.once("error", reject);
     readiness.listen(readinessPort, readinessHost, () => { readiness.off("error", reject); resolveReady(); });
   });
+  readinessEvent("regauge_worker_readiness_listener_bound", { workerId, host: readinessHost, port: readinessPort });
   const probe = async () => {
-    await transport.request({
-      path: "/v1/regauge/attempt-coordinator/readyz",
-      body: { tenantId, campaignId },
-    });
-    const sentinelKey = `readiness/${tenantId}/${workerId}`;
-    const sentinel = new TextEncoder().encode(`transformer-readiness:${tenantId}:${workerId}`);
-    await backend.createOnly(sentinelKey, sentinel);
-    const readback = await backend.read(sentinelKey);
-    if (!readback || new TextDecoder().decode(readback) !== new TextDecoder().decode(sentinel)) throw new Error("transformer_multinode_artifact_probe_failed");
+    try {
+      await transport.request({
+        path: "/v1/regauge/attempt-coordinator/readyz",
+        body: { tenantId, campaignId },
+      });
+    }
+    catch (error) {
+      void error;
+      throw new ReadinessProbeError("coordinator", "transformer_multinode_coordinator_probe_failed");
+    }
+    try {
+      const sentinelKey = `readiness/${tenantId}/${workerId}`;
+      const sentinel = new TextEncoder().encode(`transformer-readiness:${tenantId}:${workerId}`);
+      await backend.createOnly(sentinelKey, sentinel);
+      const readback = await backend.read(sentinelKey);
+      if (!readback || new TextDecoder().decode(readback) !== new TextDecoder().decode(sentinel)) throw new Error("transformer_multinode_artifact_probe_failed");
+    }
+    catch (error) {
+      throw new ReadinessProbeError("artifact", safeArtifactErrorCode(error));
+    }
   };
-  try { await probe(); healthy = true; } catch (error) { healthy = false; lastError = error instanceof Error ? error.message : "transformer_multinode_probe_failed"; }
+  const recordReady = () => {
+    const recovered = lastFailure !== null;
+    healthy = true;
+    lastError = null;
+    lastFailure = null;
+    if (recovered) readinessEvent("regauge_worker_readiness_recovered", { workerId });
+    else if (!readinessObserved) readinessEvent("regauge_worker_readiness_ready", { workerId });
+    readinessObserved = true;
+  };
+  const recordFailure = (error: unknown, fallbackStage: ReadinessProbeStage = "work_cycle") => {
+    const stage = error instanceof ReadinessProbeError ? error.stage : fallbackStage;
+    const code = error instanceof ReadinessProbeError
+      ? error.message
+      : "transformer_multinode_work_cycle_failed";
+    healthy = false;
+    lastError = code;
+    const failure = `${stage}:${code}`;
+    if (failure !== lastFailure) readinessEvent("regauge_worker_readiness_failed", { workerId, stage, code });
+    lastFailure = failure;
+    readinessObserved = true;
+  };
+  try { await probe(); recordReady(); } catch (error) { recordFailure(error); }
   const loop = async () => {
     while (!closing) {
       try {
@@ -109,9 +155,9 @@ export async function runTransformerServiceCli(env: NodeJS.ProcessEnv = process.
         await service.runOnce();
         await service.runDeliveryOnce();
         await service.runObservationOnce();
-        healthy = true; lastError = null;
+        recordReady();
       }
-      catch (error) { healthy = false; lastError = error instanceof Error ? error.message : "transformer_multinode_unknown"; }
+      catch (error) { recordFailure(error); }
       if (!closing) await new Promise<void>((resolveWait) => {
         const timer = setTimeout(resolveWait, intervalMs);
         stop.signal.addEventListener("abort", () => { clearTimeout(timer); resolveWait(); }, { once: true });
@@ -135,3 +181,5 @@ function integer(value: string, minimum: number, maximum: number, code: string):
 function readinessAddress(value: string): "127.0.0.1" | "0.0.0.0" { if (value === "127.0.0.1" || value === "0.0.0.0") return value; throw new Error("transformer_multinode_readiness_host_invalid"); }
 function decodeKey(value: string): Uint8Array { const bytes = Buffer.from(value, "base64"); if (bytes.byteLength !== 32 || bytes.toString("base64") !== value) throw new Error("transformer_multinode_checkpoint_key_invalid"); return new Uint8Array(bytes); }
 function evidenceRefs(value: string): readonly string[] { const refs = value.split(",").map((item) => item.trim()).filter(Boolean); if (!refs.length || new Set(refs).size !== refs.length) throw new Error("transformer_multinode_evidence_refs_invalid"); return Object.freeze(refs); }
+function safeArtifactErrorCode(error: unknown): string { const message = error instanceof Error ? error.message : ""; return /^(?:s3_artifact|filesystem_artifact|transformer_multinode_artifact)_[a-z0-9_]{2,120}$/.test(message) ? message : "transformer_multinode_artifact_probe_failed"; }
+function readinessEvent(event: string, details: Readonly<Record<string, string | number>>): void { console.info(JSON.stringify({ event, ...details })); }

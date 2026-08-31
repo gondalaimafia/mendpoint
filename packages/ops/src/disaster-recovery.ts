@@ -610,8 +610,17 @@ function snapshotSqliteDatabase(source: string, destination: string): void {
 
 function assertJsonConfiguration(path: string): void {
   if (!statSync(path).isFile()) throw new Error("backup_configuration_file_required");
+  // Reading and parsing are separate failures. Folding the read into the parse handler reports a
+  // file the process could not open as malformed JSON, which sends operators to look at content
+  // that was never inspected.
+  let contents: string;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    contents = readFileSync(path, "utf8");
+  } catch {
+    throw new Error("backup_configuration_unreadable");
+  }
+  try {
+    const parsed = JSON.parse(contents) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid");
   } catch {
     throw new Error("backup_configuration_json_required");
@@ -1328,7 +1337,6 @@ export function recoverStaleMutationMarker(input: {
     if (inspected.hostname === hostname() && processIsAlive(inspected.pid)) {
       throw new Error("backup_fence_recovery_owner_still_alive");
     }
-    rmSync(target);
     const audit = {
       schemaVersion: 1,
       recoveredAt: new Date().toISOString(),
@@ -1342,7 +1350,18 @@ export function recoverStaleMutationMarker(input: {
       recoveryOwnerToken: recoveryMarker.ownerToken,
     };
     const auditLine = `${JSON.stringify(audit)}\n`;
-    appendFileSync(paths.audit, auditLine, { encoding: "utf8", mode: 0o600 });
+    const heldMarker = resolve(
+      paths.root,
+      `.recovered-${input.kind}-${markerId}-${recoveryMarker.ownerToken}.json`,
+    );
+    renameSync(target, heldMarker);
+    try {
+      appendFileSync(paths.audit, auditLine, { encoding: "utf8", mode: 0o600 });
+    } catch (error) {
+      renameSync(heldMarker, target);
+      throw error;
+    }
+    rmSync(heldMarker, { force: true });
     return { recovered: true, kind: input.kind, markerId, auditSha256: sha256(auditLine) };
   } finally {
     rmSync(paths.recovery, { force: true });
@@ -1371,6 +1390,14 @@ export function prepareMutationFenceDirectories(
       chmodSync(directory, 0o700);
     }
     accessSync(directory, constants.R_OK | constants.W_OK);
+  }
+  if (existsSync(paths.audit)) {
+    assertNoSymlink(paths.audit);
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      chownSync(paths.audit, owner.uid, owner.gid);
+      chmodSync(paths.audit, 0o600);
+    }
+    accessSync(paths.audit, constants.R_OK | constants.W_OK);
   }
 }
 

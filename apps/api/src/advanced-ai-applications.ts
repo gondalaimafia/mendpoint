@@ -260,7 +260,7 @@ export function createDurablePostTrainedConsentReader(db: AppDb, clock: () => st
 
 export function createAdvancedAiApplicationRoutes(options: AdvancedAiApplicationRoutesOptions): Hono<ApiEnv> {
   const routes = new Hono<ApiEnv>({ strict: false });
-  if (!options.enabled) { routes.all("*", (c) => c.json({ error: "not_found" }, 404)); return routes; }
+  if (!options.enabled) routes.use("*", async (c) => c.json({ error: "not_found" }, 404));
   const now = options.now ?? (() => new Date().toISOString());
 
   routes.post("/learning/consents", async (c) => {

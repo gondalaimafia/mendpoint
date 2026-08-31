@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Recovery and reliability | Mendpoint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="top"><a href="index.html">Mendpoint</a><span>Product documentation</span></header>
+  <main id="content">
+    <nav class="crumb"><a href="index.html">Documentation</a> / Operations</nav>
+    <header class="hero">
+      <p class="kicker">Operations</p>
+      <h1>Recovery and reliability</h1>
+      <p>Back up authenticated state, restore it under a bounded operator workflow, and prove readiness without repeating completed external work.</p>
+      <dl><dt>Status</dt><dd>Engineering controls only</dd><dt>Availability</dt><dd>Authenticated backup and restore primitives exist; current schema convergence, replay canaries, and cross region production recovery are not integrated</dd><dt>Last verified</dt><dd>2026-08-30</dd><dt>Publication evidence</dt><dd>Not live; no deployed revision or live evidence digest recorded</dd><dt>Requirements</dt><dd>ME-ENT-005, ME-ENT-006, ME-ENT-007, ME-ENT-008, ME-ENT-009, ME-ENT-010</dd><dt>Public claims</dt><dd>None</dd></dl>
+    </header>
+    <section><h2>Start here</h2><p>Create an authenticated backup receipt before exercising recovery in an isolated target.</p><ol><li>Verify current backup authority and create one committed encrypted backup.</li><li>Load and authenticate its exact recovery receipt.</li><li>Restore only into the explicitly isolated target.</li><li>Separately run current schema convergence, replay canaries, readiness, and rollback checks before considering cutover.</li></ol></section>
+    <section><h2>What it does</h2><ul><li>Encrypted committed backup manifests</li><li>Authenticated recovery receipts</li><li>Bounded restore orchestration</li><li>Backup fencing</li><li>Readiness, recovery summary, and disaster recovery drill primitives</li></ul></section>
+    <section><h2>When to use it</h2><ul><li>A deployment must recover from storage or region loss.</li><li>An upgrade must prove rollback and prior schema restore.</li></ul></section>
+    <section><h2>How it works</h2><ol><li>Backup captures the declared durable resources and signs the exact manifest identity.</li><li>The restore command authenticates the receipt and content before copying into the explicit target.</li><li>The restore command does not open the restored stores under current schema code or run replay canaries.</li><li>Schema convergence, no-repeat canaries, readiness, and rollback evidence remain separate required qualification gates.</li><li>Cutover must not proceed until those gates are implemented and pass.</li></ol></section>
+    <section><h2>Interfaces</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Description</th></tr></thead><tbody><tr><td><code>npm run backup:customer</code></td><td>Command</td><td>Create a protected customer backup.</td></tr><tr><td><code>npm run restore:customer</code></td><td>Command</td><td>Restore an authenticated backup under operator authority.</td></tr><tr><td><code>npm run dr:drill</code></td><td>Command</td><td>Run the deterministic disaster recovery drill.</td></tr><tr><td><code>GET /recovery/summary</code></td><td>API</td><td>Read bounded recovery state.</td></tr><tr><td><code>GET /ready</code></td><td>API</td><td>Read dependency readiness.</td></tr></tbody></table></div></section>
+    <section><h2>Evidence and verification</h2><ul><li><strong>Disaster recovery</strong><br><code>packages/ops/src/disaster-recovery.test.ts</code></li><li><strong>Readiness</strong><br><code>packages/ops/src/readiness.test.ts</code></li><li><strong>Customer restore</strong><br><code>scripts/customer-backup-workflow.test.ts</code></li></ul></section>
+    <section><h2>Contract sources</h2><ul><li><code>packages/ops/src/readiness.ts</code></li><li><code>packages/ops/src/disaster-recovery.ts</code></li><li><code>scripts/customer-restore.ts</code></li></ul></section>
+    <section><h2>Safety model</h2><ul class="guardrails"><li>An expired or mismatched receipt fails closed.</li><li>Restore targets are explicit and cannot escape the declared root.</li><li>Historical authenticated checkpoints and external effects are never rematerialized.</li><li>No old authority is stopped before replacement health and rollback evidence pass.</li></ul></section>
+    <section><h2>Limitations</h2><ul><li>Current schema convergence and no-repeat external-effect canaries are not performed by the restore command.</li><li>Measured cross region RTO and RPO need an approved recovery target.</li><li>Single node profiles do not imply high availability.</li></ul></section>
+    <section><h2>See also</h2><ul><li><a href="deployment-operations.html">Deployment and operations</a></li><li><a href="audit-compliance.html">Audit and compliance evidence</a></li><li><a href="limits-errors.html">Limits, errors, and retries</a></li></ul></section>
+    <p class="download"><a href="recovery-reliability.md">Read this page as Markdown</a></p></main>
+  <footer>Evidence-backed migration software. Human review remains required for delivered code.</footer>
+</body>
+</html>

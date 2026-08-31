@@ -33,6 +33,7 @@ import {
 } from "@mendpoint/db";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { normalizeChange } from "@mendpoint/change-intel";
@@ -40,7 +41,9 @@ import {
   analyzeCapabilityAdoption,
   analyzeImpact,
   analyzeImpactWithSoftwareGraph,
+  rawRetrievalRepositoryIdentityFromError,
   reportToFindings,
+  resolveBoundedRawRetrievalFallback,
 } from "@mendpoint/code-impact";
 import { notifyCapabilityAdoptionOpportunity } from "@mendpoint/notify";
 import { generateMigration } from "@mendpoint/generation";
@@ -107,6 +110,7 @@ import {
   ingestSpecDiff,
   ingestImpactFindings,
   labelPrOutcome,
+  getSoftwareGraphHead,
   runGraphQuery,
   formatQueryForPlanner,
   type GraphLearnDb,
@@ -121,6 +125,152 @@ import {
 type IndexMaterializationEvidence = NonNullable<
   Awaited<ReturnType<typeof analyzeImpactWithSoftwareGraph>>["indexReuse"]
 >;
+
+const RAW_RETRIEVAL_BOUNDS = Object.freeze({
+  maxFiles: 10_000,
+  maxBytes: 1_000_000_000,
+  maxFileBytes: 5_242_880,
+  maxTraversalDepth: 64,
+  maxCandidates: 50_000,
+});
+
+export type RawRetrievalBounds = Readonly<{
+  maxFiles: number;
+  maxBytes: number;
+  maxFileBytes: number;
+  maxTraversalDepth: number;
+  maxCandidates: number;
+}>;
+
+function resolveRawRetrievalBounds(input?: Partial<RawRetrievalBounds>): RawRetrievalBounds {
+  if (input && Object.keys(input).some(
+    (name) => ![
+      "maxFiles", "maxBytes", "maxFileBytes", "maxTraversalDepth", "maxCandidates",
+    ].includes(name),
+  )) {
+    throw new Error("raw_retrieval_bounds_invalid");
+  }
+  const bounds = { ...RAW_RETRIEVAL_BOUNDS, ...input };
+  for (const [name, value] of Object.entries(bounds)) {
+    const ceiling = RAW_RETRIEVAL_BOUNDS[name as keyof RawRetrievalBounds];
+    if (!Number.isSafeInteger(value) || value < 1 || value > ceiling) {
+      throw new Error("raw_retrieval_bounds_invalid");
+    }
+  }
+  return Object.freeze(bounds);
+}
+
+type RawRetrievalBudgetFailure = Readonly<{
+  failureCode:
+    | "raw_retrieval_file_budget_exceeded"
+    | "raw_retrieval_byte_budget_exceeded"
+    | "raw_retrieval_traversal_depth_budget_exceeded"
+    | "raw_retrieval_candidate_budget_exceeded";
+  sourceCode: string;
+  metric: "files" | "bytes" | "fileBytes" | "traversalDepth" | "candidates";
+  limit: number;
+  actual: number;
+}>;
+
+function classifyRawRetrievalBudgetFailure(
+  error: unknown,
+  bounds: RawRetrievalBounds,
+): RawRetrievalBudgetFailure | undefined {
+  const value = error && typeof error === "object"
+    ? error as { code?: unknown; message?: unknown; limit?: unknown; actual?: unknown; diagnostic?: unknown }
+    : undefined;
+  const sourceCode = typeof value?.code === "string"
+    ? value.code
+    : typeof value?.message === "string"
+      ? value.message
+      : "";
+  const diagnostic = value?.diagnostic && typeof value.diagnostic === "object"
+    ? value.diagnostic as { limit?: unknown; actual?: unknown }
+    : undefined;
+  const numeric = (candidate: unknown, fallback: number) =>
+    Number.isSafeInteger(candidate) && Number(candidate) >= 0 ? Number(candidate) : fallback;
+  if (sourceCode === "codebase_index_file_count_limit") {
+    return Object.freeze({
+      failureCode: "raw_retrieval_file_budget_exceeded",
+      sourceCode,
+      metric: "files",
+      limit: numeric(diagnostic?.limit, bounds.maxFiles),
+      actual: numeric(diagnostic?.actual, bounds.maxFiles + 1),
+    });
+  }
+  if (
+    sourceCode === "codebase_index_total_bytes_limit"
+  ) {
+    return Object.freeze({
+      failureCode: "raw_retrieval_byte_budget_exceeded",
+      sourceCode,
+      metric: "bytes",
+      limit: numeric(diagnostic?.limit, bounds.maxBytes),
+      actual: numeric(diagnostic?.actual, bounds.maxBytes + 1),
+    });
+  }
+  if (sourceCode === "codebase_index_file_bytes_limit") {
+    return Object.freeze({
+      failureCode: "raw_retrieval_byte_budget_exceeded",
+      sourceCode,
+      metric: "fileBytes",
+      limit: numeric(diagnostic?.limit, bounds.maxFileBytes),
+      actual: numeric(diagnostic?.actual, bounds.maxFileBytes + 1),
+    });
+  }
+  if (sourceCode === "codebase_index_traversal_depth_limit") {
+    return Object.freeze({
+      failureCode: "raw_retrieval_traversal_depth_budget_exceeded",
+      sourceCode,
+      metric: "traversalDepth",
+      limit: numeric(diagnostic?.limit, bounds.maxTraversalDepth),
+      actual: numeric(diagnostic?.actual, bounds.maxTraversalDepth + 1),
+    });
+  }
+  if (sourceCode === "raw_retrieval_candidate_budget_exceeded") {
+    return Object.freeze({
+      failureCode: "raw_retrieval_candidate_budget_exceeded",
+      sourceCode,
+      metric: "candidates",
+      limit: numeric(value?.limit, bounds.maxCandidates),
+      actual: numeric(value?.actual, bounds.maxCandidates + 1),
+    });
+  }
+  return undefined;
+}
+
+type RawRetrievalRepositoryIdentity = Readonly<{
+  schemaVersion: "mendpoint.codebase-index-repository-identity.v1";
+  repositorySnapshotId: string;
+  repositoryRevision: string;
+  repositoryContentDigest: string;
+  filesInspected: number;
+  bytesInspected: number;
+}>;
+
+export type RawRetrievalBudgetDecisionV1 = Readonly<{
+  schemaVersion: "mendpoint.raw-retrieval-budget-decision.v1";
+  outcome: "abstained";
+  tenantId: string;
+  repositoryId: string;
+  repositorySnapshotId: string;
+  repositoryRevision: string;
+  repositoryContentDigest: string;
+  providerId: string;
+  providerSnapshotId: string;
+  observedAt: string;
+  bounds: RawRetrievalBounds;
+  usage: Readonly<{
+    metric: RawRetrievalBudgetFailure["metric"];
+    limit: number;
+    actual: number;
+  }>;
+  identityUsage: Readonly<{ filesInspected: number; bytesInspected: number }>;
+  failureCode: RawRetrievalBudgetFailure["failureCode"];
+  sourceCode: string;
+  graphBinding: Readonly<{ versionId: string; contentDigest: string }> | null;
+  decisionDigest: string;
+}>;
 
 function trustId(prefix: string, ...parts: string[]): string {
   return `${prefix}_${createHash("sha256").update(parts.join("\0")).digest("hex")}`;
@@ -226,6 +376,10 @@ export type PipelineInput = {
   providerSlug: string;
   fromVersionLabel?: string;
   toVersionLabel?: string;
+  /** Immutable version row identities. Production queued work must use these
+   * rather than reselecting whichever two versions are latest at claim time. */
+  fromVersionId?: string;
+  toVersionId?: string;
   consumerIds?: string[];
   db?: AppDb;
   graphDb?: GraphLearnDb;
@@ -233,6 +387,8 @@ export type PipelineInput = {
    * authoritative: analysis failure abstains rather than falling back to raw
    * impact as if the graph had succeeded. */
   softwareGraphAnalyzer?: typeof analyzeImpactWithSoftwareGraph;
+  /** Optional fail-closed narrowing of the production raw-retrieval ceilings. */
+  rawRetrievalBounds?: Partial<RawRetrievalBounds>;
   github?: GitHubDelivery;
   persistIndex?: boolean;
   /** Override the Mendpoint-owned persisted-index root (primarily for tests). */
@@ -277,6 +433,10 @@ export type PipelineInput = {
 
 export type PipelineReport = {
   changeId: string;
+  fromVersionId?: string;
+  toVersionId?: string;
+  fromVersionLabel?: string;
+  toVersionLabel?: string;
   risk: string;
   summary: string;
   diff: StructuralDiff;
@@ -547,6 +707,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     process.env.MENDPOINT_DATA_DIR?.trim() ??
     join(process.cwd(), "data");
   if (!input.tenantId.trim()) throw new Error("tenantId is required");
+  const rawRetrievalBounds = resolveRawRetrievalBounds(input.rawRetrievalBounds);
   const db = input.db ?? createDb();
   const deliveryFor = createPipelineDeliveryResolver(input, db);
   const pipelinePrincipal = insertPrincipal(db, {
@@ -567,12 +728,16 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     throw new Error(`Provider ${input.providerSlug} needs at least 2 API versions`);
   }
 
-  const from = input.fromVersionLabel
-    ? versions.find((v) => v.version_label === input.fromVersionLabel)
-    : versions[versions.length - 2];
-  const to = input.toVersionLabel
-    ? versions.find((v) => v.version_label === input.toVersionLabel)
-    : versions[versions.length - 1];
+  const from = input.fromVersionId
+    ? versions.find((v) => v.id === input.fromVersionId)
+    : input.fromVersionLabel
+      ? versions.find((v) => v.version_label === input.fromVersionLabel)
+      : versions[versions.length - 2];
+  const to = input.toVersionId
+    ? versions.find((v) => v.id === input.toVersionId)
+    : input.toVersionLabel
+      ? versions.find((v) => v.version_label === input.toVersionLabel)
+      : versions[versions.length - 1];
   if (!from) {
     throw new Error(
       `Unknown from version ${input.fromVersionLabel} for provider ${input.providerSlug}`,
@@ -582,6 +747,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     throw new Error(
       `Unknown to version ${input.toVersionLabel} for provider ${input.providerSlug}`,
     );
+  }
+  if (
+    (input.fromVersionLabel && from.version_label !== input.fromVersionLabel) ||
+    (input.toVersionLabel && to.version_label !== input.toVersionLabel)
+  ) {
+    throw new Error(`Pipeline version identity mismatch for provider ${input.providerSlug}`);
   }
   if (from.id === to.id) {
     throw new Error(`Pipeline versions must be distinct for provider ${input.providerSlug}`);
@@ -862,6 +1033,10 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
 
   const report: PipelineReport = {
     changeId,
+    fromVersionId: from.id,
+    toVersionId: to.id,
+    fromVersionLabel: from.version_label,
+    toVersionLabel: to.version_label,
     risk: diff.risk,
     summary: diff.summary,
     diff,
@@ -874,13 +1049,14 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         `${finding.consumer_id}\u0000${finding.file_path}\u0000${finding.line_start}\u0000${finding.line_end}\u0000${finding.symbol}`,
     ),
   );
+  const replayNotificationOnly = input.notificationsOnly === true;
   const nonRetryableStatuses = new Set([
     "draft",
     "open",
     "closed",
     "merged",
-    "notification_only",
     "low_confidence",
+    ...(!replayNotificationOnly ? ["notification_only"] : []),
   ]);
   const existingPrByConsumer = new Map(
     listPrsForChange(db, changeId, input.tenantId)
@@ -889,9 +1065,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
   );
   const retryablePrByConsumer = new Map(
     listPrsForChange(db, changeId, input.tenantId)
-      .filter((pr) =>
-        ["delivery_pending", "delivery_failed", "gates_failed"].includes(pr.status),
-      )
+      .filter((pr) => [
+        "delivery_pending",
+        "delivery_failed",
+        "gates_failed",
+        ...(replayNotificationOnly ? ["notification_only"] : []),
+      ].includes(pr.status))
       .map((pr) => [pr.consumer_id, pr]),
   );
   const assertActive = () => {
@@ -947,7 +1126,137 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     let impactReport: ImpactReport;
     let indexMaterialization: IndexMaterializationEvidence | undefined;
     let rawRetrievalFallback = false;
-    const endpointSurface = surfaces.find((surface) => surface.path);
+    const persistRawRetrievalBudgetFailure = (
+      error: unknown,
+      inputArtifactId: string,
+    ): RawRetrievalBudgetFailure | undefined => {
+      const failure = classifyRawRetrievalBudgetFailure(error, rawRetrievalBounds);
+      if (!failure) return undefined;
+      const repositoryIdentity = rawRetrievalRepositoryIdentityFromError(error) as
+        RawRetrievalRepositoryIdentity | undefined;
+      if (!repositoryIdentity) throw new Error("raw_retrieval_repository_identity_missing");
+      const graphHead = gldb
+        ? getSoftwareGraphHead(
+            gldb,
+            input.tenantId,
+            repo.connected_repository_id ?? repo.id,
+            provider.id,
+          )
+        : undefined;
+      const unsignedDecision = {
+        schemaVersion: "mendpoint.raw-retrieval-budget-decision.v1" as const,
+        outcome: "abstained" as const,
+        tenantId: input.tenantId,
+        repositoryId: repo.connected_repository_id ?? repo.id,
+        repositorySnapshotId: repositoryIdentity.repositorySnapshotId,
+        repositoryRevision: repositoryIdentity.repositoryRevision,
+        repositoryContentDigest: repositoryIdentity.repositoryContentDigest,
+        providerId: provider.id,
+        providerSnapshotId: to.id,
+        observedAt: graphObservedAt,
+        bounds: rawRetrievalBounds,
+        usage: {
+          metric: failure.metric,
+          limit: failure.limit,
+          actual: failure.actual,
+        },
+        identityUsage: {
+          filesInspected: repositoryIdentity.filesInspected,
+          bytesInspected: repositoryIdentity.bytesInspected,
+        },
+        failureCode: failure.failureCode,
+        sourceCode: failure.sourceCode,
+        graphBinding: graphHead ?? null,
+      };
+      const decision: RawRetrievalBudgetDecisionV1 = Object.freeze({
+        ...unsignedDecision,
+        decisionDigest: `sha256:${textDigest(JSON.stringify(unsignedDecision))}`,
+      });
+      const artifact = persistJsonArtifact(db, {
+        tenantId: input.tenantId,
+        kind: "fettler-raw-retrieval-fallback",
+        mediaType: "application/vnd.mendpoint.fettler-raw-retrieval-budget-decision+json",
+        value: {
+          schemaVersion: "mendpoint.fettler-raw-retrieval-fallback.v1",
+          decision,
+          relationshipCandidates: [],
+        },
+        producerPrincipalId: pipelinePrincipal.id,
+        createdAt: graphObservedAt,
+      });
+      insertEvidenceRecord(db, {
+        id: trustId("evidence", input.tenantId, consumer.id, decision.decisionDigest, artifact.id),
+        tenantId: input.tenantId,
+        subjectType: "api_change",
+        subjectId: changeId,
+        artifactId: artifact.id,
+        inputArtifactId,
+        producerPrincipalId: pipelinePrincipal.id,
+        tool: "mendpoint-raw-retrieval-fallback",
+        toolVersion: "1",
+        verdict: "failed",
+        createdAt: graphObservedAt,
+      });
+      recordAudit(db, {
+        tenantId: input.tenantId,
+        actor: "pipeline",
+        action: "graph.raw_retrieval_fallback_recorded",
+        resourceType: "consumer",
+        resourceId: consumer.id,
+        metadata: {
+          decisionDigest: decision.decisionDigest,
+          outcome: decision.outcome,
+          failureCode: decision.failureCode,
+          usage: decision.usage,
+          repositorySnapshotId: decision.repositorySnapshotId,
+          repositoryRevision: decision.repositoryRevision,
+          repositoryContentDigest: decision.repositoryContentDigest,
+          artifactId: artifact.id,
+        },
+      });
+      appendDomainEvent(db, {
+        id: trustId(
+          "event",
+          input.tenantId,
+          changeId,
+          consumer.id,
+          "raw-retrieval",
+          decision.decisionDigest,
+        ),
+        tenantId: input.tenantId,
+        schemaVersion: 1,
+        eventType: "change_graph.raw_retrieval_recorded",
+        aggregateType: "api_change",
+        aggregateId: changeId,
+        actorPrincipalId: pipelinePrincipal.id,
+        correlationId: changeId,
+        causationId: trustId("event", input.tenantId, changeId, "normalized"),
+        idempotencyKey:
+          `api_change:${changeId}:raw_retrieval:${consumer.id}:${decision.decisionDigest}`,
+        payload: {
+          consumerId: consumer.id,
+          decisionDigest: decision.decisionDigest,
+          artifactId: artifact.id,
+          outcome: decision.outcome,
+          failureCode: decision.failureCode,
+          usage: decision.usage,
+          repositorySnapshotId: decision.repositorySnapshotId,
+          repositoryRevision: decision.repositoryRevision,
+          repositoryContentDigest: decision.repositoryContentDigest,
+          learningDestination: "graph_candidate_validation",
+          modelWeightEligible: false,
+        },
+        createdAt: graphObservedAt,
+      });
+      return failure;
+    };
+    const endpointSurfaces = surfaces.filter((surface) => surface.path);
+    const endpointKeys = new Set(endpointSurfaces.map(
+      (surface) => `${(surface.method ?? "ANY").toUpperCase()} ${surface.path}`,
+    ));
+    const endpointSurface = endpointKeys.size === 1 && endpointSurfaces.length === surfaces.length
+      ? endpointSurfaces[0]
+      : undefined;
     if (endpointSurface && gldb) {
       try {
         const graphAnalysis = await (input.softwareGraphAnalyzer ?? analyzeImpactWithSoftwareGraph)(repo.local_path, surfaces, {
@@ -966,6 +1275,13 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           impact: {
             persistIndex: input.persistIndex ?? true,
             indexStorageRoot,
+            indexLimits: {
+              maxFiles: rawRetrievalBounds.maxFiles,
+              maxTotalBytes: rawRetrievalBounds.maxBytes,
+              maxFileBytes: rawRetrievalBounds.maxFileBytes,
+              maxTraversalDepth: rawRetrievalBounds.maxTraversalDepth,
+            },
+            maxCandidates: rawRetrievalBounds.maxCandidates,
           },
         });
         impactReport = graphAnalysis.impactReport;
@@ -1060,10 +1376,135 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           },
           createdAt: graphObservedAt,
         });
+        const fallback = resolveBoundedRawRetrievalFallback({
+          graphImpact: graphAnalysis.graphImpact,
+          rawReport: graphAnalysis.impactReport,
+          authority: {
+            tenantId: input.tenantId,
+            repositoryId: repo.connected_repository_id ?? repo.id,
+            repositorySnapshotId: graphAnalysis.repositorySnapshotId,
+            repositoryRevision: graphAnalysis.repositoryRevision,
+            providerId: provider.id,
+            providerSnapshotId: to.id,
+            providerRevision: to.version_label,
+            parentGraphVersionId: graphAnalysis.graphVersion.versionId,
+            parentGraphContentDigest: graphAnalysis.graphVersion.contentDigest,
+          },
+          observedAt: graphObservedAt,
+          retrieval: {
+            ...rawRetrievalBounds,
+            ...graphAnalysis.rawRetrievalUsage,
+          },
+          requiredReasonCodes: graphAnalysis.rawRetrievalReasonCodes,
+        });
+        const currentHead = getSoftwareGraphHead(
+          gldb,
+          input.tenantId,
+          repo.connected_repository_id ?? repo.id,
+          provider.id,
+        );
+        if (
+          currentHead?.versionId !== graphAnalysis.graphVersion.versionId ||
+          currentHead.contentDigest !== graphAnalysis.graphVersion.contentDigest
+        ) {
+          throw new Error("raw_retrieval_fallback_mutated_graph_head");
+        }
+        if (fallback.decision.outcome !== "not_required") {
+          const fallbackArtifact = persistJsonArtifact(db, {
+            tenantId: input.tenantId,
+            kind: "fettler-raw-retrieval-fallback",
+            mediaType: "application/vnd.mendpoint.fettler-raw-retrieval-fallback+json",
+            value: {
+              schemaVersion: "mendpoint.fettler-raw-retrieval-fallback.v1",
+              decision: fallback.decision,
+              relationshipCandidates: fallback.relationshipCandidates,
+            },
+            producerPrincipalId: pipelinePrincipal.id,
+            createdAt: graphObservedAt,
+          });
+          insertEvidenceRecord(db, {
+            id: trustId(
+              "evidence",
+              input.tenantId,
+              consumer.id,
+              fallback.decision.decisionDigest,
+              fallbackArtifact.id,
+            ),
+            tenantId: input.tenantId,
+            subjectType: "api_change",
+            subjectId: changeId,
+            artifactId: fallbackArtifact.id,
+            inputArtifactId: graphArtifact.id,
+            producerPrincipalId: pipelinePrincipal.id,
+            tool: "mendpoint-raw-retrieval-fallback",
+            toolVersion: "1",
+            verdict: fallback.decision.outcome === "completed" ? "passed" : "failed",
+            createdAt: graphObservedAt,
+          });
+          recordAudit(db, {
+            tenantId: input.tenantId,
+            actor: "pipeline",
+            action: "graph.raw_retrieval_fallback_recorded",
+            resourceType: "consumer",
+            resourceId: consumer.id,
+            metadata: {
+              graphVersionId,
+              decisionDigest: fallback.decision.decisionDigest,
+              outcome: fallback.decision.outcome,
+              reasonCodes: fallback.decision.reasonCodes,
+              candidateDigests: fallback.decision.candidateDigests,
+              artifactId: fallbackArtifact.id,
+            },
+          });
+          appendDomainEvent(db, {
+            id: trustId(
+              "event",
+              input.tenantId,
+              changeId,
+              consumer.id,
+              "raw-retrieval",
+              fallback.decision.decisionDigest,
+            ),
+            tenantId: input.tenantId,
+            schemaVersion: 1,
+            eventType: "change_graph.raw_retrieval_recorded",
+            aggregateType: "api_change",
+            aggregateId: changeId,
+            actorPrincipalId: pipelinePrincipal.id,
+            correlationId: changeId,
+            causationId: trustId("event", input.tenantId, changeId, consumer.id, graphVersionId),
+            idempotencyKey:
+              `api_change:${changeId}:raw_retrieval:${consumer.id}:${fallback.decision.decisionDigest}`,
+            payload: {
+              consumerId: consumer.id,
+              graphVersionId,
+              decisionDigest: fallback.decision.decisionDigest,
+              artifactId: fallbackArtifact.id,
+              outcome: fallback.decision.outcome,
+              reasonCodes: fallback.decision.reasonCodes,
+              candidateDigests: fallback.decision.candidateDigests,
+              learningDestination: "graph_candidate_validation",
+              modelWeightEligible: false,
+            },
+            createdAt: graphObservedAt,
+          });
+          if (fallback.decision.outcome === "abstained") {
+            throw new Error(
+              fallback.decision.failureCode ?? "raw_retrieval_fallback_abstained",
+            );
+          }
+          impactReport = fallback.impactReport!;
+          rawRetrievalFallback = true;
+        }
       } catch (error) {
-        const code = error instanceof Error && /^[a-z0-9._:-]{1,160}$/i.test(error.message)
+        const budgetFailure = persistRawRetrievalBudgetFailure(
+          error,
+          graphContextArtifactId ?? sourceArtifacts[1]!.id,
+        );
+        const code = budgetFailure?.failureCode ??
+          (error instanceof Error && /^[a-z0-9._:-]{1,160}$/i.test(error.message)
           ? error.message
-          : "change_graph_analysis_failed";
+          : "change_graph_analysis_failed");
         try {
           recordAudit(db, {
             tenantId: input.tenantId,
@@ -1091,18 +1532,51 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
       // FET-018: no endpoint surface or no tenant graph handle. The existing
       // Index→Candidates→Expand→Confirm analyzer is the raw-retrieval path —
       // stamp that fact rather than inventing a second retriever.
-      impactReport = await analyzeImpact(repo.local_path, surfaces, {
-        persistIndex: input.persistIndex ?? true,
-        indexStorageRoot,
-        indexAuthority: {
+      try {
+        impactReport = await analyzeImpact(repo.local_path, surfaces, {
+          persistIndex: input.persistIndex ?? true,
+          indexStorageRoot,
+          indexAuthority: {
+            tenantId: input.tenantId,
+            repositoryId: repo.connected_repository_id ?? repo.id,
+          },
+          onIndexMaterialized: (evidence) => {
+            indexMaterialization = evidence;
+          },
+          indexLimits: {
+            maxFiles: rawRetrievalBounds.maxFiles,
+            maxTotalBytes: rawRetrievalBounds.maxBytes,
+            maxFileBytes: rawRetrievalBounds.maxFileBytes,
+            maxTraversalDepth: rawRetrievalBounds.maxTraversalDepth,
+          },
+          maxCandidates: rawRetrievalBounds.maxCandidates,
+        });
+        rawRetrievalFallback = true;
+      } catch (error) {
+        const budgetFailure = persistRawRetrievalBudgetFailure(error, sourceArtifacts[1]!.id);
+        const code = budgetFailure?.failureCode ??
+          (error instanceof Error && /^[a-z0-9._:-]{1,160}$/i.test(error.message)
+            ? error.message
+            : "raw_retrieval_analysis_failed");
+        recordAudit(db, {
           tenantId: input.tenantId,
-          repositoryId: repo.connected_repository_id ?? repo.id,
-        },
-        onIndexMaterialized: (evidence) => {
-          indexMaterialization = evidence;
-        },
-      });
-      rawRetrievalFallback = true;
+          actor: "pipeline",
+          action: "graph.analysis_failed",
+          resourceType: "consumer",
+          resourceId: consumer.id,
+          metadata: { code },
+        });
+        report.consumers.push({
+          consumerId: consumer.id,
+          name: consumer.name,
+          findings: 0,
+          candidates: 0,
+          confirmed: 0,
+          prStatus: "package_failed",
+          deliveryError: code,
+        });
+        continue;
+      }
     }
     if (indexMaterialization) {
       const evidence = indexMaterialization;
