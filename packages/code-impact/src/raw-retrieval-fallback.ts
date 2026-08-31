@@ -24,6 +24,8 @@ export type RawRetrievalFallbackDecision = Readonly<{
   graphVersionId: string;
   graphContentDigest: string;
   graphResultDigest: string;
+  impactReport: ImpactReport | null;
+  impactReportDigest: string | null;
   retrieval: RawRetrievalBoundsAndUsage & Readonly<{ candidatesInspected: number }>;
   candidateDigests: string[];
   failureCode?:
@@ -79,8 +81,24 @@ function decision(
 function graphAuthorityMatches(input: ResolveBoundedRawRetrievalFallbackInput): boolean {
   return input.graphImpact.tenantId === input.authority.tenantId &&
     input.graphImpact.repositoryId === input.authority.repositoryId &&
+    input.graphImpact.repositorySnapshotId === input.authority.repositorySnapshotId &&
+    input.graphImpact.repositoryRevision === input.authority.repositoryRevision &&
+    input.graphImpact.providerId === input.authority.providerId &&
+    input.graphImpact.providerSnapshotId === input.authority.providerSnapshotId &&
+    input.graphImpact.providerRevision === input.authority.providerRevision &&
     input.graphImpact.graphVersionId === input.authority.parentGraphVersionId &&
     input.graphImpact.graphContentDigest === input.authority.parentGraphContentDigest;
+}
+
+function normalizeImpactReport(report: ImpactReport): ImpactReport {
+  const normalized = JSON.parse(JSON.stringify(canonicalValue(report))) as ImpactReport;
+  const freeze = (value: unknown): void => {
+    if (!value || typeof value !== "object" || Object.isFrozen(value)) return;
+    for (const child of Object.values(value as Record<string, unknown>)) freeze(child);
+    Object.freeze(value);
+  };
+  freeze(normalized);
+  return normalized;
 }
 
 function retrievalReasons(input: ResolveBoundedRawRetrievalFallbackInput): string[] {
@@ -157,6 +175,8 @@ export function resolveBoundedRawRetrievalFallback(
         graphVersionId: input.graphImpact.graphVersionId,
         graphContentDigest: input.graphImpact.graphContentDigest,
         graphResultDigest: input.graphImpact.resultDigest,
+        impactReport: null,
+        impactReportDigest: null,
         retrieval: {
           ...input.retrieval,
           filesInspected: 0,
@@ -186,6 +206,8 @@ export function resolveBoundedRawRetrievalFallback(
         graphVersionId: input.graphImpact.graphVersionId,
         graphContentDigest: input.graphImpact.graphContentDigest,
         graphResultDigest: input.graphImpact.resultDigest,
+        impactReport: null,
+        impactReportDigest: null,
         retrieval: { ...input.retrieval, candidatesInspected },
         candidateDigests: [],
         failureCode,
@@ -216,20 +238,24 @@ export function resolveBoundedRawRetrievalFallback(
         confidence: site.confidence,
       },
     }));
-  const impactReport = input.rawReport.sites.length === 0
+  const impactReport = normalizeImpactReport(input.rawReport.sites.length === 0
     ? unknownEmptyReport(input.rawReport, reasons)
-    : input.rawReport;
-  return Object.freeze({
-    decision: decision({
-      outcome: "completed",
-      reasonCodes: reasons,
-      graphVersionId: input.graphImpact.graphVersionId,
-      graphContentDigest: input.graphImpact.graphContentDigest,
-      graphResultDigest: input.graphImpact.resultDigest,
-      retrieval: { ...input.retrieval, candidatesInspected },
-      candidateDigests: relationshipCandidates.map((candidate) => candidate.candidateDigest),
-    }),
+    : input.rawReport);
+  const impactReportDigest = digest(impactReport);
+  const completedDecision = decision({
+    outcome: "completed",
+    reasonCodes: reasons,
+    graphVersionId: input.graphImpact.graphVersionId,
+    graphContentDigest: input.graphImpact.graphContentDigest,
+    graphResultDigest: input.graphImpact.resultDigest,
     impactReport,
+    impactReportDigest,
+    retrieval: { ...input.retrieval, candidatesInspected },
+    candidateDigests: relationshipCandidates.map((candidate) => candidate.candidateDigest),
+  });
+  return Object.freeze({
+    decision: completedDecision,
+    impactReport: completedDecision.impactReport ?? undefined,
     relationshipCandidates,
   });
 }

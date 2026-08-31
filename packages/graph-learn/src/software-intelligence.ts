@@ -695,6 +695,8 @@ export type FettlerEndpointImpactQuery = {
 export type FettlerEndpointImpactResult = {
   schemaVersion: "mendpoint.fettler-impact-context.v1";
   tenantId: string; repositoryId: string; graphVersionId: string; graphContentDigest: string;
+  repositorySnapshotId: string; repositoryRevision: string;
+  providerId: string; providerSnapshotId: string; providerRevision: string;
   target: SoftwareEntityResolution;
   impact: "impact" | "no_impact" | "unknown_impact";
   entities: SoftwareGraphEntityV1[]; relationships: SoftwareGraphRelationshipV1[]; paths: string[][];
@@ -707,7 +709,7 @@ export function queryFettlerEndpointImpact(db: GraphLearnDb, query: FettlerEndpo
   const graph = readSoftwareGraphVersion(db, query.tenantId, query.repositoryId, query.graphVersionId);
   const target = resolveSoftwareEntity(graph.entities, query.endpointKey);
   if (target.status !== "exact" && target.status !== "alias") {
-    const base = { schemaVersion: "mendpoint.fettler-impact-context.v1" as const, tenantId: query.tenantId, repositoryId: query.repositoryId, graphVersionId: graph.versionId, graphContentDigest: graph.contentDigest, target, impact: "unknown_impact" as const, entities: [], relationships: [], paths: [], coverage: { basis: "target_absent" as const, reasons: [target.status], truncated: false } };
+    const base = { schemaVersion: "mendpoint.fettler-impact-context.v1" as const, tenantId: query.tenantId, repositoryId: query.repositoryId, repositorySnapshotId: graph.repositorySnapshotId, repositoryRevision: graph.repositoryRevision, providerId: graph.providerId, providerSnapshotId: graph.providerSnapshotId, providerRevision: graph.providerRevision, graphVersionId: graph.versionId, graphContentDigest: graph.contentDigest, target, impact: "unknown_impact" as const, entities: [], relationships: [], paths: [], coverage: { basis: "target_absent" as const, reasons: [target.status], truncated: false } };
     return { ...base, resultDigest: sha256(canonicalJson(base)) };
   }
   const allowed = new Set<SoftwareRelationshipKind>(query.allowedRelationshipKinds ?? ["uses_endpoint", "uses_sdk_method", "wraps", "calls", "tests"]);
@@ -774,6 +776,8 @@ export function queryFettlerEndpointImpact(db: GraphLearnDb, query: FettlerEndpo
   const base = {
     schemaVersion: "mendpoint.fettler-impact-context.v1" as const,
     tenantId: query.tenantId, repositoryId: query.repositoryId, graphVersionId: graph.versionId,
+    repositorySnapshotId: graph.repositorySnapshotId, repositoryRevision: graph.repositoryRevision,
+    providerId: graph.providerId, providerSnapshotId: graph.providerSnapshotId, providerRevision: graph.providerRevision,
     graphContentDigest: graph.contentDigest, target, impact,
     entities: [...foundEntities.values()].sort((a, b) => compareCodeUnits(a.id, b.id)),
     relationships: [...foundRelationships.values()].sort((a, b) => compareCodeUnits(a.id, b.id)),
@@ -815,6 +819,11 @@ export function compileFettlerImpactContext(result: FettlerEndpointImpactResult,
     binding: {
       tenantId: result.tenantId,
       repositoryId: result.repositoryId,
+      repositorySnapshotId: result.repositorySnapshotId,
+      repositoryRevision: result.repositoryRevision,
+      providerId: result.providerId,
+      providerSnapshotId: result.providerSnapshotId,
+      providerRevision: result.providerRevision,
       graphVersionId: result.graphVersionId,
       graphContentDigest: result.graphContentDigest,
       resultDigest: result.resultDigest,

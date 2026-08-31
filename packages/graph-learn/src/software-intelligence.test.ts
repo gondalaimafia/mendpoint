@@ -34,6 +34,17 @@ const relationshipValidity = Object.freeze({
   validFrom: "2026-08-17T12:00:00.000Z",
 });
 
+function canonicalTestJson(value: unknown): string {
+  const normalize = (item: unknown): unknown => Array.isArray(item)
+    ? item.map(normalize)
+    : item && typeof item === "object"
+      ? Object.fromEntries(Object.entries(item as Record<string, unknown>)
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+        .map(([key, child]) => [key, normalize(child)]))
+      : item;
+  return JSON.stringify(normalize(value));
+}
+
 function publication(snapshotId = "snapshot-1"): SoftwareGraphPublicationV1 {
   return {
     schemaVersion: "mendpoint.software-graph.v1",
@@ -354,6 +365,15 @@ describe("foundational software intelligence graph", () => {
     ]);
     expect(result.relationships).toHaveLength(4);
     expect(result.coverage.basis).toBe("complete");
+    expect(result).toMatchObject({
+      repositorySnapshotId: "snapshot-1",
+      repositoryRevision: "a".repeat(40),
+      providerId: "provider-a",
+      providerSnapshotId: "provider-snapshot-1",
+      providerRevision: "2026-08-17",
+    });
+    const { resultDigest, ...unsigned } = result;
+    expect(resultDigest).toBe(`sha256:${createHash("sha256").update(canonicalTestJson(unsigned)).digest("hex")}`);
   });
 
   it("does not treat a provider-only endpoint mapping as repository impact", () => {

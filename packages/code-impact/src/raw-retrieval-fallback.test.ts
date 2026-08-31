@@ -14,6 +14,11 @@ function graphImpact(
     schemaVersion: "mendpoint.fettler-impact-context.v1",
     tenantId: "tenant-a",
     repositoryId: "repo-a",
+    repositorySnapshotId: "snapshot-a",
+    repositoryRevision: "c".repeat(40),
+    providerId: "provider-a",
+    providerSnapshotId: "provider-snapshot-a",
+    providerRevision: "2026-08-30",
     graphVersionId,
     graphContentDigest: graphDigest,
     target: { status: "unresolved", candidates: [] },
@@ -145,6 +150,8 @@ describe("bounded raw-retrieval fallback", () => {
     expect(second).toEqual(first);
     expect(first.decision.outcome).toBe("completed");
     expect(first.decision.reasonCodes).toEqual(["language_parsing:partial"]);
+    expect(first.decision.impactReport).toEqual(first.impactReport);
+    expect(first.decision.impactReportDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(first.impactReport?.sites).toHaveLength(1);
     expect(first.relationshipCandidates).toHaveLength(1);
     expect(first.relationshipCandidates[0]).toMatchObject({
@@ -157,6 +164,38 @@ describe("bounded raw-retrieval fallback", () => {
         maxTraversalDepth: retrieval.maxTraversalDepth,
       },
     });
+  });
+
+  it("authenticates the exact normalized report in the durable decision", () => {
+    const run = (report: ImpactReport) => resolveBoundedRawRetrievalFallback({
+      graphImpact: graphImpact({ basis: "partial", reasons: ["language_parsing:partial"], truncated: false }),
+      rawReport: report,
+      authority,
+      observedAt: "2026-08-30T12:00:00.000Z",
+      retrieval,
+    });
+    const high = run(rawReport());
+    const medium = run({ ...rawReport(), overallConfidence: "medium" });
+    const modified = run({ ...rawReport(), strategySummary: "modified result" });
+    const empty = run(rawReport(false));
+    const modifiedEmpty = run({ ...rawReport(false), strategySummary: "modified empty result" });
+
+    expect(high.decision.candidateDigests).toEqual(medium.decision.candidateDigests);
+    expect(new Set([
+      high.decision.impactReportDigest,
+      medium.decision.impactReportDigest,
+      modified.decision.impactReportDigest,
+    ]).size).toBe(3);
+    expect(new Set([
+      high.decision.decisionDigest,
+      medium.decision.decisionDigest,
+      modified.decision.decisionDigest,
+    ]).size).toBe(3);
+    expect(high.decision.impactReport).toEqual(high.impactReport);
+    expect(empty.decision.candidateDigests).toEqual(modifiedEmpty.decision.candidateDigests);
+    expect(empty.decision.impactReportDigest).not.toBe(modifiedEmpty.decision.impactReportDigest);
+    expect(empty.decision.decisionDigest).not.toBe(modifiedEmpty.decision.decisionDigest);
+    expect(Object.isFrozen(high.decision.impactReport?.sites)).toBe(true);
   });
 
   it("requires bounded raw confirmation for a complete graph projection that cannot represent the change class", () => {
@@ -191,6 +230,8 @@ describe("bounded raw-retrieval fallback", () => {
     });
 
     expect(result.decision.outcome).toBe("completed");
+    expect(result.decision.impactReport).toEqual(result.impactReport);
+    expect(result.decision.impactReportDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(result.impactReport?.sites).toEqual([]);
     expect(result.impactReport?.overallConfidence).toBe("unknown");
     expect(result.impactReport?.coverage).toMatchObject({ basis: "partial" });
@@ -214,6 +255,8 @@ describe("bounded raw-retrieval fallback", () => {
     expect(result.decision).toMatchObject({
       outcome: "abstained",
       failureCode: "raw_retrieval_candidate_budget_exceeded",
+      impactReport: null,
+      impactReportDigest: null,
     });
     expect(result.impactReport).toBeUndefined();
     expect(result.relationshipCandidates).toEqual([]);
@@ -236,6 +279,22 @@ describe("bounded raw-retrieval fallback", () => {
   it("rejects a graph observation outside the supplied authority", () => {
     expect(() => resolveBoundedRawRetrievalFallback({
       graphImpact: { ...graphImpact({ basis: "partial", reasons: ["unresolved"], truncated: false }), tenantId: "tenant-b" },
+      rawReport: rawReport(),
+      authority,
+      observedAt: "2026-08-30T12:00:00.000Z",
+      retrieval,
+    })).toThrow("raw_retrieval_fallback_graph_scope_mismatch");
+  });
+
+  it.each([
+    ["repository snapshot", { repositorySnapshotId: "snapshot-b" }],
+    ["repository revision", { repositoryRevision: "d".repeat(40) }],
+    ["provider", { providerId: "provider-b" }],
+    ["provider snapshot", { providerSnapshotId: "provider-snapshot-b" }],
+    ["provider revision", { providerRevision: "2026-08-31" }],
+  ] as const)("rejects a mismatched %s before candidate creation", (_name, mismatch) => {
+    expect(() => resolveBoundedRawRetrievalFallback({
+      graphImpact: { ...graphImpact({ basis: "partial", reasons: ["unresolved"], truncated: false }), ...mismatch },
       rawReport: rawReport(),
       authority,
       observedAt: "2026-08-30T12:00:00.000Z",
