@@ -44,6 +44,77 @@ function judge(text: string | null, status: number | null = 0, now = NOW) {
   });
 }
 
+/**
+ * The shared harness for running SHIPPED workflow step scripts under the shell
+ * GitHub actually uses. Module scope because both the read-step suite and the
+ * remediation suite below run the same steps the same way; a second private
+ * copy of these stubs is how one suite would start testing a different shell
+ * than the other.
+ */
+/** Exactly what GitHub passes for `shell: bash`. Not our own choice of flags. */
+const GITHUB_BASH_FLAGS = ["--noprofile", "--norc", "-e", "-o", "pipefail"];
+
+/** A fake app that cannot resolve, so a PATH miss can never reach production. */
+const STUB_APP = "stub-app-that-does-not-exist";
+const STUB_TOKEN = "stub-token-not-a-real-secret";
+
+function workspace(): string {
+  return mkdtempSync(join(tmpdir(), "watchdog-step-"));
+}
+
+function stubBin(dir: string, name: string, body: string): string {
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  const path = join(bin, name);
+  writeFileSync(path, body, "utf8");
+  chmodSync(path, 0o755);
+  return bin;
+}
+
+/**
+ * `flyctl ssh console --command` does NOT hand the string to a shell on the
+ * machine: fly word-splits it and execs the result. This stub reproduces that
+ * exactly, because a stub that ran the command through a shell would have
+ * made the shipped command look fine while production read nothing. Against
+ * the real machine the un-shelled form produced, verbatim:
+ *
+ *     cat: '$MENDPOINT_BACKUP_EVIDENCE_PATH': No such file or directory
+ */
+const FLY_EXEC_STUB = `#!/usr/bin/env node
+const { spawnSync } = require("node:child_process");
+const argv = process.argv.slice(2);
+const command = argv[argv.indexOf("--command") + 1];
+const words = [];
+let cur = "";
+let quote = null;
+let started = false;
+for (const ch of command) {
+if (quote) {
+  if (ch === quote) quote = null;
+  else cur += ch;
+  continue;
+}
+if (ch === "'" || ch === '"') {
+  quote = ch;
+  started = true;
+  continue;
+}
+if (ch === " ") {
+  if (started || cur) {
+    words.push(cur);
+    cur = "";
+    started = false;
+  }
+  continue;
+}
+cur += ch;
+started = true;
+}
+if (started || cur) words.push(cur);
+const result = spawnSync(words[0], words.slice(1), { stdio: "inherit", env: process.env });
+process.exit(result.status === null ? 1 : result.status);
+`;
+
 describe("customer backup freshness — the fresh case", () => {
   it("passes when the newest verified backup is inside the RPO", () => {
     const verdict = judge(JSON.stringify(evidenceDocument()));
@@ -415,9 +486,6 @@ describe("customer backup watchdog workflow", () => {
  * under GitHub's, against a stubbed flyctl, and assert the step keeps going.
  */
 describe("customer backup watchdog — the shipped steps under GitHub's real shell", () => {
-  /** Exactly what GitHub passes for `shell: bash`. Not our own choice of flags. */
-  const GITHUB_BASH_FLAGS = ["--noprofile", "--norc", "-e", "-o", "pipefail"];
-
   const workflowSteps = (
     parse(
       readFileSync(resolve(root, ".github/workflows/customer-backup-watchdog.yml"), "utf8"),
@@ -431,23 +499,6 @@ describe("customer backup watchdog — the shipped steps under GitHub's real she
     // ones it runs under and every assertion here would be measuring fiction.
     expect(found.shell).toBe("bash");
     return found;
-  }
-
-  /** A fake app that cannot resolve, so a PATH miss can never reach production. */
-  const STUB_APP = "stub-app-that-does-not-exist";
-  const STUB_TOKEN = "stub-token-not-a-real-secret";
-
-  function workspace(): string {
-    return mkdtempSync(join(tmpdir(), "watchdog-step-"));
-  }
-
-  function stubBin(dir: string, name: string, body: string): string {
-    const bin = join(dir, "bin");
-    mkdirSync(bin, { recursive: true });
-    const path = join(bin, name);
-    writeFileSync(path, body, "utf8");
-    chmodSync(path, 0o755);
-    return bin;
   }
 
   function runShippedStep(
@@ -563,50 +614,6 @@ describe("customer backup watchdog — the shipped steps under GitHub's real she
     expect(result.stderr).toContain("customer_backup_watchdog_binding_missing");
     expect(verdictFor(dir, "78").report.reason).toBe("remote_read_failed");
   });
-
-  /**
-   * `flyctl ssh console --command` does NOT hand the string to a shell on the
-   * machine: fly word-splits it and execs the result. This stub reproduces that
-   * exactly, because a stub that ran the command through a shell would have
-   * made the shipped command look fine while production read nothing. Against
-   * the real machine the un-shelled form produced, verbatim:
-   *
-   *     cat: '$MENDPOINT_BACKUP_EVIDENCE_PATH': No such file or directory
-   */
-  const FLY_EXEC_STUB = `#!/usr/bin/env node
-const { spawnSync } = require("node:child_process");
-const argv = process.argv.slice(2);
-const command = argv[argv.indexOf("--command") + 1];
-const words = [];
-let cur = "";
-let quote = null;
-let started = false;
-for (const ch of command) {
-  if (quote) {
-    if (ch === quote) quote = null;
-    else cur += ch;
-    continue;
-  }
-  if (ch === "'" || ch === '"') {
-    quote = ch;
-    started = true;
-    continue;
-  }
-  if (ch === " ") {
-    if (started || cur) {
-      words.push(cur);
-      cur = "";
-      started = false;
-    }
-    continue;
-  }
-  cur += ch;
-  started = true;
-}
-if (started || cur) words.push(cur);
-const result = spawnSync(words[0], words.slice(1), { stdio: "inherit", env: process.env });
-process.exit(result.status === null ? 1 : result.status);
-`;
 
   it("has the MACHINE expand its own evidence path, which needs a shell on the machine", () => {
     const dir = workspace();
@@ -773,5 +780,387 @@ describe("customer backup watchdog — the watchdog's own failure has a name", (
     const retain = step("Retain the redacted freshness verdict");
     expect(retain.with["if-no-files-found"]).toBe("error");
     expect(retain.if).toBe("${{ always() }}");
+  });
+});
+/**
+ * Remediation, proved on the SHIPPED steps under GitHub's real shell.
+ *
+ * The failure these cover is not a broken backup. Every scheduled
+ * `Customer production backup` run that fires SUCCEEDS; GitHub drops its
+ * every-30-minutes cron for hours at a time (observed scheduled runs 6h and 8.4h apart against a
+ * 3600s RPO), the evidence ages out, `/healthz` goes red, and this watchdog
+ * correctly alarms — every hour, forever. The watchdog was right; the delivery
+ * was wrong. So the watchdog, which has strictly better delivery than the cron
+ * it watches, now dispatches one backup and re-measures before it decides.
+ *
+ * The whole risk of that change is that remediation quietly becomes a way for a
+ * real failure to pass. These tests exist to make that impossible to ship:
+ * every one of them asserts on the step scripts as the runner executes them,
+ * under `bash --noprofile --norc -e -o pipefail`, against a `gh` and a `flyctl`
+ * that cannot reach anything real.
+ */
+describe("customer backup watchdog — a stale backup is remediated once, before it alerts", () => {
+  const steps = (
+    parse(
+      readFileSync(resolve(root, ".github/workflows/customer-backup-watchdog.yml"), "utf8"),
+    ) as Record<string, any>
+  ).jobs.freshness.steps as Record<string, any>[];
+
+  function shippedStep(name: string): Record<string, any> {
+    const found = steps.find((candidate) => candidate.name === name);
+    if (!found) throw new Error(`step not found: ${name}`);
+    expect(found.shell).toBe("bash");
+    return found;
+  }
+
+  const READ = "Read backup evidence from the customer machine";
+  const JUDGE = "Judge backup freshness against the policy RPO";
+  const REMEDIATE = "Remediate a stale backup with one dispatch, then re-measure";
+  const DECIDE = "Fail unless the final verdict is provably fresh";
+  const ALERT = "Alert on stale or undetermined backup freshness";
+
+  /**
+   * A `gh` that cannot reach GitHub, and that LOGS every invocation, so "how
+   * many backups were dispatched" is a counted fact rather than an inference
+   * from the script's shape. The env knobs let one stub cover the dispatch
+   * refused / run never observed / run failed branches without a second stub
+   * that might diverge from this one.
+   */
+  const GH_STUB = `#!/bin/sh
+echo "$1 $2" >> "$GH_STUB_LOG"
+case "$1 $2" in
+  'workflow run') exit \${GH_STUB_DISPATCH_STATUS:-0} ;;
+  'run list') echo "\${GH_STUB_RUN_ID-4242}" ;;
+  'run view') echo "\${GH_STUB_RUN_STATE:-completed success}" ;;
+esac
+exit 0
+`;
+
+  interface StepResult {
+    readonly status: number | null;
+    readonly stdout: string;
+    readonly stderr: string;
+  }
+
+  /**
+   * Runs a shipped step under the runner's flags. `cwd` is separate from where
+   * the script is written because the remediation step invokes the real judge
+   * as `node --import tsx scripts/...`, which only resolves from the repo root,
+   * while every path it touches is redirected into the scratch workspace by the
+   * step's own env. Nothing this suite runs writes inside the repo.
+   */
+  function runStep(
+    run: string,
+    options: { dir: string; cwd: string; bin: string; env: Record<string, string> },
+  ): StepResult {
+    const scriptPath = join(options.dir, "step.sh");
+    writeFileSync(scriptPath, run, "utf8");
+    const result = spawnSync("bash", [...GITHUB_BASH_FLAGS, scriptPath.replace(/\\/g, "/")], {
+      cwd: options.cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${options.bin}${delimiter}${process.env.PATH ?? ""}`,
+        ...options.env,
+      },
+    });
+    return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  }
+
+  /** Built by the REAL producer, so the fixture cannot be shaped like the test. */
+  function verdictOn(machineEvidence: Record<string, unknown>): Record<string, unknown> {
+    return redactedReport(judge(JSON.stringify(machineEvidence)), NOW);
+  }
+
+  const EIGHT_HOURS_STALE = evidenceDocument({
+    createdAt: "2026-08-30T04:00:00.000Z",
+    verifiedAt: "2026-08-30T04:01:00.000Z",
+  });
+
+  function scenario(options: {
+    /** What the customer machine will hand back when it is re-read. */
+    machine?: Record<string, unknown>;
+    /** The verdict the judge step already wrote, before remediation runs. */
+    verdict?: Record<string, unknown>;
+    gh?: Record<string, string>;
+  }) {
+    const dir = workspace();
+    const bin = stubBin(dir, "flyctl", FLY_EXEC_STUB);
+    stubBin(dir, "gh", GH_STUB);
+    // A no-op `sleep`, so a bounded retry loop can never hang the suite and a
+    // loop that failed to break shows up as a wrong count, not a timeout.
+    stubBin(dir, "sleep", "#!/bin/sh\nexit 0\n");
+
+    const report = join(dir, "verdict.json");
+    const capture = join(dir, "evidence-capture.json");
+    const machinePath = join(dir, "last-verified.json");
+    const ghLog = join(dir, "gh-invocations.log");
+    writeFileSync(ghLog, "", "utf8");
+    writeFileSync(
+      machinePath,
+      JSON.stringify(options.machine ?? freshEvidence()),
+      "utf8",
+    );
+    writeFileSync(
+      report,
+      `${JSON.stringify(options.verdict ?? verdictOn(EIGHT_HOURS_STALE), null, 2)}\n`,
+      "utf8",
+    );
+
+    return {
+      dir,
+      bin,
+      report,
+      env: {
+        // Deliberately a repository that does not exist, under a token that is
+        // not one: if the stub above were ever missed, the real `gh` 404s
+        // instead of dispatching a backup against production.
+        GH_REPO: "mendpoint-tests/repository-that-does-not-exist",
+        GH_TOKEN: "stub-token-not-a-real-secret",
+        BACKUP_WORKFLOW: "customer-backup.yml",
+        BACKUP_REF: "main",
+        FLY_API_TOKEN: STUB_TOKEN,
+        CUSTOMER_APP: STUB_APP,
+        MENDPOINT_BACKUP_EVIDENCE_PATH: machinePath,
+        MENDPOINT_BACKUP_EVIDENCE_CAPTURE_PATH: capture,
+        MENDPOINT_BACKUP_FRESHNESS_REPORT_PATH: report,
+        GH_STUB_LOG: ghLog,
+        ...options.gh,
+      },
+      calls(): string[] {
+        return readFileSync(ghLog, "utf8").split("\n").filter(Boolean);
+      },
+      verdict(): any {
+        return JSON.parse(readFileSync(report, "utf8"));
+      },
+    };
+  }
+
+  /** Recent against the wall clock, because the real judge reads `new Date()`. */
+  function freshEvidence(): Record<string, unknown> {
+    return evidenceDocument({
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+      verifiedAt: new Date(Date.now() - 30_000).toISOString(),
+    });
+  }
+
+  function remediate(context: ReturnType<typeof scenario>): StepResult {
+    return runStep(shippedStep(REMEDIATE).run, {
+      dir: context.dir,
+      cwd: root,
+      bin: context.bin,
+      env: context.env,
+    });
+  }
+
+  function decide(context: ReturnType<typeof scenario>): StepResult {
+    return runStep(shippedStep(DECIDE).run, {
+      dir: context.dir,
+      cwd: context.dir,
+      bin: context.bin,
+      env: context.env,
+    });
+  }
+
+  it("dispatches exactly one backup for a stale verdict, and passes once the re-check is fresh", () => {
+    const context = scenario({ machine: freshEvidence() });
+    const step = remediate(context);
+
+    expect(step.status).toBe(0);
+    // ONE dispatch per watchdog run. A retry loop wrapped around the dispatch,
+    // or a dispatch moved inside the wait loop, shows up here as a count of 2+.
+    expect(context.calls().filter((call) => call === "workflow run")).toHaveLength(1);
+    // It waited: it looked the run up and read its conclusion rather than
+    // assuming the dispatch was the same thing as a backup.
+    expect(context.calls()).toContain("run list");
+    expect(context.calls()).toContain("run view");
+
+    // Re-measured from the MACHINE, not inferred from "the run succeeded".
+    const verdict = context.verdict();
+    expect(verdict.state).toBe("fresh");
+    expect(verdict.remediation).toMatchObject({
+      attempted: true,
+      dispatched: true,
+      runId: "4242",
+      outcome: "backup_run_completed",
+    });
+
+    // The staleness stays visible even though remediation worked. Without both
+    // of these the dropped cron becomes invisible the moment this starts
+    // succeeding, which is the silence the watchdog exists to end.
+    expect(step.stdout).toContain("::warning title=Customer backup was stale::");
+    const decided = decide(context);
+    expect(decided.status).toBe(0);
+    expect(decided.stdout).toContain("::warning title=Backup freshness required remediation::");
+    expect(decided.stdout).toContain("customer_backup_final state=fresh remediated=true");
+  });
+
+  it("still fails, and still opens the issue, when the backup is stale after remediation", () => {
+    // The backup ran and succeeded, and the machine is STILL past its RPO. A
+    // remediation that reported this as recovered would be strictly worse than
+    // the noise it replaced.
+    const context = scenario({ machine: EIGHT_HOURS_STALE });
+    const step = remediate(context);
+
+    expect(step.status).toBe(0);
+    expect(context.calls().filter((call) => call === "workflow run")).toHaveLength(1);
+    const verdict = context.verdict();
+    expect(verdict.state).toBe("stale");
+    expect(verdict.remediation).toMatchObject({ dispatched: true });
+
+    const decided = decide(context);
+    expect(decided.status).toBe(1);
+    expect(decided.stderr).toContain("customer_backup_not_fresh state=stale");
+
+    // And the alarm the operator actually sees still fires, from the same
+    // verdict document, under `if: failure()`.
+    expect(shippedStep(ALERT).if).toBe("${{ failure() }}");
+    const alertDir = join(context.dir, "alert");
+    mkdirSync(join(alertDir, "test-results/customer-backup-watchdog"), { recursive: true });
+    writeFileSync(
+      join(alertDir, "test-results/customer-backup-watchdog/verdict.json"),
+      readFileSync(context.report, "utf8"),
+      "utf8",
+    );
+    const alerted = runStep(shippedStep(ALERT).run, {
+      dir: alertDir,
+      cwd: alertDir,
+      bin: context.bin,
+      // RUN_URL is the workflow's own; under the runner's `-u` an absent one
+      // would abort the alert before it ever reached `gh issue create`.
+      env: { ...context.env, RUN_URL: "https://example.invalid/run/1" },
+    });
+    expect(alerted.status).toBe(0);
+    expect(context.calls()).toContain("issue create");
+  });
+
+  it("dispatches nothing at all when the backup is fresh", () => {
+    // Two independent guards, because either one alone is a single point of
+    // failure for "the watchdog started dispatching backups every hour".
+    expect(shippedStep(REMEDIATE).if).toBe(
+      "${{ !cancelled() && steps.judge.outputs.status != '0' }}",
+    );
+
+    const context = scenario({ verdict: verdictOn(evidenceDocument()) });
+    const step = remediate(context);
+
+    expect(step.status).toBe(0);
+    expect(context.calls()).toEqual([]);
+    expect(step.stdout).toContain("no dispatch: verdict state is fresh");
+    // A verdict it did not remediate carries no remediation claim.
+    expect(context.verdict().remediation).toBeUndefined();
+  });
+
+  it("never dispatches for an indeterminate verdict, which a backup cannot answer", () => {
+    const context = scenario({ verdict: redactedReport(judge(null, 14), NOW) });
+    const step = remediate(context);
+
+    expect(step.status).toBe(0);
+    expect(context.calls()).toEqual([]);
+    expect(step.stdout).toContain("no dispatch: verdict state is indeterminate");
+    // Unchanged from today: it goes straight to failing and alerting.
+    expect(decide(context).status).toBe(1);
+  });
+
+  it("reports a refused dispatch instead of swallowing it", () => {
+    const context = scenario({ gh: { GH_STUB_DISPATCH_STATUS: "1" } });
+    const step = remediate(context);
+
+    expect(step.status).toBe(1);
+    expect(step.stderr).toContain("customer_backup_remediation_dispatch_failed status=1");
+    expect(context.verdict()).toMatchObject({
+      state: "stale",
+      remediation: { attempted: true, dispatched: false, outcome: "dispatch_failed" },
+    });
+    // It did not go on to wait for, or claim, a run that was never started.
+    expect(context.calls()).toEqual(["workflow run"]);
+    expect(decide(context).status).toBe(1);
+  });
+
+  it("reports a backup run that completed unsuccessfully instead of re-reading past it", () => {
+    const context = scenario({ gh: { GH_STUB_RUN_STATE: "completed failure" } });
+    const step = remediate(context);
+
+    expect(step.status).toBe(1);
+    expect(step.stderr).toContain("customer_backup_remediation_run_unsuccessful conclusion=failure");
+    expect(context.verdict().remediation).toMatchObject({
+      outcome: "backup_run_unsuccessful",
+      conclusion: "failure",
+    });
+    expect(decide(context).status).toBe(1);
+  });
+
+  it("keeps the job's verdict in ONE place, decided from the document and not from an exit code", () => {
+    // The judge's exit is deferred so remediation can run after it. That is only
+    // safe because this step re-derives the answer from the verdict on disk: cut
+    // the remediation step out of the workflow entirely and a stale backup still
+    // fails here, still reaches `if: failure()`, and still opens the issue.
+    const judgeStep = shippedStep(JUDGE);
+    expect(judgeStep.id).toBe("judge");
+    expect(judgeStep.run).toContain("|| status=$?");
+    expect(judgeStep.run).toContain('echo "status=$status" >> "$GITHUB_OUTPUT"');
+
+    const decider = shippedStep(DECIDE);
+    expect(decider.if).toBe("${{ !cancelled() }}");
+    expect(decider.run).toContain('if [ "$state" != "fresh" ]');
+    // Ordering is load bearing: the decision must be reached before the step
+    // whose `failure()` opens the issue, and after the meta verdict guarantees
+    // a document exists.
+    const order = steps.map((each) => each.name);
+    expect(order.indexOf(JUDGE)).toBeLessThan(order.indexOf(REMEDIATE));
+    expect(order.indexOf("Record the meta verdict when the watchdog produced none")).toBeLessThan(
+      order.indexOf(DECIDE),
+    );
+    expect(order.indexOf(DECIDE)).toBeLessThan(order.indexOf(ALERT));
+  });
+
+  it("re-reads the machine with the SAME command the first read uses, so neither can drift", () => {
+    // Four separate defects were fixed in that one command: the remote `sh -c`
+    // expansion, the `</dev/null`, the `timeout`, and `|| status=$?` surviving
+    // the runner's `-e`. A second copy that drifted would re-open all four in a
+    // place the hardened tests above do not look.
+    const collapse = (run: string): string =>
+      run.replace(/\\\n\s+/g, " ").replace(/[ \t]+/g, " ");
+    const extract = (run: string): string => {
+      const found = /timeout 300 flyctl ssh console .*?<\/dev\/null/.exec(collapse(run));
+      if (!found) throw new Error("no evidence read found in step");
+      return found[0];
+    };
+    expect(extract(shippedStep(REMEDIATE).run)).toBe(extract(shippedStep(READ).run));
+    expect(shippedStep(REMEDIATE).run).toContain("|| status=$?");
+  });
+
+  it("bounds its own waiting, so remediation can never cancel the job and mute the alarm", () => {
+    // `timeout-minutes` firing CANCELS the job, and `if: failure()` steps do not
+    // run on a cancelled job. An unbounded `gh run watch` here would therefore
+    // have silenced the alert on exactly the runs that needed it most.
+    const run = shippedStep(REMEDIATE).run;
+    expect(run).not.toContain("gh run watch");
+    expect(run).toContain("for _ in $(seq 1 18); do");
+    expect(run).toContain("for _ in $(seq 1 36); do");
+    const freshness = (
+      parse(
+        readFileSync(resolve(root, ".github/workflows/customer-backup-watchdog.yml"), "utf8"),
+      ) as Record<string, any>
+    ).jobs.freshness;
+    // 3min to observe the run + 6min for it to finish + 5min for the re-read,
+    // with room left over rather than room exactly consumed.
+    expect(freshness["timeout-minutes"]).toBe(25);
+    expect(freshness.permissions).toMatchObject({ "actions": "write", "issues": "write" });
+  });
+
+  it("leaves the backup workflow's own schedule, RPO and alert untouched", () => {
+    // The fix must not be a relaxation. The `*/30` cron is free when it fires
+    // and is still there; the RPO is still the one the readiness check uses.
+    const backup = parse(
+      readFileSync(resolve(root, ".github/workflows/customer-backup.yml"), "utf8"),
+    ) as Record<string, any>;
+    expect(backup.on.schedule).toEqual([{ cron: "*/30 * * * *" }]);
+    expect(backup.on).toHaveProperty("workflow_dispatch");
+    expect(backup.concurrency).toMatchObject({
+      group: "customer-production-backup",
+      "cancel-in-progress": false,
+    });
+    expect(resolveBackupRpoSeconds()).toBe(CORE_DISASTER_RECOVERY_POLICY.rpoSeconds);
   });
 });
