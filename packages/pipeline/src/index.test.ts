@@ -409,7 +409,10 @@ describe("pipeline", () => {
     };
     expect(fallback.decision).toMatchObject({
       outcome: "completed",
-      reasonCodes: ["language_parsing:partial"],
+      reasonCodes: [
+        "graph_projection_change_class_unrepresented",
+        "language_parsing:partial",
+      ],
     });
     expect(fallback.relationshipCandidates).not.toHaveLength(0);
     expect(fallback.relationshipCandidates.every(
@@ -497,6 +500,12 @@ describe("pipeline", () => {
       bounds: { maxBytes: 1 },
       failureCode: "raw_retrieval_byte_budget_exceeded",
       metric: "bytes",
+    },
+    {
+      name: "file byte",
+      bounds: { maxFileBytes: 1 },
+      failureCode: "raw_retrieval_byte_budget_exceeded",
+      metric: "fileBytes",
     },
     {
       name: "candidate",
@@ -587,6 +596,89 @@ describe("pipeline", () => {
       }
     }, 15_000);
   }
+
+  it("persists traversal-depth exhaustion with all five bounds and exact snapshot identity", async () => {
+    const dir = join(tmpdir(), `mendpoint-pipe-depth-budget-${Date.now()}-${Math.random()}`);
+    const repoDir = join(dir, "shop");
+    mkdirSync(join(repoDir, "one", "two"), { recursive: true });
+    writeFileSync(
+      join(repoDir, "one", "two", "client.ts"),
+      'export function createCharge() { return fetch("/v1/charges"); }\n',
+      "utf8",
+    );
+    dirs.push(dir);
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    restrictProviderVersionsToCharges(db, provider.id);
+    addMonitoredConsumer(db, provider.id, {
+      name: "Depth budget shop",
+      repo: "depth-budget-shop",
+      localPath: repoDir,
+    });
+    const previous = process.env.GRAPH_LEARN_DB;
+    delete process.env.GRAPH_LEARN_DB;
+    try {
+      const bounds = {
+        maxFiles: 100,
+        maxBytes: 1_000_000,
+        maxFileBytes: 10_000,
+        maxTraversalDepth: 1,
+        maxCandidates: 100,
+      };
+      const common = {
+        tenantId: "tenant_default",
+        providerSlug: "acme-payments",
+        db,
+        github: new MockGitHubDelivery(join(dir, "delivery")),
+        persistIndex: false,
+        rawRetrievalBounds: bounds,
+        contractCases: [{
+          id: "fixture",
+          name: "fixture",
+          requiredKeys: ["id"],
+          responseBody: { id: "ok" },
+        }],
+        securityScanAttested: true,
+      };
+      const first = await runChangePipeline(common);
+      const second = await runChangePipeline(common);
+      expect(first.consumers[0]?.deliveryError)
+        .toBe("raw_retrieval_traversal_depth_budget_exceeded");
+      expect(second.consumers[0]?.deliveryError)
+        .toBe("raw_retrieval_traversal_depth_budget_exceeded");
+      const artifacts = listArtifactManifests(
+        db,
+        "tenant_default",
+        "fettler-raw-retrieval-fallback",
+      );
+      expect(artifacts).toHaveLength(1);
+      const stored = JSON.parse(artifacts[0]!.content_text!) as {
+        decision: {
+          bounds: typeof bounds;
+          usage: { metric: string; limit: number; actual: number };
+          repositorySnapshotId: string;
+          repositoryRevision: string;
+          repositoryContentDigest: string;
+          identityUsage: { filesInspected: number; bytesInspected: number };
+        };
+      };
+      expect(stored.decision.bounds).toEqual(bounds);
+      expect(stored.decision.usage).toEqual({
+        metric: "traversalDepth",
+        limit: 1,
+        actual: 2,
+      });
+      expect(stored.decision.repositorySnapshotId).toMatch(/^repository-snapshot:[a-f0-9]{64}$/);
+      expect(stored.decision.repositoryRevision).toMatch(/^[a-f0-9]{64}$/);
+      expect(stored.decision.repositoryContentDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(stored.decision.identityUsage).toEqual({ filesInspected: 0, bytesInspected: 0 });
+    } finally {
+      if (previous === undefined) delete process.env.GRAPH_LEARN_DB;
+      else process.env.GRAPH_LEARN_DB = previous;
+    }
+  }, 15_000);
 
   it("binds early budget abstention replay to changed repository content", async () => {
     const dir = join(tmpdir(), `mendpoint-budget-identity-${Date.now()}-${Math.random()}`);

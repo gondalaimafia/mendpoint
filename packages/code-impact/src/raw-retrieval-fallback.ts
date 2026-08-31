@@ -10,6 +10,8 @@ import type { ImpactReport } from "@mendpoint/shared";
 export type RawRetrievalBoundsAndUsage = Readonly<{
   maxFiles: number;
   maxBytes: number;
+  maxFileBytes: number;
+  maxTraversalDepth: number;
   maxCandidates: number;
   filesInspected: number;
   bytesInspected: number;
@@ -27,6 +29,7 @@ export type RawRetrievalFallbackDecision = Readonly<{
   failureCode?:
     | "raw_retrieval_file_budget_exceeded"
     | "raw_retrieval_byte_budget_exceeded"
+    | "raw_retrieval_traversal_depth_budget_exceeded"
     | "raw_retrieval_candidate_budget_exceeded";
   decisionDigest: string;
 }>;
@@ -43,6 +46,7 @@ export type ResolveBoundedRawRetrievalFallbackInput = Readonly<{
   authority: RawRetrievalRelationshipCandidateAuthority;
   observedAt: string;
   retrieval: RawRetrievalBoundsAndUsage;
+  requiredReasonCodes?: readonly string[];
 }>;
 
 const compareCodeUnits = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
@@ -79,10 +83,11 @@ function graphAuthorityMatches(input: ResolveBoundedRawRetrievalFallbackInput): 
     input.graphImpact.graphContentDigest === input.authority.parentGraphContentDigest;
 }
 
-function retrievalReasons(impact: FettlerEndpointImpactResult): string[] {
+function retrievalReasons(input: ResolveBoundedRawRetrievalFallbackInput): string[] {
   return [...new Set([
-    ...impact.coverage.reasons,
-    ...(impact.coverage.truncated ? ["query_truncated"] : []),
+    ...input.graphImpact.coverage.reasons,
+    ...(input.graphImpact.coverage.truncated ? ["query_truncated"] : []),
+    ...(input.requiredReasonCodes ?? []),
   ])].sort(compareCodeUnits);
 }
 
@@ -129,7 +134,8 @@ export function resolveBoundedRawRetrievalFallback(
     throw new Error("raw_retrieval_fallback_graph_scope_mismatch");
   }
   const graphComplete = input.graphImpact.coverage.basis === "complete" &&
-    !input.graphImpact.coverage.truncated;
+    !input.graphImpact.coverage.truncated &&
+    (input.requiredReasonCodes?.length ?? 0) === 0;
   if (graphComplete) {
     return Object.freeze({
       decision: decision({
@@ -150,11 +156,13 @@ export function resolveBoundedRawRetrievalFallback(
     });
   }
 
-  const reasons = retrievalReasons(input.graphImpact);
+  const reasons = retrievalReasons(input);
   const candidatesInspected = input.rawReport.candidateCount;
   const invalid =
     !Number.isSafeInteger(input.retrieval.maxFiles) || input.retrieval.maxFiles < 1 ||
     !Number.isSafeInteger(input.retrieval.maxBytes) || input.retrieval.maxBytes < 1 ||
+    !Number.isSafeInteger(input.retrieval.maxFileBytes) || input.retrieval.maxFileBytes < 1 ||
+    !Number.isSafeInteger(input.retrieval.maxTraversalDepth) || input.retrieval.maxTraversalDepth < 1 ||
     !Number.isSafeInteger(input.retrieval.maxCandidates) || input.retrieval.maxCandidates < 1 ||
     !Number.isSafeInteger(input.retrieval.filesInspected) || input.retrieval.filesInspected < 0 ||
     !Number.isSafeInteger(input.retrieval.bytesInspected) || input.retrieval.bytesInspected < 0;

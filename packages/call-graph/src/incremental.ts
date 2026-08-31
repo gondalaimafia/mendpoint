@@ -11,7 +11,7 @@
  * Inspired by industrial reset-recompute (e.g. Zhao et al., ICSE-SEIP 2023).
  */
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   buildCallGraph,
   type BuildCallGraphOptions,
@@ -141,7 +141,7 @@ export function identifyAffectedRegion(
     opts.expansionHops ??
     (strategy === "eager" ? 99 : strategy === "conservative" ? 1 : 1);
   const seedFiles = [...new Set(changedFiles.map(normPath))];
-  const changeSet = classifyChanges(previous, seedFiles);
+  const changeSet = classifyChanges(previous, seedFiles, { sources: opts.sources });
   const atomicChanges = changeSetToAtomic(changeSet);
   const hierarchyDirty = changeSet.structural.hierarchyChanged;
   const importDirty = changeSet.structural.importChanged;
@@ -425,9 +425,13 @@ export function resetRecomputeCallGraph(
     resetNodeIds,
   );
 
-  // Only re-parse files that still exist
+  // When an exact captured source set is supplied, it is the sole existence
+  // authority. Never probe the mutable repository between capture and graph
+  // recomputation.
   const filesToReanalyze = region.resetFiles.filter((f) =>
-    existsSync(join(previous.repoRoot, f)),
+    opts.sources
+      ? opts.sources.has(resolve(previous.repoRoot, f))
+      : existsSync(join(previous.repoRoot, f)),
   );
 
   const partial = reanalyzeFiles(previous.repoRoot, filesToReanalyze, surviving, opts);

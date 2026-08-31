@@ -235,9 +235,19 @@ type DiscoveredFile = {
   abs: string;
   rel: string;
   size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  mode: number;
+  ino: number;
+  dev: number;
   text?: string;
   contentHash?: string;
   contentDigest?: string;
+};
+
+type DiscoveredDirectory = {
+  abs: string;
+  entries: string[];
 };
 
 type DiscoveryUsage = { files: number; totalBytes: number };
@@ -319,9 +329,9 @@ function accountFile(
 function assertRegularFile(
   repoRoot: string,
   path: string,
-  expectedSize: number | undefined,
+  expected: Pick<DiscoveredFile, "size" | "mtimeMs" | "ctimeMs" | "mode" | "ino" | "dev"> | undefined,
   limits: CodebaseIndexLimits,
-): number {
+): Pick<DiscoveredFile, "size" | "mtimeMs" | "ctimeMs" | "mode" | "ino" | "dev"> {
   const stat = lstatSync(path);
   if (stat.isSymbolicLink()) {
     fail("codebase_index_symlink_not_allowed", repoRoot, path);
@@ -332,10 +342,24 @@ function assertRegularFile(
   if (stat.size > limits.maxFileBytes) {
     fail("codebase_index_file_bytes_limit", repoRoot, path, limits.maxFileBytes, stat.size);
   }
-  if (expectedSize !== undefined && stat.size !== expectedSize) {
-    fail("codebase_index_file_changed_during_index", repoRoot, path, expectedSize, stat.size);
+  if (expected && (
+    stat.size !== expected.size ||
+    stat.mtimeMs !== expected.mtimeMs ||
+    stat.ctimeMs !== expected.ctimeMs ||
+    stat.mode !== expected.mode ||
+    stat.ino !== expected.ino ||
+    stat.dev !== expected.dev
+  )) {
+    fail("codebase_index_file_changed_during_index", repoRoot, path, expected.size, stat.size);
   }
-  return stat.size;
+  return {
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+    mode: stat.mode,
+    ino: stat.ino,
+    dev: stat.dev,
+  };
 }
 
 function readDiscoveredFile(
@@ -343,9 +367,18 @@ function readDiscoveredFile(
   file: DiscoveredFile,
   limits: CodebaseIndexLimits,
 ): string {
-  assertRegularFile(repoRoot, file.abs, file.size, limits);
+  assertRegularFile(repoRoot, file.abs, file, limits);
   const text = readFileSync(file.abs, "utf8");
-  assertRegularFile(repoRoot, file.abs, Buffer.byteLength(text), limits);
+  assertRegularFile(repoRoot, file.abs, file, limits);
+  if (Buffer.byteLength(text) !== file.size) {
+    fail(
+      "codebase_index_file_changed_during_index",
+      repoRoot,
+      file.abs,
+      file.size,
+      Buffer.byteLength(text),
+    );
+  }
   return text;
 }
 
@@ -391,8 +424,11 @@ function walk(
   skipped: SkippedDirectory[],
   depth = 0,
   out: DiscoveredFile[] = [],
+  directories: DiscoveredDirectory[] = [],
 ): DiscoveredFile[] {
-  for (const name of readdirSync(dir).sort()) {
+  const entries = readdirSync(dir).sort();
+  directories.push({ abs: dir, entries });
+  for (const name of entries) {
     const p = join(dir, name);
     const skipReason = ignoredDirectoryReason(name, p);
     if (skipReason) {
@@ -416,7 +452,7 @@ function walk(
       if (nextDepth > limits.maxTraversalDepth) {
         fail("codebase_index_traversal_depth_limit", repoRoot, p, limits.maxTraversalDepth, nextDepth);
       }
-      walk(repoRoot, p, limits, usage, skipped, nextDepth, out);
+      walk(repoRoot, p, limits, usage, skipped, nextDepth, out, directories);
     } else if (st.isFile()) {
       const ext = name.includes(".") ? `.${name.split(".").pop()}` : "";
       if (INDEX_EXTS.has(ext)) {
@@ -425,6 +461,11 @@ function walk(
           abs: p,
           rel: relativePath(repoRoot, p),
           size: st.size,
+          mtimeMs: st.mtimeMs,
+          ctimeMs: st.ctimeMs,
+          mode: st.mode,
+          ino: st.ino,
+          dev: st.dev,
         }, limits));
       }
     }
@@ -453,20 +494,37 @@ function discoverFiles(
   const skipped: SkippedDirectory[] = [];
   const files: DiscoveredFile[] = [];
   const manifests: DiscoveredFile[] = [];
+  const directories: DiscoveredDirectory[] = [];
   try {
-    walk(repoRoot, repoRoot, limits, usage, skipped, 0, files);
+    walk(repoRoot, repoRoot, limits, usage, skipped, 0, files, directories);
     const discoveredPaths = new Set(files.map((file) => file.abs));
     for (const manifest of ["package.json", "requirements.txt", "go.mod", "Gemfile"]) {
       const path = join(repoRoot, manifest);
       if (!existsSync(path)) continue;
       if (discoveredPaths.has(path)) continue;
-      const size = assertRegularFile(repoRoot, path, undefined, limits);
-      accountFile(repoRoot, path, size, limits, usage);
+      const metadata = assertRegularFile(repoRoot, path, undefined, limits);
+      accountFile(repoRoot, path, metadata.size, limits, usage);
       manifests.push(captureDiscoveredFile(repoRoot, {
         abs: path,
         rel: relativePath(repoRoot, path),
-        size,
+        ...metadata,
       }, limits));
+    }
+    for (const directory of directories) {
+      const stat = lstatSync(directory.abs);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        fail("codebase_index_file_changed_during_index", repoRoot, directory.abs);
+      }
+      const current = readdirSync(directory.abs).sort();
+      if (JSON.stringify(current) !== JSON.stringify(directory.entries)) {
+        fail(
+          "codebase_index_file_changed_during_index",
+          repoRoot,
+          directory.abs,
+          directory.entries.length,
+          current.length,
+        );
+      }
     }
   } catch (error) {
     if (!(error instanceof CodebaseIndexSafetyError)) throw error;
@@ -900,7 +958,7 @@ function buildIndexFromDiscovered(
       });
       continue;
     }
-    sources.set(abs, text);
+    sources.set(resolve(abs), text);
     const language = langOf(rel);
     let imports = extractImports(text, language);
     let fns = extractFunctions(text, language);
@@ -1710,10 +1768,16 @@ export function buildIndexIncremental(
   const changedCodeFiles = allChanged.filter(
     (path) => !STRUCTURED_EXTS.has(extname(path).toLowerCase()),
   );
+  const capturedSources = new Map(
+    discovery.files
+      .filter((file) => !STRUCTURED_EXTS.has(extname(file.rel).toLowerCase()))
+      .map((file) => [resolve(file.abs), file.text ?? ""] as const),
+  );
   const callGraph = changedCodeFiles.length
     ? buildCallGraphIncremental(repoRoot, previous.callGraph, changedCodeFiles, {
         algorithm: "hybrid",
         strategy: "hybrid",
+        sources: capturedSources,
       })
     : previous.callGraph;
 

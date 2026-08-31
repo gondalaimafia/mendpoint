@@ -129,18 +129,24 @@ type IndexMaterializationEvidence = NonNullable<
 const RAW_RETRIEVAL_BOUNDS = Object.freeze({
   maxFiles: 10_000,
   maxBytes: 1_000_000_000,
+  maxFileBytes: 5_242_880,
+  maxTraversalDepth: 64,
   maxCandidates: 50_000,
 });
 
-type RawRetrievalBounds = Readonly<{
+export type RawRetrievalBounds = Readonly<{
   maxFiles: number;
   maxBytes: number;
+  maxFileBytes: number;
+  maxTraversalDepth: number;
   maxCandidates: number;
 }>;
 
 function resolveRawRetrievalBounds(input?: Partial<RawRetrievalBounds>): RawRetrievalBounds {
   if (input && Object.keys(input).some(
-    (name) => !["maxFiles", "maxBytes", "maxCandidates"].includes(name),
+    (name) => ![
+      "maxFiles", "maxBytes", "maxFileBytes", "maxTraversalDepth", "maxCandidates",
+    ].includes(name),
   )) {
     throw new Error("raw_retrieval_bounds_invalid");
   }
@@ -158,9 +164,10 @@ type RawRetrievalBudgetFailure = Readonly<{
   failureCode:
     | "raw_retrieval_file_budget_exceeded"
     | "raw_retrieval_byte_budget_exceeded"
+    | "raw_retrieval_traversal_depth_budget_exceeded"
     | "raw_retrieval_candidate_budget_exceeded";
   sourceCode: string;
-  metric: "files" | "bytes" | "candidates";
+  metric: "files" | "bytes" | "fileBytes" | "traversalDepth" | "candidates";
   limit: number;
   actual: number;
 }>;
@@ -192,8 +199,7 @@ function classifyRawRetrievalBudgetFailure(
     });
   }
   if (
-    sourceCode === "codebase_index_total_bytes_limit" ||
-    sourceCode === "codebase_index_file_bytes_limit"
+    sourceCode === "codebase_index_total_bytes_limit"
   ) {
     return Object.freeze({
       failureCode: "raw_retrieval_byte_budget_exceeded",
@@ -201,6 +207,24 @@ function classifyRawRetrievalBudgetFailure(
       metric: "bytes",
       limit: numeric(diagnostic?.limit, bounds.maxBytes),
       actual: numeric(diagnostic?.actual, bounds.maxBytes + 1),
+    });
+  }
+  if (sourceCode === "codebase_index_file_bytes_limit") {
+    return Object.freeze({
+      failureCode: "raw_retrieval_byte_budget_exceeded",
+      sourceCode,
+      metric: "fileBytes",
+      limit: numeric(diagnostic?.limit, bounds.maxFileBytes),
+      actual: numeric(diagnostic?.actual, bounds.maxFileBytes + 1),
+    });
+  }
+  if (sourceCode === "codebase_index_traversal_depth_limit") {
+    return Object.freeze({
+      failureCode: "raw_retrieval_traversal_depth_budget_exceeded",
+      sourceCode,
+      metric: "traversalDepth",
+      limit: numeric(diagnostic?.limit, bounds.maxTraversalDepth),
+      actual: numeric(diagnostic?.actual, bounds.maxTraversalDepth + 1),
     });
   }
   if (sourceCode === "raw_retrieval_candidate_budget_exceeded") {
@@ -1228,6 +1252,8 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
             indexLimits: {
               maxFiles: rawRetrievalBounds.maxFiles,
               maxTotalBytes: rawRetrievalBounds.maxBytes,
+              maxFileBytes: rawRetrievalBounds.maxFileBytes,
+              maxTraversalDepth: rawRetrievalBounds.maxTraversalDepth,
             },
             maxCandidates: rawRetrievalBounds.maxCandidates,
           },
@@ -1343,6 +1369,7 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
             ...rawRetrievalBounds,
             ...graphAnalysis.rawRetrievalUsage,
           },
+          requiredReasonCodes: graphAnalysis.rawRetrievalReasonCodes,
         });
         const currentHead = getSoftwareGraphHead(
           gldb,
@@ -1493,6 +1520,8 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
           indexLimits: {
             maxFiles: rawRetrievalBounds.maxFiles,
             maxTotalBytes: rawRetrievalBounds.maxBytes,
+            maxFileBytes: rawRetrievalBounds.maxFileBytes,
+            maxTraversalDepth: rawRetrievalBounds.maxTraversalDepth,
           },
           maxCandidates: rawRetrievalBounds.maxCandidates,
         });

@@ -83,6 +83,8 @@ const authority = {
 const retrieval = {
   maxFiles: 100,
   maxBytes: 1_000_000,
+  maxFileBytes: 100_000,
+  maxTraversalDepth: 16,
   maxCandidates: 50,
   filesInspected: 4,
   bytesInspected: 4_096,
@@ -138,6 +140,24 @@ describe("bounded raw-retrieval fallback", () => {
       repositoryId: "repo-a",
       parentGraphVersionId: graphVersionId,
     });
+  });
+
+  it("requires bounded raw confirmation for a complete graph projection that cannot represent the change class", () => {
+    const result = resolveBoundedRawRetrievalFallback({
+      graphImpact: graphImpact({ basis: "complete", reasons: [], truncated: false }, "impact"),
+      rawReport: rawReport(),
+      authority,
+      observedAt: "2026-08-30T12:00:00.000Z",
+      retrieval,
+      requiredReasonCodes: ["graph_projection_change_class_unrepresented"],
+    });
+
+    expect(result.decision).toMatchObject({
+      outcome: "completed",
+      reasonCodes: ["graph_projection_change_class_unrepresented"],
+    });
+    expect(result.impactReport?.sites).toHaveLength(1);
+    expect(result.relationshipCandidates).toHaveLength(1);
   });
 
   it("keeps an empty fallback unknown while graph coverage is incomplete", () => {

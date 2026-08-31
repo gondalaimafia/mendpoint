@@ -780,7 +780,16 @@ export async function analyzeImpactWithSoftwareGraph(
   // incomplete graph is allowed to invoke bounded raw retrieval.
   const graphComplete = graphImpact.coverage.basis === "complete" &&
     !graphImpact.coverage.truncated;
-  const impactReport = graphComplete
+  const graphProjectionFaithful = surfaces.every((surface) =>
+    ["http_path", "http_method", "sdk_method"].includes(surface.kind) &&
+    ["path_removed", "path_added", "method_removed", "method_added", "method_changed"].includes(surface.op) &&
+    !surface.field && !surface.fromField && !surface.toField
+  );
+  const rawRetrievalReasonCodes = graphComplete && !graphProjectionFaithful
+    ? ["graph_projection_change_class_unrepresented"]
+    : [];
+  const useGraphOnly = graphComplete && graphProjectionFaithful;
+  const impactReport = useGraphOnly
     ? impactReportFromCompleteGraph(surfaces, graphImpact)
     : await analyzeImpact(repoRoot, surfaces, {
         ...options.impact,
@@ -796,7 +805,8 @@ export async function analyzeImpactWithSoftwareGraph(
     repositoryContentDigest: derivedIdentity.repositoryContentDigest,
     graphImpact,
     context,
-    rawRetrievalUsage: graphComplete
+    rawRetrievalReasonCodes,
+    rawRetrievalUsage: useGraphOnly
       ? { filesInspected: 0, bytesInspected: 0 }
       : rawRetrievalUsage(index),
     ...(materialized.evidence ? { indexReuse: materialized.evidence } : {}),
@@ -810,13 +820,21 @@ function impactReportFromCompleteGraph(
   const sites: ConfirmedImpact[] = [];
   const seen = new Set<string>();
   for (const entity of graphImpact.entities) {
-    if (entity.scope !== "repository" || entity.kind !== "internal_sdk_method") continue;
+    if (
+      entity.scope !== "repository" ||
+      !["internal_sdk_method", "function", "test"].includes(entity.kind)
+    ) continue;
     for (const evidence of entity.evidenceRefs) {
       const match = /^source:(.+):(\d+)$/.exec(evidence);
       if (!match) continue;
       const filePath = match[1]!;
       const line = Number(match[2]);
-      const key = `${filePath}\0${line}\0${entity.label}`;
+      const impactType = entity.kind === "test"
+        ? "test_only" as const
+        : entity.kind === "function"
+          ? "wrapper" as const
+          : "direct_call" as const;
+      const key = `${filePath}\0${line}\0${entity.label}\0${impactType}`;
       if (seen.has(key)) continue;
       seen.add(key);
       sites.push({
@@ -830,9 +848,9 @@ function impactReportFromCompleteGraph(
             ? "medium"
             : "high",
         evidence,
-        impactType: "direct_call",
-        surfaceIds: [surfaces[0]!.id],
-        relatedOps: [surfaces[0]!.op],
+        impactType,
+        surfaceIds: surfaces.map((surface) => surface.id),
+        relatedOps: [...new Set(surfaces.map((surface) => surface.op))],
         confirmationPath: "static",
       });
     }
