@@ -27,6 +27,7 @@
     "calibration:report": "tsx scripts/calibration-report.ts",
     "router:value:proof": "tsx scripts/router-value-proof.ts",
     "dr:drill": "tsx scripts/dr-drill.ts",
+    "recovery:proof": "tsx scripts/production-recovery-proof.ts",
     "backup:customer": "tsx scripts/customer-backup.ts",
     "restore:customer": "tsx scripts/customer-restore.ts",
     "backup:fence:inspect": "tsx scripts/backup-fence-inspect.ts",

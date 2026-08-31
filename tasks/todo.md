@@ -4205,10 +4205,10 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, backup, restore, migration, rollback, regional failure, and recurring drills across the database, graph, artifacts, change-source state, ReGauge control plane, ReGauge execution state, and configuration. Production backup-provider, cross-region, and real regional-failover observations remain an explicit external leaf.
 
-- [ ] RED: specify one bounded production recovery qualification caller that consumes an authenticated object-backup receipt, restores all seven resources to an isolated target, opens the restored stores through their current schema convergence paths, and records exact pre-upgrade and post-upgrade identities without mutating the source or active deployment.
-- [ ] GREEN: publish one create-only, authenticated evidence envelope binding the backup, key identifier, object commit, exact deployed and repository revisions, resource digests, schema convergence, semantic canaries, measured RTO and RPO, rollback digest, recovery-region identity, and the external-proof state.
-- [ ] RED: prove wrong tenant or backup identity, receipt or object tampering, unsupported prior schema, partial restore, live-target overlap, symlink or path escape, duplicate output, missed objective, canary failure, migration failure, rollback drift, dependency outage, and interrupted replay cannot publish passing evidence.
-- [ ] GREEN: make an exact completed proof replay without another download or restore, and leave failed or externally incomplete evidence distinct from a passing synthetic or local drill.
+- [x] RED: specify one bounded production recovery qualification caller that consumes an authenticated object-backup receipt, restores all seven resources to an isolated target, opens the restored stores through their current schema convergence paths, and records exact pre-upgrade and post-upgrade identities without mutating the source or active deployment.
+- [x] GREEN: publish one create-only, authenticated evidence envelope binding the backup, key identifier, object commit, exact deployed and repository revisions, resource digests, schema convergence, semantic canaries, measured RTO and RPO, rollback digest, recovery-region identity, and the external-proof state.
+- [x] RED: prove wrong tenant or backup identity, receipt or object tampering, unsupported prior schema, partial restore, live-target overlap, symlink or path escape, duplicate output, missed objective, canary failure, migration failure, rollback drift, dependency outage, and interrupted replay cannot publish passing evidence.
+- [x] GREEN: make an exact completed proof replay without another download or restore, and leave failed or externally incomplete evidence distinct from a passing synthetic or local drill.
 - [ ] Verify focused recovery tests, prior-schema convergence suites, Ops and scripts typechecks, full tests and typecheck, optimized build, GA gates, dependency audit, and diff integrity.
 - [ ] Obtain independent exact-head review, current-base protected CI, protected merge, exact-revision deployment, and a live collector run. Keep `ME-ENT-007` below GA until the production provider, approved cross-region target, and real regional-failure drill are attributable.
 
@@ -4227,4 +4227,7 @@ Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, ba
 
 ### Review
 
-- Pending implementation and verification.
+- The bounded engineering collector reuses the authenticated object-backup receipt and manifest, customer object-store download, atomic restore, mutation fence, current store constructors, and measured recovery contracts. It creates one authenticated evidence envelope for all seven resources and never introduces a second backup format.
+- Exact completed replay authenticates the existing envelope and returns before download, restore, convergence, canaries, or rollback. Retained failure, tenant or receipt mismatch, tamper, unsafe paths, partial restore, unsupported schema, missed objectives, canary failure, migration failure, and rollback drift fail closed.
+- Local, synthetic, and production-targeted runs all retain `productionProven: false` with an explicit pending external observation. `ME-ENT-007` remains below GA until a protected exact-revision run supplies attributable provider, approved cross-region, and real regional-failure evidence.
+- Focused verification passes 21 recovery tests. Remaining repository gates and protected shipping evidence are recorded by the release owner after this bounded slice is integrated.
