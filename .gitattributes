@@ -90,4 +90,13 @@ packages/pipeline/src/delegated-pr-verification-operation.test.ts text eol=lf
 # This is deliberately scoped to the one file with that append-only shape. Do not
 # widen it: for ordinary source files a union merge silently produces a tree
 # neither side wrote, which is far worse than a conflict.
+#
+# The same caveat applies *inside* this file, so treat it as append-only in
+# practice. Union only concatenates; it does not reconcile. If one branch flips
+# "- [ ] ship X" to "- [x] ship X" while another rewords that same line, the
+# merge succeeds silently and the task appears twice with contradictory status.
+# Nothing warns you. That is tolerable only because no gate reads this file --
+# the sole repo-wide reference is a prose comment in
+# scripts/adr-numbering-check.ts -- so the cost is human readability of a
+# scratch planning log rather than a broken check.
 tasks/todo.md merge=union
