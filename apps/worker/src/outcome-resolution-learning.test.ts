@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   claimNextJob,
   createDb,
+  disableOrganizationMemory,
   enqueueJob,
   enqueueWardenCandidateDelivery,
   getLearningRecord,
@@ -27,6 +28,7 @@ import {
 
 const NOW = "2026-08-06T12:00:00.000Z";
 const LATER = "2026-08-07T12:00:00.000Z";
+const LATEST = "2026-08-08T12:00:00.000Z";
 const TENANT = "tenant-a";
 const HUMAN = "human:reviewer@example.com";
 
@@ -230,6 +232,67 @@ describe("outcome-resolution learning re-invocation", () => {
     expect(second.admitted).toBe(true);
     expect(second.reason).toBe("already_admitted");
     expect(second.recordId).toBe(first.recordId);
+  });
+
+  // The Organization Memory projection NEVER throws: it returns a third value,
+  // `{ status: "failed" }`. This is the only production path that produces one --
+  // apps/worker/src/cli.ts's `learning.outcome.resolve` branch calls this function
+  // and hands the whole admission to `completeJob`, where a failure lands in
+  // `jobs.result_json` and nothing queries, counts, or alerts on it. Without an
+  // observation here, "the projection failed" is indistinguishable from "there was
+  // nothing to project" at every operator surface.
+  //
+  // Delete-the-check: removing the `observeMemoryProjectionFailure` call (or its
+  // console.error) in outcome-resolution-learning.ts leaves the first two
+  // assertions passing and fails the third, which is the point -- the failure is
+  // still durable in the result, and still silent.
+  it("reports a failed memory projection at the live boundary instead of swallowing it", () => {
+    const { db, deliveryId, artifactEnv } = fixture("merged");
+    const first = runOutcomeResolutionLearning({
+      db, job: resolveJob(db, deliveryId), artifactEnv, now: () => LATER,
+    });
+    if (first.memoryProjection?.status !== "observed") {
+      throw new Error("expected the first resolution to observe a memory candidate");
+    }
+    // An operator rolls the candidate back. The chain is now terminal, so the next
+    // projection fails -- while the governed admission itself stays intact.
+    disableOrganizationMemory(db, {
+      tenantId: TENANT,
+      memoryId: first.memoryProjection.memoryId,
+      actorPrincipalId: HUMAN,
+      reason: "operator rollback",
+      at: LATER,
+    });
+    enqueueJob(db, {
+      id: `learning-outcome-${deliveryId}-rollback`, tenantId: TENANT,
+      type: LEARNING_OUTCOME_RESOLVE_JOB_TYPE, payload: { lane: "fettler", deliveryId },
+      createdAt: LATEST,
+    });
+    const retryJob = claimNextJob(db, [LEARNING_OUTCOME_RESOLVE_JOB_TYPE], {
+      tenantId: TENANT, workerId: "worker-1", leaseMs: 60_000, now: LATEST,
+    })!;
+
+    const observed: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      observed.push(args.map((arg) => String(arg)).join(" "));
+    });
+    let second;
+    try {
+      second = runOutcomeResolutionLearning({ db, job: retryJob, artifactEnv, now: () => LATEST });
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The projection failure must not fail the admission or the job.
+    expect(second.admitted).toBe(true);
+    expect(second.memoryProjection).toMatchObject({
+      status: "failed",
+      reason: "organization_memory_not_open",
+    });
+    expect(observed.some((line) =>
+      line.includes("organization_memory_projection_failed") &&
+      line.includes("organization_memory_not_open") &&
+      line.includes(retryJob.id))).toBe(true);
   });
 
   it("records a PR observed closed without merge as a negative result that can never train weights", () => {
