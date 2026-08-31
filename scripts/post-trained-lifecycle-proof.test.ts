@@ -15,14 +15,25 @@ import {
 const DIGEST = `sha256:${"a".repeat(64)}`;
 const PROOF_SIGNING_KEY = Buffer.alloc(32, 7).toString("base64");
 const PROOF_SIGNING_KEY_ID = "adapter-proof-test-key";
+const RETAINED_PROOF_KEY = Buffer.alloc(32, 8).toString("base64");
+const RETAINED_PROOF_KEY_ID = "adapter-proof-retained-key";
 const roots: string[] = [];
 
-function proofDependencies(fetch: typeof globalThis.fetch, apiKey = "secret") {
+function proofDependencies(
+  fetch: typeof globalThis.fetch,
+  apiKey = "secret",
+  authority: Readonly<{
+    signingKeyBase64?: string;
+    signingKeyId?: string;
+    verificationKeys?: Record<string, Readonly<{ status: "retained"; keyBase64: string } | { status: "revoked" }>>;
+  }> = {},
+) {
   return {
     apiKey,
     apiBaseUrl: "https://mendpoint.example/",
-    proofSigningKeyBase64: PROOF_SIGNING_KEY,
-    proofSigningKeyId: PROOF_SIGNING_KEY_ID,
+    proofSigningKeyBase64: authority.signingKeyBase64 ?? PROOF_SIGNING_KEY,
+    proofSigningKeyId: authority.signingKeyId ?? PROOF_SIGNING_KEY_ID,
+    proofVerificationKeyringJson: JSON.stringify({ schemaVersion: 1, keys: authority.verificationKeys ?? {} }),
     fetch,
   };
 }
@@ -170,6 +181,57 @@ describe("post-trained adapter lifecycle production proof", () => {
     const replay = await persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, proofDependencies(fetch));
     expect(fetch).not.toHaveBeenCalled();
     expect(replay.rolledBack).toBe(true);
+  });
+
+  it("replays an authenticated report across signing-key rotation without repeating provider work", async () => {
+    const item = fixture();
+    await persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, proofDependencies(transport(), "secret", {
+      signingKeyBase64: RETAINED_PROOF_KEY,
+      signingKeyId: RETAINED_PROOF_KEY_ID,
+    }));
+    const fetch = transport();
+    const replay = await persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, proofDependencies(fetch, "secret", {
+      verificationKeys: { [RETAINED_PROOF_KEY_ID]: { status: "retained", keyBase64: RETAINED_PROOF_KEY } },
+    }));
+    expect(fetch).not.toHaveBeenCalled();
+    expect(replay.proofKeyId).toBe(RETAINED_PROOF_KEY_ID);
+  });
+
+  it.each([
+    ["unknown", {}, "post_trained_proof_key_unknown"],
+    ["revoked", { [RETAINED_PROOF_KEY_ID]: { status: "revoked" as const } }, "post_trained_proof_key_revoked"],
+  ])("rejects a retained report whose signing key is %s", async (_name, verificationKeys, code) => {
+    const item = fixture();
+    await persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, proofDependencies(transport(), "secret", {
+      signingKeyBase64: RETAINED_PROOF_KEY,
+      signingKeyId: RETAINED_PROOF_KEY_ID,
+    }));
+    const fetch = transport();
+    await expect(persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, proofDependencies(fetch, "secret", {
+      verificationKeys,
+    }))).rejects.toThrow(code);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("signs new proof reports only with the current active key", async () => {
+    const item = fixture();
+    const report = await persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, proofDependencies(transport(), "secret", {
+      verificationKeys: { [RETAINED_PROOF_KEY_ID]: { status: "retained", keyBase64: RETAINED_PROOF_KEY } },
+    }));
+    expect(report.proofKeyId).toBe(PROOF_SIGNING_KEY_ID);
+  });
+
+  it.each([
+    ["malformed JSON", "{"],
+    ["missing schema", JSON.stringify({ keys: {} })],
+    ["active key duplicated", JSON.stringify({ schemaVersion: 1, keys: { [PROOF_SIGNING_KEY_ID]: { status: "retained", keyBase64: RETAINED_PROOF_KEY } } })],
+    ["retained key without material", JSON.stringify({ schemaVersion: 1, keys: { old: { status: "retained" } } })],
+  ])("fails closed on %s verification-keyring configuration before network access", async (_name, proofVerificationKeyringJson) => {
+    const fetch = transport();
+    await expect(executePostTrainedLifecycleProof(proofInput(), inputDigest(), {
+      ...proofDependencies(fetch), proofVerificationKeyringJson,
+    })).rejects.toThrow("post_trained_proof_authority_invalid");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each(["https://attacker.example/", "https://127.0.0.1/"])(

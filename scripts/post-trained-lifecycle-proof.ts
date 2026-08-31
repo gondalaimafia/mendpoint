@@ -58,10 +58,20 @@ type ProofDependencies = Readonly<{
   apiBaseUrl: string;
   proofSigningKeyBase64: string;
   proofSigningKeyId: string;
+  proofVerificationKeyringJson: string;
   fetch?: typeof fetch;
 }>;
 
-type ProofAuthority = Readonly<{ key: Buffer; keyId: string }>;
+type ProofVerificationKey = Readonly<{
+  status: "retained" | "revoked";
+  key?: Buffer;
+}>;
+
+type ProofAuthority = Readonly<{
+  signingKey: Buffer;
+  signingKeyId: string;
+  verificationKeys: ReadonlyMap<string, ProofVerificationKey>;
+}>;
 
 function digest(value: string | Buffer): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -109,9 +119,8 @@ function normalizedSecretName(value: string): string {
   return value.normalize("NFKC").replace(/[^a-z0-9]/giu, "").toLowerCase();
 }
 
-function proofAuthority(dependencies: ProofDependencies): ProofAuthority {
-  const keyId = identifier(dependencies.proofSigningKeyId);
-  const encoded = requiredText(dependencies.proofSigningKeyBase64, "post_trained_proof_authority_invalid");
+function decodeProofKey(value: unknown): Buffer {
+  const encoded = requiredText(value, "post_trained_proof_authority_invalid");
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(encoded)) {
     throw new Error("post_trained_proof_authority_invalid");
   }
@@ -119,7 +128,42 @@ function proofAuthority(dependencies: ProofDependencies): ProofAuthority {
   if (key.length < 32 || key.length > 128 || key.toString("base64") !== encoded) {
     throw new Error("post_trained_proof_authority_invalid");
   }
-  return Object.freeze({ key, keyId });
+  return key;
+}
+
+function proofAuthority(dependencies: ProofDependencies): ProofAuthority {
+  const signingKeyId = identifier(dependencies.proofSigningKeyId);
+  const signingKey = decodeProofKey(dependencies.proofSigningKeyBase64);
+  const serialized = dependencies.proofVerificationKeyringJson;
+  if (typeof serialized !== "string" || !serialized.trim() || serialized.length > 128 * 1024) {
+    throw new Error("post_trained_proof_authority_invalid");
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(serialized); }
+  catch { throw new Error("post_trained_proof_authority_invalid"); }
+  const root = exactRecord(parsed, ["schemaVersion", "keys"], "post_trained_proof_authority_invalid");
+  if (root.schemaVersion !== 1) throw new Error("post_trained_proof_authority_invalid");
+  const entries = record(root.keys, "post_trained_proof_authority_invalid");
+  if (Object.keys(entries).length > 32) throw new Error("post_trained_proof_authority_invalid");
+  const verificationKeys = new Map<string, ProofVerificationKey>();
+  const material = new Set<string>([signingKey.toString("base64")]);
+  for (const [candidateKeyId, candidate] of Object.entries(entries)) {
+    const keyId = identifier(candidateKeyId);
+    if (keyId !== candidateKeyId || keyId === signingKeyId) throw new Error("post_trained_proof_authority_invalid");
+    const entry = exactRecord(candidate, ["status", "keyBase64"], "post_trained_proof_authority_invalid");
+    if (entry.status === "revoked") {
+      if (entry.keyBase64 !== undefined) throw new Error("post_trained_proof_authority_invalid");
+      verificationKeys.set(keyId, Object.freeze({ status: "revoked" }));
+      continue;
+    }
+    if (entry.status !== "retained") throw new Error("post_trained_proof_authority_invalid");
+    const key = decodeProofKey(entry.keyBase64);
+    const encoded = key.toString("base64");
+    if (material.has(encoded)) throw new Error("post_trained_proof_authority_invalid");
+    material.add(encoded);
+    verificationKeys.set(keyId, Object.freeze({ status: "retained", key }));
+  }
+  return Object.freeze({ signingKey, signingKeyId, verificationKeys });
 }
 
 function key(value: unknown): string {
@@ -550,9 +594,9 @@ export async function executePostTrainedLifecycleProof(
     eligibleAfterRollback: false,
     rollbackReason: "lifecycle_not_servable",
   });
-  const authenticatedBody = Object.freeze({ ...report, proofKeyId: authority.keyId });
+  const authenticatedBody = Object.freeze({ ...report, proofKeyId: authority.signingKeyId });
   const proofDigest = digest(canonicalJson(authenticatedBody));
-  const proofMac = createHmac("sha256", authority.key)
+  const proofMac = createHmac("sha256", authority.signingKey)
     .update(`${proofDigest}\0${canonicalJson(authenticatedBody)}`)
     .digest("hex");
   return Object.freeze({ ...authenticatedBody, proofDigest, proofMac });
@@ -571,14 +615,24 @@ function validateExistingReport(value: unknown, authority: ProofAuthority): Post
   }
   const proofDigest = report.proofDigest;
   const proofMac = report.proofMac;
-  if (typeof proofDigest !== "string" || typeof proofMac !== "string" || report.proofKeyId !== authority.keyId) {
+  if (typeof proofDigest !== "string" || typeof proofMac !== "string" || typeof report.proofKeyId !== "string") {
     throw new Error("post_trained_output_conflict");
+  }
+  let verificationKey: Buffer;
+  if (report.proofKeyId === authority.signingKeyId) {
+    verificationKey = authority.signingKey;
+  } else {
+    const retained = authority.verificationKeys.get(report.proofKeyId);
+    if (!retained) throw new Error("post_trained_proof_key_unknown");
+    if (retained.status === "revoked") throw new Error("post_trained_proof_key_revoked");
+    if (!retained.key) throw new Error("post_trained_proof_authority_invalid");
+    verificationKey = retained.key;
   }
   const { proofDigest: ignored, proofMac: ignoredMac, ...body } = report;
   void ignored;
   void ignoredMac;
   if (proofDigest !== digest(canonicalJson(body))) throw new Error("post_trained_output_conflict");
-  const expectedMac = createHmac("sha256", authority.key)
+  const expectedMac = createHmac("sha256", verificationKey)
     .update(`${proofDigest}\0${canonicalJson(body)}`)
     .digest();
   if (!/^[a-f0-9]{64}$/u.test(proofMac)) throw new Error("post_trained_output_conflict");
@@ -703,6 +757,7 @@ export async function runPostTrainedLifecycleProofCli(
       apiBaseUrl: env.MENDPOINT_API_BASE_URL ?? "",
       proofSigningKeyBase64: env.MENDPOINT_ADAPTER_PROOF_SIGNING_KEY_B64 ?? "",
       proofSigningKeyId: env.MENDPOINT_ADAPTER_PROOF_SIGNING_KEY_ID ?? "",
+      proofVerificationKeyringJson: env.MENDPOINT_ADAPTER_PROOF_VERIFICATION_KEYRING_JSON ?? "",
     });
     io.stdout(`${JSON.stringify({ ok: true, inputDigest: report.inputDigest, adapterId: report.adapterId, output: resolve(args.output) })}\n`);
     return 0;
