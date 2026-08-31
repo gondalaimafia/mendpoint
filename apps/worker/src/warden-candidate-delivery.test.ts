@@ -87,6 +87,11 @@ function fixture(preciseEvidence = false, deleted = false, providerChange = fals
         providerSlug: "stripe",
         changeId: "change-stripe-2026-08-31",
         pipelineJobId: "pipeline-job-1",
+        contentHash: "0123456789abcdef",
+        fromVersionId: "version-stripe-2025-01",
+        fromVersionLabel: "2025-01",
+        toVersionId: "version-stripe-2026-08",
+        toVersionLabel: "2026-08",
         repositoryId: "repo-1",
         snapshotId: "snapshot-1",
         revision: "a".repeat(40),
@@ -229,6 +234,8 @@ describe("Warden exact candidate draft delivery", () => {
     const body = (deliver.mock.calls[0]![0] as ExactDraftDeliveryInput).body;
     expect(body).toContain("Provider change");
     expect(body).toContain("Provider: stripe");
+    expect(body).toContain("Provider versions: 2025-01 (version-stripe-2025-01) to 2026-08 (version-stripe-2026-08)");
+    expect(body).toContain("Provider content hash: 0123456789abcdef");
     expect(body).toContain("Graph version: graph-version-1");
     expect(body).toContain(`Impact evidence: sha256:${"f".repeat(64)}`);
     expect(body).toContain("What changed");

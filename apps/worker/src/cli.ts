@@ -910,7 +910,10 @@ type FettlerProviderChangeSource = Readonly<{
   kind: typeof FETTLER_PROVIDER_CHANGE_SOURCE_KIND;
   trigger: "feed";
   contentHash: string;
-  versionId?: string;
+  fromVersionId: string;
+  fromVersionLabel: string;
+  toVersionId: string;
+  toVersionLabel: string;
 }>;
 
 function isFettlerProviderChangeSource(value: unknown): value is FettlerProviderChangeSource {
@@ -919,9 +922,48 @@ function isFettlerProviderChangeSource(value: unknown): value is FettlerProvider
   return source.schemaVersion === 1 &&
     source.kind === FETTLER_PROVIDER_CHANGE_SOURCE_KIND &&
     source.trigger === "feed" &&
-    typeof source.contentHash === "string" && Boolean(source.contentHash.trim()) &&
-    (source.versionId === undefined ||
-      typeof source.versionId === "string" && Boolean(source.versionId.trim()));
+    typeof source.contentHash === "string" && /^[a-f0-9]{16}$/.test(source.contentHash) &&
+    typeof source.fromVersionId === "string" && Boolean(source.fromVersionId.trim()) &&
+    typeof source.fromVersionLabel === "string" && Boolean(source.fromVersionLabel.trim()) &&
+    typeof source.toVersionId === "string" && Boolean(source.toVersionId.trim()) &&
+    typeof source.toVersionLabel === "string" && Boolean(source.toVersionLabel.trim());
+}
+
+function exactFeedVersionPair(
+  db: AppDb,
+  tenantId: string,
+  providerSlug: string,
+  toVersionId: string,
+  toVersionLabel: string,
+  contentHash: string,
+): Readonly<{
+  fromVersionId: string;
+  fromVersionLabel: string;
+  toVersionId: string;
+  toVersionLabel: string;
+}> {
+  const provider = listProviders(db, undefined, 0, tenantId)
+    .find((candidate) => candidate.slug === providerSlug);
+  if (!provider) throw new Error("fettler_feed_provider_not_found");
+  const versions = [...listVersionsForProvider(db, provider.id)]
+    .sort((left, right) => left.published_at.localeCompare(right.published_at) || left.id.localeCompare(right.id));
+  const toIndex = versions.findIndex((version) => version.id === toVersionId);
+  const to = versions[toIndex];
+  const from = toIndex > 0 ? versions[toIndex - 1] : undefined;
+  if (
+    !to || !from ||
+    to.version_label !== toVersionLabel ||
+    typeof to.content_hash !== "string" ||
+    !to.content_hash.startsWith(contentHash)
+  ) {
+    throw new Error("fettler_feed_version_binding_invalid");
+  }
+  return Object.freeze({
+    fromVersionId: from.id,
+    fromVersionLabel: from.version_label,
+    toVersionId: to.id,
+    toVersionLabel: to.version_label,
+  });
 }
 
 function monitoredConsumerIds(
@@ -944,13 +986,26 @@ export function enqueueFeedPipelineJob(
     providerSlug: string;
     contentHash: string;
     versionId?: string;
+    versionLabel?: string;
     productionIntent?: boolean;
   },
 ): string {
   const id = feedPipelineJobId(input);
   const productionIntent = input.productionIntent ?? deploymentProfile(process.env) === "customer";
   const payload = productionIntent
-    ? {
+    ? (() => {
+        if (!input.versionId || !input.versionLabel || !/^[a-f0-9]{16}$/.test(input.contentHash)) {
+          throw new Error("fettler_feed_version_binding_required");
+        }
+        const versions = exactFeedVersionPair(
+          db,
+          input.tenantId,
+          input.providerSlug,
+          input.versionId,
+          input.versionLabel,
+          input.contentHash,
+        );
+        return {
         providerSlug: input.providerSlug,
         consumerIds: monitoredConsumerIds(db, input.tenantId, input.providerSlug),
         source: {
@@ -958,9 +1013,10 @@ export function enqueueFeedPipelineJob(
           kind: FETTLER_PROVIDER_CHANGE_SOURCE_KIND,
           trigger: "feed" as const,
           contentHash: input.contentHash,
-          ...(input.versionId ? { versionId: input.versionId } : {}),
+          ...versions,
         },
-      }
+        };
+      })()
     : {
         providerSlug: input.providerSlug,
         source: "feed" as const,
@@ -1381,7 +1437,9 @@ function validatedFettlerProviderChange(
     throw new Error("fettler_provider_change_source_job_not_complete");
   }
   const pipelinePayload = JSON.parse(pipelineJob.payload_json) as Record<string, unknown>;
-  const canonicalSource = isFettlerProviderChangeSource(pipelinePayload.source);
+  const canonicalSource = isFettlerProviderChangeSource(pipelinePayload.source)
+    ? pipelinePayload.source
+    : undefined;
   const legacySource = pipelinePayload.wardenPilot === true;
   if (
     !canonicalSource && !legacySource ||
@@ -1398,6 +1456,11 @@ function validatedFettlerProviderChange(
       lineage.providerSlug !== source.providerSlug ||
       lineage.changeId !== source.changeId ||
       lineage.pipelineJobId !== source.pipelineJobId ||
+      lineage.contentHash !== canonicalSource.contentHash ||
+      lineage.fromVersionId !== canonicalSource.fromVersionId ||
+      lineage.fromVersionLabel !== canonicalSource.fromVersionLabel ||
+      lineage.toVersionId !== canonicalSource.toVersionId ||
+      lineage.toVersionLabel !== canonicalSource.toVersionLabel ||
       lineage.repositoryId !== binding.repositoryId ||
       lineage.snapshotId !== binding.snapshotId ||
       lineage.revision !== binding.revision ||
@@ -2740,6 +2803,7 @@ async function runFeedPollUnfenced(opts: {
             providerSlug: slug,
             contentHash: context.contentHash,
             versionId: context.versionId,
+            versionLabel: context.versionLabel,
           }),
         })
       : async (slug, database) => {
@@ -4408,13 +4472,22 @@ if (job.type === "warden.candidate.cleanup") {
       };
       console.log(`Job ${job.id} pipeline.fanout ${payload.providerSlug}`);
       const pipelineRunner = opts.pipelineRunner ?? runChangePipeline;
-      const fettlerProductionIntent = isFettlerProviderChangeSource(payload.source);
+      const fettlerProductionSource = isFettlerProviderChangeSource(payload.source)
+        ? payload.source
+        : undefined;
+      const fettlerProductionIntent = fettlerProductionSource !== undefined;
       const legacyWardenPilot = payload.wardenPilot === true;
       const report = await pipelineRunner({
         tenantId: job.tenant_id,
         providerSlug: payload.providerSlug,
         db,
         consumerIds: payload.consumerIds,
+        ...(fettlerProductionIntent ? {
+          fromVersionId: fettlerProductionSource.fromVersionId,
+          fromVersionLabel: fettlerProductionSource.fromVersionLabel,
+          toVersionId: fettlerProductionSource.toVersionId,
+          toVersionLabel: fettlerProductionSource.toVersionLabel,
+        } : {}),
         severity: payload.severity,
         notificationsOnly: fettlerProductionIntent || legacyWardenPilot
           ? true
@@ -4430,9 +4503,13 @@ if (job.type === "warden.candidate.cleanup") {
       });
       if (
         fettlerProductionIntent &&
-        report.consumers.some((consumer) => !payload.consumerIds?.includes(consumer.consumerId))
+        (report.fromVersionId !== fettlerProductionSource.fromVersionId ||
+          report.fromVersionLabel !== fettlerProductionSource.fromVersionLabel ||
+          report.toVersionId !== fettlerProductionSource.toVersionId ||
+          report.toVersionLabel !== fettlerProductionSource.toVersionLabel ||
+          report.consumers.some((consumer) => !payload.consumerIds?.includes(consumer.consumerId)))
       ) {
-        throw new Error("fettler_provider_change_consumer_scope_mismatch");
+        throw new Error("fettler_provider_change_execution_binding_mismatch");
       }
       const deliveryFailures = report.consumers.filter(
         (consumer) => consumer.prStatus === "delivery_failed",
@@ -4458,6 +4535,7 @@ if (job.type === "warden.candidate.cleanup") {
             report,
             observedAt: nowIso(),
             useLlm: true,
+            ...(fettlerProductionSource ? { versionBinding: fettlerProductionSource } : {}),
           });
           if (
             !completeJob(
@@ -4873,6 +4951,7 @@ async function runService(intervalMs: number) {
                 providerSlug: slug,
                 contentHash: context.contentHash,
                 versionId: context.versionId,
+                versionLabel: context.versionLabel,
               }),
             }),
           });

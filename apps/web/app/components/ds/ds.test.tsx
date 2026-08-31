@@ -134,6 +134,13 @@ describe("DS2 signature components", () => {
     expect(html.match(/indigo-glow/g)?.length).toBe(1);
     expect(html).toContain("Open all PRs");
     expect(html).toContain("body");
+    const fettler = html.indexOf("Fettler");
+    const pullRequests = html.indexOf("Pull requests");
+    const regauge = html.indexOf("ReGauge");
+    expect(fettler).toBeGreaterThanOrEqual(0);
+    expect(pullRequests).toBeGreaterThan(fettler);
+    expect(regauge).toBeGreaterThan(pullRequests);
+    expect(html).not.toContain("Regauge");
   });
 
   it("AppShell renders no primary CTA when none is supplied", () => {

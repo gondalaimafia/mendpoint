@@ -11,6 +11,11 @@ export type FettlerProviderChangeEvidence = Readonly<{
   providerSlug: string;
   changeId: string;
   pipelineJobId: string;
+  contentHash: string;
+  fromVersionId: string;
+  fromVersionLabel: string;
+  toVersionId: string;
+  toVersionLabel: string;
   repositoryId: string;
   snapshotId: string;
   revision: string;
@@ -46,6 +51,11 @@ export function parseFettlerProviderChangeEvidence(
     !boundedText(record.providerSlug, 200) ||
     !boundedText(record.changeId, 500) ||
     !boundedText(record.pipelineJobId, 500) ||
+    typeof record.contentHash !== "string" || !/^[a-f0-9]{16}$/.test(record.contentHash) ||
+    !boundedText(record.fromVersionId, 500) ||
+    !boundedText(record.fromVersionLabel, 500) ||
+    !boundedText(record.toVersionId, 500) ||
+    !boundedText(record.toVersionLabel, 500) ||
     !boundedText(record.repositoryId, 500) ||
     !boundedText(record.snapshotId, 500) ||
     typeof record.revision !== "string" || !REVISION.test(record.revision) ||
@@ -65,6 +75,11 @@ export function parseFettlerProviderChangeEvidence(
     providerSlug: record.providerSlug,
     changeId: record.changeId,
     pipelineJobId: record.pipelineJobId,
+    contentHash: record.contentHash,
+    fromVersionId: record.fromVersionId,
+    fromVersionLabel: record.fromVersionLabel,
+    toVersionId: record.toVersionId,
+    toVersionLabel: record.toVersionLabel,
     repositoryId: record.repositoryId,
     snapshotId: record.snapshotId,
     revision: record.revision,

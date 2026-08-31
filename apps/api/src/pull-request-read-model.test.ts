@@ -7,6 +7,7 @@ import {
   insertApiChange,
   insertApiVersion,
   insertConsumer,
+  insertConsumerRepo,
   insertMigrationPr,
   insertProvider,
   type AppDb,
@@ -50,10 +51,17 @@ function seedLegacy(db: AppDb, tenantId: string) {
     id: "consumer-a", name: "Consumer A", githubOwner: "customer",
     githubRepo: "legacy", tenantId, createdAt: NOW,
   });
+  insertConsumerRepo(db, {
+    id: "consumer-repo-a", consumerId: "consumer-a", localPath: "repo-a",
+    createdAt: NOW,
+  });
+  db.raw.prepare(
+    "UPDATE consumer_repos SET connected_repository_id = 'repo-a' WHERE id = 'consumer-repo-a'",
+  ).run();
   insertMigrationPr(db, {
     id: "legacy-pr", changeId: "change-a", consumerId: "consumer-a",
     title: "Legacy migration", body: "Legacy body", branchName: "mendpoint/legacy",
-    status: "draft", risk: "breaking", patchUnified: "", createdAt: NOW,
+    status: "notification_only", risk: "breaking", patchUnified: "", createdAt: NOW,
   });
 }
 
@@ -65,12 +73,15 @@ function seedCandidate(input: Readonly<{
   repositoryId: string;
   requestedAt: string;
   tamper?: boolean;
+  changeId?: string;
+  includeProviderChange?: boolean;
 }>) {
   const revision = "a".repeat(40);
   const approvals = join(input.root, "data", "warden-evidence", input.tenantId, "approvals");
   mkdirSync(approvals, { recursive: true });
+  const includeProviderChange = input.includeProviderChange ?? true;
   const artifact = {
-    schemaVersion: 5,
+    schemaVersion: includeProviderChange ? 5 : 3,
     tenantId: input.tenantId,
     repositoryId: input.repositoryId,
     snapshotId: `snapshot-${input.id}`,
@@ -103,11 +114,16 @@ function seedCandidate(input: Readonly<{
         },
       }],
     },
-    fettlerProviderChange: {
+    ...(includeProviderChange ? { fettlerProviderChange: {
       schemaVersion: 1,
       providerSlug: "stripe",
-      changeId: "change-stripe-2026-08",
+      changeId: input.changeId ?? "change-stripe-2026-08",
       pipelineJobId: "pipeline-job-a",
+      contentHash: "0123456789abcdef",
+      fromVersionId: "version-a-1",
+      fromVersionLabel: "1",
+      toVersionId: "version-a-2",
+      toVersionLabel: "2",
       repositoryId: input.repositoryId,
       snapshotId: `snapshot-${input.id}`,
       revision,
@@ -119,7 +135,7 @@ function seedCandidate(input: Readonly<{
       knownFacts: ["The removed field is read in src/client.ts."],
       unknowns: ["Runtime traffic volume is not observed."],
       whyAffected: "The repository reads the provider field removed by this version.",
-    },
+    } } : {}),
     changedPaths: ["src/client.ts"],
     sourceDigest: `sha256:${"b".repeat(64)}`,
     candidate: { digest: `sha256:${"c".repeat(64)}`, entries: [] },
@@ -206,6 +222,70 @@ describe("Fettler pull request read model", () => {
     expect(() => listPullRequestReadModel({
       db, tenantId: "tenant-a", limit: 20, offset: 0, env,
     })).toThrow("warden_candidate_approval_digest_mismatch");
+  });
+
+  it("deduplicates only the exact notification precursor for a sealed repository and change", () => {
+    const { db, root, env } = setup();
+    seedLegacy(db, "tenant-a");
+    seedCandidate({
+      db, root, tenantId: "tenant-a", id: "candidate-a", repositoryId: "repo-a",
+      requestedAt: "2026-08-31T13:00:00.000Z", changeId: "change-a",
+    });
+
+    const rows = listPullRequestReadModel({ db, tenantId: "tenant-a", limit: 20, offset: 0, env });
+
+    expect(rows.map((row) => [row.id, row.source])).toEqual([
+      ["candidate-a", "fettler_candidate"],
+    ]);
+  });
+
+  it("preserves a notification row when the sealed candidate has no provider change linkage", () => {
+    const { db, root, env } = setup();
+    seedLegacy(db, "tenant-a");
+    seedCandidate({
+      db, root, tenantId: "tenant-a", id: "candidate-a", repositoryId: "repo-a",
+      requestedAt: "2026-08-31T13:00:00.000Z", includeProviderChange: false,
+    });
+
+    const rows = listPullRequestReadModel({ db, tenantId: "tenant-a", limit: 20, offset: 0, env });
+
+    expect(rows.map((row) => row.id)).toEqual(["candidate-a", "legacy-pr"]);
+  });
+
+  it("preserves a same change notification row for a different repository", () => {
+    const { db, root, env } = setup();
+    seedLegacy(db, "tenant-a");
+    db.raw.prepare(
+      "UPDATE consumer_repos SET connected_repository_id = 'repo-other' WHERE id = 'consumer-repo-a'",
+    ).run();
+    seedCandidate({
+      db, root, tenantId: "tenant-a", id: "candidate-a", repositoryId: "repo-a",
+      requestedAt: "2026-08-31T13:00:00.000Z", changeId: "change-a",
+    });
+
+    const rows = listPullRequestReadModel({ db, tenantId: "tenant-a", limit: 20, offset: 0, env });
+
+    expect(rows.map((row) => row.id)).toEqual(["candidate-a", "legacy-pr"]);
+  });
+
+  it("fails closed rather than hiding a precursor with ambiguous repository linkage", () => {
+    const { db, root, env } = setup();
+    seedLegacy(db, "tenant-a");
+    insertConsumerRepo(db, {
+      id: "consumer-repo-other", consumerId: "consumer-a", localPath: "repo-other",
+      createdAt: NOW,
+    });
+    db.raw.prepare(
+      "UPDATE consumer_repos SET connected_repository_id = 'repo-other' WHERE id = 'consumer-repo-other'",
+    ).run();
+    seedCandidate({
+      db, root, tenantId: "tenant-a", id: "candidate-a", repositoryId: "repo-a",
+      requestedAt: "2026-08-31T13:00:00.000Z", changeId: "change-a",
+    });
+
+    expect(() => listPullRequestReadModel({
+      db, tenantId: "tenant-a", limit: 20, offset: 0, env,
+    })).toThrow("fettler_candidate_precursor_link_ambiguous");
   });
 
   it("rejects a blank tenant scope", () => {

@@ -188,6 +188,8 @@ function providerChangeBody(artifact: Record<string, unknown>): string[] {
     "Provider change",
     `Provider: ${singleLine(evidence.providerSlug)}`,
     `Change: ${singleLine(evidence.changeId)}`,
+    `Provider versions: ${singleLine(evidence.fromVersionLabel)} (${singleLine(evidence.fromVersionId)}) to ${singleLine(evidence.toVersionLabel)} (${singleLine(evidence.toVersionId)})`,
+    `Provider content hash: ${evidence.contentHash}`,
     `Impact evidence: ${evidence.impactEvidenceDigest}`,
     `Graph version: ${evidence.graphVersionId ?? "raw retrieval fallback"}`,
     `Graph context: ${evidence.graphContextArtifactId ?? "not available"}`,

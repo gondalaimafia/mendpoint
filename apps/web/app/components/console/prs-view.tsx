@@ -30,6 +30,7 @@ function CandidateEvidence({ pr }: { pr: PullRequest }) {
         <div><dt>Base revision</dt><dd><code>{evidence.expectedBaseRevision}</code></dd></div>
         {change && <>
           <div><dt>Provider change</dt><dd>{change.providerSlug} · <code>{change.changeId}</code></dd></div>
+          <div><dt>Provider versions</dt><dd>{change.fromVersionLabel} to {change.toVersionLabel}</dd></div>
           <div><dt>What changed</dt><dd>{change.whatChanged}</dd></div>
           <div><dt>Change Graph</dt><dd>{change.graphVersionId ? <code>{change.graphVersionId}</code> : "No graph version was recorded"}</dd></div>
           <div><dt>Graph context</dt><dd>{change.graphContextArtifactId ? <code>{change.graphContextArtifactId}</code> : "No graph context artifact was recorded"}</dd></div>

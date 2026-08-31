@@ -27,6 +27,13 @@ import { enqueuePipelineFettlerRuns } from "./warden-pilot-join.js";
 
 const opened: Array<{ db: AppDb; root: string }> = [];
 const observedAt = "2026-08-10T18:00:00.000Z";
+const versionBinding = Object.freeze({
+  contentHash: "0123456789abcdef",
+  fromVersionId: "version-stripe-2025-01",
+  fromVersionLabel: "2025-01",
+  toVersionId: "version-stripe-2026-08",
+  toVersionLabel: "2026-08",
+});
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "mendpoint-warden-pilot-join-"));
@@ -227,6 +234,7 @@ describe("joined Fettler provider-change intake", () => {
       report: report(["src/client.ts", "src/charges.ts"]),
       observedAt,
       useLlm: true,
+      versionBinding,
     });
     const second = enqueuePipelineFettlerRuns(db, {
       tenantId: "tenant-a",
@@ -235,6 +243,7 @@ describe("joined Fettler provider-change intake", () => {
       report: report(["src/client.ts", "src/charges.ts"]),
       observedAt,
       useLlm: true,
+      versionBinding,
     });
 
     expect(first).toEqual([expect.objectContaining({ status: "queued", consumerId: "consumer-a" })]);
@@ -259,6 +268,11 @@ describe("joined Fettler provider-change intake", () => {
         providerSlug: "stripe",
         changeId: "change-a",
         pipelineJobId: "pipeline-job-a",
+        contentHash: "0123456789abcdef",
+        fromVersionId: "version-stripe-2025-01",
+        fromVersionLabel: "2025-01",
+        toVersionId: "version-stripe-2026-08",
+        toVersionLabel: "2026-08",
         repositoryId: "repository-a",
         snapshotId: "snapshot-a",
         revision: "a".repeat(40),
@@ -376,6 +390,7 @@ describe("joined Fettler provider-change intake", () => {
     expect(second[0]?.jobId).toBe(first[0]!.jobId);
     const payload = JSON.parse(getJob(db, first[0]!.jobId!, "tenant-a")!.payload_json) as Record<string, unknown>;
     expect(payload).not.toHaveProperty("fettlerCampaignId");
+    expect(payload).not.toHaveProperty("fettlerProviderChange");
   });
 
   it("stays unbound when two single-repo campaigns share the repository", () => {

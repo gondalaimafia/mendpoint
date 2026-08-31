@@ -40,6 +40,13 @@ export type PipelineFettlerJoinInput = Readonly<{
   report: PipelineReport;
   observedAt: string;
   useLlm: boolean;
+  versionBinding?: Readonly<{
+    contentHash: string;
+    fromVersionId: string;
+    fromVersionLabel: string;
+    toVersionId: string;
+    toVersionLabel: string;
+  }>;
 }>;
 
 export type FettlerProviderChangeLineage = FettlerProviderChangeEvidence;
@@ -100,12 +107,11 @@ function equivalentReplayPayload(existingPayloadJson: string, expectedPayload: R
     if (existingHint && existingHint !== expectedHint) return false;
     const existingLineage = existing.fettlerProviderChange;
     const expectedLineage = expectedPayload.fettlerProviderChange;
-    if (
-      !existingLineage || typeof existingLineage !== "object" || Array.isArray(existingLineage) ||
-      !expectedLineage || typeof expectedLineage !== "object" || Array.isArray(expectedLineage)
-    ) {
-      return false;
-    }
+    if ((existingLineage === undefined) !== (expectedLineage === undefined)) return false;
+    if (existingLineage !== undefined && (
+      typeof existingLineage !== "object" || existingLineage === null || Array.isArray(existingLineage) ||
+      typeof expectedLineage !== "object" || expectedLineage === null || Array.isArray(expectedLineage)
+    )) return false;
     return isDeepStrictEqual(
       {
         ...withoutCampaignHint(existing),
@@ -113,10 +119,12 @@ function equivalentReplayPayload(existingPayloadJson: string, expectedPayload: R
           ...existingSource,
           pipelineJobId: (expectedSource as Record<string, unknown>).pipelineJobId,
         },
-        fettlerProviderChange: {
-          ...existingLineage,
-          pipelineJobId: (expectedLineage as Record<string, unknown>).pipelineJobId,
-        },
+        ...(existingLineage === undefined ? {} : {
+          fettlerProviderChange: {
+            ...existingLineage as Record<string, unknown>,
+            pipelineJobId: (expectedLineage as Record<string, unknown>).pipelineJobId,
+          },
+        }),
       },
       withoutCampaignHint(expectedPayload),
     );
@@ -130,6 +138,7 @@ function providerChangeLineage(input: PipelineFettlerJoinInput, result: Pipeline
   snapshotId: string;
   revision: string;
 }): FettlerProviderChangeLineage {
+  if (!input.versionBinding) throw new Error("fettler_provider_change_version_binding_required");
   const impact = result.impactReport!;
   const sites = impact.sites
     .map((site) => ({
@@ -166,6 +175,7 @@ function providerChangeLineage(input: PipelineFettlerJoinInput, result: Pipeline
     providerSlug: input.providerSlug,
     changeId: input.report.changeId,
     pipelineJobId: input.pipelineJobId,
+    ...input.versionBinding,
     repositoryId: binding.repositoryId,
     snapshotId: binding.snapshotId,
     revision: binding.revision,
@@ -293,11 +303,13 @@ export function enqueuePipelineFettlerRuns(
       input.tenantId,
       repo.connected_repository_id,
     );
-    const fettlerProviderChange = providerChangeLineage(input, result, {
-      repositoryId: repo.connected_repository_id,
-      snapshotId: snapshot.id,
-      revision: snapshot.resolved_sha,
-    });
+    const fettlerProviderChange = input.versionBinding
+      ? providerChangeLineage(input, result, {
+          repositoryId: repo.connected_repository_id,
+          snapshotId: snapshot.id,
+          revision: snapshot.resolved_sha,
+        })
+      : undefined;
     const payload = {
       goal,
       consumerId: consumer.id,
@@ -306,7 +318,7 @@ export function enqueuePipelineFettlerRuns(
       useLlm: input.useLlm,
       allowNetwork: false,
       sessionId: runId,
-      fettlerProviderChange,
+      ...(fettlerProviderChange ? { fettlerProviderChange } : {}),
       ...(campaign ? { fettlerCampaignId: campaign.campaignId } : {}),
       source: {
         pipelineJobId: input.pipelineJobId,

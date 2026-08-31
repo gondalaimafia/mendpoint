@@ -145,6 +145,11 @@ export type MigrationPr = {
       providerSlug: string;
       changeId: string;
       pipelineJobId: string;
+      contentHash: string;
+      fromVersionId: string;
+      fromVersionLabel: string;
+      toVersionId: string;
+      toVersionLabel: string;
       repositoryId: string;
       snapshotId: string;
       revision: string;

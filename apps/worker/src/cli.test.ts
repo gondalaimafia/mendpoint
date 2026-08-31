@@ -1327,6 +1327,23 @@ describe("worker runtime", () => {
       website: null,
       createdAt: at,
     });
+    const providerV1 = '{"openapi":"3.0.0","info":{"title":"Stripe","version":"1.0.0"},"paths":{}}';
+    const providerV2 = '{"openapi":"3.0.0","info":{"title":"Stripe","version":"2.0.0"},"paths":{"/charges":{}}}';
+    insertApiVersion(db, {
+      id: "version-joined-fettler-v1",
+      providerId: "provider-joined-fettler",
+      versionLabel: "1.0.0",
+      openapiJson: providerV1,
+      publishedAt: "2026-01-01T00:00:00.000Z",
+    });
+    insertApiVersion(db, {
+      id: "version-joined-fettler-v2",
+      providerId: "provider-joined-fettler",
+      versionLabel: "2.0.0",
+      openapiJson: providerV2,
+      publishedAt: "2026-02-01T00:00:00.000Z",
+    });
+    const providerV2Hash = createHash("sha256").update(providerV2).digest("hex").slice(0, 16);
     insertMonitoredApi(db, {
       id: "monitor-joined-fettler",
       consumerId: "consumer-joined-warden",
@@ -1349,15 +1366,17 @@ describe("worker runtime", () => {
     const pipelineJobId = enqueueFeedPipelineJob(db, {
       tenantId: "tenant-a",
       providerSlug: "stripe",
-      contentHash: "feed-content-a",
-      versionId: "version-a",
+      contentHash: providerV2Hash,
+      versionId: "version-joined-fettler-v2",
+      versionLabel: "2.0.0",
       productionIntent: true,
     });
     expect(enqueueFeedPipelineJob(db, {
       tenantId: "tenant-a",
       providerSlug: "stripe",
-      contentHash: "feed-content-a",
-      versionId: "version-a",
+      contentHash: providerV2Hash,
+      versionId: "version-joined-fettler-v2",
+      versionLabel: "2.0.0",
       productionIntent: true,
     })).toBe(pipelineJobId);
     const feedPayload = JSON.parse(getJob(db, pipelineJobId, "tenant-a")!.payload_json);
@@ -1368,12 +1387,26 @@ describe("worker runtime", () => {
         schemaVersion: 1,
         kind: "fettler.production.provider_change",
         trigger: "feed",
-        contentHash: "feed-content-a",
-        versionId: "version-a",
+        contentHash: providerV2Hash,
+        fromVersionId: "version-joined-fettler-v1",
+        fromVersionLabel: "1.0.0",
+        toVersionId: "version-joined-fettler-v2",
+        toVersionLabel: "2.0.0",
       },
+    });
+    insertApiVersion(db, {
+      id: "version-joined-fettler-v3",
+      providerId: "provider-joined-fettler",
+      versionLabel: "3.0.0",
+      openapiJson: '{"openapi":"3.0.0","info":{"title":"Stripe","version":"3.0.0"},"paths":{"/payments":{}}}',
+      publishedAt: "2026-03-01T00:00:00.000Z",
     });
     const pipelineRunner = vi.fn(async (): Promise<PipelineReport> => ({
       changeId: "change-joined-warden",
+      fromVersionId: "version-joined-fettler-v1",
+      fromVersionLabel: "1.0.0",
+      toVersionId: "version-joined-fettler-v2",
+      toVersionLabel: "2.0.0",
       risk: "breaking",
       summary: "The charges endpoint changed",
       diff: { risk: "breaking", summary: "The charges endpoint changed", entries: [] },
@@ -1422,6 +1455,10 @@ describe("worker runtime", () => {
       tenantId: "tenant-a",
       providerSlug: "stripe",
       consumerIds: ["consumer-joined-warden"],
+      fromVersionId: "version-joined-fettler-v1",
+      fromVersionLabel: "1.0.0",
+      toVersionId: "version-joined-fettler-v2",
+      toVersionLabel: "2.0.0",
       notificationsOnly: true,
     }));
     expect(listJobs(db, 20, "tenant-a")).toEqual(expect.arrayContaining([
@@ -1442,6 +1479,11 @@ describe("worker runtime", () => {
       schemaVersion: 1,
       providerSlug: "stripe",
       pipelineJobId,
+      contentHash: providerV2Hash,
+      fromVersionId: "version-joined-fettler-v1",
+      fromVersionLabel: "1.0.0",
+      toVersionId: "version-joined-fettler-v2",
+      toVersionLabel: "2.0.0",
       repositoryId: "repository-joined-warden",
       snapshotId: "snapshot-joined-warden",
       impactEvidenceDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
@@ -1491,11 +1533,29 @@ describe("worker runtime", () => {
       website: null,
       createdAt: at,
     });
+    const unmonitoredV1 = '{"openapi":"3.0.0","info":{"title":"Unmonitored","version":"1.0.0"},"paths":{}}';
+    const unmonitoredV2 = '{"openapi":"3.0.0","info":{"title":"Unmonitored","version":"2.0.0"},"paths":{"/new":{}}}';
+    insertApiVersion(db, {
+      id: "unmonitored-version-v1",
+      providerId: "provider-unmonitored-feed",
+      versionLabel: "1.0.0",
+      openapiJson: unmonitoredV1,
+      publishedAt: "2026-01-01T00:00:00.000Z",
+    });
+    insertApiVersion(db, {
+      id: "unmonitored-version-v2",
+      providerId: "provider-unmonitored-feed",
+      versionLabel: "2.0.0",
+      openapiJson: unmonitoredV2,
+      publishedAt: "2026-02-01T00:00:00.000Z",
+    });
+    const unmonitoredHash = createHash("sha256").update(unmonitoredV2).digest("hex").slice(0, 16);
     const jobId = enqueueFeedPipelineJob(db, {
       tenantId: "tenant-a",
       providerSlug: "unmonitored",
-      contentHash: "unmonitored-content",
-      versionId: "unmonitored-version",
+      contentHash: unmonitoredHash,
+      versionId: "unmonitored-version-v2",
+      versionLabel: "2.0.0",
       productionIntent: true,
     });
     expect(JSON.parse(getJob(db, jobId, "tenant-a")!.payload_json)).toEqual(
@@ -1503,6 +1563,10 @@ describe("worker runtime", () => {
     );
     const pipelineRunner = vi.fn(async (): Promise<PipelineReport> => ({
       changeId: "change-unmonitored",
+      fromVersionId: "unmonitored-version-v1",
+      fromVersionLabel: "1.0.0",
+      toVersionId: "unmonitored-version-v2",
+      toVersionLabel: "2.0.0",
       risk: "breaking",
       summary: "An unmonitored provider changed",
       diff: { risk: "breaking", summary: "An unmonitored provider changed", entries: [] },
@@ -1903,8 +1967,11 @@ describe("worker runtime", () => {
           schemaVersion: 1,
           kind: "fettler.production.provider_change",
           trigger: "feed",
-          contentHash: "provider-content-a",
-          versionId: "provider-version-a",
+          contentHash: "a".repeat(16),
+          fromVersionId: "provider-version-v1",
+          fromVersionLabel: "1.0.0",
+          toVersionId: "provider-version-v2",
+          toVersionLabel: "2.0.0",
         },
       },
     });
@@ -1937,6 +2004,11 @@ describe("worker runtime", () => {
           providerSlug: "stripe",
           changeId: "change-snapshot",
           pipelineJobId: "pipeline-job-snapshot",
+          contentHash: "a".repeat(16),
+          fromVersionId: "provider-version-v1",
+          fromVersionLabel: "1.0.0",
+          toVersionId: "provider-version-v2",
+          toVersionLabel: "2.0.0",
           repositoryId: repository.id,
           snapshotId: "snapshot-warden-a",
           revision,
@@ -4271,6 +4343,28 @@ describe("Fettler live resume seam (behavioral, through the job loop)", () => {
       actorPrincipalId: "owner-campaign-resume",
       eventId: "campaign-resume-linked",
       idempotencyKey: "campaign-resume-linked",
+      correlationId: "campaign-resume",
+      createdAt: at,
+    });
+    const envelope = defaultPolicyEnvelope({
+      tenantId: "tenant_test",
+      policyEnvelopeId: "pe-campaign-resume",
+      createdAt: at,
+    });
+    createPolicyEnvelope(fixture.db, {
+      tenantId: "tenant_test",
+      version: 1,
+      policyEnvelopeId: envelope.policyEnvelopeId,
+      envelopeJson: canonicalPolicyEnvelopeJson(envelope),
+      createdAt: at,
+    });
+    bindMissionToPolicyEnvelope(fixture.db, {
+      tenantId: "tenant_test",
+      missionId: "mission-campaign-resume",
+      version: 1,
+      actorPrincipalId: "owner-campaign-resume",
+      eventId: "campaign-resume-policy-bound",
+      idempotencyKey: "campaign-resume-policy-bound",
       correlationId: "campaign-resume",
       createdAt: at,
     });
