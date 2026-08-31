@@ -436,10 +436,13 @@ jobs:
       # is null and the drift this job exists to fix stays invisible.
       - name: Deploy customer production
         if: steps.head.outputs.superseded != 'true'
-        # Depot failed twice before reading the Dockerfile, so use Fly's
-        # deterministic legacy remote builder while preserving remote builds.
+        # Both Depot and Fly's legacy remote builder require builder authority
+        # that the deliberately app-scoped deploy token does not carry. The
+        # GitHub runner already proves this exact Docker target in
+        # container-builds, so build with its local Docker daemon and leave the
+        # app-scoped token responsible only for registry upload and deployment.
         run: >-
-          flyctl deploy --remote-only --depot=false --ha=false --app mendpoint-fettler-production
+          flyctl deploy --local-only --ha=false --app mendpoint-fettler-production
           --config fly.customer-warden.toml
           --env MENDPOINT_RELEASE_REVISION=${{ github.sha }}
         env:
