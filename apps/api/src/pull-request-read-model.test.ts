@@ -75,6 +75,7 @@ function seedCandidate(input: Readonly<{
   tamper?: boolean;
   changeId?: string;
   includeProviderChange?: boolean;
+  precursorMigrationPrId?: string;
 }>) {
   const revision = "a".repeat(40);
   const approvals = join(input.root, "data", "warden-evidence", input.tenantId, "approvals");
@@ -151,14 +152,15 @@ function seedCandidate(input: Readonly<{
       (id, tenant_id, run_id, job_id, status, repository_id, snapshot_id, base_branch,
        expected_base_revision, sealed_path, sealed_sha256, requester_principal_id,
        rationale, branch_name, base_revision, commit_sha, draft_pr, draft_pr_number,
-       draft_pr_url, requested_at, delivered_at, updated_at)
+       draft_pr_url, precursor_migration_pr_id, requested_at, delivered_at, updated_at)
      VALUES (?, ?, ?, ?, 'delivered', ?, ?, 'main', ?, ?, ?, 'human:reviewer@example.com',
        'The exact candidate and checks are approved.', 'fettler/stripe-change', ?, ?, 1, 42,
-       'https://github.com/customer/repo/pull/42', ?, ?, ?)`,
+       'https://github.com/customer/repo/pull/42', ?, ?, ?, ?)`,
   ).run(
     input.id, input.tenantId, `run-${input.id}`, `job-${input.id}`,
     input.repositoryId, `snapshot-${input.id}`, revision, path, digest,
-    revision, "d".repeat(40), input.requestedAt, input.requestedAt, input.requestedAt,
+    revision, "d".repeat(40), input.precursorMigrationPrId ?? null,
+    input.requestedAt, input.requestedAt, input.requestedAt,
   );
 }
 
@@ -230,13 +232,16 @@ describe("Fettler pull request read model", () => {
     seedCandidate({
       db, root, tenantId: "tenant-a", id: "candidate-a", repositoryId: "repo-a",
       requestedAt: "2026-08-31T13:00:00.000Z", changeId: "change-a",
+      precursorMigrationPrId: "legacy-pr",
     });
 
-    const rows = listPullRequestReadModel({ db, tenantId: "tenant-a", limit: 20, offset: 0, env });
+    const rows = listPullRequestReadModel({ db, tenantId: "tenant-a", limit: 1, offset: 0, env });
 
     expect(rows.map((row) => [row.id, row.source])).toEqual([
       ["candidate-a", "fettler_candidate"],
     ]);
+    expect(listPullRequestReadModel({ db, tenantId: "tenant-a", limit: 1, offset: 1, env }))
+      .toEqual([]);
   });
 
   it("preserves a notification row when the sealed candidate has no provider change linkage", () => {
@@ -268,24 +273,25 @@ describe("Fettler pull request read model", () => {
     expect(rows.map((row) => row.id)).toEqual(["candidate-a", "legacy-pr"]);
   });
 
-  it("fails closed rather than hiding a precursor with ambiguous repository linkage", () => {
+  it("does not read an unrelated damaged historical seal outside the requested page", () => {
     const { db, root, env } = setup();
-    seedLegacy(db, "tenant-a");
-    insertConsumerRepo(db, {
-      id: "consumer-repo-other", consumerId: "consumer-a", localPath: "repo-other",
-      createdAt: NOW,
-    });
-    db.raw.prepare(
-      "UPDATE consumer_repos SET connected_repository_id = 'repo-other' WHERE id = 'consumer-repo-other'",
-    ).run();
     seedCandidate({
-      db, root, tenantId: "tenant-a", id: "candidate-a", repositoryId: "repo-a",
-      requestedAt: "2026-08-31T13:00:00.000Z", changeId: "change-a",
+      db, root, tenantId: "tenant-a", id: "candidate-old", repositoryId: "repo-old",
+      requestedAt: "2026-08-31T12:00:00.000Z", tamper: true,
+    });
+    seedCandidate({
+      db, root, tenantId: "tenant-a", id: "candidate-current", repositoryId: "repo-current",
+      requestedAt: "2026-08-31T14:00:00.000Z",
     });
 
+    const current = listPullRequestReadModel({
+      db, tenantId: "tenant-a", limit: 1, offset: 0, env,
+    });
+    expect(current.map((row) => row.id)).toEqual(["candidate-current"]);
+
     expect(() => listPullRequestReadModel({
-      db, tenantId: "tenant-a", limit: 20, offset: 0, env,
-    })).toThrow("fettler_candidate_precursor_link_ambiguous");
+      db, tenantId: "tenant-a", limit: 1, offset: 1, env,
+    })).toThrow("warden_candidate_approval_digest_mismatch");
   });
 
   it("rejects a blank tenant scope", () => {

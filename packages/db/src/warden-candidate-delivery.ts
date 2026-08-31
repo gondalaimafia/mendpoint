@@ -33,6 +33,7 @@ export type WardenCandidateDeliveryRecord = Readonly<{
   sealedSha256: string;
   requesterPrincipalId: string;
   rationale: string;
+  precursorMigrationPrId: string | null;
   intentDigest: string | null;
   branchName: string | null;
   baseRevision: string | null;
@@ -57,7 +58,8 @@ type Row = {
   id: string; tenant_id: string; run_id: string; job_id: string; status: string;
   repository_id: string; snapshot_id: string; base_branch: string;
   expected_base_revision: string; sealed_path: string; sealed_sha256: string;
-  requester_principal_id: string; rationale: string; intent_digest: string | null;
+  requester_principal_id: string; rationale: string; precursor_migration_pr_id: string | null;
+  intent_digest: string | null;
   branch_name: string | null; base_revision: string | null; commit_sha: string | null;
   draft_pr: number | null; draft_pr_number: number | null; draft_pr_url: string | null;
   error_code: string | null; error_message: string | null; requested_at: string;
@@ -98,7 +100,8 @@ function map(row: Row): WardenCandidateDeliveryRecord {
     snapshotId: row.snapshot_id, baseBranch: row.base_branch,
     expectedBaseRevision: row.expected_base_revision, sealedPath: row.sealed_path,
     sealedSha256: row.sealed_sha256, requesterPrincipalId: row.requester_principal_id,
-    rationale: row.rationale, intentDigest: row.intent_digest, branchName: row.branch_name,
+    rationale: row.rationale, precursorMigrationPrId: row.precursor_migration_pr_id,
+    intentDigest: row.intent_digest, branchName: row.branch_name,
     baseRevision: row.base_revision, commitSha: row.commit_sha,
     draftPr: row.draft_pr === 1 ? true : null, draftPrNumber: row.draft_pr_number,
     draftPrUrl: row.draft_pr_url, errorCode: row.error_code, errorMessage: row.error_message,
@@ -268,6 +271,47 @@ function readBoundScope(payloadJson: string): FettlerProviderChangeScope | null 
   });
 }
 
+function resolvePrecursorMigrationPrId(
+  db: AppDb,
+  delivery: WardenCandidateDeliveryRecord,
+  changeId: string,
+): string | null {
+  const linkedConsumers = db.raw.prepare(
+    `SELECT DISTINCT consumer.id
+     FROM consumers AS consumer
+     JOIN consumer_repos AS repository ON repository.consumer_id = consumer.id
+     WHERE consumer.tenant_id = ? AND repository.connected_repository_id = ?
+     ORDER BY consumer.id
+     LIMIT 2`,
+  ).all(delivery.tenantId, delivery.repositoryId) as Array<{ id: string }>;
+  if (linkedConsumers.length > 1) {
+    throw new Error("warden_candidate_delivery_precursor_repository_ambiguous");
+  }
+  if (linkedConsumers.length === 0) return null;
+  const consumerRepositories = db.raw.prepare(
+    `SELECT DISTINCT connected_repository_id AS id
+     FROM consumer_repos
+     WHERE consumer_id = ? AND connected_repository_id IS NOT NULL
+     ORDER BY connected_repository_id
+     LIMIT 2`,
+  ).all(linkedConsumers[0]!.id) as Array<{ id: string }>;
+  if (consumerRepositories.length > 1) {
+    throw new Error("warden_candidate_delivery_precursor_repository_ambiguous");
+  }
+  const precursors = db.raw.prepare(
+    `SELECT DISTINCT migration.id
+     FROM migration_prs AS migration
+     WHERE migration.change_id = ? AND migration.consumer_id = ?
+       AND migration.status = 'notification_only'
+     ORDER BY migration.id
+     LIMIT 2`,
+  ).all(changeId, linkedConsumers[0]!.id) as Array<{ id: string }>;
+  if (precursors.length > 1) {
+    throw new Error("warden_candidate_delivery_precursor_ambiguous");
+  }
+  return precursors[0]?.id ?? null;
+}
+
 /**
  * Bind a version 5/6 approval's sealed provider-change identity before any
  * remote side effect. The scope is stored in the durable job payload so older
@@ -299,6 +343,11 @@ export function bindWardenCandidateDeliveryScope(db: AppDb, input: Readonly<{
     if (alreadyBound && alreadyBound.scopeDigest !== scope.scopeDigest) {
       throw new Error("warden_candidate_delivery_scope_binding_mismatch");
     }
+    // The first binding freezes the exact precursor identity. Replays validate
+    // the sealed scope but must not reinterpret it against later feed changes.
+    const precursorMigrationPrId = alreadyBound
+      ? delivery.precursorMigrationPrId
+      : resolvePrecursorMigrationPrId(db, delivery, scope.changeId);
     const peers = db.raw.prepare(
       `SELECT jobs.payload_json
        FROM fettler_candidate_deliveries AS delivery
@@ -319,6 +368,14 @@ export function bindWardenCandidateDeliveryScope(db: AppDb, input: Readonly<{
       db.raw.prepare(
         "UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?",
       ).run(JSON.stringify({ ...payload, fettlerProviderChangeScope: scope }), delivery.jobId, delivery.tenantId);
+      const linked = db.raw.prepare(
+        `UPDATE fettler_candidate_deliveries
+         SET precursor_migration_pr_id = ?
+         WHERE id = ? AND tenant_id = ? AND precursor_migration_pr_id IS NULL`,
+      ).run(precursorMigrationPrId, delivery.id, delivery.tenantId);
+      if (Number(linked.changes) !== 1) {
+        throw new Error("warden_candidate_delivery_precursor_binding_mismatch");
+      }
     }
     if (owns) db.raw.exec("COMMIT");
     return Object.freeze({ status: "bound" as const, ...scope });

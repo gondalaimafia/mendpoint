@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDb, getJob, insertAgentRun, type AppDb } from "./index.js";
 import {
@@ -15,6 +16,64 @@ import {
 
 const NOW = "2026-08-06T12:00:00.000Z";
 const opened: Array<{ db: AppDb; directory: string }> = [];
+
+function sealedProviderChange(repositoryId = "repo-1") {
+  return {
+    schemaVersion: 5,
+    tenantId: "tenant-a",
+    repositoryId,
+    snapshotId: "snapshot-1",
+    baseBranch: "main",
+    expectedBaseRevision: "a".repeat(40),
+    fettlerProviderChange: {
+      schemaVersion: 1,
+      providerSlug: "stripe",
+      changeId: "change-stripe-2026-08-31",
+      pipelineJobId: "pipeline-job-1",
+      contentHash: "0123456789abcdef",
+      fromVersionId: "version-stripe-2026-07-29",
+      fromVersionLabel: "2026-07-29.dahlia",
+      toVersionId: "version-stripe-2026-08-31",
+      toVersionLabel: "2026-08-31.acacia",
+      repositoryId,
+      snapshotId: "snapshot-1",
+      revision: "a".repeat(40),
+    },
+  } as const;
+}
+
+function seedPrecursorInputs(db: AppDb) {
+  db.raw.exec(`
+    INSERT INTO providers (id, slug, name, created_at)
+      VALUES ('provider-stripe', 'stripe', 'Stripe', '${NOW}');
+    INSERT INTO api_versions (id, provider_id, version_label, openapi_json, published_at)
+      VALUES ('version-stripe-2026-07-29', 'provider-stripe', '2026-07-29.dahlia', '{}', '${NOW}'),
+             ('version-stripe-2026-08-31', 'provider-stripe', '2026-08-31.acacia', '{}', '${NOW}');
+    INSERT INTO api_changes (id, provider_id, from_version_id, to_version_id, risk, summary, diff_json, created_at)
+      VALUES ('change-stripe-2026-08-31', 'provider-stripe', 'version-stripe-2026-07-29',
+        'version-stripe-2026-08-31', 'breaking', 'Removed request field', '{}', '${NOW}');
+  `);
+}
+
+function seedRepositoryConsumer(db: AppDb, input: { consumerId: string; repoRowId: string; repositoryId: string }) {
+  db.raw.prepare(
+    `INSERT INTO consumers (id, name, github_owner, github_repo, tenant_id, created_at)
+     VALUES (?, ?, 'acme', 'sdk', 'tenant-a', ?)`,
+  ).run(input.consumerId, input.consumerId, NOW);
+  db.raw.prepare(
+    `INSERT INTO consumer_repos (id, consumer_id, local_path, connected_repository_id, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(input.repoRowId, input.consumerId, `C:\\repos\\${input.consumerId}`, input.repositoryId, NOW);
+}
+
+function seedNotificationOnlyMigrationPr(db: AppDb, input: { id: string; consumerId: string }) {
+  db.raw.prepare(
+    `INSERT INTO migration_prs
+     (id, change_id, consumer_id, title, body, branch_name, status, risk, patch_unified, created_at)
+     VALUES (?, 'change-stripe-2026-08-31', ?, 'Notice', 'Notice only', 'none',
+       'notification_only', 'breaking', '', ?)`,
+  ).run(input.id, input.consumerId, NOW);
+}
 
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "mendpoint-warden-delivery-db-"));
@@ -89,6 +148,11 @@ describe("Warden candidate delivery outbox", () => {
 
     expect(replay).toEqual(first);
     expect(first.status).toBe("delivery_pending");
+    expect(first.precursorMigrationPrId).toBeNull();
+    expect((db.raw.prepare("PRAGMA table_info(fettler_candidate_deliveries)").all() as Array<{ name: string }>)
+      .map((column) => column.name)).toContain("precursor_migration_pr_id");
+    expect((db.raw.prepare("PRAGMA index_list(fettler_candidate_deliveries)").all() as Array<{ name: string }>)
+      .map((index) => index.name)).toContain("fettler_candidate_deliveries_precursor_idx");
     expect(getJob(db, first.jobId, "tenant-a")).toMatchObject({
       type: "warden.candidate.deliver",
       status: "pending",
@@ -179,6 +243,7 @@ describe("Warden candidate delivery outbox", () => {
       deliveryId: first.id,
       sealedArtifact: sealedProviderChange,
     })).toMatchObject({ status: "bound", providerSlug: "stripe", changeId: "change-stripe-2026-08-31" });
+    expect(getWardenCandidateDelivery(db, "tenant-a", first.id)?.precursorMigrationPrId).toBeNull();
     expect(() => bindWardenCandidateDeliveryScope(db, {
       tenantId: "tenant-a",
       deliveryId: second.id,
@@ -186,8 +251,109 @@ describe("Warden candidate delivery outbox", () => {
     })).toThrow("warden_candidate_delivery_scope_conflict");
   });
 
+  it("atomically stores one exact notification-only precursor and replays idempotently", () => {
+    const db = fixture();
+    seedPrecursorInputs(db);
+    seedRepositoryConsumer(db, { consumerId: "consumer-1", repoRowId: "consumer-repo-1", repositoryId: "repo-1" });
+    seedNotificationOnlyMigrationPr(db, { id: "migration-pr-1", consumerId: "consumer-1" });
+    const delivery = enqueueWardenCandidateDelivery(db, deliveryInput);
+
+    const first = bindWardenCandidateDeliveryScope(db, {
+      tenantId: "tenant-a",
+      deliveryId: delivery.id,
+      sealedArtifact: sealedProviderChange(),
+    });
+    const replay = bindWardenCandidateDeliveryScope(db, {
+      tenantId: "tenant-a",
+      deliveryId: delivery.id,
+      sealedArtifact: sealedProviderChange(),
+    });
+
+    expect(replay).toEqual(first);
+    expect(getWardenCandidateDelivery(db, "tenant-a", delivery.id)?.precursorMigrationPrId)
+      .toBe("migration-pr-1");
+  });
+
+  it("does not reinterpret a bound null precursor when feed history changes", () => {
+    const db = fixture();
+    seedPrecursorInputs(db);
+    seedRepositoryConsumer(db, { consumerId: "consumer-1", repoRowId: "consumer-repo-1", repositoryId: "repo-1" });
+    const delivery = enqueueWardenCandidateDelivery(db, deliveryInput);
+    const first = bindWardenCandidateDeliveryScope(db, {
+      tenantId: "tenant-a",
+      deliveryId: delivery.id,
+      sealedArtifact: sealedProviderChange(),
+    });
+    seedNotificationOnlyMigrationPr(db, { id: "migration-pr-later", consumerId: "consumer-1" });
+
+    const replay = bindWardenCandidateDeliveryScope(db, {
+      tenantId: "tenant-a",
+      deliveryId: delivery.id,
+      sealedArtifact: sealedProviderChange(),
+    });
+
+    expect(replay).toEqual(first);
+    expect(getWardenCandidateDelivery(db, "tenant-a", delivery.id)?.precursorMigrationPrId).toBeNull();
+  });
+
+  it("fails closed and rolls back scope binding when multiple exact precursors exist", () => {
+    const db = fixture();
+    seedPrecursorInputs(db);
+    seedRepositoryConsumer(db, { consumerId: "consumer-1", repoRowId: "consumer-repo-1", repositoryId: "repo-1" });
+    seedNotificationOnlyMigrationPr(db, { id: "migration-pr-1", consumerId: "consumer-1" });
+    seedNotificationOnlyMigrationPr(db, { id: "migration-pr-2", consumerId: "consumer-1" });
+    const delivery = enqueueWardenCandidateDelivery(db, deliveryInput);
+
+    expect(() => bindWardenCandidateDeliveryScope(db, {
+      tenantId: "tenant-a",
+      deliveryId: delivery.id,
+      sealedArtifact: sealedProviderChange(),
+    })).toThrow("warden_candidate_delivery_precursor_ambiguous");
+    expect(getWardenCandidateDelivery(db, "tenant-a", delivery.id)?.precursorMigrationPrId).toBeNull();
+    expect(getJob(db, delivery.jobId, "tenant-a")?.payload_json).not.toContain("fettlerProviderChangeScope");
+  });
+
+  it("fails closed when a connected repository is linked to multiple tenant consumers", () => {
+    const db = fixture();
+    seedPrecursorInputs(db);
+    seedRepositoryConsumer(db, { consumerId: "consumer-1", repoRowId: "consumer-repo-1", repositoryId: "repo-1" });
+    seedRepositoryConsumer(db, { consumerId: "consumer-2", repoRowId: "consumer-repo-2", repositoryId: "repo-1" });
+    seedNotificationOnlyMigrationPr(db, { id: "migration-pr-1", consumerId: "consumer-1" });
+    const delivery = enqueueWardenCandidateDelivery(db, deliveryInput);
+
+    expect(() => bindWardenCandidateDeliveryScope(db, {
+      tenantId: "tenant-a",
+      deliveryId: delivery.id,
+      sealedArtifact: sealedProviderChange(),
+    })).toThrow("warden_candidate_delivery_precursor_repository_ambiguous");
+    expect(getWardenCandidateDelivery(db, "tenant-a", delivery.id)?.precursorMigrationPrId).toBeNull();
+  });
+
+  it("fails closed when the matching consumer is linked to another connected repository", () => {
+    const db = fixture();
+    seedPrecursorInputs(db);
+    seedRepositoryConsumer(db, { consumerId: "consumer-1", repoRowId: "consumer-repo-1", repositoryId: "repo-1" });
+    db.raw.prepare(
+      `INSERT INTO consumer_repos (id, consumer_id, local_path, connected_repository_id, created_at)
+       VALUES ('consumer-repo-2', 'consumer-1', 'C:\\repos\\consumer-1-other', 'repo-2', ?)`,
+    ).run(NOW);
+    seedNotificationOnlyMigrationPr(db, { id: "migration-pr-1", consumerId: "consumer-1" });
+    const delivery = enqueueWardenCandidateDelivery(db, deliveryInput);
+
+    expect(() => bindWardenCandidateDeliveryScope(db, {
+      tenantId: "tenant-a",
+      deliveryId: delivery.id,
+      sealedArtifact: sealedProviderChange(),
+    })).toThrow("warden_candidate_delivery_precursor_repository_ambiguous");
+    expect(getWardenCandidateDelivery(db, "tenant-a", delivery.id)?.precursorMigrationPrId).toBeNull();
+    expect(getJob(db, delivery.jobId, "tenant-a")?.payload_json).not.toContain("fettlerProviderChangeScope");
+  });
+
   it("leaves legacy approval schemas unscoped and rejects mutated sealed bindings", () => {
     const db = fixture();
+    seedPrecursorInputs(db);
+    seedRepositoryConsumer(db, { consumerId: "consumer-1", repoRowId: "consumer-repo-1", repositoryId: "repo-1" });
+    seedNotificationOnlyMigrationPr(db, { id: "migration-pr-1", consumerId: "consumer-1" });
     const delivery = enqueueWardenCandidateDelivery(db, deliveryInput);
     expect(bindWardenCandidateDeliveryScope(db, {
       tenantId: "tenant-a",
@@ -201,6 +367,7 @@ describe("Warden candidate delivery outbox", () => {
         },
       },
     })).toEqual({ status: "legacy_unscoped" });
+    expect(getWardenCandidateDelivery(db, "tenant-a", delivery.id)?.precursorMigrationPrId).toBeNull();
     expect(() => bindWardenCandidateDeliveryScope(db, {
       tenantId: "tenant-a",
       deliveryId: delivery.id,
@@ -227,6 +394,42 @@ describe("Warden candidate delivery outbox", () => {
         },
       },
     })).toThrow("warden_candidate_delivery_scope_binding_mismatch");
+  });
+
+  it("adds the nullable precursor column when an existing database is reopened", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mendpoint-warden-delivery-upgrade-"));
+    const path = join(directory, "upgrade.sqlite");
+    const seed = createDb(path);
+    seed.raw.prepare(
+      `INSERT INTO fettler_candidate_deliveries
+       (id, tenant_id, run_id, job_id, status, repository_id, snapshot_id, base_branch,
+        expected_base_revision, sealed_path, sealed_sha256, requester_principal_id, rationale,
+        requested_at, updated_at)
+       VALUES ('delivery-legacy', 'tenant-a', 'run-legacy', 'job-legacy', 'delivery_pending',
+        'repo-1', 'snapshot-1', 'main', ?, 'C:\\seal.json', ?, 'human:reviewer@example.com',
+        'Approved', ?, ?)`,
+    ).run("a".repeat(40), `sha256:${"b".repeat(64)}`, NOW, NOW);
+    seed.raw.close();
+    const legacy = new DatabaseSync(path);
+    const before = (legacy.prepare("PRAGMA table_info(fettler_candidate_deliveries)").all() as Array<{ name: string }>)
+      .map((column) => column.name);
+    if (before.includes("precursor_migration_pr_id")) {
+      legacy.exec(`
+        DROP INDEX IF EXISTS fettler_candidate_deliveries_precursor_idx;
+        ALTER TABLE fettler_candidate_deliveries DROP COLUMN precursor_migration_pr_id;
+      `);
+    }
+    legacy.close();
+
+    const upgraded = createDb(path);
+    opened.push({ db: upgraded, directory });
+    const after = (upgraded.raw.prepare("PRAGMA table_info(fettler_candidate_deliveries)").all() as Array<{ name: string }>)
+      .map((column) => column.name);
+    expect(after).toContain("precursor_migration_pr_id");
+    expect((upgraded.raw.prepare("PRAGMA index_list(fettler_candidate_deliveries)").all() as Array<{ name: string }>)
+      .map((index) => index.name)).toContain("fettler_candidate_deliveries_precursor_idx");
+    expect(getWardenCandidateDelivery(upgraded, "tenant-a", "delivery-legacy")?.precursorMigrationPrId)
+      .toBeNull();
   });
 
   it("fails closed when an existing delivery scope is malformed", () => {

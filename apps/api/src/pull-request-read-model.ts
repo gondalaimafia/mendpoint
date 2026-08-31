@@ -20,11 +20,6 @@ type FeedCursor = Readonly<{
   source: "legacy_migration" | "fettler_candidate";
 }>;
 
-type NotificationPrecursorLink = Readonly<{
-  id: string;
-  connected_repository_id: string | null;
-}>;
-
 export type FettlerCandidatePrEvidence = Readonly<{
   source: "fettler_candidate";
   runId: string;
@@ -140,66 +135,13 @@ function candidateToApi(
   });
 }
 
-function resolveNotificationPrecursors(input: Readonly<{
-  db: AppDb;
-  tenantId: string;
-  env: NodeJS.ProcessEnv;
-}>): Readonly<{
-  suppressedLegacyIds: ReadonlySet<string>;
-  candidatesById: ReadonlyMap<string, PullRequestReadModelRow>;
-}> {
-  const candidateIds = input.db.raw.prepare(
-    `SELECT id FROM fettler_candidate_deliveries
-      WHERE tenant_id = ?
-      ORDER BY requested_at DESC, id DESC`,
-  ).all(input.tenantId) as Array<{ id: string }>;
-  const candidatesById = new Map<string, PullRequestReadModelRow>();
-  const suppressedLegacyIds = new Set<string>();
-
-  for (const { id } of candidateIds) {
-    const candidate = candidateToApi(input.db, input.tenantId, id, input.env);
-    candidatesById.set(id, candidate);
-    const providerChange = candidate.candidateDelivery?.providerChange;
-    if (!providerChange) continue;
-
-    const links = input.db.raw.prepare(
-      `SELECT pr.id, cr.connected_repository_id
-         FROM migration_prs pr
-         JOIN consumers consumer ON consumer.id = pr.consumer_id
-         LEFT JOIN consumer_repos cr ON cr.consumer_id = pr.consumer_id
-        WHERE consumer.tenant_id = ?
-          AND pr.status = 'notification_only'
-          AND pr.change_id = ?
-        ORDER BY pr.id, cr.id`,
-    ).all(input.tenantId, providerChange.changeId) as NotificationPrecursorLink[];
-    const repositoriesByPr = new Map<string, Set<string>>();
-    for (const link of links) {
-      const repositories = repositoriesByPr.get(link.id) ?? new Set<string>();
-      if (link.connected_repository_id) repositories.add(link.connected_repository_id);
-      repositoriesByPr.set(link.id, repositories);
-    }
-
-    const exact: string[] = [];
-    for (const [legacyId, repositories] of repositoriesByPr) {
-      if (!repositories.has(providerChange.repositoryId)) continue;
-      if (repositories.size !== 1) {
-        throw new Error("fettler_candidate_precursor_link_ambiguous");
-      }
-      exact.push(legacyId);
-    }
-    if (exact.length > 1) throw new Error("fettler_candidate_precursor_link_ambiguous");
-    if (exact.length === 1) suppressedLegacyIds.add(exact[0]!);
-  }
-
-  return Object.freeze({ suppressedLegacyIds, candidatesById });
-}
-
 /**
  * Tenant scoped, chronologically merged read model for legacy migration rows and
  * sealed Fettler candidate deliveries. Candidate prose is read only from the
- * digest verified approval artifact. Any malformed seal aborts the whole read,
- * allowing the caller to report an unavailable feed instead of a false empty or
- * unverified candidate.
+ * digest verified approval artifact. The exact precursor link is derived from
+ * that seal once, when delivery authority is bound, so pagination remains in
+ * SQLite and only candidate artifacts in the requested page are opened. A bad
+ * seal in the requested page aborts that read; unrelated history is untouched.
  */
 export function listPullRequestReadModel(input: Readonly<{
   db: AppDb;
@@ -209,33 +151,29 @@ export function listPullRequestReadModel(input: Readonly<{
   env?: NodeJS.ProcessEnv;
 }>): PullRequestReadModelRow[] {
   if (!input.tenantId.trim()) throw new Error("tenant_scope_required");
-  const linked = resolveNotificationPrecursors({
-    db: input.db,
-    tenantId: input.tenantId,
-    env: input.env ?? process.env,
-  });
   const cursors = input.db.raw.prepare(
     `SELECT id, source FROM (
        SELECT pr.id AS id, 'legacy_migration' AS source, pr.created_at AS sort_at
          FROM migration_prs pr
          JOIN consumers c ON c.id = pr.consumer_id
         WHERE c.tenant_id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM fettler_candidate_deliveries delivery
+             WHERE delivery.tenant_id = c.tenant_id
+               AND delivery.precursor_migration_pr_id = pr.id
+          )
        UNION ALL
        SELECT delivery.id AS id, 'fettler_candidate' AS source, delivery.requested_at AS sort_at
          FROM fettler_candidate_deliveries delivery
         WHERE delivery.tenant_id = ?
      )
-     ORDER BY sort_at DESC, id DESC`,
-  ).all(input.tenantId, input.tenantId) as FeedCursor[];
+     ORDER BY sort_at DESC, id DESC
+     LIMIT ? OFFSET ?`,
+  ).all(input.tenantId, input.tenantId, input.limit, input.offset) as FeedCursor[];
 
-  return cursors
-    .filter((cursor) => cursor.source !== "legacy_migration" || !linked.suppressedLegacyIds.has(cursor.id))
-    .slice(input.offset, input.offset + input.limit)
-    .map((cursor) => {
+  return cursors.map((cursor) => {
       if (cursor.source === "fettler_candidate") {
-        const candidate = linked.candidatesById.get(cursor.id);
-        if (!candidate) throw new Error("fettler_candidate_delivery_read_missing");
-        return candidate;
+        return candidateToApi(input.db, input.tenantId, cursor.id, input.env ?? process.env);
       }
       const row = getPr(input.db, cursor.id, input.tenantId);
       if (!row) throw new Error("migration_pr_read_missing");
