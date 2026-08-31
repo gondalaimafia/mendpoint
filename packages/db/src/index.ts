@@ -2290,6 +2290,7 @@ CREATE TABLE IF NOT EXISTS fettler_candidate_deliveries (
   sealed_sha256 TEXT NOT NULL,
   requester_principal_id TEXT NOT NULL,
   rationale TEXT NOT NULL,
+  precursor_migration_pr_id TEXT,
   intent_digest TEXT,
   branch_name TEXT,
   base_revision TEXT,
@@ -2467,6 +2468,7 @@ export function createDb(urlOrPath?: string): AppDb {
     migrateSecretLifecycleOperationCommitments({ raw });
     migrateSecretLifecycleAttestation({ raw });
     migrateWardenTransformerTableNames({ raw });
+    installFettlerCandidateDeliveryPrecursorIndex({ raw });
     migrateWardenCiAwaitingReview({ raw });
     installTrustImmutability({ raw });
     return { raw };
@@ -2474,6 +2476,13 @@ export function createDb(urlOrPath?: string): AppDb {
     raw.close();
     throw error;
   }
+}
+
+function installFettlerCandidateDeliveryPrecursorIndex(db: AppDb): void {
+  db.raw.exec(`
+    CREATE INDEX IF NOT EXISTS fettler_candidate_deliveries_precursor_idx
+      ON fettler_candidate_deliveries(tenant_id, precursor_migration_pr_id);
+  `);
 }
 
 function validateIdentitySessionPrincipalAuthority(db: AppDb): void {
@@ -2743,6 +2752,7 @@ function migrateWardenTransformerTableNames(db: AppDb): void {
     { table: "warden_candidate_deliveries", name: "outcome", sql: "TEXT" },
     { table: "warden_candidate_deliveries", name: "outcome_at", sql: "TEXT" },
     { table: "warden_candidate_deliveries", name: "outcome_source", sql: "TEXT" },
+    { table: "warden_candidate_deliveries", name: "precursor_migration_pr_id", sql: "TEXT" },
     { table: "transformer_adaptive_deliveries", name: "outcome", sql: "TEXT" },
     { table: "transformer_adaptive_deliveries", name: "outcome_at", sql: "TEXT" },
     { table: "transformer_adaptive_deliveries", name: "outcome_source", sql: "TEXT" },
@@ -3208,6 +3218,7 @@ function migrateProvidersFeedColumns(db: AppDb) {
     { table: "fettler_candidate_deliveries", name: "outcome", sql: "TEXT" },
     { table: "fettler_candidate_deliveries", name: "outcome_at", sql: "TEXT" },
     { table: "fettler_candidate_deliveries", name: "outcome_source", sql: "TEXT" },
+    { table: "fettler_candidate_deliveries", name: "precursor_migration_pr_id", sql: "TEXT" },
     // Coverage/basis discriminator for the analysis behind a migration PR
     // (§11.7, §12.4). Nullable, no default: an existing DB converges on boot by
     // adding the column, and rows written before this migration read as null
@@ -4677,6 +4688,7 @@ export {
   enqueueWardenCandidateDelivery,
   getWardenCandidateDelivery,
   getWardenCandidateDeliveryByRun,
+  bindWardenCandidateDeliveryScope,
   bindWardenCandidateDeliveryIntent,
   recordWardenCandidateDeliverySuccess,
   recordWardenCandidateDeliveryFailure,
@@ -4686,6 +4698,7 @@ export {
   type WardenCandidateDeliveryOutcome,
   type WardenCandidateDeliveryRecord,
   type EnqueueWardenCandidateDeliveryInput,
+  type BindWardenCandidateDeliveryScopeResult,
 } from "./warden-candidate-delivery.js";
 
 export {

@@ -179,6 +179,83 @@ describe("pipeline", () => {
     ).rejects.toThrow("Unknown from version missing");
   });
 
+  it("reconstructs complete notification evidence when a worker crashes before handoff", async () => {
+    const db = seedProviderVersions();
+    const provider = db.raw
+      .prepare("SELECT id FROM providers WHERE slug = ?")
+      .get("acme-payments") as { id: string };
+    const exactVersions = db.raw
+      .prepare("SELECT id, version_label FROM api_versions WHERE provider_id = ? ORDER BY published_at, id")
+      .all(provider.id) as Array<{ id: string; version_label: string }>;
+    insertApiVersion(db, {
+      id: newId(),
+      providerId: provider.id,
+      versionLabel: "3.0.0",
+      openapiJson: `${readFileSync(join(acme, "openapi-v1.json"), "utf8")}\n`,
+      publishedAt: "2026-08-01T00:00:00.000Z",
+    });
+    const consumerId = addMonitoredConsumer(db, provider.id, {
+      name: "Replay Shop",
+      repo: "replay-shop",
+      localPath: shop,
+    });
+
+    const first = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      fromVersionId: exactVersions[0]!.id,
+      fromVersionLabel: exactVersions[0]!.version_label,
+      toVersionId: exactVersions[1]!.id,
+      toVersionLabel: exactVersions[1]!.version_label,
+      db,
+      graphDb: testGraphDb(),
+      consumerIds: [consumerId],
+      notificationsOnly: true,
+      persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+    });
+    expect(first.consumers[0]).toMatchObject({
+      consumerId,
+      prStatus: "notification_only",
+      impactReport: expect.objectContaining({ overallConfidence: expect.any(String) }),
+    });
+    expect(first).toMatchObject({
+      fromVersionId: exactVersions[0]!.id,
+      toVersionId: exactVersions[1]!.id,
+      toVersionLabel: "2.0.0",
+    });
+    expect(listPrs(db)).toHaveLength(1);
+
+    // This is the exact retry state after the pipeline has persisted its
+    // notification row but the worker has not yet committed its agent.run.
+    const replay = await runChangePipeline({
+      tenantId: "tenant_default",
+      providerSlug: "acme-payments",
+      fromVersionId: exactVersions[0]!.id,
+      fromVersionLabel: exactVersions[0]!.version_label,
+      toVersionId: exactVersions[1]!.id,
+      toVersionLabel: exactVersions[1]!.version_label,
+      db,
+      graphDb: testGraphDb(),
+      consumerIds: [consumerId],
+      notificationsOnly: true,
+      persistIndex: false,
+      contractCases: [{ id: "fixture", name: "fixture", requiredKeys: ["id"], responseBody: { id: "ok" } }],
+      securityScanAttested: true,
+    });
+    expect(replay.changeId).toBe(first.changeId);
+    expect(replay.consumers[0]).toMatchObject({
+      consumerId,
+      prStatus: "notification_only",
+      prId: first.consumers[0]!.prId,
+      impactReport: expect.objectContaining({
+        overallConfidence: first.consumers[0]!.impactReport!.overallConfidence,
+      }),
+    });
+    expect(listPrs(db)).toHaveLength(1);
+  });
+
   it("creates the migration branch from the persisted default branch", async () => {
     const db = seedProviderVersions();
     const provider = db.raw

@@ -25,6 +25,7 @@ import {
   createDb,
   bindConsumerRepoSnapshot,
   bindMissionToPolicyEnvelope,
+  createWardenCampaign,
   claimNextJob,
   createExplicitMemory,
   createMission,
@@ -52,6 +53,7 @@ import {
   insertRepositorySnapshot,
   insertRepositorySnapshotPolicy,
   listMissionExceptions,
+  linkFettlerCampaignToMission,
   recordAdaptiveCandidate,
   retryJob,
   reviewAdaptiveCandidate,
@@ -303,6 +305,7 @@ function setupWardenSnapshotJob(options: {
   mode?: "repair" | "feature";
   goal?: string;
   missionId?: string;
+  fettlerCampaignId?: string;
 }) {
   const {
     parent,
@@ -313,6 +316,7 @@ function setupWardenSnapshotJob(options: {
     mode,
     goal = "Fix the API path typo from chargess to charges.",
     missionId,
+    fettlerCampaignId,
   } = options;
   const snapshotRoot = join(parent, "repositories", "tenant_test", "snapshot-a");
   const dataRoot = join(parent, "data");
@@ -404,6 +408,7 @@ function setupWardenSnapshotJob(options: {
       useLlm,
       ...(mode ? { mode } : {}),
       ...(missionId ? { missionId } : {}),
+      ...(fettlerCampaignId ? { fettlerCampaignId } : {}),
     },
   });
   return {
@@ -1241,6 +1246,7 @@ describe("worker runtime", () => {
       providerSlug: "stripe",
       contentHash: "hash-1",
       versionId: "version-1",
+      productionIntent: false,
     };
 
     const first = enqueueFeedPipelineJob(db, input);
@@ -1255,7 +1261,7 @@ describe("worker runtime", () => {
     db.raw.close();
   });
 
-  it("joins a bounded pipeline fanout to one pending snapshot-bound Warden run", async () => {
+  it("joins an ordinary customer feed to one pending snapshot-bound Fettler run", async () => {
     const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-joined-warden-"));
     dirs.push(root);
     const snapshotRoot = join(root, "snapshot");
@@ -1314,6 +1320,36 @@ describe("worker runtime", () => {
       tenantId: "tenant-a",
       createdAt: at,
     });
+    insertProvider(db, {
+      id: "provider-joined-fettler",
+      slug: "stripe",
+      name: "Stripe",
+      website: null,
+      createdAt: at,
+    });
+    const providerV1 = '{"openapi":"3.0.0","info":{"title":"Stripe","version":"1.0.0"},"paths":{}}';
+    const providerV2 = '{"openapi":"3.0.0","info":{"title":"Stripe","version":"2.0.0"},"paths":{"/charges":{}}}';
+    insertApiVersion(db, {
+      id: "version-joined-fettler-v1",
+      providerId: "provider-joined-fettler",
+      versionLabel: "1.0.0",
+      openapiJson: providerV1,
+      publishedAt: "2026-01-01T00:00:00.000Z",
+    });
+    insertApiVersion(db, {
+      id: "version-joined-fettler-v2",
+      providerId: "provider-joined-fettler",
+      versionLabel: "2.0.0",
+      openapiJson: providerV2,
+      publishedAt: "2026-02-01T00:00:00.000Z",
+    });
+    const providerV2Hash = createHash("sha256").update(providerV2).digest("hex").slice(0, 16);
+    insertMonitoredApi(db, {
+      id: "monitor-joined-fettler",
+      consumerId: "consumer-joined-warden",
+      providerId: "provider-joined-fettler",
+      detectionSource: "manual",
+    });
     insertConsumerRepo(db, {
       id: "consumer-repo-joined-warden",
       consumerId: "consumer-joined-warden",
@@ -1327,19 +1363,50 @@ describe("worker runtime", () => {
       connectedRepositoryId: repository.id,
       snapshotId: "snapshot-joined-warden",
     });
-    enqueueJob(db, {
-      id: "pipeline-joined-warden",
+    const pipelineJobId = enqueueFeedPipelineJob(db, {
       tenantId: "tenant-a",
-      type: "pipeline.fanout",
-      createdAt: at,
-      payload: {
-        providerSlug: "stripe",
-        consumerIds: ["consumer-joined-warden"],
-        wardenPilot: true,
+      providerSlug: "stripe",
+      contentHash: providerV2Hash,
+      versionId: "version-joined-fettler-v2",
+      versionLabel: "2.0.0",
+      productionIntent: true,
+    });
+    expect(enqueueFeedPipelineJob(db, {
+      tenantId: "tenant-a",
+      providerSlug: "stripe",
+      contentHash: providerV2Hash,
+      versionId: "version-joined-fettler-v2",
+      versionLabel: "2.0.0",
+      productionIntent: true,
+    })).toBe(pipelineJobId);
+    const feedPayload = JSON.parse(getJob(db, pipelineJobId, "tenant-a")!.payload_json);
+    expect(feedPayload).toEqual({
+      providerSlug: "stripe",
+      consumerIds: ["consumer-joined-warden"],
+      source: {
+        schemaVersion: 1,
+        kind: "fettler.production.provider_change",
+        trigger: "feed",
+        contentHash: providerV2Hash,
+        fromVersionId: "version-joined-fettler-v1",
+        fromVersionLabel: "1.0.0",
+        toVersionId: "version-joined-fettler-v2",
+        toVersionLabel: "2.0.0",
       },
+    });
+    insertApiVersion(db, {
+      id: "version-joined-fettler-v3",
+      providerId: "provider-joined-fettler",
+      versionLabel: "3.0.0",
+      openapiJson: '{"openapi":"3.0.0","info":{"title":"Stripe","version":"3.0.0"},"paths":{"/payments":{}}}',
+      publishedAt: "2026-03-01T00:00:00.000Z",
     });
     const pipelineRunner = vi.fn(async (): Promise<PipelineReport> => ({
       changeId: "change-joined-warden",
+      fromVersionId: "version-joined-fettler-v1",
+      fromVersionLabel: "1.0.0",
+      toVersionId: "version-joined-fettler-v2",
+      toVersionLabel: "2.0.0",
       risk: "breaking",
       summary: "The charges endpoint changed",
       diff: { risk: "breaking", summary: "The charges endpoint changed", entries: [] },
@@ -1388,16 +1455,39 @@ describe("worker runtime", () => {
       tenantId: "tenant-a",
       providerSlug: "stripe",
       consumerIds: ["consumer-joined-warden"],
+      fromVersionId: "version-joined-fettler-v1",
+      fromVersionLabel: "1.0.0",
+      toVersionId: "version-joined-fettler-v2",
+      toVersionLabel: "2.0.0",
       notificationsOnly: true,
     }));
     expect(listJobs(db, 20, "tenant-a")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "pipeline-joined-warden", status: "done" }),
+      expect.objectContaining({ id: pipelineJobId, status: "done" }),
       expect.objectContaining({ type: "agent.run", status: "pending" }),
     ]));
     expect(listJobs(db, 20, "tenant-a").filter((job) => job.type === "agent.run"))
       .toHaveLength(1);
+    const pipelineResult = JSON.parse(getJob(db, pipelineJobId, "tenant-a")!.result_json!);
+    expect(pipelineResult.fettlerRuns).toEqual([
+      expect.objectContaining({ consumerId: "consumer-joined-warden", status: "queued" }),
+    ]);
+    expect(pipelineResult).not.toHaveProperty("wardenRuns");
 
     const firstWarden = listJobs(db, 20, "tenant-a").find((job) => job.type === "agent.run")!;
+    const firstPayload = JSON.parse(firstWarden.payload_json) as Record<string, unknown>;
+    expect(firstPayload.fettlerProviderChange).toEqual(expect.objectContaining({
+      schemaVersion: 1,
+      providerSlug: "stripe",
+      pipelineJobId,
+      contentHash: providerV2Hash,
+      fromVersionId: "version-joined-fettler-v1",
+      fromVersionLabel: "1.0.0",
+      toVersionId: "version-joined-fettler-v2",
+      toVersionLabel: "2.0.0",
+      repositoryId: "repository-joined-warden",
+      snapshotId: "snapshot-joined-warden",
+      impactEvidenceDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+    }));
     db.raw.prepare("UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?")
       .run(nowIso(), firstWarden.id);
     enqueueJob(db, {
@@ -1428,6 +1518,78 @@ describe("worker runtime", () => {
     })).resolves.toEqual({ claimed: 1, succeeded: 0, failed: 1, retried: 0, inconclusive: 0 });
     expect(listJobs(db, 20, "tenant-a").filter((job) => job.type === "agent.run"))
       .toHaveLength(1);
+    db.raw.close();
+  });
+
+  it("does not queue remediation when a production feed provider has no monitored consumers", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mendpoint-worker-unmonitored-feed-"));
+    dirs.push(root);
+    const db = createDb(join(root, "jobs.sqlite"));
+    const at = nowIso();
+    insertProvider(db, {
+      id: "provider-unmonitored-feed",
+      slug: "unmonitored",
+      name: "Unmonitored",
+      website: null,
+      createdAt: at,
+    });
+    const unmonitoredV1 = '{"openapi":"3.0.0","info":{"title":"Unmonitored","version":"1.0.0"},"paths":{}}';
+    const unmonitoredV2 = '{"openapi":"3.0.0","info":{"title":"Unmonitored","version":"2.0.0"},"paths":{"/new":{}}}';
+    insertApiVersion(db, {
+      id: "unmonitored-version-v1",
+      providerId: "provider-unmonitored-feed",
+      versionLabel: "1.0.0",
+      openapiJson: unmonitoredV1,
+      publishedAt: "2026-01-01T00:00:00.000Z",
+    });
+    insertApiVersion(db, {
+      id: "unmonitored-version-v2",
+      providerId: "provider-unmonitored-feed",
+      versionLabel: "2.0.0",
+      openapiJson: unmonitoredV2,
+      publishedAt: "2026-02-01T00:00:00.000Z",
+    });
+    const unmonitoredHash = createHash("sha256").update(unmonitoredV2).digest("hex").slice(0, 16);
+    const jobId = enqueueFeedPipelineJob(db, {
+      tenantId: "tenant-a",
+      providerSlug: "unmonitored",
+      contentHash: unmonitoredHash,
+      versionId: "unmonitored-version-v2",
+      versionLabel: "2.0.0",
+      productionIntent: true,
+    });
+    expect(JSON.parse(getJob(db, jobId, "tenant-a")!.payload_json)).toEqual(
+      expect.objectContaining({ consumerIds: [] }),
+    );
+    const pipelineRunner = vi.fn(async (): Promise<PipelineReport> => ({
+      changeId: "change-unmonitored",
+      fromVersionId: "unmonitored-version-v1",
+      fromVersionLabel: "1.0.0",
+      toVersionId: "unmonitored-version-v2",
+      toVersionLabel: "2.0.0",
+      risk: "breaking",
+      summary: "An unmonitored provider changed",
+      diff: { risk: "breaking", summary: "An unmonitored provider changed", entries: [] },
+      surfaces: 1,
+      consumers: [],
+    }));
+
+    await expect(processJobsOnce(db, {
+      tenantId: "tenant-a",
+      workerId: "worker-unmonitored-feed",
+      maxJobs: 1,
+      runWardenMaintenance: false,
+      pipelineRunner,
+    })).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+    expect(pipelineRunner).toHaveBeenCalledWith(expect.objectContaining({
+      consumerIds: [],
+      notificationsOnly: true,
+    }));
+    expect(listJobs(db, 20, "tenant-a").filter((job) => job.type === "agent.run"))
+      .toHaveLength(0);
+    expect(JSON.parse(getJob(db, jobId, "tenant-a")!.result_json!)).toEqual(
+      expect.objectContaining({ fettlerRuns: [] }),
+    );
     db.raw.close();
   });
 
@@ -1712,7 +1874,7 @@ describe("worker runtime", () => {
     db.raw.close();
   });
 
-  it("repairs an exact snapshot only in a private candidate and persists evidence", async () => {
+  it("persists canonical Fettler lineage and still reads a legacy pilot source", async () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-worker-warden-snapshot-"));
     dirs.push(parent);
     const snapshotRoot = join(parent, "repositories", "tenant_test", "snapshot-a");
@@ -1801,14 +1963,23 @@ describe("worker runtime", () => {
       payload: {
         providerSlug: "stripe",
         consumerIds: ["consumer-warden-snapshot"],
-        wardenPilot: true,
+        source: {
+          schemaVersion: 1,
+          kind: "fettler.production.provider_change",
+          trigger: "feed",
+          contentHash: "a".repeat(16),
+          fromVersionId: "provider-version-v1",
+          fromVersionLabel: "1.0.0",
+          toVersionId: "provider-version-v2",
+          toVersionLabel: "2.0.0",
+        },
       },
     });
     db.raw.prepare(
       "UPDATE jobs SET status = 'done', result_json = ?, finished_at = ? WHERE id = ?",
     ).run(JSON.stringify({
       changeId: "change-snapshot",
-      wardenRuns: [{
+      fettlerRuns: [{
         consumerId: "consumer-warden-snapshot",
         status: "queued",
         runId: "session-warden-snapshot",
@@ -1828,6 +1999,28 @@ describe("worker runtime", () => {
         allowedChangedPaths: ["client.js"],
         maxSteps: 20,
         useLlm: false,
+        fettlerProviderChange: {
+          schemaVersion: 1,
+          providerSlug: "stripe",
+          changeId: "change-snapshot",
+          pipelineJobId: "pipeline-job-snapshot",
+          contentHash: "a".repeat(16),
+          fromVersionId: "provider-version-v1",
+          fromVersionLabel: "1.0.0",
+          toVersionId: "provider-version-v2",
+          toVersionLabel: "2.0.0",
+          repositoryId: repository.id,
+          snapshotId: "snapshot-warden-a",
+          revision,
+          graphVersionId: "sgv1:graph-a",
+          graphContextArtifactId: "artifact-graph-a",
+          impactEvidenceDigest: `sha256:${"c".repeat(64)}`,
+          overallConfidence: "high",
+          whatChanged: "The charges endpoint changed.",
+          knownFacts: ["One direct call site is confirmed."],
+          unknowns: [],
+          whyAffected: "A confirmed provider call site uses the changed operation.",
+        },
         source: {
           pipelineJobId: "pipeline-job-snapshot",
           changeId: "change-snapshot",
@@ -1860,27 +2053,87 @@ describe("worker runtime", () => {
       artifacts: { candidateWorkspace: string; candidateManifest: string; evidence: string };
       retention: { expiresAt: string };
       intake: {
-        pipelineJobId: string;
-        changeId: string;
-        providerSlug: string;
-        repositoryId: string;
-        snapshotId: string;
-        revision: string;
+        fettlerProviderChange: {
+          schemaVersion: number;
+          pipelineJobId: string;
+          impactEvidenceDigest: string;
+          knownFacts: string[];
+        };
       };
     };
     expect(persisted.retention.expiresAt).toBe(snapshotExpiresAt);
-    expect(persisted.intake).toEqual({
+    expect(persisted.intake.fettlerProviderChange).toEqual(expect.objectContaining({
+      schemaVersion: 1,
       pipelineJobId: "pipeline-job-snapshot",
-      changeId: "change-snapshot",
-      providerSlug: "stripe",
-      repositoryId: repository.id,
-      snapshotId: "snapshot-warden-a",
-      revision,
-    });
+      impactEvidenceDigest: `sha256:${"c".repeat(64)}`,
+      knownFacts: ["One direct call site is confirmed."],
+    }));
     expect(readFileSync(join(persisted.artifacts.candidateWorkspace, "client.js"), "utf8"))
       .toContain("/v1/charges");
     expect(existsSync(persisted.artifacts.candidateManifest)).toBe(true);
     expect(existsSync(persisted.artifacts.evidence)).toBe(true);
+
+    enqueueJob(db, {
+      id: "pipeline-job-snapshot-legacy",
+      tenantId: "tenant_test",
+      type: "pipeline.fanout",
+      createdAt: at,
+      payload: {
+        providerSlug: "stripe",
+        consumerIds: ["consumer-warden-snapshot"],
+        wardenPilot: true,
+      },
+    });
+    db.raw.prepare(
+      "UPDATE jobs SET status = 'done', result_json = ?, finished_at = ? WHERE id = ?",
+    ).run(JSON.stringify({
+      changeId: "change-snapshot-legacy",
+      wardenRuns: [{
+        consumerId: "consumer-warden-snapshot",
+        status: "queued",
+        runId: "session-warden-snapshot-legacy",
+      }],
+    }), at, "pipeline-job-snapshot-legacy");
+    enqueueJob(db, {
+      id: "job-warden-snapshot-legacy",
+      tenantId: "tenant_test",
+      type: "agent.run",
+      createdAt: new Date(Date.now() + 1).toISOString(),
+      payload: {
+        sessionId: "session-warden-snapshot-legacy",
+        consumerId: "consumer-warden-snapshot",
+        goal: "Fix the API path typo from chargess to charges.",
+        errorLog: "HTTP 404 /v1/chargess",
+        verifyCommand: "node check.mjs",
+        allowedChangedPaths: ["client.js"],
+        maxSteps: 20,
+        useLlm: false,
+        source: {
+          pipelineJobId: "pipeline-job-snapshot-legacy",
+          changeId: "change-snapshot-legacy",
+          providerSlug: "stripe",
+          repositoryId: repository.id,
+          snapshotId: "snapshot-warden-a",
+          revision,
+        },
+      },
+    });
+    process.env.MENDPOINT_DATA_DIR = dataRoot;
+    try {
+      await expect(processJobsOnce(db, {
+        tenantId: "tenant_test",
+        workerId: "worker-warden-snapshot-legacy",
+        leaseMs: 30_000,
+        maxJobs: 1,
+      })).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+    } finally {
+      if (previousDataRoot === undefined) delete process.env.MENDPOINT_DATA_DIR;
+      else process.env.MENDPOINT_DATA_DIR = previousDataRoot;
+    }
+    const legacy = JSON.parse(
+      getAgentRun(db, "session-warden-snapshot-legacy", "tenant_test")!.result_json!,
+    ) as { intake: { pipelineJobId: string } };
+    expect(legacy.intake.pipelineJobId).toBe("pipeline-job-snapshot-legacy");
     db.raw.close();
   });
 
@@ -4036,6 +4289,98 @@ describe("Fettler live resume seam (behavioral, through the job loop)", () => {
       else process.env.MENDPOINT_INHERITED_CONTEXT = previous;
     }
   }
+
+  it("resolves campaign-only enrollment for Mission context and trajectory lineage", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mendpoint-resume-campaign-mission-"));
+    dirs.push(parent);
+    const fixture = setupWardenSnapshotJob({
+      parent,
+      checkBody: FAST_CHECK,
+      snapshotExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      fettlerCampaignId: "campaign-resume",
+    });
+    const at = nowIso();
+    fixture.db.raw.prepare(
+      `INSERT INTO tenants (id, slug, name, plan, billing_status, seat_limit, created_at)
+       VALUES ('tenant_test','tenant-test','Tenant Test','team','active',10,?)`,
+    ).run(at);
+    insertPrincipal(fixture.db, {
+      id: "owner-campaign-resume",
+      tenantId: "tenant_test",
+      kind: "human",
+      subject: "campaign-resume@example.com",
+      displayName: "Campaign resume owner",
+      createdAt: at,
+    });
+    createWardenCampaign(fixture.db, {
+      id: "campaign-resume",
+      tenantId: "tenant_test",
+      name: "Campaign Mission binding",
+      ownerPrincipalId: "owner-campaign-resume",
+      concurrencyLimit: 1,
+      completionPolicy: "all",
+      eventId: "campaign-resume-created",
+      idempotencyKey: "campaign-resume-created",
+      correlationId: "campaign-resume",
+      createdAt: at,
+    });
+    createMission(fixture.db, {
+      id: "mission-campaign-resume",
+      tenantId: "tenant_test",
+      product: "fettler",
+      triggerKind: "provider_change",
+      objective: "Keep campaign work bound to its Mission",
+      ownerPrincipalId: "owner-campaign-resume",
+      eventId: "mission-campaign-resume-created",
+      idempotencyKey: "mission-campaign-resume-created",
+      correlationId: "campaign-resume",
+      createdAt: at,
+    });
+    linkFettlerCampaignToMission(fixture.db, {
+      tenantId: "tenant_test",
+      campaignId: "campaign-resume",
+      missionId: "mission-campaign-resume",
+      actorPrincipalId: "owner-campaign-resume",
+      eventId: "campaign-resume-linked",
+      idempotencyKey: "campaign-resume-linked",
+      correlationId: "campaign-resume",
+      createdAt: at,
+    });
+    const envelope = defaultPolicyEnvelope({
+      tenantId: "tenant_test",
+      policyEnvelopeId: "pe-campaign-resume",
+      createdAt: at,
+    });
+    createPolicyEnvelope(fixture.db, {
+      tenantId: "tenant_test",
+      version: 1,
+      policyEnvelopeId: envelope.policyEnvelopeId,
+      envelopeJson: canonicalPolicyEnvelopeJson(envelope),
+      createdAt: at,
+    });
+    bindMissionToPolicyEnvelope(fixture.db, {
+      tenantId: "tenant_test",
+      missionId: "mission-campaign-resume",
+      version: 1,
+      actorPrincipalId: "owner-campaign-resume",
+      eventId: "campaign-resume-policy-bound",
+      idempotencyKey: "campaign-resume-policy-bound",
+      correlationId: "campaign-resume",
+      createdAt: at,
+    });
+
+    const result = await processJobsOnce(fixture.db, {
+      tenantId: "tenant_test",
+      workerId: "worker-resume-campaign",
+      leaseMs: 30_000,
+      wardenEnv: { MENDPOINT_DATA_DIR: fixture.dataRoot },
+    });
+
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
+    expect(getTrajectoryByRun(fixture.db, "tenant_test", "session-warden-snapshot"))
+      .toMatchObject({ missionId: "mission-campaign-resume" });
+    fixture.db.raw.close();
+  }, 30_000);
 
   it("CONTROL: an agent-owned run inherits tenant organization memory (org_memory ref on the trajectory)", async () => {
     const parent = mkdtempSync(join(tmpdir(), "mendpoint-resume-agent-owned-"));

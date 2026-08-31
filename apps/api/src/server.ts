@@ -338,6 +338,7 @@ import {
   mappedErrorResponse,
   type PublicErrorRule,
 } from "./error-boundary.js";
+import { listPullRequestReadModel } from "./pull-request-read-model.js";
 
 // Fail fast in production if env invalid
 assertApiEnvOrExit();
@@ -2190,7 +2191,12 @@ app.get("/prs", (c) => {
   const offset = requestListOffset(c);
   return pagedJson(
     c,
-    listPrs(db, requestTenantId(c), limit, offset).map(prToApi),
+    listPullRequestReadModel({
+      db,
+      tenantId: requestTenantId(c),
+      limit,
+      offset,
+    }),
     limit,
     offset,
   );

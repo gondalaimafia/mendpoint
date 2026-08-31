@@ -376,6 +376,10 @@ export type PipelineInput = {
   providerSlug: string;
   fromVersionLabel?: string;
   toVersionLabel?: string;
+  /** Immutable version row identities. Production queued work must use these
+   * rather than reselecting whichever two versions are latest at claim time. */
+  fromVersionId?: string;
+  toVersionId?: string;
   consumerIds?: string[];
   db?: AppDb;
   graphDb?: GraphLearnDb;
@@ -429,6 +433,10 @@ export type PipelineInput = {
 
 export type PipelineReport = {
   changeId: string;
+  fromVersionId?: string;
+  toVersionId?: string;
+  fromVersionLabel?: string;
+  toVersionLabel?: string;
   risk: string;
   summary: string;
   diff: StructuralDiff;
@@ -720,12 +728,16 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     throw new Error(`Provider ${input.providerSlug} needs at least 2 API versions`);
   }
 
-  const from = input.fromVersionLabel
-    ? versions.find((v) => v.version_label === input.fromVersionLabel)
-    : versions[versions.length - 2];
-  const to = input.toVersionLabel
-    ? versions.find((v) => v.version_label === input.toVersionLabel)
-    : versions[versions.length - 1];
+  const from = input.fromVersionId
+    ? versions.find((v) => v.id === input.fromVersionId)
+    : input.fromVersionLabel
+      ? versions.find((v) => v.version_label === input.fromVersionLabel)
+      : versions[versions.length - 2];
+  const to = input.toVersionId
+    ? versions.find((v) => v.id === input.toVersionId)
+    : input.toVersionLabel
+      ? versions.find((v) => v.version_label === input.toVersionLabel)
+      : versions[versions.length - 1];
   if (!from) {
     throw new Error(
       `Unknown from version ${input.fromVersionLabel} for provider ${input.providerSlug}`,
@@ -735,6 +747,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
     throw new Error(
       `Unknown to version ${input.toVersionLabel} for provider ${input.providerSlug}`,
     );
+  }
+  if (
+    (input.fromVersionLabel && from.version_label !== input.fromVersionLabel) ||
+    (input.toVersionLabel && to.version_label !== input.toVersionLabel)
+  ) {
+    throw new Error(`Pipeline version identity mismatch for provider ${input.providerSlug}`);
   }
   if (from.id === to.id) {
     throw new Error(`Pipeline versions must be distinct for provider ${input.providerSlug}`);
@@ -1015,6 +1033,10 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
 
   const report: PipelineReport = {
     changeId,
+    fromVersionId: from.id,
+    toVersionId: to.id,
+    fromVersionLabel: from.version_label,
+    toVersionLabel: to.version_label,
     risk: diff.risk,
     summary: diff.summary,
     diff,
@@ -1027,13 +1049,14 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
         `${finding.consumer_id}\u0000${finding.file_path}\u0000${finding.line_start}\u0000${finding.line_end}\u0000${finding.symbol}`,
     ),
   );
+  const replayNotificationOnly = input.notificationsOnly === true;
   const nonRetryableStatuses = new Set([
     "draft",
     "open",
     "closed",
     "merged",
-    "notification_only",
     "low_confidence",
+    ...(!replayNotificationOnly ? ["notification_only"] : []),
   ]);
   const existingPrByConsumer = new Map(
     listPrsForChange(db, changeId, input.tenantId)
@@ -1042,9 +1065,12 @@ export async function runChangePipeline(input: PipelineInput): Promise<PipelineR
   );
   const retryablePrByConsumer = new Map(
     listPrsForChange(db, changeId, input.tenantId)
-      .filter((pr) =>
-        ["delivery_pending", "delivery_failed", "gates_failed"].includes(pr.status),
-      )
+      .filter((pr) => [
+        "delivery_pending",
+        "delivery_failed",
+        "gates_failed",
+        ...(replayNotificationOnly ? ["notification_only"] : []),
+      ].includes(pr.status))
       .map((pr) => [pr.consumer_id, pr]),
   );
   const assertActive = () => {

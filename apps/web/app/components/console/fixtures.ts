@@ -1,5 +1,6 @@
 import type { DiffHunk, Status } from "../ds/index.js";
 import type { CoverageSummary } from "./pr-map.js";
+import type { MigrationPr } from "../../../lib/api.js";
 
 /**
  * Typed shapes for the DS console views, plus reference fixtures. The views are
@@ -44,6 +45,10 @@ export type PullRequest = {
   time: string;
   /** Impact-coverage view-model; absent for rows recorded before the channel existed. */
   coverage?: CoverageSummary;
+  /** Digest verified Fettler delivery evidence. Absent on legacy migration rows. */
+  candidateEvidence?: NonNullable<MigrationPr["candidateDelivery"]>;
+  /** Remote draft created by the delivery worker. Never a merge action. */
+  githubUrl?: string | null;
 };
 
 export type PrTab = "all" | "review" | "failing" | "merged";
