@@ -4193,12 +4193,19 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 
 ## 2026-08-30 Plan 09-01 authenticated recovery follow-up
 
-- [ ] RED and GREEN: recompute the complete versioned reservation and settlement fingerprints before importing a paid attempt; reject stored-field or digest tampering without creating routing or cost evidence.
-- [ ] RED and GREEN: validate every pending adaptive handoff against the exact same-attempt routing binding, expose it only after terminal settlement, preserve blocked review authority, and reject populated conflicts.
-- [ ] RED and GREEN: serialize legacy handoff normalization under a write lock so constructor migration cannot overwrite a concurrent campaign update.
-- [ ] Rebase onto current `origin/main`, resolve only owned overlaps, and rerun focused/full affected suites, four workspace typechecks, and diff integrity.
-- [ ] Commit the reviewed repair locally without pushing, then report the exact head for fresh review.
+- [x] RED and GREEN: recompute the complete versioned reservation and settlement fingerprints before importing a paid attempt; reject stored-field or digest tampering without creating routing or cost evidence.
+- [x] RED and GREEN: validate every pending adaptive handoff against the exact same-attempt routing binding, expose it only after terminal settlement, preserve blocked review authority, and reject populated conflicts.
+- [x] RED and GREEN: serialize legacy handoff normalization under a write lock so constructor migration cannot overwrite a concurrent campaign update.
+- [x] Rebase onto current `origin/main`, resolve only owned overlaps, and rerun focused/full affected suites, four workspace typechecks, and diff integrity.
+- [x] Commit the reviewed repair locally without pushing, then report the exact head for fresh review.
 
 ### Safety boundary
 
 - Recovery must derive evidence only from authenticated durable rows and never rerun or resettle provider work. Migration may repair missing compatibility fields but may not invent routing authority, expose unsettled work, or overwrite a concurrent state transition.
+
+### Review
+
+- Paid-attempt recovery now verifies the complete reservation fingerprint and a versioned settlement fingerprint reconstructed from every persisted settlement field. New settlements use the complete v2 digest; compatible v1 rows are recomputed under their original contract plus deterministic charged-field validation. Reservation or settlement tampering fails before any routing outcome or immutable cost row is written.
+- Pending adaptive handoffs are bound to the exact campaign, route, envelope, attempt, lease generation, and lease-token digest at creation and restored-volume startup. They remain invisible and cannot be marked imported until the matching routing outcome is terminal and durably settled; missing authority defaults to blocked only when an exact routing binding exists, and populated conflicts fail startup.
+- Restored-volume normalization now acquires `BEGIN IMMEDIATE` before reading campaign state, holds the write lock through validation and update, and rolls back on any conflict. This removes the prior read-then-lock lost-update window.
+- The branch rebased cleanly onto current `origin/main` `94185f82`; the sole task-ledger conflict retained both main and MCU records. Verification passes the complete 471-test database suite, complete 450-test Transformer suite, 127 affected Worker tests including the 90-test job loop, and 42 affected API tests: 1,090 tests total. Database, Worker, Transformer, and API typechecks pass, and diff integrity is clean. No push, PR, merge, deployment, provider call, or settlement replay occurred.

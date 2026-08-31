@@ -559,6 +559,19 @@ describe("transformer adaptive candidate review routes", () => {
       idempotencyKey: "create-campaign-1",
       gateConfig,
     });
+    store.bindRoutingAttempt({
+      tenantId: "tenant-a",
+      campaignId: "campaign-1",
+      runId: "run-original",
+      envelopeId: "route-original",
+      outcomeIdempotencyKey: "route-original-outcome",
+      executorId: "transformer-attempt",
+      providerId: "mendpoint-transformer",
+      observedAt: "2026-08-06T12:00:30.000Z",
+      evidenceRefs: ["evidence://routing/original"],
+      idempotencyKey: "bind-route-original",
+      gateConfig,
+    });
     const leaseToken = "regeneration-original-lease-token";
     const originalLease = store.claimNextAttempt({
       tenantId: "tenant-a",
@@ -599,6 +612,40 @@ describe("transformer adaptive candidate review routes", () => {
       idempotencyKey: "handoff-original",
       gateConfig,
     });
+    store.recordAttemptFailure({
+      tenantId: "tenant-a",
+      campaignId: "campaign-1",
+      unitId: "unit-1",
+      leaseGeneration: originalLease.leaseGeneration,
+      leaseToken,
+      code: "worker_crash",
+      errorCode: "transformer_worker_crashed_after_candidate_seal",
+      accounting: {
+        plannerCalls: 1,
+        modelCalls: 1,
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        actualCostUsd: 0.001,
+        wallTimeMs: 1_000,
+      },
+      observedAt: "2026-08-06T12:01:35.000Z",
+      evidenceRefs: ["evidence://attempt/failed"],
+      idempotencyKey: "fail-original",
+      gateConfig,
+    });
+    const originalRouting = store.listPendingRoutingSettlements("tenant-a")[0]!;
+    store.markRoutingOutcomeSettled({
+      tenantId: "tenant-a",
+      campaignId: "campaign-1",
+      unitId: originalRouting.unitId,
+      envelopeId: originalRouting.envelopeId,
+      outcomeIdempotencyKey: originalRouting.outcome.idempotencyKey,
+      observedAt: "2026-08-06T12:01:38.000Z",
+      evidenceRefs: ["evidence://routing/original/settled"],
+      idempotencyKey: "settle-route-original",
+      gateConfig,
+    });
     store.markAdaptiveCandidateHandoffImported({
       tenantId: "tenant-a",
       campaignId: "campaign-1",
@@ -609,28 +656,6 @@ describe("transformer adaptive candidate review routes", () => {
       observedAt: "2026-08-06T12:01:40.000Z",
       evidenceRefs: ["evidence://candidate/imported"],
       idempotencyKey: "handoff-original-imported",
-      gateConfig,
-    });
-    store.recordAttemptFailure({
-      tenantId: "tenant-a",
-      campaignId: "campaign-1",
-      unitId: "unit-1",
-      leaseGeneration: originalLease.leaseGeneration,
-      leaseToken,
-      code: "worker_crash",
-      errorCode: "transformer_worker_crashed_after_candidate_import",
-      accounting: {
-        plannerCalls: 1,
-        modelCalls: 1,
-        inputTokens: 100,
-        outputTokens: 20,
-        totalTokens: 120,
-        actualCostUsd: 0.001,
-        wallTimeMs: 1_000,
-      },
-      observedAt: "2026-08-06T12:02:00.000Z",
-      evidenceRefs: ["evidence://attempt/failed"],
-      idempotencyKey: "fail-original",
       gateConfig,
     });
 
@@ -736,6 +761,19 @@ describe("transformer adaptive candidate review routes", () => {
     expect(store.listEvents("tenant-a", "campaign-1")
       .filter((event) => event.type === "campaign.authorize_regeneration")).toHaveLength(1);
 
+    store.bindRoutingAttempt({
+      tenantId: "tenant-a",
+      campaignId: "campaign-1",
+      runId: "run-successor",
+      envelopeId: "route-successor",
+      outcomeIdempotencyKey: "route-successor-outcome",
+      executorId: "transformer-attempt",
+      providerId: "mendpoint-transformer",
+      observedAt: new Date(Date.parse(scheduledAt) + 750).toISOString(),
+      evidenceRefs: ["evidence://routing/successor"],
+      idempotencyKey: "bind-route-successor",
+      gateConfig,
+    });
     const successorToken = "regeneration-successor-lease-token";
     const successorLease = store.claimNextAttempt({
       tenantId: "tenant-a",
