@@ -522,9 +522,3 @@
 **Mistake:** The lineage-key backfill ran only inside the column-add branch, so a crash after ALTER but before UPDATE made the partial migration permanent.
 **Correction:** Run authoritative NULL-row backfill independently and idempotently on every startup, preserving NULL when historical identity cannot be proven.
 **Rule:** Every multi-step migration must resume from each durable intermediate state. A newly present column is not evidence that its data migration completed.
-
-### 2026-08-30 — Disabling Depot does not remove remote-builder authority
-
-**Mistake:** The deployment repair changed `--depot` without tracing where the image would be built, so Fly fell back to its legacy remote builder and the app-scoped deploy token was rejected before the Dockerfile was read.
-**Correction:** Use the GitHub runner's already proven local Docker daemon for image construction, leaving the app-scoped token responsible only for registry upload and app deployment.
-**Rule:** When replacing a failing build service, verify builder selection, registry upload authority, deployment authority, and runtime verification as separate links before shipping the repair.
