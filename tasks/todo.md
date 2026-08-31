@@ -4128,7 +4128,6 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The complete matrix recomputation produced issue-authority digest `sha256:87e9f68ce12947e833983dd4bf68bc97e070b0c08a3b249105f3c0d967c21083`. The release-train digest remains `sha256:f4666ff849eca0a74d939d6a1f918042bc8e1091a7f6ae476bcdc1d5a7abf2c1` because no release-train record changed.
 - `npm run spec:check`, `npm run closure:check`, `npm run ledger:check`, and `npm run ga:check` pass. The focused GitHub authority, closure-matrix, and proposal-authority suite passes all 127 tests. `git diff --check` passes.
 - Review found no requirement, availability, public-claim, issue ownership, issue title, issue URL, requirement mapping, release-train, workflow, policy, credential, or runtime change. Protected GitHub authority and production acceptance remain pending until this exact change is reviewed, merged normally, and observed on the deployed main revision.
-
 ## 2026-08-30 Plan 05-03A final authority repair
 
 - [x] Restrict complete-graph short-circuiting to change classes the endpoint projection can represent, and materialize direct, wrapper, and test sites from graph evidence.
@@ -4201,3 +4200,31 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The projection mints a `repository:`-scoped `REVIEW_PREFERENCE` candidate per reviewed outcome, and both live consumers of Organization Memory read it tenant-wide with no scope filter. The ReGauge plan consult picked one inferred candidate per layer by sorting on a sha256, so which repository's reviewer preference governed a plan was arbitrary; the Mission Context Compiler caps each section, so unrelated repositories could crowd out relevant memory. A single shared predicate now bounds repository-scoped memory to the repositories a consult is actually about, applied at both sites.
 - `subjectKey` components are escaped so a colon inside one component cannot collide with a different component split. Both values are enum-ish today, so this is a structural guard, not a live defect.
 - Not changed here, and routed to the schema owner instead: revoking governed-learning consent is forward-looking and does not retract already-projected candidates. That matches the append-only learning-corpus model and is a consent-policy decision, not a defect in this plan.
+
+## 2026-08-30 GSD Plan 10-04: recovery qualification collector
+
+Requirement: `ME-ENT-007`, issue #438. Acceptance: define and prove RTO, RPO, backup, restore, migration, rollback, regional failure, and recurring drills across the database, graph, artifacts, change-source state, ReGauge control plane, ReGauge execution state, and configuration. Production backup-provider, cross-region, and real regional-failover observations remain an explicit external leaf.
+
+- [ ] RED: specify one bounded production recovery qualification caller that consumes an authenticated object-backup receipt, restores all seven resources to an isolated target, opens the restored stores through their current schema convergence paths, and records exact pre-upgrade and post-upgrade identities without mutating the source or active deployment.
+- [ ] GREEN: publish one create-only, authenticated evidence envelope binding the backup, key identifier, object commit, exact deployed and repository revisions, resource digests, schema convergence, semantic canaries, measured RTO and RPO, rollback digest, recovery-region identity, and the external-proof state.
+- [ ] RED: prove wrong tenant or backup identity, receipt or object tampering, unsupported prior schema, partial restore, live-target overlap, symlink or path escape, duplicate output, missed objective, canary failure, migration failure, rollback drift, dependency outage, and interrupted replay cannot publish passing evidence.
+- [ ] GREEN: make an exact completed proof replay without another download or restore, and leave failed or externally incomplete evidence distinct from a passing synthetic or local drill.
+- [ ] Verify focused recovery tests, prior-schema convergence suites, Ops and scripts typechecks, full tests and typecheck, optimized build, GA gates, dependency audit, and diff integrity.
+- [ ] Obtain independent exact-head review, current-base protected CI, protected merge, exact-revision deployment, and a live collector run. Keep `ME-ENT-007` below GA until the production provider, approved cross-region target, and real regional-failure drill are attributable.
+
+### Files and interfaces
+
+- `scripts/production-recovery-proof.ts`: protected recovery proof caller and create-only evidence publication.
+- `scripts/production-recovery-proof.test.ts`: exact replay, hostile receipt, prior-schema, failure, rollback, and third-state matrix.
+- `package.json`: operator command only. Reuse the existing object-backup, restore, schema, and measured-drill contracts; do not create a second backup format.
+
+### Threats and rollback
+
+- Secret material remains environment-only and is never persisted in inputs, output, logs, digests, or errors. The evidence envelope retains key identifiers and authenticated receipt digests only.
+- The caller accepts only an isolated empty target and a distinct rollback target, rejects active data roots and filesystem redirects, and holds the existing mutation fence through store convergence and canary reads.
+- A local or synthetic drill can prove engineering behavior but cannot set `productionProven`, satisfy the external evidence leaf, or promote a public recovery claim.
+- Rollback removes only the operator caller and command. Existing backup formats, receipts, scheduled jobs, retained objects, source state, and production recovery authority remain unchanged.
+
+### Review
+
+- Pending implementation and verification.
