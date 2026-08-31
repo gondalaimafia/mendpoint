@@ -2062,17 +2062,17 @@
   "releaseTrain": {
     "provider": "github",
     "repository": "gondalaimafia/mendpoint",
-    "observedAt": "2026-08-30T22:22:50.000Z",
-    "observedMainRevision": "ef5ea1be6807040023541ac74ebdec42a2d75f91",
-    "observationDigest": "sha256:f4666ff849eca0a74d939d6a1f918042bc8e1091a7f6ae476bcdc1d5a7abf2c1",
+    "observedAt": "2026-08-31T01:02:58.000Z",
+    "observedMainRevision": "94185f823042208e90bbd05bc6013475acc20820",
+    "observationDigest": "sha256:927f5be06fdeca086a8165fe3f17184f481c6700b8a46d547028140eafc0b61b",
     "ownershipAuthority": "provisional_branch_prefix_only",
     "currentPullRequestBootstrap": {
       "observationSource": "github_api",
-      "number": 580,
-      "url": "https://github.com/gondalaimafia/mendpoint/pull/580",
-      "title": "Retire obsolete legacy deployment",
+      "number": 585,
+      "url": "https://github.com/gondalaimafia/mendpoint/pull/585",
+      "title": "Bypass unavailable Fly Depot builder",
       "baseBranch": "main",
-      "headBranch": "codex/retire-legacy-deploy",
+      "headBranch": "codex/fly-depot-bypass",
       "owner": {
         "actor": "Codex",
         "source": "github_label",
@@ -2087,12 +2087,12 @@
       "blockers": [],
       "remediatesPullRequests": [],
       "authorityRotation": {
-        "rotationId": "rotation-20260830-011",
+        "rotationId": "rotation-20260831-012",
         "kind": "runtime",
-        "issuedAt": "2026-08-30T22:22:50.000Z",
-        "expiresAt": "2026-08-31T22:22:50.000Z",
-        "basePolicySha256": "sha256:e1c13a09fd9b00b2b0f0a509f7ffec56649676a08379931508d5dadeb4f62215",
-        "proposedPolicySha256": "sha256:ce460df1f6b6f803952d7a98b4193c45db62e82889f00adf678ffd5b535b90ba"
+        "issuedAt": "2026-08-31T01:02:58.000Z",
+        "expiresAt": "2026-09-01T01:02:58.000Z",
+        "basePolicySha256": "sha256:ce460df1f6b6f803952d7a98b4193c45db62e82889f00adf678ffd5b535b90ba",
+        "proposedPolicySha256": "sha256:ad29ced4c2d768a12a37ec35f9fb3a0035548ab7832ddd54d922878966d7aa70"
       }
     },
     "pullRequests": [
