@@ -1316,7 +1316,6 @@ export function getLatestActualExecutionCostForTaskBeforeAttempt(
   const row = one<CostRow>(db,
     `SELECT * FROM actual_execution_cost_entries
      WHERE tenant_id = ? AND task_id = ? AND attempt_number < ?
-       AND total_cost_money_micros > 0
      ORDER BY attempt_number DESC, entry_sequence DESC LIMIT 1`,
     [input.tenantId, input.taskId, input.attemptNumber]);
   return row ? entryFromRow(row) : undefined;

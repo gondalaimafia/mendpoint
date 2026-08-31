@@ -405,7 +405,7 @@ describe("mission-task job bridge", () => {
     expect(listActualExecutionCosts(db, "t1")).toHaveLength(2);
   });
 
-  it("does not wedge a paid retry behind an uncharged first lease and links only charged history", () => {
+  it("retains retry lineage through a measured zero-cost prior execution", () => {
     const db = fixture();
     const claimed = job({ missionId: "m1", goal: "repair", consumerId: "c1" });
     bridgeClaimedJobToMissionTask(db, claimed, at);
@@ -427,7 +427,7 @@ describe("mission-task job bridge", () => {
     })).toMatchObject({
       executionId: "job-1:lease-2:attempt-2",
       totalCostMoneyMicros: 50_000,
-      fallbackFromExecutionId: null,
+      fallbackFromExecutionId: "job-1:lease-1:attempt-1",
     });
 
     const laterEnvelope = seedRouting(db, "session-later-retry", "job-1", 0.04);
@@ -439,6 +439,24 @@ describe("mission-task job bridge", () => {
     })).toMatchObject({
       executionId: "job-1:lease-3:attempt-3",
       fallbackFromExecutionId: "job-1:lease-2:attempt-2",
+    });
+  });
+
+  it("does not wedge a later paid lease when no prior cost row exists", () => {
+    const db = fixture();
+    const claimed = job({ missionId: "m1", goal: "repair", consumerId: "c1" });
+    bridgeClaimedJobToMissionTask(db, claimed, at);
+    const paidEnvelope = seedRouting(db, "session-paid-without-prior", "job-1", 0.05);
+
+    expect(recordBoundMissionExecutionCost(db, {
+      job: { ...claimed, attempts: 2 },
+      routingRunId: "session-paid-without-prior",
+      routingEnvelopeId: paidEnvelope,
+      createdAt: at,
+    })).toMatchObject({
+      executionId: "job-1:lease-2:attempt-2",
+      totalCostMoneyMicros: 50_000,
+      fallbackFromExecutionId: null,
     });
   });
 
