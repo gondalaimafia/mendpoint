@@ -524,6 +524,50 @@ describe("worker mission-context producer (real stores)", () => {
     expect(compiled.injection.promptBody).toContain("use the internal auth client");
   });
 
+  // `listOrganizationMemory` is tenant-wide and carries no scope filter, so before
+  // this filter a `repository:`-scoped convention from ANY repository in the tenant
+  // reached every task's context. The governed-outcome projection now mints one such
+  // candidate per reviewed outcome, so unrelated repositories would also compete for
+  // the compiler's per-section cap. Deleting the `organizationMemoryScopeApplies`
+  // filter in mission-context.ts puts r2's statement in the prompt and makes
+  // `applied` length 2, failing both assertions.
+  it("excludes organization memory scoped to a DIFFERENT repository than the task", () => {
+    const db = fixture();
+    createExplicitMemory(db, {
+      tenantId: "t1",
+      category: "CODING_CONVENTION",
+      scope: "repository:r1",
+      subjectKey: "imports",
+      statement: "use the internal auth client in this repository",
+      actorPrincipalId: "p1",
+      reason: "org convention",
+      at: T0,
+    });
+    createExplicitMemory(db, {
+      tenantId: "t1",
+      category: "CODING_CONVENTION",
+      scope: "repository:r2",
+      subjectKey: "imports",
+      statement: "use the vendored auth client in the other repository",
+      actorPrincipalId: "p1",
+      reason: "org convention",
+      at: T0,
+    });
+    const mission = getMission(db, "t1", "m1")!;
+    const compiled = buildMissionContext(db, {
+      tenantId: "t1",
+      mission,
+      task: { taskId: "task-scope", capability: "code_migration", riskClass: "medium", goal: "Do the migration" },
+      fallback: { objective: mission.objective, repositoryId: mission.repositoryId, snapshotId: mission.snapshotId },
+    });
+
+    expect(mission.repositoryId).toBe("r1");
+    if (compiled.envelope.relevantOrgMemory.status !== "consulted") throw new Error("unreachable");
+    expect(compiled.envelope.relevantOrgMemory.applied).toHaveLength(1);
+    expect(compiled.injection.promptBody).toContain("use the internal auth client in this repository");
+    expect(compiled.injection.promptBody).not.toContain("vendored auth client");
+  });
+
   it("carries a pinned graph version on mission identity without inventing an impact query", () => {
     const db = fixture();
     const beforeMission = getMission(db, "t1", "m1")!;

@@ -62,7 +62,34 @@ export function runOutcomeResolutionLearning(
     artifactEnv: input.artifactEnv,
     now: input.now,
   });
-  return payload.lane === "fettler"
+  const admission = payload.lane === "fettler"
     ? admitWardenLearningForResolvedOutcome(shared)
     : admitTransformerLearningForResolvedOutcome(shared);
+  observeMemoryProjectionFailure(input.job, admission);
+  return admission;
+}
+
+/**
+ * The single live boundary that OBSERVES a failed Organization Memory projection.
+ *
+ * `projectGovernedOutcomeToOrganizationMemory` never throws — it returns a third
+ * value, `{ status: "failed" }` — and the only production caller of this function
+ * (apps/worker/src/cli.ts, the `learning.outcome.resolve` branch) hands the whole
+ * admission to `completeJob`, where the failure lands in `jobs.result_json` and
+ * nothing queries, counts, or alerts on it. Without this line "the projection
+ * failed" and "there was nothing to project" are indistinguishable to every
+ * operator surface, which is exactly the third-state defect the projection's own
+ * honest return value exists to avoid. The token is stable and greppable, matching
+ * the `verifier_shadow_failed:*` idiom already used in the worker loop. It is a
+ * report only: a projection failure still must not fail the job or the admission.
+ */
+function observeMemoryProjectionFailure(
+  job: JobRow,
+  admission: GovernedLearningAdmissionResult,
+): void {
+  if (admission.memoryProjection?.status !== "failed") return;
+  console.error(
+    `organization_memory_projection_failed job=${job.id} tenant=${job.tenant_id} ` +
+      `event=${admission.eventId ?? "none"} reason=${admission.memoryProjection.reason}`,
+  );
 }
