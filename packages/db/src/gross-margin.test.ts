@@ -759,4 +759,79 @@ describe("actual execution cost and gross margin", () => {
       db.raw.prepare("DELETE FROM actual_execution_cost_entries WHERE id = 'cost-a'").run(),
     ).toThrow("actual_execution_cost_entries_append_only");
   });
+
+  it("scopes execution-cost outcome reads and writes to the requesting tenant", () => {
+    const db = setupDb();
+    setupTenant(db, "tenant-b", "b");
+    // Both tenants carry the SAME execution id. A cost lookup or outcome read
+    // that loses its tenant predicate resolves the other tenant's row, and this
+    // feeds the customer-facing GET /execution-costs and the revenue
+    // attribution in reconcileGrossMargin.
+    const costA = recordActualExecutionCost(db, costInput({
+      outcomeStatus: "unresolved",
+      acceptedOutcomeId: null,
+    }));
+    const costB = recordActualExecutionCost(db, costInput({
+      id: "cost-b",
+      tenantId: "tenant-b",
+      idempotencyKey: "cost-b",
+      executionId: "execution-a",
+      taskId: "task-b",
+      campaignId: "campaign-b",
+      outcomeStatus: "unresolved",
+      acceptedOutcomeId: null,
+      actorPrincipalId: "principal-b",
+    }));
+    expect(costA.id).not.toBe(costB.id);
+    expect(costA.entryHash).not.toBe(costB.entryHash);
+
+    const reject = (tenantId: string, suffix: string, cost: { id: string; entryHash: string }) => {
+      const createdAt = "2026-08-01T12:03:00.000Z";
+      const artifactId = `rejected-artifact-${suffix}`;
+      const content = JSON.stringify({ costEntryId: cost.id, costEntryHash: cost.entryHash });
+      const authorityDigest = createHash("sha256").update(content).digest("hex");
+      insertArtifactManifest(db, {
+        id: artifactId, tenantId, kind: "review-evidence", schemaVersion: 1,
+        sha256: authorityDigest, mediaType: "application/json",
+        sizeBytes: Buffer.byteLength(content), storageRef: `evidence://${artifactId}`,
+        content, producerPrincipalId: `principal-${suffix}`, createdAt,
+      });
+      insertReviewDecision(db, {
+        id: `review-${suffix}`, tenantId, subjectType: "execution_cost",
+        subjectId: "execution-a", candidateArtifactId: artifactId,
+        reviewerPrincipalId: `principal-${suffix}`, decision: "reject",
+        rationale: "Tenant-scope test outcome", createdAt,
+      });
+      return recordExecutionCostOutcome(db, {
+        id: `outcome-${suffix}`,
+        tenantId,
+        idempotencyKey: `outcome-${suffix}`,
+        executionId: "execution-a",
+        outcomeStatus: "rejected",
+        authorityKind: "reviewer",
+        authorityEvidenceId: `review-${suffix}`,
+        authorityDigest,
+        actorPrincipalId: `principal-${suffix}`,
+        createdAt,
+      });
+    };
+
+    // Written second, so an unscoped cost lookup resolves tenant_default's
+    // earlier row instead of this tenant's.
+    const outcomeB = reject("tenant-b", "b", costB);
+    expect(outcomeB.costEntryId).toBe(costB.id);
+    expect(outcomeB.tenantId).toBe("tenant-b");
+    expect(listExecutionCostOutcomes(db, "tenant-b").map((row) => row.id)).toEqual(["outcome-b"]);
+    expect(listExecutionCostOutcomes(db, "tenant_default")).toEqual([]);
+    expect(listExecutionCostOutcomes(db, "tenant-b", "execution-a").map((row) => row.costEntryId))
+      .toEqual([costB.id]);
+    expect(listExecutionCostOutcomes(db, "tenant_default", "execution-a")).toEqual([]);
+
+    const outcomeA = reject("tenant_default", "a", costA);
+    expect(outcomeA.costEntryId).toBe(costA.id);
+    expect(listExecutionCostOutcomes(db, "tenant_default").map((row) => row.id)).toEqual(["outcome-a"]);
+    expect(listExecutionCostOutcomes(db, "tenant-b").map((row) => row.id)).toEqual(["outcome-b"]);
+    expect(verifyExecutionOutcomeIntegrity(db, "tenant_default")).toEqual({ ok: true, checked: 1 });
+    expect(verifyExecutionOutcomeIntegrity(db, "tenant-b")).toEqual({ ok: true, checked: 1 });
+  });
 });

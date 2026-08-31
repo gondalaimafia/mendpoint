@@ -335,11 +335,25 @@ export function reconcilePriorPaidWardenAttempts(
       if (!Number.isSafeInteger(value)) throw new Error("warden_paid_attempt_evidence_invalid");
       return value;
     };
+    const inputTokens = sumInteger("charged_input_tokens");
+    const outputTokens = sumInteger("charged_output_tokens");
+    const totalTokens = sumInteger("charged_total_tokens");
     const costUsd = reservations.reduce(
       (sum, reservation) => sum + reservation.charged_cost_usd!,
       0,
     );
     if (!Number.isFinite(costUsd)) throw new Error("warden_paid_attempt_evidence_invalid");
+    // A reservation settled without a reported cost was never observed: its
+    // charged_* columns hold the reservation ceiling, written precisely BECAUSE
+    // nothing came back from the provider (settleUnknownReservation, and any
+    // settlement that reported no usage). The ceiling is what we charge, never
+    // what we measured, so the recovered routing row carries a null cost and
+    // null tokens. That resolves `modelCostMeasured` to false downstream and
+    // stamps the immutable cost entry's provenance `:cost_unmeasured` instead of
+    // attesting a routing-ledger measurement for a call nobody ever saw.
+    const costMeasured = reservations.every(
+      (reservation) => reservation.reported_cost_usd !== null,
+    );
     const evidence = reservations.map((reservation) => ({
       reservationId: reservation.id,
       reservationDigest: reservation.reservation_digest,
@@ -365,10 +379,10 @@ export function reconcilePriorPaidWardenAttempts(
         action: "human_handoff",
         outcome: "failed",
         errorCode: "warden_routing_outcome_recovered_from_model_reservations",
-        inputTokens: sumInteger("charged_input_tokens"),
-        outputTokens: sumInteger("charged_output_tokens"),
-        totalTokens: sumInteger("charged_total_tokens"),
-        costUsd,
+        inputTokens: costMeasured ? inputTokens : null,
+        outputTokens: costMeasured ? outputTokens : null,
+        totalTokens: costMeasured ? totalTokens : null,
+        costUsd: costMeasured ? costUsd : null,
         startedAt: reservations.map((reservation) => reservation.reserved_at).sort()[0]!,
         completedAt: reservations.map((reservation) => reservation.settled_at!).sort().at(-1)!,
         observedAt: input.observedAt,

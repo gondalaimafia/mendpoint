@@ -24,6 +24,7 @@ import {
   recordRoutingOutcome,
   reserveWardenModelCall,
   resolveTaskHandoff,
+  settleActiveWardenModelReservationsForFence,
   settleWardenModelCall,
   type AppDb,
 } from "@mendpoint/db";
@@ -220,6 +221,123 @@ describe("mission-task job bridge", () => {
         modelCostMoneyMicros: 500_000,
       }),
     ]);
+    expect(getWardenModelReservation(db, "t1", reservationId)).toEqual(settledBeforeRetry);
+  });
+
+  it("recovers a never-observed prior lease as unmeasured instead of the reservation ceiling", () => {
+    const db = fixture();
+    enqueueJob(db, {
+      id: "job-unknown-recovery",
+      tenantId: "t1",
+      type: "agent.run",
+      payload: { missionId: "m1", goal: "repair", consumerId: "c1" },
+      createdAt: at,
+    });
+    const first = claimNextJob(db, ["agent.run"], {
+      tenantId: "t1",
+      workerId: "worker-first",
+      leaseMs: 60_000,
+      now: at,
+    })!;
+    bridgeClaimedJobToMissionTask(db, first, at);
+    recordRoutingDecision(db, {
+      tenantId: "t1",
+      jobId: first.id,
+      runId: "session-unknown:lease-1",
+      taskKind: "agent.run",
+      envelopeId: "envelope-unknown-first",
+      policySnapshotId: "policy-unknown-first",
+      taskSnapshotId: "snapshot-unknown-first",
+      action: "route",
+      selectedExecutorId: "executor-frontier",
+      providerId: "provider-frontier",
+      eliminated: [], fallback: [], breaker: [], handoffRequired: false,
+      decision: { decisionId: "envelope-unknown-first" },
+      createdAt: at,
+    });
+    const reservationId = "wdmodel-unknown-recovery";
+    reserveWardenModelCall(db, {
+      id: reservationId,
+      tenantId: "t1",
+      jobId: first.id,
+      runId: "session-unknown",
+      workerId: first.lease_owner!,
+      leaseGeneration: first.lease_generation,
+      callIndex: 1,
+      requestDigest: digest("c"),
+      provider: "provider-frontier",
+      configuredModel: "model-a",
+      endpointHost: "models.example",
+      maximumInputTokens: 1_000,
+      maximumOutputTokens: 200,
+      maximumTotalTokens: 1_200,
+      maximumCostUsd: 7,
+      jobBudgetUsd: 20,
+      observedAt: "2026-01-01T00:00:01.000Z",
+    });
+    // Process death between reserve and terminal: the fence sweep settles the
+    // reservation `unknown` at its ceiling precisely because nothing was ever
+    // observed from the provider. reported_cost_usd stays NULL.
+    expect(settleActiveWardenModelReservationsForFence(db, {
+      jobId: first.id,
+      workerId: first.lease_owner!,
+      leaseGeneration: first.lease_generation,
+      observedAt: "2026-01-01T00:00:02.000Z",
+      errorCode: "warden_model_job_failed",
+    })).toBe(1);
+    const settledBeforeRetry = getWardenModelReservation(db, "t1", reservationId)!;
+    expect(settledBeforeRetry).toMatchObject({
+      status: "unknown",
+      reported_cost_usd: null,
+      charged_cost_usd: 7,
+    });
+    expect(failJob(db, first.id, "terminal transaction rolled back", "2026-01-01T00:00:03.000Z", {
+      workerId: first.lease_owner!,
+      leaseGeneration: first.lease_generation,
+      errorCode: "mcu_accounting_persistence_failed",
+      retryable: true,
+      baseDelayMs: 1_000,
+      maxDelayMs: 1_000,
+    }).status).toBe("pending");
+    const retry = claimNextJob(db, ["agent.run"], {
+      tenantId: "t1",
+      workerId: "worker-retry",
+      leaseMs: 60_000,
+      now: "2026-01-01T00:00:05.000Z",
+    })!;
+    expect(retry.lease_generation).toBe(2);
+
+    // The pending routing row is still closed — the paid attempt is recovered —
+    // but it carries no fabricated usage.
+    expect(reconcilePriorPaidWardenAttempts(db, {
+      job: retry,
+      observedAt: "2026-01-01T00:00:06.000Z",
+    })).toBe(1);
+    expect(getRoutingLedgerForJob(db, retry.id, "t1")).toEqual([
+      expect.objectContaining({
+        run_id: "session-unknown:lease-1",
+        outcome: "failed",
+        error_code: "warden_routing_outcome_recovered_from_model_reservations",
+        input_tokens: null,
+        output_tokens: null,
+        total_tokens: null,
+        cost_usd: null,
+      }),
+    ]);
+    // The append-only cost entry must not attest a measurement that never
+    // happened, and must not charge the reservation ceiling as measured money.
+    const costs = listActualExecutionCosts(db, "t1");
+    expect(costs).toEqual([
+      expect.objectContaining({
+        executionId: "job-unknown-recovery:lease-1:attempt-1",
+        attemptNumber: 1,
+        modelCostMeasured: false,
+        modelCostMoneyMicros: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+      }),
+    ]);
+    expect(costs[0]!.measurementProvenance.model).toMatch(/:cost_unmeasured$/);
     expect(getWardenModelReservation(db, "t1", reservationId)).toEqual(settledBeforeRetry);
   });
 
@@ -476,7 +594,17 @@ describe("mission-task job bridge", () => {
     })).toMatchObject({ outcomeStatus: "unresolved", acceptedOutcomeId: null });
   });
 
-  it("joins the terminal job transaction so accounting failures remain retryable", () => {
+  // Scope note: this proves the DB primitive participates in the caller's
+  // transaction, so a failed cost write leaves no partial row. It does NOT
+  // prove the classifier path: in production `recordJobMissionExecutionCost`
+  // only ever runs after `applyRoutingOutcome` has set
+  // `routingFinalizationStarted`, so `mcu_accounting_persistence_failed` is
+  // always wrapped in `WardenAtomicFinalizationError` and rethrown at
+  // cli.ts:4423 before `classifyJobFailure` sees it. That failure recovers by
+  // lease expiry and `reconcilePriorPaidWardenAttempts`, not by a `failJob`
+  // retry with backoff. (`mcu_settlement_persistence_failed` from
+  // `settleFanoutRunUsage` does reach the classifier.)
+  it("joins the terminal job transaction so a failed cost write leaves no partial row", () => {
     const db = fixture();
     const failed = job(
       { missionId: "m1", goal: "repair", consumerId: "c1" },
