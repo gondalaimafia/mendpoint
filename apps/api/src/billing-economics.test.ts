@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  appendDomainEvent,
   createApiKey,
   createDb,
   createMission,
@@ -848,6 +849,42 @@ describe("billing economics API routes", () => {
       }),
     });
     expect(accepted.status).toBe(201);
+    const acceptedBody = await accepted.json();
+    const acceptedReplay = await app.request("/billing/execution-costs/job-production-a/outcomes", {
+      method: "POST",
+      headers: headers(tenantA, "mission-outcome-a"),
+      body: JSON.stringify({
+        authorityEvidenceId: "review-production-a",
+      }),
+    });
+    expect(acceptedReplay.status).toBe(201);
+    await expect(acceptedReplay.json()).resolves.toEqual(acceptedBody);
+
+    const costs = await app.request("/billing/execution-costs", {
+      headers: headers(tenantA, "mission-cost-list"),
+    });
+    expect(costs.status).toBe(200);
+    await expect(costs.json()).resolves.toMatchObject({
+      data: [{
+        executionId: "job-production-a",
+        outcomeStatus: "accepted",
+        acceptedOutcomeId: "pull-request-a",
+        modelCostMeasured: true,
+        cacheCostMeasured: true,
+        gpuCostMeasured: true,
+        graphCostMeasured: true,
+        sandboxCostMeasured: true,
+        verificationCostMeasured: true,
+        measurementProvenance: {
+          model: "provider_invoice:model-a",
+          cache: "provider_invoice:cache",
+          gpu: "runtime_meter:gpu",
+          graph: "runtime_meter:graph",
+          sandbox: "runtime_meter:sandbox",
+          verification: "runtime_meter:verification",
+        },
+      }],
+    });
 
     const margin = await app.request("/billing/gross-margin", {
       headers: headers(tenantA, "mission-margin"),
@@ -879,6 +916,53 @@ describe("billing economics API routes", () => {
         ],
       },
     });
+
+    const rollback = appendDomainEvent(db, {
+      id: "rollback-production-a",
+      tenantId: "billing-tenant-a",
+      schemaVersion: 1,
+      eventType: "execution_cost.rolled_back",
+      aggregateType: "execution_cost",
+      aggregateId: "job-production-a",
+      actorPrincipalId: actor!.id,
+      correlationId: "job-production-a",
+      idempotencyKey: "rollback-production-a",
+      payload: {
+        costEntryId: recordedCost.id,
+        costEntryHash: recordedCost.entryHash,
+      },
+      createdAt: "2026-09-02T00:01:00.000Z",
+    });
+    const rolledBack = await app.request("/billing/execution-costs/job-production-a/outcomes", {
+      method: "POST",
+      headers: headers(tenantA, "mission-outcome-rollback"),
+      body: JSON.stringify({ authorityEvidenceId: rollback.row.id }),
+    });
+    expect(rolledBack.status).toBe(201);
+    await expect(rolledBack.json()).resolves.toMatchObject({
+      data: { outcomeStatus: "rolled_back", acceptedOutcomeId: null },
+    });
+    const rolledBackCosts = await app.request("/billing/execution-costs", {
+      headers: headers(tenantA, "mission-cost-list-rolled-back"),
+    });
+    await expect(rolledBackCosts.json()).resolves.toMatchObject({
+      data: [{
+        executionId: "job-production-a",
+        outcomeStatus: "rolled_back",
+        acceptedOutcomeId: null,
+      }],
+    });
+
+    const originalReplayAfterRollback = await app.request(
+      "/billing/execution-costs/job-production-a/outcomes",
+      {
+        method: "POST",
+        headers: headers(tenantA, "mission-outcome-a"),
+        body: JSON.stringify({ authorityEvidenceId: "review-production-a" }),
+      },
+    );
+    expect(originalReplayAfterRollback.status).toBe(201);
+    await expect(originalReplayAfterRollback.json()).resolves.toEqual(acceptedBody);
 
     db.raw.exec("DROP TRIGGER actual_execution_cost_outcomes_append_only_update");
     db.raw.prepare(

@@ -629,17 +629,6 @@ export function recordExecutionCostOutcome(
       `SELECT * FROM actual_execution_cost_entries WHERE tenant_id = ? AND execution_id = ?`,
       [input.tenantId, input.executionId]);
     if (!cost) throw new Error("execution_cost_outcome_execution_not_found");
-    requireCurrentOutcomeAuthority(db, {
-      tenantId: input.tenantId,
-      executionId: input.executionId,
-      outcomeStatus: input.outcomeStatus,
-      acceptedOutcomeId: input.acceptedOutcomeId ?? null,
-      authorityKind: input.authorityKind,
-      authorityEvidenceId,
-      authorityDigest: input.authorityDigest,
-      actorPrincipalId: input.actorPrincipalId,
-      createdAt: input.createdAt,
-    }, cost);
     const boundAuthorityDigest = bindOutcomeAuthorityDigest(
       authorityEvidenceId, input.authorityDigest, cost.entry_hash);
     const replay = one<OutcomeRow>(db,
@@ -658,6 +647,17 @@ export function recordExecutionCostOutcome(
       if (owns) db.raw.exec("COMMIT");
       return existing;
     }
+    requireCurrentOutcomeAuthority(db, {
+      tenantId: input.tenantId,
+      executionId: input.executionId,
+      outcomeStatus: input.outcomeStatus,
+      acceptedOutcomeId: input.acceptedOutcomeId ?? null,
+      authorityKind: input.authorityKind,
+      authorityEvidenceId,
+      authorityDigest: input.authorityDigest,
+      actorPrincipalId: input.actorPrincipalId,
+      createdAt: input.createdAt,
+    }, cost);
     if (Date.parse(input.createdAt) <= Date.parse(cost.created_at)) {
       throw new Error("execution_cost_outcome_authority_predates_execution");
     }

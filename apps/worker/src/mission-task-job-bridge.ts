@@ -309,25 +309,27 @@ export function reconcilePriorPaidWardenAttempts(
       candidate.route.action !== "route" ||
       !candidate.route.selected_executor_id ||
       !candidate.route.provider_id ||
-      reservations.some((reservation) =>
-        reservation.run_id !== candidate.baseRunId ||
-        reservation.provider !== candidate.route.provider_id ||
-        reservation.status === "active" ||
-        !verifyWardenModelReservationIntegrity(reservation).ok ||
-        !Number.isSafeInteger(reservation.charged_input_tokens) ||
-        reservation.charged_input_tokens! < 0 ||
-        !Number.isSafeInteger(reservation.charged_output_tokens) ||
-        reservation.charged_output_tokens! < 0 ||
-        !Number.isSafeInteger(reservation.charged_total_tokens) ||
-        reservation.charged_total_tokens !==
-          reservation.charged_input_tokens! + reservation.charged_output_tokens! ||
-        typeof reservation.charged_cost_usd !== "number" ||
-        !Number.isFinite(reservation.charged_cost_usd) ||
-        reservation.charged_cost_usd < 0 ||
-        !reservation.settled_at ||
-        !Number.isFinite(Date.parse(reservation.reserved_at)) ||
-        !Number.isFinite(Date.parse(reservation.settled_at))
-      )
+      reservations.some((reservation) => {
+        const integrity = verifyWardenModelReservationIntegrity(reservation);
+        return reservation.run_id !== candidate.baseRunId ||
+          reservation.provider !== candidate.route.provider_id ||
+          reservation.status === "active" ||
+          !integrity.ok ||
+          integrity.settlementDigestVersion !== 2 ||
+          !Number.isSafeInteger(reservation.charged_input_tokens) ||
+          reservation.charged_input_tokens! < 0 ||
+          !Number.isSafeInteger(reservation.charged_output_tokens) ||
+          reservation.charged_output_tokens! < 0 ||
+          !Number.isSafeInteger(reservation.charged_total_tokens) ||
+          reservation.charged_total_tokens !==
+            reservation.charged_input_tokens! + reservation.charged_output_tokens! ||
+          typeof reservation.charged_cost_usd !== "number" ||
+          !Number.isFinite(reservation.charged_cost_usd) ||
+          reservation.charged_cost_usd < 0 ||
+          !reservation.settled_at ||
+          !Number.isFinite(Date.parse(reservation.reserved_at)) ||
+          !Number.isFinite(Date.parse(reservation.settled_at));
+      })
     ) {
       throw new Error("warden_paid_attempt_evidence_invalid");
     }

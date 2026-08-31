@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -222,7 +223,7 @@ describe("mission-task job bridge", () => {
     expect(getWardenModelReservation(db, "t1", reservationId)).toEqual(settledBeforeRetry);
   });
 
-  it("rejects tampered paid-attempt evidence without creating immutable recovery rows", () => {
+  it("rejects weak legacy paid-attempt evidence without creating immutable recovery rows", () => {
     const db = fixture();
     enqueueJob(db, {
       id: "job-paid-tampered",
@@ -285,9 +286,26 @@ describe("mission-task job bridge", () => {
       costUsd: 0.5,
       observedAt: "2026-01-01T00:00:02.000Z",
     });
+    const legacySettlementDigest = `sha256:${createHash("sha256").update(JSON.stringify({
+      errorCode: "warden_model_job_failed",
+      jobId: first.id,
+      leaseGeneration: first.lease_generation,
+      status: "unknown",
+      workerId: first.lease_owner,
+    })).digest("hex")}`;
     db.raw.prepare(
-      "UPDATE fettler_model_reservations SET charged_cost_usd = ? WHERE id = ?",
-    ).run(0.6, "wdmodel-paid-tampered");
+      `UPDATE fettler_model_reservations
+       SET status = 'unknown', settlement_digest = ?, actual_model = NULL,
+           body_request_id = NULL, header_request_id = NULL,
+           reported_input_tokens = NULL, reported_output_tokens = NULL,
+           reported_total_tokens = NULL, reported_cost_usd = NULL,
+           charged_input_tokens = maximum_input_tokens,
+           charged_output_tokens = maximum_output_tokens,
+           charged_total_tokens = maximum_total_tokens,
+           charged_cost_usd = maximum_cost_usd,
+           error_code = 'warden_model_job_failed'
+       WHERE id = ?`,
+    ).run(legacySettlementDigest, "wdmodel-paid-tampered");
     failJob(db, first.id, "terminal transaction rolled back", "2026-01-01T00:00:03.000Z", {
       workerId: first.lease_owner!,
       leaseGeneration: first.lease_generation,

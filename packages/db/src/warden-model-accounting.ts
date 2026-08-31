@@ -236,6 +236,45 @@ function storedSettlementFingerprint(row: WardenModelReservationRow): string {
   });
 }
 
+function settleUnknownReservation(
+  db: AppDb,
+  reservation: WardenModelReservationRow,
+  observedAt: string,
+  errorCode: string,
+): void {
+  const settled: WardenModelReservationRow = {
+    ...reservation,
+    status: "unknown",
+    charged_input_tokens: reservation.maximum_input_tokens,
+    charged_output_tokens: reservation.maximum_output_tokens,
+    charged_total_tokens: reservation.maximum_total_tokens,
+    charged_cost_usd: reservation.maximum_cost_usd,
+    error_code: errorCode,
+    settled_at: observedAt,
+  };
+  const settlementDigest = storedSettlementFingerprint(settled);
+  const updated = db.raw.prepare(
+    `UPDATE fettler_model_reservations
+     SET status = 'unknown', settlement_digest = ?,
+         charged_input_tokens = maximum_input_tokens,
+         charged_output_tokens = maximum_output_tokens,
+         charged_total_tokens = maximum_total_tokens,
+         charged_cost_usd = maximum_cost_usd,
+         error_code = ?, settled_at = ?
+     WHERE id = ? AND tenant_id = ? AND status = 'active'
+       AND worker_id = ? AND lease_generation = ?`,
+  ).run(
+    settlementDigest,
+    errorCode,
+    observedAt,
+    reservation.id,
+    reservation.tenant_id,
+    reservation.worker_id,
+    reservation.lease_generation,
+  );
+  if (Number(updated.changes) !== 1) throw new Error("warden_model_job_lease_stale");
+}
+
 export type WardenModelReservationIntegrity = Readonly<{
   ok: boolean;
   reservationDigestVersion: 1;
@@ -575,29 +614,28 @@ export function settleExpiredWardenModelReservations(
   requireIso(observedAt, "warden_model_observed_at_invalid");
   assertTenantScope(tenantId);
   if (tenantId) requireId(tenantId, "warden_model_tenant_invalid");
-  const settlementDigest = digest({ status: "unknown", errorCode: "warden_model_lease_expired" });
-  const updated = db.raw.prepare(
-    `UPDATE fettler_model_reservations
-     SET status = 'unknown', settlement_digest = ?,
-         charged_input_tokens = maximum_input_tokens,
-         charged_output_tokens = maximum_output_tokens,
-         charged_total_tokens = maximum_total_tokens,
-         charged_cost_usd = maximum_cost_usd,
-         error_code = 'warden_model_lease_expired', settled_at = ?
-     WHERE status = 'active'
-       AND ${tenantId ? "tenant_id = ? AND" : ""}
-       EXISTS (
-         SELECT 1 FROM jobs
-         WHERE jobs.id = fettler_model_reservations.job_id
-           AND jobs.tenant_id = fettler_model_reservations.tenant_id
-           AND jobs.status = 'running'
-           AND jobs.lease_owner = fettler_model_reservations.worker_id
-           AND jobs.lease_generation = fettler_model_reservations.lease_generation
-           AND jobs.lease_expires_at IS NOT NULL
-           AND jobs.lease_expires_at <= ?
-       )`,
-  ).run(settlementDigest, observedAt, ...(tenantId ? [tenantId] : []), observedAt);
-  return Number(updated.changes);
+  return transaction(db, () => {
+    const reservations = db.raw.prepare(
+      `SELECT fettler_model_reservations.* FROM fettler_model_reservations
+       WHERE status = 'active'
+         AND ${tenantId ? "tenant_id = ? AND" : ""}
+         EXISTS (
+           SELECT 1 FROM jobs
+           WHERE jobs.id = fettler_model_reservations.job_id
+             AND jobs.tenant_id = fettler_model_reservations.tenant_id
+             AND jobs.status = 'running'
+             AND jobs.lease_owner = fettler_model_reservations.worker_id
+             AND jobs.lease_generation = fettler_model_reservations.lease_generation
+             AND jobs.lease_expires_at IS NOT NULL
+             AND jobs.lease_expires_at <= ?
+         )
+       ORDER BY tenant_id, id`,
+    ).all(...(tenantId ? [tenantId] : []), observedAt) as WardenModelReservationRow[];
+    for (const reservation of reservations) {
+      settleUnknownReservation(db, reservation, observedAt, "warden_model_lease_expired");
+    }
+    return reservations.length;
+  });
 }
 
 export function settleActiveWardenModelReservationsForFence(
@@ -615,22 +653,9 @@ export function settleActiveWardenModelReservationsForFence(
   requireInteger(input.leaseGeneration, "warden_model_lease_generation_invalid");
   requireIso(input.observedAt, "warden_model_observed_at_invalid");
   const errorCode = requireId(input.errorCode, "warden_model_error_code_invalid");
-  const settlementDigest = digest({
-    status: "unknown",
-    jobId: input.jobId,
-    workerId: input.workerId,
-    leaseGeneration: input.leaseGeneration,
-    errorCode,
-  });
   return transaction(db, () => {
-    const updated = db.raw.prepare(
-      `UPDATE fettler_model_reservations
-       SET status = 'unknown', settlement_digest = ?,
-           charged_input_tokens = maximum_input_tokens,
-           charged_output_tokens = maximum_output_tokens,
-           charged_total_tokens = maximum_total_tokens,
-           charged_cost_usd = maximum_cost_usd,
-           error_code = ?, settled_at = ?
+    const reservations = db.raw.prepare(
+      `SELECT fettler_model_reservations.* FROM fettler_model_reservations
        WHERE status = 'active'
          AND job_id = ? AND worker_id = ? AND lease_generation = ?
          AND EXISTS (
@@ -642,17 +667,18 @@ export function settleActiveWardenModelReservationsForFence(
              AND jobs.lease_generation = fettler_model_reservations.lease_generation
              AND jobs.lease_expires_at IS NOT NULL
              AND jobs.lease_expires_at > ?
-         )`,
-    ).run(
-      settlementDigest,
-      errorCode,
-      input.observedAt,
+         )
+       ORDER BY tenant_id, id`,
+    ).all(
       input.jobId,
       input.workerId,
       input.leaseGeneration,
       input.observedAt,
-    );
-    return Number(updated.changes);
+    ) as WardenModelReservationRow[];
+    for (const reservation of reservations) {
+      settleUnknownReservation(db, reservation, input.observedAt, errorCode);
+    }
+    return reservations.length;
   });
 }
 

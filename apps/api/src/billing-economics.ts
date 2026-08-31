@@ -20,6 +20,7 @@ import {
   type ActualExecutionCostEntry,
   type ActualExecutionCostInput,
   type AppDb,
+  type ExecutionCostOutcome,
   type GrossMarginReconciliation,
   type InvoiceExport,
   type InvoiceExportSigner,
@@ -282,7 +283,10 @@ function recordId(tenantId: string, idempotencyKey: string): string {
     .slice(0, 32)}`;
 }
 
-function publicExecutionCost(entry: ActualExecutionCostEntry) {
+function publicExecutionCost(
+  entry: ActualExecutionCostEntry,
+  latestOutcome?: ExecutionCostOutcome,
+) {
   return {
     id: entry.id,
     executionId: entry.executionId,
@@ -293,8 +297,10 @@ function publicExecutionCost(entry: ActualExecutionCostEntry) {
     attemptNumber: entry.attemptNumber,
     retryNumber: entry.retryNumber,
     fallbackFromExecutionId: entry.fallbackFromExecutionId,
-    outcomeStatus: entry.outcomeStatus,
-    acceptedOutcomeId: entry.acceptedOutcomeId,
+    outcomeStatus: latestOutcome?.outcomeStatus ?? entry.outcomeStatus,
+    acceptedOutcomeId: latestOutcome
+      ? latestOutcome.acceptedOutcomeId
+      : entry.acceptedOutcomeId,
     inputTokens: entry.inputTokens,
     outputTokens: entry.outputTokens,
     cacheReadTokens: entry.cacheReadTokens,
@@ -308,6 +314,13 @@ function publicExecutionCost(entry: ActualExecutionCostEntry) {
     graphCostMoneyMicros: entry.graphCostMoneyMicros,
     sandboxCostMoneyMicros: entry.sandboxCostMoneyMicros,
     verificationCostMoneyMicros: entry.verificationCostMoneyMicros,
+    modelCostMeasured: entry.modelCostMeasured,
+    cacheCostMeasured: entry.cacheCostMeasured,
+    gpuCostMeasured: entry.gpuCostMeasured,
+    graphCostMeasured: entry.graphCostMeasured,
+    sandboxCostMeasured: entry.sandboxCostMeasured,
+    verificationCostMeasured: entry.verificationCostMeasured,
+    measurementProvenance: entry.measurementProvenance,
     totalCostMoneyMicros: entry.totalCostMoneyMicros,
     currency: entry.currency,
     createdAt: entry.createdAt,
@@ -541,7 +554,9 @@ export function createBillingEconomicsRoutes({
       if (!review && !event) {
         return errorResponse(c, "execution_cost_outcome_evidence_invalid", "Tenant-bound outcome evidence was not found", 409);
       }
-      const prior = listExecutionCostOutcomes(db, identity.tenantId, executionId).at(-1);
+      const outcomes = listExecutionCostOutcomes(db, identity.tenantId, executionId);
+      const replay = outcomes.find((outcome) => outcome.idempotencyKey === idempotencyKey);
+      const prior = outcomes.at(-1);
       const payload = event ? JSON.parse(event.payload_json) as JsonRecord : undefined;
       const reviewPayload = review?.content_text
         ? JSON.parse(review.content_text) as JsonRecord
@@ -558,8 +573,8 @@ export function createBillingEconomicsRoutes({
       if (!approved && !rejected && !rolledBack) {
         return errorResponse(c, "execution_cost_outcome_evidence_invalid", "Evidence does not authorize an accounting outcome", 409);
       }
-      const outcomeStatus = rolledBack ? "rolled_back"
-        : approved && prior ? "corrected" : approved ? "accepted" : "rejected";
+      const outcomeStatus = replay?.outcomeStatus ?? (rolledBack ? "rolled_back"
+        : approved && prior ? "corrected" : approved ? "accepted" : "rejected");
       const acceptedOutcomeId = approved
         ? (event && typeof payload?.outcomeId === "string" && payload.outcomeId.trim()
             ? payload.outcomeId.trim()
@@ -595,7 +610,12 @@ export function createBillingEconomicsRoutes({
     if (!Number.isInteger(limit) || limit < 1 || limit > 5_000) {
       return errorResponse(c, "execution_cost_limit_invalid", "Limit must be an integer from 1 to 5000", 400);
     }
-    const records = listActualExecutionCosts(db, identity.tenantId, limit).map(publicExecutionCost);
+    const latestOutcomes = new Map<string, ExecutionCostOutcome>();
+    for (const outcome of listExecutionCostOutcomes(db, identity.tenantId)) {
+      latestOutcomes.set(outcome.costEntryId, outcome);
+    }
+    const records = listActualExecutionCosts(db, identity.tenantId, limit)
+      .map((entry) => publicExecutionCost(entry, latestOutcomes.get(entry.id)));
     return c.json({ data: records, meta: { count: records.length } });
   });
 

@@ -243,12 +243,18 @@ describe("Warden durable model accounting", () => {
     reserveWardenModelCall(db, input);
 
     expect(recoverExpiredJobs(db, AFTER_EXPIRY, "tenant-a")).toBe(1);
-    expect(getWardenModelReservation(db, "tenant-a", input.id)).toMatchObject({
+    const expired = getWardenModelReservation(db, "tenant-a", input.id)!;
+    expect(expired).toMatchObject({
       status: "unknown",
       error_code: "warden_model_lease_expired",
       charged_cost_usd: 1.5,
       charged_total_tokens: 1_200,
       settled_at: AFTER_EXPIRY,
+    });
+    expect(verifyWardenModelReservationIntegrity(expired)).toEqual({
+      ok: true,
+      reservationDigestVersion: 1,
+      settlementDigestVersion: 2,
     });
 
     const retry = claimNextJob(db, ["agent.run"], {
@@ -288,16 +294,49 @@ describe("Warden durable model accounting", () => {
       observedAt: LATER,
       errorCode: "warden_model_job_failed",
     })).toBe(2);
-    expect(getWardenModelReservation(db, "tenant-a", first.id)).toMatchObject({
+    const firstSettled = getWardenModelReservation(db, "tenant-a", first.id)!;
+    const secondSettled = getWardenModelReservation(db, "tenant-a", second.id)!;
+    expect(firstSettled).toMatchObject({
       status: "unknown",
       charged_cost_usd: 0.75,
       error_code: "warden_model_job_failed",
     });
-    expect(getWardenModelReservation(db, "tenant-a", second.id)).toMatchObject({
+    expect(secondSettled).toMatchObject({
       status: "unknown",
       charged_cost_usd: 0.5,
       error_code: "warden_model_job_failed",
     });
+    expect(verifyWardenModelReservationIntegrity(firstSettled)).toEqual({
+      ok: true,
+      reservationDigestVersion: 1,
+      settlementDigestVersion: 2,
+    });
+    expect(verifyWardenModelReservationIntegrity(secondSettled)).toEqual({
+      ok: true,
+      reservationDigestVersion: 1,
+      settlementDigestVersion: 2,
+    });
+    expect(firstSettled.settlement_digest).not.toBe(secondSettled.settlement_digest);
+    for (const tampered of [
+      { ...firstSettled, settled_at: AFTER_EXPIRY },
+      { ...firstSettled, actual_model: "forged-model" },
+      { ...firstSettled, body_request_id: "forged-body-request" },
+      { ...firstSettled, header_request_id: "forged-header-request" },
+      { ...firstSettled, reported_input_tokens: 1 },
+      { ...firstSettled, reported_output_tokens: 1 },
+      { ...firstSettled, reported_total_tokens: 2 },
+      { ...firstSettled, reported_cost_usd: 999 },
+      { ...firstSettled, charged_input_tokens: 999 },
+      { ...firstSettled, charged_output_tokens: 199 },
+      { ...firstSettled, charged_total_tokens: 1_199 },
+      { ...firstSettled, charged_cost_usd: 999 },
+      { ...firstSettled, error_code: "forged-error" },
+    ]) {
+      expect(verifyWardenModelReservationIntegrity(tampered)).toMatchObject({
+        ok: false,
+        error: "warden_model_settlement_digest_mismatch",
+      });
+    }
     expect(settleActiveWardenModelReservationsForFence(db, {
       jobId: job.id,
       workerId: "worker-stale",
