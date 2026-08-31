@@ -76,5 +76,11 @@ describe("repository index is LF-normalized", () => {
         .map((o) => `  ${o.path} (${o.crCount} CR)`)
         .join("\n")}`,
     ).toEqual([]);
-  });
+    // Scans every tracked blob in the index, so it is far slower than the
+    // pure-function cases above: measured 5.5s on a Windows dev checkout against
+    // Vitest's 5s default, i.e. already negative margin. The sibling whole-repo
+    // scan in third-state-check.test.ts carries the same explicit budget for the
+    // same reason. Without it a slow host reports an EOL failure and sends
+    // someone hunting a CRLF blob that does not exist.
+  }, 120_000);
 });
