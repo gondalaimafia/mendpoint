@@ -107,19 +107,33 @@ function coverageGaps(coverage: PrCoverage): Array<{ reason: string; detail: str
 }
 
 /**
+ * What the change record says about this PR's consumer, supplied by callers that
+ * fetched it. `"unspecified"` is for callers that have no change body at all (the
+ * PR list pages), which keep the status-only inference.
+ */
+export type ObservedImpact = "impact" | "none" | "unknown" | "unspecified";
+
+/**
  * Build the coverage view-model from the raw PR status and coverage channel.
  *
- * `status === "low_confidence"` is the pipeline's signal that the result was
- * non-actionable (empty findings); combined with `coverage.basis` it yields the
- * three states §11.7 requires be kept apart. Absent coverage is `unknown`, never
- * defaulted to `analyzed` — the fail-open default is precisely the bug being
- * fixed.
+ * Combined with `coverage.basis` this yields the three states §11.7 requires be
+ * kept apart. Absent coverage is `unknown`, never defaulted to `analyzed` — the
+ * fail-open default is precisely the bug being fixed.
+ *
+ * `status === "low_confidence"` is NOT a reliable signal that the result was
+ * empty. The pipeline sets it whenever `findings.length > 0 && overallConfidence
+ * !== "low"` is false, so a PR with real persisted findings but low overall
+ * confidence lands there too while `coverage_json` still records `analyzed`.
+ * Reading that as "empty" made this card claim complete evidence of no impact
+ * beside a lineage card listing the very findings it denied. When the caller has
+ * read the change record, that observation overrides the status proxy.
  */
 export function coverageSummary(
   status: string,
   coverage?: PrCoverage | null,
+  observed: ObservedImpact = "unspecified",
 ): CoverageSummary {
-  const empty = status === "low_confidence";
+  const empty = status === "low_confidence" && observed !== "impact";
 
   if (!coverage) {
     return {
@@ -139,27 +153,43 @@ export function coverageSummary(
 
   switch (coverage.basis) {
     case "analyzed":
-      return empty
-        ? {
-            state: "clean",
-            tone: "emerald",
-            badge: "no impact",
-            headline: "No impact — verified",
-            detail:
-              "Fettler analyzed the code in scope with full coverage and found nothing affected. This is complete evidence of no impact, not merely an empty result.",
-            files,
-            gaps: [],
-          }
-        : {
-            state: "covered",
-            tone: "emerald",
-            badge: "full coverage",
-            headline: "Analyzed with full coverage",
-            detail:
-              "The repository was analyzed with full coverage, so the impacted sites below are the complete set — nothing in scope was left unexamined.",
-            files,
-            gaps: [],
-          };
+      if (!empty) {
+        return {
+          state: "covered",
+          tone: "emerald",
+          badge: "full coverage",
+          headline: "Analyzed with full coverage",
+          detail:
+            "The repository was analyzed with full coverage, so the impacted sites below are the complete set — nothing in scope was left unexamined.",
+          files,
+          gaps: [],
+        };
+      }
+      // An empty result under full coverage is a positive finding only when the
+      // finding list was actually read and was empty. When the change record
+      // could not be read, this is an absence of data, not evidence of safety.
+      if (observed === "unknown") {
+        return {
+          state: "no_known_impact",
+          tone: "amber",
+          badge: "impact record unavailable",
+          headline: "Analyzed — impact record unavailable",
+          detail:
+            "The repository was analyzed with full coverage, but the impact record for this consumer could not be read, so an empty result here is missing data rather than evidence of no impact. Treat it as unverified.",
+          files,
+          gaps: [],
+        };
+      }
+      return {
+        state: "clean",
+        tone: "emerald",
+        badge: "no impact",
+        headline: "No impact — verified",
+        detail:
+          "Fettler analyzed the code in scope with full coverage and found nothing affected. This is complete evidence of no impact, not merely an empty result.",
+        files,
+        gaps: [],
+      };
     case "partial":
       return {
         state: "no_known_impact",
