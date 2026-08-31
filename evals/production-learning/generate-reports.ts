@@ -2,11 +2,16 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { learningCases, assertCatalogComplete, catalogSummary } from "./catalog.js";
 import { buildRequirementCaseTraceability, flattenRequirementRegister, validateRequirementCaseTraceability, type ClosureRow, type RequirementRegister } from "./matrix.js";
-import { admissionCandidates, rejectedCandidates, repositories } from "./repositories.js";
+import { admissionCandidates, rejectedCandidates, repositories, repositoryScreeningEvidenceState } from "./repositories.js";
 import { publicCaseProjection } from "./sealing.js";
 
 const PROGRAM_BASE_REVISION = "96801a319fc3d355cb2b28b4167b83023a192042";
-const generatedAt = new Date().toISOString();
+// Injectable so a regeneration is byte-stable. With a wall-clock timestamp every
+// regeneration rewrote the `generatedAt` line of all six artifacts, so a diff
+// against the committed copies could never distinguish "nothing drifted" from
+// "content drifted": the diff was non-empty either way. The drift check pins
+// this to the committed value and then compares whole files.
+const generatedAt = process.env.PRODUCTION_LEARNING_GENERATED_AT ?? new Date().toISOString();
 const outputDirectory = resolve(process.argv[2] ?? "evals/reports/production-learning");
 const register = JSON.parse(readFileSync("docs/PRODUCT_REQUIREMENTS.json", "utf8")) as RequirementRegister;
 const requirements = flattenRequirementRegister(register);
@@ -80,7 +85,13 @@ const status = {
     candidates: admissionCandidates.length,
     admitted: repositories.length,
     rejected: rejectedCandidates.length,
-    evidenceState: repositories.length === admissionCandidates.length ? "verified" : "unknown",
+    // A count match is not evidence. Admitting every candidate says nothing
+    // about whether any of them was screened, so this verdict consults the
+    // screening result itself: "verified" requires at least one admitted
+    // repository, every candidate admitted, and every admitted repository
+    // carrying a conclusive screening outcome on all four axes. Anything
+    // unknown or detected leaves the verdict "unknown".
+    evidenceState: repositoryScreeningEvidenceState(repositories, admissionCandidates),
     nativeCaseBindings: learningCases.filter((item) => item.repository.binding.mode === "native").length,
     syntheticSubstrateCaseBindings: learningCases.filter((item) => item.repository.binding.mode === "synthetic_substrate").length,
   },

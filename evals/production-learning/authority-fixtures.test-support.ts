@@ -3,6 +3,8 @@ import type { EvaluationArm, EvaluationGradeAuthorityPayload, EvaluationMetrics 
 import type { ExternalProviderTransmissionAuthorityPayload } from "./learning.js";
 import type { CaseExecutionEvidenceAuthorityPayload } from "./matrix.js";
 import type { ProductionLearningAuthorityPayload } from "./preflight.js";
+import { modeledCaseInputDigest } from "./sealing.js";
+import type { LearningCase } from "./schema.js";
 
 export const SHA = "a".repeat(64);
 export const PREFLIGHT_REVISION = "b".repeat(40);
@@ -17,8 +19,8 @@ export function installTestAuthorityTrustRoots(): void {
   process.env.MENDPOINT_EXTERNAL_PROVIDER_PUBLIC_KEY_SPKI_BASE64 = "MCowBQYDK2VwAyEAWIQyPsEbTcLdHHEChm8pMA/Dcw33h0ppwLjassvDjcE=";
   process.env.MENDPOINT_EXTERNAL_PROVIDER_TRUSTED_KEY_SHA256 = "71dc3ef2dba5fb6d07f47402efcea7e9b1e407ae2caf733828cf349ce1f97eee";
   process.env.MENDPOINT_EXTERNAL_PROVIDER_MINIMUM_ISSUED_AT = "2026-01-01T00:00:00.000Z";
-  process.env.MENDPOINT_EVALUATION_GRADING_PUBLIC_KEY_SPKI_BASE64 = "MCowBQYDK2VwAyEAA/C8ZPCO4+I95alR80dPxvLZp8hzj89mclxxA4GVphc=";
-  process.env.MENDPOINT_EVALUATION_GRADING_TRUSTED_KEY_SHA256 = "b3efb695aa915685e4e1c2b285b9df752f4df6c57d61716e704d2c552974062a";
+  process.env.MENDPOINT_EVALUATION_GRADING_PUBLIC_KEY_SPKI_BASE64 = "MCowBQYDK2VwAyEAzu+JH5ALLiBU3MoRd83Tjc1MuARfNlzU+UK6dVRrK1c=";
+  process.env.MENDPOINT_EVALUATION_GRADING_TRUSTED_KEY_SHA256 = "a4708fdececb873ba315bec65e8b8e86d115a23d66bbcd3fa90be56c751333e8";
   process.env.MENDPOINT_EVALUATION_GRADING_MINIMUM_ISSUED_AT = "2026-01-01T00:00:00.000Z";
   process.env.MENDPOINT_CASE_EXECUTION_EVIDENCE_PUBLIC_KEY_SPKI_BASE64 = "MCowBQYDK2VwAyEA3uPkzcrlWpx3aInDFDJR3KRwD2teHSsB+uaxdlpiBdg=";
   process.env.MENDPOINT_CASE_EXECUTION_EVIDENCE_TRUSTED_KEY_SHA256 = "16e80404b2b1b8f658e9844cc080f91f5fe6285e79e53d834f8d449040ba842a";
@@ -30,6 +32,39 @@ const VALIDITY = {
   issuedAt: "2026-01-01T00:00:00.000Z",
   expiresAt: "2100-01-01T00:00:00.000Z",
 };
+
+// The registry case the evaluation fixtures are bound to. It lives here rather
+// than inside the test so the signed grading envelopes and the case-arm rows
+// derive their modeled-input digests from one identical case; a case defined
+// separately in each place would let the two drift apart silently.
+export const EVALUATION_LEARNING_CASE: LearningCase = {
+  schemaVersion: "mendpoint.learning-case.v1",
+  id: "REG-E001",
+  product: "regauge",
+  cohort: "edge",
+  datasetSplit: "holdout",
+  title: "Registry-bound evaluation case",
+  importance: { statement: "Official evidence supports this case.", frequencyClaim: "not_claimed", sourceIds: ["source-1"] },
+  sources: [{ id: "source-1", kind: "official_documentation", title: "Official evidence", publisher: "Upstream", url: "https://example.com/evidence", retrievedAt: "2026-08-28T23:00:00.000Z" }],
+  repository: {
+    provenanceId: "repo-example",
+    languages: ["TypeScript"],
+    frameworks: ["Node.js"],
+    binding: { mode: "native", originalResearchCandidate: "repo-example", rationale: "The repository directly exercises the case." },
+  },
+  pattern: { family: "runtime-upgrade", seededFailure: "A deterministic failure is seeded.", expectedImpactGraph: ["runtime", "test"], evidenceState: "verified" },
+  expected: { diagnosis: "Diagnose the seeded failure.", repairOrMigration: "Apply the bounded migration.", oracleIds: ["oracle-reg-e001"], productionAcceptance: ["The oracle passes."] },
+  fixture: { manifestId: "fixture-reg-e001-manifest-v1", mutationId: "mutation-reg-e001-v1", allowedEditPaths: ["src/**"], rollbackId: "rollback-reg-e001-v1", cleanupId: "cleanup-reg-e001-v1" },
+  security: { tenantRisk: "bounded", risks: ["untrusted_repository_content"], requiresDedicatedBenchmarkTenant: true },
+  planning: { requirementIds: ["REQ-EVAL-001"] },
+};
+
+// The digest an honest producer would present for each arm: the staged leak-free
+// input for the modeled arms, and null for the oracle, which is entitled to the
+// answer key and therefore consumes no staged input.
+export function evaluationModeledInputDigest(arm: EvaluationArm): string | null {
+  return arm === "oracle" ? null : modeledCaseInputDigest(EVALUATION_LEARNING_CASE, arm);
+}
 
 function preflightPayload(
   productionRevision = PREFLIGHT_REVISION,
@@ -166,11 +201,11 @@ const PRODUCTION_DIGESTS: Record<EvaluationArm, string> = {
   oracle: "0962730736e5c0112da8407acab83b0222e4865a836447118275e1a9e81db30e",
 };
 const GRADE_SIGNATURES: Record<EvaluationArm, string> = {
-  production_baseline: "kSD091TAht59drG/4/2/wX9jK767AubUh5eRr4fwoS61/DPSqhx9yd5bEkYwcOYGh1EUd7OMOLvrnpUmqfMSCA==",
-  deterministic_recipe: "NGEKTyxQWlKwIu6YJPqPdoO7hl3NRx/CJSyCmxpOaRwyQSsoqPi7Qlq/vyU7Cswz1REtUx7Qfa5Wa6A0BYetAQ==",
-  configured_model_router: "y5f67aptbarO4rMuldcc1cHnB9n4FRSR3HkiDWVC2zniha4iHL2Ui2liGi851RvgLSbgHijrKuTUAQ/eCvj4CA==",
-  advisory_verifier: "oiJfvBssf+FaHhWOMUAJkGop0DpmyUkSGkoquQnlNxPHIHT3Q97mtF1EmKh+/RXedE7zhNJvCYHvIki3QH6tBw==",
-  oracle: "vMQZOmQYMA6XDy8mdrefaNTKMsYy/XV6DmgnRQ2vHYOzbYIRIaZqGHIPNgMId8cvYu8GCL+QE6kssh7Qbl0qCA==",
+  production_baseline: "2VmsmxosjLKvwO44ZmbjhegAWUpm0a6j7zCpqNnEeLU5m6Fvj5SzW87PLTPku0JQO/dy1yet73hhztq6RwqCAg==",
+  deterministic_recipe: "/KvaTYD3unVvaIGvLKyxyIQrD1lgqAuwx1Zwxo2mSUixRMfJhknX0olPzjfehZB5ufnVbsYtGPYXRb82fRpACQ==",
+  configured_model_router: "kG/Yl6H2q2P6tGKsqFq4+GWo1/a3ISOvMVowS7f17VBCe755hj7MReoDx60SXot0cmghyO9LQQTvoorw5cB4AQ==",
+  advisory_verifier: "QCkpl/NgNuX9tj7KgWsGF1nW2n2yX6hBKNCb+yjr+QfiLfvLsPjK8LmZx7qmfTeywe344A6KLBsjB70wyNYQBA==",
+  oracle: "T/F+puKumaLngg5J9bGxfMJJHz0CqHOpOlULlQa6wTceCOCI06ynE9nPIyG60TwBr5/Abk5A6jlVFnw2A+udCQ==",
 };
 const METRICS_DIGESTS: Record<EvaluationArm, string> = {
   production_baseline: "d5c976110a48baf45d24c99c68d99fbf5ccb016c9c1446189a3ca95048314958",
@@ -224,6 +259,7 @@ export function evaluationGradeAuthorityEnvelope(
       predictionArtifactDigest: PREDICTION_DIGESTS[arm], predictionSealedAt: "2026-08-28T23:00:00.000Z",
       answerKeyOpenedAt: "2026-08-28T23:01:00.000Z", answerKeyAccessReceiptDigest: "d".repeat(64),
       gradedAt: "2026-08-28T23:02:00.000Z", metricsDigest: METRICS_DIGESTS[arm],
+      modeledInputArtifactDigest: evaluationModeledInputDigest(arm),
     },
     signature: GRADE_SIGNATURES[arm],
   };

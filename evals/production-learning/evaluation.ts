@@ -6,6 +6,7 @@ import {
   type SignedAuthorityEnvelope,
   type VerifiedAuthorityContext,
 } from "./authority.js";
+import { modeledCaseInputDigest } from "./sealing.js";
 import { validateExecutionReceipt } from "./schema.js";
 import type { LearningCase, ProductionExecutionReceipt, RepositoryProvenance } from "./schema.js";
 import { requireVerifiedProductionLearningAuthority, type VerifiedProductionLearningAuthority } from "./preflight.js";
@@ -62,8 +63,20 @@ export interface CaseArmResult {
   answerKeyAccessReceiptDigest: string | null;
   gradedAt: string;
   gradingAuthorityDigest: string;
-  expectedOutcomeIncludedInInput: boolean;
-  answerKeyIncludedInInput: boolean;
+  // sha256 over the canonical serialization of the exact input artifact the arm
+  // received, or null when no executor retained one.
+  //
+  // This replaces the pair of `expectedOutcomeIncludedInInput` /
+  // `answerKeyIncludedInInput` booleans. Those were set by the same producer
+  // whose leakage they were supposed to rule out, were bound to no content, and
+  // were absent from the signed grading payload, so an arm that had actually
+  // received the answer key satisfied the anti-leak check by reporting `false`.
+  // A two-valued flag also could not express the state this program is really
+  // in: no executor exists, so for every case the honest answer is "not yet
+  // determined" rather than "no leak". The digest carries all three states —
+  // matching the recomputed staged digest, not matching it, and absent — and
+  // the validator decides from content rather than from the claim.
+  modeledInputArtifactDigest: string | null;
   metrics: EvaluationMetrics;
 }
 
@@ -85,6 +98,11 @@ export interface EvaluationGradeAuthorityPayload {
   answerKeyAccessReceiptDigest: string;
   gradedAt: string;
   metricsDigest: string;
+  // Inside the signed payload, so the Ed25519 signature covers the value the
+  // anti-leak determination is made from. The booleans it replaces sat outside
+  // this payload entirely, which meant the signature said nothing about whether
+  // the arm had seen the answer key.
+  modeledInputArtifactDigest: string | null;
 }
 
 const VERIFIED_EVALUATION_GRADE_AUTHORITY: unique symbol = Symbol("verified-evaluation-grade-authority");
@@ -183,6 +201,12 @@ export function verifyEvaluationGradeAuthority(
     ["answerKeyAccessReceiptDigest", payload.answerKeyAccessReceiptDigest],
     ["metricsDigest", payload.metricsDigest],
   ] as const) if (!SHA256.test(value)) errors.push(`grading authority ${field} must be sha256`);
+  if (payload.modeledInputArtifactDigest !== null && !SHA256.test(payload.modeledInputArtifactDigest)) {
+    errors.push("grading authority modeledInputArtifactDigest must be sha256 or null");
+  }
+  if (payload.arm === "oracle" && payload.modeledInputArtifactDigest !== null) {
+    errors.push("grading authority for the oracle arm must not carry a modeled input artifact digest");
+  }
   for (const [field, value] of [
     ["caseId", payload.caseId],
     ["tenantId", payload.tenantId],
@@ -344,17 +368,14 @@ export function validateCaseArmCohort(results: readonly CaseArmResult[], registr
     }
     if (!SHA256.test(result.budgetDigest)) errors.push(`${result.caseId}/${result.arm} budgetDigest must be sha256`);
     if (!SHA256.test(result.predictionArtifactDigest)) errors.push(`${result.caseId}/${result.arm} predictionArtifactDigest must be sha256`);
-    if (typeof result.expectedOutcomeIncludedInInput !== "boolean") {
-      errors.push(`${result.caseId}/${result.arm} expectedOutcomeIncludedInInput must be boolean`);
+    if (result.modeledInputArtifactDigest !== null && !SHA256.test(result.modeledInputArtifactDigest)) {
+      errors.push(`${result.caseId}/${result.arm} modeledInputArtifactDigest must be sha256 or null`);
     }
-    if (typeof result.answerKeyIncludedInInput !== "boolean") {
-      errors.push(`${result.caseId}/${result.arm} answerKeyIncludedInInput must be boolean`);
-    }
-    if (result.arm !== "oracle" && result.expectedOutcomeIncludedInInput !== false) {
-      errors.push(`${result.caseId}/${result.arm} modeled input must not include expected outcome`);
-    }
-    if (result.arm !== "oracle" && result.answerKeyIncludedInInput !== false) {
-      errors.push(`${result.caseId}/${result.arm} modeled input must not include answer key`);
+    // The oracle arm is entitled to the answer key, so no leak-free input digest
+    // applies to it and presenting one would be a false claim about which
+    // artifact it consumed.
+    if (result.arm === "oracle" && result.modeledInputArtifactDigest !== null) {
+      errors.push(`${result.caseId}/${result.arm} oracle arm must not present a modeled input artifact digest`);
     }
     const sealedAt = Date.parse(result.predictionSealedAt);
     const openedAt = result.answerKeyOpenedAt === null ? Number.NaN : Date.parse(result.answerKeyOpenedAt);
@@ -400,13 +421,11 @@ export function validateCaseArmCohort(results: readonly CaseArmResult[], registr
         ["answerKeyAccessReceiptDigest", result.answerKeyAccessReceiptDigest, trustedGrade.answerKeyAccessReceiptDigest],
         ["gradedAt", result.gradedAt, trustedGrade.gradedAt],
         ["metricsDigest", evaluationMetricsDigest(result.metrics), trustedGrade.metricsDigest],
+        ["modeledInputArtifactDigest", result.modeledInputArtifactDigest, trustedGrade.modeledInputArtifactDigest],
       ];
       for (const [field, actual, expected] of gradeBindings) {
         if (actual !== expected) errors.push(`${prefix} ${field} does not match the trusted grading authority`);
       }
-    }
-    if (result.datasetSplit === "holdout" && result.answerKeyIncludedInInput !== false) {
-      errors.push(`${result.caseId}/${result.arm} holdout answer key must remain sealed from the input`);
     }
     for (const metric of BOOLEAN_METRICS) {
       if (typeof result.metrics[metric] !== "boolean") errors.push(`${prefix} metrics.${metric} must be boolean`);
@@ -427,6 +446,26 @@ export function validateCaseArmCohort(results: readonly CaseArmResult[], registr
       }
       if (result.fixtureManifestId !== learningCase.fixture.manifestId) {
         errors.push(`${prefix} fixtureManifestId does not match the case registry`);
+      }
+      // Content-derived answer-key exposure determination for the modeled arms.
+      // The validator recomputes the digest of the only leak-free input the arm
+      // was allowed to receive and compares it to the digest of the artifact the
+      // arm actually received. A mismatch means the arm consumed something other
+      // than the staged input, so absence of the answer key cannot be concluded;
+      // a null digest means no input artifact was retained, which is the
+      // undetermined third state and also fails closed. Neither outcome can be
+      // talked out of by the producer, because neither reads a producer-set
+      // claim about leakage.
+      if (result.arm !== "oracle") {
+        if (result.modeledInputArtifactDigest === null) {
+          errors.push(
+            `${prefix} modeled input artifact digest is not retained, so answer-key exposure cannot be determined`,
+          );
+        } else if (result.modeledInputArtifactDigest !== modeledCaseInputDigest(learningCase, result.arm)) {
+          errors.push(
+            `${prefix} modeled input artifact does not match the sealed leak-free staged input for this case and arm`,
+          );
+        }
       }
     }
     const repository = repositoriesById.get(result.repositoryProvenanceId);

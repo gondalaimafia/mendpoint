@@ -407,16 +407,6 @@
           "ME-FET-016"
         ]
       },
-      "pattern": {
-        "family": "webhook-authentication",
-        "seededFailure": "Accept a webhook using plain equality or the legacy SHA-1 header only.",
-        "expectedImpactGraph": [
-          "webhook-ingress",
-          "signature-verifier",
-          "event-queue"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture-fet-c005-manifest-v1",
         "mutationId": "mutation-fet-c005-seed-v1",
@@ -436,10 +426,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "webhook-authentication",
+        "seededFailure": "Accept a webhook using plain equality or the legacy SHA-1 header only.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "b0cf148b62421829c22fea123268059b78d662e2f6e8b1483f851c6d06de58c5",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "026af60ba6e8abb538a8e39d1ecd884a3b969404dc259d49e1b6ad9927d25633",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -848,16 +844,6 @@
           "ME-FET-016"
         ]
       },
-      "pattern": {
-        "family": "webhook-idempotency",
-        "seededFailure": "Apply the same payment transition twice.",
-        "expectedImpactGraph": [
-          "stripe-ingress",
-          "event-ledger",
-          "billing-effect"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture-fet-c010-manifest-v1",
         "mutationId": "mutation-fet-c010-seed-v1",
@@ -877,10 +863,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "webhook-idempotency",
+        "seededFailure": "Apply the same payment transition twice.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "5714388f8e6ab8bdcbeef9b624086a4ae734291230cae8a8e746c963e50c9a7a",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "cf825fb91e7437a3f7b03ad870e7f0bb0ecfa9e22c4782e192b38c84c74efff6",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -1295,16 +1287,6 @@
           "ME-FET-016"
         ]
       },
-      "pattern": {
-        "family": "api-retirement",
-        "seededFailure": "Call the retired files.upload endpoint.",
-        "expectedImpactGraph": [
-          "slack-client",
-          "file-upload",
-          "channel-delivery"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture-fet-c015-manifest-v1",
         "mutationId": "mutation-fet-c015-seed-v1",
@@ -1324,10 +1306,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "api-retirement",
+        "seededFailure": "Call the retired files.upload endpoint.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "2b4210432507944c8d94220c2b829c0b016b8de54f7bf90ac723bddf9227ba8f",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "a3b9bdf3a0acf76a16fde700d7a0294aea5fdacdfa24a2eba761d9eff20302fa",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -1738,16 +1726,6 @@
           "ME-FET-016"
         ]
       },
-      "pattern": {
-        "family": "webhook-handshake",
-        "seededFailure": "Decode url_verification as a normal domain event.",
-        "expectedImpactGraph": [
-          "slack-ingress",
-          "signature-verifier",
-          "challenge-response"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture-fet-c020-manifest-v1",
         "mutationId": "mutation-fet-c020-seed-v1",
@@ -1767,10 +1745,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "webhook-handshake",
+        "seededFailure": "Decode url_verification as a normal domain event.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "587e1cf5459d69dd3a45b338a44b770c473efcbf86089cd33558da52fc4c8c13",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "3225ada236732b7cdd0a7830d5b5b0126296edf1bd558fb3f555eea64357b26f",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -2179,16 +2163,6 @@
           "ME-FET-016"
         ]
       },
-      "pattern": {
-        "family": "sdk-major-migration",
-        "seededFailure": "Leave an AWS.Service call with .promise() after removing the v2 package.",
-        "expectedImpactGraph": [
-          "aws-client",
-          "service-command",
-          "dependency-lockfile"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture-fet-c025-manifest-v1",
         "mutationId": "mutation-fet-c025-seed-v1",
@@ -2207,10 +2181,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "sdk-major-migration",
+        "seededFailure": "Leave an AWS.Service call with .promise() after removing the v2 package.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "6e4e70142a75738c2fb6e8eccb17971f6a89bd74404a2b48af7e6cedf68a1687",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "ec095f8bf26b9c6768c1e8edd10446dd3d28e40d6e28b862c39c038451a4062b",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -2623,16 +2603,6 @@
           "ME-FET-016"
         ]
       },
-      "pattern": {
-        "family": "credential-provider-migration",
-        "seededFailure": "Replace the provider chain with a hardcoded credential object or a different precedence.",
-        "expectedImpactGraph": [
-          "aws-client",
-          "credential-provider",
-          "account-binding"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture-fet-c030-manifest-v1",
         "mutationId": "mutation-fet-c030-seed-v1",
@@ -2651,10 +2621,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "credential-provider-migration",
+        "seededFailure": "Replace the provider chain with a hardcoded credential object or a different precedence.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "3917e199fd0adceacacad9cb9e195b1403296d58af5598d3d3e383d21cbb4f1f",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "0271b7e84c2408a691fd547aec57a69945fb34ced7979859549609fddc77405b",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -3056,16 +3032,6 @@
           "ME-FET-016"
         ]
       },
-      "pattern": {
-        "family": "security-provider-migration",
-        "seededFailure": "Delete a PSP without installing equivalent enforcement.",
-        "expectedImpactGraph": [
-          "pod-security-policy",
-          "namespace-policy",
-          "pod-admission"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture-fet-c035-manifest-v1",
         "mutationId": "mutation-fet-c035-seed-v1",
@@ -3083,10 +3049,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "security-provider-migration",
+        "seededFailure": "Delete a PSP without installing equivalent enforcement.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "77fd5bab1a3f6e8f4bf8768799cbc6901cc507f0763868fddf9f621cd681eec2",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "aa1a679e772850c6052bd3bc469e45a8840ed668bd17e82190108bbfead94515",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -3496,16 +3468,6 @@
           "ME-FET-016"
         ]
       },
-      "pattern": {
-        "family": "provider-operation-migration",
-        "seededFailure": "Perform only a host-name substitution for an operation with a changed payload.",
-        "expectedImpactGraph": [
-          "graph-client",
-          "request-serializer",
-          "response-normalizer"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture-fet-c040-manifest-v1",
         "mutationId": "mutation-fet-c040-seed-v1",
@@ -3524,10 +3486,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "provider-operation-migration",
+        "seededFailure": "Perform only a host-name substitution for an operation with a changed payload.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "bed6c9649b55b6418972b1de801fc6cdb97daa02834f5f5c0d4421d79e0c2d0f",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "d67c702ea0132ac6a4a2e7397aad21bf4d88d8cd6dfa06f3885728fd3c5d103e",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -3936,16 +3904,6 @@
           "ME-FET-016"
         ]
       },
-      "pattern": {
-        "family": "runtime-security-api-removal",
-        "seededFailure": "Call ssl.wrap_socket on Python 3.12 or replace it with an unverified context.",
-        "expectedImpactGraph": [
-          "tls-client",
-          "certificate-validation",
-          "provider-connection"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture-fet-c045-manifest-v1",
         "mutationId": "mutation-fet-c045-seed-v1",
@@ -3965,10 +3923,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "runtime-security-api-removal",
+        "seededFailure": "Call ssl.wrap_socket on Python 3.12 or replace it with an unverified context.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "544e3a83692e336567d15d8bed5450f0361c04762712fce80c2461c0c56792e5",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "cb9611f0dd2e6e9105adf46a6ec88a0b714045fac69bc6013467bd134c1b8678",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -4377,16 +4341,6 @@
           "ME-FET-016"
         ]
       },
-      "pattern": {
-        "family": "dependency-security-remediation",
-        "seededFailure": "Pass an attacker-controlled absolute URL to a client configured with a trusted baseURL and API key.",
-        "expectedImpactGraph": [
-          "axios-client",
-          "destination-policy",
-          "credential-header"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture-fet-c050-manifest-v1",
         "mutationId": "mutation-fet-c050-seed-v1",
@@ -4405,10 +4359,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "dependency-security-remediation",
+        "seededFailure": "Pass an attacker-controlled absolute URL to a client configured with a trusted baseURL and API key.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "08dafcfde07138033778b1eff8c397205b37aa9ea7ed0866fbcadc94f55f8416",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "b3a49af1545426f8b962826890ff6c7121640dcd30d56bc41289e07bcbb79ca5",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -4821,16 +4781,6 @@
           "ME-FET-016"
         ]
       },
-      "pattern": {
-        "family": "historical-schema-version",
-        "seededFailure": "Decode an old stored Event as if it had the current account API version.",
-        "expectedImpactGraph": [
-          "event-store",
-          "stripe-decoder",
-          "billing-replay"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture-fet-e005-manifest-v1",
         "mutationId": "mutation-fet-e005-seed-v1",
@@ -4850,10 +4800,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "historical-schema-version",
+        "seededFailure": "Decode an old stored Event as if it had the current account API version.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "b9389b0df2c4069445795e52ffe41c8c66c0f264bc38f151551a13f2a59b0c43",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "90921c46a2aa60d91f89ccac314c381e3bd0a9e118310758b7179fbe0ad8be4f",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -5266,16 +5222,6 @@
           "ME-FET-016"
         ]
       },
-      "pattern": {
-        "family": "provider-health-threshold",
-        "seededFailure": "Retry expensive work inline while the rolling webhook failure rate rises.",
-        "expectedImpactGraph": [
-          "slack-ingress",
-          "health-window",
-          "subscription-state"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture-fet-e010-manifest-v1",
         "mutationId": "mutation-fet-e010-seed-v1",
@@ -5295,10 +5241,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "provider-health-threshold",
+        "seededFailure": "Retry expensive work inline while the rolling webhook failure rate rises.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "0ef72d41076996d633d4a8d696d75591f5279256e7ea5c5a43278f6fba6c5b97",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "f94f53dd18a1362d05e80499ed381e2bee5cb52918a3189fbe08f9d17d9d7cba",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -5710,16 +5662,6 @@
           "ME-FET-018"
         ]
       },
-      "pattern": {
-        "family": "unsupported-migration-path",
-        "seededFailure": "Invent a v3 import for an unsupported v2 SAML or filesystem provider.",
-        "expectedImpactGraph": [
-          "aws-client",
-          "credential-provider",
-          "migration-plan"
-        ],
-        "evidenceState": "unknown"
-      },
       "fixture": {
         "manifestId": "fixture-fet-e015-manifest-v1",
         "mutationId": "mutation-fet-e015-seed-v1",
@@ -5738,10 +5680,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "unsupported-migration-path",
+        "seededFailure": "Invent a v3 import for an unsupported v2 SAML or filesystem provider.",
+        "evidenceState": "unknown",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "ac1ea1c0f9745e437f30815ea5aa151cb67d0832792bb40064509d458b8f580a",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "11f82618f7c0cd0b24839b0443f81314f26125e1fecd0ee69aecee858b3eb3eb",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -6149,16 +6097,6 @@
           "ME-FET-018"
         ]
       },
-      "pattern": {
-        "family": "ga-availability-gap",
-        "seededFailure": "Replace a retired GA operation with a beta-only Microsoft Graph operation without approval.",
-        "expectedImpactGraph": [
-          "graph-client",
-          "api-version",
-          "production-policy"
-        ],
-        "evidenceState": "unknown"
-      },
       "fixture": {
         "manifestId": "fixture-fet-e020-manifest-v1",
         "mutationId": "mutation-fet-e020-seed-v1",
@@ -6177,10 +6115,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "ga-availability-gap",
+        "seededFailure": "Replace a retired GA operation with a beta-only Microsoft Graph operation without approval.",
+        "evidenceState": "unknown",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "3ff2d5018ba1361c2e6609bb8cfcfeedc0530ca1ff68cea642748495b426bdd6",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "a8a7f37e846c2394a02f8b756d23b65cc58d89d03afef4b9bc63ba3ad6ba0cf5",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -6590,16 +6534,6 @@
           "ME-FET-018"
         ]
       },
-      "pattern": {
-        "family": "withdrawn-security-advisory",
-        "seededFailure": "Report a library vulnerability as fixed solely because a scanner names the withdrawn CVE.",
-        "expectedImpactGraph": [
-          "dependency-scanner",
-          "jwt-call-site",
-          "security-closure"
-        ],
-        "evidenceState": "unknown"
-      },
       "fixture": {
         "manifestId": "fixture-fet-e025-manifest-v1",
         "mutationId": "mutation-fet-e025-seed-v1",
@@ -6618,10 +6552,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "withdrawn-security-advisory",
+        "seededFailure": "Report a library vulnerability as fixed solely because a scanner names the withdrawn CVE.",
+        "evidenceState": "unknown",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "776963463e473870f900cc425acaa98f2547b83f10a9fabb63a66350d9f52a5a",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "c977b6908cc3042cccd4640e868bb310e5fe2438959f4383b61feceeb76ab7ee",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -7080,17 +7020,6 @@
           "ME-REG-016"
         ]
       },
-      "pattern": {
-        "family": "observability-test-migration",
-        "seededFailure": "Error telemetry depends on rethrown render errors and tests depend on renderer internals.",
-        "expectedImpactGraph": [
-          "render_root",
-          "error_boundary",
-          "telemetry",
-          "tests"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-c005:v1",
         "mutationId": "mutation:reg-c005:v1",
@@ -7110,10 +7039,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "observability-test-migration",
+        "seededFailure": "Error telemetry depends on rethrown render errors and tests depend on renderer internals.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "a7d566879b6a3bb15684cdd4c984d9d74fb259ae520560237e9ca32dfbe6e472",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "17647cdeeb4df5b89c8f565274bbc78d925077fc198209be6bdee3142169f62e",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -7571,18 +7506,6 @@
           "ME-REG-016"
         ]
       },
-      "pattern": {
-        "family": "tooling-config-migration",
-        "seededFailure": "The legacy config or one of its nested overrides is ignored under the flat configuration system.",
-        "expectedImpactGraph": [
-          "lint_config",
-          "plugins",
-          "file_selection",
-          "rules",
-          "ci"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-c010:v1",
         "mutationId": "mutation:reg-c010:v1",
@@ -7604,10 +7527,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "tooling-config-migration",
+        "seededFailure": "The legacy config or one of its nested overrides is ignored under the flat configuration system.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "eb38287b6f8fae825400c1e419c8d00cf1a68777f10db79da90c42db9ecbf988",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "ef4d7df117dbbcd5978d854141f71d5b1aa7da62bfa581787e726ee1768e9b68",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -8064,18 +7993,6 @@
           "ME-REG-016"
         ]
       },
-      "pattern": {
-        "family": "serialized-state-migration",
-        "seededFailure": "Mixed-version nodes cannot safely read cached responses or sessions written by the other version.",
-        "expectedImpactGraph": [
-          "application",
-          "cache",
-          "sessions",
-          "deployment",
-          "rollback"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-c015:v1",
         "mutationId": "mutation:reg-c015:v1",
@@ -8095,10 +8012,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "serialized-state-migration",
+        "seededFailure": "Mixed-version nodes cannot safely read cached responses or sessions written by the other version.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "0670232d0248729a9dc2c55f0634a1116985cd2a15f573e1ef6ae598c5da28fa",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "dab3ac63861bb0340ff2fd3d0789b843d1fc5aa4f62232212757af41e3ab6ec3",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -8553,18 +8476,6 @@
           "ME-REG-016"
         ]
       },
-      "pattern": {
-        "family": "runtime-major-upgrade",
-        "seededFailure": "The application uses removed modules, obsolete JVM flags, or reflective access blocked by the target runtime.",
-        "expectedImpactGraph": [
-          "jdk",
-          "build",
-          "bytecode",
-          "reflection",
-          "deployment"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-c020:v1",
         "mutationId": "mutation:reg-c020:v1",
@@ -8586,10 +8497,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "runtime-major-upgrade",
+        "seededFailure": "The application uses removed modules, obsolete JVM flags, or reflective access blocked by the target runtime.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "c0a78b5deef0f5797930ed8e1bedc851ed382be29b5bdea5614f26700f7e6220",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "6beca21fa20eb0c78436d0550f2a936faf235a8dc80ecf6196c3455c82076df1",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -9050,18 +8967,6 @@
           "ME-REG-016"
         ]
       },
-      "pattern": {
-        "family": "runtime-major-upgrade",
-        "seededFailure": "The application compiles but changes serialization, reflection, or deployment behavior on .NET 8.",
-        "expectedImpactGraph": [
-          "target_framework",
-          "packages",
-          "runtime",
-          "serialization",
-          "deployment"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-c025:v1",
         "mutationId": "mutation:reg-c025:v1",
@@ -9083,10 +8988,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "runtime-major-upgrade",
+        "seededFailure": "The application compiles but changes serialization, reflection, or deployment behavior on .NET 8.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "767232c37cdd6bde1192af60b3cd59ecb04ab22ed104d4f644164b90fdc85fb7",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "c716a33017ecc61c53b3021c886dc19cac426ccfa6ab7502244e837ee153dee8",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -9539,18 +9450,6 @@
           "ME-REG-016"
         ]
       },
-      "pattern": {
-        "family": "api-major-version-migration",
-        "seededFailure": "A v2 tag has a v1 module path or downstream imports resolve the wrong major version.",
-        "expectedImpactGraph": [
-          "module_path",
-          "imports",
-          "tags",
-          "proxy",
-          "consumers"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-c030:v1",
         "mutationId": "mutation:reg-c030:v1",
@@ -9570,10 +9469,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "api-major-version-migration",
+        "seededFailure": "A v2 tag has a v1 module path or downstream imports resolve the wrong major version.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "2f503b9be043796e15b15363fcc575fced1c4072eb383641807adfa874650f45",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "6c9033e2e138c4bb774b1a726504ada059a97962763cc01ec42fe7f590618a39",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -10013,18 +9918,6 @@
           "ME-REG-016"
         ]
       },
-      "pattern": {
-        "family": "provider-address-migration",
-        "seededFailure": "Configuration and copied state refer to different provider source addresses.",
-        "expectedImpactGraph": [
-          "configuration",
-          "modules",
-          "provider_lock",
-          "state",
-          "plan"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-c035:v1",
         "mutationId": "mutation:reg-c035:v1",
@@ -10046,10 +9939,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "provider-address-migration",
+        "seededFailure": "Configuration and copied state refer to different provider source addresses.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "af77eb75e794d0120a5f53533dbd877232e720045f151b291a278360504fe531",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "e6d181fe6c9679a00c56bfb68755e42cd717f2fb35a8507ca1f7b9279ce21f03",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -10508,18 +10407,6 @@
           "ME-REG-016"
         ]
       },
-      "pattern": {
-        "family": "database-major-upgrade",
-        "seededFailure": "The target cluster fails compatibility checks because of extensions, collations, catalogs, or binaries.",
-        "expectedImpactGraph": [
-          "old_cluster",
-          "extensions",
-          "upgrade",
-          "new_cluster",
-          "application"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-c040:v1",
         "mutationId": "mutation:reg-c040:v1",
@@ -10541,10 +10428,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "database-major-upgrade",
+        "seededFailure": "The target cluster fails compatibility checks because of extensions, collations, catalogs, or binaries.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "4de853f7a6a5c709de38dd82c97baf3b99f3f7b7d4585f598ac56400c160f41c",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "4066b2261383699cf4bf57991e0b0c7de10fa1cc50dbbdd22f492c26c25e4e91",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -11004,18 +10897,6 @@
           "ME-REG-016"
         ]
       },
-      "pattern": {
-        "family": "distributed-control-plane-migration",
-        "seededFailure": "A ZooKeeper cluster or unsupported metadata version is targeted directly for Kafka 4.",
-        "expectedImpactGraph": [
-          "zookeeper",
-          "metadata",
-          "kraft_quorum",
-          "brokers",
-          "clients"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-c045:v1",
         "mutationId": "mutation:reg-c045:v1",
@@ -11037,10 +10918,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "distributed-control-plane-migration",
+        "seededFailure": "A ZooKeeper cluster or unsupported metadata version is targeted directly for Kafka 4.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "e8f7bf2c1146f85c0dfedf047acb79819cbd8a8c1118f73fd4459f991213a917",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "71b7a1dd4122d51343ae208c7c3e6cb424fdf45ef0cf870120e1aca22e9258dd",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -11490,18 +11377,6 @@
           "ME-REG-016"
         ]
       },
-      "pattern": {
-        "family": "token-security-migration",
-        "seededFailure": "A stolen access or refresh token can be replayed outside its intended sender, audience, or tenant.",
-        "expectedImpactGraph": [
-          "token_issuer",
-          "client",
-          "resource_server",
-          "replay_detection",
-          "incident_lineage"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-c050:v1",
         "mutationId": "mutation:reg-c050:v1",
@@ -11523,10 +11398,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "token-security-migration",
+        "seededFailure": "A stolen access or refresh token can be replayed outside its intended sender, audience, or tenant.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "a6e1fc01319f86f5560b647aa87f5dd727e2d9ef938d0f44171898e86d309ff0",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "316a44df7903f61fed7f393039df3c585a9b8a1487ec66bd2abfeba03f08c92f",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -11975,17 +11856,6 @@
           "ME-REG-017"
         ]
       },
-      "pattern": {
-        "family": "partial-coverage",
-        "seededFailure": "Default features pass while a nondefault feature or target-specific path remains incompatible.",
-        "expectedImpactGraph": [
-          "default_features",
-          "optional_features",
-          "targets",
-          "coverage_receipt"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-e005:v1",
         "mutationId": "mutation:reg-e005:v1",
@@ -12005,10 +11875,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "partial-coverage",
+        "seededFailure": "Default features pass while a nondefault feature or target-specific path remains incompatible.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "8bfc7c5c7d8864e096b3ab2cb17c3a88daea6a26113588e36af6ba392bc70734",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "dd6767e4d5860b80728912a4c40e26f720e08e80fb7756d590a1c0fb6e7ff14f",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -12456,18 +12332,6 @@
           "ME-REG-017"
         ]
       },
-      "pattern": {
-        "family": "stale-evidence-binding",
-        "seededFailure": "The repository head, snapshot digest, or graph version changes after candidate selection.",
-        "expectedImpactGraph": [
-          "candidate",
-          "snapshot",
-          "graph",
-          "plan",
-          "execution"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-e010:v1",
         "mutationId": "mutation:reg-e010:v1",
@@ -12488,10 +12352,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "stale-evidence-binding",
+        "seededFailure": "The repository head, snapshot digest, or graph version changes after candidate selection.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "aff7fc18bc29e3bfb8cf66f588cac8df9e71b487986382c853d1092bda96eed2",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "62479d609adf7dcfbb7387e7739072f60419d310cbc6e693ce7236e2b171a821",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -12932,18 +12802,6 @@
           "ME-TRN-008"
         ]
       },
-      "pattern": {
-        "family": "verifier-false-positive",
-        "seededFailure": "The advisory verifier rejects a repair that the sealed deterministic oracle proves correct.",
-        "expectedImpactGraph": [
-          "repair",
-          "advisory_verifier",
-          "deterministic_oracle",
-          "review",
-          "learning_event"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-e015:v1",
         "mutationId": "mutation:reg-e015:v1",
@@ -12963,10 +12821,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "verifier-false-positive",
+        "seededFailure": "The advisory verifier rejects a repair that the sealed deterministic oracle proves correct.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "ddcfc4a9f315079ec89d1b27042b872bb156baba1efbf0777d813d60a3f1a911",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "e783c07100bd042cfa587cbc55c9074c23aff280732d39e4604170ad9251d3a5",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -13418,18 +13282,6 @@
           "ME-REG-016"
         ]
       },
-      "pattern": {
-        "family": "security-remediation-migration",
-        "seededFailure": "The vulnerable dependency is found, but the first candidate patch remains affected or breaks required logging behavior.",
-        "expectedImpactGraph": [
-          "dependency_graph",
-          "vulnerability",
-          "patched_version",
-          "logging_behavior",
-          "application"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-e020:v1",
         "mutationId": "mutation:reg-e020:v1",
@@ -13450,10 +13302,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "security-remediation-migration",
+        "seededFailure": "The vulnerable dependency is found, but the first candidate patch remains affected or breaks required logging behavior.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "6b662e9d5a69cae96678139cc1322b5bd2419dc50d3ad161112bfb1b243fa856",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "2bfbb124044ba558fe802ccc1ddc28e592f2ae465cf7f2f0a27de5807b9edad2",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     },
     {
@@ -13906,18 +13764,6 @@
           "ME-TRN-008"
         ]
       },
-      "pattern": {
-        "family": "holdout-contamination",
-        "seededFailure": "The model or candidate selector can read the mutation label, expected patch, oracle implementation, or answer key.",
-        "expectedImpactGraph": [
-          "sealed_manifest",
-          "execution_input",
-          "model",
-          "oracle",
-          "evaluation_result"
-        ],
-        "evidenceState": "verified"
-      },
       "fixture": {
         "manifestId": "fixture:reg-e025:v1",
         "mutationId": "mutation:reg-e025:v1",
@@ -13936,10 +13782,16 @@
         ],
         "requiresDedicatedBenchmarkTenant": true
       },
+      "pattern": {
+        "family": "holdout-contamination",
+        "seededFailure": "The model or candidate selector can read the mutation label, expected patch, oracle implementation, or answer key.",
+        "evidenceState": "verified",
+        "expectedImpactGraph": null
+      },
       "holdout": {
         "state": "assigned_unsealed",
-        "answerKeyCommitmentSha256": "384bfd71cfb4e419c25e49b1587e957a31f28d38d114e6678b844d5dbaa6cbb6",
-        "note": "The answer key is withheld from generated catalogs, but protected storage and access receipts do not yet exist."
+        "answerKeyCommitmentSha256": "e96cd5c98c2e5e1ff21d4c3974a33d57c30279cb6749a9e2aa5be747d280e8c2",
+        "note": "The expected outcome and expected impact graph are withheld from generated catalogs, but protected storage and access receipts do not yet exist."
       }
     }
   ]

@@ -350,3 +350,31 @@ export const rejectedCandidates = [
 // Promotion from admissionCandidates is therefore intentionally impossible until
 // the exact pinned clones have been screened and the resulting evidence retained.
 export const repositories: RepositoryProvenance[] = [];
+
+// Whether the repository-provenance section of the status report may claim
+// screening evidence. The previous verdict compared admitted and candidate
+// counts, which is not evidence about screening at all: it reported "verified"
+// whenever the two arrays happened to be the same length, and would have
+// reported "verified" the moment `repositories` was populated even if every
+// screening axis were still "unknown". An empty-versus-empty comparison also
+// reports "verified" for a program that has screened nothing.
+//
+// The verdict now reads the screening result. "verified" requires admitted
+// repositories to exist, every candidate to be admitted, and every admitted
+// repository to carry a conclusive negative outcome on all four screening axes.
+// Any "unknown" or positive finding leaves it "unknown".
+export function repositoryScreeningEvidenceState(
+  admitted: readonly RepositoryProvenance[],
+  candidates: readonly RepositoryAdmissionCandidate[],
+): "verified" | "unknown" {
+  if (admitted.length === 0) return "unknown";
+  if (admitted.length !== candidates.length) return "unknown";
+  const screened = admitted.every(
+    (repository) =>
+      repository.contentScreening.secrets === "not_detected" &&
+      repository.contentScreening.personalData === "not_detected" &&
+      repository.contentScreening.generatedCredentials === "not_detected" &&
+      repository.contentScreening.customerData === "not_present",
+  );
+  return screened ? "verified" : "unknown";
+}

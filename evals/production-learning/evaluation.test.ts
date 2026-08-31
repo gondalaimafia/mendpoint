@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import {
   EVALUATION_ARMS,
+  EVALUATION_LEARNING_CASE,
   EVALUATION_PRODUCTION_REVISION,
   EVALUATION_REPOSITORY_COMMIT,
   SHA,
+  evaluationModeledInputDigest,
   evaluationGradeAuthorityEnvelope,
   evaluationMetrics,
   evaluationProductionAuthorityEnvelope,
@@ -64,8 +66,7 @@ function cohort(): CaseArmResult[] {
     answerKeyAccessReceiptDigest: "d".repeat(64),
     gradedAt: "2026-08-28T23:02:00.000Z",
     gradingAuthorityDigest: "0".repeat(64),
-    expectedOutcomeIncludedInInput: false,
-    answerKeyIncludedInInput: false,
+    modeledInputArtifactDigest: evaluationModeledInputDigest(arm),
     metrics: evaluationMetrics(arm),
     };
     row.trustedProductionReceiptAuthorityDigest = productionAuthority(row).authorityEnvelopeDigest;
@@ -107,27 +108,7 @@ function productionReceipt(row: CaseArmResult): ProductionExecutionReceipt {
 }
 
 function registry(): EvaluationRegistry {
-  const learningCase: LearningCase = {
-    schemaVersion: "mendpoint.learning-case.v1",
-    id: "REG-E001",
-    product: "regauge",
-    cohort: "edge",
-    datasetSplit: "holdout",
-    title: "Registry-bound evaluation case",
-    importance: { statement: "Official evidence supports this case.", frequencyClaim: "not_claimed", sourceIds: ["source-1"] },
-    sources: [{ id: "source-1", kind: "official_documentation", title: "Official evidence", publisher: "Upstream", url: "https://example.com/evidence", retrievedAt: "2026-08-28T23:00:00.000Z" }],
-    repository: {
-      provenanceId: "repo-example",
-      languages: ["TypeScript"],
-      frameworks: ["Node.js"],
-      binding: { mode: "native", originalResearchCandidate: "repo-example", rationale: "The repository directly exercises the case." },
-    },
-    pattern: { family: "runtime-upgrade", seededFailure: "A deterministic failure is seeded.", expectedImpactGraph: ["runtime", "test"], evidenceState: "verified" },
-    expected: { diagnosis: "Diagnose the seeded failure.", repairOrMigration: "Apply the bounded migration.", oracleIds: ["oracle-reg-e001"], productionAcceptance: ["The oracle passes."] },
-    fixture: { manifestId: "fixture-reg-e001-manifest-v1", mutationId: "mutation-reg-e001-v1", allowedEditPaths: ["src/**"], rollbackId: "rollback-reg-e001-v1", cleanupId: "cleanup-reg-e001-v1" },
-    security: { tenantRisk: "bounded", risks: ["untrusted_repository_content"], requiresDedicatedBenchmarkTenant: true },
-    planning: { requirementIds: ["REQ-EVAL-001"] },
-  };
+  const learningCase: LearningCase = EVALUATION_LEARNING_CASE;
   const repository: RepositoryProvenance = {
     schemaVersion: "mendpoint.repository-provenance.v1",
     id: "repo-example",
@@ -165,13 +146,61 @@ describe("case arm evaluation", () => {
   });
 
   it("rejects desired outcome or answer key leakage into a modeled arm", () => {
+    // The arm presents an input artifact that is not the staged leak-free input
+    // for this case and arm. The validator recomputes the staged digest itself,
+    // so the mismatch is decided from content; the producer cannot clear it by
+    // reporting that it did not leak.
     const rows = cohort();
-    rows[2]!.expectedOutcomeIncludedInInput = true;
-    rows[2]!.answerKeyIncludedInInput = true;
+    rows[2]!.modeledInputArtifactDigest = "c".repeat(64);
     expect(validateCaseArmCohort(rows, registry())).toEqual(expect.arrayContaining([
-      "REG-E001/configured_model_router modeled input must not include expected outcome",
-      "REG-E001/configured_model_router modeled input must not include answer key",
-      "REG-E001/configured_model_router holdout answer key must remain sealed from the input",
+      "REG-E001/configured_model_router modeled input artifact does not match the sealed leak-free staged input for this case and arm",
+    ]));
+  });
+
+  it("rejects a modeled arm whose input artifact digest is the real answer-key-bearing case", () => {
+    // The concrete leak this guard exists for: the arm was handed the full
+    // learning case, answer key and expected impact graph included, rather than
+    // the staged projection. Digesting that artifact the same way the honest
+    // producer would still fails, because its content is not the staged input.
+    const rows = cohort();
+    const leakedInputDigest = createHash("sha256")
+      .update(JSON.stringify(EVALUATION_LEARNING_CASE))
+      .digest("hex");
+    rows[2]!.modeledInputArtifactDigest = leakedInputDigest;
+    expect(validateCaseArmCohort(rows, registry())).toEqual(expect.arrayContaining([
+      "REG-E001/configured_model_router modeled input artifact does not match the sealed leak-free staged input for this case and arm",
+    ]));
+  });
+
+  it("fails closed when no modeled input artifact was retained", () => {
+    // The undetermined third state. No executor exists yet, so this is the
+    // state every real row would be in today. It must not read as "no leak".
+    const rows = cohort();
+    rows[1]!.modeledInputArtifactDigest = null;
+    expect(validateCaseArmCohort(rows, registry())).toEqual(expect.arrayContaining([
+      "REG-E001/deterministic_recipe modeled input artifact digest is not retained, so answer-key exposure cannot be determined",
+    ]));
+  });
+
+  it("rejects an oracle arm that presents a modeled input artifact digest", () => {
+    const rows = cohort();
+    rows[4]!.modeledInputArtifactDigest = "c".repeat(64);
+    expect(validateCaseArmCohort(rows, registry())).toEqual(expect.arrayContaining([
+      "REG-E001/oracle oracle arm must not present a modeled input artifact digest",
+    ]));
+  });
+
+  it("requires all five arms to run under an identical budget", () => {
+    // The headline property of the five-arm design: an arm that was given a
+    // larger budget than its peers is not comparable to them, so a cohort whose
+    // budgets disagree is not a valid comparison regardless of its metrics.
+    const rows = cohort();
+    expect(validateCaseArmCohort(rows, registry())).toEqual([]);
+    rows[2]!.budgetDigest = createHash("sha256")
+      .update(JSON.stringify({ ...RUN_BUDGET, maximumUsd: RUN_BUDGET.maximumUsd * 10 }))
+      .digest("hex");
+    expect(validateCaseArmCohort(rows, registry())).toEqual(expect.arrayContaining([
+      "REG-E001 arms must use an identical budget",
     ]));
   });
 
