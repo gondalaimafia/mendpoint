@@ -80,9 +80,13 @@ export function rollbackPostTrainedAdapter(db: AppDb, input: Readonly<{ tenantId
   if (!db.raw.prepare("SELECT 1 FROM principals WHERE tenant_id = ? AND id = ? AND revoked_at IS NULL").get(input.tenantId, input.actorPrincipalId)) throw new Error("post_trained_actor_invalid");
   const manifest = getPostTrainedAdapterStatus(db, input.tenantId, input.adapterId, { enabled: true });
   if (manifest.lifecycle.artifactDigest !== input.expectedArtifactDigest) throw new Error("post_trained_rollback_binding_mismatch");
-  if (manifest.lifecycle.state === "rolled_back") return manifest;
   const requestDigest = sha256(canonicalJson({ ...input, rolledBackAt: undefined }));
   const key = `post-trained-rollback:${input.idempotencyKey}`;
+  if (manifest.lifecycle.state === "rolled_back") {
+    const existing = db.raw.prepare("SELECT payload_json FROM domain_events WHERE tenant_id = ? AND idempotency_key = ? AND aggregate_type = 'post_trained_adapter' AND aggregate_id = ? AND event_type = 'post_trained_adapter.rolled_back'").get(input.tenantId, key, input.adapterId) as { payload_json: string } | undefined;
+    if (!existing || (JSON.parse(existing.payload_json) as { requestDigest?: string }).requestDigest !== requestDigest) throw new Error("post_trained_rollback_replay_mismatch");
+    return manifest;
+  }
   const rollbackContent = canonicalJson({ schemaVersion: 1, kind: "post_trained_human_rollback", tenantId: input.tenantId, adapterId: input.adapterId, expectedArtifactDigest: input.expectedArtifactDigest, reason: input.reason, actorPrincipalId: input.actorPrincipalId, rolledBackAt: input.rolledBackAt });
   const rollbackArtifactId = `rollback_${sha256(rollbackContent)}`;
   const rollbackEvidenceId = `evidence_${sha256(`${input.tenantId}\0${input.adapterId}\0${rollbackArtifactId}`)}`;

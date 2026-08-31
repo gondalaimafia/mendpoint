@@ -76,6 +76,8 @@ describe("post trained application", () => {
     registerPostTrainedAdapter(db, registration, authority);
     const rolledBack = rollbackPostTrainedAdapter(db, { tenantId: "tenant-1", adapterId: "adapter-1", actorPrincipalId: "actor", expectedArtifactDigest: DIGEST, reason: "Canary regression", idempotencyKey: "rollback-1", rolledBackAt: "2026-08-12T12:10:00.000Z" }, authority);
     expect(rolledBack.lifecycle.state).toBe("rolled_back");
+    expect(rollbackPostTrainedAdapter(db, { tenantId: "tenant-1", adapterId: "adapter-1", actorPrincipalId: "actor", expectedArtifactDigest: DIGEST, reason: "Canary regression", idempotencyKey: "rollback-1", rolledBackAt: "2026-08-12T12:11:00.000Z" }, authority)).toEqual(rolledBack);
+    expect(() => rollbackPostTrainedAdapter(db, { tenantId: "tenant-1", adapterId: "adapter-1", actorPrincipalId: "actor", expectedArtifactDigest: DIGEST, reason: "Different rollback", idempotencyKey: "rollback-other", rolledBackAt: "2026-08-12T12:11:00.000Z" }, authority)).toThrow("post_trained_rollback_replay_mismatch");
     expect(rolledBack.lifecycle.history.at(-1)?.evidenceRefs[0]).toMatch(/^evidence_/);
     expect(db.raw.prepare("SELECT COUNT(*) c FROM artifact_manifests WHERE tenant_id = ? AND kind = 'post_trained_human_rollback'").get("tenant-1")).toEqual({ c: 1 });
     expect(getPostTrainedAdapterEligibility(db, { tenantId: "tenant-1", adapterId: "adapter-1", task: task(), now: new Date("2026-08-12T12:10:00.000Z") }, authority)).toMatchObject({ eligible: false, reason: "lifecycle_not_servable" });

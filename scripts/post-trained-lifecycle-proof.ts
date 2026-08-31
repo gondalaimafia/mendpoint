@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, linkSync, lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,9 +42,19 @@ export type PostTrainedLifecycleProofReport = Readonly<{
   eligibleAfterRollback: false;
   rollbackReason: "lifecycle_not_servable";
   proofDigest: string;
+  proofKeyId: string;
+  proofMac: string;
 }>;
 
-type ProofDependencies = Readonly<{ apiKey: string; fetch?: typeof fetch }>;
+type ProofDependencies = Readonly<{
+  apiKey: string;
+  apiBaseUrl: string;
+  proofSigningKeyBase64: string;
+  proofSigningKeyId: string;
+  fetch?: typeof fetch;
+}>;
+
+type ProofAuthority = Readonly<{ key: Buffer; keyId: string }>;
 
 function digest(value: string | Buffer): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -81,6 +91,30 @@ function identifier(value: unknown): string {
   return candidate;
 }
 
+function exactRecord(value: unknown, allowed: readonly string[], code: string): JsonRecord {
+  const item = record(value, code);
+  const allowedKeys = new Set(allowed);
+  if (Object.keys(item).some((name) => !allowedKeys.has(name))) throw new Error(code);
+  return item;
+}
+
+function normalizedSecretName(value: string): string {
+  return value.normalize("NFKC").replace(/[^a-z0-9]/giu, "").toLowerCase();
+}
+
+function proofAuthority(dependencies: ProofDependencies): ProofAuthority {
+  const keyId = identifier(dependencies.proofSigningKeyId);
+  const encoded = requiredText(dependencies.proofSigningKeyBase64, "post_trained_proof_authority_invalid");
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(encoded)) {
+    throw new Error("post_trained_proof_authority_invalid");
+  }
+  const key = Buffer.from(encoded, "base64");
+  if (key.length < 32 || key.length > 128 || key.toString("base64") !== encoded) {
+    throw new Error("post_trained_proof_authority_invalid");
+  }
+  return Object.freeze({ key, keyId });
+}
+
 function key(value: unknown): string {
   const candidate = requiredText(value, "post_trained_idempotency_invalid");
   if (candidate.length > 200 || /[\r\n]/u.test(candidate)) {
@@ -97,15 +131,69 @@ function assertNoCredentials(value: unknown, depth = 0): void {
   }
   if (!value || typeof value !== "object") return;
   for (const [name, child] of Object.entries(value as JsonRecord)) {
-    if (/^(?:authorization|api[_-]?key|token|secret|password)$/iu.test(name)) {
+    const normalized = normalizedSecretName(name);
+    if (/(?:authorization|apikey|accesstoken|refreshtoken|bearertoken|clientsecret|privatekey|webhooksecret|password|credential|githubtoken)/u.test(normalized)) {
       throw new Error("post_trained_input_contains_credentials");
     }
     assertNoCredentials(child, depth + 1);
   }
 }
 
+function assertExactNestedSchemas(input: JsonRecord): void {
+  const training = exactRecord(record(input.training).body, ["jobId", "adapterId", "baseModelId", "datasetId", "purpose", "residencyRegion", "trainingCorpusArtifactIds", "validationArtifactId", "holdoutArtifactId", "splitManifestDigest", "recipe"], "post_trained_stage_schema_invalid");
+  exactRecord(training.recipe, ["epochs", "maximumExamples", "seed"], "post_trained_stage_schema_invalid");
+
+  const evaluation = exactRecord(record(input.evaluation).body, ["evaluationId", "trainingJobId", "adapterId", "baseline", "evaluator", "policy"], "post_trained_stage_schema_invalid");
+  exactRecord(evaluation.baseline, ["executorId", "revision"], "post_trained_stage_schema_invalid");
+  exactRecord(evaluation.evaluator, ["harnessVersion", "graderVersion"], "post_trained_stage_schema_invalid");
+  exactRecord(evaluation.policy, ["minimumSuccessRate", "maximumRegressionRate", "maximumSecurityRegressions"], "post_trained_stage_schema_invalid");
+
+  exactRecord(record(input.canary).body, ["canaryId", "trainingJobId", "evaluationId", "adapterId"], "post_trained_stage_schema_invalid");
+  const registration = exactRecord(record(input.registration).body, ["adapterId", "trainingJobId", "lifecycle", "consent", "descriptor"], "post_trained_stage_schema_invalid");
+  const lifecycle = exactRecord(registration.lifecycle, ["tenantId", "adapterId", "state", "revision", "baseModel", "artifactDigest", "trainingDataset", "heldOutEvaluation", "promotionThresholds", "approvedInfrastructure", "servingRevision", "monitoringWindow", "rollbackTarget", "approver", "canaryEvidence", "evidenceRefs", "history"], "post_trained_stage_schema_invalid");
+  exactRecord(lifecycle.baseModel, ["modelId", "license", "evidenceRef"], "post_trained_stage_schema_invalid");
+  const dataset = exactRecord(lifecycle.trainingDataset, ["datasetId", "lineageRefs", "consent", "sufficiency"], "post_trained_stage_schema_invalid");
+  exactRecord(dataset.consent, ["status", "evidenceRefs"], "post_trained_stage_schema_invalid");
+  exactRecord(dataset.sufficiency, ["representative", "sampleCount", "minimumSampleCount", "evidenceRefs"], "post_trained_stage_schema_invalid");
+  if (lifecycle.heldOutEvaluation !== undefined) exactRecord(lifecycle.heldOutEvaluation, ["reportRef", "passed", "successRate", "regressionRate"], "post_trained_stage_schema_invalid");
+  if (lifecycle.promotionThresholds !== undefined) exactRecord(lifecycle.promotionThresholds, ["minimumSuccessRate", "maximumRegressionRate"], "post_trained_stage_schema_invalid");
+  if (lifecycle.approvedInfrastructure !== undefined) exactRecord(lifecycle.approvedInfrastructure, ["approved", "marker", "evidenceRef"], "post_trained_stage_schema_invalid");
+  if (lifecycle.monitoringWindow !== undefined) exactRecord(lifecycle.monitoringWindow, ["startsAt", "endsAt"], "post_trained_stage_schema_invalid");
+  if (lifecycle.rollbackTarget !== undefined) exactRecord(lifecycle.rollbackTarget, ["servingRevision", "artifactDigest"], "post_trained_stage_schema_invalid");
+  if (lifecycle.approver !== undefined) exactRecord(lifecycle.approver, ["principalId", "approvedAt", "evidenceRef"], "post_trained_stage_schema_invalid");
+  if (lifecycle.canaryEvidence !== undefined) exactRecord(lifecycle.canaryEvidence, ["passed", "observedAt", "evidenceRefs"], "post_trained_stage_schema_invalid");
+  if (!Array.isArray(lifecycle.history)) throw new Error("post_trained_stage_schema_invalid");
+  for (const event of lifecycle.history) exactRecord(event, ["revision", "from", "to", "actorId", "occurredAt", "evidenceRefs"], "post_trained_stage_schema_invalid");
+
+  exactRecord(registration.consent, ["tenantId", "datasetId", "revision", "status", "evidenceRefs", "checkedAt", "expiresAt"], "post_trained_stage_schema_invalid");
+  const descriptor = exactRecord(registration.descriptor, ["executorId", "providerId", "kind", "version", "deployment", "capabilities", "tools", "regions", "price", "limits", "health", "license", "maximumDataClassification", "maximumRisk", "qualityScore", "estimatedLatencyMs", "estimatedCostUsd"], "post_trained_stage_schema_invalid");
+  exactRecord(descriptor.price, ["version", "currency", "effectiveAt"], "post_trained_stage_schema_invalid");
+  exactRecord(descriptor.limits, ["maximumInputTokens", "maximumOutputTokens", "maximumConcurrentTasks"], "post_trained_stage_schema_invalid");
+  exactRecord(descriptor.health, ["status", "checkedAt", "evidenceRef"], "post_trained_stage_schema_invalid");
+  exactRecord(descriptor.license, ["id", "commercialUse", "redistribution"], "post_trained_stage_schema_invalid");
+
+  const eligibility = exactRecord(input.eligibility, ["body"], "post_trained_stage_schema_invalid");
+  const eligibilityBody = exactRecord(eligibility.body, ["task"], "post_trained_stage_schema_invalid");
+  const task = exactRecord(eligibilityBody.task, ["taskId", "tenantId", "kind", "goal", "idempotencyKey", "inputArtifactIds", "requiredCapabilities", "allowedTools", "context", "verification", "fallbackPolicy", "privacy", "risk", "quality", "latency", "budget"], "post_trained_stage_schema_invalid");
+  exactRecord(task.context, ["estimatedInputTokens", "maximumOutputTokens"], "post_trained_stage_schema_invalid");
+  exactRecord(task.verification, ["requiredChecks", "requireAll", "onFailure"], "post_trained_stage_schema_invalid");
+  exactRecord(task.fallbackPolicy, ["enabled", "maxAttempts", "sameExecutorRetries", "retryableFailures", "fallbackFailures"], "post_trained_stage_schema_invalid");
+  exactRecord(task.privacy, ["classification", "requiredRegion"], "post_trained_stage_schema_invalid");
+  exactRecord(task.quality, ["minimumScore"], "post_trained_stage_schema_invalid");
+  exactRecord(task.latency, ["maximumMs"], "post_trained_stage_schema_invalid");
+  exactRecord(task.budget, ["maximumUsd"], "post_trained_stage_schema_invalid");
+}
+
+function assertExactInputSchema(value: JsonRecord): void {
+  for (const name of ["training", "evaluation", "canary", "registration"]) {
+    exactRecord(value[name], ["idempotencyKey", "body"], "post_trained_stage_schema_invalid");
+  }
+  exactRecord(value.rollback, ["idempotencyKey", "reason"], "post_trained_stage_schema_invalid");
+  assertExactNestedSchemas(value);
+}
+
 function parseStage(value: unknown): Stage {
-  const item = record(value, "post_trained_stage_invalid");
+  const item = exactRecord(value, ["idempotencyKey", "body"], "post_trained_stage_schema_invalid");
   return Object.freeze({
     idempotencyKey: key(item.idempotencyKey),
     body: record(item.body, "post_trained_stage_invalid"),
@@ -117,8 +205,9 @@ function parseInput(raw: Buffer): PostTrainedLifecycleProofInput {
   try { parsed = JSON.parse(raw.toString("utf8")); }
   catch { throw new Error("post_trained_input_invalid"); }
   assertNoCredentials(parsed);
-  const value = record(parsed, "post_trained_input_invalid");
+  const value = exactRecord(parsed, ["version", "apiBaseUrl", "timeoutMs", "training", "evaluation", "canary", "registration", "eligibility", "rollback"], "post_trained_input_schema_invalid");
   if (value.version !== POST_TRAINED_PROOF_VERSION) throw new Error("post_trained_version_invalid");
+  assertExactInputSchema(value);
   const timeoutMs = value.timeoutMs;
   if (!Number.isSafeInteger(timeoutMs) || (timeoutMs as number) < 1 || (timeoutMs as number) > 300_000) {
     throw new Error("post_trained_timeout_invalid");
@@ -266,8 +355,14 @@ export async function executePostTrainedLifecycleProof(
   inputDigest: string,
   dependencies: ProofDependencies,
 ): Promise<PostTrainedLifecycleProofReport> {
+  assertNoCredentials(input);
+  const inputRecord = exactRecord(input, ["version", "apiBaseUrl", "timeoutMs", "training", "evaluation", "canary", "registration", "eligibility", "rollback"], "post_trained_input_schema_invalid");
+  assertExactInputSchema(inputRecord);
+  const requestedBase = parseBase(input.apiBaseUrl);
+  const base = parseBase(requiredText(dependencies.apiBaseUrl, "post_trained_api_url_invalid"));
+  if (requestedBase.href !== base.href) throw new Error("post_trained_api_url_untrusted");
   const apiKey = requiredText(dependencies.apiKey, "post_trained_api_key_required");
-  const base = parseBase(input.apiBaseUrl);
+  const authority = proofAuthority(dependencies);
   const transport = dependencies.fetch ?? fetch;
   const trainingJobId = identifier(input.training.body.jobId);
   const adapterId = identifier(input.training.body.adapterId);
@@ -356,14 +451,24 @@ export async function executePostTrainedLifecycleProof(
   if (registeredCanary.passed !== true || canonicalJson(registeredCanary.evidenceRefs) !== canonicalJson(evidenceRefs)) {
     throw new Error("post_trained_stage_binding_mismatch");
   }
-  if (lifecycle.state !== "monitored" || !Number.isSafeInteger(lifecycle.revision)) {
+  const sourceRevision = sourceLifecycle.revision;
+  if (!Number.isSafeInteger(sourceRevision) || (sourceRevision as number) < 1 ||
+      !Number.isSafeInteger(lifecycle.revision) ||
+      !["monitored", "rolled_back"].includes(lifecycle.state as string)) {
     throw new Error("post_trained_registration_not_monitored");
+  }
+  const resumedAfterRollback = lifecycle.state === "rolled_back";
+  if ((!resumedAfterRollback && lifecycle.revision !== sourceRevision) ||
+      (resumedAfterRollback && lifecycle.revision !== (sourceRevision as number) + 1)) {
+    throw new Error("post_trained_registration_revision_invalid");
   }
 
   const eligiblePath = `advanced-ai/post-trained/adapters/${encodeURIComponent(adapterId)}/eligibility`;
-  const eligible = await requestJson(transport, base, apiKey, input.timeoutMs, eligiblePath, input.eligibility.body);
-  expectBinding(eligible.adapterId, adapterId);
-  if (eligible.eligible !== true) throw new Error("post_trained_adapter_not_eligible");
+  if (!resumedAfterRollback) {
+    const eligible = await requestJson(transport, base, apiKey, input.timeoutMs, eligiblePath, input.eligibility.body);
+    expectBinding(eligible.adapterId, adapterId);
+    if (eligible.eligible !== true) throw new Error("post_trained_adapter_not_eligible");
+  }
 
   const rollbackPath = `advanced-ai/post-trained/adapters/${encodeURIComponent(adapterId)}/rollback`;
   const rolledBack = await requestJson(transport, base, apiKey, input.timeoutMs, rollbackPath,
@@ -373,7 +478,7 @@ export async function executePostTrainedLifecycleProof(
   const rollbackLifecycle = record(rolledBack.lifecycle);
   expectBinding(rollbackLifecycle.artifactDigest, adapterDigest);
   if (rollbackLifecycle.state !== "rolled_back") throw new Error("post_trained_rollback_not_applied");
-  if (!Number.isSafeInteger(rollbackLifecycle.revision) || (rollbackLifecycle.revision as number) <= (lifecycle.revision as number)) {
+  if (!Number.isSafeInteger(rollbackLifecycle.revision) || rollbackLifecycle.revision !== (sourceRevision as number) + 1) {
     throw new Error("post_trained_rollback_revision_invalid");
   }
 
@@ -396,32 +501,49 @@ export async function executePostTrainedLifecycleProof(
     evaluationArtifactId,
     evaluation: Object.freeze({ successRate, regressionRate }),
     canary: Object.freeze({ servingRevision, observedAt, evidenceRefs }),
-    lifecycleRevision: lifecycle.revision as number,
+    lifecycleRevision: sourceRevision as number,
     rollbackLifecycleRevision: rollbackLifecycle.revision as number,
     eligibleBeforeRollback: true,
     rolledBack: true,
     eligibleAfterRollback: false,
     rollbackReason: "lifecycle_not_servable",
   });
-  return Object.freeze({ ...report, proofDigest: digest(canonicalJson(report)) });
+  const authenticatedBody = Object.freeze({ ...report, proofKeyId: authority.keyId });
+  const proofDigest = digest(canonicalJson(authenticatedBody));
+  const proofMac = createHmac("sha256", authority.key)
+    .update(`${proofDigest}\0${canonicalJson(authenticatedBody)}`)
+    .digest("hex");
+  return Object.freeze({ ...authenticatedBody, proofDigest, proofMac });
 }
 
-function validateExistingReport(value: unknown): PostTrainedLifecycleProofReport {
+function validateExistingReport(value: unknown, authority: ProofAuthority): PostTrainedLifecycleProofReport {
   const report = record(value, "post_trained_output_conflict");
   const expectedKeys = [
     "adapterDigest", "adapterId", "apiOrigin", "canary", "canaryId", "eligibleAfterRollback",
     "eligibleBeforeRollback", "evaluation", "evaluationArtifactId", "evaluationId", "inputDigest",
-    "lifecycleRevision", "proofDigest", "rollbackLifecycleRevision", "rollbackReason", "rolledBack",
+    "lifecycleRevision", "proofDigest", "proofKeyId", "proofMac", "rollbackLifecycleRevision", "rollbackReason", "rolledBack",
     "tenantId", "trainingJobId", "version",
   ];
   if (Object.keys(report).sort().join("\0") !== expectedKeys.sort().join("\0")) {
     throw new Error("post_trained_output_conflict");
   }
   const proofDigest = report.proofDigest;
-  if (typeof proofDigest !== "string") throw new Error("post_trained_output_conflict");
-  const { proofDigest: ignored, ...body } = report;
+  const proofMac = report.proofMac;
+  if (typeof proofDigest !== "string" || typeof proofMac !== "string" || report.proofKeyId !== authority.keyId) {
+    throw new Error("post_trained_output_conflict");
+  }
+  const { proofDigest: ignored, proofMac: ignoredMac, ...body } = report;
   void ignored;
+  void ignoredMac;
   if (proofDigest !== digest(canonicalJson(body))) throw new Error("post_trained_output_conflict");
+  const expectedMac = createHmac("sha256", authority.key)
+    .update(`${proofDigest}\0${canonicalJson(body)}`)
+    .digest();
+  if (!/^[a-f0-9]{64}$/u.test(proofMac)) throw new Error("post_trained_output_conflict");
+  const suppliedMac = Buffer.from(proofMac, "hex");
+  if (suppliedMac.length !== expectedMac.length || !timingSafeEqual(suppliedMac, expectedMac)) {
+    throw new Error("post_trained_output_conflict");
+  }
   const parsed = report as unknown as PostTrainedLifecycleProofReport;
   const evaluation = record(parsed.evaluation, "post_trained_output_conflict");
   const canary = record(parsed.canary, "post_trained_output_conflict");
@@ -445,7 +567,7 @@ function validateExistingReport(value: unknown): PostTrainedLifecycleProofReport
   return Object.freeze(parsed);
 }
 
-function existingReport(path: string, inputDigest: string, apiOrigin: string): PostTrainedLifecycleProofReport | undefined {
+function existingReport(path: string, inputDigest: string, apiOrigin: string, authority: ProofAuthority): PostTrainedLifecycleProofReport | undefined {
   if (!existsSync(path)) return undefined;
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > POST_TRAINED_PROOF_MAX_INPUT_BYTES) {
@@ -454,7 +576,7 @@ function existingReport(path: string, inputDigest: string, apiOrigin: string): P
   let value: unknown;
   try { value = JSON.parse(readFileSync(path, "utf8")); }
   catch { throw new Error("post_trained_output_conflict"); }
-  const report = validateExistingReport(value);
+  const report = validateExistingReport(value, authority);
   if (report.version !== POST_TRAINED_PROOF_VERSION || report.inputDigest !== inputDigest ||
       report.apiOrigin !== apiOrigin || report.rolledBack !== true || report.eligibleAfterRollback !== false) {
     throw new Error("post_trained_output_conflict");
@@ -472,13 +594,25 @@ export async function persistPostTrainedLifecycleProof(
   if (inputFile === outputFile) throw new Error("post_trained_output_must_differ");
   const { input, raw } = readInput(inputFile);
   const inputDigest = digest(raw);
-  const replay = existingReport(outputFile, inputDigest, parseBase(input.apiBaseUrl).origin);
+  const requestedBase = parseBase(input.apiBaseUrl);
+  const protectedBase = parseBase(requiredText(dependencies.apiBaseUrl, "post_trained_api_url_invalid"));
+  if (requestedBase.href !== protectedBase.href) throw new Error("post_trained_api_url_untrusted");
+  const authority = proofAuthority(dependencies);
+  const replay = existingReport(outputFile, inputDigest, protectedBase.origin, authority);
   if (replay) return replay;
   const report = await executePostTrainedLifecycleProof(input, inputDigest, dependencies);
   const temporary = resolve(dirname(outputFile), `.${randomUUID()}.post-trained-proof.tmp`);
   try {
     writeFileSync(temporary, `${canonicalJson(report)}\n`, { flag: "wx" });
-    linkSync(temporary, outputFile);
+    try {
+      linkSync(temporary, outputFile);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const winner = existingReport(outputFile, inputDigest, protectedBase.origin, authority);
+      if (!winner || canonicalJson(winner) !== canonicalJson(report)) throw new Error("post_trained_output_conflict");
+      rmSync(temporary, { force: true });
+      return winner;
+    }
     rmSync(temporary);
   } catch (error) {
     rmSync(temporary, { force: true });
@@ -518,7 +652,12 @@ export async function runPostTrainedLifecycleProofCli(
     return 2;
   }
   try {
-    const report = await persistPostTrainedLifecycleProof(args.input, args.output, { apiKey: env.MENDPOINT_API_KEY ?? "" });
+    const report = await persistPostTrainedLifecycleProof(args.input, args.output, {
+      apiKey: env.MENDPOINT_API_KEY ?? "",
+      apiBaseUrl: env.MENDPOINT_API_BASE_URL ?? "",
+      proofSigningKeyBase64: env.MENDPOINT_ADAPTER_PROOF_SIGNING_KEY_B64 ?? "",
+      proofSigningKeyId: env.MENDPOINT_ADAPTER_PROOF_SIGNING_KEY_ID ?? "",
+    });
     io.stdout(`${JSON.stringify({ ok: true, inputDigest: report.inputDigest, adapterId: report.adapterId, output: resolve(args.output) })}\n`);
     return 0;
   } catch (error) {
