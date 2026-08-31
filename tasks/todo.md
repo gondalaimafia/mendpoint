@@ -4109,3 +4109,23 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - The first vertical slice defines a pure protected-bundle loader. It accepts only an exact schema, validates the existing 101-of-101 attestation, confines the bundle and three artifacts to a canonical non-reparse root, hashes the raw file bytes, binds every digest and the exact release revision, and returns only an indeterminate authority on any ambiguity.
 - Exact-head re-review found that mixed Windows path separators could collapse two artifact roles onto the same canonical file. The loader now resolves and validates all artifact paths before reading, rejects duplicate canonical paths, and covers the slash-to-backslash alias directly.
 - After rebasing onto production repair `842dafc2`, all 171 Ops tests pass, including eleven hostile loader tests and the existing readiness matrix. Coverage includes deletion, byte drift, duplicate canonical files, extra and missing keys, malformed JSON, stale revision, attestation substitution, traversal, absolute paths, incomplete revocation state, symbolic links, substituted roots, and a real Windows junction. The Ops typecheck and diff integrity pass. Any runtime wiring remains pending.
+
+## 2026-08-30 Issue authority refresh for #430 and #433
+
+- [x] Bind issue-authority records #430 and #433 to their exact live GitHub state and `updatedAt` values without changing requirement status, availability, or claims.
+- [x] Recompute the issue-authority and release-train integrity digests from the complete proposed matrix.
+- [x] Prove the changed issue records retain their exact owner, title, URL, and 101-requirement mappings through the focused GitHub authority tests.
+- [x] Run the full closure, specification, release-train, and GA validators plus diff integrity.
+- [x] Inspect the complete metadata-only diff, record review and rollback evidence, then commit and push without opening or merging a pull request.
+
+### Scope and rollback
+
+- Owned files: `docs/PRODUCTION_CLOSURE_MATRIX.json` and this task record. No issue, requirement, public claim, workflow, policy, credential, or production runtime is mutated by this branch.
+- Rollback is a single commit revert. The main authority observer remains fail closed until a refreshed matrix is merged and a new exact-main observation passes.
+
+### Review
+
+- Live GitHub readback confirmed issue #430 is open with `updatedAt` `2026-08-30T23:49:26Z` and issue #433 is open with `updatedAt` `2026-08-30T23:49:27Z`; both retain the expected owner, title, URL, and requirement mappings.
+- The complete matrix recomputation produced issue-authority digest `sha256:87e9f68ce12947e833983dd4bf68bc97e070b0c08a3b249105f3c0d967c21083`. The release-train digest remains `sha256:f4666ff849eca0a74d939d6a1f918042bc8e1091a7f6ae476bcdc1d5a7abf2c1` because no release-train record changed.
+- `npm run spec:check`, `npm run closure:check`, `npm run ledger:check`, and `npm run ga:check` pass. The focused GitHub authority, closure-matrix, and proposal-authority suite passes all 127 tests. `git diff --check` passes.
+- Review found no requirement, availability, public-claim, issue ownership, issue title, issue URL, requirement mapping, release-train, workflow, policy, credential, or runtime change. Protected GitHub authority and production acceptance remain pending until this exact change is reviewed, merged normally, and observed on the deployed main revision.
