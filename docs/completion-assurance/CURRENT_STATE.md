@@ -1,7 +1,7 @@
 # Completion Assurance — Current State
 
 **Status:** Archaeology. Descriptive, not prescriptive.  
-**Commit under test:** `d232a27c667197fa15323b13439441f5050ce69f` (`origin/main`, 2026-08-31).  
+**Commit under test:** `da3ba221a889def6d5a2d1526dc81a9353133693` (`origin/main`, 2026-08-31).  
 **Source contract:** Mendpoint Completion Assurance Product Spec for Cursor v1.0.  
 **This document does not authorize training, customer-ready claims, or flipping `v4-platform` rows to `verified`.**
 
@@ -40,6 +40,8 @@ A requirement is never SATISFIED because a table exists, a test exists, or an ag
 3. **“Ready for review” today is a local loop, not a gate.** Fettler campaign-execute can move a *Warden target* to stage `review` and write a best-effort `mission_verifications` row. ReGauge `completeAttempt` can mark a *pilot unit* `executed` and hand off a MissionTask. Neither calls `transitionMission` past `executing`. Neither is a CompletionGate.
 
 4. **The implementer and the validator are the same role.** Fettler/ReGauge write the checks they then pass. There is no access-control wall that hides validation cases from the implementer principal.
+
+   Main already records the cause in code, not just the symptom: `packages/pipeline/src/lesson-routing.ts:37-38` and `:234-237` state that both production producers feed the attribution deriver a constant `not_verified` because **Warden’s independent verifier is unsatisfiable and ReGauge’s `passed` flag is tautological and has no verifier**. That is an already-merged, in-repo finding that today’s “verification passed” signal is not an independent definition of done — it is the strongest evidence for this finding and for §B.8’s `none`-attribution symptom.
 
 5. **Do not duplicate what already works.** Snapshot-bound verification standing, content-addressed artifacts, Policy Envelope admission, job leases, MissionTask handoffs, and the advisory AgentVerifier must be reused. Inventing a second “is this evidence still valid” algorithm, a second scheduler, or a second policy engine is a defect.
 
@@ -165,7 +167,7 @@ No `validation.run` job type.
 
 `LearningDestination` (`packages/pipeline/src/learning-event.ts:51-71`) includes `graph`, `deterministic_recipe`, `calibration`, `no_action`, `organization_memory`.
 
-`LESSON_DESTINATION_DISPOSITIONS` (`packages/pipeline/src/lesson-routing.ts:8-16`): production lessons are attributed `none` and route to `no_action`. `model_weight` and `retrieval` have sinks that are **fed nothing**. The other destinations are unrouted. `organization_memory` is vocabulary; `classify` never emits it.
+`LESSON_DESTINATION_DISPOSITIONS` (`packages/pipeline/src/lesson-routing.ts:81`; the drop is described at `packages/pipeline/src/lesson-routing.ts:8-19`): production lessons are attributed `none` and route to `no_action`. `model_weight` and `retrieval` have sinks that are **fed nothing**. The other destinations are unrouted. `organization_memory` is vocabulary; `classify` never emits it.
 
 **Spec §22:** PARTIAL (admission exists); DEFERRED to invent GRAPH / H4 `organization_memory` / FET-015 write-back sinks. Completion Assurance may admit events; it must not build those sinks.
 
@@ -192,6 +194,9 @@ Checkpoint complete (`completeAttemptWithCheckpointHead`) can bypass the coordin
 ---
 
 ## Part C — Spec requirement classification
+
+> **Classified against an out-of-repo document. Re-derive before acting.**
+> The § numbers below key to the uploaded *Mendpoint Completion Assurance Product Spec for Cursor* v1.0, which is **not in this repository** — `git grep -il "Completion Assurance"` on `origin/main` returns zero files. No reader of this repository can check what any § requires, so the SATISFIED / PARTIAL / MISSING verdicts in this Part are **unauditable here** and must not be treated as reviewed. Part B (repository archaeology) is auditable and stands on its own; Part C does not. Vendoring the spec into `docs/completion-assurance/SPEC.md` is the fix and is owed before Wave A.
 
 Classifications below are against Completion Assurance spec sections. “SATISFIED” is reserved for production paths.
 
@@ -344,7 +349,6 @@ Re-check at each wave. As of this archaeology:
 | `apps/worker/src/mission-context.ts`, `packages/pipeline/src/mission-context-compiler.ts` | Open #533 (review blockers), #543 |
 | `apps/worker/src/transformer-pilot-lane.ts` | Open #542 (ReGauge artifacts) |
 | `apps/worker/src/cli.ts` | Many open branches |
-| `docs/missions/V4_GAP_ANALYSIS.md` | Open #445 |
 | Root `package.json`, claims (#461), authority/matrix PRs | Not this program |
 | `scripts/production-closure-*.ts`, `config/production-closure-*.json`, `docs/PRODUCTION_CLOSURE_MATRIX.json` | Cursor does not reseal except on an owned bootstrap PR |
 

@@ -1,8 +1,8 @@
 # Completion Assurance — Implementation Plan
 
 **Status:** Planning contract. Not an implementation.  
-**Depends on:** [CURRENT_STATE.md](./CURRENT_STATE.md) at `d232a27c667197fa15323b13439441f5050ce69f`.  
-**Parent spec:** Mendpoint Completion Assurance Product Spec for Cursor v1.0.  
+**Depends on:** [CURRENT_STATE.md](./CURRENT_STATE.md) at `da3ba221a889def6d5a2d1526dc81a9353133693`.  
+**Parent spec:** Mendpoint Completion Assurance Product Spec for Cursor v1.0 — **not in this repository**; every `§` citation below is unverifiable from this repo until it is vendored (see [CURRENT_STATE.md](./CURRENT_STATE.md) Part C).  
 **Horizon:** entire spec (Phases 0–5 / A–J) with hard stop points.
 
 No customer-ready claims. No `MENDPOINT_CUSTOMER_READY=1`. No `v4-platform` row flipped to `verified`. Cursor does not self-merge material PRs.
