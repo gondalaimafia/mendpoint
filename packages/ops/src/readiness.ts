@@ -5,7 +5,11 @@ import { existsSync, accessSync, constants, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { assessModelEgress } from "@mendpoint/shared";
 import { releaseBanner, resolveRelease } from "./release.js";
-import { validateApiEnv, assessCustomerReadiness } from "./env.js";
+import { validateApiEnv } from "./env.js";
+import {
+  assessCustomerReadiness,
+  type CustomerReadinessAuthority,
+} from "./customer-readiness.js";
 import { featureMatrix } from "./features.js";
 import { assessCustomerBackupReadiness } from "./disaster-recovery.js";
 import { recordCounter, recordHistogram, startSpan } from "./telemetry.js";
@@ -52,6 +56,7 @@ export function readiness(opts?: {
   dbPath?: string;
   dbPing?: () => boolean;
   schemaCheck?: () => boolean;
+  customerReadinessAuthority?: CustomerReadinessAuthority;
 }): ProbeResult {
   const span = startSpan("ops.readiness");
   const release = resolveRelease();
@@ -128,19 +133,6 @@ export function readiness(opts?: {
       detail: backup.detail,
     });
 
-    // A customer deployment's readiness must reflect its declared state and its
-    // unmet preconditions, never a constant. Indeterminate and not-ready both
-    // fail this check (fail closed); only a "ready" declaration with no env
-    // errors reads as ready, and any blocker is named in the detail.
-    const customerReadiness = assessCustomerReadiness(process.env, env.errors);
-    checks.push({
-      name: "customer_readiness",
-      ok: customerReadiness.status === "ready",
-      detail:
-        customerReadiness.status === "ready"
-          ? "ready"
-          : `${customerReadiness.status}: ${customerReadiness.reasons.join("; ")}`,
-    });
   }
 
   // Auditable model egress posture, so an operator can verify local_only mode.
@@ -150,6 +142,23 @@ export function readiness(opts?: {
     ok: egress.violation === null,
     detail: egress.violation ?? egress.mode,
   });
+
+  if (process.env.MENDPOINT_DEPLOYMENT_PROFILE === "customer") {
+    const customerReadiness = assessCustomerReadiness(process.env, env.errors, {
+      ...opts?.customerReadinessAuthority,
+      criticalHealth: [
+        ...(opts?.customerReadinessAuthority?.criticalHealth ?? []),
+        ...checks.map(({ name, ok }) => ({ name, ok })),
+      ],
+    });
+    checks.push({
+      name: "customer_readiness",
+      ok: customerReadiness.status === "ready",
+      detail: customerReadiness.activation === "inactive_compatibility" && customerReadiness.status === "ready"
+        ? "ready"
+        : `${customerReadiness.status}: ${customerReadiness.reasons.join("; ") || "qualified"}; digest=${customerReadiness.digest}`,
+    });
+  }
 
   const fail = checks.some((c) => !c.ok);
   const degraded = env.warnings.length > 0 && !fail;

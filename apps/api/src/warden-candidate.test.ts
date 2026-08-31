@@ -265,6 +265,94 @@ describe("Warden candidate API", () => {
 });
 
 describe("Warden approval sealing", () => {
+  it("seals production provider, graph, impact, and uncertainty lineage", async () => {
+    const value = fixture();
+    (value.result as Record<string, unknown>).intake = {
+      fettlerProviderChange: {
+        schemaVersion: 1,
+        providerSlug: "stripe",
+        changeId: "change-stripe-2026-08-31",
+        pipelineJobId: "pipeline-job-1",
+        contentHash: "0123456789abcdef",
+        fromVersionId: "version-stripe-2025-01",
+        fromVersionLabel: "2025-01",
+        toVersionId: "version-stripe-2026-08",
+        toVersionLabel: "2026-08",
+        repositoryId: "repo-1",
+        snapshotId: "snapshot-1",
+        revision: "a".repeat(40),
+        graphVersionId: "graph-version-1",
+        graphContextArtifactId: "graph-context-1",
+        impactEvidenceDigest: `sha256:${"d".repeat(64)}`,
+        overallConfidence: "high",
+        whatChanged: "The provider removed the legacy request field.",
+        knownFacts: ["The removed request field is used by client.js."],
+        unknowns: ["Runtime-only callers were not observed."],
+        whyAffected: "client.js sends the removed request field at the confirmed call site.",
+      },
+    };
+    const sealed = await sealWardenCandidateApproval({
+      ...REVIEW_BINDING,
+      tenantId: "tenant-a",
+      repoPath: value.source,
+      status: "candidate_ready",
+      resultJson: JSON.stringify(value.result),
+      env: { MENDPOINT_DATA_DIR: join(value.root, "data") },
+    });
+    expect(readWardenApprovalArtifact({
+      tenantId: "tenant-a", path: sealed.path, sha256: sealed.sha256,
+      env: { MENDPOINT_DATA_DIR: join(value.root, "data") },
+    })).toMatchObject({
+      schemaVersion: 5,
+      fettlerProviderChange: {
+        providerSlug: "stripe",
+        contentHash: "0123456789abcdef",
+        fromVersionId: "version-stripe-2025-01",
+        fromVersionLabel: "2025-01",
+        toVersionId: "version-stripe-2026-08",
+        toVersionLabel: "2026-08",
+        graphVersionId: "graph-version-1",
+        impactEvidenceDigest: `sha256:${"d".repeat(64)}`,
+      },
+    });
+  });
+
+  it("rejects provider change evidence bound to another snapshot", async () => {
+    const value = fixture();
+    (value.result as Record<string, unknown>).intake = {
+      fettlerProviderChange: {
+        schemaVersion: 1,
+        providerSlug: "stripe",
+        changeId: "change-stripe-2026-08-31",
+        pipelineJobId: "pipeline-job-1",
+        contentHash: "0123456789abcdef",
+        fromVersionId: "version-stripe-2025-01",
+        fromVersionLabel: "2025-01",
+        toVersionId: "version-stripe-2026-08",
+        toVersionLabel: "2026-08",
+        repositoryId: "repo-1",
+        snapshotId: "snapshot-other",
+        revision: "a".repeat(40),
+        graphVersionId: null,
+        graphContextArtifactId: null,
+        impactEvidenceDigest: `sha256:${"d".repeat(64)}`,
+        overallConfidence: "medium",
+        whatChanged: "The provider renamed a request field.",
+        knownFacts: ["A bounded call site was found."],
+        unknowns: ["Graph coverage was insufficient."],
+        whyAffected: "Raw retrieval found a matching request field.",
+      },
+    };
+    await expect(sealWardenCandidateApproval({
+      ...REVIEW_BINDING,
+      tenantId: "tenant-a",
+      repoPath: value.source,
+      status: "candidate_ready",
+      resultJson: JSON.stringify(value.result),
+      env: { MENDPOINT_DATA_DIR: join(value.root, "data") },
+    })).rejects.toThrow("fettler_provider_change_evidence_binding_mismatch");
+  });
+
   it("seals complete version two edit authority as a version four approval artifact", async () => {
     const value = fixture();
     const evidence = JSON.parse(readFileSync(value.evidence, "utf8")) as Record<string, unknown>;

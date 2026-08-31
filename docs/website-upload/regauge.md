@@ -1,10 +1,13 @@
-# Regauge — the first AI Legacy Engineer
+# ReGauge — the first AI Legacy Engineer
 
-Regauge is an experimental planning preview.
+ReGauge is an experimental planning preview.
 
 Status: Experimental planning preview
 Availability: Durable campaign planning and review controls; repository execution and staged pull request campaigns are not customer ready
 Last verified: 2026-08-14
+Publication evidence: not live; no deployed revision or live evidence digest recorded
+Requirements: ME-TRN-001, ME-TRN-002, ME-TRN-003, ME-TRN-004, ME-TRN-005, ME-TRN-006, ME-TRN-007, ME-TRN-008, ME-TRN-009, ME-TRN-010, ME-TRN-011, ME-TRN-012, ME-TRN-013
+Public claims: CLM-007
 
 ## Start here
 
@@ -43,8 +46,8 @@ Evaluate the planning preview against an approved snapshot without authorizing c
 | --- | --- | --- |
 | POST /transformer/missions | API | Plan a repository-backed migration mission. |
 | POST /transformer/control-plane/campaigns/:campaignId/review | API | Record independent blueprint review. |
-| GET /transformer/executions/:campaignId | API | Inspect execution state. |
-| npm run eval:transformer:canary | Command | Run the deterministic Regauge canary. |
+| GET /transformer/control-plane/campaigns/:campaignId | API | Inspect campaign and execution state. |
+| npm run eval:transformer:canary | Command | Run the deterministic ReGauge canary. |
 | MENDPOINT_REGAUGE_GATE | Configuration | Tenant, environment, boundary, and production-delivery authority. |
 
 ## Evidence and verification
@@ -52,6 +55,12 @@ Evaluate the planning preview against an approved snapshot without authorizing c
 - Mission planning and compilation: `packages/transformer/src/mission-planner.test.ts`
 - Pilot execution and checkpoints: `packages/transformer/src/pilot-execution.test.ts`
 - Multi-node worker: `apps/worker/src/transformer-multinode-service.test.ts`
+
+## Contract sources
+
+- `apps/api/src/regauge-production-bootstrap.ts`
+- `apps/api/src/regauge-plan-consult.ts`
+- `apps/worker/src/regauge-mission-task-claim.ts`
 
 ## Safety model
 
@@ -63,7 +72,7 @@ Evaluate the planning preview against an approved snapshot without authorizing c
 ## Limitations
 
 - Repository execution and staged pull request campaigns are not customer ready
-- No dedicated Regauge deployment is claimed live.
+- No dedicated ReGauge deployment is claimed live.
 - Adaptive model planning and legacy extraction use separate gates and are not implied by the planning preview.
 
 ## See also

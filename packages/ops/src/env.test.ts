@@ -123,3 +123,45 @@ describe("validateApiEnv adaptive-routing flag guard", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe("validateApiEnv secret-lifecycle activation", () => {
+  it("requires the complete protected authority binding when production activation is on", () => {
+    const missing = validateApiEnv({
+      NODE_ENV: "production",
+      MENDPOINT_SECRET_LIFECYCLE_ENABLED: "1",
+    } as NodeJS.ProcessEnv);
+    for (const name of [
+      "MENDPOINT_ENVELOPE_KEY_CATALOG_JSON",
+      "MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON",
+      "MENDPOINT_SECRET_LINEAGE_KEYRING_JSON",
+    ]) {
+      expect(missing.errors.some((error) => error.includes(name))).toBe(true);
+    }
+    expect(missing.errors.some((error) => error.includes("MENDPOINT_SECRET_BREAK_GLASS"))).toBe(true);
+
+    const complete = validateApiEnv({
+      NODE_ENV: "production",
+      MENDPOINT_SECRET_LIFECYCLE_ENABLED: "1",
+      MENDPOINT_ENVELOPE_KEY_CATALOG_JSON: '{"schemaVersion":1,"keys":[]}',
+      MENDPOINT_SECRET_IDEMPOTENCY_KEYRING_JSON: JSON.stringify({
+        schemaVersion: 1, activeKeyId: "secret-request-v1", keys: [],
+      }),
+      MENDPOINT_SECRET_LINEAGE_KEYRING_JSON: JSON.stringify({
+        schemaVersion: 1, activeKeyId: "secret-lineage-v1", keys: [],
+      }),
+      MENDPOINT_SECRET_BREAK_GLASS: "false",
+    } as NodeJS.ProcessEnv);
+    expect(complete.errors.some((error) => error.includes("when MENDPOINT_SECRET_LIFECYCLE_ENABLED=1")))
+      .toBe(false);
+  });
+
+  it("rejects partial authority bindings outside the explicit activation scope", () => {
+    const report = validateApiEnv({
+      MENDPOINT_SECRET_LIFECYCLE_ENABLED: "0",
+      MENDPOINT_ENVELOPE_KEY_CATALOG_JSON: '{"schemaVersion":1,"keys":[]}',
+    } as NodeJS.ProcessEnv);
+    expect(report.errors).toContain(
+      "Secret lifecycle authority bindings require MENDPOINT_SECRET_LIFECYCLE_ENABLED=1; partial or inactive bindings are forbidden",
+    );
+  });
+});

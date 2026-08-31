@@ -1,5 +1,147 @@
 # Mendpoint 101 production closure (2026-08-28)
 
+## Issue 433 independent review repair: 2026-08-30
+
+### Exact-head follow-up for `9b882204`
+
+- [x] RED: prove a restarted process cannot substitute new lineage key bytes under an already-bound key ID and revive revoked material.
+- [x] GREEN: bind new lineage key IDs immediately, but authenticate every first binding for historical IDs against all decryptable non-revoked durable generations before insertion.
+- [x] GREEN: reject same-ID/different-key substitution, missing historical lineage authority, and unattributable legacy rows before material mutation.
+- [x] Verify clean restart, pre-binding upgrade, fingerprint secrecy, focused database and API behavior, and affected typechecks.
+- [x] RED: prove exact replay survives request-key rotation only while the operation's stored historical key remains retained.
+- [x] RED: prove revoked material cannot be revived after independent replay and lineage-key rotation.
+- [x] RED: prove missing historical lineage authority fails closed and tenant or credential boundaries produce distinct fingerprints.
+- [x] GREEN: split replay and material-lineage keyrings, persist lineage key identity, and recognize migrated pre-split rows only through their retained historical replay key.
+- [x] GREEN: require production's protected configuration to supply distinct retained replay and lineage keyrings.
+- [x] GREEN: make lineage-key migration backfill independently idempotent after an interrupted column-add step.
+- [x] Run affected database, API, environment, and configuration tests, affected typechecks, and diff integrity; commit locally without pushing.
+
+#### Follow-up review
+
+- Lineage key IDs now have tenant-scoped durable cryptographic identity. A genuinely empty tenant can establish first authority immediately. A pre-binding tenant with history must decrypt and audit every non-revoked generation for the proposed ID, reproduce each stored lineage commitment, and only then atomically insert the immutable binding.
+- Existing deployments no longer trust the current protected key bytes as their own backfill proof. Same-ID substitution, inconsistent history, revoked-only history, missing envelope authority, and missing historical keys all fail closed without inserting a binding or publishing a new generation. Stored fingerprints are domain separated hashes of random 256-bit key material, not plaintext, reversible material, or credential fingerprints.
+- Every replay computes its commitment with the exact key ID stored on the immutable operation. Rotation selects the active key only for new operations; removing a historical replay key makes the old operation unavailable rather than conflicting or silently reauthorizing it.
+- New material fingerprints use a separate retained lineage keyring. Each version persists the lineage key ID, and every replacement is compared under every retained lineage key inside the rotation transaction before the current generation can retire.
+- Upgrade migration binds pre-split lineage rows to the request key recorded by the last material-changing create or rotate operation. Retained replay keys can recognize those legacy fingerprints but cannot mint new lineage identities. Unattributable legacy rows and missing retained keys fail closed.
+- The backfill now runs whenever authoritative NULL rows remain, independently of whether a prior process already added the column. Repeated startup is exact, and rows without attributable historical operation identity remain NULL and fail closed.
+- Revoked A remains revoked across A to B, revocation, independent replay-key rotation, lineage-key rotation, and attempted B to A replacement. Tenant and credential identifiers are inside the keyed canonical input, so identical plaintext across either boundary produces different durable fingerprints.
+- Production activation now requires distinct protected replay and lineage keyring JSON bindings. No key bytes, plaintext, unkeyed material digest, or reversible fingerprint is stored or logged.
+- Verification: 74 focused lifecycle database, service, and route tests pass, including exact pre-binding A to B, revoke A, restart with same ID and different bytes, valid retained-key upgrade, inconsistent history, and revoked-only history. DB and API typechecks pass; `git diff --check` is clean.
+
+### Exact-head follow-up for `744e5aa8`
+
+- [x] RED: prove operation commitments cannot stand in for credential-material lineage across A to B to A rotation.
+- [x] RED: prove revoking compromised material revokes every historical reuse and prevents later resurrection.
+- [x] RED: prove a second connection can downgrade owner authority after the post-decrypt check without permitting a break-glass grant.
+- [x] GREEN: derive a separate domain-bound keyed material lineage, reject revoked-lineage rotation, and revalidate owner authority inside the break-glass transaction immediately before grant audit and operation persistence.
+- [x] Run focused DB and API lifecycle tests, DB, API, and Platform typechecks, and diff integrity; commit locally without pushing.
+
+#### Follow-up review
+
+- Material lineage is now a domain-separated HMAC over the tenant, credential, and plaintext. It is independent of the semantic operation commitment and neither plaintext nor a guessable unkeyed digest is logged or persisted.
+- A to B to A produces the same lineage for both A generations. Revoking the first A generation revokes the active reused A generation atomically, while a later attempt to resurrect any already-revoked lineage is rejected before the current B generation is retired.
+- Break-glass completion revalidates the live owner authority inside the database transaction immediately before grant audit and operation insertion. A hostile second connection that downgrades the owner after the last outside-transaction observation now causes rollback with no grant operation or granted audit.
+- Verification: 62 focused lifecycle tests pass, DB, API, and Platform typechecks pass, and `git diff --check` is clean.
+
+### Exact-head follow-up for `8b39ac8`
+
+- [x] RED: prove every physical rotation or rewrap source decrypt emits its own granted or denied outcome with the actual request, API key, and credential principal attribution.
+- [x] RED: reject JSONP and JSON-prefixed media types while accepting case-insensitive `application/json` with parameters.
+- [x] GREEN: separate physical decrypt audit identity from semantic operation replay identity and parse the exact media type token.
+- [x] Run focused lifecycle suites, affected API typecheck, diff checks, and commit locally without pushing.
+
+#### Follow-up review
+
+- Each physical source decrypt now creates one random attempt identity shared by its attempted and actual-outcome audit pair. Granted and denied events retain the real request ID, API key ID, credential principal, and stable authority principal; lifecycle operation tables remain the separate semantic replay authority.
+- Two rewrap attempts under rotated API keys now produce two granted events with exact per-request and per-credential attribution. A completed lifecycle replay still returns from the semantic operation record without another decrypt.
+- Content type validation compares the case-insensitive media type token before optional parameters exactly to `application/json`. `application/jsonp` and `application/json-bogus` are rejected, while `Application/JSON; Charset=UTF-8` is accepted.
+- Verification: the 52 focused lifecycle service and route tests pass, the affected API typecheck passes, and `git diff --check` is clean.
+
+- [x] Trace the exact create, rotate, rewrap, and revoke commit boundaries and reproduce authority loss during asynchronous provider work.
+- [x] RED: prove every lifecycle mutation revalidates the stable principal and credential binding immediately before durable publication and cleans up staged provider state on loss.
+- [x] RED: prove self-serve and production-bootstrap owner keys retain a stable owner authority binding, including safe compatibility for legacy rows.
+- [x] RED: reject oversized JSON, unknown fields, overlong identifiers, lifecycle values, arrays, and break-glass reasons before persistence.
+- [x] GREEN: implement the smallest transactional authority fences, owner-binding migration, and bounded strict parsers.
+- [x] Verify focused suites, affected typechecks, complete tests, build, GA gates, dependency audit, and diff integrity.
+- [x] Review the complete diff, record evidence below, and commit locally without pushing.
+
+### Issue 433 repair review
+
+- Create, rotate, rewrap, and revoke now capture the exact stable authority version before provider work and revalidate it inside the final SQLite transaction after lifecycle rows, operation rows, and audit rows are staged. Authority loss throws before commit, so the transaction removes every staged durable effect and preserves the prior active generation.
+- Fresh self-serve tenants bind their wildcard owner key to a deterministic human authority principal. Legacy self-serve keys migrate only when exactly one active self-serve owner membership exists. Production bootstrap keys bind to a deterministic deployment owner principal, and existing configured keys can receive only that exact owner binding under a narrow fail-closed compatibility rule.
+- Lifecycle HTTP bodies are byte bounded before JSON parsing, require JSON media type, reject unknown top-level and nested fields, and cap identifiers, source references, secret material, audiences, timestamps, envelope values, revocation reasons, and break-glass reasons. Rejected oversized break-glass values are not copied into audit metadata.
+- Hostile regressions cover authority loss during provider wrapping for create, rotate, and rewrap, authority loss inside revoke audit persistence, stable authority migration and rotation, unknown fields, oversized bodies, invalid media type, and direct-service bypass attempts.
+- Verification: 62 focused API and database tests pass; all workspace typechecks pass; the complete workspace and root test runner passes, including 586 API tests, 237 web tests, 648 worker tests with 1 skipped, and 476 root tests; the optimized 50-route production build passes; GA preflight passes; `npm audit --omit=dev` reports 0 vulnerabilities; `git diff --check` is clean.
+
+## Plan 01-01: Durable secret lifecycle SCM tracer
+
+- [x] RED: add database lifecycle tests for encrypted envelopes, tenant scope, rotation, expiry, retirement, and immutable incident revocation.
+- [x] GREEN: implement the additive secret lifecycle schema and atomic persistence module.
+- [x] RED: add provider and SCM materialization tests for durable lifecycle resolution, fail-closed audit, rotation, revocation, and pre-transport denial.
+- [x] GREEN: wire the existing vault envelope and SCM snapshot seam without changing `scheme://id` references.
+- [x] Verify fresh and aged database behavior, focused tests, affected typechecks, and the complete diff.
+- [x] RED: cover provider-authoritative KEK classification, disabled production wiring, lifecycle authorization, cross-tenant denial, idempotent replay, and restart-safe atomic rotation failures.
+- [x] GREEN: replace caller-asserted KEK metadata and split in-memory lifecycle publication with one durable provider-attested lifecycle service.
+- [x] GREEN: expose tenant-admin create, rotate, revoke, and break-glass operations with policy-bound audit and fail-closed replay.
+- [x] Verify focused Platform, DB, and API suites, affected typechecks, diff integrity, and commit the final repair locally without pushing.
+- [x] RED: prove attestation drift, restart, generation transplant, and legacy-schema migration fail closed.
+- [x] RED: prove denied break glass and rotation unwrap outcomes are durable and request-attempt identities distinguish new authority from exact replay.
+- [x] RED: prove tenant-created SCM connections cannot select deployment-global environment secrets or another tenant's lifecycle reference.
+- [x] GREEN: persist and AAD-bind provider attestation, make lifecycle access audit outcome-aware, remove tenant-selectable env fallback, and bind break-glass replay identity.
+- [x] Re-run Platform, DB, API, and SCM suites, affected typechecks, diff integrity, and commit the audit repair locally without pushing.
+- [x] RED: prove break-glass HTTP replay and interrupted rotation recovery are independent of transport request IDs.
+- [x] RED: prove every pre-decrypt break-glass denial is durably audited with actual request context and audit failure remains fail closed.
+- [x] RED: prove lifecycle request commitments resist offline plaintext guessing, bind every semantic field and key ID, and reject legacy or wrong-key replay.
+- [x] GREEN: persist versioned keyed commitments, add durable break-glass replay evidence, and separate stable operation audit identity from denied-attempt identity.
+- [x] Re-run focused and complete Platform, DB, API, and SCM suites, affected typechecks, diff integrity, and commit locally without pushing.
+- [x] RED: reject identical commitment and envelope key material at both route startup and direct service construction without exposing key material.
+- [x] RED: prove exact create, rotate, and break-glass replay across two rotated API keys bound to one stable authority, with unrelated-authority denial and dual attribution.
+- [x] RED: prove real authentication and RBAC middleware durably audit anonymous and non-admin break-glass denials, preserve the original 401 or 403, and fail closed when audit persistence fails.
+- [x] GREEN: add provider key fingerprints, stable API-key authority binding, dual audit attribution, and a narrow pre-route break-glass denial audit middleware.
+- [x] Re-run focused and broad Platform, DB, API, auth, and SCM suites, affected typechecks, diff integrity, and commit locally without pushing.
+- [x] RED: prove `/keys` cannot amplify tenant-admin authority into wildcard or owner scope, and break glass requires a currently active stable owner authority.
+- [x] RED: distinguish KEK rewrap from credential-material rotation, require new resolver-bound material for rotation, and revoke every successor derived from compromised material.
+- [x] RED: deterministically race break glass with concurrent revocation and require exact active generation, key binding, and provider attestation revalidation before plaintext release.
+- [x] RED: bind revoke replay to keyed idempotency evidence, audit exact replay, and reject actor or reason drift even after the generation is already revoked.
+- [x] RED: classify locally held imported keys as Mendpoint-custodied and withhold customer-managed status without provider-authenticated custody evidence.
+- [x] GREEN: implement the smallest full-chain authority, material lineage, transactional release, revoke replay, and custody-evidence repair.
+- [x] Re-run focused and broad Platform, DB, API, auth, and SCM suites, affected typechecks, diff integrity, inspect the complete diff, and commit locally without pushing.
+- [x] RED: require current stable admin or owner authority for create, rotate, rewrap, and revoke, and reject unbound legacy wildcard keys through the real auth and RBAC middleware.
+- [x] RED: race break-glass unwrap against human downgrade, offboarding, principal revocation, and principal expiry, with no plaintext grant operation committed.
+- [x] RED: reject a second revoke under a different idempotency key without publishing contradictory reason evidence.
+- [x] GREEN: revalidate exact principal, credential principal, API-key binding, membership, role, revocation, expiry, and authority version immediately before audited plaintext release.
+- [x] GREEN: validate every lifecycle request body, locator, generation, material, array, reason, and timestamp order at the HTTP boundary with bounded 400 responses.
+- [x] Re-run focused tests, full workspace tests, typechecks, optimized build, GA gates, dependency audit, root script tests, and diff integrity; commit locally without pushing.
+
+### Review
+
+- New additive tables converge on fresh and pre-change databases with no existing-table alteration.
+- SCM materialization resolves durable metadata separately from the stored `scheme://id` reference, reloads exact generations, and denies expiry or revocation before GitHub transport.
+- Production now constructs one validated provider-authoritative key catalog from protected environment configuration and otherwise retains an explicitly disabled provider. The provider, not request metadata, supplies customer-managed classification and a digest-bound attestation; both wrap and unwrap reject relabeling.
+- Durable reads no longer rebuild an in-memory lifecycle registry. Create and rotation stage provider-attested envelopes, then commit required durable audit, immutable replay identity, and the visible lifecycle generation in one SQLite transaction. Failed audit or operation persistence leaves the previous active generation exact.
+- Tenant-admin HTTP entry points cover create, rotate, and revoke. Break glass additionally requires owner role, an explicit production policy flag, and a nonempty audited reason. Tenant and actor always come from the authenticated principal; responses never return envelope material, and only the gated break-glass response can return plaintext with `Cache-Control: no-store`.
+- Verification passes all 252 Platform tests; 30 focused DB, lifecycle API, route, and SCM tests; Platform, DB, and API typechecks; and `git diff --check`. The regressions include false customer-managed relabeling, missing and malformed provider configuration, failed-audit rollback, process-restart create and rotation replay, replay mismatch, non-admin denial, cross-tenant denial, disabled break glass, and all four authorized lifecycle entry points.
+- Provider attestation is now persisted beside each lifecycle envelope, included in outer AAD, and compared exactly with current provider evidence before unwrap. Migrated rows without that evidence remain present but unreadable, and both attestation drift and generation transplants fail closed after restart.
+- Secret access audit records the actual grant or denial. Rotation source unwrap is durably audited before a replacement generation can publish, while break-glass attempts use caller-supplied idempotency keys so exact retries reuse one record and new authorized attempts receive distinct identities.
+- Production SCM resolution accepts only tenant-scoped lifecycle records. Caller-supplied environment fallback providers are ignored, and both deployment-global references and another tenant's lifecycle reference are denied before transport.
+- Final audit-repair evidence passes all 253 Platform tests and 35 focused DB, lifecycle service, route, and SCM tests. Platform, DB, and API typechecks pass, and `git diff --check` is clean.
+- Lifecycle create, rotation, and break-glass replay now persist a versioned HMAC-SHA-256 commitment under a deployment-owned key ID. The canonical commitment binds every semantic request field while excluding transport request and API-key identifiers; legacy unkeyed operation rows, wrong keys, wrong key IDs, and payload drift fail closed.
+- Break-glass grant replay is an immutable tenant-scoped operation. Exact HTTP retries across new request IDs and API keys return the committed generation without another grant audit, while payload mismatches are denied and every distinct denial attempt records its actual principal, request, API key, role, reason, and failure before the response. Missing audit durability returns `vault_access_audit_failed` and never plaintext.
+- Rotation source access audit uses a stable operation identity, so retries after an audited unwrap or replacement-stage failure resume without duplicate or conflicting access evidence and cannot publish a new generation until the required audit and lifecycle transaction commit.
+- Final verification passes 28 focused lifecycle and database tests, 1,449 complete Platform, DB, API, and SCM tests across 157 files, all four affected package typechecks, and `git diff --check`.
+- Envelope and commitment authorities now publish only domain-separated one-way key fingerprints for construction-time equality checks. Route startup and direct service construction reject identical material without logging or persisting the key or fingerprint.
+- API keys carry an additive stable human or service authority binding. Exact create, rotate, and break-glass retries survive credential rotation because semantic commitments bind the stable authority, while every attempt and replay audit separately records the current API key and credential principal. A different stable authority cannot consume the replay.
+- The exact break-glass path is wrapped before authentication and RBAC. Anonymous and non-admin 401 or 403 responses receive truthful durable denial evidence, compatibility headers cannot spoof attribution, successful dispatch is not double-audited, and audit persistence failure replaces the denial with a generic fail-closed 503.
+- Rotation records a credential-specific source attempt before unwrap and one stable source outcome for the semantic operation. A retry under a rotated key after pre-publication failure resumes without a source-audit conflict or duplicate grant.
+- Final verification passes 27 focused lifecycle tests, 115 affected tests, and 1,456 complete Platform, DB, API, auth, and SCM tests across 157 files. Platform, DB, API, and GitHub typechecks pass, and `git diff --check` is clean.
+- API-key minting now attenuates requested roles and permissions against both the current credential and its immutable stable authority. Wildcard scope can be issued only by a current wildcard owner, legacy wildcard keys cannot infer stable owner authority, and any persisted role that exceeds its stable authority is rejected during authentication.
+- Credential rotation now requires different replacement plaintext and starts a new material lineage. KEK rewrap is a separate operation and audit namespace that retains material lineage, while incident revocation reaches every rewrapped successor containing the compromised material.
+- Break-glass completion rechecks the exact active generation, envelope key binding, and provider attestation inside the final write transaction after decryption. Concurrent revoke therefore prevents plaintext release. Revoke operations now persist versioned keyed replay evidence, audit exact replay, and audit actor or reason drift even when the target is already revoked.
+- Locally held and configured imported keys are reported as Mendpoint-custodied. Customer-managed status is accepted only from provider-authenticated attestation and cannot be asserted in local key configuration.
+- Final verification passes all 138 focused secrets regressions and all 1,462 Platform, DB, API, auth, and SCM tests across 378 suites. Platform, DB, API, and GitHub typechecks pass, and `git diff --check` is clean.
+- Final exact-head repair verification passes 52 focused lifecycle tests, all workspace package tests, all workspace typechecks, the optimized 50-route production build, GA preflight, and a zero-vulnerability production dependency audit. The complete 476-test script suite also passes when its two load-sensitive proposal-authority cases run in a bounded worker; the first all-at-once pass hit only a Vitest RPC timeout after every assertion passed.
+
+
 Observed `origin/main`: `96801a319fc3d355cb2b28b4167b83023a192042`.
 
 - [x] Convert the approved eleven-phase plan into the exhaustive 101-row execution ledger (`docs/PRODUCTION_CLOSURE_EXECUTION_LEDGER.json`).
@@ -3616,15 +3758,446 @@ Main revision `c8d51caa` merged a reviewer key that the runtime ignores and reta
 - A stopped and restarted worker cannot retain its preflight process incarnation. Rollback now proves the complete Machine topology and expected state, records the observed restored instance ID, and requires the exact worker health check to pass when the prior worker was running. A health failure enters global containment. Every uploaded and downloaded activation artifact is also scoped to the exact GitHub run ID and run attempt, preventing reruns from colliding with or consuming stale topology evidence.
 - Exact-head review closed three further authority and timing gaps. Expired coordinator authority now permits only a nonmutating replay whose exact current approval and every current acceptance reference are already durable on every authorized draft; an expired unseen authority epoch is rejected. The activation authority lasts 75 minutes, the deployment watchdog is 85 minutes, live evaluation budgets its full 1,230-second kill window, and both proof polls have a 610-second whole-step bound included in the pre-evaluation guard. Cleanup uses 15 rounds, includes every `--kill-after` allowance, converts final restore uncertainty to containment, and performs a final terminal inventory; its proven worst case is 799 seconds under the 1,200-second independent watchdog, leaving 401 seconds for setup, artifact transfer, evidence publication, and runner overhead.
 - Compatibility review found that legacy `mendpoint/transformer/` drafts were included in repository-wide cardinality but could not themselves be selected as the exact durable canary. Exact draft validation now permits the expected branch to use either the canonical `mendpoint/regauge/` prefix or an explicitly configured compatibility prefix, while still counting both namespaces together and rejecting unrelated branches. The GitHub and production-proof regressions pass 39 of 39.
+## 2026-08-30 Plan 00-01: canonical closure matrix and non-blocking queue
+
+- [x] RED: add contract regressions for the exact 101-row approved primary-plan catalog, acceptance coverage, evidence partitions, target states, production bindings, and the four queue states.
+- [x] GREEN: extend the existing production closure execution ledger generator with the explicit primary catalog and deterministic canonical row projection.
+- [x] GREEN: extend the existing ledger gate to reject count or workstream drift, duplicate or missing primary ownership, wildcard plans, uncovered acceptance, external GA without proof, and register, claim, evidence, or deployed-revision drift.
+- [x] Prove one broken or external-pending plan does not block unrelated runnable plans and final qualification waits for every external leaf.
+- [x] Regenerate the canonical artifact, run focused tests, affected typechecks, `git diff --check`, and inspect the complete scoped diff.
+- [x] Commit the isolated branch without pushing, opening a pull request, or changing production authority.
+
+### Review
+
+- RED produced the expected two committed-artifact drift failures after the new contract tests were added. GREEN passes all 14 focused ledger tests and the gate regenerates exactly 101 unique rows, with the approved primary catalog, acceptance partitions, explicit target claims, production bindings, and exact workstream totals enforced.
+- The queue contract keeps `external-proof` as a waiting lane, leaves unrelated dependency-ready `build`, `repair`, and `ship` work runnable when another item is broken or externally pending, and requires every row to succeed before final qualification.
+- Verification is green: `npm run ledger:check`; `npm run closure:check` with 33 tests over 101 requirements and 81 static pull requests; `npm run spec:check`; `npm run claims:check`; full workspace `npm run typecheck`; complete `npm test`; optimized 50-route `npm run build`; and `git diff --check`. No protected GitHub, deployment, or production authority is claimed.
+- Root review tightened the qualification boundary: every row targets `verified`, GA requires exact-revision production evidence, and no qualified row may retain a planned evidence locator.
+
+## 2026-08-30 Plan 08-01: typed router registry tracer
+
+- [x] Prove the literal ME-RTR-001 through ME-RTR-004 gap against the existing `router.ts` and `router-runtime.ts` contracts.
+- [x] RED: add focused regressions for a versioned typed registry, complete policy-bound eligibility, deterministic replay and fallback, and fail-closed handoff.
+- [x] GREEN: extend the existing platform router with the smallest compatible registry and routing contract that satisfies those regressions.
+- [x] Run the focused platform tests, affected typechecks, and `git diff --check`; inspect the complete scoped diff.
+- [ ] Commit only if the isolated worktree branch passes the mandatory commit guard. Do not push, open a pull request, deploy, or change production authority.
+
+### Review
+
+- The literal gap was narrower than the registered requirement status implied: executor descriptors were typed, but the registry had no versioned identity bound into routing decisions, and a policy-bound fallback plan could be replayed with another tenant identifier. A spread copy could also retain the internal route marker while changing a cost or latency constraint.
+- RED passed the 20 existing router tests and failed all three new boundary tests: versioned registry binding was absent, cross-tenant fallback still selected an executor, and a tampered route collapsed into ordinary fallback exhaustion.
+- GREEN binds schema version, registry identity, registry version, and a deterministic registry fingerprint into every plan and decision. Every route now binds tenant, policy, registry, executor version, price version, region, quality, latency, and cost under a deterministic route fingerprint. Tenant mismatch, malformed bindings, unavailable fallbacks, and exhausted chains end in typed human handoff.
+- Verification is green: 23 of 23 focused router tests, all 237 platform tests, the complete repository workspace and scripts typecheck, and `git diff --check`. No Worker or Pipeline consumer change was required, and no push, pull request, deployment, or production authority action occurred.
+
+## 2026-08-30 Plan 00-03: computed customer readiness authority
+
+- [x] Add one pure readiness decision bound to the exact release revision, requirement-register digest, public-claims digest, evidence-manifest digest, 101-of-101 attestation, sandbox authority, critical health, and revocation state.
+- [x] Route customer startup validation and the runtime readiness probe through the same evaluator.
+- [x] Preserve explicit inactive compatibility until qualification artifacts are packaged; fail closed when required mode is selected.
+- [x] Add negative coverage for missing, malformed, mismatched, expired, revoked, unhealthy, and incomplete evidence.
+- [x] Run focused readiness tests, the Ops typecheck, and diff integrity.
+- [x] Repair exact-head review P1 so absent or malformed revocation state is indeterminate and only an explicit array can prove the revocation boundary.
+- [x] Obtain independent exact-head review, current-base CI, protected merge, and exact-revision deployment proof.
+
+### Review
+
+- The deployment declaration is only an upper bound. Required mode cannot become ready without all three matching digests, exact qualified revision, 101 of 101 outcome, fresh sandbox receipt, nonempty passing critical-health evidence, and no revocation or profile blocker.
+- The focused matrix passes 30 of 30 tests. Root review added a fail-closed `critical_health_indeterminate` result so omitted health evidence cannot qualify a deployment.
+- Runtime packaging and injection of the qualification attestation and expected digests remain a separate activation increment; this slice does not enable required mode in production.
+- Exact-head review found that missing revocation state was normalized to an empty list. Required mode now distinguishes missing or malformed state from the authoritative empty array, includes that distinction in the readiness digest, and fails closed as indeterminate.
+- Exact head `846a679b4c67fe0bb06a8569d7feeb2f284907b7` passed independent review and all six protected checks, then merged as `5b3ff73717a1e18784a288472d7121d8d89dc23c` with `enforce_admins: true`. The exact revision is deployed on `mendpoint-fettler-production`; `/version`, `/livez`, `/healthz`, and `/readyz` all return HTTP 200 after protected backup run `33307659797` refreshed the overdue authenticated recovery evidence.
+
+## 2026-08-30 GSD Plan 09-02 signed invoice export tracer
+
+- [x] RED: specify immutable tenant-scoped invoice derivation, signing, replay, tax, credits, state transitions, tamper reconciliation, and database convergence.
+- [x] GREEN: implement append-only invoice exports, line items, and state-event chains over exact usage price versions.
+- [x] GREEN: extend authenticated billing economics routes for create, read, transition, and reconciliation without any charging transport.
+- [x] Verify focused DB and API tests, DB/API typechecks, fresh and upgrade database convergence, and diff integrity.
+- [x] Record exact review results and keep live charging and external-account claims explicitly absent.
+- [x] Mount invoice export through the existing billing runtime with a fail-closed, exact-grant protected signing binding and verify every generated signature before persistence.
+
+### Review
+
+- `invoice_exports`, immutable line items, and hash-chained state events are created by the canonical database DDL, including fresh and reopen convergence plus update/delete denial triggers.
+- Exports derive only settlement, adjustment, credit, and refund lines inside one explicit UTC period. Every source must retain its exact tenant price version, currency, entitlement contract, and usage-chain integrity. Money and tax arithmetic uses checked integers and `BigInt`, with explicit basis points, jurisdiction, policy version, and deterministic toward-zero money-micros rounding.
+- An injected signer authorizes the exact tenant, actor, currency, contract, and tax policy, then signs the canonical payload. Only its key identifier and signature are stored. State changes require the same injected finance authority and append policy-versioned events; no card, charge, processor, or external-account path exists.
+- Authenticated `/billing/invoice-exports` create, read, transition, and reconciliation routes force tenant and actor from identity. Public responses exclude canonical payload, source hashes, source sequence, actor, tenant, idempotency, and event-chain fields.
+- Verification passed: 4 focused database tests, 5 focused authenticated API tests, DB typecheck, API typecheck, fresh and reopen database convergence, and `git diff --check`. No live charging or external-account claim was added.
+- The existing billing runtime now mounts invoice routes with a versioned exact-grant signer derived only from a protected current key ID, canonical versioned HMAC keyring, and tenant, actor, currency, contract, and tax authority document. Partial or malformed bindings leave signing unavailable and return 503; a signer that cannot verify its own result cannot persist an invoice.
+- Independent exact-head review found two P1 boundaries and one P2 boundary: the same usage entry could be covered by multiple signed invoices under different request IDs, public hash recomputation could make impossible or unauthorized state events reconcile, and a single current key made historical invoices unverifiable after rotation.
+- The repair gives every tenant usage entry one immutable invoice owner, authenticates every state event with its authority key, validates the exact initial event, allowed transition graph, monotonic time, historical actor validity, and signature chain, and refuses public reads or further transitions when reconciliation is incomplete. A versioned keyring signs with the active key while retaining exact historical verification keys. Invoice issuance also rejects an open billing period.
+- The repaired focused matrix passes 12 of 12 tests, including duplicate-source rejection, state-signature corruption, fail-closed public reads, closed-period enforcement, and historical verification after key rotation. DB and API typechecks pass. Exact-head re-review, protected CI, merge, and deployment remain pending.
+- Exact-head re-review then found that issuance and transitions checked current revocation but not principal creation and expiry at the signed occurrence time, and that the authenticated response did not expose enough verification material to validate its signature independently. Persistence now enforces the same historical actor-validity predicate as reconciliation inside the write transaction. A dedicated tenant-scoped signed-document endpoint returns the exact canonical bytes, digest, Ed25519 signature, key identifier, and public SPKI key; a consumer-side test verifies the digest and signature without server secrets.
+- The next exact-head review found that source selection mixed every tenant contract and currency before validation, and that rotation retained historical private signing material. Source selection now filters by the requested contract and currency inside the immutable usage query, with concurrent-contract and concurrent-currency regressions. The keyring now requires private material only for the selected current key and accepts retired public-only verification records.
+- The final repaired matrix passes 12 of 12 focused database and API tests, both affected typechecks, and diff integrity. A fresh immutable-head review and current-base protected CI remain required before merge.
+- Immutable-head review found one final P2: the parser still accepted private material on a noncurrent key even though rotation examples used public-only history. Key selection is now passed into parsing, which rejects retired private material before importing it. The negative rotation regression proves signer construction fails for a keyring retaining an old private key; the public-only historical verification path remains green.
+## 2026-08-30 GSD Plan 10-03: production dispatch observability and horizontal reliability
+
+- [x] Recover only the tenant-scoped release-dispatch runtime from closed PR #507 on current `main`; keep customer activation bindings optional and leave the documented operator hold intact.
+- [x] Add one durable operator reconciliation path for exhausted dispatches, including authenticated requeue or acknowledgement evidence, bounded retry state, exact tenant scope, and immutable failure history.
+- [x] Provision the dispatch service principal through the existing production identity bootstrap and require its active tenant-bound identity at every event write.
+- [x] Bind replay to tenant, dispatch, actor principal, source digest, payload digest, and exact domain-event identity; reject unknown or malformed runtime state instead of normalizing it to zero or healthy.
+- [x] Wire the release-dispatch drainer into the real worker lifecycle with lease-generation fencing, exact claim ownership, bounded integrity verification, shutdown containment, and a test that fails when the live caller is removed.
+- [x] Surface identifier-and-digest-only dispatch health through the existing tenant health, paging, and error-budget path without source, prompts, credentials, or raw provider payloads.
+- [x] Verify duplicate delivery, poisoned-row recovery, crash takeover, stale lease rejection, cross-tenant denial, principal revocation, malformed configuration, unknown health, shutdown, and restored-database replay.
+- [x] Run focused Catalog, Worker, Notify, Web, API, and Ops tests; affected typechecks; fresh and upgrade database convergence; production build; configuration checks; and `git diff --check`.
+- [ ] Obtain independent exact-head Codex review, rebase on current `main`, pass all six protected checks with `enforce_admins: true`, merge normally, and verify the exact Fettler production revision and capability health.
+
+### Scope and safety
+
+- Requirements: `ME-ENT-005-AC01`, `ME-ENT-006-AC01`; issue #438; primary plan `10-03`.
+- Initial files: `packages/catalog/src/release-ingestion.ts`, `packages/catalog/src/release-ingestion.test.ts`, `apps/worker/src/release-dispatch-domain-event-sink.ts`, its focused test, `apps/worker/src/release-dispatch-drainer.ts`, its focused test, `apps/worker/src/cli.ts`, and `apps/worker/src/cli.test.ts`. Health and paging integration follows as a second narrow commit only after the live worker tracer is green.
+- Threats: one poisoned row permanently degrading readiness, a missing or revoked service principal, a stale worker writing after takeover, actor or tenant replay substitution, unbounded domain-log rehash under the global lease, unknown state appearing healthy, and accidental customer boot hard-failure.
+- Rollback: revert the implementing commits, stop the dispatch lane by removing its optional consumer binding, retain immutable dispatch and domain-event ledgers, and never delete or rewrite authenticated historical outcomes.
+
+### Review
+
+#### Rejected exact-head repair, 2026-08-30
+
+- [x] Bind human reconciliation authority to the exact OIDC issuer and raw subject.
+- [x] Require post-failure reconciliation evidence bound to the exact action, dispatch, lease generation, failure timestamp and code, artifact kind, and producer.
+- [x] Keep bounded backlog progress at the base interval while preserving degraded readiness and paging until the backlog clears.
+- [x] Use the durable release clock watermark for the final authority check so wall-clock rollback cannot restore expired authority.
+- [x] Replace stale prior failure identity with the current backlog cause.
+- [x] Run focused hostile tests, affected and full typechecks and tests, build, GA, audit, and diff checks; commit without pushing.
+
+- The rejected-head repair binds human membership to the exact issuer and raw OIDC subject, requires exact post-failure evidence lineage, advances the durable clock watermark for final authority validation, separates healthy bounded progress from true backoff, and reports the current backlog cause instead of stale fence state.
+- Hostile verification passes: 14 focused Worker tests, 39 focused Catalog tests, all Worker and Catalog tests, all workspace typechecks, every workspace test assertion, the optimized production build, GA checks, zero production dependency vulnerabilities, and diff integrity. The 475 script assertions also pass; their combined Vitest process reports an internal task-update timeout after the long authority suite, so clean exits were proved by running the other 444 script tests together and the 31-test authority file separately.
+
+- The extracted runtime remains gated only by explicit release polling or dispatch configuration. Customer profile selection alone neither opens the dispatch store nor makes the new binding a boot requirement. `MENDPOINT_RELEASE_DISPATCH_CONSUMERS_JSON` is declared as identifier-only, optional gated configuration.
+- The catalog schema now converges through v5 and retains append-only acknowledgement and requeue evidence bound to the exact tenant, dispatch, lease generation, terminal time, failure code, actor, evidence digest, and idempotency key. Exact replays are stable, drift conflicts, acknowledgement removes only the matching terminal failure from actionable health, and requeue preserves immutable last-failure history.
+- The operator command resolves the exact tenant consumer but requires a separately authenticated, protected-environment-bound human or dedicated reconciliation principal. It never provisions or reuses the worker consumer identity, holds the operator authority while reconciling, persists that actor, emits identifiers only, and cannot cross tenants. Event replay binds the actor and validates the exact local hash-chain record in bounded time.
+- The production worker calls one tested service-iteration seam. Leases fence every claim and settlement, unknown programming defects terminate under a fixed nonretryable code, corrupt cross-tenant claims abort before consumption, and unavailable backlog state becomes explicit `unknown` with null counts through heartbeat, health, and paging rather than false zeroes.
+- Verification is green: 208 affected tests across Catalog, DB, Worker, Notify, and Web; all five affected workspace typechecks; fresh, v1, v2, partial-v3, and restart migration paths; optimized 50-route production build; complete GA gate; configuration completeness; zero production dependency vulnerabilities; and `git diff --check`. Independent exact-head review, protected CI, merge, deployment, and live proof remain pending.
+- Review repair closes all seven rejected-head findings as one chain. Exact crash replay now validates the recorded principal at the historical event time before considering current revocation or expiry, while a new event acquires the SQLite write lock before current-authority validation and append. Revoke, expiry, and two-connection lock races have direct regression coverage.
+- Catalog artifact errors are typed by retry policy: unavailable storage and I/O remain pending and retryable, while missing, digest-mismatched, or undecodable immutable artifacts terminate. The v5 reconciliation schema now owns an exact composite dispatch-and-tenant foreign key, validates the complete column, constraint, index, trigger, and foreign-key contract, and rebuilds drift without losing valid evidence.
+- The bounded release-dispatch failure stage and code now survive service state, structured logs, telemetry, heartbeat parsing, health, and paging. Feed staleness and dispatch degradation produce independent deduplicated pages when both are present, so neither masks the other.
+- Repaired verification is green: 359 unique relevant tests across Catalog, DB trust, Worker runtime and CLI, Notify, and Web health; all affected typechecks; the complete configuration and GA gates; optimized 50-route production build; zero production dependency vulnerabilities; and `git diff --check`. Protected CI, merge, deployment, and live proof remain pending outside this local repair commit.
+- Exact-head review then found three remaining recovery and health boundaries. An expired fifth dispatch claim could be terminalized before replaying an already-emitted exact event, malformed non-null failure fields could collapse to healthy nulls in a complete heartbeat, and the operator CLI opened both SQLite stores before acquiring its backup mutation fence.
+- The repair adds a lease-generation-fenced final-attempt recovery claim that never increments attempts and only permits read-only exact event reconciliation. Exact durable evidence settles the claim at attempt five without another append; absent evidence becomes `dispatch_attempts_exhausted`. Shutdown checks can leave the recovery lease for safe later takeover instead of settling during termination.
+- Fully populated heartbeat parsing now distinguishes an authoritative null from malformed non-null stage or code values and reports the dispatch contract as unknown and unhealthy. The operator process now holds one backup writer lease across app-store and release-store construction, migrations, reconciliation transactions, reverse-order partial-open cleanup, and close, eliminating the backup admission gap between phases.
+- Verification passes 207 affected tests: 111 Catalog, dispatch sink, drainer, operator reconciliation, and Web health assertions plus 96 Worker lifecycle and runtime-seam assertions. Catalog, Worker, and Web typechecks pass, the optimized production build emits all 50 routes, and diff integrity is clean. The matrix includes fifth-attempt crash replay, no-evidence exhaustion, complete-heartbeat mutations, one-fence lifetime, partial-open cleanup, and the real worker caller. Full gates and immutable-head review remain pending before any push or production claim.
+- The next exact-head review found four coupled boundaries: retryable App DB failure terminalized the final recovery claim, exact replay still required the current configured actor, dispatch degradation suppressed simultaneous expired-lease and dead-letter pages, and multi-page delivery returned only the first result.
+- Retryable exact-event observation now leaves the recovery lease unsettled for expiry and generation-fenced takeover. Confirmed absence becomes exhausted and deterministic invalid evidence terminalizes. Newly provisioned dispatch principals use an ID-namespaced subject while legacy subjects remain valid, allowing retained historical actors and current configured replacements to coexist; exact replay validates the recorded actor at event time, while only a new append requires current authority.
+- Worker paging now emits independently deduplicated events for every active stale-heartbeat, dispatch-degradation, expired-lease, and dead-letter condition. Delivery attempts all required pages concurrently, combines every delivery result, and reports failure when any required page fails without throwing into the heartbeat path.
+- The repaired matrix passes 66 focused dispatch, sink, runtime seam, and paging tests. Worker and Notify typechecks pass, the optimized 50 route build passes, and diff integrity is clean. Hostile coverage includes transient DB failure followed by takeover, deterministic invalid evidence, revoked historical actor plus configured principal rotation, four simultaneous pages, and one of four delivery failure aggregation.
+- Exact-head follow-up review found two remaining races: the normal claim transaction could still terminalize a fifth lease that expired immediately after the recovery scan, and overlapping heartbeat invocations could both pass the paging dedupe check before either delivery stamped the key.
+- The final-attempt terminal sweep is removed from ordinary claims. Exhausted claimed work is now exclusively eligible for the fenced recovery claim, which must reconcile exact evidence before completion or failure. A deterministic two-clock regression proves a fifth lease expiring between the two claim calls remains claimed for recovery.
+- Paging now serializes work per dedupe key. A successful delivery stamps the window before the next waiter evaluates it; a failed delivery releases only that key without stamping it, so the waiting invocation retries while the other simultaneous conditions stay deduplicated.
+- Final repair verification passes 87 focused race and authority tests, all 170 Catalog tests, all 36 Notify tests, 700 Worker tests with one explicitly skipped, all three affected typechecks, the optimized 50-route production build, and `git diff --check`. Immutable-head review, protected CI, merge, deployment, and live proof remain pending.
+## 2026-08-30 Plan 11-01 generated production documentation contract (#572)
+
+- [x] Create and claim issue #572 on an isolated `codex/572-public-docs-contract` branch from current `origin/main`.
+- [x] Inventory the public route, schema, requirement, claim, and existing documentation catalogs; identify unsupported claims and missing production components.
+- [x] Extend the canonical documentation catalog with authentication and tenancy, Mission and Policy Envelope, API semantics, webhooks, idempotency, pagination, errors, retries, runbooks, and executable examples without duplicating product contracts.
+- [x] Generate deterministic HTML, Markdown, and machine-readable website-upload artifacts from that catalog, with exact source and claim lineage.
+- [x] Add hostile drift checks for broken links, stale schemas, unsafe examples, naming regressions, inaccessible markup, and claims that exceed verified requirement status.
+- [x] Regenerate the website-upload bundle and run focused tests, documentation checks, naming and claims gates, full typecheck, production build, dependency audit, and diff integrity.
+- [ ] Inspect the exact diff, obtain independent exact-head Codex review, fix every P0 to P2 finding, and rerun the affected gates.
+- [ ] Rebase onto current `origin/main`, push one protected PR, require current-base CI and all protected checks, then merge and verify the exact deployed revision before treating any page as published evidence.
+
+### Plan 11-01 contracts
+
+- Source of truth remains the v4 product specification, registered requirements, public claims registry, real route and schema contracts, and accepted ADRs. Documentation cannot create product authority.
+- Each generated page records its supported production boundary, availability, requirement IDs, claim IDs, route or schema sources, limitations, security boundary, and last verified revision or an explicit not-yet-live state.
+- Examples must be executable against the documented contract, use placeholder credentials, refuse redirects where credentials are present, and avoid secrets or real tenant data.
+- Links are relative within the upload bundle; output is create-or-update only under the ownership sentinel and rejects unexpected entries or path escape.
+- Fettler and ReGauge are the only customer-facing product names. Historical identifiers may appear only in explicit compatibility notes.
+- No requirement, availability, or public claim is promoted by this plan. Final GA qualification remains Plan 11-02.
+
+### Review
+
+- In progress. Plan committed before implementation; recovery Plan 10-04 and ReGauge activation remain parked untouched per the user instruction to start the next wave.
+- The canonical catalog now contains 20 component guides. Seven new guides cover authentication and tenancy, Mission and Policy Envelope, API conventions, GitHub webhooks and domain events, audit and compliance evidence, recovery and reliability, and limits, errors, and retries.
+- Every page now exports registered requirement IDs, applicable public claim IDs, and existing route, schema, or runtime source locators into the web page, Markdown, HTML upload bundle, and machine manifest. The generator remains deterministic and ownership fenced.
+- Hostile checks prove all authority identifiers resolve, source and evidence files exist, related links close over the catalog, generated relative links remain in the bundle, examples contain no credential values, production status cannot exceed verified GA requirements, and historical customer facing names do not reappear.
+- Current verification: 18 focused catalog, route, bundle, link, lineage, and output safety tests; public documentation drift check; product naming gate; public claims gate; affected Web and scripts typechecks; full workspace typecheck; optimized Web build artifact; zero production dependency vulnerabilities; and clean diff integrity. The final exact command rerun, review, current base CI, merge, deployment, and browser proof remain pending.
+- Independent exact-head review rejected the first implementation with six publication-boundary defects: one nonexistent ReGauge route, incomplete public-claim requirement closure, overstated recovery and identity behavior, no revision-bound publication evidence, and incorrect ReGauge casing. The repair binds the implemented campaign-read route, mechanically closes every page over its claims' requirement dependencies, documents current recovery and membership limits, emits an explicit `not_live` publication state with null revision and digest, and enforces canonical ReGauge casing across the generated bundle.
+- Repaired verification passes 19 focused documentation tests, the complete Web suite with 240 tests, documentation drift, naming, public-claims, affected typechecks, full workspace typecheck, optimized 64-page Web build, every GA gate, production dependency audit with zero vulnerabilities, and diff integrity. Fresh immutable-head review remains required before push.
+- The second immutable-head review confirmed the original six findings closed and identified two new P1 boundaries: output cleanup could follow a Windows junction outside the owned documentation tree, and route drift checks validated only one hand-selected route instead of the complete mounted API surface.
+- Output generation now rejects a reparse point at the output root or any existing ancestor before writing or deletion, with real junction regressions proving outside files remain untouched. Every documented API interface now belongs to one versioned shared route contract, the catalog must cover that contract exactly, and API startup validates the contract against Hono's actual mounted route table. This behavioral guard exposed and corrected two inaccurate documented paths and preserves exact disabled-route registration behind fail-closed middleware. The repaired focused matrix passes 46 of 46 tests and actual local API startup reaches a listening state only after the complete route assertion passes. Full gates and a fresh exact-head review remain pending.
+- Protected deployment E2E then caught a serious keyboard-access violation on horizontally scrollable quickstart code. Both documentation quickstart regions are now explicitly named and keyboard focusable, preserving scrolling for keyboard-only and Safari users. The exact browser E2E and fresh immutable-head review remain required after current-base rebase.
+- Fresh exact-head review found the same keyboard-access defect remained in the generated website-upload HTML. Both generator templates now emit named, focusable quickstart regions, the committed bundle is regenerated from those templates, and a catalog-wide regression fails if either `aria-label` or `tabindex="0"` drifts. The repaired focused matrix passes 47 of 47 generator, catalog, API-route, GraphQL, and advanced-AI tests; the documentation drift check and diff integrity also pass.
+- The protected authority gate then detected live issue snapshot drift after unfinished identity issue #437 was reopened. This branch now carries the exact live issue timestamp, observation time, and recomputed canonical issue digest; it does not promote the identity requirement or change the documentation publication boundary.
+
+## 2026-08-30 GSD Plan 10-01: production human identity
+
+- [x] Prove the literal ME-ENT-001 engineering gap against the existing OIDC, SAML, membership, trust-principal, reviewer, and offboarding paths.
+- [x] RED: specify tenant-scoped service-principal provisioning, scope attenuation, expiry, rotation, revocation, replay, and cross-tenant denial.
+- [x] GREEN: extend the existing principal and API-key contracts with the smallest durable service-principal administration surface; do not create a parallel identity store.
+- [x] RED: specify revocable server-side session authority that binds tenant, issuer, subject, membership version, authentication strength, expiry, and logout/offboarding invalidation.
+- [x] GREEN: require the production API identity path to consult that authority without weakening existing short-lived OIDC verification.
+- [x] RED: specify SCIM 2.0 user provision, update, deactivate, reactivate, filtering, idempotent replay, stale-update rejection, tenant isolation, and last-owner protection.
+- [x] GREEN: map SCIM lifecycle operations onto the canonical tenant membership and trust-principal contracts behind an explicit protected binding.
+- [x] Prove mutation and failure behavior for revoked memberships, principals, sessions, credentials, and cross-tenant identifiers; keep the approved enterprise IdP drill as an external-proof leaf.
+- [x] Run focused tests, affected typechecks, fresh and upgrade database convergence, full tests, optimized build, GA gates, dependency audit, and diff integrity.
+- [ ] Obtain independent exact-head review, current-base protected CI, all six required checks, intact `enforce_admins: true`, normal merge, exact-revision deployment, and live health proof.
+
+### Scope boundary
+
+- Plan 10-01 completes identity engineering only. It does not fabricate the approved enterprise SAML and SCIM tenant drill required for final GA evidence.
+- Plan 10-02 owns the repository-wide tenant-isolation qualification matrix; this increment adds hostile identity-boundary tests but does not promote ME-ENT-002.
+- Existing OIDC and SAML wire contracts remain compatible. Service credential secrets are returned only once at creation, while bearer tokens and token hashes are never persisted in plaintext, returned by lifecycle reads, or written to audit metadata.
+
+### Review
+
+- The vertical tracer extends the existing `principals`, `api_keys`, and `tenant_memberships` authority rather than introducing a second identity store. Service principals receive one explicit audience, an enumerated attenuated scope set, a maximum 90-day lifetime, one-time credentials, deterministic replay denial, complete credential revocation, and tenant-bound persistence triggers.
+- Production OIDC authentication now claims a durable server-side session bound to the exact tenant, issuer, subject, trust principal, membership version, MFA evidence, token digest, issuance, and expiry. Logout, membership offboarding, and SCIM deactivation revoke that session; completed revocation evidence is immutable and conflicting replay fails closed.
+- SCIM 2.0 provisioning requires one exact protected tenant-to-principal-to-issuer binding plus a dedicated `mendpoint-scim` service principal carrying only `identity:provision`. Provision, replay, filter, replace, patch, deactivate, reactivate, and delete paths serialize their version check and write under one database transaction. Owner lifecycle remains outside SCIM.
+- Root self-review closed additional authority gaps before independent review: every human can revoke only their own OIDC session; service rotation replay reports a stable issued-credential conflict; credential-to-principal tenant binding and session revocation lineage are protected from raw drift; session revocation replay is exact; and SCIM read-check-write sequences cannot race an old ETag.
+- Verification passed: 119 focused identity and authorization checks, all 101-requirement database convergence checks exercised by the full suite, complete repository tests, full workspace typecheck, optimized 50-route production build, every GA gate, zero production dependency vulnerabilities, and diff integrity. Independent exact-head review, protected CI, merge, deployment, and the separate enterprise IdP drill remain outstanding.
+- Exact-head review found five production boundaries: three advertised service scopes could never pass the agent role gate; SCIM matching and PATCH parsing did not cover case-insensitive enterprise-provider forms or pathless Replace; userName uniqueness was not database enforced; durable sessions accepted a human principal ID without proving its issuer, subject, and audience; and the protected SCIM binding was outside the customer startup contract.
+- The repair derives accepted service scopes from the production agent role and tests every accepted scope through both role and key-scope gates. SCIM now validates User and PatchOp schemas, treats filter attributes, operators, PATCH fields, paths, and role values case-insensitively, supports bounded pathless Replace, and rejects ambiguous duplicate attributes.
+- A transactional expression index enforces case-insensitive userName uniqueness per tenant and issuer. Upgrade convergence detects pre-existing duplicates before creating the index, fails with a named conflict, closes the failed database handle, and preserves both legacy rows for operator resolution. SCIM translates write conflicts into the standard 409 uniqueness response.
+- Session claims now prove the exact human principal audience and canonical issuer-subject binding in storage, enforce the same rule on raw inserts, and reject mismatched historical rows during database convergence. `MENDPOINT_SCIM_BINDINGS_JSON` is required by the customer profile, passed only to the API process, and checked at API startup against an active service principal plus one or more exact `identity:provision` credentials.
+- The repaired affected matrix passes 92 of 92 identity, authorization, production-startup, platform, and cross-tenant tests. The corrected worker launcher preflight passes 3 of 3 tests. The complete repository suite, full workspace typecheck, optimized 50-route production build, every GA gate, dependency audit with zero vulnerabilities, and diff integrity all pass. A fresh immutable-head review, protected CI, merge, deployment, and the separate enterprise IdP drill remain required.
+
+## 2026-08-30 Plan 10-01 exact-head review repair
+
+- [x] RED: prove startup rejects a SCIM provisioning issuer that cannot be canonicalized to the exact configured OIDC issuer while accepting standards-compliant equivalent URL spelling.
+- [x] RED: prove an empty SCIM PATCH operation list is invalid and cannot advance the resource ETag.
+- [x] RED: prove pathless Replace rejects case-insensitive duplicate attributes before mutation.
+- [x] RED: prove role subattributes `value` and `primary` are case-insensitive and duplicate-safe.
+- [x] GREEN: make the smallest startup and PATCH-boundary repairs that satisfy the hostile regressions.
+- [x] Run focused identity suites, affected and full typechecks, full tests, build, GA, dependency audit, and diff integrity.
+- [x] Inspect the complete repair diff and commit atomically without pushing.
+
+### Review
+
+- `scimBindingsFromEnv` now accepts only a trailing-slash spelling difference, stores the exact configured OIDC issuer used by JWT verification, and rejects missing or arbitrary issuer mismatches before provisioning authority can be constructed.
+- PATCH requires at least one operation. Pathless Replace rejects case-insensitive duplicate attributes. Role `value` and `primary` subattributes are read case-insensitively and duplicates fail closed across every supplied role object.
+- Red-first evidence: the original focused suite failed six hostile assertions at the expected seams. The repaired focused SCIM suite passes 12 of 12 tests; the wider API and database identity matrix passes 52 of 52 tests.
+- Verification passes: complete repository tests, affected and full workspace typechecks, optimized 50-route production build, every GA gate, zero production dependency vulnerabilities, and diff integrity.
+- No push, merge, deployment, enterprise IdP drill, or production claim was performed. Fresh immutable-head independent review and protected CI remain required.
+
+## 2026-08-30 Plan 10-01 strict SCIM active repair
+
+- [x] RED: prove string, null, and numeric `active` values on POST cannot create a membership, audit record, or resource version.
+- [x] RED: prove string, null, and numeric `active` values on PUT cannot change membership bytes, audit history, or ETag.
+- [x] GREEN: route POST, PUT, and PATCH through one strict optional boolean parser while preserving the existing omitted-value default on full-resource writes.
+- [x] Run focused and wider identity tests, affected typechecks, and diff integrity.
+- [x] Inspect and commit the isolated repair without pushing.
+
+### Review
+
+- One shared `active` parser now distinguishes absence from invalid presence. POST and PUT retain their existing omitted-value default, while every present value must be a JSON boolean; PATCH uses the same strict parser.
+- Red-first evidence reproduced six state-changing failures: malformed POST created an active membership, and malformed PUT advanced the ETag. The repaired regressions prove membership rows, audit history, and versions remain unchanged.
+- Verification passes: 19 focused SCIM tests, the 59-test API and database identity matrix, both affected workspace typechecks, and diff integrity.
+- No push, merge, deployment, or production claim was performed. Fresh immutable-head independent review remains required.
+
+## 2026-08-30 Plan 10-01 complete authority and payload-boundary repair
+
+- [x] Revalidate complete live human-manager authority inside every tenant-membership mutation, SCIM DELETE, and service-principal revoke transaction.
+- [x] Keep first-owner bootstrap API-key-only and revalidate the exact live key, scope, actor, and trust principal inside its transaction.
+- [x] Reject multi-valued SCIM role arrays unless exactly one role is primary.
+- [x] Parse required customer-profile SCIM bindings, require at least one binding, and bind the exact SCIM tenant set to the Fettler model-source tenant allowlist.
+- [x] Enforce SCIM and service-principal request limits while streaming, cancel on overflow, and reject malformed or negative content lengths.
+- [x] Prove delayed-body and pre-transaction revocation cannot change target membership, credential, audit, or version state.
+- [x] Run focused hostile tests, the wider identity/startup matrix, affected typechecks, and diff integrity.
+- [x] Inspect and commit the isolated repair without pushing.
+
+### Review
+
+- One shared live-manager authority primitive now verifies the exact trust principal, active owner/admin membership, OIDC session or delegated API key, membership evidence, scope, expiry, and revocation state at the mutation boundary. Bootstrap retains its distinct first-owner contract but no longer trusts stale request context.
+- SCIM DELETE and service-principal revoke now perform the same transaction-local authority proof as their asynchronous peers. Hostile regressions revoke authority after request context capture and prove the target row, resource version, credentials, and audit history remain unchanged.
+- The production profile consumes the same SCIM binding parser as the API and rejects empty, malformed, issuer-mismatched, duplicate, or tenant-set-mismatched bindings before startup.
+- The focused and wider identity/startup matrix passes 97 tests. API and platform typechecks plus diff integrity pass. A fresh immutable-head independent review remains required; no push, merge, deployment, enterprise IdP drill, or production claim was performed.
+
+## 2026-08-30 Plan 10-01 live authority repair
+
+- [x] RED: prove delayed-body API-key and trust-principal revocation blocks SCIM POST, PUT, and PATCH without membership, audit, or version mutation.
+- [x] RED: prove delayed-body trust-principal or manager-membership revocation blocks service-principal creation and credential rotation without principal, credential, audit, or prior-key mutation.
+- [x] RED: prove SCIM POST, PUT, and PATCH reject multiple primary roles without mutation.
+- [x] GREEN: revalidate complete live authority inside the same database transaction as every affected mutation and reject ambiguous primary role selection.
+- [x] Run focused and wider identity tests, affected typechecks, and diff integrity.
+- [x] Inspect and commit the isolated repair without pushing.
+
+### Review
+
+- SCIM now revalidates the exact live API key, dedicated provisioning scope, protected binding, and active service trust principal inside each POST, PUT, and PATCH transaction after body parsing. Revocation during a delayed body read returns 403 without changing membership bytes, audit history, or resource version.
+- Service-principal creation and rotation now revalidate the canonical human trust principal, active owner or admin membership, membership evidence, and either the durable OIDC session or delegated API key inside the mutation transaction. Delayed manager offboarding, trust-principal revocation, and API-key revocation leave principals, credentials, prior-key status, and audit history unchanged.
+- Multiple role entries marked primary are invalid regardless of attribute casing. POST, PUT, and PATCH all return SCIM 400 without mutation.
+- Red-first evidence reproduced nine unauthorized or ambiguous writes on the rejected head. The repaired focused suites pass 34 of 34 tests; the wider API and database identity matrix passes 60 of 60 tests. API and database typechecks plus diff integrity pass.
+- No push, merge, deployment, or production claim was performed. Fresh immutable-head independent review remains required.
+
+## 2026-08-30 Plan 10-01 final P1 repair
+
+- [x] Add an atomic protected pre-start SCIM authority bootstrap for fresh and populated current-schema volumes.
+- [x] Keep the bootstrap credential out of every long-lived child process and require it at the customer production boundary.
+- [x] Read service-principal mutation time only after the write transaction has acquired its lock.
+- [x] Prove second-connection write waits cannot outlive session, principal, or delegated API-key authority.
+- [x] Replace tenant-membership body buffering with a strict incremental reader that cancels overflow and rejects malformed content lengths.
+- [x] Prove overflow and malformed lengths cannot mutate membership or audit state.
+- [x] Run the focused identity and launcher matrix, API and Worker typechecks, scripts typecheck, and diff integrity.
+- [x] Inspect and commit the repair without pushing.
+
+### Review
+
+- The production launcher now materializes the exact tenant, service principal, dedicated key, issuer, expiry, and `identity:provision` scope under one `BEGIN IMMEDIATE` transaction before the API starts. Replays require exact persisted identity and credential bytes; any mismatch rolls the complete bootstrap back. The bootstrap token is supplied only to the setup process and is removed from the API, Worker, Web, and backup child environments.
+- Service-principal create, rotate, and revoke obtain the authoritative clock only after `BEGIN IMMEDIATE` succeeds. Real two-connection SQLite regressions hold the write lock past session and principal expiry, and revoke delegated API-key authority before releasing it. All three requests fail without principal, credential, target, or audit mutation.
+- Tenant-membership JSON is decoded from bounded byte chunks with fatal UTF-8 validation. Invalid content lengths cancel immediately; a streamed body crossing 32 KiB cancels its reader and returns 413. Hostile regressions prove no membership or audit entry is created.
+- Verification passes: 37 of 37 focused API, launcher, and customer-profile tests; API and Worker typechecks; scripts typecheck; and `git diff --check`. The protected bootstrap also enforces the same maximum 90-day lifetime as the service-principal API. No push, merge, deployment, enterprise IdP drill, or production claim was performed. Fresh immutable-head independent review remains required.
+
+## 2026-08-30 Plan 10-01 protected authority refresh
+
+- [x] Reopen unfinished authority issue #437 after its live state diverged from the canonical closure matrix.
+- [x] Bind the matrix to the exact live `updated_at` value returned after the state transition.
+- [x] Run the local closure structure and digest checks.
+- [ ] Commit the metadata-only repair, obtain fresh exact-head review, and rerun all six protected checks. The protected proposal check remains fail-closed outside its GitHub authority context.
+
+### Review
+
+- Issue #437 is open again under the existing owner and title. The matrix now records the live `2026-08-30T20:07:33.000Z` authority timestamp. This repairs the observed `ISSUE_METADATA_MISMATCH` without promoting the unfinished identity requirements or changing their supported boundary.
+- Exact-head review found that protected SCIM binding validation still accepted null or malformed service-principal expiry and did not enforce the 90-day authority ceiling after bootstrap. Startup and every request-time authority check now require canonical finite creation and expiry timestamps, active expiry, and a creation-to-expiry lifetime no greater than 90 days. Direct null, malformed, expired, and overlong regressions cover both consumption points. The repaired identity matrix passes 78 of 78 tests, API typecheck passes, and diff integrity is clean.
+
+## 2026-08-30 Optional SCIM production startup repair
+
+- [x] Remove optional enterprise SCIM bindings from the unconditional customer secret set.
+- [x] Require the complete SCIM binding and bootstrap-authority pair only when either trimmed value activates SCIM.
+- [x] Preserve active SCIM parsing, nonempty bindings, issuer validation, and exact model-tenant matching.
+- [x] Run focused customer profile and launcher tests, affected typechecks, config completeness, and diff integrity.
+- [x] Commit the isolated repair without pushing.
+
+### Review
+
+- The customer profile no longer treats enterprise SCIM as an unconditional production secret. Both trimmed values absent means inactive; either value present activates the pair requirement and the existing binding parser, nonempty, issuer, and exact model-tenant checks.
+- The SCIM-free launcher regression reaches the exclusive-backup startup gate instead of failing profile validation. Partial activation, empty bindings, malformed JSON, issuer mismatch, and tenant mismatch remain fail closed; a complete active pair still passes.
+- Focused verification passes 11 of 11 customer profile and launcher tests, 16 of 16 configuration completeness tests, API and Worker typechecks, scripts typecheck, and diff integrity.
+
+## 2026-08-30 GSD Plan 08-02A: production router value proof caller
+
+- [x] Rebase the bounded create-only proof caller onto current production main without overlapping the MCU, Organization Memory, graph fallback, or authority lanes.
+- [x] Preserve exact held-out cohort, policy, cost, latency, and evidence-digest validation with no model or provider dispatch.
+- [x] Expose the caller through the root package command and verify focused tests plus Eval and scripts typechecks.
+- [x] Reject string booleans from runtime JSON so training cohorts and rejected observations cannot pass through truthiness.
+- [x] Attribute accepted-output cost and latency policy failures to the exact contributing task IDs.
+- [ ] Obtain independent exact-head review, current-base protected CI, normal protected merge, exact-revision production deployment, and live health proof.
+
+### Scope and rollback
+
+- Primary requirement: `ME-RTR-009`; `ME-RTR-005` is supporting only. This slice does not promote `ME-RTR-006`, any requirement status, GA availability, or public claim.
+- Rollback removes only the root command and proof caller. Evidence is create-only, retained proof files are never overwritten, and no provider, model, database, worker, API, or production mutation is performed by the evaluator.
+
+### Review
+
+- The first independent review blocked the slice because untyped JSON string booleans were treated as true and cost or latency failures were aggregate-only. The repair validates both boolean fields before evaluation and preserves task-level failure attribution in the immutable report.
+- The next review found an overflow case where finite task costs produced non-finite aggregates that serialized as null but could pass policy. Aggregate cost is now an explicit number-or-null contract, strict finite-and-lower evaluation remains authoritative, and undefined or overflowed aggregates fail with all cohort task IDs retained.
+- Focused proof, artifact-runner, and CLI coverage passes 19 of 19 tests. Eval and scripts typechecks pass. The initial root test command was invalid for focused execution and hit the desktop filesystem boundary; the direct focused Vitest command passed outside that boundary.
+
+## 2026-08-30 GSD Plan 11-02: protected qualification authority loader (#430)
+
+- [x] Create an isolated `codex/430-qualification-authority-loader` worktree from current `origin/main`.
+- [x] Define one exact-schema protected qualification bundle without creating evidence or changing requirement, availability, or claim status.
+- [x] Load the requirements register, public claims registry, and evidence manifest as raw bytes under an explicit local authority root; reject path escape and symbolic-link or reparse traversal before reading.
+- [x] Bind all three byte-level SHA-256 digests and the qualified revision to the existing customer-readiness attestation contract.
+- [x] Return an explicit fail-closed indeterminate result for absent, malformed, unsafe, stale, or mismatched authority.
+- [x] Add hostile deletion, drift, traversal, symlink, junction, schema, digest, revision, and revocation-state tests.
+- [x] Run focused and complete Ops tests, the Ops typecheck, and diff integrity.
+- [x] Obtain independent review of the original exact head before push; require a fresh exact-head review after the production-repair rebase.
+
+### Scope and safety
+
+- Requirements: final qualification authority engineering for issue #430 and primary plan `11-02`; no requirement is promoted by this slice.
+- Owned files: `packages/ops/src/customer-qualification-authority.ts`, its focused test, minimal customer-readiness exports, the Ops public export, and this Plan 11-02 record.
+- Excluded concurrent surfaces: API startup, environment declarations, Fly launch configuration, and customer-profile bindings remain untouched while Plan 10-01 owns them.
+- Threats: substituted bundle roots, path traversal, Windows junction or symbolic-link escape, digest normalization instead of raw-byte binding, stale-revision replay, partial revocation state appearing authoritative, permissive unknown keys, and errors collapsing to ready defaults.
+- Rollback: revert this isolated loader commit. No evidence, requirement status, public claim, protected environment, or production process is mutated.
+
+### Review
+
+- The original exact head received an independent APPROVE with no P0, P1, or P2 findings. The protected production-repair rebase changes the immutable head, so a fresh exact-head review remains mandatory before merge. Runtime consumption and protected environment binding remain separate follow-up increments.
+- The first vertical slice defines a pure protected-bundle loader. It accepts only an exact schema, validates the existing 101-of-101 attestation, confines the bundle and three artifacts to a canonical non-reparse root, hashes the raw file bytes, binds every digest and the exact release revision, and returns only an indeterminate authority on any ambiguity.
+- Exact-head re-review found that mixed Windows path separators could collapse two artifact roles onto the same canonical file. The loader now resolves and validates all artifact paths before reading, rejects duplicate canonical paths, and covers the slash-to-backslash alias directly.
+- After rebasing onto production repair `842dafc2`, all 171 Ops tests pass, including eleven hostile loader tests and the existing readiness matrix. Coverage includes deletion, byte drift, duplicate canonical files, extra and missing keys, malformed JSON, stale revision, attestation substitution, traversal, absolute paths, incomplete revocation state, symbolic links, substituted roots, and a real Windows junction. The Ops typecheck and diff integrity pass. Any runtime wiring remains pending.
+## 2026-08-30 Issue authority refresh for #430 and #433
+
+- [x] Bind issue-authority records #430 and #433 to their exact live GitHub state and `updatedAt` values without changing requirement status, availability, or claims.
+- [x] Recompute the issue-authority and release-train integrity digests from the complete proposed matrix.
+- [x] Prove the changed issue records retain their exact owner, title, URL, and 101-requirement mappings through the focused GitHub authority tests.
+- [x] Run the full closure, specification, release-train, and GA validators plus diff integrity.
+- [x] Inspect the complete metadata-only diff, record review and rollback evidence, then commit and push without opening or merging a pull request.
+
+### Scope and rollback
+
+- Owned files: `docs/PRODUCTION_CLOSURE_MATRIX.json` and this task record. No issue, requirement, public claim, workflow, policy, credential, or production runtime is mutated by this branch.
+- Rollback is a single commit revert. The main authority observer remains fail closed until a refreshed matrix is merged and a new exact-main observation passes.
+
+### Review
+
+- Live GitHub readback confirmed issue #430 is open with `updatedAt` `2026-08-30T23:49:26Z` and issue #433 is open with `updatedAt` `2026-08-30T23:49:27Z`; both retain the expected owner, title, URL, and requirement mappings.
+- The complete matrix recomputation produced issue-authority digest `sha256:87e9f68ce12947e833983dd4bf68bc97e070b0c08a3b249105f3c0d967c21083`. The release-train digest remains `sha256:f4666ff849eca0a74d939d6a1f918042bc8e1091a7f6ae476bcdc1d5a7abf2c1` because no release-train record changed.
+- `npm run spec:check`, `npm run closure:check`, `npm run ledger:check`, and `npm run ga:check` pass. The focused GitHub authority, closure-matrix, and proposal-authority suite passes all 127 tests. `git diff --check` passes.
+- Review found no requirement, availability, public-claim, issue ownership, issue title, issue URL, requirement mapping, release-train, workflow, policy, credential, or runtime change. Protected GitHub authority and production acceptance remain pending until this exact change is reviewed, merged normally, and observed on the deployed main revision.
+
+## 2026-08-30 Plan 05-03A final authority repair
+
+- [x] Restrict complete-graph short-circuiting to change classes the endpoint projection can represent, and materialize direct, wrapper, and test sites from graph evidence.
+- [x] Make call-graph extraction consume only the exact source bytes captured by the bounded repository index, with no mutable repository re-walk or fallback reads.
+- [x] Thread all five public raw-retrieval bounds through graph and non-graph paths and persist traversal-depth exhaustion as snapshot-bound abstention evidence.
+- [x] Add hostile regressions for field/configuration and indirect sites, mutable source-set drift, symlink drift, and traversal-depth exhaustion.
+- [x] Run affected suites and typechecks, inspect the complete diff, commit, and push without opening or merging a pull request.
+
+### Scope and rollback
+
+- Owned surfaces are the Plan 05-03A code-impact, codebase-index, call-graph, pipeline tests and implementation, plus this task record. Concurrent product, authority, and deployment work remains untouched.
+- Rollback is one commit revert. Existing graph versions and retained abstention evidence remain immutable; no requirement, availability, claim, credential, or production runtime is promoted by this repair.
+
+### Review
+
+- Complete graph evidence now short-circuits raw retrieval only for endpoint path, method, and SDK method changes that the projection can represent faithfully. Direct SDK callers, indirect wrappers, and tests retain distinct graph-derived sites; field and configuration changes require bounded raw confirmation.
+- The repository index captures one exact source set, validates file identity and the complete directory-entry set against same-size metadata mutation, late files, and late links, then passes only those captured bytes into full or incremental call-graph extraction. The call graph never falls back to a mutable disk read when snapshot sources are supplied.
+- The public retrieval contract now accepts and enforces `maxFiles`, `maxBytes`, `maxFileBytes`, `maxTraversalDepth`, and `maxCandidates` on graph and non-graph paths. Traversal-depth exhaustion produces an idempotent abstention artifact, evidence record, audit event, and domain event bound to the exact repository snapshot, revision, content digest, limits, and usage.
+- Full affected verification passes: call graph 25 tests, codebase index 34 tests, code impact 123 tests, and pipeline 256 tests, for 438 tests total. All four affected workspace typechecks and diff integrity pass. No requirement, availability, or public claim is promoted.
+## 2026-08-31 GSD Plan 06-05/06-06: Fettler real provider change to exact draft
+
+- [x] Audit the complete production producer-to-consumer chain from feed revision through exact draft delivery, including every durable transition and claim predicate.
+- [x] Reject persisted demo or unbound SCM targets in the customer production profile and expose the exact fail-closed reason without claiming readiness.
+- [x] Make provider polling accumulate comparable immutable versions and enqueue the correct tenant-bound change fanout without starving monitored providers.
+- [x] Carry graph coverage, provider-to-code lineage, proposed migration, deterministic verification, and explicit known/unknown evidence into one review package.
+- [x] Deliver only an idempotent exact draft PR against an explicitly authorized GitHub App installation and repository binding.
+- [x] Add deletion-resistant regressions for stale demo state, first-version polling, duplicate replay, insufficient graph coverage, failed verification, and one-draft delivery.
+- [ ] Run focused tests, affected typechecks, full gates, independent exact-head Codex review, current-base protected CI, normal merge, exact-revision deployment, live canary, and authenticated browser verification.
+
+### Scope and rollback
+
+- Primary issue: `#433`; primary requirement `ME-WAR-010`, with `ME-WAR-004`, `ME-WAR-006`, and `ME-WAR-009` supporting.
+- Production delivery remains draft-only. This work grants no merge or customer deployment authority and does not set `MENDPOINT_CUSTOMER_READY=1`.
+- An external proof leaf remains blocked until an exact consented Fettler tenant, repository, ref, budget, and reviewer are bound. Engineering and fail-closed production behavior continue independently.
+- Rollback stops new claims, preserves immutable revisions, findings, verification evidence, and draft identity, then reverts the isolated production-path commit. Completed provider or verification work is not repeated.
+
+### Review
+
+- The customer feed lane now freezes the exact monitored-consumer set, runs analysis without direct SCM delivery, and atomically enqueues snapshot-bound Fettler runs only where non-low impact evidence, a current immutable snapshot, and its verification policy all exist. Every abstention records a tenant-scoped reason.
+- A versioned sealed artifact carries the exact provider change, Change Graph version or raw-retrieval fallback, impact digest, repository, snapshot, revision, known facts, unknowns, proposed edit evidence, and deterministic verification into both the draft body and authenticated pull-request console.
+- Delivery revalidates snapshot expiry immediately before GitHub, derives a canonical `mendpoint/fettler-*` branch for new seals, preserves legacy replay identity, and serializes one open draft per tenant, provider change, and repository. Malformed persisted scope or artifact evidence fails closed before any remote call.
+- Campaign-only enrollment now resolves one canonical Mission binding for policy, inherited context, MissionTask, and trajectory lineage; it no longer loses Mission evidence merely because the job omitted a direct `missionId`.
+- Focused verification currently passes the complete 81-test bridge, sealing, delivery, database, API, GitLab-compatibility, and web-console matrix plus the worker behavioral suite. Agent, database, API, worker, and web typechecks and diff integrity pass. Full gates, exact-head review, protected merge, deployment, live canary, and authenticated browser proof remain in progress.
+- The repository-wide suite exposed two linked evaluation-fixture failures after the production expiry and review-package changes. The repair keeps the expiry fence intact by binding the simulated repository expiry to the scenario clock, and updates the evidence grader to require the current proposed-migration, exact-path, objective-verification, and reviewer-rationale fields. The repaired production-worker-to-exact-draft evaluation passes.
+- The first exact-head review correctly blocked release on three P1 defects and two P2 product defects. Production feed jobs now bind the exact source and target version row identities, labels, and observed content hash before enqueue; execution and sealed evidence reject any drift even when a newer provider version arrives before claim.
+- A crash after the notification row is persisted but before the child run is committed is replayable. Notification-only retries reconstruct the complete impact report, reuse the same migration row, and reach the atomic child enqueue instead of abstaining with missing evidence. The regression reproduces the durable crash boundary and proves one retained precursor.
+- The Mission regression now binds the required inherited Policy Envelope. The authenticated pull-request read model suppresses only the digest-verified exact notification precursor, fails closed on ambiguous repository linkage, and presents Pull Requests under Fettler with canonical ReGauge spelling.
+- The repaired affected matrix passes 66 sealing, delivery, database, API, navigation, and crash-replay tests; the exact-version worker regressions and campaign-only Mission regression also pass. Repository-wide gates and fresh immutable-head review remain in progress.
+- Fresh exact-head review found one P2 scalability and availability defect: `/prs` opened and verified every historical candidate seal before applying its requested page. The repair freezes the exact notification precursor in the delivery transaction, rejects consumer or repository ambiguity, preserves the frozen result across replay, installs an upgrade-safe lookup index, performs deduplication and pagination in SQLite, and opens only artifacts on the requested page. Focused database and API verification passes 20 of 20 tests, including damaged off-page history and existing-database convergence.
+
 ## 2026-08-30 Plan 08-03 governed Organization Memory projection
 
 - [x] Add one tenant-bound projection from an admitted governed learning event to a non-active Organization Memory observation, preserving event, snapshot, revision, repository, product, and reviewer lineage.
 - [x] Invoke the projection for both Fettler and ReGauge terminal reviewed outcomes without allowing learning failure to block delivery or allowing one observation to become active memory.
-- [x] Prove idempotency, tenant isolation, redaction, cross-product emission, conflict handling, policy and Mission precedence, and rollback-safe disablement with focused tests and affected typechecks.
+- [x] Prove idempotency, tenant isolation, redaction, cross-product emission, policy and Mission precedence, and rollback-safe disablement with focused tests and affected typechecks.
 
 ### Review
 
 - Admitted terminal outcomes now create a low-confidence `REVIEW_PREFERENCE` candidate through the existing append-only Organization Memory lifecycle. The candidate remains non-active and not training eligible; only existing human-confirmation or independent-corroboration authority can promote it.
 - The projection consumes the shared governed producer used by Fettler and ReGauge. It preserves event, learning-record, product, repository, revision, snapshot, outcome, and reviewer lineage while redacting reviewer rationale before persistence.
-- Projection conflicts and foreign-tenant reviewer authority fail independently after governed admission, so learning-memory availability cannot block delivery or erase the canonical learning event. An idempotent admission replay also retries the same memory projection safely.
+- Foreign-tenant reviewer authority fails independently after governed admission, so learning-memory availability cannot block delivery or erase the canonical learning event. An idempotent admission replay also retries the same memory projection safely.
+- CORRECTION: the original entry above claimed this plan proved "conflict handling". It did not. The only conflict-adjacent test covered `organization_memory_not_open` (a disabled chain), which is a different error from `organization_memory_observation_conflict`, the one production actually hit. See the follow-up review below.
 - Focused verification passes 28 tests across the database Organization Memory lifecycle and worker governed producer. Database and worker typechecks pass, and `git diff --check` is clean. Exact-head independent review remains pending.
+
+### Review (exact-head follow-up)
+
+- The pinned source reference in `packages/pipeline/src/lesson-routing.ts` was stale: this plan inserted lines into `governed-learning-producer.ts`, moving the referenced forwarding line, and the source-scan guard in `governed-learning-attribution.test.ts` was failing. Repinned to the current line. That guard breaks on ANY line motion in the file it references, so it will go stale again; making it match on content rather than a line number is a follow-up, deliberately not widened into this plan.
+- The projected `structuredValue` carried per-event fields (`eventId`, `learningRecordId`, `revision`, `snapshotDigest`). `recordOrganizationMemoryObservation` compares `structuredValue` canonically to decide whether a later observation restates the same meaning, so the SECOND governed outcome sharing a reviewer rationale failed with `organization_memory_observation_conflict` instead of reaching the idempotency or corroboration branch. Both production producers fall back to a constant rationale (`Approved in Warden review.`, `Approved in adaptive review.`), so that collision was the ordinary path, not an edge case, and independent corroboration to VALIDATION was unreachable on this path despite the module docstring promising it is required. The per-event fields are dropped; the lineage they carried is unchanged in `sourceRefs` and `reason`, which are written on every revision and are not part of the meaning comparison.
+- The projection returns a third value (`{ status: "failed" }`) rather than throwing, and the only production caller stored it in `jobs.result_json` where nothing queried, counted, or alerted on it, making "the projection failed" indistinguishable from "there was nothing to project". `runOutcomeResolutionLearning` (the function the worker's `learning.outcome.resolve` branch calls) now reports it on a stable, greppable token, without failing the job or the admission.
+- The projection mints a `repository:`-scoped `REVIEW_PREFERENCE` candidate per reviewed outcome, and both live consumers of Organization Memory read it tenant-wide with no scope filter. The ReGauge plan consult picked one inferred candidate per layer by sorting on a sha256, so which repository's reviewer preference governed a plan was arbitrary; the Mission Context Compiler caps each section, so unrelated repositories could crowd out relevant memory. A single shared predicate now bounds repository-scoped memory to the repositories a consult is actually about, applied at both sites.
+- `subjectKey` components are escaped so a colon inside one component cannot collide with a different component split. Both values are enum-ish today, so this is a structural guard, not a live defect.
+- Not changed here, and routed to the schema owner instead: revoking governed-learning consent is forward-looking and does not retract already-projected candidates. That matches the append-only learning-corpus model and is a consent-policy decision, not a defect in this plan.

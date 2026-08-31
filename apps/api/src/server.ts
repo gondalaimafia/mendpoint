@@ -163,6 +163,7 @@ import {
   planToMarkdown,
 } from "@mendpoint/orchestrator";
 import {
+  assertPublicDocsApiRoutesMounted,
   evaluatePrGates,
   reviewOpenApiDesign,
   securityAttestationPolicyFromEnv,
@@ -177,12 +178,8 @@ import {
   vmStatusReport,
   startLiveSandbox,
   evaluateLatencyAlerts,
-  parsePrincipalFromHeaders,
-  can,
   canMutateSystemCatalog,
-  permissionForRoute,
-  CredentialBroker,
-  EnvSecretProvider,
+  envelopeKeyProvidersFromEnvironment,
   estimateCost,
   MCU_VERSION,
   selfServeBillingEnabled,
@@ -248,8 +245,9 @@ import {
 import { normalizeChange } from "@mendpoint/change-intel";
 import {
   createAuthMiddleware,
+  createRbacMiddleware,
+  attenuateApiKeyScopes,
   effectiveAuthMode,
-  scopeAllows,
   type ApiEnv,
 } from "./auth.js";
 import {
@@ -276,6 +274,7 @@ import {
 import { canonicalRepoPath, resolveRepoKey } from "./repo-path.js";
 import {
   materializeConnectedRepository,
+  createRepositoryCredentialDependencies,
   purgeExpiredSnapshots,
   registerConnectedRepository,
   registerScmConnection,
@@ -306,6 +305,11 @@ import { createLearningConsentRoutes } from "./learning-consent-routes.js";
 import { createOrganizationMemoryRoutes } from "./organization-memory-routes.js";
 import { createPlatformSandboxRoutes } from "./platform-sandbox.js";
 import { createPlatformStateRoutes } from "./platform-state-routes.js";
+import {
+  createSecretBreakGlassDenialAuditMiddleware,
+  createSecretLifecycleRoutes,
+} from "./secret-lifecycle-routes.js";
+import { secretLifecycleCommitmentAuthorityFromEnvironment } from "./secret-lifecycle-service.js";
 import { createTenantCreationRoutes } from "./tenant-creation-routes.js";
 import { createTransformerAttemptCoordinatorRoutes } from "./transformer-attempt-coordinator.js";
 import { regaugeProductionBootstrapInputFromEnvironment } from "./regauge-production-bootstrap-runtime.js";
@@ -334,6 +338,7 @@ import {
   mappedErrorResponse,
   type PublicErrorRule,
 } from "./error-boundary.js";
+import { listPullRequestReadModel } from "./pull-request-read-model.js";
 
 // Fail fast in production if env invalid
 assertApiEnvOrExit();
@@ -350,9 +355,15 @@ const {
   pilotSuccessRoutes,
   migrationPrRoutes,
   tenantMembershipRoutes,
+  servicePrincipalRoutes,
+  identitySessionRoutes,
+  scimRoutes,
 } = durableState;
 const app = new Hono<ApiEnv>();
 const startedAt = Date.now();
+const envelopeKeyProviders = envelopeKeyProvidersFromEnvironment(
+  process.env.MENDPOINT_ENVELOPE_KEY_CATALOG_JSON,
+);
 
 function apiReadiness() {
   return readiness({
@@ -441,6 +452,7 @@ const SCM_SNAPSHOT_ERRORS = [
     status: 404,
   },
   { internalCode: "scm_connection_revoked", status: 409 },
+  { internalCode: "github_credential_lifecycle_required", status: 409 },
   { internalCode: "consumer_repository_tenant_mismatch", publicCode: "not_found", status: 404 },
 ] satisfies readonly PublicErrorRule[];
 const REPO_KEY_ERRORS = publicErrorRules(
@@ -673,13 +685,12 @@ function withRequestGraphHandle<T>(
 function repositoryCredentialDependencies(c: Context<ApiEnv>) {
   const principal = c.get("principal");
   if (!principal) throw new Error("authenticated_principal_required");
-  const credentialBroker = new CredentialBroker({
-    providers: [
-      new EnvSecretProvider({
-        GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-      }),
-    ],
-    audit: (event) =>
+  return createRepositoryCredentialDependencies(db, {
+    tenantId: principal.tenantId,
+    actorId: principal.id,
+    requestId: c.get("requestId") ?? undefined,
+    keyProviders: envelopeKeyProviders,
+    credentialAudit: (event) =>
       requestAudit(c, {
         actor: "system",
         action: `credential.access.${event.outcome}`,
@@ -694,12 +705,22 @@ function repositoryCredentialDependencies(c: Context<ApiEnv>) {
           rotationDue: event.rotation.due,
         },
       }),
+    envelopeAudit: (event) =>
+      requestAudit(c, {
+        actor: "system",
+        action: `secret.envelope.${event.operation}.${event.outcome}`,
+        resourceType: "scm_credential",
+        resourceId: event.secretId,
+        metadata: {
+          purpose: event.purpose,
+          reason: event.reason,
+          keyProvider: event.key.provider,
+          keyId: event.key.keyId,
+          keyVersion: event.key.version,
+          customerManaged: event.key.customerManaged,
+        },
+      }),
   });
-  return {
-    credentialBroker,
-    actorId: principal.id,
-    requestId: c.get("requestId") ?? undefined,
-  };
 }
 
 function tenantConsumerRepo(consumerId: string, tenantId: string) {
@@ -776,46 +797,12 @@ app.use("*", async (c, next) => {
 // Rate limit before auth so credential stuffing is throttled
 app.use("*", rateLimitMiddleware({ identity: "network" }));
 app.use("*", mutationAdmissionMiddleware());
+app.use("*", createSecretBreakGlassDenialAuditMiddleware({ db }));
 app.use("*", createAuthMiddleware(db));
 app.use("*", rateLimitMiddleware({ identity: "principal" }));
 
 /** RBAC identity comes from the authenticated API key in protected modes. */
-app.use("*", async (c, next) => {
-  const path = new URL(c.req.url).pathname;
-  const method = c.req.method;
-  if (method === "OPTIONS") return next();
-  const need = permissionForRoute(method, path);
-  if (!need) return next();
-  const mode = effectiveAuthMode();
-  const authenticated = c.get("principal");
-  const principal =
-    authenticated ??
-    (mode === "off"
-      ? parsePrincipalFromHeaders({
-          "x-tenant-id": c.req.header("x-tenant-id") ?? undefined,
-          "x-role": c.req.header("x-role") ?? undefined,
-          "x-user-id": c.req.header("x-user-id") ?? undefined,
-        })
-      : undefined);
-  if (!principal) {
-    return c.json({ error: "unauthorized", message: "authenticated principal required" }, 401);
-  }
-  const scopes = c.get("authScopes");
-  const scopeAllowed = mode === "off" || scopeAllows(scopes, need);
-  if (!can(principal, need) || !scopeAllowed) {
-    return c.json(
-      {
-        error: "rbac_denied",
-        need,
-        role: principal.role,
-        message: `role ${principal.role} or API key scope lacks ${need}`,
-      },
-      403,
-    );
-  }
-  c.set("principal", principal);
-  return next();
-});
+app.use("*", createRbacMiddleware());
 
 // Per-tenant quota runs after the principal (API key, OIDC, or header-parsed) is resolved,
 // so it can budget by tenant. Disabled by default; see tenantQuotaMiddleware.
@@ -824,6 +811,13 @@ app.use("*", tenantQuotaMiddleware());
 app.route("/graphql/schemas", createGraphQLSchemaIngestionRoutes({
   db,
   enabled: graphqlSchemaIngestionEnabled(process.env),
+}));
+app.route("/platform/secrets", createSecretLifecycleRoutes({
+  db,
+  providers: envelopeKeyProviders,
+  enabled: process.env.MENDPOINT_SECRET_LIFECYCLE_ENABLED === "1",
+  breakGlassEnabled: process.env.MENDPOINT_SECRET_BREAK_GLASS === "true",
+  ...secretLifecycleCommitmentAuthorityFromEnvironment(process.env),
 }));
 app.route("/advanced-ai", createAdvancedAiApplicationRoutes({
   db,
@@ -924,6 +918,9 @@ app.route("/design-partner-applications", designPartnerRoutes);
 app.route("/pilot-success-contracts", pilotSuccessRoutes);
 app.route("/prs", migrationPrRoutes);
 app.route("/tenants/memberships", tenantMembershipRoutes);
+app.route("/tenants/service-principals", servicePrincipalRoutes);
+app.route("/auth/sessions", identitySessionRoutes);
+app.route("/scim/v2", scimRoutes);
 const wardenPilotIntakeRoutes = createWardenPilotIntakeRoutes({ db });
 app.route("/fettler/pilot", wardenPilotIntakeRoutes);
 app.route("/warden/pilot", wardenPilotIntakeRoutes);
@@ -2194,7 +2191,12 @@ app.get("/prs", (c) => {
   const offset = requestListOffset(c);
   return pagedJson(
     c,
-    listPrs(db, requestTenantId(c), limit, offset).map(prToApi),
+    listPullRequestReadModel({
+      db,
+      tenantId: requestTenantId(c),
+      limit,
+      offset,
+    }),
     limit,
     offset,
   );
@@ -2279,11 +2281,30 @@ app.post("/keys", async (c) => {
   if (!principal) return c.json({ error: "unauthorized" }, 401);
   const body = await c.req.json<{ name: string; scopes?: string[] }>();
   if (!body.name) return c.json({ error: "name required" }, 400);
+  const authorityRole = c.get("authorityRole");
+  if (!authorityRole) {
+    return c.json({ error: "forbidden", message: "api_key_stable_authority_required" }, 403);
+  }
+  let scopes: string[];
+  try {
+    scopes = attenuateApiKeyScopes({
+      principalRole: principal.role,
+      currentScopes: c.get("authScopes") ?? [],
+      requestedScopes: body.scopes,
+    });
+  } catch (error) {
+    return c.json({
+      error: "forbidden",
+      message: error instanceof Error ? error.message : "api_key_authority_amplification",
+    }, 403);
+  }
   const created = createApiKey(db, {
     id: newId(),
     name: body.name,
     tenantId: principal.tenantId,
-    scopes: body.scopes,
+    scopes,
+    authorityPrincipalId: c.get("authorityPrincipalId"),
+    authorityRole,
     createdAt: nowIso(),
   });
   requestAudit(c, {
@@ -3964,6 +3985,8 @@ app.post("/brands/:id/preview", async (c) => {
   });
   return c.json({ pack: pack.id, ...out });
 });
+
+assertPublicDocsApiRoutesMounted(app.routes);
 
 const port = Number(process.env.API_PORT ?? 3001);
 const hostname = process.env.API_HOST?.trim() || "0.0.0.0";

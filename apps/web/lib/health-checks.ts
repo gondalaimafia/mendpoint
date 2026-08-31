@@ -30,6 +30,16 @@ type WorkerHeartbeat = {
   feedScheduleStatus?: string;
   releaseConfigurationStatus?: string;
   releaseConfigurationFailed?: number;
+  releaseDispatchConfigured?: boolean | null;
+  releaseDispatchConsumerCount?: number | null;
+  releaseDispatchStatus?: string;
+  releaseDispatchPending?: number | null;
+  releaseDispatchClaimed?: number | null;
+  releaseDispatchFailed?: number | null;
+  releaseDispatchDue?: number | null;
+  releaseDispatchExpiredClaims?: number | null;
+  releaseDispatchFailureStage?: string | null;
+  releaseDispatchFailureCode?: string | null;
   activeJob?: { id?: string; type?: string; leaseGeneration?: number } | null;
   recovery?: {
     due?: number;
@@ -43,6 +53,10 @@ type WorkerHeartbeat = {
 
 type FeedScheduleStatus = "not_started" | "healthy" | "degraded";
 type ReleaseConfigurationStatus = "not_started" | "not_configured" | "healthy" | "degraded";
+type ReleaseDispatchStatus = ReleaseConfigurationStatus | "unknown";
+type ReleaseDispatchFailureStage =
+  | "configuration" | "claim" | "artifact_rehydration" | "event_append"
+  | "settlement" | "backlog" | "fence" | "runtime";
 
 function hasOwn(value: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
@@ -61,8 +75,23 @@ function releaseConfigurationStatus(value: unknown): ReleaseConfigurationStatus 
     : null;
 }
 
+function releaseDispatchStatus(value: unknown): ReleaseDispatchStatus | null {
+  return value === "unknown" ? value : releaseConfigurationStatus(value);
+}
+
 function safeCount(value: unknown): number | null {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : null;
+}
+
+function releaseDispatchFailureStage(value: unknown): ReleaseDispatchFailureStage | null {
+  return typeof value === "string" && [
+    "configuration", "claim", "artifact_rehydration", "event_append",
+    "settlement", "backlog", "fence", "runtime",
+  ].includes(value) ? value as ReleaseDispatchFailureStage : null;
+}
+
+function releaseDispatchFailureCode(value: unknown): string | null {
+  return typeof value === "string" && /^[a-z][a-z0-9_]{0,127}$/.test(value) ? value : null;
 }
 
 function apiBase(): string {
@@ -97,6 +126,16 @@ export async function workerCheck(operational = true): Promise<{
   feedScheduleStatus?: FeedScheduleStatus;
   releaseConfigurationStatus?: ReleaseConfigurationStatus;
   releaseConfigurationFailed?: number;
+  releaseDispatchConfigured?: boolean | null;
+  releaseDispatchConsumerCount?: number | null;
+  releaseDispatchStatus?: ReleaseDispatchStatus;
+  releaseDispatchPending?: number | null;
+  releaseDispatchClaimed?: number | null;
+  releaseDispatchFailed?: number | null;
+  releaseDispatchDue?: number | null;
+  releaseDispatchExpiredClaims?: number | null;
+  releaseDispatchFailureStage?: ReleaseDispatchFailureStage | null;
+  releaseDispatchFailureCode?: string | null;
   activeJob?: WorkerHeartbeat["activeJob"];
   recovery?: WorkerHeartbeat["recovery"];
   transformer?: TransformerHeartbeat & {
@@ -175,6 +214,104 @@ export async function workerCheck(operational = true): Promise<{
       : releaseFieldsValid && releasePollConfigurationCount === 0 &&
         currentReleaseConfigurationStatus === "not_configured" &&
         releaseConfigurationFailed === 0;
+    const releaseDispatchFieldPresence = [
+      "releaseDispatchConfigured",
+      "releaseDispatchConsumerCount",
+      "releaseDispatchStatus",
+      "releaseDispatchPending",
+      "releaseDispatchClaimed",
+      "releaseDispatchFailed",
+      "releaseDispatchDue",
+      "releaseDispatchExpiredClaims",
+      "releaseDispatchFailureStage",
+      "releaseDispatchFailureCode",
+    ].map((field) => hasOwn(heartbeat, field));
+    const releaseDispatchAnyFieldPresent = releaseDispatchFieldPresence.some(Boolean);
+    const releaseDispatchAllFieldsPresent = releaseDispatchFieldPresence.every(Boolean);
+    const dispatchConfiguredPresent = hasOwn(heartbeat, "releaseDispatchConfigured");
+    const releaseDispatchConfigured = dispatchConfiguredPresent
+      ? typeof heartbeat.releaseDispatchConfigured === "boolean"
+        ? heartbeat.releaseDispatchConfigured
+        : null
+      : releaseDispatchAnyFieldPresent ? null : false;
+    const releaseDispatchConsumerCount = hasOwn(heartbeat, "releaseDispatchConsumerCount")
+      ? safeCount(heartbeat.releaseDispatchConsumerCount)
+      : releaseDispatchAnyFieldPresent ? null : 0;
+    const currentReleaseDispatchStatus = hasOwn(heartbeat, "releaseDispatchStatus")
+      ? releaseDispatchStatus(heartbeat.releaseDispatchStatus)
+      : releaseDispatchAnyFieldPresent ? null : "not_configured";
+    const releaseDispatchPending = hasOwn(heartbeat, "releaseDispatchPending")
+      ? safeCount(heartbeat.releaseDispatchPending)
+      : releaseDispatchAnyFieldPresent ? null : 0;
+    const releaseDispatchClaimed = hasOwn(heartbeat, "releaseDispatchClaimed")
+      ? safeCount(heartbeat.releaseDispatchClaimed)
+      : releaseDispatchAnyFieldPresent ? null : 0;
+    const releaseDispatchFailed = hasOwn(heartbeat, "releaseDispatchFailed")
+      ? safeCount(heartbeat.releaseDispatchFailed)
+      : releaseDispatchAnyFieldPresent ? null : 0;
+    const releaseDispatchDue = hasOwn(heartbeat, "releaseDispatchDue")
+      ? safeCount(heartbeat.releaseDispatchDue)
+      : releaseDispatchAnyFieldPresent ? null : 0;
+    const releaseDispatchExpiredClaims = hasOwn(heartbeat, "releaseDispatchExpiredClaims")
+      ? safeCount(heartbeat.releaseDispatchExpiredClaims)
+      : releaseDispatchAnyFieldPresent ? null : 0;
+    const currentReleaseDispatchFailureStage = hasOwn(heartbeat, "releaseDispatchFailureStage")
+      ? heartbeat.releaseDispatchFailureStage === null
+        ? null
+        : releaseDispatchFailureStage(heartbeat.releaseDispatchFailureStage)
+      : releaseDispatchAnyFieldPresent ? undefined : null;
+    const currentReleaseDispatchFailureCode = hasOwn(heartbeat, "releaseDispatchFailureCode")
+      ? heartbeat.releaseDispatchFailureCode === null
+        ? null
+        : releaseDispatchFailureCode(heartbeat.releaseDispatchFailureCode)
+      : releaseDispatchAnyFieldPresent ? undefined : null;
+    const releaseDispatchFailureStageShapeValid =
+      !hasOwn(heartbeat, "releaseDispatchFailureStage") ||
+      heartbeat.releaseDispatchFailureStage === null ||
+      currentReleaseDispatchFailureStage !== null;
+    const releaseDispatchFailureCodeShapeValid =
+      !hasOwn(heartbeat, "releaseDispatchFailureCode") ||
+      heartbeat.releaseDispatchFailureCode === null ||
+      currentReleaseDispatchFailureCode !== null;
+    const releaseDispatchFailureValid =
+      currentReleaseDispatchFailureStage !== undefined &&
+      currentReleaseDispatchFailureCode !== undefined &&
+      releaseDispatchFailureStageShapeValid &&
+      releaseDispatchFailureCodeShapeValid &&
+      ((currentReleaseDispatchFailureStage === null) === (currentReleaseDispatchFailureCode === null)) &&
+      (currentReleaseDispatchStatus === "degraded" || currentReleaseDispatchStatus === "unknown"
+        ? currentReleaseDispatchFailureStage !== null
+        : currentReleaseDispatchFailureStage === null);
+    const releaseDispatchFieldsValid =
+      (!releaseDispatchAnyFieldPresent || releaseDispatchAllFieldsPresent) &&
+      typeof releaseDispatchConfigured === "boolean" &&
+      releaseDispatchConsumerCount !== null &&
+      currentReleaseDispatchStatus !== null &&
+      releaseDispatchPending !== null &&
+      releaseDispatchClaimed !== null &&
+      releaseDispatchFailed !== null &&
+      releaseDispatchDue !== null &&
+      releaseDispatchExpiredClaims !== null;
+    const releaseDispatchRequiredButMissing =
+      releasePollingConfigured === true && !releaseDispatchAnyFieldPresent;
+    const releaseDispatchContractValid = releaseDispatchFieldsValid &&
+      releaseDispatchFailureValid && !releaseDispatchRequiredButMissing;
+    const releaseDispatchHealthy = releaseDispatchContractValid && releaseDispatchConfigured
+      ? releaseDispatchConsumerCount > 0 &&
+        currentReleaseDispatchStatus === "healthy" &&
+        releaseDispatchFailed === 0 &&
+        releaseDispatchDue === 0 &&
+        releaseDispatchExpiredClaims === 0
+      : releaseDispatchContractValid &&
+        releaseDispatchConsumerCount === 0 &&
+        currentReleaseDispatchStatus === "not_configured" &&
+        releaseDispatchPending === 0 &&
+        releaseDispatchClaimed === 0 &&
+        releaseDispatchFailed === 0 &&
+        releaseDispatchDue === 0 &&
+        releaseDispatchExpiredClaims === 0;
+    const releaseDispatchUnknown = releaseDispatchRequiredButMissing ||
+      releaseDispatchAnyFieldPresent && !releaseDispatchContractValid;
     const feedLastSuccessAt = Date.parse(heartbeat.feedLastSuccessAt ?? "");
     const feedFreshness = assessFeedFreshness({
       lastSuccessAt: heartbeat.feedLastSuccessAt,
@@ -192,6 +329,7 @@ export async function workerCheck(operational = true): Promise<{
       (!operational ||
         (heartbeat.feedPollOk === true &&
           releasePollingHealthy &&
+          releaseDispatchHealthy &&
           requiredFeedAvailable &&
           (heartbeat.recovery?.expiredLeases ?? 0) === 0 &&
           (heartbeat.recovery?.deadLetter ?? 0) === 0 &&
@@ -215,6 +353,19 @@ export async function workerCheck(operational = true): Promise<{
       feedScheduleStatus: currentFeedScheduleStatus ?? "not_started",
       releaseConfigurationStatus: currentReleaseConfigurationStatus ?? "not_configured",
       releaseConfigurationFailed: releaseConfigurationFailed ?? 0,
+      releaseDispatchConfigured: releaseDispatchUnknown ? null : releaseDispatchConfigured,
+      releaseDispatchConsumerCount: releaseDispatchUnknown ? null : releaseDispatchConsumerCount,
+      releaseDispatchStatus: releaseDispatchUnknown
+        ? "unknown"
+        : currentReleaseDispatchStatus ??
+          (releaseDispatchAnyFieldPresent ? "unknown" : "not_configured"),
+      releaseDispatchPending: releaseDispatchUnknown ? null : releaseDispatchPending,
+      releaseDispatchClaimed: releaseDispatchUnknown ? null : releaseDispatchClaimed,
+      releaseDispatchFailed: releaseDispatchUnknown ? null : releaseDispatchFailed,
+      releaseDispatchDue: releaseDispatchUnknown ? null : releaseDispatchDue,
+      releaseDispatchExpiredClaims: releaseDispatchUnknown ? null : releaseDispatchExpiredClaims,
+      releaseDispatchFailureStage: releaseDispatchUnknown ? null : currentReleaseDispatchFailureStage,
+      releaseDispatchFailureCode: releaseDispatchUnknown ? null : currentReleaseDispatchFailureCode,
       activeJob: heartbeat.activeJob ?? null,
       recovery: heartbeat.recovery,
       transformer: transformer ? {

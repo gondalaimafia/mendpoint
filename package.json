@@ -25,6 +25,7 @@
     "db:seed": "tsx scripts/seed.ts",
     "learning:export-corpus": "tsx scripts/learning-export-corpus.ts",
     "calibration:report": "tsx scripts/calibration-report.ts",
+    "router:value:proof": "tsx scripts/router-value-proof.ts",
     "dr:drill": "tsx scripts/dr-drill.ts",
     "backup:customer": "tsx scripts/customer-backup.ts",
     "restore:customer": "tsx scripts/customer-restore.ts",

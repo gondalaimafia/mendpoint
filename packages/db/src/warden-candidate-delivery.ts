@@ -33,6 +33,7 @@ export type WardenCandidateDeliveryRecord = Readonly<{
   sealedSha256: string;
   requesterPrincipalId: string;
   rationale: string;
+  precursorMigrationPrId: string | null;
   intentDigest: string | null;
   branchName: string | null;
   baseRevision: string | null;
@@ -57,7 +58,8 @@ type Row = {
   id: string; tenant_id: string; run_id: string; job_id: string; status: string;
   repository_id: string; snapshot_id: string; base_branch: string;
   expected_base_revision: string; sealed_path: string; sealed_sha256: string;
-  requester_principal_id: string; rationale: string; intent_digest: string | null;
+  requester_principal_id: string; rationale: string; precursor_migration_pr_id: string | null;
+  intent_digest: string | null;
   branch_name: string | null; base_revision: string | null; commit_sha: string | null;
   draft_pr: number | null; draft_pr_number: number | null; draft_pr_url: string | null;
   error_code: string | null; error_message: string | null; requested_at: string;
@@ -98,7 +100,8 @@ function map(row: Row): WardenCandidateDeliveryRecord {
     snapshotId: row.snapshot_id, baseBranch: row.base_branch,
     expectedBaseRevision: row.expected_base_revision, sealedPath: row.sealed_path,
     sealedSha256: row.sealed_sha256, requesterPrincipalId: row.requester_principal_id,
-    rationale: row.rationale, intentDigest: row.intent_digest, branchName: row.branch_name,
+    rationale: row.rationale, precursorMigrationPrId: row.precursor_migration_pr_id,
+    intentDigest: row.intent_digest, branchName: row.branch_name,
     baseRevision: row.base_revision, commitSha: row.commit_sha,
     draftPr: row.draft_pr === 1 ? true : null, draftPrNumber: row.draft_pr_number,
     draftPrUrl: row.draft_pr_url, errorCode: row.error_code, errorMessage: row.error_message,
@@ -156,6 +159,230 @@ export function getWardenCandidateDeliveryByRun(db: AppDb, tenantId: string, run
     "SELECT * FROM fettler_candidate_deliveries WHERE run_id = ? AND tenant_id = ?",
   ).get(runId, tenantId) as Row | undefined;
   return row ? map(row) : undefined;
+}
+
+type FettlerProviderChangeScope = Readonly<{
+  schemaVersion: 1;
+  providerSlug: string;
+  changeId: string;
+  repositoryId: string;
+  scopeDigest: string;
+}>;
+
+function providerChangeScopeDigest(input: Readonly<{
+  providerSlug: string;
+  changeId: string;
+  repositoryId: string;
+}>): string {
+  return `sha256:${createHash("sha256").update(JSON.stringify({
+    schemaVersion: 1,
+    providerSlug: input.providerSlug,
+    changeId: input.changeId,
+    repositoryId: input.repositoryId,
+  }), "utf8").digest("hex")}`;
+}
+
+export type BindWardenCandidateDeliveryScopeResult =
+  | Readonly<{ status: "legacy_unscoped" }>
+  | Readonly<({ status: "bound" } & FettlerProviderChangeScope)>;
+
+function sealedProviderChangeScope(
+  delivery: WardenCandidateDeliveryRecord,
+  sealedArtifact: unknown,
+): FettlerProviderChangeScope | null {
+  if (!sealedArtifact || typeof sealedArtifact !== "object" || Array.isArray(sealedArtifact)) {
+    throw new Error("warden_candidate_delivery_scope_artifact_invalid");
+  }
+  const artifact = sealedArtifact as Record<string, unknown>;
+  if (artifact.schemaVersion !== 5 && artifact.schemaVersion !== 6) return null;
+  if (
+    artifact.tenantId !== delivery.tenantId ||
+    artifact.repositoryId !== delivery.repositoryId ||
+    artifact.snapshotId !== delivery.snapshotId ||
+    artifact.baseBranch !== delivery.baseBranch ||
+    artifact.expectedBaseRevision !== delivery.expectedBaseRevision
+  ) {
+    throw new Error("warden_candidate_delivery_scope_binding_mismatch");
+  }
+  const value = artifact.fettlerProviderChange;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("warden_candidate_delivery_scope_artifact_invalid");
+  }
+  const evidence = value as Record<string, unknown>;
+  const providerSlug = typeof evidence.providerSlug === "string" ? evidence.providerSlug : "";
+  const changeId = typeof evidence.changeId === "string" ? evidence.changeId : "";
+  if (
+    evidence.schemaVersion !== 1 ||
+    !providerSlug || providerSlug !== providerSlug.trim() || providerSlug.length > 200 ||
+    !changeId || changeId !== changeId.trim() || changeId.length > 500 ||
+    evidence.repositoryId !== delivery.repositoryId ||
+    evidence.snapshotId !== delivery.snapshotId ||
+    evidence.revision !== delivery.expectedBaseRevision
+  ) {
+    throw new Error("warden_candidate_delivery_scope_binding_mismatch");
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    providerSlug,
+    changeId,
+    repositoryId: delivery.repositoryId,
+    scopeDigest: providerChangeScopeDigest({
+      providerSlug,
+      changeId,
+      repositoryId: delivery.repositoryId,
+    }),
+  });
+}
+
+function readBoundScope(payloadJson: string): FettlerProviderChangeScope | null {
+  let value: unknown;
+  try { value = JSON.parse(payloadJson); }
+  catch { throw new Error("warden_candidate_delivery_payload_invalid"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("warden_candidate_delivery_payload_invalid");
+  }
+  const scope = (value as Record<string, unknown>).fettlerProviderChangeScope;
+  if (scope === undefined) return null;
+  if (!scope || typeof scope !== "object" || Array.isArray(scope)) {
+    throw new Error("warden_candidate_delivery_scope_corrupt");
+  }
+  const record = scope as Record<string, unknown>;
+  if (
+    record.schemaVersion !== 1 ||
+    typeof record.providerSlug !== "string" || !record.providerSlug ||
+    record.providerSlug !== record.providerSlug.trim() || record.providerSlug.length > 200 ||
+    typeof record.changeId !== "string" || !record.changeId ||
+    record.changeId !== record.changeId.trim() || record.changeId.length > 500 ||
+    typeof record.repositoryId !== "string" || !record.repositoryId ||
+    record.repositoryId !== record.repositoryId.trim() || record.repositoryId.length > 200 ||
+    typeof record.scopeDigest !== "string" || !DIGEST.test(record.scopeDigest) ||
+    record.scopeDigest !== providerChangeScopeDigest({
+      providerSlug: record.providerSlug as string,
+      changeId: record.changeId as string,
+      repositoryId: record.repositoryId as string,
+    })
+  ) throw new Error("warden_candidate_delivery_scope_corrupt");
+  return Object.freeze({
+    schemaVersion: 1,
+    providerSlug: record.providerSlug,
+    changeId: record.changeId,
+    repositoryId: record.repositoryId,
+    scopeDigest: record.scopeDigest,
+  });
+}
+
+function resolvePrecursorMigrationPrId(
+  db: AppDb,
+  delivery: WardenCandidateDeliveryRecord,
+  changeId: string,
+): string | null {
+  const linkedConsumers = db.raw.prepare(
+    `SELECT DISTINCT consumer.id
+     FROM consumers AS consumer
+     JOIN consumer_repos AS repository ON repository.consumer_id = consumer.id
+     WHERE consumer.tenant_id = ? AND repository.connected_repository_id = ?
+     ORDER BY consumer.id
+     LIMIT 2`,
+  ).all(delivery.tenantId, delivery.repositoryId) as Array<{ id: string }>;
+  if (linkedConsumers.length > 1) {
+    throw new Error("warden_candidate_delivery_precursor_repository_ambiguous");
+  }
+  if (linkedConsumers.length === 0) return null;
+  const consumerRepositories = db.raw.prepare(
+    `SELECT DISTINCT connected_repository_id AS id
+     FROM consumer_repos
+     WHERE consumer_id = ? AND connected_repository_id IS NOT NULL
+     ORDER BY connected_repository_id
+     LIMIT 2`,
+  ).all(linkedConsumers[0]!.id) as Array<{ id: string }>;
+  if (consumerRepositories.length > 1) {
+    throw new Error("warden_candidate_delivery_precursor_repository_ambiguous");
+  }
+  const precursors = db.raw.prepare(
+    `SELECT DISTINCT migration.id
+     FROM migration_prs AS migration
+     WHERE migration.change_id = ? AND migration.consumer_id = ?
+       AND migration.status = 'notification_only'
+     ORDER BY migration.id
+     LIMIT 2`,
+  ).all(changeId, linkedConsumers[0]!.id) as Array<{ id: string }>;
+  if (precursors.length > 1) {
+    throw new Error("warden_candidate_delivery_precursor_ambiguous");
+  }
+  return precursors[0]?.id ?? null;
+}
+
+/**
+ * Bind a version 5/6 approval's sealed provider-change identity before any
+ * remote side effect. The scope is stored in the durable job payload so older
+ * databases converge without a schema migration. BEGIN IMMEDIATE serializes
+ * competing claims: at most one pending or still-open draft may own the same
+ * tenant, provider change, and repository tuple. Legacy v3/v4 approvals remain
+ * deliberately unscoped for compatibility.
+ */
+export function bindWardenCandidateDeliveryScope(db: AppDb, input: Readonly<{
+  tenantId: string;
+  deliveryId: string;
+  sealedArtifact: unknown;
+}>): BindWardenCandidateDeliveryScopeResult {
+  const owns = !db.raw.isTransaction;
+  if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  try {
+    const delivery = getWardenCandidateDelivery(db, input.tenantId, input.deliveryId);
+    if (!delivery) throw new Error("warden_candidate_delivery_not_found");
+    const scope = sealedProviderChangeScope(delivery, input.sealedArtifact);
+    if (!scope) {
+      if (owns) db.raw.exec("COMMIT");
+      return Object.freeze({ status: "legacy_unscoped" as const });
+    }
+    const currentJob = db.raw.prepare(
+      "SELECT payload_json FROM jobs WHERE id = ? AND tenant_id = ?",
+    ).get(delivery.jobId, delivery.tenantId) as { payload_json: string } | undefined;
+    if (!currentJob) throw new Error("warden_candidate_delivery_job_not_found");
+    const alreadyBound = readBoundScope(currentJob.payload_json);
+    if (alreadyBound && alreadyBound.scopeDigest !== scope.scopeDigest) {
+      throw new Error("warden_candidate_delivery_scope_binding_mismatch");
+    }
+    // The first binding freezes the exact precursor identity. Replays validate
+    // the sealed scope but must not reinterpret it against later feed changes.
+    const precursorMigrationPrId = alreadyBound
+      ? delivery.precursorMigrationPrId
+      : resolvePrecursorMigrationPrId(db, delivery, scope.changeId);
+    const peers = db.raw.prepare(
+      `SELECT jobs.payload_json
+       FROM fettler_candidate_deliveries AS delivery
+       JOIN jobs ON jobs.id = delivery.job_id AND jobs.tenant_id = delivery.tenant_id
+       WHERE delivery.tenant_id = ? AND delivery.repository_id = ? AND delivery.id <> ?
+         AND (delivery.status = 'delivery_pending' OR
+           (delivery.status = 'delivered' AND delivery.outcome IS NULL))`,
+    ).all(delivery.tenantId, delivery.repositoryId, delivery.id) as Array<{ payload_json: string }>;
+    if (peers.some((peer) => readBoundScope(peer.payload_json)?.scopeDigest === scope.scopeDigest)) {
+      throw new Error("warden_candidate_delivery_scope_conflict");
+    }
+    if (!alreadyBound) {
+      const parsed: unknown = JSON.parse(currentJob.payload_json);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("warden_candidate_delivery_payload_invalid");
+      }
+      const payload = parsed as Record<string, unknown>;
+      db.raw.prepare(
+        "UPDATE jobs SET payload_json = ? WHERE id = ? AND tenant_id = ?",
+      ).run(JSON.stringify({ ...payload, fettlerProviderChangeScope: scope }), delivery.jobId, delivery.tenantId);
+      const linked = db.raw.prepare(
+        `UPDATE fettler_candidate_deliveries
+         SET precursor_migration_pr_id = ?
+         WHERE id = ? AND tenant_id = ? AND precursor_migration_pr_id IS NULL`,
+      ).run(precursorMigrationPrId, delivery.id, delivery.tenantId);
+      if (Number(linked.changes) !== 1) {
+        throw new Error("warden_candidate_delivery_precursor_binding_mismatch");
+      }
+    }
+    if (owns) db.raw.exec("COMMIT");
+    return Object.freeze({ status: "bound" as const, ...scope });
+  } catch (error) {
+    if (owns && db.raw.isTransaction) db.raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function enqueueWardenCandidateDelivery(

@@ -12,6 +12,7 @@ import Link from "next/link";
 import type { PrDetailData } from "./fixtures.js";
 import { PrReviewActions } from "./pr-review-actions.js";
 import { CoverageCard } from "./coverage.js";
+import { ImpactLineageCard } from "./impact-lineage-card.js";
 
 /**
  * `/prs/[id]` — one PR in review, driven by live data (`PrDetailData`) fetched
@@ -93,6 +94,7 @@ export function PrDetailView({ pr }: { pr: PrDetailData }) {
         </div>
         <aside className="ds-detail__aside">
           {pr.coverage && <CoverageCard summary={pr.coverage} />}
+          {pr.lineage && <ImpactLineageCard lineage={pr.lineage} />}
           <div className="ds-panel ds-panel--pad">
             <div className="section-label section-label--muted">CHECKS</div>
             <ul className="ds-check-list">
@@ -115,7 +117,7 @@ export function PrDetailView({ pr }: { pr: PrDetailData }) {
             <div className="section-label section-label--muted">AUTHORED BY</div>
             <div className="ds-author">
               <WandSparklesIcon size={16} className="ds-author__icon" />
-              <span>Regauge</span>
+              <span>Fettler</span>
             </div>
             <p className="ds-author__note">
               Draft by default. Merging is always a human action.

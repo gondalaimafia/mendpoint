@@ -1,8 +1,76 @@
+# Every text file is stored LF-only in git. A CRLF blob in the index breaks
+# digest-pinned gates: they byte-compare committed content against a fresh
+# LF serialization, so a CRLF checkout raises a spurious drift failure.
+#
+# These are explicit per-extension `text eol=lf` rules rather than a single
+# `* text=auto eol=lf`. Git's `text=auto` heuristic classifies any file
+# containing a NUL byte as binary and silently skips normalizing it, and
+# several .ts sources here embed a literal NUL in a template-literal key
+# separator. An explicit rule overrides that heuristic; `text=auto` does not.
+# scripts/eol-normalization-check.ts enforces this and deliberately applies the
+# same explicit classification, so the normalizer and the guard always agree.
+
 .gitattributes text eol=lf
+.gitignore text eol=lf
+.dockerignore text eol=lf
+.nvmrc text eol=lf
+.node-version text eol=lf
+
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.svg text eol=lf
+*.xml text eol=lf
+*.toml text eol=lf
+*.txt text eol=lf
+*.sql text eol=lf
+*.py text eol=lf
+*.rb text eol=lf
+*.go text eol=lf
+*.java text eol=lf
 *.sh text eol=lf
+*.lock text eol=lf
+*.example text eol=lf
+
+CODEOWNERS text eol=lf
+Dockerfile text eol=lf
+Makefile text eol=lf
+LICENSE text eol=lf
+
 docs/website-upload/** text eol=lf
+
+# Binary assets: git must never normalize or diff these.
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.zip binary
+*.gz binary
+*.wasm binary
+
+# Digest-pinned authority prompts. scripts/change-graph-authority-check.ts
+# byte-compares these files, so git must never rewrite their bytes. These lines
+# must stay AFTER the `*.md` rule above: .gitattributes is last-match-wins, and
+# an earlier `-text` would be overridden by the later glob.
 docs/authority/Mendpoint_CODEX_Change_Graph_Intelligence_Prompt.md -text
 docs/authority/Codex_Master_Prompt_Integrate_Graphify_Into_the_Mendpoint_Change_Graph.md -text
+
 # The execution-ledger gate reads the committed JSON and byte-compares it to a
 # fresh generation that always serializes with LF. Without a pinned eol the file
 # checks out CRLF on Windows and the gate raises a spurious LEDGER_DRIFT.

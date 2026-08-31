@@ -19,6 +19,7 @@ import {
   recordAudit,
   verifyAuditIntegrity,
   verifyDomainEventIntegrity,
+  verifyDomainEventRecordIntegrity,
 } from "./index.js";
 
 const dirs: string[] = [];
@@ -313,6 +314,12 @@ describe("trust records", () => {
     expect(listDomainEvents(db, "tenant-a").map((row) => row.event_sequence)).toEqual([1, 2]);
     expect(listDomainEvents(db, "tenant-b")).toEqual([]);
     expect(verifyDomainEventIntegrity(db, "tenant-a")).toEqual({ ok: true, checked: 2 });
+    expect(verifyDomainEventRecordIntegrity(db, "tenant-a", "event-a"))
+      .toEqual({ ok: true, checked: 1 });
+    expect(verifyDomainEventRecordIntegrity(db, "tenant-a", "event-b"))
+      .toEqual({ ok: true, checked: 1 });
+    expect(verifyDomainEventRecordIntegrity(db, "tenant-b", "event-a"))
+      .toEqual({ ok: false, checked: 0, error: "domain_event_missing:event-a" });
     expect(() =>
       db.raw.prepare("DELETE FROM domain_events WHERE id = 'event-a'").run(),
     ).toThrow("domain_events_append_only");

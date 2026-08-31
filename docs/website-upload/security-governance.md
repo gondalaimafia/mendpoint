@@ -5,6 +5,9 @@ Bind every sensitive operation to tenant identity, least-privilege authority, im
 Status: Profile-specific pilot controls
 Availability: Private preview deployments with profile-specific authentication, encryption, and governance controls
 Last verified: 2026-08-14
+Publication evidence: not live; no deployed revision or live evidence digest recorded
+Requirements: ME-GTM-001, ME-ENT-001, ME-ENT-002, ME-ENT-003, ME-ENT-004, ME-WAR-008
+Public claims: CLM-014
 
 ## Start here
 
@@ -35,7 +38,7 @@ Run the deployment preflight, bootstrap one owner authority, and configure the n
 1. Authentication resolves a durable principal and tenant before route authority.
 2. RBAC and domain-specific gates authorize the exact action and scope.
 3. Sensitive data is encrypted at rest and excluded from logs and public evidence.
-4. Every transition records immutable evidence and rechecks stale or revoked authority at effect boundaries.
+4. Every transition records attributable evidence under the authority implemented by that route.
 5. Readiness fails closed when profile-required controls are absent.
 
 ## Interfaces
@@ -56,6 +59,12 @@ Run the deployment preflight, bootstrap one owner authority, and configure the n
 - Customer profile: `scripts/customer-warden-profile.test.ts`
 - Design partner encryption: `apps/api/src/design-partner-applications-store.test.ts`
 
+## Contract sources
+
+- `apps/api/src/auth.ts`
+- `packages/contract/src/tenant-boundary.ts`
+- `packages/contract/src/audit-governance.ts`
+
 ## Safety model
 
 - Tenant identity comes from authenticated authority, never request body claims.
@@ -66,7 +75,7 @@ Run the deployment preflight, bootstrap one owner authority, and configure the n
 ## Limitations
 
 - Security posture depends on correct deployment secrets, network policy, and operator procedures.
-- High availability differs by profile; the current dedicated Regauge coordinator is single-authority.
+- High availability differs by profile; a dedicated ReGauge coordinator is single-authority when deployed.
 - External providers and SCM integrations create egress only when explicitly configured.
 
 ## See also

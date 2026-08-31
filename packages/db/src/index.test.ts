@@ -12,6 +12,7 @@ import {
   listAudit,
   createApiKey,
   createApiKeyFromToken,
+  insertPrincipal,
   listApiKeys,
   findApiKeyByToken,
   revokeApiKey,
@@ -936,6 +937,38 @@ describe("db", () => {
     expect(created.prefix).toBe(token.slice(0, 10));
     expect(findApiKeyByToken(db, token)?.tenant_id).toBe("tenant_default");
     expect(JSON.stringify(listApiKeys(db))).not.toContain(token);
+  });
+
+  it("returns durable API-key authority bindings without exposing key hashes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mendpoint-key-authority-list-"));
+    dirs.push(dir);
+    const db = createDb(join(dir, "authority.sqlite"));
+    dbs.push(db);
+    const authority = insertPrincipal(db, {
+      id: "principal-owner",
+      tenantId: "tenant_default",
+      kind: "human",
+      subject: "https://issuer.example|owner",
+      displayName: "Owner",
+      audience: "https://issuer.example",
+      createdAt: nowIso(),
+    });
+    createApiKey(db, {
+      id: "key-owner-bound",
+      name: "owner-bound",
+      tenantId: "tenant_default",
+      scopes: ["tenant:admin"],
+      authorityPrincipalId: authority.id,
+      authorityRole: "owner",
+      createdAt: nowIso(),
+    });
+
+    expect(listApiKeys(db, "tenant_default")).toContainEqual(expect.objectContaining({
+      id: "key-owner-bound",
+      authority_principal_id: authority.id,
+      authority_role: "owner",
+    }));
+    expect(listApiKeys(db, "tenant_default")[0]).not.toHaveProperty("key_hash");
   });
 
   it("feed poll ledger", () => {

@@ -9,6 +9,7 @@ import {
   pagingEventForEgressReceipt,
   pagingEventForReadiness,
   pagingEventForWorkerHeartbeat,
+  pagingEventsForWorkerHeartbeat,
 } from "./index.js";
 
 beforeEach(() => {
@@ -166,6 +167,90 @@ describe("paging adapters", () => {
       pagingEventForWorkerHeartbeat({ workerId: "w1", ok: true, stale: false }),
     ).toBeNull();
   });
+
+  it("classifies a fresh degraded release-dispatch heartbeat separately from stale", () => {
+    const event = pagingEventForWorkerHeartbeat({
+      workerId: "w1",
+      ok: false,
+      stale: false,
+      releaseDispatchDegraded: true,
+      releaseDispatchPending: 7,
+      releaseDispatchClaimed: 2,
+      releaseDispatchFailed: 3,
+      releaseDispatchDue: 5,
+      releaseDispatchExpiredClaims: 1,
+    });
+
+    expect(event).toMatchObject({
+      type: "release_dispatch_degraded",
+      severity: "critical",
+      dedupeKey: "release_dispatch_degraded:w1",
+      details: { pending: 7, claimed: 2, failed: 3, due: 5, expiredClaims: 1 },
+    });
+    expect(event?.type).not.toBe("worker_heartbeat_stale");
+  });
+
+  it("preserves unknown release-dispatch counts instead of reporting false zeroes", () => {
+    expect(pagingEventForWorkerHeartbeat({
+      workerId: "w1",
+      ok: false,
+      stale: false,
+      releaseDispatchDegraded: true,
+      releaseDispatchPending: null,
+      releaseDispatchClaimed: null,
+      releaseDispatchFailed: null,
+      releaseDispatchDue: null,
+      releaseDispatchExpiredClaims: null,
+    })).toMatchObject({
+      type: "release_dispatch_degraded",
+      details: { pending: null, claimed: null, failed: null, due: null, expiredClaims: null },
+    });
+  });
+
+  it("keeps stale feed and release dispatch degradation as independent pages", () => {
+    expect(pagingEventsForWorkerHeartbeat({
+      workerId: "w1",
+      ok: false,
+      stale: true,
+      releaseDispatchDegraded: true,
+      releaseDispatchPending: null,
+      releaseDispatchClaimed: null,
+      releaseDispatchFailed: null,
+      releaseDispatchDue: null,
+      releaseDispatchExpiredClaims: null,
+      releaseDispatchFailureStage: "claim",
+      releaseDispatchFailureCode: "release_dispatch_claim_unavailable",
+    })).toEqual([
+      expect.objectContaining({ type: "worker_heartbeat_stale" }),
+      expect.objectContaining({
+        type: "release_dispatch_degraded",
+        details: expect.objectContaining({
+          failureStage: "claim",
+          failureCode: "release_dispatch_claim_unavailable",
+        }),
+      }),
+    ]);
+  });
+
+  it("emits every simultaneous critical heartbeat condition with an independent dedupe key", () => {
+    const events = pagingEventsForWorkerHeartbeat({
+      workerId: "w-compound",
+      ok: false,
+      stale: true,
+      expiredLeases: 2,
+      deadLetter: 3,
+      releaseDispatchDegraded: true,
+      releaseDispatchFailureStage: "claim",
+      releaseDispatchFailureCode: "release_dispatch_claim_unavailable",
+    });
+    expect(events.map((event) => event.type)).toEqual([
+      "worker_heartbeat_stale",
+      "release_dispatch_degraded",
+      "expired_lease_uncertain_side_effect",
+      "dead_letter_growth",
+    ]);
+    expect(new Set(events.map((event) => event.dedupeKey)).size).toBe(4);
+  });
 });
 
 describe("paging best-effort wiring", () => {
@@ -182,9 +267,11 @@ describe("paging best-effort wiring", () => {
     });
     if (!res || res.skipped) throw new Error("expected a delivered page");
     expect(res.ok).toBe(true);
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
-    expect(body.type).toBe("worker_heartbeat_stale");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map((call) => JSON.parse(call[1].body as string).type)).toEqual([
+      "worker_heartbeat_stale",
+      "dead_letter_growth",
+    ]);
   });
 
   it("does not page for a healthy worker heartbeat", async () => {
@@ -193,6 +280,162 @@ describe("paging best-effort wiring", () => {
     const res = await pageWorkerHeartbeat({ workerId: "w1", ok: true, stale: false });
     expect(res).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("pages a fresh release-dispatch degradation with its own event type", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await pageWorkerHeartbeat({
+      workerId: "w1",
+      ok: false,
+      stale: false,
+      releaseDispatchDegraded: true,
+      releaseDispatchPending: 4,
+      releaseDispatchClaimed: 1,
+      releaseDispatchFailed: 2,
+      releaseDispatchDue: 3,
+      releaseDispatchExpiredClaims: 1,
+    });
+    if (!res || res.skipped) throw new Error("expected a delivered page");
+    expect(res.ok).toBe(true);
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body.type).toBe("release_dispatch_degraded");
+    expect(body.details).toEqual({
+      pending: 4, claimed: 1, failed: 2, due: 3, expiredClaims: 1,
+      failureStage: null, failureCode: null,
+    });
+  });
+
+  it("delivers stale-feed and release-dispatch degradation as two independent pages", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await pageWorkerHeartbeat({
+      workerId: "w-compound",
+      ok: false,
+      stale: true,
+      releaseDispatchDegraded: true,
+      releaseDispatchFailureStage: "claim",
+      releaseDispatchFailureCode: "release_dispatch_claim_unavailable",
+    });
+    if (!res || res.skipped) throw new Error("expected delivered pages");
+    expect(res.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map((call) => JSON.parse(call[1].body as string).type)).toEqual([
+      "worker_heartbeat_stale",
+      "release_dispatch_degraded",
+    ]);
+  });
+
+  it("attempts every simultaneous page and reports aggregate failure when any required delivery fails", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await pageWorkerHeartbeat({
+      workerId: "w-compound-failure",
+      ok: false,
+      stale: true,
+      expiredLeases: 1,
+      deadLetter: 1,
+      releaseDispatchDegraded: true,
+      releaseDispatchFailureStage: "claim",
+      releaseDispatchFailureCode: "release_dispatch_claim_unavailable",
+    });
+    if (!result || result.skipped) throw new Error("expected aggregate delivery result");
+    expect(result.ok).toBe(false);
+    expect(result.deliveries).toHaveLength(4);
+    expect(result.deliveries.map((delivery) => delivery.ok)).toEqual([true, false, true, true]);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("serializes overlapping compound heartbeats to one delivery per key and dedupe window", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    let releaseFirstDelivery: (() => void) | undefined;
+    const releaseFirstStarted = new Promise<void>((resolve) => {
+      releaseFirstDelivery = resolve;
+    });
+    let allowDeliveries: (() => void) | undefined;
+    const deliveriesAllowed = new Promise<void>((resolve) => {
+      allowDeliveries = resolve;
+    });
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      releaseFirstDelivery?.();
+      await deliveriesAllowed;
+      return { ok: true, status: 200 };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const input = {
+      workerId: "w-overlap",
+      ok: false,
+      stale: true,
+      expiredLeases: 1,
+      deadLetter: 1,
+      releaseDispatchDegraded: true,
+    } as const;
+
+    const first = pageWorkerHeartbeat(input);
+    await releaseFirstStarted;
+    const second = pageWorkerHeartbeat(input);
+    await Promise.resolve();
+    allowDeliveries?.();
+    const results = await Promise.all([first, second]);
+
+    expect(results.every((result) => result?.ok)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls.map((call) => JSON.parse(call[1].body as string).type).sort()).toEqual([
+      "dead_letter_growth",
+      "expired_lease_uncertain_side_effect",
+      "release_dispatch_degraded",
+      "worker_heartbeat_stale",
+    ]);
+  });
+
+  it("releases only a failed compound-page key so an overlapping invocation retries it", async () => {
+    process.env.PAGING_WEBHOOK_URL = "https://ops.example.test/hook";
+    const attempts = new Map<string, number>();
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const type = JSON.parse(init.body as string).type as string;
+      const attempt = (attempts.get(type) ?? 0) + 1;
+      attempts.set(type, attempt);
+      await Promise.resolve();
+      return {
+        ok: type !== "release_dispatch_degraded" || attempt > 1,
+        status: type !== "release_dispatch_degraded" || attempt > 1 ? 200 : 503,
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const input = {
+      workerId: "w-overlap-retry",
+      ok: false,
+      stale: true,
+      expiredLeases: 1,
+      deadLetter: 1,
+      releaseDispatchDegraded: true,
+    } as const;
+
+    const [first, second] = await Promise.all([
+      pageWorkerHeartbeat(input),
+      pageWorkerHeartbeat(input),
+    ]);
+
+    expect(first?.ok).toBe(false);
+    expect(second?.ok).toBe(true);
+    expect(attempts).toEqual(new Map([
+      ["worker_heartbeat_stale", 1],
+      ["release_dispatch_degraded", 2],
+      ["expired_lease_uncertain_side_effect", 1],
+      ["dead_letter_growth", 1],
+    ]));
   });
 
   it("pages when the readiness probe is failing (the real /ready path)", async () => {
