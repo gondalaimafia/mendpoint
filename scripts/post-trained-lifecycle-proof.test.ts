@@ -1,0 +1,253 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  executePostTrainedLifecycleProof,
+  persistPostTrainedLifecycleProof,
+  POST_TRAINED_PROOF_VERSION,
+  runPostTrainedLifecycleProofCli,
+  type PostTrainedLifecycleProofInput,
+} from "./post-trained-lifecycle-proof.js";
+
+const DIGEST = `sha256:${"a".repeat(64)}`;
+const roots: string[] = [];
+
+function proofInput(): PostTrainedLifecycleProofInput {
+  return {
+    version: POST_TRAINED_PROOF_VERSION,
+    apiBaseUrl: "https://mendpoint.example/",
+    timeoutMs: 1_000,
+    training: { idempotencyKey: "train-1", body: {
+      jobId: "job-1", adapterId: "adapter-1", baseModelId: "base-1", datasetId: "dataset-1",
+      purpose: "adapter_training", residencyRegion: "us", trainingCorpusArtifactIds: ["corpus-1"],
+      validationArtifactId: "validation-1", holdoutArtifactId: "holdout-1",
+      splitManifestDigest: `sha256:${"b".repeat(64)}`, recipe: { epochs: 1, maximumExamples: 10, seed: 7 },
+    } },
+    evaluation: { idempotencyKey: "evaluate-1", body: {
+      evaluationId: "evaluation-1", trainingJobId: "job-1", adapterId: "adapter-1",
+      baseline: { executorId: "baseline", revision: "c".repeat(40) },
+      evaluator: { harnessVersion: "harness-1", graderVersion: "grader-1" },
+      policy: { minimumSuccessRate: 0.9, maximumRegressionRate: 0.02, maximumSecurityRegressions: 0 },
+    } },
+    canary: { idempotencyKey: "canary-1", body: {
+      canaryId: "canary-1", trainingJobId: "job-1", evaluationId: "evaluation-1", adapterId: "adapter-1",
+    } },
+    registration: { idempotencyKey: "register-1", body: {
+      adapterId: "adapter-1", trainingJobId: "job-1",
+      lifecycle: {
+        tenantId: "tenant-1", adapterId: "adapter-1", state: "monitored", revision: 7,
+        baseModel: { modelId: "base-1", license: "commercial", evidenceRef: "evidence://base" },
+        artifactDigest: DIGEST,
+        trainingDataset: { datasetId: "dataset-1", lineageRefs: ["lineage://1"],
+          consent: { status: "granted", evidenceRefs: ["consent://train"] },
+          sufficiency: { representative: true, sampleCount: 1000, minimumSampleCount: 500, evidenceRefs: ["eval://data"] } },
+        heldOutEvaluation: { reportRef: "placeholder", passed: true, successRate: 0.96, regressionRate: 0.01 },
+        promotionThresholds: { minimumSuccessRate: 0.9, maximumRegressionRate: 0.02 },
+        approvedInfrastructure: { approved: true, marker: "gpu-a", evidenceRef: "infra://approved" },
+        servingRevision: "serve-7",
+        monitoringWindow: { startsAt: "2026-08-01T00:00:00.000Z", endsAt: "2026-09-01T00:00:00.000Z" },
+        rollbackTarget: { servingRevision: "serve-6", artifactDigest: `sha256:${"d".repeat(64)}` },
+        approver: { principalId: "human-1", approvedAt: "2026-08-01T00:00:00.000Z", evidenceRef: "approval://1" },
+        canaryEvidence: { passed: true, observedAt: "2026-08-01T00:00:00.000Z", evidenceRefs: ["placeholder"] },
+        evidenceRefs: ["lifecycle://7"], history: [],
+      },
+      consent: { tenantId: "tenant-1", datasetId: "dataset-1", purpose: "adapter_training", revision: 1,
+        status: "granted", grantedAt: "2026-08-01T00:00:00.000Z", expiresAt: "2026-09-01T00:00:00.000Z",
+        evidenceRefs: ["consent://serving"] },
+      descriptor: { provider: "tenant-private", modelId: "adapter-1" },
+    } },
+    eligibility: { body: { task: { tenantId: "tenant-1", taskId: "task-1", capability: "migration", risk: "low" } } },
+    rollback: { idempotencyKey: "rollback-1", reason: "Bounded lifecycle rollback drill" },
+  };
+}
+
+function successfulBodies(): Record<string, unknown>[] {
+  return [
+    { tenantId: "tenant-1", jobId: "job-1", adapterId: "adapter-1", status: "completed", adapterDigest: DIGEST },
+    { tenantId: "tenant-1", evaluationId: "evaluation-1", trainingJobId: "job-1", adapterId: "adapter-1", status: "passed",
+      reportArtifactId: "evaluation-artifact", successRate: 0.96, regressionRate: 0.01, overlapCount: 0 },
+    { tenantId: "tenant-1", canaryId: "canary-1", adapterId: "adapter-1", status: "passed", servingRevision: "serve-7",
+      observedAt: "2026-08-01T00:00:00.000Z", evidenceRefs: ["canary://passed"] },
+    { tenantId: "tenant-1", adapterId: "adapter-1", trainingJobId: "job-1", lifecycle: {
+      state: "monitored", revision: 7, artifactDigest: DIGEST, servingRevision: "serve-7",
+      heldOutEvaluation: { reportRef: "evaluation-artifact", passed: true, successRate: 0.96, regressionRate: 0.01 },
+      canaryEvidence: { passed: true, observedAt: "2026-08-01T00:00:00.000Z", evidenceRefs: ["canary://passed"] },
+    } },
+    { adapterId: "adapter-1", eligible: true },
+    { tenantId: "tenant-1", adapterId: "adapter-1", lifecycle: { state: "rolled_back", revision: 8, artifactDigest: DIGEST } },
+    { adapterId: "adapter-1", eligible: false, reason: "lifecycle_not_servable" },
+  ];
+}
+
+function transport(bodies = successfulBodies()) {
+  let index = 0;
+  return vi.fn(async (_input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => new Response(JSON.stringify(bodies[index++]!), {
+    status: 200, headers: { "content-type": "application/json" },
+  }));
+}
+
+function fixture(value: unknown = proofInput()) {
+  const root = mkdtempSync(join(tmpdir(), "mendpoint-adapter-lifecycle-proof-"));
+  roots.push(root);
+  const inputPath = join(root, "input.json");
+  const outputPath = join(root, "report.json");
+  writeFileSync(inputPath, `${JSON.stringify(value)}\n`);
+  return { root, inputPath, outputPath };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
+});
+
+describe("post-trained adapter lifecycle production proof", () => {
+  it("runs the exact lifecycle and publishes a credential-free bound report", async () => {
+    const item = fixture();
+    const fetch = transport();
+    const report = await persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, { apiKey: "top-secret", fetch });
+    expect(fetch).toHaveBeenCalledTimes(7);
+    expect(fetch.mock.calls.every((call) => (call[1] as RequestInit).headers &&
+      ((call[1] as RequestInit).headers as Record<string, string>).authorization === "Bearer top-secret")).toBe(true);
+    expect(fetch.mock.calls.map((call) => new Headers(call[1]?.headers).get("idempotency-key")))
+      .toEqual(["train-1", "evaluate-1", "canary-1", "register-1", null, "rollback-1", null]);
+    expect(report).toMatchObject({ adapterId: "adapter-1", eligibleBeforeRollback: true,
+      rolledBack: true, eligibleAfterRollback: false, rollbackReason: "lifecycle_not_servable" });
+    const output = readFileSync(item.outputPath, "utf8");
+    expect(output).not.toContain("top-secret");
+    expect(JSON.parse(output).proofDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+  });
+
+  it("replays an exact retained report without repeating provider work", async () => {
+    const item = fixture();
+    await persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, { apiKey: "secret", fetch: transport() });
+    const fetch = transport();
+    const replay = await persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, { apiKey: "secret", fetch });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(replay.rolledBack).toBe(true);
+  });
+
+  it("reuses exact server reconciliation keys after an interrupted run", async () => {
+    const item = fixture();
+    const firstBodies = successfulBodies();
+    let firstIndex = 0;
+    const interrupted = vi.fn(async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      if (firstIndex === 1) throw new Error("connection_lost");
+      return new Response(JSON.stringify(firstBodies[firstIndex++]!), { headers: { "content-type": "application/json" } });
+    });
+    await expect(persistPostTrainedLifecycleProof(item.inputPath, item.outputPath,
+      { apiKey: "secret", fetch: interrupted })).rejects.toThrow("post_trained_request_failed");
+    expect(existsSync(item.outputPath)).toBe(false);
+
+    const resumed = transport();
+    await persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, { apiKey: "secret", fetch: resumed });
+    expect(new Headers(interrupted.mock.calls[0]![1]?.headers).get("idempotency-key")).toBe("train-1");
+    expect(new Headers(resumed.mock.calls[0]![1]?.headers).get("idempotency-key")).toBe("train-1");
+  });
+
+  it("refuses changed input and tampered retained evidence", async () => {
+    const item = fixture();
+    await persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, { apiKey: "secret", fetch: transport() });
+    writeFileSync(item.inputPath, `${JSON.stringify({ ...proofInput(), timeoutMs: 2_000 })}\n`);
+    await expect(persistPostTrainedLifecycleProof(item.inputPath, item.outputPath,
+      { apiKey: "secret", fetch: transport() })).rejects.toThrow("post_trained_output_conflict");
+
+    writeFileSync(item.inputPath, `${JSON.stringify(proofInput())}\n`);
+    const retained = JSON.parse(readFileSync(item.outputPath, "utf8"));
+    retained.adapterId = "substituted";
+    writeFileSync(item.outputPath, JSON.stringify(retained));
+    await expect(persistPostTrainedLifecycleProof(item.inputPath, item.outputPath,
+      { apiKey: "secret", fetch: transport() })).rejects.toThrow("post_trained_output_conflict");
+  });
+
+  it.each([
+    [0, { jobId: "other" }, "post_trained_stage_binding_mismatch", 1],
+    [1, { status: "failed" }, "post_trained_evaluation_not_passed", 2],
+    [2, { status: "failed" }, "post_trained_canary_not_passed", 3],
+    [3, { lifecycle: { state: "monitored", revision: 7, artifactDigest: `sha256:${"f".repeat(64)}` } }, "post_trained_stage_binding_mismatch", 4],
+    [4, { eligible: false }, "post_trained_adapter_not_eligible", 5],
+    [5, { lifecycle: { state: "monitored", revision: 8, artifactDigest: DIGEST } }, "post_trained_rollback_not_applied", 6],
+    [5, { lifecycle: { state: "rolled_back", revision: 7, artifactDigest: DIGEST } }, "post_trained_rollback_revision_invalid", 6],
+    [6, { eligible: true, reason: "allowed" }, "post_trained_rollback_not_enforced", 7],
+  ])("fails closed at stage %i and does not execute later work", async (stage, patch, code, calls) => {
+    const bodies = successfulBodies();
+    bodies[stage] = { ...bodies[stage], ...patch };
+    const fetch = transport(bodies);
+    await expect(executePostTrainedLifecycleProof(proofInput(), "sha256:input", { apiKey: "secret", fetch }))
+      .rejects.toThrow(code as string);
+    expect(fetch).toHaveBeenCalledTimes(calls);
+  });
+
+  it("rejects credential material in the evidence input before network access", async () => {
+    const input = proofInput();
+    const item = fixture({ ...input, training: { ...input.training, body: { ...input.training.body, apiKey: "forbidden" } } });
+    const fetch = transport();
+    await expect(persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, { apiKey: "secret", fetch }))
+      .rejects.toThrow("post_trained_input_contains_credentials");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 1, 2, 3, 5])("rejects cross-tenant stage evidence at response %i", async (stage) => {
+    const bodies = successfulBodies();
+    bodies[stage] = { ...bodies[stage], tenantId: "tenant-other" };
+    const fetch = transport(bodies);
+    await expect(executePostTrainedLifecycleProof(proofInput(), "sha256:input", { apiKey: "secret", fetch }))
+      .rejects.toThrow("post_trained_stage_binding_mismatch");
+    expect(fetch).toHaveBeenCalledTimes(stage + 1);
+  });
+
+  it("rejects a cross-tenant eligibility request before network access", async () => {
+    const input = proofInput();
+    const fetch = transport();
+    await expect(executePostTrainedLifecycleProof({ ...input,
+      eligibility: { body: { task: { ...(input.eligibility.body.task as Record<string, unknown>), tenantId: "tenant-other" } } },
+    }, "sha256:input", { apiKey: "secret", fetch })).rejects.toThrow("post_trained_stage_binding_mismatch");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses external plaintext HTTP and redirects", async () => {
+    await expect(executePostTrainedLifecycleProof({ ...proofInput(), apiBaseUrl: "http://mendpoint.example" },
+      "sha256:input", { apiKey: "secret", fetch: transport() })).rejects.toThrow("post_trained_api_url_invalid");
+    const redirected = vi.fn(async () => new Response("{}", { status: 302, headers: { location: "https://other.example" } }));
+    await expect(executePostTrainedLifecycleProof(proofInput(), "sha256:input", { apiKey: "secret", fetch: redirected }))
+      .rejects.toThrow("post_trained_redirect_refused");
+  });
+
+  it("bounds streamed response bytes and body time", async () => {
+    const oversized = vi.fn(async () => new Response("x", { headers: { "content-length": "1048577" } }));
+    await expect(executePostTrainedLifecycleProof(proofInput(), "sha256:input", { apiKey: "secret", fetch: oversized }))
+      .rejects.toThrow("post_trained_response_too_large");
+
+    vi.useFakeTimers();
+    const hanging = vi.fn(async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    }));
+    const pending = executePostTrainedLifecycleProof({ ...proofInput(), timeoutMs: 10 }, "sha256:input",
+      { apiKey: "secret", fetch: hanging });
+    const rejected = expect(pending).rejects.toThrow("post_trained_request_failed");
+    await vi.advanceTimersByTimeAsync(11);
+    await rejected;
+
+    const stalledBody = vi.fn(async () => new Response(new ReadableStream({ start() {} })));
+    const bodyPending = executePostTrainedLifecycleProof({ ...proofInput(), timeoutMs: 10 }, "sha256:input",
+      { apiKey: "secret", fetch: stalledBody });
+    const bodyRejected = expect(bodyPending).rejects.toThrow("post_trained_request_failed");
+    await vi.advanceTimersByTimeAsync(11);
+    await bodyRejected;
+  });
+
+  it("returns deterministic CLI failures without leaking the API key", async () => {
+    const item = fixture({ ...proofInput(), apiBaseUrl: "http://external.example" });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runPostTrainedLifecycleProofCli([
+      `--input=${item.inputPath}`, `--output=${item.outputPath}`,
+    ], { MENDPOINT_API_KEY: "do-not-print" }, {
+      stdout: (value) => { stdout.push(value); }, stderr: (value) => { stderr.push(value); },
+    });
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr.join("")) .not.toContain("do-not-print");
+    expect(JSON.parse(stderr.join(""))).toEqual({ ok: false, error: "post_trained_api_url_invalid" });
+  });
+});
