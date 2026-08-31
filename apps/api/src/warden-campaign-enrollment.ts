@@ -6,7 +6,6 @@ import {
   createMissionTask,
   createWardenCampaign,
   fettlerCampaignMissionTaskId,
-  getMission,
   getPrincipal,
   getProviderBySlug,
   getScmConnection,
@@ -67,11 +66,6 @@ const ERRORS: readonly PublicErrorRule[] = [
   { internalCode: "warden_org_installation_not_connected", publicCode: "installation_not_connected", status: 409 },
   { internalCode: "warden_enroll_connection_revoked", publicCode: "connection_revoked", status: 409 },
   { internalCode: "warden_principal_tenant_mismatch", publicCode: "forbidden", status: 403 },
-  { internalCode: "mission_not_found", publicCode: "not_found", status: 404 },
-  { internalCode: "mission_scope_conflict", publicCode: "conflict", status: 409 },
-  { internalCode: "mission_revision_conflict", publicCode: "conflict", status: 409 },
-  { internalCode: "mission_snapshot_tenant_mismatch", publicCode: "unprocessable", status: 422 },
-  { internalCode: "mission_repository_tenant_mismatch", publicCode: "unprocessable", status: 422 },
   ...[
     "warden_enroll_content_type_invalid",
     "warden_enroll_payload_invalid",
@@ -333,6 +327,33 @@ function createFettlerEnrollmentMissionTasks(
   }
 }
 
+// Why a start did or did not pin the Mission scope. A `void` return could not
+// tell a by-design skip (multi-repo) apart from a fault (the Mission row that
+// enroll was supposed to create is missing), and BOTH collapsed into the same
+// downstream observable: `repositoryId: null` reads as `no_mission_bound` in
+// apps/worker/src/mission-context.ts, identically for five different causes.
+// FAILURE_MODES §1: the third value has to be sayable, and a caller has to
+// handle it; here the caller writes it into the campaign-start audit row so the
+// cause survives past the lifetime of a log line.
+type MissionScopeSkipReason =
+  // By design. Set-once scope cannot honestly name one of several repositories.
+  | "multi_repo"
+  // By design. Never pin a snapshot that has already expired.
+  | "snapshot_expired"
+  // Fault. Enroll's own Mission wiring never landed for this campaign.
+  | "mission_missing"
+  // Fault. The target names a snapshot row that is not there.
+  | "snapshot_missing"
+  // Fault, and the worst one: the Mission is pinned to a DIFFERENT repository,
+  // so downstream reads a bound scope naming the wrong repo, not an absent one.
+  | "scope_conflict"
+  // Fault. Anything else the store raised (SQLITE_BUSY, a revision race).
+  | "bind_failed";
+
+type MissionScopeBindOutcome =
+  | { readonly bound: true }
+  | { readonly bound: false; readonly reason: MissionScopeSkipReason; readonly detail?: string };
+
 /**
  * Pin repository + snapshot onto a Fettler Mission only at campaign start,
  * after the campaign has become running. Draft enrollment can still add
@@ -350,26 +371,37 @@ function tryBindSingleRepoFettlerMissionScope(
     createdAt: string;
     targets: readonly WardenCampaignTarget[];
   }>,
-): void {
-  if (input.targets.length !== 1) return;
-  const mission = resolveMissionForFettlerCampaign(db, input.tenantId, input.campaignId);
-  if (!mission) return;
-  const target = input.targets[0]!;
-  const snapshot = listRepositorySnapshots(db, input.tenantId, target.repositoryId)
-    .find((row) => row.id === target.snapshotId);
-  if (!snapshot) {
-    console.error(
-      `fettler mission scope skip: snapshot_missing tenant=${input.tenantId} campaign=${input.campaignId} snapshot=${target.snapshotId}`,
-    );
-    return;
-  }
-  if (Date.parse(snapshot.expires_at) <= Date.parse(input.createdAt)) {
-    console.error(
-      `fettler mission scope skip: snapshot_expired tenant=${input.tenantId} campaign=${input.campaignId} snapshot=${target.snapshotId}`,
-    );
-    return;
-  }
+): MissionScopeBindOutcome {
+  const skip = (reason: MissionScopeSkipReason, detail?: string): MissionScopeBindOutcome => {
+    const line = JSON.stringify({
+      event: "fettler_mission_scope_not_bound",
+      reason,
+      tenantId: input.tenantId,
+      campaignId: input.campaignId,
+      ...(detail === undefined ? {} : { detail }),
+    });
+    // Two of the six causes are the system working as designed; the other four
+    // mean something upstream is broken. Logging them at the same level is what
+    // made "enroll never created the Mission" look like routine bookkeeping.
+    if (reason === "multi_repo" || reason === "snapshot_expired") console.warn(line);
+    else console.error(line);
+    return detail === undefined ? { bound: false, reason } : { bound: false, reason, detail };
+  };
+  // The lookups live inside the try as well as the write. This runs after the
+  // campaign has already transitioned to running, so a raw store failure in
+  // resolveMissionForFettlerCampaign or listRepositorySnapshots must not turn a
+  // start that already committed into an error response.
   try {
+    if (input.targets.length !== 1) return skip("multi_repo", `targets=${input.targets.length}`);
+    const mission = resolveMissionForFettlerCampaign(db, input.tenantId, input.campaignId);
+    if (!mission) return skip("mission_missing");
+    const target = input.targets[0]!;
+    const snapshot = listRepositorySnapshots(db, input.tenantId, target.repositoryId)
+      .find((row) => row.id === target.snapshotId);
+    if (!snapshot) return skip("snapshot_missing", `snapshot=${target.snapshotId}`);
+    if (Date.parse(snapshot.expires_at) <= Date.parse(input.createdAt)) {
+      return skip("snapshot_expired", `snapshot=${target.snapshotId}`);
+    }
     bindMissionScope(db, {
       tenantId: input.tenantId,
       missionId: mission.id,
@@ -381,12 +413,10 @@ function tryBindSingleRepoFettlerMissionScope(
       correlationId: input.campaignId,
       createdAt: input.createdAt,
     });
+    return { bound: true };
   } catch (error) {
-    console.error(
-      `fettler mission scope bind failed tenant=${input.tenantId} campaign=${input.campaignId}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    return skip(message === "mission_scope_conflict" ? "scope_conflict" : "bind_failed", message);
   }
 }
 
@@ -565,10 +595,15 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           .update(`${tenantId}\0${campaignId}`)
           .digest("hex")
           .slice(0, 32)}`;
-        // Replay the already-bound scope if start pinned it. createMission
-        // compares repositoryId/snapshotId; passing null after a bind throws
-        // mission_id_conflict and would skip the rest of this best-effort block.
-        const existingMission = getMission(options.db, tenantId, missionId);
+        // No repositoryId/snapshotId here, and no read-back of an existing
+        // Mission to replay them from. Enrollment is the only writer that can
+        // reach this line, and it only runs while the campaign is draft
+        // (autoEnrollWardenCampaignOrg throws warden_campaign_not_draft
+        // otherwise); the scope bind happens strictly after the transition to
+        // running, and no transition ever returns a campaign to draft. So a
+        // Mission whose scope is already bound can never re-enter createMission,
+        // and defending against that here would be guarding an unreachable
+        // state.
         createMission(options.db, {
           id: missionId,
           tenantId,
@@ -576,8 +611,6 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
           triggerKind: "provider_change",
           objective: `Fettler campaign ${campaignId}`.slice(0, 200),
           ownerPrincipalId: trustPrincipalId,
-          repositoryId: existingMission?.repositoryId ?? null,
-          snapshotId: existingMission?.snapshotId ?? null,
           eventId: `${missionId}-created`,
           idempotencyKey: `mission-create-${missionId}`,
           correlationId: campaignId,
@@ -680,6 +713,24 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
       reverifyCampaignWriter(c, options.db, auth, at);
       if (campaign.status === "running") {
         const existing = getWardenRolloutDecision(options.db, auth.tenantId, `rollout-${campaignId}`);
+        // An earlier start whose transition committed but whose bind did not
+        // (SQLITE_BUSY, a missing Mission row, a revision race) would otherwise
+        // leave this campaign's scope null FOREVER: no transition returns a
+        // running campaign to draft (campaignTransitions in
+        // packages/db/src/warden-campaign.ts) and enroll-org rejects a
+        // non-draft campaign with warden_campaign_not_draft, so nothing else
+        // ever reaches a bind again. This replay is the only repair path.
+        // bindMissionScope short-circuits on an identical (repository,
+        // snapshot) without bumping the revision, so replaying an already-bound
+        // scope stays a no-op. The outcome is logged rather than audited: this
+        // branch records no start audit row of its own.
+        tryBindSingleRepoFettlerMissionScope(options.db, {
+          tenantId: auth.tenantId,
+          campaignId,
+          actorPrincipalId: auth.trustPrincipalId,
+          createdAt: at,
+          targets: listWardenCampaignTargets(options.db, auth.tenantId, campaignId),
+        });
         return c.json({
           campaignId,
           status: "running",
@@ -725,7 +776,7 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
       });
       // Bind after the campaign is running so a refused start (cancelled /
       // not-draft / plan failure) cannot permanently pin set-once scope.
-      tryBindSingleRepoFettlerMissionScope(options.db, {
+      const missionScope = tryBindSingleRepoFettlerMissionScope(options.db, {
         tenantId: auth.tenantId,
         campaignId,
         actorPrincipalId: auth.trustPrincipalId,
@@ -760,7 +811,10 @@ export function createWardenCampaignEnrollmentRoutes(options: WardenCampaignEnro
         action: "warden.campaign.started",
         resourceType: "warden_campaign",
         resourceId: campaignId,
-        metadata: { jobIds: enqueued.jobIds, rolloutDecisionId: decision.id },
+        // missionScope carries WHY the scope is or is not pinned. Without it the
+        // audit trail agreed with the worker that every one of the five skip
+        // causes was simply "no mission bound" (FAILURE_MODES §1).
+        metadata: { jobIds: enqueued.jobIds, rolloutDecisionId: decision.id, missionScope },
       });
       return c.json({ campaignId, status: "running", jobIds: enqueued.jobIds, rolloutDecisionId: decision.id }, 200);
     } catch (error) {

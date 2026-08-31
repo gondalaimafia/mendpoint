@@ -11,6 +11,7 @@ import {
   createDb,
   createWardenCampaign,
   getWardenCampaign,
+  getWardenRolloutDecision,
   insertConnectedRepository,
   insertConsumer,
   insertConsumerRepo,
@@ -512,6 +513,160 @@ describe("Warden campaign org enrollment", () => {
     expect(events).toHaveLength(0);
   });
 
+  // The regression #463 was rejected for: a start that PLANS successfully and
+  // then fails to transition. Cancelling up front is not that case - it makes
+  // planWardenRollout throw warden_campaign_not_draft before either candidate
+  // bind position is reached, so it cannot tell "bind before the transition"
+  // apart from "bind after it". The failure has to land between the two.
+  //
+  // Production reaches this through a concurrent writer: another request
+  // cancels the campaign in the window after planWardenRollout commits its
+  // rollout decision and before transitionWardenCampaign re-reads the row, so
+  // the transition sees a bumped revision and raises
+  // warden_revision_conflict. The route is synchronous within one request, so
+  // the only honest way to open that window in a test is to make the store
+  // itself perform the concurrent write: an AFTER INSERT trigger on
+  // fettler_rollout_decisions fires inside the plan's own transaction and
+  // commits with it, which is exactly when the real racing cancel would land.
+  function cancelConcurrentlyAfterPlan(db: AppDb): void {
+    db.raw.exec(`
+      CREATE TRIGGER test_cancel_between_plan_and_transition
+      AFTER INSERT ON fettler_rollout_decisions
+      BEGIN
+        UPDATE fettler_campaigns
+        SET status = 'cancelled', revision = revision + 1
+        WHERE id = NEW.campaign_id AND tenant_id = NEW.tenant_id;
+      END;
+    `);
+  }
+
+  it("does not bind Mission scope when the transition fails after a successful plan", async () => {
+    const { app, db } = fixture();
+    expect((await enroll(app)).status).toBe(200);
+    cancelConcurrentlyAfterPlan(db);
+
+    const res = await startCampaign(app);
+    expect(res.status).toBe(409);
+    // The plan really did succeed - this is not the not-draft refusal again.
+    expect(getWardenRolloutDecision(db, "tenant-a", "rollout-campaign-a")).toBeDefined();
+    expect(getWardenCampaign(db, "tenant-a", "campaign-a")?.status).toBe("cancelled");
+
+    // Set-once scope pinned here could never be released: the campaign is
+    // terminal and nothing can rebind a Mission to the repository it does run.
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      repositoryId: null,
+      snapshotId: null,
+    });
+    const events = db.raw.prepare(
+      `SELECT event_type FROM domain_events WHERE tenant_id = ? AND event_type = 'mission.scope_bound'`,
+    ).all("tenant-a") as Array<{ event_type: string }>;
+    expect(events).toHaveLength(0);
+  });
+
+  it("binds on start replay a scope an earlier start attempt left unbound", async () => {
+    const { app, db } = fixture();
+    expect((await enroll(app)).status).toBe(200);
+    // A first start whose transition committed and whose bind did not: the
+    // campaign is running, the Mission scope is still null, and no route can
+    // return the campaign to draft to try again.
+    const campaign = getWardenCampaign(db, "tenant-a", "campaign-a")!;
+    transitionWardenCampaign(db, {
+      tenantId: "tenant-a",
+      campaignId: "campaign-a",
+      expectedRevision: campaign.revision,
+      to: "running",
+      actorPrincipalId: "trust-tenant-a-writer-a",
+      eventId: "ev-running-partial",
+      idempotencyKey: "running-partial",
+      correlationId: "corr",
+      createdAt: NOW,
+    });
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      repositoryId: null,
+      snapshotId: null,
+    });
+    // Enrollment cannot repair it either - it refuses a non-draft campaign.
+    expect((await enroll(app)).status).toBe(409);
+
+    expect((await startCampaign(app)).status).toBe(200);
+    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
+      repositoryId: "repository-a",
+      snapshotId: "snapshot-repository-a",
+    });
+  });
+
+  // repositoryId: null on a Mission is the SAME downstream observable for five
+  // different causes - legitimate multi-repo, a Mission enroll never created, a
+  // missing snapshot, an expired one, and a failed bind - and
+  // apps/worker/src/mission-context.ts reports all of them as
+  // "no_mission_bound". The campaign-start audit row is where they have to stay
+  // told apart, because a log line does not survive the incident.
+  function startedMissionScope(db: AppDb): unknown {
+    const started = listAudit(db, "tenant-a")
+      .find((row) => row.action === "warden.campaign.started");
+    expect(started).toBeDefined();
+    return (JSON.parse(started!.metadata_json as string) as { missionScope: unknown }).missionScope;
+  }
+
+  it("audits a bound scope as bound", async () => {
+    const { app, db } = fixture();
+    expect((await enroll(app)).status).toBe(200);
+    expect((await startCampaign(app)).status).toBe(200);
+    expect(startedMissionScope(db)).toEqual({ bound: true });
+  });
+
+  it("audits multi-repo apart from a missing Mission", async () => {
+    const multi = fixture();
+    insertMonitoredApi(multi.db, {
+      id: "monitor-repository-b",
+      consumerId: "consumer-repository-b",
+      providerId: "provider-stripe",
+      detectionSource: "detected",
+    });
+    expect((await enroll(multi.app)).status).toBe(200);
+    expect((await startCampaign(multi.app)).status).toBe(200);
+    expect(startedMissionScope(multi.db)).toMatchObject({ bound: false, reason: "multi_repo" });
+
+    // The one cause that means enroll's own Mission wiring failed. It used to be
+    // a bare `if (!mission) return;` with no log at all, so the case that says
+    // "this campaign is broken" was quieter than the two beside it that say
+    // "this is working as designed". Production reaches it when enrollment's
+    // best-effort block throws between createMission and
+    // linkFettlerCampaignToMission: the Mission row exists but carries no
+    // campaign link, so resolveMissionForFettlerCampaign finds nothing.
+    const missing = fixture();
+    expect((await enroll(missing.app)).status).toBe(200);
+    const mission = resolveMissionForFettlerCampaign(missing.db, "tenant-a", "campaign-a")!;
+    missing.db.raw.prepare(`UPDATE mission SET fettler_campaign_id = NULL WHERE id = ?`).run(mission.id);
+    expect(resolveMissionForFettlerCampaign(missing.db, "tenant-a", "campaign-a")).toBeUndefined();
+
+    expect((await startCampaign(missing.app)).status).toBe(200);
+    expect(startedMissionScope(missing.db)).toMatchObject({ bound: false, reason: "mission_missing" });
+  });
+
+  it("audits a scope pinned to another repository apart from a skipped bind", async () => {
+    const { app, db } = fixture();
+    expect((await enroll(app)).status).toBe(200);
+    const mission = resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")!;
+    // The Mission is pinned to a repository this campaign does not target. This
+    // is not a skip: downstream now reads a BOUND scope naming the wrong repo.
+    // The catch used to fold it in with "the snapshot expired".
+    bindMissionScope(db, {
+      tenantId: "tenant-a",
+      missionId: mission.id,
+      repositoryId: "repository-b",
+      snapshotId: "snapshot-repository-b",
+      actorPrincipalId: "trust-tenant-a-writer-a",
+      eventId: `${mission.id}-scope-bound-elsewhere`,
+      idempotencyKey: `mission-scope-elsewhere-${mission.id}`,
+      correlationId: "campaign-a",
+      createdAt: NOW,
+    });
+
+    expect((await startCampaign(app)).status).toBe(200);
+    expect(startedMissionScope(db)).toMatchObject({ bound: false, reason: "scope_conflict" });
+  });
+
   it("skips binding an expired snapshot without failing start", async () => {
     const clock = { at: NOW };
     const { app, db } = fixture({ now: () => clock.at });
@@ -524,33 +679,7 @@ describe("Warden campaign org enrollment", () => {
       repositoryId: null,
       snapshotId: null,
     });
-  });
-
-  it("replays enroll wiring after scope is already bound", async () => {
-    const { app, db } = fixture();
-    expect((await enroll(app)).status).toBe(200);
-    const mission = resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")!;
-    bindMissionScope(db, {
-      tenantId: "tenant-a",
-      missionId: mission.id,
-      repositoryId: "repository-a",
-      snapshotId: "snapshot-repository-a",
-      actorPrincipalId: "trust-tenant-a-writer-a",
-      eventId: `${mission.id}-scope-bound-test`,
-      idempotencyKey: `mission-scope-test-${mission.id}`,
-      correlationId: "campaign-a",
-      createdAt: NOW,
-    });
-    db.raw.prepare(`DELETE FROM mission_task WHERE mission_id = ?`).run(mission.id);
-    expect(listMissionTasks(db, "tenant-a", mission.id)).toHaveLength(0);
-
-    expect((await enroll(app)).status).toBe(200);
-    expect(resolveMissionForFettlerCampaign(db, "tenant-a", "campaign-a")).toMatchObject({
-      id: mission.id,
-      repositoryId: "repository-a",
-      snapshotId: "snapshot-repository-a",
-    });
-    expect(listMissionTasks(db, "tenant-a", mission.id)).toHaveLength(1);
+    expect(startedMissionScope(db)).toMatchObject({ bound: false, reason: "snapshot_expired" });
   });
 
   it("fails closed on unknown provider, missing connection, and unknown fields", async () => {
