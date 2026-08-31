@@ -17,6 +17,22 @@ const PROOF_SIGNING_KEY = Buffer.alloc(32, 7).toString("base64");
 const PROOF_SIGNING_KEY_ID = "adapter-proof-test-key";
 const RETAINED_PROOF_KEY = Buffer.alloc(32, 8).toString("base64");
 const RETAINED_PROOF_KEY_ID = "adapter-proof-retained-key";
+// The exact ordered production request surface of the lifecycle proof. Pinned as
+// literals so renaming or reordering an endpoint fails a named test instead of
+// shipping a proof that cannot run against the API it claims to prove.
+const PROOF_REQUESTS = [
+  "POST https://mendpoint.example/advanced-ai/post-trained/training-jobs",
+  "POST https://mendpoint.example/advanced-ai/post-trained/evaluations",
+  "POST https://mendpoint.example/advanced-ai/post-trained/canaries",
+  "POST https://mendpoint.example/advanced-ai/post-trained/adapters",
+  "POST https://mendpoint.example/advanced-ai/post-trained/adapters/adapter-1/proof-checkpoints",
+  "POST https://mendpoint.example/advanced-ai/post-trained/adapters/adapter-1/rollback",
+  "POST https://mendpoint.example/advanced-ai/post-trained/adapters/adapter-1/eligibility",
+] as const;
+// Independent pin of the canonical input digest of proofInput(). The checkpoint
+// fixture below returns this literal rather than calling the production digest,
+// so expectBinding(checkpoint.inputDigest, inputDigest) compares two sources.
+const PROOF_INPUT_DIGEST = "sha256:97f2c8cf1b1f35f900117edfc078cda6aff8672a10c47f8e6b031f2817df60ad";
 const roots: string[] = [];
 
 function proofDependencies(
@@ -127,7 +143,7 @@ function successfulBodies(): Record<string, unknown>[] {
       heldOutEvaluation: { reportRef: "evaluation-artifact", passed: true, successRate: 0.96, regressionRate: 0.01 },
       canaryEvidence: { passed: true, observedAt: "2026-08-01T00:00:00.000Z", evidenceRefs: ["canary://passed"] },
     } },
-    { adapterId: "adapter-1", eligible: true, inputDigest: inputDigest(input), eligibilityRequestDigest: sha(input.eligibility.body), rollbackRequestDigest: sha(rollbackRequest), eligibilityObservationDigest: `sha256:${"e".repeat(64)}`, eventId: "event-proof", eventHash: "f".repeat(64), eventSequence: 5, observedAt: "2026-08-01T00:00:00.000Z" },
+    { adapterId: "adapter-1", eligible: true, inputDigest: PROOF_INPUT_DIGEST, eligibilityRequestDigest: sha(input.eligibility.body), rollbackRequestDigest: sha(rollbackRequest), eligibilityObservationDigest: `sha256:${"e".repeat(64)}`, eventId: "event-proof", eventHash: "f".repeat(64), eventSequence: 5, observedAt: "2026-08-01T00:00:00.000Z" },
     { tenantId: "tenant-1", adapterId: "adapter-1", lifecycle: { state: "rolled_back", revision: 8, artifactDigest: DIGEST } },
     { adapterId: "adapter-1", eligible: false, reason: "lifecycle_not_servable" },
   ];
@@ -140,6 +156,10 @@ function transport(bodies = successfulBodies()) {
   return vi.fn(async (_input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => new Response(JSON.stringify(bodies[index++]!), {
     status: 200, headers: { "content-type": "application/json" },
   }));
+}
+
+function requestSignatures(fetch: ReturnType<typeof transport>): readonly string[] {
+  return fetch.mock.calls.map((call) => `${(call[1] as RequestInit | undefined)?.method ?? "GET"} ${String(call[0])}`);
 }
 
 function fixture(value: unknown = proofInput()) {
@@ -162,6 +182,7 @@ describe("post-trained adapter lifecycle production proof", () => {
     const fetch = transport();
     const report = await persistPostTrainedLifecycleProof(item.inputPath, item.outputPath, proofDependencies(fetch, "top-secret"));
     expect(fetch).toHaveBeenCalledTimes(7);
+    expect(requestSignatures(fetch)).toEqual([...PROOF_REQUESTS]);
     expect(fetch.mock.calls.every((call) => (call[1] as RequestInit).headers &&
       ((call[1] as RequestInit).headers as Record<string, string>).authorization === "Bearer top-secret")).toBe(true);
     expect(fetch.mock.calls.map((call) => new Headers(call[1]?.headers).get("idempotency-key")))
@@ -335,6 +356,7 @@ describe("post-trained adapter lifecycle production proof", () => {
     await expect(executePostTrainedLifecycleProof(proofInput(), inputDigest(), proofDependencies(fetch)))
       .rejects.toThrow(code as string);
     expect(fetch).toHaveBeenCalledTimes(calls);
+    expect(requestSignatures(fetch)).toEqual(PROOF_REQUESTS.slice(0, calls as number));
   });
 
   it("rejects credential material in the evidence input before network access", async () => {
@@ -444,9 +466,10 @@ describe("post-trained adapter lifecycle production proof", () => {
     await expect(executePostTrainedLifecycleProof(proofInput(), inputDigest(), proofDependencies(fetch)))
       .rejects.toThrow("post_trained_stage_binding_mismatch");
     expect(fetch).toHaveBeenCalledTimes(stage + 1);
+    expect(requestSignatures(fetch)).toEqual(PROOF_REQUESTS.slice(0, stage + 1));
   });
 
-  it("rejects a cross-tenant eligibility request before network access", async () => {
+  it("rejects a cross-tenant eligibility task in the client proof input before network access", async () => {
     const input = proofInput();
     const fetch = transport();
     await expect(executePostTrainedLifecycleProof({ ...input,
@@ -485,6 +508,11 @@ describe("post-trained adapter lifecycle production proof", () => {
     const bodyRejected = expect(bodyPending).rejects.toThrow("post_trained_request_failed");
     await vi.advanceTimersByTimeAsync(11);
     await bodyRejected;
+  });
+
+  it("pins the canonical input digest the checkpoint fixture binds", () => {
+    expect(postTrainedLifecycleProofInputDigest(proofInput())).toBe(PROOF_INPUT_DIGEST);
+    expect(`sha256:${createHash("sha256").update(canonicalJson(proofInput())).digest("hex")}`).toBe(PROOF_INPUT_DIGEST);
   });
 
   it("returns deterministic CLI failures without leaking the API key", async () => {

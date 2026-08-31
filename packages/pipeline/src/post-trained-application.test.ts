@@ -96,6 +96,26 @@ describe("post trained application", () => {
     expect(() => recordPostTrainedLifecycleProofCheckpoint(db, { ...checkpointInput, actorPrincipalId: "evaluator" }, authority)).toThrow("post_trained_proof_checkpoint_replay_mismatch");
   });
 
+  it("refuses a proof checkpoint whose task belongs to another tenant", () => {
+    const db = setup();
+    const authority = { enabled: true as const, authorizeHumanApprover: () => true, verifyEvidence: () => true, readConsent: (_tenant: string, _dataset: string, stored: PostTrainedConsentSnapshot) => stored };
+    registerPostTrainedAdapter(db, { tenantId: "tenant-1", adapterId: "adapter-1", trainingJobId: "training-job-1", actorPrincipalId: "actor", idempotencyKey: "register-cross-task", registeredAt: "2026-08-12T12:00:00.000Z", lifecycle: lifecycle(), consent: consent(), descriptor: descriptor() }, authority);
+    expect(() => recordPostTrainedLifecycleProofCheckpoint(db, { tenantId: "tenant-1", adapterId: "adapter-1", actorPrincipalId: "actor", idempotencyKey: "cross-tenant-task", inputDigest: `sha256:${"c".repeat(64)}`, task: { ...task(), tenantId: "tenant-2" }, rollback: { expectedArtifactDigest: DIGEST, reason: "Canary regression", idempotencyKey: "rollback-cross-task" }, observedAt: "2026-08-12T12:00:30.000Z" }, authority)).toThrow("post_trained_proof_checkpoint_invalid");
+    expect(db.raw.prepare("SELECT COUNT(*) c FROM domain_events WHERE aggregate_type = 'post_trained_lifecycle_proof'").get()).toEqual({ c: 0 });
+  });
+
+  it("does not replay another tenant's proof checkpoint for the same adapter and key", () => {
+    const db = setup();
+    insertPrincipal(db, { id: "actor-2", tenantId: "tenant-2", kind: "human", subject: "operator-2", displayName: "Operator Two", createdAt: "2026-08-12T12:00:00.000Z" });
+    const authority = { enabled: true as const, authorizeHumanApprover: () => true, verifyEvidence: () => true, readConsent: (_tenant: string, _dataset: string, stored: PostTrainedConsentSnapshot) => stored };
+    registerPostTrainedAdapter(db, { tenantId: "tenant-1", adapterId: "adapter-1", trainingJobId: "training-job-1", actorPrincipalId: "actor", idempotencyKey: "register-cross-replay", registeredAt: "2026-08-12T12:00:00.000Z", lifecycle: lifecycle(), consent: consent(), descriptor: descriptor() }, authority);
+    const checkpointInput = { tenantId: "tenant-1", adapterId: "adapter-1", actorPrincipalId: "actor", idempotencyKey: "shared-checkpoint", inputDigest: `sha256:${"c".repeat(64)}`, task: task(), rollback: { expectedArtifactDigest: DIGEST, reason: "Canary regression", idempotencyKey: "rollback-shared" }, observedAt: "2026-08-12T12:00:30.000Z" };
+    expect(recordPostTrainedLifecycleProofCheckpoint(db, checkpointInput, authority).eligible).toBe(true);
+    expect(() => recordPostTrainedLifecycleProofCheckpoint(db, { ...checkpointInput, tenantId: "tenant-2", actorPrincipalId: "actor-2", task: { ...task(), tenantId: "tenant-2" } }, authority)).toThrow("post_trained_adapter_not_found");
+    expect(db.raw.prepare("SELECT COUNT(*) c FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'post_trained_lifecycle_proof'").get("tenant-2")).toEqual({ c: 0 });
+    expect(db.raw.prepare("SELECT COUNT(*) c FROM domain_events WHERE tenant_id = ? AND aggregate_type = 'post_trained_lifecycle_proof'").get("tenant-1")).toEqual({ c: 1 });
+  });
+
   it("cannot invent pre-rollback eligibility after the adapter is already rolled back", () => {
     const db = setup();
     const authority = { enabled: true as const, authorizeHumanApprover: () => true, verifyEvidence: () => true, readConsent: (_tenant: string, _dataset: string, stored: PostTrainedConsentSnapshot) => stored };
