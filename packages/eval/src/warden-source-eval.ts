@@ -904,6 +904,10 @@ async function deliverScriptedCandidate(input: Readonly<{
       owner: DELIVERY_OWNER,
       repo: "payment-consumer",
       baseBranch: "main",
+      // The scenario owns a deterministic simulated clock. Bind expiry to that
+      // clock as production does, rather than to the wall clock running the
+      // test, so the fixture cannot age into an invalid authorization.
+      snapshotExpiresAt: new Date(Date.parse(input.reviewedAt) + 60_000).toISOString(),
     }),
   });
   const intent = calls[0];
@@ -965,8 +969,10 @@ async function deliverScriptedCandidate(input: Readonly<{
     draftOnly: result.draft === true && intent.body.includes("This pull request is a draft") &&
       !/auto(?:matic)? merge:\s*enabled|auto(?:matic)? deployment:\s*enabled/i.test(intent.body),
     exactFiles: JSON.stringify(intent.files) === JSON.stringify(expectedFiles),
-    evidenceLinked: intent.body.includes("Reviewed change evidence") &&
-      intent.body.includes("Objective verification") && intent.body.includes(rationale),
+    evidenceLinked: intent.body.includes("Proposed migration") &&
+      intent.body.includes("Objective verification") &&
+      intent.body.includes(TARGET_PATH) &&
+      intent.body.includes(rationale),
     identicalReplay: JSON.stringify(replay) === JSON.stringify(result),
     baseDriftBlocked,
     divergenceBlocked,
