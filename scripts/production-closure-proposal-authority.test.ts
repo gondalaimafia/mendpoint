@@ -14,6 +14,10 @@ import {
   writeProposalAuthorityFailureObservation,
   type ProposalAuthorityClient,
 } from "./production-closure-proposal-authority.js";
+import type {
+  PublicClaimLiveEvidence,
+  PublicClaimRegistry,
+} from "../packages/contract/src/public-claims.js";
 
 const root = resolve(import.meta.dirname, "..");
 const HEAD = "a".repeat(40);
@@ -36,6 +40,43 @@ function policy() {
   return JSON.parse(
     readFileSync(resolve(root, "config", "production-closure-authority.json"), "utf8"),
   );
+}
+
+/**
+ * The claims registry these tests judge, decoupled from the live one.
+ *
+ * `verifyProductionClosureProposal` validates the proposed claims registry at
+ * the instant it is handed (`asOf: new Date(observedAt)`), and these tests hand
+ * it the frozen OBSERVED_AT. `docs/PUBLIC_CLAIMS.json` is a live document whose
+ * `type: "live"` evidence is re-probed and re-stamped on a real wall clock, so
+ * judging it against a literal from months ago reports LIVE_EVIDENCE_FUTURE on
+ * every refresh that lands after that literal — a failure about the calendar,
+ * not about the authority. This fixture is production-shaped (same schema, same
+ * claims, same auditedRevision, real surface paths and requirement IDs) with
+ * its live evidence pinned around OBSERVED_AT: observed before it, fresh past
+ * it. The frozen clock is therefore still exercised — see the future and stale
+ * cases below — while a genuine re-probe of production cannot break this suite.
+ */
+function claimsFixture(): PublicClaimRegistry {
+  return JSON.parse(
+    readFileSync(
+      resolve(root, "scripts", "fixtures", "production-closure-public-claims-v1.json"),
+      "utf8",
+    ),
+  ) as PublicClaimRegistry;
+}
+
+/**
+ * Throws rather than returning undefined so a fixture that lost its live
+ * evidence fails the frozen-clock tests instead of passing them vacuously.
+ */
+function liveEvidence(registry: PublicClaimRegistry, evidenceId: string): PublicClaimLiveEvidence {
+  for (const claim of registry.claims ?? []) {
+    for (const evidence of claim.evidence ?? []) {
+      if (evidence.id === evidenceId && evidence.type === "live") return evidence;
+    }
+  }
+  throw new Error(`claims fixture is missing live evidence ${evidenceId}`);
 }
 
 function baseAuthority() {
@@ -160,6 +201,7 @@ class FixtureClient implements ProposalAuthorityClient {
       matrix.releaseTrain.observationDigest = releaseTrainIntegrityDigest(matrix);
       this.replace("docs/PRODUCTION_CLOSURE_MATRIX.json", matrix);
     }
+    this.replace("docs/PUBLIC_CLAIMS.json", claimsFixture());
     for (const [path, blobSha] of this.pathToSha) this.basePathToSha.set(path, blobSha);
   }
 
@@ -262,6 +304,54 @@ describe("production closure proposal authority", () => {
         expect.objectContaining({ path: "docs/PUBLIC_CLAIMS.json" }),
       ]),
     );
+  });
+
+  it("rejects a live claim observation stamped after the proposal instant", async () => {
+    const client = new FixtureClient();
+    const claims = claimsFixture();
+    const evidence = liveEvidence(claims, "CLM-001-EV01");
+    evidence.observedAt = "2026-08-25T12:00:00.001Z";
+    evidence.freshUntil = "2026-09-01T12:00:00.001Z";
+    client.replace("docs/PUBLIC_CLAIMS.json", claims);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(
+      result.issues
+        .filter((issue) => issue.code === "LIVE_EVIDENCE_FUTURE")
+        .map((issue) => issue.subject),
+      JSON.stringify(result.issues, null, 2),
+    ).toEqual(["CLM-001-EV01"]);
+  });
+
+  it("rejects a live claim whose freshness window closed before the proposal instant", async () => {
+    const client = new FixtureClient();
+    const claims = claimsFixture();
+    liveEvidence(claims, "CLM-013-EV02").freshUntil = "2026-08-25T11:59:59.999Z";
+    client.replace("docs/PUBLIC_CLAIMS.json", claims);
+
+    const result = await verifyProductionClosureProposal(
+      policy(),
+      "gondalaimafia/mendpoint",
+      HEAD,
+      client,
+      OBSERVED_AT,
+      baseAuthority(),
+    );
+
+    expect(
+      result.issues
+        .filter((issue) => issue.code === "LIVE_EVIDENCE_STALE")
+        .map((issue) => issue.subject),
+      JSON.stringify(result.issues, null, 2),
+    ).toEqual(["CLM-013-EV02"]);
   });
 
   it("does not report an open pull request head the local object database cannot resolve, but still flags an unreachable merge revision", async () => {
