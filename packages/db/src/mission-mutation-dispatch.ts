@@ -154,9 +154,23 @@ export function beginMissionMutationRemoteCall(db: AppDb, input: Readonly<{
   const observedAt = timestamp(input.observedAt);
   const owns = !db.raw.isTransaction;
   if (owns) db.raw.exec("BEGIN IMMEDIATE");
+  // Only a control-plane write that invalidated this authority may revoke the
+  // armed row. Every other failure here happens BEFORE the remote call, with
+  // nothing at risk — above all an ordinary lease handover, which must roll back
+  // and leave the row re-armable so the successor's authorize() can re-arm it.
+  // Revoking there strands the delivery permanently: the successor gets
+  // mission_mutation_dispatch_revoked, which matches no retryable pattern in the
+  // worker's classifier and dead-letters.
+  // See docs/adr/2026-08-26-durable-mission-remote-mutation-dispatch.md.
+  let controlPlaneWins = false;
   try {
-    assertMissionMutationAuthority(db, input.tenantId, authority,
-      { allowClaimedTask: true, requireNoBlocking: true });
+    try {
+      assertMissionMutationAuthority(db, input.tenantId, authority,
+        { allowClaimedTask: true, requireNoBlocking: true });
+    } catch (error) {
+      controlPlaneWins = true;
+      throw error;
+    }
     assertLease(db, { ...input, observedAt });
     const allowed = input.permitUncertainReplay ? "('authorized','uncertain')" : "('authorized')";
     const changed = db.raw.prepare(`UPDATE mission_mutation_dispatches
@@ -170,11 +184,15 @@ export function beginMissionMutationRemoteCall(db: AppDb, input: Readonly<{
     if (owns) db.raw.exec("COMMIT");
   } catch (error) {
     if (owns && db.raw.isTransaction) {
-      db.raw.prepare(`UPDATE mission_mutation_dispatches SET state = 'revoked', revoked_at = ?, updated_at = ?
-        WHERE tenant_id = ? AND job_id = ? AND state = 'authorized'`).run(
-        observedAt, observedAt, input.tenantId, input.jobId,
-      );
-      db.raw.exec("COMMIT");
+      if (controlPlaneWins) {
+        db.raw.prepare(`UPDATE mission_mutation_dispatches SET state = 'revoked', revoked_at = ?, updated_at = ?
+          WHERE tenant_id = ? AND job_id = ? AND state = 'authorized'`).run(
+          observedAt, observedAt, input.tenantId, input.jobId,
+        );
+        db.raw.exec("COMMIT");
+      } else {
+        db.raw.exec("ROLLBACK");
+      }
     }
     throw error;
   }

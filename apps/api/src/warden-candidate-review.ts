@@ -12,6 +12,7 @@ import {
   getAgentRun,
   getJob,
   getMission,
+  resolveBoundMissionForJobPayload,
   getMissionTask,
   getPrincipal,
   getTenantMembership,
@@ -405,9 +406,18 @@ function candidateReviewAuthority(
   if (missionValue !== undefined && (typeof missionValue !== "string" || !missionValue.trim())) {
     throw new Error("warden_candidate_source_job_invalid");
   }
-  const missionId = typeof missionValue === "string" ? missionValue : null;
-  const mission = missionId ? getMission(db, input.tenantId, missionId) : undefined;
-  if (missionId && !mission) throw new Error("warden_candidate_snapshot_binding_mismatch");
+  // Canonical resolver, not a raw `payload.missionId` read. A campaign-bound
+  // source job IS Mission bound; calling it unbound here lets approve skip the
+  // Mission handoff and enqueue a delivery carrying no authority at all.
+  let mission;
+  try {
+    mission = sourceJob
+      ? resolveBoundMissionForJobPayload(db, input.tenantId, sourceJob.payload)
+      : undefined;
+  } catch {
+    throw new Error("warden_candidate_snapshot_binding_mismatch");
+  }
+  const missionId = mission?.id ?? null;
   if (mission && mission.product !== "fettler") throw new Error("warden_candidate_mission_product_invalid");
   if (mission && ["accepted", "rejected", "partial", "failed", "cancelled"].includes(mission.state)) {
     throw new Error("warden_candidate_review_conflict");

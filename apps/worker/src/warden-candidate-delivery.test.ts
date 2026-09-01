@@ -229,7 +229,7 @@ describe("Warden exact candidate draft delivery", () => {
       job: getJob(value.db, value.job.id, "tenant-a")!,
       github: { deliverExactDraft } as unknown as GitHubDelivery,
       artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
       now: () => NOW })).resolves.toMatchObject({ status: "delivery_failed" });
     expect(getJob(value.db, value.job.id, "tenant-a")).toMatchObject({
       status: "dead_letter",
@@ -259,7 +259,7 @@ describe("Warden exact candidate draft delivery", () => {
         }),
       },
       wardenCandidateGithub: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
-      wardenCandidateRepositoryResolver: () => ({ owner: "acme", repo: "sdk", baseBranch: "main",
+      wardenCandidateRepositoryResolver: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT,
         remoteRepositoryId: 101, installationId: 202 }),
     });
 
@@ -299,7 +299,7 @@ describe("Warden exact candidate draft delivery", () => {
       jobTypes: ["warden.candidate.deliver"], runWardenMaintenance: false,
       wardenEnv: { MENDPOINT_DATA_DIR: value.dataRoot },
       wardenCandidateGithub: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
-      wardenCandidateRepositoryResolver: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      wardenCandidateRepositoryResolver: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
     } as const;
 
     const first = await processJobsOnce(value.db, { ...options, workerId: "worker-delivery-one" });
@@ -512,7 +512,7 @@ describe("Warden exact candidate draft delivery", () => {
     const result = await runWardenCandidateDelivery({ db: value.db, job: value.job,
       github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
       artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }) });
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }) });
     expect(result.status).toBe("delivery_failed");
     expect(deliver).not.toHaveBeenCalled();
   });
@@ -528,7 +528,7 @@ describe("Warden exact candidate draft delivery", () => {
           reason: "policy_exception", impact: "A current policy blocker forbids remote mutation.",
           resolutionPath: "Resolve the policy exception before delivery.", blocking: true,
           ownerPrincipalId: "principal-owner", correlationId: "corr", createdAt: NOW });
-        return { owner: "acme", repo: "sdk", baseBranch: "main" };
+        return { owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT };
       } });
     expect(result.status).toBe("delivery_failed");
     expect(deliver).not.toHaveBeenCalled();
@@ -540,7 +540,7 @@ describe("Warden exact candidate draft delivery", () => {
     const result = await runWardenCandidateDelivery({ db: value.db, job: value.job,
       github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
       artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
       beforeRemoteDispatch: () => {
         const mission = getMission(value.db, "tenant-a", "mission-1")!;
         transitionMission(value.db, { tenantId: "tenant-a", missionId: mission.id,
@@ -560,11 +560,13 @@ describe("Warden exact candidate draft delivery", () => {
     await expect(runWardenCandidateDelivery({ db: value.db, job: value.job,
       github: { deliverExactDraft: deliver } as unknown as GitHubDelivery,
       artifactEnv: { MENDPOINT_DATA_DIR: value.dataRoot }, now: () => "2026-08-06T12:00:01.000Z",
-      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      resolveRepository: () => ({ owner: "acme", repo: "sdk", baseBranch: "main", snapshotExpiresAt: SNAPSHOT_EXPIRES_AT }),
       beforeRemoteDispatch: () => value.db.raw.prepare(`UPDATE jobs SET lease_owner = 'worker-b',
         lease_generation = lease_generation + 1 WHERE id = ? AND tenant_id = ?`).run(value.job.id, "tenant-a") }))
       .rejects.toThrow("warden_candidate_delivery_lease_lost");
     expect(deliver).not.toHaveBeenCalled();
+  });
+
   it("fails closed before GitHub when the bound snapshot expires before delivery", async () => {
     const { db, dataRoot, job } = fixture(true, false, true);
     const deliver = vi.fn();

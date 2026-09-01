@@ -1196,7 +1196,8 @@ describe("Warden candidate human review", () => {
       jobTypes: ["warden.candidate.deliver"], runWardenMaintenance: false,
       wardenEnv: { MENDPOINT_DATA_DIR: sealed.dataRoot },
       wardenCandidateGithub: { deliverExactDraft } as unknown as GitHubDelivery,
-      wardenCandidateRepositoryResolver: () => ({ owner: "acme", repo: "sdk", baseBranch: "main" }),
+      wardenCandidateRepositoryResolver: () => ({ owner: "acme", repo: "sdk", baseBranch: "main",
+        snapshotExpiresAt: "2035-08-06T12:00:00.000Z" }),
     })).resolves.toEqual({ claimed: 1, succeeded: 1, failed: 0, retried: 0, inconclusive: 0 });
     expect(deliverExactDraft).toHaveBeenCalledTimes(1);
     expect(getMissionTask(value.db, "tenant-a", REVIEW_TASK_ID)).toMatchObject({ status: "agent_working" });

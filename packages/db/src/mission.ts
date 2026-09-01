@@ -495,3 +495,46 @@ export function resolveMissionForRegaugeCampaign(db: AppDb, tenantId: string, re
     `SELECT * FROM mission WHERE tenant_id = ? AND regauge_campaign_id = ?`, [tenantId, regaugeCampaignId]);
   return row ? mission(row) : undefined;
 }
+
+/**
+ * The ONE answer to "is this job Mission-bound?".
+ *
+ * `missionId` on the payload is a claimed binding: a missing row fails closed.
+ * A campaign id is only a hint — resolve it through the Fettler/ReGauge campaign
+ * FK and return undefined when nothing is linked. That is the enrollment gap,
+ * not a fabricated Mission.
+ *
+ * Every authority reader must resolve through here. A reader that consults only
+ * `payload.missionId` answers "unbound" for a campaign-bound job, and on an
+ * authorization path "could not determine" must never read as "allowed": the
+ * caller would skip the Mission fence entirely. Keeping one implementation is
+ * what stops a second, weaker answer from growing back (spec v3 §31.7).
+ *
+ * NOTE ON REACHABILITY: no production surface currently enqueues an `agent.run`
+ * carrying a campaign hint, so today this returns exactly what the old
+ * `payload.missionId` read returned. It is fail-closed hardening ahead of the
+ * campaign → `agent.run` originator, not a live behavior change. See the
+ * Supersession note in docs/adr/2026-08-25-agent-run-mission-id.md.
+ */
+export function resolveBoundMissionForJobPayload(
+  db: AppDb,
+  tenantId: string,
+  payload: unknown,
+): Mission | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const record = payload as Record<string, unknown>;
+  const text = (key: string): string | undefined => {
+    const value = record[key];
+    return typeof value === "string" && value.trim() ? value : undefined;
+  };
+  const missionId = text("missionId");
+  if (missionId) {
+    const bound = getMission(db, tenantId, missionId);
+    if (!bound) throw new Error("mission_task_job_mission_not_found");
+    return bound;
+  }
+  const campaignId = text("campaignId") ?? text("fettlerCampaignId") ?? text("regaugeCampaignId");
+  if (!campaignId) return undefined;
+  return resolveMissionForFettlerCampaign(db, tenantId, campaignId)
+    ?? resolveMissionForRegaugeCampaign(db, tenantId, campaignId);
+}

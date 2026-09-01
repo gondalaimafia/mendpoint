@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { AppDb } from "./index.js";
 import { assertMissionMutationAuthority, completeMissionMutationAuthorityTask, parseMissionMutationAuthority,
   refreshMissionMutationAuthority, type MissionMutationAuthorityV1 } from "./mission-mutation-authority.js";
+import { resolveBoundMissionForJobPayload, type Mission } from "./mission.js";
 
 const JOB_TYPE = "warden.candidate.deliver";
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
@@ -654,12 +655,20 @@ export function enqueueWardenCandidateDelivery(
   if (sourceJob) {
     let sourcePayload: unknown;
     try { sourcePayload = JSON.parse(sourceJob.payload_json); } catch { sourcePayload = null; }
-    if (sourcePayload && typeof sourcePayload === "object" && !Array.isArray(sourcePayload) &&
-        typeof (sourcePayload as Record<string, unknown>).missionId === "string") {
-      const claimedMissionId = (sourcePayload as Record<string, unknown>).missionId;
-      if (!missionAuthority || missionAuthority.missionId !== claimedMissionId) {
-        throw new Error("warden_candidate_delivery_binding_mismatch");
-      }
+    // Resolve the source job's binding through the canonical resolver rather than
+    // reading `payload.missionId` raw. A campaign-bound source job IS Mission
+    // bound; answering "unbound" here would enqueue a delivery carrying no
+    // authority, and the worker would then skip the dispatch fence entirely.
+    let boundMission: Mission | undefined;
+    try {
+      boundMission = resolveBoundMissionForJobPayload(db, tenantId, sourcePayload);
+    } catch {
+      // A claimed Mission whose row is missing is still a binding failure here.
+      // Keep this module's error vocabulary so callers classify it unchanged.
+      throw new Error("warden_candidate_delivery_binding_mismatch");
+    }
+    if (boundMission && (!missionAuthority || missionAuthority.missionId !== boundMission.id)) {
+      throw new Error("warden_candidate_delivery_binding_mismatch");
     }
   }
   const owns = !db.raw.isTransaction;

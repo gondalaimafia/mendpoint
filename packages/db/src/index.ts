@@ -4832,6 +4832,7 @@ export {
   linkFettlerCampaignToMission,
   linkRegaugeCampaignToMission,
   regaugeMissionId,
+  resolveBoundMissionForJobPayload,
   resolveMissionForFettlerCampaign,
   resolveMissionForRegaugeCampaign,
   transitionMission,
